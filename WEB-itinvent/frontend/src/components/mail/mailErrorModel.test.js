@@ -71,4 +71,25 @@ describe('mailErrorModel', () => {
     expect(getMailErrorCode({ response: { headers: { 'X-Mail-Error-Code': 'AUTH_FAILED' } } }))
       .toBe('AUTH_FAILED');
   });
+
+  it('recovers auth error codes from 409 detail when custom headers are stripped', () => {
+    expect(getMailErrorCode({
+      response: {
+        status: 409,
+        data: { detail: 'Пароль корпоративной почты устарел или неверен. Введите новый пароль.' },
+      },
+    })).toBe('MAIL_AUTH_INVALID');
+    expect(getMailErrorCode({
+      response: {
+        status: 409,
+        data: { detail: 'Введите корпоративный пароль для почты.' },
+      },
+    })).toBe('MAIL_PASSWORD_REQUIRED');
+    expect(getMailErrorCode({
+      response: {
+        status: 409,
+        data: { detail: 'Для доступа к почте войдите в систему заново.' },
+      },
+    })).toBe('MAIL_RELOGIN_REQUIRED');
+  });
 });

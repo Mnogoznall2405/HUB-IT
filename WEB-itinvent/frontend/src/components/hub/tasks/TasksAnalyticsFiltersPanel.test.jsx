@@ -53,6 +53,7 @@ describe('TasksAnalyticsFiltersPanel', () => {
 
     expect(screen.getByLabelText('Период')).toBeInTheDocument();
     expect(screen.getByLabelText('Проекты')).toBeInTheDocument();
+    expect(screen.getByLabelText('Исполнитель')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Сбросить срез' })).toBeInTheDocument();
   });
 

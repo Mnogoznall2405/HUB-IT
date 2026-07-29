@@ -16,6 +16,8 @@ import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
+import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
@@ -34,7 +36,9 @@ export const navigationItems = [
     group: 'main',
   }] : []),
   { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main' },
+  { path: '/docflow', label: 'Документооборот', shortLabel: 'Документы', icon: <DescriptionOutlinedIcon />, permission: 'docflow.read', group: 'main' },
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
+  { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: <AccountTreeOutlinedIcon />, permission: 'company_structure.read', group: 'tools' },
   { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
   { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: <FolderSharedOutlinedIcon />, permission: 'groups_access.read', group: 'tools' },
   { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
@@ -115,4 +119,22 @@ export function getNavigationBadgeCount(path, unreadCounts = {}) {
   if (path === '/chat') return Number(unreadCounts?.chat_messages_unread_total || 0);
   if (path === '/mail') return Number(unreadCounts?.mail_unread || 0);
   return 0;
+}
+
+/**
+ * Mail nav badge meta from shared unread snapshot state.
+ * ``stale`` still has a last-known count — do not treat it like unknown/error ``?``.
+ */
+export function getMailNavigationBadgeMeta(mailState, badgeCount = 0) {
+  const state = String(mailState || 'unknown');
+  const needsAttention = state === 'unknown' || state === 'error';
+  const count = Math.max(0, Number(badgeCount) || 0);
+  return {
+    state,
+    needsAttention,
+    badgeContent: needsAttention ? (count > 0 ? count : '?') : count,
+    showBadge: count > 0 || needsAttention,
+    color: needsAttention ? 'warning' : 'error',
+    title: needsAttention ? `Почтовый снимок: ${state}` : undefined,
+  };
 }

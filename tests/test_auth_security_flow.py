@@ -544,6 +544,8 @@ def test_login_mode_returns_internal_password_only(monkeypatch):
     assert response.json() == {
         "network_zone": "internal",
         "biometric_login_enabled": False,
+        "client_country_code": "RU",
+        "show_vpn_hint": False,
     }
 
 
@@ -573,6 +575,8 @@ def test_login_mode_returns_internal_passkey_when_internal_allowed(monkeypatch):
     assert response.json() == {
         "network_zone": "internal",
         "biometric_login_enabled": True,
+        "client_country_code": "RU",
+        "show_vpn_hint": False,
     }
 
 
@@ -581,6 +585,11 @@ def test_login_mode_returns_external_passkey_when_webauthn_is_configured(monkeyp
         auth,
         "build_request_network_context",
         lambda request: SimpleNamespace(client_ip="95.24.10.1", network_zone="external"),
+    )
+    monkeypatch.setattr(
+        auth,
+        "resolve_client_geo",
+        lambda **kwargs: SimpleNamespace(country_code="RU", show_vpn_hint=False, source="lookup"),
     )
     original_rp_id = auth.config.security.webauthn_rp_id
     original_origin = auth.config.security.webauthn_origin
@@ -599,6 +608,41 @@ def test_login_mode_returns_external_passkey_when_webauthn_is_configured(monkeyp
     assert response.json() == {
         "network_zone": "external",
         "biometric_login_enabled": True,
+        "client_country_code": "RU",
+        "show_vpn_hint": False,
+    }
+
+
+def test_login_mode_sets_vpn_hint_when_client_is_outside_russia(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "build_request_network_context",
+        lambda request: SimpleNamespace(client_ip="8.8.8.8", network_zone="external"),
+    )
+    monkeypatch.setattr(
+        auth,
+        "resolve_client_geo",
+        lambda **kwargs: SimpleNamespace(country_code="DE", show_vpn_hint=True, source="lookup"),
+    )
+    original_rp_id = auth.config.security.webauthn_rp_id
+    original_origin = auth.config.security.webauthn_origin
+    auth.config.security.webauthn_rp_id = "hubit.zsgp.ru"
+    auth.config.security.webauthn_origin = "https://hubit.zsgp.ru"
+    try:
+        app = FastAPI()
+        app.include_router(auth.router, prefix="/auth")
+
+        response = TestClient(app).get("/auth/login-mode")
+    finally:
+        auth.config.security.webauthn_rp_id = original_rp_id
+        auth.config.security.webauthn_origin = original_origin
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "network_zone": "external",
+        "biometric_login_enabled": True,
+        "client_country_code": "DE",
+        "show_vpn_hint": True,
     }
 
 

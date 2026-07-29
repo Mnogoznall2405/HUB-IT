@@ -1,4 +1,4 @@
-# IT-Invent Agent
+# HUB-IT Agent
 
 Основной entrypoint агента: `agent.py`.
 
@@ -25,10 +25,10 @@ python setup.py bdist_msi
 
 После установки MSI автоматически:
 
-- копирует бинарные файлы в `C:\Program Files\IT-Invent\Agent`
-- пишет runtime-конфиг в `C:\ProgramData\IT-Invent\Agent\.env`
-- мигрирует legacy `.env` из `C:\Program Files\IT-Invent\Agent\.env`, если он существует
-- регистрирует Scheduled Task `IT-Invent Agent`
+- копирует бинарные файлы в `C:\Program Files\HUB-IT\Agent`
+- пишет runtime-конфиг в `C:\ProgramData\HUB-IT\Agent\.env`
+- мигрирует legacy runtime из `C:\ProgramData\IT-Invent\Agent`, если он существует
+- регистрирует Scheduled Task `HUB-IT Agent`
 - форсирует on-demand scan:
   - `SCAN_AGENT_SCAN_ON_START=0`
   - `SCAN_AGENT_WATCHDOG_ENABLED=0`
@@ -43,19 +43,19 @@ MSI custom actions больше не используют `ITInventAgent.exe` к
 Канонический runtime root после MSI:
 
 ```text
-C:\ProgramData\IT-Invent\Agent
+C:\ProgramData\HUB-IT\Agent
 ```
 
 Канонические пути:
 
 ```text
-C:\ProgramData\IT-Invent\Agent\.env
-C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log
-C:\ProgramData\IT-Invent\Agent\Spool
-C:\ProgramData\IT-Invent\Agent\ScanAgent
+C:\ProgramData\HUB-IT\Agent\.env
+C:\ProgramData\HUB-IT\Agent\Logs\itinvent_agent.log
+C:\ProgramData\HUB-IT\Agent\Spool
+C:\ProgramData\HUB-IT\Agent\ScanAgent
 ```
 
-`C:\Program Files\IT-Invent\Agent` используется только для binaries и MSI-owned files.
+`C:\Program Files\HUB-IT\Agent` используется только для binaries и MSI-owned files.
 
 Основной агент автоматически чистит свой лог при старте:
 
@@ -79,13 +79,13 @@ C:\ProgramData\IT-Invent\Agent\ScanAgent
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan task poll interval |
 | `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | `120` | Scan task poll jitter |
 | `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | `D:\` | Extra Outlook PST/OST search roots |
-| `INSTALLDIR` | Нет | `C:\Program Files\IT-Invent\Agent` | `D:\Apps\IT-Invent\Agent` | Custom install path |
+| `INSTALLDIR` | Нет | `C:\Program Files\HUB-IT\Agent` | `D:\Apps\HUB-IT\Agent` | Custom install path |
 
 Deployment MSI берёт оба API-ключа из корневого `.env` во время сборки, а для URL использует публичные client defaults. Сборка завершается ошибкой, если одного из ключей нет; переданные в `msiexec` properties по-прежнему могут переопределить встроенные значения.
 
 Фиксированные значения v1, не выносятся в MSI properties:
 
-- `TaskName = IT-Invent Agent`
+- `TaskName = HUB-IT Agent`
 - `RepeatMinutes = 60`
 - `SCAN_AGENT_SCAN_ON_START = 0`
 - `SCAN_AGENT_WATCHDOG_ENABLED = 0`
@@ -95,21 +95,21 @@ Deployment MSI берёт оба API-ключа из корневого `.env` �
 Тихая установка на встроенных значениях:
 
 ```powershell
-msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart
+msiexec /i "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart
 ```
 
 Тихая установка с логом:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log"
+msiexec /i "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log"
 ```
 
 Минимально рекомендуемая тихая установка:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   SCAN_AGENT_SERVER_BASE="http://127.0.0.1:8011/api/v1/scan" `
@@ -120,7 +120,7 @@ msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Tem
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   ITINV_AGENT_INTERVAL_SEC="3600" `
@@ -138,25 +138,25 @@ msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Tem
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /x "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+msiexec /x "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
 ```
 
 Тихий repair:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /fa "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+msiexec /fa "C:\Path\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
 ```
 
 ## Что проверить после установки
 
 ```powershell
-Test-Path "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe"
-Test-Path "C:\Program Files\IT-Invent\Agent\ITInventAgentMsiHelper.exe"
-Get-Content "C:\ProgramData\IT-Invent\Agent\.env"
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe"
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgentMsiHelper.exe"
+Get-Content "C:\ProgramData\HUB-IT\Agent\.env"
 Get-ScheduledTask -TaskName "IT-Invent Agent" | % Settings | Format-List ExecutionTimeLimit, MultipleInstances, StartWhenAvailable
 Get-ScheduledTask -TaskName "IT-Invent Agent" | % Triggers | Select Enabled, @{n='RepetitionInterval';e={$_.Repetition.Interval}}, @{n='RepetitionDuration';e={$_.Repetition.Duration}}
-Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 80
+Get-Content "C:\ProgramData\HUB-IT\Agent\Logs\itinvent_agent.log" -Tail 80
 ```
 
 Ожидаемое:
@@ -181,13 +181,13 @@ Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 80
 
 MSI uninstall сам:
 
-- удаляет Scheduled Task `IT-Invent Agent`
+- удаляет Scheduled Task `HUB-IT Agent`
 - удаляет `ITInventOutlookProbe`, если он был
 - останавливает процессы `ITInventAgent.exe` и `ITInventOutlookProbe.exe`
 - очищает installer-created machine env vars:
   - `SCAN_AGENT_SCAN_ON_START`
   - `SCAN_AGENT_WATCHDOG_ENABLED`
-- удаляет runtime root `C:\ProgramData\IT-Invent\Agent`
+- удаляет runtime root `C:\ProgramData\HUB-IT\Agent`
 - удаляет install directory через стандартный MSI file removal
 
 После uninstall проверь:
@@ -196,8 +196,8 @@ MSI uninstall сам:
 Get-Process ITInventAgent -ErrorAction SilentlyContinue
 Get-Process ITInventOutlookProbe -ErrorAction SilentlyContinue
 Get-ScheduledTask -TaskName "IT-Invent Agent" -ErrorAction SilentlyContinue
-Test-Path "C:\Program Files\IT-Invent\Agent"
-Test-Path "C:\ProgramData\IT-Invent\Agent"
+Test-Path "C:\Program Files\HUB-IT\Agent"
+Test-Path "C:\ProgramData\HUB-IT\Agent"
 ```
 
 ## Troubleshooting
@@ -223,19 +223,19 @@ Get-Content "C:\Windows\Temp\itinvent_agent_msi_helper.log" -Tail 200
 Agent log:
 
 ```powershell
-Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 200
+Get-Content "C:\ProgramData\HUB-IT\Agent\Logs\itinvent_agent.log" -Tail 200
 ```
 
 Если задача не создалась:
 
 - проверь MSI log
-- проверь, существует ли `C:\Program Files\IT-Invent\Agent\scripts\install_agent_task.ps1`
+- проверь, существует ли `C:\Program Files\HUB-IT\Agent\scripts\install_agent_task.ps1`
 - вручную выполни fallback:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Program Files\IT-Invent\Agent\scripts\install_agent_task.ps1" `
-  -ExecutablePath "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe" `
-  -EnvFilePath "C:\ProgramData\IT-Invent\Agent\.env" `
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\HUB-IT\Agent\scripts\install_agent_task.ps1" `
+  -ExecutablePath "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe" `
+  -EnvFilePath "C:\ProgramData\HUB-IT\Agent\.env" `
   -StartAfterRegister
 ```
 

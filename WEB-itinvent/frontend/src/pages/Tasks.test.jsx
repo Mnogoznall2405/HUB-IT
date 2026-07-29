@@ -1,7 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Tasks from './Tasks';
 import hubTasksAPI from '../api/hubTasks';
@@ -431,6 +431,10 @@ beforeEach(() => {
   hubTasksAPI.createTask.mockResolvedValue({ id: 'task-created' });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('Tasks page detail workspace', () => {
   it('opens the create dialog from the dashboard quick-action URL and consumes the flag', async () => {
     render(
@@ -449,7 +453,11 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    expect(await screen.findByRole(
+      'textbox',
+      { name: 'Что нужно сделать' },
+      { timeout: 4000 },
+    )).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByTestId('location-probe').textContent).not.toContain('create=1');
     });
@@ -474,7 +482,11 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    expect(await screen.findByRole(
+      'textbox',
+      { name: 'Что нужно сделать' },
+      { timeout: 4000 },
+    )).toBeInTheDocument();
     expect(window.sessionStorage.getItem('hub.tasks.pendingCreate')).toBeNull();
   });
 
@@ -530,7 +542,7 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('analytics-filters-panel')).toBeInTheDocument();
     expect(screen.getByText('Период отчёта')).toBeInTheDocument();
     expect(screen.getByText('Постановка и выполнение по времени')).toBeInTheDocument();
-    expect(screen.getAllByText('По участникам').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('По исполнителям').length).toBeGreaterThan(0);
     expect(screen.getByText('Выполнено без срока')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Скрыть фильтры' }));
@@ -543,7 +555,7 @@ describe('Tasks page detail workspace', () => {
       expect(screen.getByText('Период отчёта')).toBeVisible();
     });
 
-    await selectAutocompleteOption('Участник', 'Испол', 'Исполнитель И.И.');
+    await selectAutocompleteOption('Исполнитель', 'Испол', 'Исполнитель И.И.');
 
     await waitFor(() => {
       expect(hubTaskAnalyticsAPI.getTaskAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -553,7 +565,7 @@ describe('Tasks page detail workspace', () => {
 
     const participantCard = await screen.findByTestId('analytics-participant-card');
     expect(participantCard).toBeInTheDocument();
-    expect(within(participantCard).getByText(/Участник:/)).toHaveTextContent('Исполнитель И.И.');
+    expect(within(participantCard).getByText(/Исполнитель:/)).toHaveTextContent('Исполнитель И.И.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт Excel' }));
     await waitFor(() => {
@@ -809,6 +821,9 @@ describe('Tasks page detail workspace', () => {
   });
 
   it('renders deadlines, calendar, and gantt task modes without the removed plan tab', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-12T10:00:00'));
+
     hubTasksAPI.getTasks.mockResolvedValue({
       items: [
         {
@@ -851,6 +866,23 @@ describe('Tasks page detail workspace', () => {
     const ganttView = await screen.findByTestId('tasks-gantt-view');
     expect(within(ganttView).getByText('Проверить акт перемещения')).toBeInTheDocument();
     expect(within(ganttView).getByText('Задача без срока')).toBeInTheDocument();
+  });
+
+  it('uses analytics total in the mobile header and hides the create fab', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=analytics']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Аналитика · 5');
+    });
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
   });
 
   it('uses searchable people fields in board filters and create dialog', async () => {

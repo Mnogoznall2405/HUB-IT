@@ -30,7 +30,9 @@ describe('TasksMobileHeader', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByTestId('tasks-mobile-header-inline')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-mobile-header-inline')).toHaveStyle({
+      paddingTop: 'calc(12px + env(safe-area-inset-top, 0px))',
+    });
     expect(screen.getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Лента · 3');
     expect(screen.getByTestId('tasks-mobile-open-search')).toBeInTheDocument();
     expect(screen.getByTestId('tasks-mobile-mode-segmented')).toBeInTheDocument();

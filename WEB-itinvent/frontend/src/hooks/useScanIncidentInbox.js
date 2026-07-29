@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { scanAPI } from '../api/client';
 
-export const INCIDENT_BATCH_SIZE = 500;
+export const INCIDENT_BATCH_SIZE = 80;
 
 function compactFilters(filters) {
   const out = {};
@@ -15,8 +14,15 @@ function compactFilters(filters) {
 
 export function useScanIncidentInbox(filters, options = {}) {
   const batchSize = Number(options.batchSize || INCIDENT_BATCH_SIZE);
+  const enabled = options.enabled !== false;
+  const getIncidentsRef = useRef(options.getIncidents);
+  getIncidentsRef.current = options.getIncidents;
+
   const normalizedFilters = useMemo(() => compactFilters(filters), [filters]);
   const filtersKey = useMemo(() => JSON.stringify(normalizedFilters), [normalizedFilters]);
+  const normalizedFiltersRef = useRef(normalizedFilters);
+  normalizedFiltersRef.current = normalizedFilters;
+
   const requestIdRef = useRef(0);
   const abortRef = useRef(null);
   const [items, setItems] = useState([]);
@@ -35,6 +41,16 @@ export function useScanIncidentInbox(filters, options = {}) {
   }, []);
 
   const loadFirstPage = useCallback(async ({ silent = false } = {}) => {
+    if (!enabled) {
+      cancelInFlight();
+      setItems([]);
+      setTotal(0);
+      setLoaded(0);
+      setLoadingInitial(false);
+      setLoadingMore(false);
+      setError(null);
+      return;
+    }
     cancelInFlight();
     const requestId = requestIdRef.current;
     const controller = new AbortController();
@@ -44,10 +60,13 @@ export function useScanIncidentInbox(filters, options = {}) {
     setError(null);
 
     try {
-      const first = await scanAPI.getIncidents(
-        { ...normalizedFilters, limit: batchSize, offset: 0 },
-        { signal: controller.signal },
-      );
+      const fn = getIncidentsRef.current;
+      const first = typeof fn === 'function'
+        ? await fn(
+          { ...normalizedFiltersRef.current, limit: batchSize, offset: 0 },
+          { signal: controller.signal },
+        )
+        : { items: [], total: 0 };
       if (requestId !== requestIdRef.current) return;
       const firstItems = Array.isArray(first?.items) ? first.items : [];
       const nextTotal = Number(first?.total || firstItems.length || 0);
@@ -66,7 +85,7 @@ export function useScanIncidentInbox(filters, options = {}) {
         setLoadingMore(false);
       }
     }
-  }, [batchSize, cancelInFlight, normalizedFilters]);
+  }, [batchSize, cancelInFlight, enabled]);
 
   const loadMore = useCallback(async () => {
     if (loadingInitial || loadingMore) return;
@@ -77,10 +96,13 @@ export function useScanIncidentInbox(filters, options = {}) {
     setLoadingMore(true);
     setError(null);
     try {
-      const page = await scanAPI.getIncidents(
-        { ...normalizedFilters, limit: batchSize, offset: loaded },
-        { signal: controller.signal },
-      );
+      const fn = getIncidentsRef.current;
+      const page = typeof fn === 'function'
+        ? await fn(
+          { ...normalizedFiltersRef.current, limit: batchSize, offset: loaded },
+          { signal: controller.signal },
+        )
+        : { items: [] };
       if (requestId !== requestIdRef.current) return;
       const pageItems = Array.isArray(page?.items) ? page.items : [];
       const nextOffset = page?.next_offset ?? (loaded + pageItems.length);
@@ -94,22 +116,23 @@ export function useScanIncidentInbox(filters, options = {}) {
     } finally {
       if (requestId === requestIdRef.current) setLoadingMore(false);
     }
-  }, [batchSize, loaded, loadingInitial, loadingMore, normalizedFilters, total]);
+  }, [batchSize, loaded, loadingInitial, loadingMore, total]);
 
   const refreshFirstPage = useCallback(async ({ silent = true } = {}) => {
+    if (!enabled) return;
     const requestId = requestIdRef.current;
     if (!silent) setLoadingInitial(true);
     setError(null);
     try {
-      const first = await scanAPI.getIncidents({ ...normalizedFilters, limit: batchSize, offset: 0 });
+      const fn = getIncidentsRef.current;
+      const first = typeof fn === 'function'
+        ? await fn({ ...normalizedFiltersRef.current, limit: batchSize, offset: 0 })
+        : { items: [], total: 0 };
       if (requestId !== requestIdRef.current) return;
       const firstItems = Array.isArray(first?.items) ? first.items : [];
       const nextTotal = Number(first?.total || firstItems.length || 0);
       setTotal(nextTotal);
       setItems((prev) => {
-        // Keep any already-loaded pages beyond page 1 (avoid collapsing the list
-        // on a silent refresh), but drop tail entries that are now duplicated in
-        // the freshly-fetched first page (e.g. re-ordered into it, or already acked).
         const freshIds = new Set(firstItems.map((item) => String(item?.id ?? '')));
         const tail = prev.slice(firstItems.length).filter((item) => !freshIds.has(String(item?.id ?? '')));
         return [...firstItems, ...tail];
@@ -120,12 +143,12 @@ export function useScanIncidentInbox(filters, options = {}) {
     } finally {
       if (requestId === requestIdRef.current && !silent) setLoadingInitial(false);
     }
-  }, [batchSize, normalizedFilters]);
+  }, [batchSize, enabled]);
 
   useEffect(() => {
     loadFirstPage({ silent: false });
     return () => cancelInFlight();
-  }, [filtersKey, loadFirstPage, cancelInFlight]);
+  }, [filtersKey, enabled, loadFirstPage, cancelInFlight]);
 
   return {
     filters: normalizedFilters,

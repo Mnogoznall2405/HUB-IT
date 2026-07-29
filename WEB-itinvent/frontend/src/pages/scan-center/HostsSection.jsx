@@ -8,6 +8,7 @@ import {
   FormControl,
   Grid,
   InputLabel,
+  LinearProgress,
   MenuItem,
   Paper,
   Select,
@@ -50,12 +51,12 @@ export default function HostsSection({
   onOpenHost,
 }) {
   const theme = useTheme();
-  const mobileLayout = useMediaQuery(theme.breakpoints.down('md'));
+  const mobileLayout = useMediaQuery(theme.breakpoints.down('lg'));
   if (!visible) return null;
 
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack spacing={1.5}>
+    <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 2 }, maxWidth: '100%', minWidth: 0 }}>
+      <Stack spacing={1.5} sx={{ minWidth: 0, maxWidth: '100%' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 800 }}>Компьютеры с рисками</Typography>
@@ -99,7 +100,8 @@ export default function HostsSection({
             </FormControl>
           </Grid>
         </Grid>
-        {mobileLayout ? <Stack spacing={1}>
+        {loading && rows.length > 0 ? <LinearProgress sx={{ borderRadius: 1 }} /> : null}
+        {mobileLayout ? <Stack spacing={1} sx={{ opacity: loading && rows.length > 0 ? 0.55 : 1, transition: 'opacity 120ms' }}>
           {loading && rows.length === 0 ? <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box> : null}
           {!loading && rows.length === 0 ? <Typography color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>Инцидентов по текущим фильтрам нет.</Typography> : null}
           {rows.map((row) => (
@@ -124,7 +126,19 @@ export default function HostsSection({
           ))}
         </Stack> : (
 
-        <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 540 }}>
+        <TableContainer
+          component={Paper}
+          variant="outlined"
+          sx={{
+            width: '100%',
+            maxWidth: '100%',
+            maxHeight: 540,
+            overflowX: 'auto',
+            overflowY: 'auto',
+            opacity: loading && rows.length > 0 ? 0.55 : 1,
+            transition: 'opacity 120ms',
+          }}
+        >
           <Table stickyHeader size="small" sx={{ minWidth: 1240 }}>
             <TableHead>
               <TableRow>

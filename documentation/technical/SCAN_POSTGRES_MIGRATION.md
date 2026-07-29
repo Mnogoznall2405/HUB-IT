@@ -29,6 +29,8 @@ python scripts\benchmark_scan_storage.py --repeats 5 --json-output tmp\scan-stor
 
 Вывод: срочной аварийной причины менять БД нет — типовые чтения быстрые, исторических lock-ошибок мало. Но размер, общий lock внутри `ScanStore` и дальнейший рост делают миграцию разумной до увеличения числа worker/API процессов.
 
+Backup перед миграцией (пример): `data/scan_server/backups/scan_server_YYYYMMDD_HHMMSS.db`.
+
 ## Что даст PostgreSQL
 
 - независимые транзакции API и worker вместо одного SQLite writer;
@@ -45,36 +47,65 @@ python scripts\benchmark_scan_storage.py --repeats 5 --json-output tmp\scan-stor
 
 ## Целевая схема
 
-- отдельная переменная `SCAN_DATABASE_URL`, не импорт `APP_DATABASE_URL` из web backend;
-- отдельный PostgreSQL schema `scan` и отдельная роль с правами только на него;
-- таблицы: `agents`, `tasks`, `jobs`, `findings`, `incidents`, `task_file_observations`, `artifacts`;
-- JSON-поля переводятся в `jsonb`, timestamps — в `timestamptz`, идентификаторы остаются строковыми на первом этапе для совместимости;
-- claim jobs/tasks выполняется одной транзакцией с блокировкой строк;
-- PDF-фрагменты и Office payload не помещаются в PostgreSQL: временные/архивные файлы остаются в spool, в БД хранится путь и метаданные.
+- отдельная переменная `SCAN_DATABASE_URL` (`postgresql+psycopg://…`), **не** импорт `APP_DATABASE_URL` из web backend;
+- schema **`scan`** на том же PostgreSQL-инстансе; роль с правами на schema `scan` (можно начать с той же роли, что app/chat, затем сузить);
+- таблицы (имена сохранены для совместимости SQL):
+  - `scan_agents` (+ `outbox_depth`, `dead_letter_depth`, `last_ingest_ok_at`)
+  - `scan_tasks`
+  - `scan_task_system_metrics`
+  - `scan_jobs`
+  - `scan_findings`
+  - `scan_incidents`
+  - `scan_task_file_observations`
+  - `scan_artifacts`
+- timestamps остаются unix epoch (`BIGINT`); JSON-поля — `TEXT` (совместимость с `_json_dumps` / `_json_loads`; фильтр pattern на PG через `::jsonb`);
+- claim jobs: `FOR UPDATE SKIP LOCKED`;
+- PDF/spool и archive остаются на диске.
+
+Код: dual-backend в `ScanStore` — пустой `SCAN_DATABASE_URL` → SQLite; иначе → PostgreSQL (`scan_server/db.py`, `pg_compat.py`, `models.py`, Alembic `scan_server/alembic`).
 
 ## Безопасный порядок перехода
 
-1. Ввести интерфейс хранилища и PostgreSQL-реализацию, сохранив SQLite по умолчанию.
-2. Развернуть сервер с поддержкой обоих backend; API агентов не менять.
-3. Создать schema/роль, применить DDL и выполнить тестовый backfill из копии SQLite.
-4. Сравнить количество строк по каждой таблице, статусы, ссылки `job → finding → incident` и случайные checksum-выборки.
-5. Запустить одинаковый storage benchmark и нагрузочный ingest на тестовой схеме.
-6. На переключении временно остановить выдачу новых tasks и worker. Агенты сохраняют результаты в outbox.
-7. Скопировать дельту, повторить сверку, переключить `SCAN_DATABASE_URL`, запустить API/worker и дождаться опустошения outbox.
-8. SQLite оставить read-only как rollback snapshot минимум на срок retention. Не удалять до успешного пилота.
+1. Развернуть код dual-backend (SQLite default).
+2. Создать schema `scan`, применить DDL (`ensure_scan_schema` / alembic).
+3. Backfill из копии SQLite:
 
-Dual-write в рабочем процессе не использовать как основной механизм: он создаёт риск расхождения двух БД при частичном сбое. Короткая контролируемая пауза с outbox безопаснее и проще проверяется.
+```powershell
+python scripts\migrate_scan_sqlite_to_postgres.py `
+  --source-db-path data\scan_server\backups\scan_server_YYYYMMDD_HHMMSS.db `
+  --target-database-url "postgresql+psycopg://USER:PASS@127.0.0.1:5432/hubit_chat" `
+  --truncate
+```
+
+4. Сверить COUNT по 8 таблицам, статусы jobs, orphan finding/incident, sample checksum.
+5. Storage benchmark на PG (после cutover — `tmp\scan-storage-after.json`).
+6. Cutover: stop worker (+ при необходимости API write) → дельта/полный повтор backfill → выставить `SCAN_DATABASE_URL` в `.env` → restart `itinvent-scan` / `itinvent-scan-worker`.
+7. Smoke: `/health` → `storage_backend=postgres`, dashboard, claim, heartbeat, ingest.
+8. SQLite snapshot read-only ≥ срок retention.
+
+Dual-write не использовать.
 
 ## Критерии переключения
 
-- количество строк и статусов совпадает для всех семи таблиц;
+- количество строк и статусов совпадает для всех **восьми** таблиц;
 - отсутствуют `finding`/`incident` без существующего job;
 - очередь после переключения обрабатывается без дублей;
 - ни один `analysis_incomplete` не превращается в `done_clean`;
 - p95 API dashboard/incidents не хуже исходного замера;
-- lock/deadlock retry наблюдаемы в dashboard и логах;
-- rollback на SQLite проверен до production cutover.
+- lock/deadlock retry наблюдаемы в логах;
+- rollback: убрать `SCAN_DATABASE_URL`, restart на SQLite snapshot.
 
 ## Быстрое улучшение до миграции
 
-SQLite остаётся в WAL. Для выборки метрик добавлены индексы `scan_jobs(created_at)` и `scan_jobs(finished_at)`. После развёртывания повторить базовый benchmark. Освобождать свободные страницы через `VACUUM` можно только в отдельное окно обслуживания после резервной копии; это не обязательная часть текущего обновления.
+SQLite остаётся в WAL. Индексы `scan_jobs(created_at)` / `finished_at` уже добавлены. `VACUUM` — только в отдельное окно после резервной копии.
+
+## Статус cutover (17–18.07.2026)
+
+- Dual-backend в коде; production `SCAN_DATABASE_URL` → schema `scan` на `hubit_chat` (роль `hubit_chat_app`).
+- Live backfill сверен (8 таблиц, orphans=0, sample checksum OK).
+- `/health` → `storage_backend=postgres`.
+- PM2 ecosystem читает `SCAN_DATABASE_URL` из `.env` (`scripts/pm2/ecosystem.scan.config.js`).
+- Claim jobs / poll tasks: `FOR UPDATE SKIP LOCKED`.
+- Hot path matches: атомарный `create_finding_and_incident(..., finalize_status=...)`.
+- SQLite `data/scan_server/scan_server.db` + `data/scan_server/backups/` — rollback snapshot (не удалять).
+- Rollback: убрать `SCAN_DATABASE_URL` из `.env`, пересоздать scan из ecosystem (`pm2 start scripts/pm2/ecosystem.scan.config.js`).

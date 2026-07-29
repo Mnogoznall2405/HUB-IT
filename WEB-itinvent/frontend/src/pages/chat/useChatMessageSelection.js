@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 
-import { getMessagePreview } from '../../components/chat/chatHelpers';
+import { canDeleteChatMessage, getMessagePreview } from '../../components/chat/chatHelpers';
 
 export default function useChatMessageSelection({
+  conversationKind,
   messages,
   selectedMessageIds,
 }) {
@@ -28,8 +29,15 @@ export default function useChatMessageSelection({
     [selectedMessages],
   );
 
+  const canDeleteSelectedMessages = useMemo(
+    () => selectedMessages.length > 0
+      && selectedMessages.every((message) => canDeleteChatMessage(message, { conversationKind })),
+    [conversationKind, selectedMessages],
+  );
+
   return {
     canCopySelectedMessages,
+    canDeleteSelectedMessages,
     selectedMessageCount,
     selectedMessages,
     selectedMessageIdSet,

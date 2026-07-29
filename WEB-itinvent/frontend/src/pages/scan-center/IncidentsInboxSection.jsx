@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -7,9 +7,9 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   FormControl,
   Grid,
+  IconButton,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -17,16 +17,23 @@ import {
   Select,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import {
+  ContentCopyOutlined as ContentCopyOutlinedIcon,
   DoneOutlined as DoneOutlinedIcon,
   ExpandMore as ExpandMoreIcon,
   FactCheckOutlined as FactCheckOutlinedIcon,
-  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { FixedSizeList as VirtualList } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
+import {
+  formatIncidentUncPath,
+  formatSeverityLabel,
+  getIncidentFileName,
+  getIncidentPatternLabel,
+} from '../../lib/scanIncidentInbox';
 
 function sourceLabel(value) {
   const source = String(value || '').toLowerCase();
@@ -34,6 +41,16 @@ function sourceLabel(value) {
   if (source.includes('text') || source === 'pdf') return 'Текстовый слой / документ';
   if (source.includes('image')) return 'Изображение';
   return value || 'Источник не указан';
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  return false;
 }
 
 export default function IncidentsInboxSection({
@@ -49,16 +66,12 @@ export default function IncidentsInboxSection({
   busyAckInbox,
   busyIncident,
   ui,
-  quietActionSx,
   panelSx,
   formatters,
   renderVirtualRow,
   renderFragments,
-  onReload,
   onResetFilters,
   onOpenHostOverview,
-  onExpandAll,
-  onCollapseAll,
   onAckFiltered,
   onFilterChange,
   onToggleFragments,
@@ -73,24 +86,49 @@ export default function IncidentsInboxSection({
     getSourceKind,
     severityColor,
   } = formatters;
+  const [pathCopied, setPathCopied] = useState(false);
   const selectedSource = selectedIncident ? getSourceKind(selectedIncident) : '';
   const selectedPage = Number(selectedIncident?.page_number || selectedIncident?.page || selectedIncident?.metadata?.page_number || 0);
+  const selectedPatternLabel = selectedIncident
+    ? getIncidentPatternLabel(selectedIncident, patternOptions)
+    : '';
+  const selectedUncPath = selectedIncident ? formatIncidentUncPath(selectedIncident) : '';
+  const canCopyPath = Boolean(selectedUncPath && selectedUncPath !== 'Путь не указан');
+
+  useEffect(() => {
+    setPathCopied(false);
+  }, [selectedIncident?.id]);
+
+  const handleCopyPath = async () => {
+    if (!canCopyPath) return;
+    try {
+      const ok = await copyTextToClipboard(selectedUncPath);
+      if (!ok) return;
+      setPathCopied(true);
+      window.setTimeout(() => setPathCopied(false), 1500);
+    } catch {
+      setPathCopied(false);
+    }
+  };
 
   return (
     <Stack spacing={1.25}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 240 }}>
-          <Typography variant="h6" sx={{ fontWeight: 850 }}>Очередь проверки</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Выберите находку, проверьте доказательство и отметьте её просмотренной. Загружено {Number(inbox.loaded || 0)} из {Number(inbox.total || 0)}.
+          <Typography variant="h6" sx={{ fontWeight: 850 }}>
+            Инциденты · загружено {Number(inbox.loaded || 0)} из {Number(inbox.total || 0)}
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-          <Button type="button" size="small" variant="outlined" startIcon={inbox.loadingInitial ? <CircularProgress size={16} /> : <RefreshIcon />} onClick={onReload} disabled={inbox.loadingInitial || inbox.loadingMore} sx={quietActionSx.neutral}>Обновить</Button>
-          <Button type="button" size="small" variant="contained" startIcon={<DoneOutlinedIcon />} onClick={onAckFiltered} disabled={!canScanAck || busyAckInbox || newCount.loadingInitial || newCount.total <= 0}>
-            {newCount.total > 0 ? `Просмотрено по фильтру (${newCount.total})` : 'Просмотрено по фильтру'}
-          </Button>
-        </Stack>
+        <Button
+          type="button"
+          size="small"
+          variant="outlined"
+          startIcon={<DoneOutlinedIcon />}
+          onClick={onAckFiltered}
+          disabled={!canScanAck || busyAckInbox || newCount.loadingInitial || newCount.total <= 0}
+        >
+          {newCount.total > 0 ? `Просмотрено по фильтру (${newCount.total})` : 'Просмотрено по фильтру'}
+        </Button>
       </Box>
 
       {(inbox.loadingInitial || inbox.loadingMore) ? (
@@ -103,7 +141,7 @@ export default function IncidentsInboxSection({
 
       <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
         <Grid container spacing={1} alignItems="center">
-          <Grid item xs={12} md={5}>
+          <Grid item xs={12} md={4}>
             <TextField size="small" fullWidth label="Поиск" value={filters.q} onChange={(event) => onFilterChange('q', event.target.value)} placeholder="Файл, компьютер, фрагмент или пользователь" />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -117,21 +155,21 @@ export default function IncidentsInboxSection({
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={4} md={2}>
+          <Grid item xs={4} sm={2} md={1}>
             <Button type="button" fullWidth size="small" variant={filters.status === 'new' ? 'contained' : 'outlined'} onClick={() => onFilterChange('status', filters.status === 'new' ? 'all' : 'new')}>Новые</Button>
           </Grid>
-          <Grid item xs={12} sm={4} md={2}>
-            <Button type="button" fullWidth size="small" color="error" variant={filters.severity === 'high' ? 'contained' : 'outlined'} onClick={() => onFilterChange('severity', filters.severity === 'high' ? 'all' : 'high')}>Высокий риск</Button>
+          <Grid item xs={4} sm={2} md={2}>
+            <Button type="button" fullWidth size="small" color="error" variant={filters.severity === 'high' ? 'contained' : 'outlined'} onClick={() => onFilterChange('severity', filters.severity === 'high' ? 'all' : 'high')}>Высокий</Button>
           </Grid>
-          <Grid item xs={12}>
-            <Button type="button" fullWidth size="small" variant={filters.hasFragment ? 'contained' : 'outlined'} onClick={onToggleFragments}>Только с доказательствами</Button>
+          <Grid item xs={4} sm={2} md={2}>
+            <Button type="button" fullWidth size="small" variant={filters.hasFragment ? 'contained' : 'outlined'} onClick={onToggleFragments}>Доказательства</Button>
           </Grid>
         </Grid>
       </Paper>
 
       <Accordion disableGutters elevation={0} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '8px !important' }}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Typography variant="body2" sx={{ fontWeight: 800 }}>Дополнительные фильтры и группировка</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 800 }}>Дополнительные фильтры</Typography>
         </AccordionSummary>
         <AccordionDetails>
           <Grid container spacing={1}>
@@ -150,8 +188,6 @@ export default function IncidentsInboxSection({
           </Grid>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.25 }}>
             <Button type="button" size="small" onClick={onOpenHostOverview}>Сводка по компьютерам</Button>
-            <Button type="button" size="small" onClick={onExpandAll}>Развернуть группы</Button>
-            <Button type="button" size="small" onClick={onCollapseAll}>Свернуть группы</Button>
             <Button type="button" size="small" color="inherit" onClick={onResetFilters}>Сбросить фильтры</Button>
           </Stack>
         </AccordionDetails>
@@ -159,16 +195,15 @@ export default function IncidentsInboxSection({
 
       <Grid container spacing={1.5}>
         <Grid item xs={12} lg={5}>
-          <Paper variant="outlined" sx={{ height: workAreaHeight, minHeight: { xs: 500, lg: 640 }, overflow: 'hidden', borderColor: ui.borderSoft, borderRadius: 2 }}>
+          <Paper variant="outlined" sx={{ height: workAreaHeight, minHeight: { xs: 360, sm: 440, lg: 640 }, overflow: 'hidden', borderColor: ui.borderSoft, borderRadius: 2 }}>
             <Box sx={{ px: 1.5, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>Находки</Typography>
-              <Typography variant="caption" color="text.secondary">Сначала высокий риск, затем остальные совпадения</Typography>
             </Box>
             {rows.length === 0 && !inbox.loadingInitial ? (
               <Box sx={{ p: 3 }}><Typography variant="subtitle1" sx={{ fontWeight: 750 }}>Инциденты не найдены</Typography><Typography variant="body2" color="text.secondary">Измените фильтры или запустите новый скан.</Typography></Box>
             ) : (
-              <Box sx={{ height: 'calc(100% - 61px)' }}>
-                <AutoSizer>{({ height, width }) => <VirtualList height={height} width={width} itemCount={rows.length} itemSize={74}>{renderVirtualRow}</VirtualList>}</AutoSizer>
+              <Box sx={{ height: 'calc(100% - 45px)' }}>
+                <AutoSizer>{({ height, width }) => <VirtualList height={height} width={width} itemCount={rows.length} itemSize={78}>{renderVirtualRow}</VirtualList>}</AutoSizer>
               </Box>
             )}
           </Paper>
@@ -184,31 +219,51 @@ export default function IncidentsInboxSection({
                       <FactCheckOutlinedIcon color="primary" fontSize="small" />
                       <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 850 }}>Карточка проверки</Typography>
                     </Stack>
-                    <Typography variant="h6" sx={{ fontWeight: 850 }}>{selectedIncident.hostname || 'Неизвестный компьютер'}</Typography>
-                    <Typography variant="body2" color="text.secondary">{String(selectedIncident.branch || '').trim() || 'Без филиала'} · {String(selectedIncident.user_full_name || selectedIncident.user_login || '').trim() || 'Пользователь не указан'}</Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 850, overflowWrap: 'anywhere' }}>
+                      {getIncidentFileName(selectedIncident)}
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} alignItems="flex-start" sx={{ mt: 0.25 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere', minWidth: 0, flex: 1 }}>
+                        {selectedUncPath}
+                      </Typography>
+                      <Tooltip title={pathCopied ? 'Скопировано' : 'Скопировать путь'}>
+                        <span>
+                          <IconButton
+                            type="button"
+                            size="small"
+                            aria-label="Скопировать путь"
+                            onClick={() => void handleCopyPath()}
+                            disabled={!canCopyPath}
+                            sx={{ mt: -0.25 }}
+                          >
+                            <ContentCopyOutlinedIcon fontSize="small" color={pathCopied ? 'success' : 'inherit'} />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.4 }}>
+                      {selectedIncident.hostname || 'Неизвестный компьютер'}
+                      {' · '}
+                      {String(selectedIncident.user_full_name || selectedIncident.user_login || '').trim() || 'Пользователь не указан'}
+                      {String(selectedIncident.branch || '').trim() ? ` · ${String(selectedIncident.branch).trim()}` : ''}
+                    </Typography>
                   </Box>
                   <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" justifyContent="flex-end">
-                    <Chip size="small" color={severityColor(selectedIncident.severity)} label={selectedIncident.severity || '—'} />
+                    <Chip size="small" color={severityColor(selectedIncident.severity)} label={formatSeverityLabel(selectedIncident.severity)} />
                     <Chip size="small" color={fileStatusColor(selectedIncident.status)} label={fileStatusLabel(selectedIncident.status)} />
                   </Stack>
                 </Stack>
 
-                <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: 'action.hover' }}>
-                  <Typography variant="caption" color="text.secondary">Файл</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 750, overflowWrap: 'anywhere' }}>{selectedIncident.file_path || selectedIncident.file_name || 'Путь не указан'}</Typography>
-                  <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-                    <Chip size="small" variant="outlined" label={`Источник: ${sourceLabel(selectedSource)}`} />
-                    {selectedPage > 0 ? <Chip size="small" variant="outlined" label={`Страница ${selectedPage}`} /> : null}
-                    <Chip size="small" variant="outlined" label={`Тип: ${getFileExt(selectedIncident) || '—'}`} />
-                    <Chip size="small" variant="outlined" label={formatTs(selectedIncident.created_at)} />
-                  </Stack>
-                </Box>
+                <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap">
+                  {selectedPatternLabel ? <Chip size="small" variant="outlined" label={selectedPatternLabel} /> : null}
+                  <Chip size="small" variant="outlined" label={sourceLabel(selectedSource)} />
+                  {selectedPage > 0 ? <Chip size="small" variant="outlined" label={`Стр. ${selectedPage}`} /> : null}
+                  <Chip size="small" variant="outlined" label={(getFileExt(selectedIncident) || '—').toUpperCase()} />
+                  <Chip size="small" variant="outlined" label={formatTs(selectedIncident.created_at)} />
+                </Stack>
 
                 <Box>
                   <Typography variant="subtitle2" sx={{ fontWeight: 850, mb: 0.8 }}>Доказательство срабатывания</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                    Показан фактически сохранённый OCR/текстовый фрагмент. Повторения одного правила не повышают критичность.
-                  </Typography>
                   {renderFragments(selectedIncident)}
                 </Box>
 

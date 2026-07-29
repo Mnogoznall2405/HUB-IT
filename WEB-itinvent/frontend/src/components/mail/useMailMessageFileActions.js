@@ -317,14 +317,25 @@ export default function useMailMessageFileActions({
   }, []);
 
   const downloadAttachmentPreview = useCallback(() => {
-    const blob = attachmentPreview?.blob || attachmentPreview?.previewBlob;
-    if (!blob) return;
-    downloadBlobFileImpl(
-      blob,
-      attachmentPreview.filename || 'attachment.bin',
-      { preferOpenFallback: true },
-    );
-  }, [attachmentPreview, downloadBlobFileImpl]);
+    // Word/Office preview keeps only LibreOffice PDF in previewBlob (blob=null).
+    // Never save previewBlob under the original .docx/.xlsx name — that corrupts the file.
+    if (attachmentPreview?.blob) {
+      downloadBlobFileImpl(
+        attachmentPreview.blob,
+        attachmentPreview.filename || 'attachment.bin',
+        { preferOpenFallback: true },
+      );
+      return;
+    }
+    const downloadContext = attachmentPreview?.downloadContext;
+    if (downloadContext) {
+      void downloadAttachmentFile(
+        downloadContext.messageOrId,
+        downloadContext.attachment,
+        downloadContext.fallbackMessage,
+      );
+    }
+  }, [attachmentPreview, downloadAttachmentFile, downloadBlobFileImpl]);
 
   const downloadAttachmentPreviewPdf = useCallback(() => {
     if (!attachmentPreview?.previewBlob) return;

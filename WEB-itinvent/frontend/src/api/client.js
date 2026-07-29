@@ -25,6 +25,7 @@ import { chatFoldersAPI } from './chatFolders';
 import { equipmentComputersAPI } from './equipmentComputers';
 import { equipmentConsumablesAPI } from './equipmentConsumables';
 import { equipmentDirectoriesAPI } from './equipmentDirectories';
+import { equipmentRecentActsAPI } from './equipmentRecentActs';
 import { equipmentRecentCardsAPI } from './equipmentRecentCards';
 import { equipmentRecordsAPI } from './equipmentRecords';
 import { equipmentSearchAPI } from './equipmentSearch';
@@ -925,6 +926,7 @@ export {
   equipmentComputersAPI,
   equipmentConsumablesAPI,
   equipmentDirectoriesAPI,
+  equipmentRecentActsAPI,
   equipmentRecentCardsAPI,
   equipmentRecordsAPI,
   equipmentSearchAPI,
@@ -1194,6 +1196,14 @@ export const equipmentAPI = {
     return equipmentComputersAPI.getAgentComputer;
   },
 
+  get hideComputer() {
+    return equipmentComputersAPI.hideComputer;
+  },
+
+  get unhideComputer() {
+    return equipmentComputersAPI.unhideComputer;
+  },
+
   get searchBySerial() {
     return equipmentSearchAPI.searchBySerial;
   },
@@ -1280,6 +1290,22 @@ export const equipmentAPI = {
 
   get clearRecentCards() {
     return equipmentRecentCardsAPI.clearRecentCards;
+  },
+
+  get getRecentActs() {
+    return equipmentRecentActsAPI.getRecentActs;
+  },
+
+  get touchRecentAct() {
+    return equipmentRecentActsAPI.touchRecentAct;
+  },
+
+  get removeRecentAct() {
+    return equipmentRecentActsAPI.removeRecentAct;
+  },
+
+  get clearRecentActs() {
+    return equipmentRecentActsAPI.clearRecentActs;
   },
 
   get identifyWorkspace() {

@@ -113,6 +113,9 @@ describe('MailComposeDialog', () => {
     renderWithTheme(<MailComposeDialog {...props} />);
 
     expect(screen.getByTestId('mail-compose-mobile-paper')).toBeTruthy();
+    expect(screen.getByTestId('mail-compose-header')).toHaveStyle({
+      paddingTop: 'calc(12px + env(safe-area-inset-top, 0px))',
+    });
     expect(screen.queryByTestId('mail-compose-subject-field')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Тема и детали/i }));

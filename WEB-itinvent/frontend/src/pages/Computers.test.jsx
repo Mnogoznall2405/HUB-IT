@@ -27,6 +27,8 @@ vi.mock('../api/client', () => ({
     getAgentComputerChanges: vi.fn(),
     getComputersSummary: vi.fn(),
     getAgentComputer: vi.fn(),
+    hideComputer: vi.fn(),
+    unhideComputer: vi.fn(),
   },
 }));
 
@@ -218,6 +220,8 @@ describe('Computers page', () => {
     equipmentAPI.getAgentComputerChanges.mockReset();
     equipmentAPI.getComputersSummary.mockReset();
     equipmentAPI.getAgentComputer.mockReset();
+    equipmentAPI.hideComputer.mockReset();
+    equipmentAPI.unhideComputer.mockReset();
     equipmentAPI.getAgentComputers.mockResolvedValue([sampleComputer]);
     equipmentAPI.searchAgentComputers.mockResolvedValue({
       items: [sampleComputer],
@@ -234,6 +238,8 @@ describe('Computers page', () => {
       outlook: { critical: 1 },
     });
     equipmentAPI.getAgentComputer.mockResolvedValue(sampleComputer);
+    equipmentAPI.hideComputer.mockResolvedValue({ ok: true, is_hidden: true });
+    equipmentAPI.unhideComputer.mockResolvedValue({ ok: true, is_hidden: false });
     equipmentAPI.getAgentComputerChanges.mockResolvedValue({
       totals: { changed_24h: 1, changed_7d: 1, changed_30d: 1 },
       daily: [],
@@ -395,6 +401,8 @@ describe('Computers page', () => {
           limit: 50,
           offset: 0,
           includeSummary: false,
+          hideVm172: true,
+          hiddenOnly: false,
           searchFields: expect.arrayContaining(['identity', 'profiles', 'outlook']),
         })
       );
@@ -417,6 +425,22 @@ describe('Computers page', () => {
       );
     }, { timeout: 2000 });
 
+    fireEvent.click(screen.getByText('Скрыть 172/VM'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ hideVm172: false })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(screen.getByText('Скрытые'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ hiddenOnly: true })
+      );
+    }, { timeout: 2000 });
+
     fireEvent.click(screen.getByLabelText('Показаны все базы'));
 
     await waitFor(() => {
@@ -424,6 +448,38 @@ describe('Computers page', () => {
         expect.objectContaining({ scope: 'selected' })
       );
     }, { timeout: 2000 });
+  }, 15000);
+
+  it('normalizes pasted search text and shows hide action in drawer', async () => {
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalled();
+    });
+
+    const searchInput = screen.getByLabelText('Поиск');
+    fireEvent.paste(searchInput, {
+      clipboardData: {
+        getData: () => 'PC-01\r\n',
+      },
+    });
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ q: 'PC-01' })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    expect(await screen.findByRole('button', { name: 'Скрыть' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Скрыть' }));
+
+    await waitFor(() => {
+      expect(equipmentAPI.hideComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
+    });
   }, 15000);
 
   it('loads the next page in the background when the list sentinel approaches the viewport', async () => {

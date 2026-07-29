@@ -68,6 +68,23 @@ function Stop-OrphanBackendProcesses {
 
 $pm2Cmd = Resolve-Pm2Command
 
+Write-Host 'PM2: reloading internal docflow gateway...' -ForegroundColor Cyan
+$gatewayExists = $false
+$pm2StateJson = & $pm2Cmd jlist 2>$null
+if ($LASTEXITCODE -eq 0 -and $pm2StateJson) {
+    try {
+        $gatewayExists = @($pm2StateJson | ConvertFrom-Json | Where-Object { $_.name -eq 'itinvent-docflow-gateway' }).Count -gt 0
+    } catch {
+        $gatewayExists = $false
+    }
+}
+if ($gatewayExists) {
+    & $pm2Cmd restart itinvent-docflow-gateway --update-env | Out-Null
+} else {
+    & $pm2Cmd start $ecosystemBackend --only itinvent-docflow-gateway --update-env | Out-Null
+}
+Start-Sleep -Seconds 3
+
 Write-Host "PM2: stopping $ProcessName..." -ForegroundColor Cyan
 & $pm2Cmd stop $ProcessName | Out-Null
 Start-Sleep -Seconds 2

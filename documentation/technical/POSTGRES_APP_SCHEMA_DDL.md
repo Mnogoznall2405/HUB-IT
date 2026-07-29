@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-07-16 04:17 UTC_  
+_Сгенерировано: 2026-07-29 08:52 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (94 tables)
+## Schema `app` (100 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -235,6 +235,107 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_departments_is_active`: (is_active)
   - `ix_app_departments_name`: (name)
+
+---
+
+### `app.docflow_audit_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `event_type` | varchar(64) | no | `` |
+| `outcome` | varchar(32) | no | `` |
+| `error_code` | varchar(64) | yes | `` |
+| `correlation_id` | varchar(64) | no | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_docflow_audit_events_correlation_id`: (correlation_id)
+  - `ix_app_docflow_audit_events_event_type`: (event_type)
+  - `ix_app_docflow_audit_events_user_id`: (user_id)
+  - `ix_app_docflow_audit_user_created`: (user_id, created_at)
+
+---
+
+### `app.docflow_commands`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `idempotency_key` | varchar(128) | no | `` |
+| `request_hash` | varchar(64) | no | `` |
+| `task_ref` | varchar(36) | no | `` |
+| `action` | varchar(32) | no | `` |
+| `status` | varchar(32) | no | `` |
+| `outcome` | varchar(32) | yes | `` |
+| `state_token_hash` | varchar(64) | no | `` |
+| `error_code` | varchar(64) | yes | `` |
+| `correlation_id` | varchar(64) | no | `` |
+| `remote_before_json` | text | no | `` |
+| `remote_after_json` | text | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `completed_at` | timestamptz | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_docflow_command_status_updated`: (status, updated_at)
+  - `ix_app_docflow_command_user_created`: (user_id, created_at)
+  - `ix_app_docflow_commands_correlation_id`: (correlation_id)
+  - `ix_app_docflow_commands_status`: (status)
+  - `ix_app_docflow_commands_task_ref`: (task_ref)
+  - `ix_app_docflow_commands_user_id`: (user_id)
+  - `uq_app_docflow_command_user_key` UNIQUE: (user_id, idempotency_key)
+
+---
+
+### `app.docflow_credentials`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `user_id` **PK** | integer | no | `` |
+| `login` | varchar(128) | no | `` |
+| `password_enc` | text | no | `` |
+| `key_version` | integer | no | `` |
+| `credential_version` | integer | no | `` |
+| `status` | varchar(32) | no | `` |
+| `last_error_code` | varchar(64) | yes | `` |
+| `last_verified_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `user_id`
+- **Indexes:**
+  - `ix_app_docflow_credentials_status`: (status)
+
+---
+
+### `app.equipment_recent_acts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.equipment_recent_acts_id_seq'::regclass)` |
+| `user_id` | integer | no | `` |
+| `db_id` | varchar(128) | no | `` |
+| `doc_no` | integer | no | `` |
+| `doc_number` | varchar(128) | no | `` |
+| `last_action` | varchar(64) | no | `` |
+| `last_action_label` | varchar(120) | no | `` |
+| `snapshot_json` | text | no | `` |
+| `activity_count` | integer | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `last_activity_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_equipment_recent_acts_user_activity`: (user_id, last_activity_at)
+  - `ix_app_equipment_recent_acts_user_db_activity`: (user_id, db_id, last_activity_at)
+  - `ix_app_equipment_recent_acts_user_id`: (user_id)
+  - `ix_equipment_recent_acts_user_id`: (user_id)
+  - `uq_app_equipment_recent_acts_user_db_doc` UNIQUE: (user_id, db_id, doc_no)
 
 ---
 
@@ -679,9 +780,13 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `last_full_snapshot_at` | integer | yes | `` |
 | `payload_json` | text | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `hidden_at` | integer | yes | `` |
+| `hidden_by` | varchar(255) | yes | `` |
+| `hidden_reason` | varchar(255) | yes | `` |
 
 - **Primary key:** `mac_address`
 - **Indexes:**
+  - `ix_app_inventory_hosts_hidden_at`: (hidden_at)
   - `ix_app_inventory_hosts_hostname`: (hostname)
   - `ix_app_inventory_hosts_ip_primary`: (ip_primary)
   - `ix_app_inventory_hosts_last_seen_at`: (last_seen_at)
@@ -1587,6 +1692,45 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.org_structure_department_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.org_structure_department_links_id_seq'::regclass)` |
+| `node_id` | varchar(64) | no | `` |
+| `department_code` | varchar(64) | no | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_org_structure_dept_links_code`: (department_code)
+  - `ix_app_org_structure_dept_links_node`: (node_id)
+  - `uq_app_org_structure_department_link` UNIQUE: (node_id, department_code)
+
+---
+
+### `app.org_structure_nodes`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `parent_id` | varchar(64) | yes | `` |
+| `node_type` | varchar(32) | no | `` |
+| `title` | varchar(255) | no | `` |
+| `person_name` | varchar(255) | no | `` |
+| `person_position` | varchar(255) | no | `` |
+| `sort_order` | integer | no | `` |
+| `is_active` | boolean | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_org_structure_nodes_active`: (is_active)
+  - `ix_app_org_structure_nodes_parent`: (parent_id, sort_order)
+
+---
+
 ### `app.password_vault_audit`
 
 | Column | Type | Nullable | Default |
@@ -1822,6 +1966,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `updated_at` | timestamptz | no | `` |
 | `department` | varchar(200) | yes | `` |
 | `position` | varchar(150) | yes | `` |
+| `zup_employee_code` | varchar(64) | yes | `` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1830,6 +1975,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_ticket_employees_app_user_id`: (app_user_id)
   - `ix_ticket_employees_full_name`: (full_name)
   - `ix_ticket_employees_status`: (status)
+  - `ix_ticket_employees_zup_employee_code` UNIQUE: (zup_employee_code)
 
 ---
 
@@ -2379,5 +2525,236 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `idx_session_auth_context_user_id`: (user_id)
   - `ix_system_session_auth_context_expires_at`: (expires_at)
   - `ix_system_session_auth_context_user_id`: (user_id)
+
+---
+
+## Schema `scan` (9 tables)
+
+### `scan.alembic_version`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `version_num` **PK** | varchar(32) | no | `` |
+
+- **Primary key:** `version_num`
+
+---
+
+### `scan.scan_agents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `agent_id` **PK** | text | no | `` |
+| `hostname` | text | no | `''::text` |
+| `branch` | text | no | `''::text` |
+| `ip_address` | text | no | `''::text` |
+| `version` | text | no | `''::text` |
+| `status` | text | no | `'online'::text` |
+| `last_seen_at` | bigint | no | `0` |
+| `last_heartbeat_json` | text | no | `'{}'::text` |
+| `updated_at` | bigint | no | `0` |
+| `outbox_depth` | integer | no | `0` |
+| `dead_letter_depth` | integer | no | `0` |
+| `last_ingest_ok_at` | bigint | no | `0` |
+
+- **Primary key:** `agent_id`
+- **Indexes:**
+  - `idx_scan_agents_last_seen`: (last_seen_at)
+
+---
+
+### `scan.scan_artifacts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('scan.scan_artifacts_id_seq'::regclass)` |
+| `job_id` | text | no | `` |
+| `artifact_type` | text | no | `` |
+| `storage_path` | text | no | `` |
+| `size_bytes` | bigint | no | `0` |
+| `created_at` | bigint | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_artifacts_job`: (job_id)
+
+---
+
+### `scan.scan_findings`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `job_id` | text | no | `` |
+| `severity` | text | no | `` |
+| `category` | text | no | `` |
+| `matched_patterns_json` | text | no | `'[]'::text` |
+| `short_reason` | text | no | `''::text` |
+| `created_at` | bigint | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_findings_job`: (job_id)
+
+---
+
+### `scan.scan_incidents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `finding_id` | text | no | `` |
+| `job_id` | text | no | `` |
+| `agent_id` | text | no | `''::text` |
+| `hostname` | text | no | `''::text` |
+| `branch` | text | no | `''::text` |
+| `user_login` | text | no | `''::text` |
+| `user_full_name` | text | no | `''::text` |
+| `file_path` | text | no | `''::text` |
+| `severity` | text | no | `` |
+| `status` | text | no | `'new'::text` |
+| `created_at` | bigint | no | `` |
+| `ack_at` | bigint | yes | `` |
+| `ack_by` | text | yes | `` |
+| `resolved_at` | bigint | yes | `` |
+| `resolved_reason` | text | yes | `` |
+| `resolved_by_task_id` | text | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_incidents_branch`: (branch, created_at)
+  - `idx_scan_incidents_created`: (created_at)
+  - `idx_scan_incidents_hostname_lower_created`: (created_at)
+  - `idx_scan_incidents_hostname_status_created`: (hostname, status, created_at)
+  - `idx_scan_incidents_job`: (job_id)
+  - `idx_scan_incidents_severity`: (severity)
+  - `idx_scan_incidents_status_created`: (status, created_at)
+  - `idx_scan_incidents_status_hostname_created`: (status, hostname, created_at)
+
+---
+
+### `scan.scan_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `agent_id` | text | no | `''::text` |
+| `hostname` | text | no | `''::text` |
+| `branch` | text | no | `''::text` |
+| `user_login` | text | no | `''::text` |
+| `user_full_name` | text | no | `''::text` |
+| `file_path` | text | no | `''::text` |
+| `file_name` | text | no | `''::text` |
+| `file_hash` | text | no | `''::text` |
+| `file_size` | bigint | no | `0` |
+| `source_kind` | text | no | `'unknown'::text` |
+| `event_id` | text | yes | `` |
+| `scan_task_id` | text | yes | `` |
+| `status` | text | no | `` |
+| `created_at` | bigint | no | `` |
+| `started_at` | bigint | yes | `` |
+| `finished_at` | bigint | yes | `` |
+| `error_text` | text | yes | `` |
+| `summary` | text | yes | `` |
+| `attempt_count` | integer | no | `0` |
+| `payload_json` | text | no | `'{}'::text` |
+| `metrics_json` | text | no | `'{}'::text` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_jobs_agent_created`: (agent_id, created_at)
+  - `idx_scan_jobs_agent_status_created`: (agent_id, status, created_at)
+  - `idx_scan_jobs_created_at`: (created_at)
+  - `idx_scan_jobs_error_text`: (error_text)
+  - `idx_scan_jobs_event_id` UNIQUE: (event_id)
+  - `idx_scan_jobs_finished_at`: (finished_at)
+  - `idx_scan_jobs_scan_task_status`: (scan_task_id, status, created_at)
+  - `idx_scan_jobs_status_created`: (status, created_at)
+  - `idx_scan_jobs_status_source_kind`: (status, source_kind)
+
+---
+
+### `scan.scan_task_file_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `scan_task_id` | text | no | `''::text` |
+| `agent_id` | text | no | `''::text` |
+| `hostname` | text | no | `''::text` |
+| `file_path` | text | no | `''::text` |
+| `file_hash` | text | no | `''::text` |
+| `event_id` | text | no | `''::text` |
+| `observation_type` | text | no | `''::text` |
+| `linked_job_id` | text | no | `''::text` |
+| `linked_incident_id` | text | no | `''::text` |
+| `source_kind` | text | no | `''::text` |
+| `severity` | text | no | `''::text` |
+| `created_at` | bigint | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_observations_hostname_created`: (hostname, created_at)
+  - `idx_scan_observations_linked_incident`: (linked_incident_id)
+  - `idx_scan_observations_linked_job`: (linked_job_id)
+  - `idx_scan_observations_task_created`: (scan_task_id, created_at)
+  - `idx_scan_observations_task_hash`: (scan_task_id, file_hash)
+
+---
+
+### `scan.scan_task_system_metrics`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `scan_task_id` **PK** | text | no | `` |
+| `captured_at` **PK** | bigint | no | `` |
+| `cpu_percent` | double precision | no | `0` |
+| `memory_percent` | double precision | no | `0` |
+| `memory_used_bytes` | bigint | no | `0` |
+| `memory_available_bytes` | bigint | no | `0` |
+| `disk_read_bytes` | bigint | no | `0` |
+| `disk_write_bytes` | bigint | no | `0` |
+| `disk_read_bps` | double precision | no | `0` |
+| `disk_write_bps` | double precision | no | `0` |
+| `network_sent_bytes` | bigint | no | `0` |
+| `network_received_bytes` | bigint | no | `0` |
+| `network_sent_bps` | double precision | no | `0` |
+| `network_received_bps` | double precision | no | `0` |
+| `process_rss_bytes` | bigint | no | `0` |
+
+- **Primary key:** `scan_task_id, captured_at`
+- **Indexes:**
+  - `idx_scan_task_system_metrics_captured`: (captured_at)
+
+---
+
+### `scan.scan_tasks`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `agent_id` | text | no | `` |
+| `command` | text | no | `` |
+| `payload_json` | text | no | `'{}'::text` |
+| `status` | text | no | `` |
+| `created_at` | bigint | no | `` |
+| `updated_at` | bigint | no | `` |
+| `due_at` | bigint | no | `` |
+| `ttl_at` | bigint | no | `` |
+| `delivered_at` | bigint | yes | `` |
+| `acked_at` | bigint | yes | `` |
+| `completed_at` | bigint | yes | `` |
+| `attempt_count` | integer | no | `0` |
+| `next_attempt_at` | bigint | no | `` |
+| `dedupe_key` | text | yes | `` |
+| `error_text` | text | yes | `` |
+| `result_json` | text | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_scan_tasks_agent_status_next`: (agent_id, status, next_attempt_at, due_at)
+  - `idx_scan_tasks_agent_status_ttl_updated`: (agent_id, status, ttl_at, updated_at, created_at)
+  - `idx_scan_tasks_dedupe`: (agent_id, dedupe_key)
+  - `idx_scan_tasks_ttl`: (ttl_at)
 
 ---

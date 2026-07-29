@@ -227,10 +227,12 @@ export default function MailToolbar({
     return (
       <>
         <Box
+          data-testid="mail-toolbar-mobile-header"
           className="mail-safe-top"
           sx={{
             px: 1,
-            py: 0.75,
+            pt: 'calc(12px + env(safe-area-inset-top, 0px))',
+            pb: 0.75,
             bgcolor: tokens.panelBg,
             borderBottom: '1px solid',
             borderColor: tokens.panelBorder,

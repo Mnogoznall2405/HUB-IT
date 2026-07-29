@@ -1,5 +1,5 @@
 param(
-    [string]$TaskName = "IT-Invent Mailbox Quota",
+    [string]$TaskName = "HUB-IT Mailbox Quota",
     [string]$ScriptPath = "",
     [int]$RepeatHours = 4,
     [string]$RuntimeRoot = "",
@@ -12,7 +12,7 @@ if ($RepeatHours -lt 1) {
     throw "RepeatHours must be >= 1"
 }
 
-$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "IT-Invent\MailboxQuota"
+$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "HUB-IT\Mail"
 $resolvedRuntimeRoot = if ($RuntimeRoot) { $RuntimeRoot } else { $defaultRuntimeRoot }
 $resolvedScriptPath = if ($ScriptPath) {
     $ScriptPath
@@ -25,10 +25,11 @@ if (-not (Test-Path -LiteralPath $resolvedScriptPath)) {
 }
 
 $repeatMinutes = [Math]::Max(1, $RepeatHours * 60)
+$taskArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$resolvedScriptPath`" -RuntimeRoot `"$resolvedRuntimeRoot`""
 
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$resolvedScriptPath`"" `
+    -Argument $taskArgs `
     -WorkingDirectory (Split-Path -Parent $resolvedScriptPath)
 
 # Once + Repetition is more reliable than AtStartup for "every N hours".
@@ -51,6 +52,16 @@ $settings = New-ScheduledTaskSettingsSet `
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 
+# Remove legacy task name if it still points at the old IT-Invent path.
+$legacyTaskName = "IT-Invent Mailbox Quota"
+if ($TaskName -ne $legacyTaskName) {
+    $legacy = Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+    if ($legacy) {
+        Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "Removed legacy task '$legacyTaskName'."
+    }
+}
+
 if ($StartAfterRegister) {
     try {
         Start-ScheduledTask -TaskName $TaskName | Out-Null
@@ -60,5 +71,6 @@ if ($StartAfterRegister) {
 }
 
 Write-Host "Scheduled task '$TaskName' registered (every $RepeatHours h, SYSTEM, StartWhenAvailable)."
+Write-Host "Runtime root: $resolvedRuntimeRoot"
 Write-Host "First scheduled run: $($startAt.ToString('yyyy-MM-dd HH:mm:ss'))."
 Write-Host "Ensure $resolvedRuntimeRoot\.env exists with Exchange and HUB credentials."

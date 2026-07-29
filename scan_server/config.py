@@ -57,6 +57,7 @@ class ScanServerConfig:
     web_auth_cache_ttl_sec: int
     data_dir: Path
     db_path: Path
+    database_url: str
     archive_dir: Path
     retention_days: int
     clean_job_retention_days: int
@@ -92,6 +93,9 @@ class ScanServerConfig:
     ocr_only_if_no_text: bool
     pdf_max_bytes: int
     worker_memory_limit_mb: int
+    agent_package_path: str
+    agent_package_url: str
+    agent_package_sha256: str
 
     @classmethod
     def from_env(cls) -> "ScanServerConfig":
@@ -156,6 +160,7 @@ class ScanServerConfig:
             ),
             data_dir=data_dir,
             db_path=db_path,
+            database_url=str(os.getenv("SCAN_DATABASE_URL", "") or "").strip(),
             archive_dir=archive_dir,
             retention_days=max(7, _to_int(os.getenv("SCAN_RETENTION_DAYS", "90"), 90)),
             clean_job_retention_days=max(
@@ -191,11 +196,11 @@ class ScanServerConfig:
             ),
             ingest_max_pending_pdf_jobs=max(
                 100,
-                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "200"), 200),
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "4000"), 4000),
             ),
             ingest_max_pending_jobs=max(
                 100,
-                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_JOBS", "200"), 200),
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_JOBS", "4000"), 4000),
             ),
             ingest_max_concurrency=max(
                 1,
@@ -287,6 +292,9 @@ class ScanServerConfig:
                 0,
                 _to_int(os.getenv("SCAN_WORKER_MEMORY_LIMIT_MB", "6144"), 6144),
             ),
+            agent_package_path=str(os.getenv("SCAN_AGENT_PACKAGE_PATH", "") or "").strip(),
+            agent_package_url=str(os.getenv("SCAN_AGENT_PACKAGE_URL", "") or "").strip(),
+            agent_package_sha256=str(os.getenv("SCAN_AGENT_PACKAGE_SHA256", "") or "").strip().lower(),
         )
 
 

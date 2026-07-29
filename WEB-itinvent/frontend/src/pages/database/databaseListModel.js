@@ -93,6 +93,7 @@ export const buildDatabaseSearchIndex = (groupedData) => {
           item.INV_NO || item.inv_no || '',
           item.SERIAL_NO || item.serial_no || '',
           item.HW_SERIAL_NO || item.hw_serial_no || '',
+          item.PART_NO || item.part_no || '',
           item.MODEL_NAME || item.model_name || '',
           item.TYPE_NAME || item.type_name || '',
           item.OWNER_DISPLAY_NAME || item.employee_name || '',

@@ -19,6 +19,13 @@ export const equipmentTransferActsAPI = {
     return response.data;
   },
 
+  getLatestActs: async ({ limit = 50 } = {}) => {
+    const response = await apiClient.get('/equipment/acts/latest', {
+      params: { limit },
+    });
+    return response.data;
+  },
+
   downloadEquipmentActFile: async (docNo, params = {}) => {
     const response = await apiClient.get(`/equipment/acts/${docNo}/file`, {
       params,

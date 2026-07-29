@@ -95,6 +95,7 @@ describe('UploadActDialog', () => {
     const onEmailSend = vi.fn();
     const onEmailRecipientsChange = vi.fn();
     const onEmailErrorClear = vi.fn();
+    const onDownload = vi.fn();
 
     render(
       <UploadActDialog
@@ -119,6 +120,7 @@ describe('UploadActDialog', () => {
         onEmailSend={onEmailSend}
         onEmailRecipientsChange={onEmailRecipientsChange}
         onEmailErrorClear={onEmailErrorClear}
+        onDownload={onDownload}
       />
     );
 
@@ -127,9 +129,11 @@ describe('UploadActDialog', () => {
     expect(screen.getByText('Один получатель без email')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Отправить выбранным' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Скачать акт' }));
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }));
 
     expect(onEmailSend).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onEmailRecipientsChange).not.toHaveBeenCalled();
     expect(onEmailErrorClear).not.toHaveBeenCalled();

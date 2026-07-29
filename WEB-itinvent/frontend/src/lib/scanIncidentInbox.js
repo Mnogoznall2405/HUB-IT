@@ -171,3 +171,93 @@ export function flattenIncidentGroups(groups, expandedState = {}) {
   });
   return rows;
 }
+
+/** Flat inbox order: higher severity first, then newest. */
+export function sortIncidentsForInbox(incidents) {
+  return (Array.isArray(incidents) ? incidents : []).slice().sort((a, b) => (
+    severityRank(b?.severity) - severityRank(a?.severity)
+    || Number(b?.created_at || 0) - Number(a?.created_at || 0)
+    || String(a?.id || '').localeCompare(String(b?.id || ''))
+  ));
+}
+
+const SEVERITY_LABELS_RU = {
+  high: 'Высокий',
+  medium: 'Средний',
+  low: 'Низкий',
+};
+
+function looksLikePatternId(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/i.test(text);
+}
+
+export function formatSeverityLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '—';
+  return SEVERITY_LABELS_RU[normalized] || String(value).trim();
+}
+
+export function getIncidentFileName(incident) {
+  const fileName = String(incident?.file_name || '').trim();
+  if (fileName) return fileName;
+  const path = String(incident?.file_path || '').trim().replace(/\\/g, '/');
+  if (path) {
+    const base = path.split('/').filter(Boolean).pop();
+    if (base) return base;
+  }
+  return 'Файл без имени';
+}
+
+/**
+ * Local path → UNC admin share: C:\Users\a\f.pdf + HOST → \\HOST\C$\Users\a\f.pdf
+ */
+export function formatIncidentUncPath(incident) {
+  const rawPath = String(incident?.file_path || incident?.file_name || '').trim();
+  if (!rawPath) return 'Путь не указан';
+  const normalized = rawPath.replace(/\//g, '\\');
+  if (normalized.startsWith('\\\\')) return normalized;
+
+  const host = String(incident?.hostname || '').trim();
+  if (!host) return normalized;
+
+  const driveMatch = normalized.match(/^([A-Za-z]):\\(.*)$/);
+  if (driveMatch) {
+    const drive = driveMatch[1].toUpperCase();
+    const rest = driveMatch[2];
+    return rest ? `\\\\${host}\\${drive}$\\${rest}` : `\\\\${host}\\${drive}$`;
+  }
+
+  const trimmed = normalized.replace(/^\\+/, '');
+  return `\\\\${host}\\${trimmed}`;
+}
+
+export function getIncidentPatternLabel(incident, patternOptions = []) {
+  const matches = Array.isArray(incident?.matched_patterns) ? incident.matched_patterns : [];
+  const raw = String(
+    incident?.short_reason
+    || matches[0]?.pattern_name
+    || matches[0]?.pattern
+    || matches[0]?.pattern_id
+    || incident?.category
+    || ''
+  ).trim();
+  if (!raw) return '';
+
+  if (!looksLikePatternId(raw)) return raw;
+
+  const options = Array.isArray(patternOptions) ? patternOptions : [];
+  const byId = options.find((item) => String(item?.id || '').trim().toLowerCase() === raw.toLowerCase());
+  if (byId?.name) return String(byId.name).trim();
+
+  const dspMatch = options.find((item) => String(item?.id || '').trim().toLowerCase() === 'dsp');
+  if (raw.toLowerCase().startsWith('dsp_') && dspMatch?.name) return String(dspMatch.name).trim();
+
+  return raw.replace(/_/g, ' ');
+}
+
+/** Primary list/card title: human file name (not rule id). */
+export function getIncidentListTitle(incident) {
+  return getIncidentFileName(incident);
+}

@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PUSH_TTL_SEC = 90
+DEFAULT_PUSH_TTL_SEC = 12 * 60 * 60
 CHAT_PUSH_TTL_SEC = 12 * 60 * 60
 CHAT_PUSH_IDEMPOTENCY_SEC = 5 * 60
 MAX_APP_BADGE_COUNT = 999
@@ -90,43 +90,6 @@ class ChatPushSendResult:
 class ChatPushService:
     """Store chat push subscriptions and send chat message pushes."""
 
-    def _build_subscription_device_key(
-        self,
-        subscription: ChatPushSubscription | None = None,
-        *,
-        user_agent: Optional[str] = None,
-        platform: Optional[str] = None,
-        browser_family: Optional[str] = None,
-    ) -> tuple[str, str, str] | None:
-        normalized_user_agent = _normalize_text(
-            user_agent if user_agent is not None else getattr(subscription, "user_agent", None)
-        )
-        normalized_platform = _normalize_text(
-            platform if platform is not None else getattr(subscription, "platform", None)
-        )
-        normalized_browser_family = _normalize_text(
-            browser_family if browser_family is not None else getattr(subscription, "browser_family", None)
-        )
-        if not normalized_user_agent or not normalized_platform or not normalized_browser_family:
-            return None
-        return (
-            normalized_browser_family,
-            normalized_platform,
-            normalized_user_agent,
-        )
-
-    def _mark_subscription_superseded(
-        self,
-        subscription: ChatPushSubscription,
-        *,
-        now: datetime,
-        reason: str,
-    ) -> None:
-        subscription.is_active = False
-        subscription.updated_at = now
-        subscription.last_error_at = None
-        subscription.last_error_text = reason
-
     def _dedupe_active_subscriptions_in_session(
         self,
         session,
@@ -135,7 +98,10 @@ class ChatPushService:
         now: Optional[datetime] = None,
     ) -> list[ChatPushSubscription]:
         normalized_user_id = int(user_id)
-        dedupe_now = now or _utc_now()
+        # Endpoint is the only reliable browser-installation identifier. Modern
+        # Android user-agent reduction makes different phones expose the same
+        # browser/platform/UA tuple, so deactivating by that tuple silently
+        # drops valid devices. Expired rotated endpoints are retired on 404/410.
         subscriptions = list(
             session.execute(
                 select(ChatPushSubscription).where(
@@ -144,55 +110,16 @@ class ChatPushService:
                 )
             ).scalars()
         )
-        if len(subscriptions) <= 1:
-            return subscriptions
-
-        ordered_subscriptions = sorted(
-            subscriptions,
-            key=lambda item: (
-                getattr(item, "updated_at", None) or getattr(item, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc),
-                getattr(item, "last_seen_at", None) or datetime.min.replace(tzinfo=timezone.utc),
-                getattr(item, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc),
-                int(getattr(item, "id", 0) or 0),
-            ),
-            reverse=True,
-        )
-
-        kept: list[ChatPushSubscription] = []
-        seen_device_keys: set[tuple[str, str, str]] = set()
-        for subscription in ordered_subscriptions:
-            device_key = self._build_subscription_device_key(subscription)
-            if device_key and device_key in seen_device_keys:
-                self._mark_subscription_superseded(
-                    subscription,
-                    now=dedupe_now,
-                    reason="Superseded by a newer push subscription on the same device",
-                )
-                continue
-            kept.append(subscription)
-            if device_key:
-                seen_device_keys.add(device_key)
-        return kept
+        return subscriptions
 
     def _select_chat_push_subscriptions(
         self,
         subscriptions: list[ChatPushSubscription],
     ) -> list[ChatPushSubscription]:
-        if len(subscriptions) <= 1:
-            return subscriptions
-
-        def _sort_key(item: ChatPushSubscription) -> tuple[int, datetime, datetime, int]:
-            install_mode = _normalize_text(getattr(item, "install_mode", "")).lower()
-            standalone_rank = 1 if install_mode == "standalone" else 0
-            last_seen = getattr(item, "last_seen_at", None) or datetime.min.replace(tzinfo=timezone.utc)
-            updated = (
-                getattr(item, "updated_at", None)
-                or getattr(item, "created_at", None)
-                or datetime.min.replace(tzinfo=timezone.utc)
-            )
-            return (standalone_rank, last_seen, updated, int(getattr(item, "id", 0) or 0))
-
-        return [max(subscriptions, key=_sort_key)]
+        # Active subscriptions have already been deduplicated per physical
+        # browser installation. Keep every remaining device so a user can
+        # receive the same chat message on Android and iOS.
+        return list(subscriptions)
 
     def _has_recent_chat_push_delivery(self, *, recipient_user_id: int, message_id: str) -> bool:
         normalized_message_id = _normalize_text(message_id)
@@ -309,29 +236,6 @@ class ChatPushService:
             subscription.last_seen_at = now
             subscription.last_error_at = None
             subscription.last_error_text = None
-
-            current_device_key = self._build_subscription_device_key(
-                user_agent=normalized_user_agent,
-                platform=normalized_platform,
-                browser_family=normalized_browser_family,
-            )
-            if current_device_key:
-                stale_candidates = list(
-                    session.execute(
-                        select(ChatPushSubscription).where(
-                            ChatPushSubscription.user_id == int(current_user_id),
-                            ChatPushSubscription.is_active.is_(True),
-                            ChatPushSubscription.endpoint != normalized_endpoint,
-                        )
-                    ).scalars()
-                )
-                for candidate in stale_candidates:
-                    if self._build_subscription_device_key(candidate) == current_device_key:
-                        self._mark_subscription_superseded(
-                            candidate,
-                            now=now,
-                            reason="Superseded by newer subscription on the same device",
-                        )
 
             self._dedupe_active_subscriptions_in_session(
                 session,
@@ -549,7 +453,7 @@ class ChatPushService:
         icon: str = "/pwa-192.png",
         badge: str = "/hubit-badge.svg",
         data: Optional[dict[str, Any]] = None,
-        ttl: int = 90,
+        ttl: int = DEFAULT_PUSH_TTL_SEC,
         app_badge_count: Optional[int] = None,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
@@ -563,7 +467,7 @@ class ChatPushService:
                 logger.warning("mail push: failed to read notification preferences", exc_info=True)
         subscriptions = self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
         headers: dict[str, Any] = {}
-        if normalized_channel in {"chat", "mail"}:
+        if normalized_channel in {"chat", "mail", "tasks"}:
             headers["Urgency"] = "high"
         normalized_route = _normalize_text(route) or "/"
         payload_data = {

@@ -39,11 +39,13 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { hubAPI } from '../api/client';
 import { chatNotificationsAPI } from '../api/chatNotifications';
 import { mailNotificationsAPI } from '../api/mailNotifications';
+import { docflowAPI } from '../api/docflow';
 import { useAuth } from '../contexts/AuthContext';
 import {
   DEFAULT_DASHBOARD_SECTIONS,
@@ -620,6 +622,7 @@ export default function Dashboard() {
   const { preferences, savePreferences } = usePreferences();
   const [payload, setPayload] = useState(EMPTY_DASHBOARD);
   const [communicationCounts, setCommunicationCounts] = useState({ chat: 0, mail: 0 });
+  const [docflowSummary, setDocflowSummary] = useState({ status: 'loading', count: null, truncated: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -635,6 +638,7 @@ export default function Dashboard() {
   const canReadMail = hasPermission('mail.access');
   const canReadChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
   const canReadNews = hasPermission('dashboard.read');
+  const canReadDocflow = hasPermission('docflow.read');
 
   const sections = useMemo(() => {
     const normalized = normalizeDashboardLayoutSections(
@@ -693,6 +697,20 @@ export default function Dashboard() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!canReadDocflow) return undefined;
+    let active = true;
+    setDocflowSummary({ status: 'loading', count: null, truncated: false });
+    docflowAPI.getInboxSummary()
+      .then((result) => {
+        if (active) setDocflowSummary(result || { status: 'unavailable', count: null, truncated: false });
+      })
+      .catch(() => {
+        if (active) setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
+      });
+    return () => { active = false; };
+  }, [canReadDocflow]);
 
   const taskItems = useMemo(
     () => (Array.isArray(payload?.my_tasks?.items) ? payload.my_tasks.items : []),
@@ -985,6 +1003,46 @@ export default function Dashboard() {
           </Button>
         )}
       >
+        {canReadDocflow ? (
+          <>
+            <ButtonBase
+              onClick={() => navigate('/docflow')}
+              sx={{
+                width: '100%',
+                minHeight: 54,
+                px: 1,
+                py: 0.75,
+                borderRadius: 2,
+                justifyContent: 'flex-start',
+                textAlign: 'left',
+              }}
+            >
+              <AssignmentTurnedInOutlinedIcon color="primary" sx={{ mr: 1.1 }} />
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="body2" fontWeight={800}>Задания 1С</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {docflowSummary.status === 'loading'
+                    ? 'Подключаем документооборот…'
+                    : docflowSummary.status === 'available'
+                      ? 'Персональные согласования и поручения'
+                      : docflowSummary.status === 'not_configured'
+                        ? 'Требуется подключить учётную запись 1С'
+                        : 'Данные 1С временно недоступны'}
+                </Typography>
+              </Box>
+              {docflowSummary.status === 'loading' ? <CircularProgress size={20} /> : (
+                <Chip
+                  size="small"
+                  color={docflowSummary.status === 'available' ? 'primary' : 'default'}
+                  label={docflowSummary.status === 'available'
+                    ? `${docflowSummary.truncated ? '100+' : Number(docflowSummary.count || 0)}`
+                    : '—'}
+                />
+              )}
+            </ButtonBase>
+            <Divider sx={{ my: 0.5, borderColor: ui.borderSoft }} />
+          </>
+        ) : null}
         {loading ? (
           <Stack spacing={0.5}>{[0, 1, 2].map((item) => <Skeleton key={item} height={56} />)}</Stack>
         ) : nearestTasks.length ? (

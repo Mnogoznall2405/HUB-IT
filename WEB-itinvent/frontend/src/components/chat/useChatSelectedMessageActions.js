@@ -1,12 +1,17 @@
 import { useCallback } from 'react';
 
-import { getMessagePreview } from './chatHelpers';
+import { chatAPI } from '../../api/client';
+import { canDeleteChatMessage, getMessagePreview } from './chatHelpers';
 
 export default function useChatSelectedMessageActions({
+  activeConversationIdRef,
   clearSelectedMessages,
+  conversationKind,
   focusComposer,
   loadChatDialogsModule,
+  mergeMessageIntoThread,
   normalizeForwardMessageQueue,
+  notifyApiError,
   notifyWarning,
   selectedMessages,
   setComposerMenuAnchor,
@@ -71,8 +76,40 @@ export default function useChatSelectedMessageActions({
     setThreadMenuAnchor,
   ]);
 
+  const deleteSelectedMessages = useCallback(async () => {
+    const deletable = selectedMessages.filter((message) => (
+      canDeleteChatMessage(message, { conversationKind })
+    ));
+    if (deletable.length <= 0) return;
+    const confirmLabel = deletable.length === 1
+      ? 'Удалить сообщение?'
+      : `Удалить ${deletable.length} сообщений?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmLabel)) return;
+
+    try {
+      for (const message of deletable) {
+        const conversationId = String(message?.conversation_id || activeConversationIdRef?.current || '').trim();
+        const messageId = String(message?.id || '').trim();
+        if (!conversationId || !messageId) continue;
+        const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
+        mergeMessageIntoThread?.(updated);
+      }
+      clearSelectedMessages();
+    } catch (error) {
+      notifyApiError?.(error, 'Не удалось удалить сообщение.');
+    }
+  }, [
+    activeConversationIdRef,
+    clearSelectedMessages,
+    conversationKind,
+    mergeMessageIntoThread,
+    notifyApiError,
+    selectedMessages,
+  ]);
+
   return {
     copySelectedMessages,
+    deleteSelectedMessages,
     openForwardSelectedMessages,
     replyToSelectedMessage,
   };

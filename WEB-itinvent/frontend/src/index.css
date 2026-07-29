@@ -459,6 +459,40 @@ select {
   }
 }
 
+/*
+  Browser autofill paints a light yellow/blue field background and can force
+  dark text. Keep login fields dark so floating labels and the eye icon stay readable.
+*/
+.login-field-input:-webkit-autofill,
+.login-field-input:-webkit-autofill:hover,
+.login-field-input:-webkit-autofill:focus,
+.login-field-input:-webkit-autofill:active,
+.login-field-input:autofill,
+.login-field-input:autofill:hover,
+.login-field-input:autofill:focus {
+  -webkit-text-fill-color: #f8fafc !important;
+  caret-color: #f8fafc;
+  border-color: rgb(255 255 255 / 0.22) !important;
+  /* Delay native autofill background paint; box-shadow provides the real fill. */
+  transition: background-color 99999s ease-out 0s;
+  box-shadow: 0 0 0 1000px #182028 inset !important;
+  background-color: #182028 !important;
+  background-image: none !important;
+  color: #f8fafc !important;
+}
+
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-label,
+.login-field:has(.login-field-input:autofill) .login-field-label {
+  color: rgb(248 250 252 / 0.72);
+}
+
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-adornment,
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-eye,
+.login-field:has(.login-field-input:autofill) .login-field-adornment,
+.login-field:has(.login-field-input:autofill) .login-field-eye {
+  color: rgb(248 250 252 / 0.82);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .login-ambient-blob {
     animation: none !important;

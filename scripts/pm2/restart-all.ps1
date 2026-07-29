@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
-$processNames = @('itinvent-backend', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+$processNames = @('itinvent-docflow-gateway', 'itinvent-backend', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
 
 function Add-LocalNodeToPath {
     if (Get-Command 'node' -ErrorAction SilentlyContinue) {
@@ -101,12 +101,26 @@ function Show-Pm2Snapshot {
         Format-Table Name, Status, PID, MemoryMB, Restarts -AutoSize
 }
 
+function Stop-OrphanNotificationWorkers {
+    $workers = @(
+        Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.CommandLine -match 'start_(mail_notification|chat_push)_worker\.py'
+            }
+    )
+    foreach ($worker in $workers) {
+        Write-Host "Stopping orphan notification worker PID=$($worker.ProcessId)" -ForegroundColor Yellow
+        Stop-Process -Id $worker.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host 'PM2: resetting daemon state...' -ForegroundColor Cyan
 try {
     & $pm2Cmd kill | Out-Null
 }
 catch {
 }
+Stop-OrphanNotificationWorkers
 
 Write-Host 'PM2: restarting managed processes...' -ForegroundColor Cyan
 & $pm2Cmd start $ecosystemAll | Out-Null

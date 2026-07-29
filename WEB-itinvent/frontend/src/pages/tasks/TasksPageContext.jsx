@@ -87,7 +87,8 @@ export function TasksPageProvider({ controller, children }) {
     analytics: pick(controller, [
       'analyticsFiltersVisible', 'toggleAnalyticsFilters', 'handleExportTaskAnalytics',
       'analyticsLoading', 'analyticsExporting', 'analyticsFocusMeta', 'analyticsFiltersPanelProps',
-      'analyticsKpis', 'analyticsPayload', 'analyticsProjectSectionMeta', 'selectedAnalyticsProjects',
+      'analyticsKpis', 'analyticsPayload', 'analyticsError', 'analyticsHasCurrentPayload',
+      'analyticsProjectSectionMeta', 'selectedAnalyticsProjects',
       'selectedAnalyticsObjects', 'selectAnalyticsParticipant', 'analyticsStatusChartData',
       'analyticsTrendItems', 'analyticsParticipantSectionMeta', 'analyticsParticipantChartData',
       'analyticsScopeChart', 'selectedAnalyticsParticipant', 'analyticsTableColumns', 'loadTaskAnalytics',

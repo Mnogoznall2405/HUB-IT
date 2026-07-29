@@ -117,7 +117,7 @@ export default function TasksAnalyticsFiltersPanel({
           <Box>
             <Typography sx={{ fontWeight: 800 }}>Срез отчёта</Typography>
             <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mt: 0.2 }}>
-              Выберите проект, затем при необходимости объект. Участник дополнительно сузит отчёт до конкретного исполнителя.
+              Выберите проект, затем при необходимости объект. Исполнитель дополнительно сузит отчёт.
             </Typography>
           </Box>
           <Button
@@ -211,7 +211,7 @@ export default function TasksAnalyticsFiltersPanel({
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  label="Участник"
+                  label="Исполнитель"
                   placeholder="Фамилия или логин"
                   sx={analyticsFilterFieldSx}
                   inputProps={{
@@ -251,7 +251,7 @@ export default function TasksAnalyticsFiltersPanel({
             {selectedAnalyticsParticipant ? (
               <Chip
                 size="small"
-                label={`Участник: ${selectedAnalyticsParticipant.participant_name || 'Не назначен'}`}
+                label={`Исполнитель: ${selectedAnalyticsParticipant.participant_name || 'Не назначен'}`}
                 sx={{ height: 24, fontWeight: 800, bgcolor: alpha('#7c3aed', 0.12), color: '#7c3aed' }}
               />
             ) : null}

@@ -38,11 +38,13 @@ export default function useChatThreadSection(ctx) {
     selectedVisibleMessageIds,
     selectedMessageCount,
     canCopySelectedMessages,
+    canDeleteSelectedMessages,
     toggleMessageSelection,
     startMessageSelection,
     clearSelectedMessages,
     selectedReplyToSelectedMessage,
     selectedCopySelectedMessages,
+    selectedDeleteSelectedMessages,
     selectedOpenForwardSelectedMessages,
     handleOpenComposerMenu,
     composerRef,
@@ -166,11 +168,13 @@ export default function useChatThreadSection(ctx) {
         selectedMessageCount={selectedMessageCount}
         canReplySelectedMessage={selectedMessageCount === 1}
         canCopySelectedMessages={canCopySelectedMessages}
+        canDeleteSelectedMessages={canDeleteSelectedMessages}
         onToggleMessageSelection={toggleMessageSelection}
         onStartMessageSelection={startMessageSelection}
         onClearMessageSelection={clearSelectedMessages}
         onReplySelectedMessage={selectedReplyToSelectedMessage}
         onCopySelectedMessages={selectedCopySelectedMessages}
+        onDeleteSelectedMessages={selectedDeleteSelectedMessages}
         onForwardSelectedMessages={selectedOpenForwardSelectedMessages}
         onOpenComposerMenu={handleOpenComposerMenu}
         composerRef={composerRef}
@@ -237,6 +241,7 @@ export default function useChatThreadSection(ctx) {
       cancelAiAction,
       cancelVoiceRecording,
       canCopySelectedMessages,
+      canDeleteSelectedMessages,
       clearEditingMessage,
       clearReplyMessage,
       clearSelectedFiles,
@@ -294,6 +299,7 @@ export default function useChatThreadSection(ctx) {
       scrollToMessage,
       searchMentionPeople,
       selectedCopySelectedMessages,
+      selectedDeleteSelectedMessages,
       selectedFiles,
       selectedFilesSummary,
       selectedMessageCount,

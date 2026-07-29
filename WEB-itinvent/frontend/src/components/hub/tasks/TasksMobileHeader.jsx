@@ -57,7 +57,8 @@ export default function TasksMobileHeader({
       sx={{
         width: '100%',
         minWidth: 0,
-        py: 0.45,
+        pt: 'calc(12px + env(safe-area-inset-top, 0px))',
+        pb: 0.45,
       }}
     >
       <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>

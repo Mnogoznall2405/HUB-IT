@@ -242,7 +242,7 @@ def _resolve_doc_type_names(
 
 
 def _act_document_filter_sql(*, doc_alias: str = "d") -> str:
-    """SQL fragment for act/transfer documents (excludes annulled)."""
+    """SQL fragment for act/transfer documents (including annulled)."""
     number_col = f"LOWER(COALESCE({doc_alias}.DOC_NUMBER, N''))"
     addinfo_col = f"LOWER(COALESCE({doc_alias}.ADDINFO, N''))"
     return f"""
@@ -252,73 +252,64 @@ def _act_document_filter_sql(*, doc_alias: str = "d") -> str:
             OR {number_col} LIKE N'%перемещ%'
             OR {addinfo_col} LIKE N'%перемещ%'
         )
-        AND {number_col} NOT LIKE N'%аннулир%'
-        AND {addinfo_col} NOT LIKE N'%аннулир%'
     """
 
 
-def search_equipment_acts(
-    q: str,
+def _enrich_acts_payload(
+    acts_list: List[dict],
     *,
-    limit: int = 50,
-    db_id: Optional[str] = None,
-    get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
-) -> dict:
-    """
-    Search act/transfer documents across DOCS linked to equipment items.
+    db_id: Optional[str],
+    get_db_fn: Optional[Callable[[Optional[str]], Any]],
+    db: Any,
+) -> List[dict]:
+    """Attach type names and has_file flags to assembled act rows."""
+    if not acts_list:
+        return []
 
-    Returns grouped documents with linked equipment rows.
-    """
-    query_text = str(q or "").strip()
-    safe_limit = max(1, min(int(limit or 50), 50))
-    if len(query_text) < 2:
-        return {"query": query_text, "total": 0, "acts": [], "truncated": False}
+    type_name_map = _resolve_doc_type_names(
+        [act.get("type_no") or act.get("TYPE_NO") for act in acts_list],
+        db_id=db_id,
+        get_db_fn=get_db_fn,
+    )
+    for act in acts_list:
+        raw_type_no = act.get("type_no") or act.get("TYPE_NO")
+        try:
+            type_no = int(raw_type_no) if raw_type_no is not None else None
+        except (TypeError, ValueError):
+            type_no = None
+        if type_no is not None and type_no in type_name_map:
+            act["type_name"] = type_name_map[type_no]
+        else:
+            act["type_name"] = ""
 
-    like_pattern = f"%{query_text.lower()}%"
-    # Только номер акта и ФИО/фамилия сотрудника (не инв./серийный №).
-    search_conditions = [
-        "LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE ?",
-        "LOWER(COALESCE(o.OWNER_DISPLAY_NAME, N'')) LIKE ?",
-    ]
-    params: List[Any] = [like_pattern, like_pattern]
-    if query_text.isdigit():
-        search_conditions.append("d.DOC_NO = ?")
-        params.append(int(query_text))
+    doc_order = [int(act["doc_no"]) for act in acts_list if act.get("doc_no") is not None]
+    file_doc_nos: set[int] = set()
+    if doc_order:
+        placeholders = ", ".join(["?"] * len(doc_order))
+        try:
+            file_rows = db.execute_query(
+                f"""
+                SELECT DISTINCT f.ITEM_ID AS doc_no
+                FROM FILES f
+                WHERE f.ITEM_ID IN ({placeholders})
+                """,
+                tuple(doc_order),
+            )
+        except Exception:
+            file_rows = []
+        for file_row in file_rows or []:
+            try:
+                file_doc_nos.add(int(file_row.get("doc_no") or file_row.get("DOC_NO")))
+            except (TypeError, ValueError):
+                continue
 
-    fetch_limit = safe_limit * 5
-    act_filter = _act_document_filter_sql(doc_alias="d")
-    sql = f"""
-        SELECT TOP {fetch_limit}
-            d.DOC_NO AS doc_no,
-            d.DOC_NUMBER AS doc_number,
-            d.DOC_DATE AS doc_date,
-            d.TYPE_NO AS type_no,
-            b.BRANCH_NAME AS branch_name,
-            l.DESCR AS location_name,
-            o.OWNER_DISPLAY_NAME AS employee_name,
-            dl.ITEM_ID AS item_id,
-            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
-            i.SERIAL_NO AS serial_no,
-            m.MODEL_NAME AS model_name
-        FROM DOCS d
-        INNER JOIN DOCS_LIST dl ON dl.DOC_NO = d.DOC_NO
-        INNER JOIN ITEMS i ON i.ID = dl.ITEM_ID AND i.CI_TYPE = 1
-        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
-        LEFT JOIN BRANCHES b ON b.BRANCH_NO = d.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON l.LOC_NO = d.LOC_NO
-        LEFT JOIN OWNERS o ON o.OWNER_NO = d.EMPL_NO
-        WHERE (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
-          AND ({' OR '.join(search_conditions)})
-          AND {act_filter}
-        ORDER BY
-            CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
-            d.DOC_DATE DESC,
-            d.DOC_NO DESC
-    """
+    for act in acts_list:
+        act["has_file"] = act["doc_no"] in file_doc_nos
+    return acts_list
 
-    db = _get_db(db_id, get_db_fn)
-    rows = db.execute_query(sql, tuple(params))
 
+def _group_act_rows(rows: List[dict], *, safe_limit: int) -> tuple[List[dict], List[int]]:
+    """Group flat DOCS/ITEMS rows into act documents with equipment items."""
     acts_map: dict[int, dict] = {}
     doc_order: List[int] = []
     for row in rows or []:
@@ -367,44 +358,193 @@ def search_equipment_acts(
             )
 
     acts_list = [acts_map[doc_no] for doc_no in doc_order if doc_no in acts_map]
-    type_name_map = _resolve_doc_type_names(
-        [act.get("type_no") or act.get("TYPE_NO") for act in acts_list],
-        db_id=db_id,
-        get_db_fn=get_db_fn,
-    )
-    for act in acts_list:
-        raw_type_no = act.get("type_no") or act.get("TYPE_NO")
-        try:
-            type_no = int(raw_type_no) if raw_type_no is not None else None
-        except (TypeError, ValueError):
-            type_no = None
-        if type_no is not None and type_no in type_name_map:
-            act["type_name"] = type_name_map[type_no]
-        else:
-            act["type_name"] = ""
+    return acts_list, doc_order
 
-    file_doc_nos: set[int] = set()
+
+def list_latest_equipment_acts(
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
+) -> dict:
+    """
+    List newest act/transfer documents linked to equipment (no search query).
+
+    Optimized path: first resolve latest DOC_NO set, then load items for that set.
+    """
+    safe_limit = max(1, min(int(limit or 50), 100))
+    act_filter = _act_document_filter_sql(doc_alias="d")
+    db = _get_db(db_id, get_db_fn)
+
+    docs_sql = f"""
+        SELECT TOP {safe_limit}
+            d.DOC_NO AS doc_no,
+            d.DOC_NUMBER AS doc_number,
+            d.DOC_DATE AS doc_date,
+            d.TYPE_NO AS type_no,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location_name,
+            o.OWNER_DISPLAY_NAME AS employee_name
+        FROM DOCS d
+        LEFT JOIN BRANCHES b ON b.BRANCH_NO = d.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON l.LOC_NO = d.LOC_NO
+        LEFT JOIN OWNERS o ON o.OWNER_NO = d.EMPL_NO
+        WHERE EXISTS (
+            SELECT 1
+            FROM DOCS_LIST dl
+            INNER JOIN ITEMS i ON i.ID = dl.ITEM_ID AND i.CI_TYPE = 1
+            WHERE dl.DOC_NO = d.DOC_NO
+              AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+        )
+          AND {act_filter}
+        ORDER BY
+            CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+            d.DOC_DATE DESC,
+            d.DOC_NO DESC
+    """
+    doc_rows = db.execute_query(docs_sql)
+
+    acts_list: List[dict] = []
+    doc_order: List[int] = []
+    for row in doc_rows or []:
+        try:
+            doc_no = int(row.get("doc_no") or row.get("DOC_NO"))
+        except (TypeError, ValueError):
+            continue
+        if doc_no in {item["doc_no"] for item in acts_list}:
+            continue
+        doc_order.append(doc_no)
+        acts_list.append(
+            {
+                "doc_no": doc_no,
+                "doc_number": str(row.get("doc_number") or row.get("DOC_NUMBER") or "").strip(),
+                "doc_date": row.get("doc_date") or row.get("DOC_DATE"),
+                "type_no": row.get("type_no") or row.get("TYPE_NO"),
+                "branch_name": str(row.get("branch_name") or row.get("BRANCH_NAME") or "").strip(),
+                "location_name": str(row.get("location_name") or row.get("LOCATION_NAME") or "").strip(),
+                "employee_name": str(row.get("employee_name") or row.get("EMPLOYEE_NAME") or "").strip(),
+                "items": [],
+            }
+        )
+
     if doc_order:
         placeholders = ", ".join(["?"] * len(doc_order))
-        try:
-            file_rows = db.execute_query(
-                f"""
-                SELECT DISTINCT f.ITEM_ID AS doc_no
-                FROM FILES f
-                WHERE f.ITEM_ID IN ({placeholders})
-                """,
-                tuple(doc_order),
-            )
-        except Exception:
-            file_rows = []
-        for file_row in file_rows or []:
+        items_sql = f"""
+            SELECT
+                dl.DOC_NO AS doc_no,
+                dl.ITEM_ID AS item_id,
+                CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+                i.SERIAL_NO AS serial_no,
+                m.MODEL_NAME AS model_name
+            FROM DOCS_LIST dl
+            INNER JOIN ITEMS i ON i.ID = dl.ITEM_ID AND i.CI_TYPE = 1
+            LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+            WHERE dl.DOC_NO IN ({placeholders})
+              AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+            ORDER BY dl.DOC_NO DESC, dl.ITEM_ID
+        """
+        item_rows = db.execute_query(items_sql, tuple(doc_order))
+        acts_by_no = {act["doc_no"]: act for act in acts_list}
+        for row in item_rows or []:
             try:
-                file_doc_nos.add(int(file_row.get("doc_no") or file_row.get("DOC_NO")))
+                doc_no = int(row.get("doc_no") or row.get("DOC_NO"))
             except (TypeError, ValueError):
                 continue
+            act_payload = acts_by_no.get(doc_no)
+            if not act_payload:
+                continue
+            item_id_raw = row.get("item_id") or row.get("ITEM_ID")
+            try:
+                item_id = int(item_id_raw) if item_id_raw is not None else None
+            except (TypeError, ValueError):
+                item_id = None
+            if item_id is None:
+                continue
+            if any(item.get("item_id") == item_id for item in act_payload["items"]):
+                continue
+            act_payload["items"].append(
+                {
+                    "item_id": item_id,
+                    "inv_no": str(row.get("inv_no") or row.get("INV_NO") or "").strip(),
+                    "serial_no": str(row.get("serial_no") or row.get("SERIAL_NO") or "").strip(),
+                    "model_name": str(row.get("model_name") or row.get("MODEL_NAME") or "").strip(),
+                }
+            )
 
-    for act in acts_list:
-        act["has_file"] = act["doc_no"] in file_doc_nos
+    acts_list = _enrich_acts_payload(acts_list, db_id=db_id, get_db_fn=get_db_fn, db=db)
+    truncated = len(acts_list) >= safe_limit
+    return {
+        "query": "",
+        "total": len(acts_list),
+        "acts": acts_list,
+        "truncated": truncated,
+    }
+
+
+def search_equipment_acts(
+    q: str,
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
+) -> dict:
+    """
+    Search act/transfer documents across DOCS linked to equipment items.
+
+    Returns grouped documents with linked equipment rows.
+    Empty/short query falls back to the latest-act feed.
+    """
+    query_text = str(q or "").strip()
+    safe_limit = max(1, min(int(limit or 50), 50))
+    if len(query_text) < 2:
+        return list_latest_equipment_acts(limit=safe_limit, db_id=db_id, get_db_fn=get_db_fn)
+
+    like_pattern = f"%{query_text.lower()}%"
+    # Только номер акта и ФИО/фамилия сотрудника (не инв./серийный №).
+    search_conditions = [
+        "LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE ?",
+        "LOWER(COALESCE(o.OWNER_DISPLAY_NAME, N'')) LIKE ?",
+    ]
+    params: List[Any] = [like_pattern, like_pattern]
+    if query_text.isdigit():
+        search_conditions.append("d.DOC_NO = ?")
+        params.append(int(query_text))
+
+    fetch_limit = safe_limit * 5
+    act_filter = _act_document_filter_sql(doc_alias="d")
+    sql = f"""
+        SELECT TOP {fetch_limit}
+            d.DOC_NO AS doc_no,
+            d.DOC_NUMBER AS doc_number,
+            d.DOC_DATE AS doc_date,
+            d.TYPE_NO AS type_no,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location_name,
+            o.OWNER_DISPLAY_NAME AS employee_name,
+            dl.ITEM_ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            m.MODEL_NAME AS model_name
+        FROM DOCS d
+        INNER JOIN DOCS_LIST dl ON dl.DOC_NO = d.DOC_NO
+        INNER JOIN ITEMS i ON i.ID = dl.ITEM_ID AND i.CI_TYPE = 1
+        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+        LEFT JOIN BRANCHES b ON b.BRANCH_NO = d.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON l.LOC_NO = d.LOC_NO
+        LEFT JOIN OWNERS o ON o.OWNER_NO = d.EMPL_NO
+        WHERE (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+          AND ({' OR '.join(search_conditions)})
+          AND {act_filter}
+        ORDER BY
+            CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+            d.DOC_DATE DESC,
+            d.DOC_NO DESC
+    """
+
+    db = _get_db(db_id, get_db_fn)
+    rows = db.execute_query(sql, tuple(params))
+    acts_list, doc_order = _group_act_rows(rows, safe_limit=safe_limit)
+    acts_list = _enrich_acts_payload(acts_list, db_id=db_id, get_db_fn=get_db_fn, db=db)
 
     truncated = len(doc_order) >= safe_limit and bool(rows)
     return {

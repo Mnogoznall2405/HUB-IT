@@ -2562,19 +2562,6 @@ class Warehouse1CService:
         balance_truncated = bool(balance_meta.get("truncated")) or bool(balance_meta.get("has_more"))
         balance_incomplete = balance_status != "ok" or balance_truncated
         balances = self.aggregate_balance_rows(raw_balances) or list(raw_balances)
-        if not balances:
-            if not include_meta:
-                return []
-            return {
-                "items": [],
-                "returned": 0,
-                "total": balance_meta.get("total", 0),
-                "has_more": bool(balance_meta.get("has_more")),
-                "truncated": balance_truncated,
-                "as_of": balance_meta.get("as_of") or utc_now_iso(),
-                "source": balance_meta.get("source") or "live_1c",
-                "status": "incomplete" if balance_incomplete and balance_status == "ok" else balance_status,
-            }
 
         current_db_id = str(db_id or "").strip() or None
         scope_key = normalize_text(scope).lower() or "current"
@@ -2589,11 +2576,34 @@ class Warehouse1CService:
         except Warehouse1CAllScopeConfigurationError as exc:
             raise Warehouse1CValidationError(str(exc)) from exc
 
+        as_of = balance_meta.get("as_of") or utc_now_iso()
+        row_status = "incomplete" if balance_incomplete and balance_status == "ok" else balance_status
+
+        if not balances and not (
+            str(part_no or "").strip()
+            or str(nomenclature_code or "").strip()
+            or str(model_name or "").strip()
+            or str(hub_query or "").strip()
+        ):
+            if not include_meta:
+                return []
+            return {
+                "items": [],
+                "returned": 0,
+                "total": balance_meta.get("total", 0),
+                "has_more": bool(balance_meta.get("has_more")),
+                "truncated": balance_truncated,
+                "as_of": as_of,
+                "source": balance_meta.get("source") or "live_1c",
+                "status": row_status,
+            }
+
         warehouse_names = [
             str(row.get("warehouse_name") or "").strip()
             for row in balances
+            if str(row.get("warehouse_name") or "").strip()
         ]
-        employment_map = resolve_employment_status_batch(warehouse_names)
+        employment_map = resolve_employment_status_batch(warehouse_names) if warehouse_names else {}
 
         # Per warehouse: preferred owner (for UI link) + total hub count across DBs.
         # IMPORTANT: Hub may have duplicate OWNER rows with the same FIO — count all of them.
@@ -2727,16 +2737,19 @@ class Warehouse1CService:
                         owner_by_warehouse[cache_key] = (owner, score)
 
         enriched: list[dict[str, Any]] = []
-        as_of = balance_meta.get("as_of") or utc_now_iso()
-        row_status = "incomplete" if balance_incomplete and balance_status == "ok" else balance_status
+        covered_owner_nos: set[int] = set()
+        covered_name_keys: set[str] = set()
         for row in balances:
             payload = dict(row)
             warehouse_name = str(row.get("warehouse_name") or "").strip()
             warehouse_ref = str(row.get("warehouse_ref") or "").strip()
+            if warehouse_name:
+                covered_name_keys.add(warehouse_name.casefold())
             cache_key = warehouse_ref or warehouse_name.casefold()
             owner, score = owner_by_warehouse.get(cache_key, (None, 0))
             hub_owner_no = None
             hub_employee_name = ""
+            hub_employee_dept = ""
             hub_count = None
             if owner is not None:
                 try:
@@ -2748,12 +2761,25 @@ class Warehouse1CService:
                     or owner.get("owner_display_name")
                     or ""
                 ).strip()
+                hub_employee_dept = str(
+                    owner.get("OWNER_DEPT")
+                    or owner.get("owner_dept")
+                    or owner.get("employee_dept")
+                    or ""
+                ).strip()
                 # Matched person → always show a number (0 if no PART_NO hits).
                 hub_count = int(hub_count_by_warehouse.get(cache_key, 0))
             elif cache_key in hub_count_by_warehouse:
                 # Matched only in a non-current DB and owner_by_warehouse missed —
                 # still expose the aggregated count.
                 hub_count = int(hub_count_by_warehouse.get(cache_key, 0))
+
+            if hub_owner_no is not None:
+                covered_owner_nos.add(hub_owner_no)
+            for owner_no in (owner_count_by_warehouse.get(cache_key) or {}):
+                covered_owner_nos.add(int(owner_no))
+            if hub_employee_name:
+                covered_name_keys.add(hub_employee_name.casefold())
 
             if hub_owner_no is not None or hub_count is not None:
                 employment = employment_map.get(warehouse_name) or {
@@ -2771,6 +2797,7 @@ class Warehouse1CService:
                 {
                     "hub_owner_no": hub_owner_no,
                     "hub_employee_name": hub_employee_name,
+                    "hub_employee_dept": hub_employee_dept,
                     "hub_count": hub_count,
                     # ``hub_count`` is an observed candidate count produced
                     # by a PART_NO/model and owner match.  Without immutable
@@ -2792,12 +2819,111 @@ class Warehouse1CService:
                 }
             )
             enriched.append(payload)
+
+        # Also surface Hub owners who hold this PART_NO/model but have no 1C balance row.
+        hub_only_by_owner: dict[int, dict[str, Any]] = {}
+        hub_only_limit = max(1, min(int(limit or 200), 500))
+        for cfg in db_configs:
+            one_db_id = str(cfg.get("id") or "").strip() or None
+            is_current_db = bool(
+                current_db_id
+                and one_db_id
+                and current_db_id.casefold() == one_db_id.casefold()
+            )
+            try:
+                hub_owners = db_queries.count_all_owners_by_hub_query(
+                    part_no=part_no,
+                    part_nos=[nomenclature_code] if nomenclature_code else None,
+                    model_name=model_name,
+                    hub_query=hub_query,
+                    hub_query_source=hub_query_source,
+                    db_id=one_db_id,
+                    limit=hub_only_limit,
+                )
+            except Exception as exc:
+                logger.warning("count_all_owners_by_hub_query failed for db=%s: %s", one_db_id, exc)
+                continue
+            for item in hub_owners or []:
+                try:
+                    owner_no = int(item.get("owner_no") or 0)
+                    hub_count = int(item.get("hub_count") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if owner_no <= 0 or hub_count <= 0:
+                    continue
+                if owner_no in covered_owner_nos:
+                    continue
+                display_name = str(item.get("owner_display_name") or "").strip() or f"OWNER {owner_no}"
+                if display_name.casefold() in covered_name_keys:
+                    continue
+                prev = hub_only_by_owner.get(owner_no)
+                if prev is None:
+                    hub_only_by_owner[owner_no] = {
+                        "owner_no": owner_no,
+                        "hub_count": hub_count,
+                        "owner_display_name": display_name,
+                        "owner_dept": str(item.get("owner_dept") or "").strip(),
+                        "prefer_current": is_current_db,
+                    }
+                else:
+                    prev["hub_count"] = int(prev.get("hub_count") or 0) + hub_count
+                    if is_current_db and not prev.get("prefer_current"):
+                        prev["owner_display_name"] = display_name
+                        prev["owner_dept"] = str(item.get("owner_dept") or "").strip()
+                        prev["prefer_current"] = True
+
+        if hub_only_by_owner:
+            hub_only_names = [
+                str(item.get("owner_display_name") or "").strip()
+                for item in hub_only_by_owner.values()
+                if str(item.get("owner_display_name") or "").strip()
+            ]
+            hub_employment = resolve_employment_status_batch(hub_only_names) if hub_only_names else {}
+            for item in sorted(
+                hub_only_by_owner.values(),
+                key=lambda row: (
+                    -int(row.get("hub_count") or 0),
+                    str(row.get("owner_display_name") or "").casefold(),
+                ),
+            ):
+                display_name = str(item.get("owner_display_name") or "").strip()
+                employment = hub_employment.get(display_name) or {
+                    "status": "unknown",
+                    "label": "",
+                    "matched_name": None,
+                }
+                hub_count = int(item.get("hub_count") or 0)
+                enriched.append(
+                    {
+                        "warehouse_ref": "",
+                        "warehouse_name": display_name,
+                        "qty_balance": 0.0,
+                        "qty_1c_total": 0.0,
+                        "hub_owner_no": int(item["owner_no"]),
+                        "hub_employee_name": display_name,
+                        "hub_employee_dept": str(item.get("owner_dept") or "").strip(),
+                        "hub_count": hub_count,
+                        "hub_count_kind": "candidate",
+                        "hub_match_score": None,
+                        "owner_link_method": "hub_only",
+                        "employment_status": employment.get("status"),
+                        "employment_label": employment.get("label") or "",
+                        "employment_matched_name": employment.get("matched_name"),
+                        "exact_linked_count": None if balance_incomplete else 0,
+                        "unlinked_candidate_count": hub_count,
+                        "source_row_count": 0,
+                        "as_of": as_of,
+                        "source": "hub_only",
+                        "status": row_status,
+                    }
+                )
+
         if not include_meta:
             return enriched
         return {
             "items": enriched,
             "returned": len(enriched),
-            "total": balance_meta.get("total", len(enriched)),
+            "total": max(int(balance_meta.get("total") or 0), len(enriched)),
             "has_more": bool(balance_meta.get("has_more")),
             "truncated": balance_truncated,
             "as_of": as_of,

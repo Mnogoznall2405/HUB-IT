@@ -1,14 +1,16 @@
 param(
-    [string]$TaskName = "IT-Invent Agent",
-    [string]$ExecutablePath = "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe",
+    [string]$TaskName = "HUB-IT Agent",
+    [string]$ExecutablePath = "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe",
     [int]$RepeatMinutes = 60,
     [string]$EnvFilePath = "",
     [switch]$StartAfterRegister
 )
 
+$LegacyTaskNames = @("IT-Invent Agent")
+
 $ErrorActionPreference = "Stop"
 
-$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "IT-Invent\Agent"
+$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "HUB-IT\Agent"
 
 function Set-EnvFileValue {
     param(
@@ -109,6 +111,15 @@ $envPath = if ($EnvFilePath) { $EnvFilePath } else { Join-Path $defaultRuntimeRo
 
 Set-ScanOnDemandDefaults -EnvPath $envPath
 Stop-ExistingAgentRuntime -TaskName $TaskName
+foreach ($legacyName in $LegacyTaskNames) {
+    if ($legacyName -eq $TaskName) { continue }
+    Stop-ExistingAgentRuntime -TaskName $legacyName
+    $legacyTask = Get-ScheduledTask -TaskName $legacyName -ErrorAction SilentlyContinue
+    if ($null -ne $legacyTask) {
+        Unregister-ScheduledTask -TaskName $legacyName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "[OK] Legacy scheduled task '$legacyName' removed."
+    }
+}
 
 $action = New-ScheduledTaskAction -Execute $ExecutablePath -WorkingDirectory $workDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -128,7 +139,6 @@ $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew
 
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
-
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 if ($StartAfterRegister) {
     try {

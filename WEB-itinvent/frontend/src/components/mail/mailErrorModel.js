@@ -90,11 +90,47 @@ export const isMissingMailDetailError = (requestError, detailText = '') => {
     || normalizedDetail.includes('message id is required');
 };
 
-export const getMailErrorCode = (requestError) => String(
-  requestError?.response?.headers?.['x-mail-error-code']
-  || requestError?.response?.headers?.['X-Mail-Error-Code']
-  || ''
-).trim();
+export const getMailErrorCode = (requestError) => {
+  const headerCode = String(
+    requestError?.response?.headers?.['x-mail-error-code']
+    || requestError?.response?.headers?.['X-Mail-Error-Code']
+    || ''
+  ).trim();
+  if (headerCode) return headerCode;
+
+  // Fallback when proxies strip custom headers: recover auth codes from body/status.
+  const statusCode = Number(requestError?.response?.status || 0);
+  if (statusCode !== 409) return '';
+  const detailText = String(
+    requestError?.response?.data?.detail?.message
+    || requestError?.response?.data?.detail
+    || requestError?.message
+    || ''
+  ).trim().toLowerCase();
+  if (!detailText) return '';
+  if (
+    detailText.includes('войдите')
+    || detailText.includes('relogin')
+    || detailText.includes('login again')
+  ) {
+    return 'MAIL_RELOGIN_REQUIRED';
+  }
+  if (
+    detailText.includes('устарел')
+    || detailText.includes('неверен')
+    || detailText.includes('invalid credentials')
+    || detailText.includes('password') && detailText.includes('expired')
+  ) {
+    return 'MAIL_AUTH_INVALID';
+  }
+  if (
+    detailText.includes('парол')
+    || detailText.includes('password')
+  ) {
+    return 'MAIL_PASSWORD_REQUIRED';
+  }
+  return '';
+};
 
 export const isTransientMailRequestError = (requestError) => {
   const statusCode = Number(requestError?.response?.status || 0);

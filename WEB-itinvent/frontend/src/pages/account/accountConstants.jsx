@@ -128,10 +128,26 @@ const permissionGroups = [
     ],
   },
   {
+    group: 'Структура компании',
+    permissions: [
+      { value: 'company_structure.read', label: 'Структура компании: просмотр' },
+      { value: 'company_structure.write', label: 'Структура компании: редактирование' },
+    ],
+  },
+  {
     group: 'Склад 1С',
     permissions: [
       { value: 'warehouse_1c.read', label: 'Склад 1С: просмотр' },
       { value: 'warehouse_1c.reconcile.write', label: 'Склад 1С: подтверждать PART_NO в HUB' },
+    ],
+  },
+  {
+    group: 'Документооборот 1С',
+    permissions: [
+      { value: 'docflow.read', label: 'Документооборот 1С: просмотр' },
+      { value: 'docflow.act', label: 'Документооборот 1С: выполнять задания' },
+      { value: 'docflow.create', label: 'Документооборот 1С: создавать документы' },
+      { value: 'docflow.admin', label: 'Документооборот 1С: диагностика интеграции' },
     ],
   },
   {
@@ -242,6 +258,7 @@ export const AI_ITINVENT_DEFAULT_TOOLS = [
 export const AI_ITINVENT_MULTI_DB_TOOL_ID = 'itinvent.equipment.search_multi_db';
 export const AI_FILES_CREATE_TOOL_ID = 'ai.files.create';
 export const AI_FILES_REPORT_TOOL_ID = 'ai.files.report';
+export const AI_FILES_CONVERT_DOCUMENT_TOOL_ID = 'ai.files.convert_document';
 export const AI_AD_PASSWORD_STATUS_TOOL_ID = 'ad.user.password_status';
 
 export const AI_ITINVENT_TOOL_OPTIONS = [
@@ -277,6 +294,7 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
 export const AI_FILE_TOOL_OPTIONS = [
   { id: AI_FILES_CREATE_TOOL_ID, label: 'Создание файлов' },
   { id: AI_FILES_REPORT_TOOL_ID, label: 'Красивые отчёты' },
+  { id: AI_FILES_CONVERT_DOCUMENT_TOOL_ID, label: 'Конвертер документов (фото/PDF)' },
 ];
 
 export const AI_OFFICE_TOOL_OPTIONS = [

@@ -358,15 +358,6 @@ export function ChatPageContent() {
     closeSearchDialog, loadMoreSearchResults, messageSearch, messageSearchHasMore, messageSearchLoading,
     messageSearchResults, openSearchDialog, openSearchResult, resetMessageSearch, searchOpen, setMessageSearch,
   } = overlays;
-  const {
-    canCopySelectedMessages,
-    selectedMessageCount,
-    selectedMessages,
-    selectedVisibleMessageIds,
-  } = useChatMessageSelection({
-    messages,
-    selectedMessageIds,
-  });
   const [highlightedMessageId, setHighlightedMessageId] = useState('');
   const deferredMessageText = useDeferredValue(messageText);
 
@@ -383,6 +374,18 @@ export function ChatPageContent() {
     searchChats,
     searchPeople,
     userId: user?.id,
+  });
+
+  const {
+    canCopySelectedMessages,
+    canDeleteSelectedMessages,
+    selectedMessageCount,
+    selectedMessages,
+    selectedVisibleMessageIds,
+  } = useChatMessageSelection({
+    conversationKind: activeConversation?.kind,
+    messages,
+    selectedMessageIds,
   });
 
   const {
@@ -1151,6 +1154,7 @@ export function ChatPageContent() {
     activeConversationId,
     activeConversationIdRef,
     buildPinnedMessagePayload,
+    conversationKind: activeConversation?.kind,
     conversations,
     focusComposer,
     loadChatDialogsModule,
@@ -1212,6 +1216,7 @@ export function ChatPageContent() {
     mailActionEditor,
     openMessageMenu,
     selectedCopySelectedMessages,
+    selectedDeleteSelectedMessages,
     selectedOpenForwardSelectedMessages,
     selectedReplyToSelectedMessage,
     setForwardConversationQuery,
@@ -1360,8 +1365,8 @@ export function ChatPageContent() {
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
         openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
         openMessageMenu, confirmAiAction, cancelAiAction, editAiAction, selectedVisibleMessageIds, selectedMessageCount,
-        canCopySelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
-        selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedOpenForwardSelectedMessages,
+        canCopySelectedMessages, canDeleteSelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
+        selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedDeleteSelectedMessages, selectedOpenForwardSelectedMessages,
         handleOpenComposerMenu, composerRef, messageText, setMessageText, handleComposerKeyDown, syncComposerSelection,
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
@@ -1407,8 +1412,8 @@ export function ChatPageContent() {
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
         openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
         openMessageMenu, confirmAiAction, cancelAiAction, editAiAction, selectedVisibleMessageIds, selectedMessageCount,
-        canCopySelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
-        selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedOpenForwardSelectedMessages,
+        canCopySelectedMessages, canDeleteSelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
+        selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedDeleteSelectedMessages, selectedOpenForwardSelectedMessages,
         handleOpenComposerMenu, composerRef, messageText, setMessageText, handleComposerKeyDown, syncComposerSelection,
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,

@@ -1019,6 +1019,31 @@ def test_task_projects_protocol_date_and_analytics(task_env):
     assert payload["by_participant"][0]["participant_user_id"] == 2
     assert payload.get("truncated") is False
 
+    completed_day = str(reviewed["completed_at"])[:10]
+    completed_basis = client.get(
+        "/hub/tasks/analytics",
+        params={
+            "start_date": completed_day,
+            "end_date": completed_day,
+            "date_basis": "completed_at",
+            "project_id": project["id"],
+        },
+    )
+    assert completed_basis.status_code == 200, completed_basis.text
+    assert completed_basis.json()["summary"]["total"] == 1
+
+    due_basis = client.get(
+        "/hub/tasks/analytics",
+        params={
+            "start_date": "2030-04-10",
+            "end_date": "2030-04-10",
+            "date_basis": "due_at",
+            "project_id": project["id"],
+        },
+    )
+    assert due_basis.status_code == 200, due_basis.text
+    assert due_basis.json()["summary"]["total"] == 1
+
 
 def test_task_analytics_backfills_completed_at_and_returns_extended_metrics(task_env):
     client = task_env["client"]
@@ -1258,7 +1283,7 @@ def test_task_analytics_export_returns_excel(task_env):
     assert "attachment; filename=" in response.headers.get("content-disposition", "")
 
     workbook = load_workbook(filename=BytesIO(response.content))
-    assert workbook.sheetnames == ["Сводка", "По участникам", "По проектам", "По объектам", "Тренд"]
+    assert workbook.sheetnames == ["Сводка", "По исполнителям", "По проектам", "По объектам", "Тренд"]
 
     summary_sheet = workbook["Сводка"]
     summary_rows = list(summary_sheet.iter_rows(values_only=True))
@@ -1267,10 +1292,40 @@ def test_task_analytics_export_returns_excel(task_env):
     assert "Фильтры отчёта" in flattened
     assert "Ключевые показатели" in flattened
 
-    assert workbook["По участникам"].max_row >= 1
+    assert workbook["По исполнителям"].max_row >= 1
     assert workbook["По проектам"].max_row >= 1
     assert workbook["По объектам"].max_row >= 1
     assert workbook["Тренд"].max_row >= 1
+
+
+def test_task_analytics_reflects_new_tasks_without_process_cache(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    _create_task(client, title="Analytics Cache First")
+    first = client.get(
+        "/hub/tasks/analytics",
+        params={
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-31",
+            "date_basis": "protocol_date",
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["summary"]["total"] == 1
+
+    _create_task(client, title="Analytics Cache Second")
+    second = client.get(
+        "/hub/tasks/analytics",
+        params={
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-31",
+            "date_basis": "protocol_date",
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["summary"]["total"] == 2
 
 
 def test_delegate_receives_task_notifications_and_read_only_access(task_env, monkeypatch):
@@ -1729,6 +1784,35 @@ def test_observer_membership_clause_uses_postgresql_json_array_elements(monkeypa
     assert params == [5]
 
 
+def test_task_analytics_trend_sql_does_not_use_select_alias_in_having(task_env):
+    service = task_env["service"]
+    executed_sql: list[str] = []
+
+    class _EmptyCursor:
+        @staticmethod
+        def fetchall():
+            return []
+
+    class _RecordingConnection:
+        @staticmethod
+        def execute(sql, _params):
+            executed_sql.append(sql)
+            return _EmptyCursor()
+
+    created, completed = service._fetch_analytics_trend_daily_sql(
+        _RecordingConnection(),
+        where_sql="",
+        params=[],
+    )
+
+    assert created == {}
+    assert completed == {}
+    assert len(executed_sql) == 2
+    assert all("HAVING bucket_date" not in sql for sql in executed_sql)
+    assert "HAVING COALESCE(" in executed_sql[0]
+    assert "HAVING substr(completed_at, 1, 10)" in executed_sql[1]
+
+
 def test_users_by_id_reuses_cached_active_user_directory(task_env, monkeypatch):
     service = task_env["service"]
     calls = {"count": 0}
@@ -1806,3 +1890,27 @@ def test_list_tasks_supports_controller_focus_and_pagination_filters(task_env):
     assert page_two["offset"] == 1
     if page_one["total"] > 1:
         assert page_one["items"][0]["id"] != page_two["items"][0]["id"]
+
+
+def test_naive_due_at_is_treated_as_local_wall_clock_not_utc(task_env):
+    """Frontend stores due_at without offset (local wall-clock). Must not shift by UTC offset."""
+    service = task_env["service"]
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    offset_hours = int(datetime.now(local_tz).utcoffset().total_seconds() // 3600)
+
+    parsed = service._parse_iso_datetime("2026-07-23T11:00")
+    assert parsed is not None
+    assert parsed.tzinfo is not None
+    local_display = parsed.astimezone().strftime("%d.%m.%Y %H:%M")
+    assert local_display == "23.07.2026 11:00"
+    assert service._format_task_email_due("2026-07-23T11:00") == "23.07.2026 11:00"
+
+    # Regression: old behaviour tagged naive as UTC → local = 11:00 + offset (e.g. 16:00 in UTC+5).
+    if offset_hours != 0:
+        wrongly_as_utc = datetime(2026, 7, 23, 11, 0, tzinfo=timezone.utc).astimezone().strftime("%H:%M")
+        assert wrongly_as_utc != "11:00"
+        assert service._format_task_email_due("2026-07-23T11:00") != f"23.07.2026 {wrongly_as_utc}"
+
+    aware_due = service._parse_iso_datetime("2026-07-23T11:00:00+05:00")
+    assert aware_due is not None
+    assert service._format_task_email_due("2026-07-23T11:00:00+05:00") == aware_due.astimezone().strftime("%d.%m.%Y %H:%M")

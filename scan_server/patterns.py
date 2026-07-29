@@ -184,7 +184,27 @@ _SPACED_DSP_PHRASE_RE = re.compile(
     r"(?i)д\s*л\s*я\s*с\s*л\s*у\s*ж\s*е\s*б\s*н\s*о\s*г\s*о\s*п\s*о\s*л\s*ь\s*з\s*о\s*в\s*а\s*н\s*и\s*я"
 )
 _SPACED_CYRILLIC_WORD_RE = re.compile(r"(?<!\w)(?:[а-яё][ \t]){3,}[а-яё](?!\w)", re.IGNORECASE)
-_DSP_FURNITURE_RE = re.compile(r"(?i)(?:столешниц|мебел|плит|лист|дсп\s*22\s*мм|\b\d+\s*мм\b)")
+# Particle-board / furniture "ДСП" (древесно-стружечная плита), not secrecy stamp.
+_DSP_FURNITURE_RE = re.compile(
+    r"(?i)(?:"
+    r"столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|"
+    r"материал|покрыти|пластик|пенополиуретан|ламинат|оргтехник|"
+    r"плит[аыеу]?|дсп\s*лист|лист[аы]?\s*дсп|"
+    r"\bмдф\b|\bhdf\b|дсп\s*22\s*мм|дсп\s*[+с]\s*пластик|\b\d+\s*мм\b"
+    r")"
+)
+# Clearance / NDA boilerplate mentioning secrecy level — not a document classification stamp.
+_SECRET_CLEARANCE_CONTEXT_RE = re.compile(
+    r"(?iu)(?:"
+    r"степен[ьи]\s+секретности|"
+    r"форма\s+допуска|"
+    r"режим(?:а|у|ом|е)?\s+конфиденциальност|"
+    r"соблюдени[еюя]\s+(?:режима\s+)?конфиденциальност|"
+    r"конфиденциальност[ьи]|"
+    r"отнесенн\w*\s+к\s+конфиденциальн|"
+    r"коммерческо[йм]\s+тайн"
+    r")"
+)
 _OCR_LATIN_TO_CYRILLIC = str.maketrans(
     "AaBCcEeHKMOoPpTXYxyD",
     "АаВСсЕеНКМОоРрТХУхуД",
@@ -201,10 +221,26 @@ def normalize_scan_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text.translate(_OCR_LATIN_TO_CYRILLIC)).strip()
 
 
+def is_furniture_dsp_context(text: str) -> bool:
+    """True when nearby context looks like particle-board furniture, not a secrecy mark."""
+    return bool(_DSP_FURNITURE_RE.search(str(text or "")))
+
+
 def _is_excluded_dsp_context(text: str, start: int, end: int) -> bool:
     left = max(0, start - 80)
     right = min(len(text), end + 80)
-    return bool(_DSP_FURNITURE_RE.search(text[left:right]))
+    return is_furniture_dsp_context(text[left:right])
+
+
+def is_secret_clearance_context(text: str) -> bool:
+    """True when nearby text talks about clearance/NDA, not a secrecy stamp on the page."""
+    return bool(_SECRET_CLEARANCE_CONTEXT_RE.search(str(text or "")))
+
+
+def _is_excluded_secret_context(text: str, start: int, end: int) -> bool:
+    left = max(0, start - 100)
+    right = min(len(text), end + 100)
+    return is_secret_clearance_context(text[left:right])
 
 
 def scan_text(text: str, allowed_pattern_ids: Optional[Iterable[Any]] = None) -> List[Dict[str, str]]:
@@ -230,6 +266,10 @@ def scan_text(text: str, allowed_pattern_ids: Optional[Iterable[Any]] = None) ->
         for candidate in sources:
             for match in regex.finditer(candidate):
                 if pattern_id == "dsp_with_exclusion" and _is_excluded_dsp_context(
+                    candidate, match.start(), match.end()
+                ):
+                    continue
+                if pattern_id in {"secret_strict", "classified_document_header"} and _is_excluded_secret_context(
                     candidate, match.start(), match.end()
                 ):
                     continue

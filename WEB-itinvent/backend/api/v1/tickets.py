@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,7 @@ from backend.services.authorization_service import (
     PERM_TICKETS_READ,
     PERM_TICKETS_WRITE,
 )
+from backend.services.russian_settlements_service import russian_settlements_service
 from backend.services.tickets_import_service import ImportSettings, TicketsImportService
 from backend.services.tickets_notification_service import tickets_notification_service
 from backend.services.tickets_service import (
@@ -115,10 +117,17 @@ class EmployeeBody(BaseModel):
     position: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+    zup_employee_code: Optional[str] = None
     status: Optional[str] = None
     app_user_id: Optional[int] = None
     date_of_birth: Optional[str] = None
     documents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EmployeeFromZupBody(BaseModel):
+    """Body for POST /employees/from-zup."""
+
+    employee_code: str = Field(..., min_length=1, max_length=64)
 
 
 class ImportExecuteBody(BaseModel):
@@ -675,6 +684,51 @@ async def list_employees(
         pagination=Pagination(page=page, page_size=page_size),
     )
     return _paged_payload(result)
+
+
+@router.get("/settlements/search")
+async def search_settlements(
+    q: str = Query("", max_length=200),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
+):
+    """Search Russian settlements (cities, villages, poselki) for ticket route field."""
+    return await run_in_threadpool(russian_settlements_service.search, q, int(limit))
+
+
+@router.get("/employees/zup-search")
+async def search_zup_employees(
+    q: str = Query("", max_length=200),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
+):
+    """Search ZUP (1C Address Book) employees to prefill ticket employee form.
+
+    Passport/birth fields are included only when the user has
+    tickets.personal_data.read.
+    """
+    return tickets_service.search_zup_employees(
+        query=q,
+        limit=int(limit),
+        user_permissions=list(current_user.permissions or []),
+    )
+
+
+@router.post("/employees/from-zup", status_code=status.HTTP_200_OK)
+async def ensure_employee_from_zup(
+    body: EmployeeFromZupBody,
+    current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
+):
+    """Create or refresh a ticket employee from ZUP by employee_code."""
+    try:
+        return tickets_service.ensure_employee_from_zup(
+            body.employee_code,
+            user_permissions=list(current_user.permissions or []),
+        )
+    except TicketsNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except TicketsValidationError as exc:
+        raise _validation_error(exc) from exc
 
 
 @router.get("/employees/{employee_id}")

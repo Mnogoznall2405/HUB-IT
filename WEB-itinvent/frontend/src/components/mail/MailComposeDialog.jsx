@@ -537,10 +537,14 @@ function ComposerContent({
       }}
     >
       <Box
+        data-testid="mail-compose-header"
         className="mail-safe-top mail-glass-header"
         sx={{
           px: { xs: 1.1, md: 1.6 },
-          py: desktopInline ? 1 : 0.9,
+          pt: mobile
+            ? 'calc(12px + env(safe-area-inset-top, 0px))'
+            : (desktopInline ? 1 : 0.9),
+          pb: desktopInline ? 1 : 0.9,
           borderBottom: '1px solid',
           borderColor: tokens.panelBorder,
           position: 'sticky',

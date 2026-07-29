@@ -21,7 +21,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
-import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
+import {
+  buildOfficeUiTokens,
+  getOfficeActionTraySx,
+  getOfficeSubtlePanelSx,
+} from '../theme/officeUiTokens';
 import {
   DATA_MODE_CONSUMABLES,
   DATA_MODE_EQUIPMENT,
@@ -83,6 +87,7 @@ import { useDatabaseDetailRuntime } from './database/useDatabaseDetailRuntime';
 import { useDatabaseListNavigation } from './database/useDatabaseListNavigation';
 import { useDatabaseQrScanner } from './database/useDatabaseQrScanner';
 import { useDatabaseRecentCards } from './database/useDatabaseRecentCards';
+import { useDatabaseRecentActs } from './database/useDatabaseRecentActs';
 import { useDatabaseTransferAction } from './database/useDatabaseTransferAction';
 import { useDatabaseUploadActWorkflow } from './database/useDatabaseUploadActWorkflow';
 import { useDatabaseWorkspaceIdentity } from './database/useDatabaseWorkspaceIdentity';
@@ -111,6 +116,8 @@ import DatabaseMobileControlStrip from './database/DatabaseMobileControlStrip';
 import DatabaseMobileActionSheet from './database/DatabaseMobileActionSheet';
 import DatabaseBulkActionBar, { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './database/DatabaseBulkActionBar';
 import DatabaseRecentCardsStrip from './database/DatabaseRecentCardsStrip';
+import DatabaseRecentActs from './database/DatabaseRecentActs';
+import DatabaseRecentActsStrip from './database/DatabaseRecentActsStrip';
 import DatabaseSelectionBar from './database/DatabaseSelectionBar';
 import { useDatabaseMaintenanceData } from './database/useDatabaseMaintenanceData';
 import {
@@ -290,6 +297,9 @@ function Database() {
     uploadActEmailStatus,
     uploadActEmailLastRecipients,
     uploadActEmailSummary,
+    uploadActDownloading,
+    uploadActDownloadError,
+    setUploadActDownloadError,
     uploadActStep,
     uploadActInvVerification,
     uploadActCommitDisabled,
@@ -305,6 +315,7 @@ function Database() {
     handleUploadActInvNosChange,
     handleUploadActCommit,
     handleUploadActEmailSend,
+    handleUploadActDownload,
   } = useDatabaseUploadActWorkflow({
     canDatabaseWrite,
     dbName: db_name,
@@ -365,6 +376,7 @@ function Database() {
     actSearchLoading,
     actSearchError,
     actSearchTruncated,
+    actFeedMode,
     resetActSearch,
     runActSearchNow,
     clearActSearchError,
@@ -519,19 +531,41 @@ function Database() {
     removeRecentCard,
     clearRecentCards,
   } = useDatabaseRecentCards({
+    // Prefetch with inventory page so scope switches stay instant.
     enabled: !isConsumablesMode,
     dbName: db_name,
   });
+  const isActsScopeEnabled = !isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS;
+  const {
+    recentActs,
+    recentActsLoading,
+    refreshRecentActs,
+    touchRecentAct,
+    removeRecentAct,
+    clearRecentActs,
+  } = useDatabaseRecentActs({
+    // Prefetch acts history while still on equipment scope.
+    enabled: !isConsumablesMode,
+    dbName: db_name,
+  });
+  const [seededAct, setSeededAct] = useState(null);
   const handleDetailRecentActivity = useCallback(() => {
     void refreshRecentCards();
   }, [refreshRecentCards]);
   const handleTransferJobDone = useCallback(() => {
     void refreshRecentCards();
-  }, [refreshRecentCards]);
+    void refreshRecentActs();
+  }, [refreshRecentActs, refreshRecentCards]);
   useEffect(() => {
     if (isConsumablesMode || !uploadActCommitResult?.doc_no) return;
     void refreshRecentCards();
-  }, [isConsumablesMode, refreshRecentCards, uploadActCommitResult?.doc_no]);
+    void refreshRecentActs();
+  }, [isConsumablesMode, refreshRecentActs, refreshRecentCards, uploadActCommitResult?.doc_no]);
+  useEffect(() => {
+    if (!isActsScopeEnabled) {
+      setSeededAct(null);
+    }
+  }, [isActsScopeEnabled]);
   const {
     visibleLocationKeys,
     hasExpandedVisible,
@@ -633,6 +667,59 @@ function Database() {
     });
     openDetailView(snapshot || invNo, { invNo, loading: !snapshot });
   }, [findEquipmentByInvNo, openDetailView, touchRecentCard]);
+
+  const buildActFromRecentItem = useCallback((item) => {
+    const snapshot = (item?.snapshot && typeof item.snapshot === 'object') ? item.snapshot : {};
+    const docNoRaw = item?.doc_no ?? snapshot?.doc_no ?? snapshot?.DOC_NO;
+    const docNo = Number(docNoRaw);
+    if (!Number.isFinite(docNo) || docNo <= 0) return null;
+    const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+    return {
+      doc_no: docNo,
+      doc_number: String(item?.doc_number || snapshot?.doc_number || snapshot?.DOC_NUMBER || '').trim(),
+      doc_date: snapshot?.doc_date || snapshot?.DOC_DATE || null,
+      branch_name: String(snapshot?.branch_name || snapshot?.BRANCH_NAME || '').trim(),
+      location_name: String(snapshot?.location_name || snapshot?.LOCATION_NAME || '').trim(),
+      employee_name: String(snapshot?.employee_name || snapshot?.EMPLOYEE_NAME || '').trim(),
+      has_file: Boolean(snapshot?.has_file),
+      item_count: Number(snapshot?.item_count || items.length || 0) || items.length,
+      items,
+    };
+  }, []);
+
+  const handleRecentActOpen = useCallback((item) => {
+    const act = buildActFromRecentItem(item);
+    if (!act) return;
+    setSeededAct(act);
+    void touchRecentAct({
+      docNo: act.doc_no,
+      docNumber: act.doc_number,
+      actionType: 'view',
+      snapshot: act,
+    });
+  }, [buildActFromRecentItem, touchRecentAct]);
+
+  const handleActSearchSelect = useCallback((act) => {
+    const docNo = Number(act?.doc_no ?? act?.DOC_NO);
+    if (!Number.isFinite(docNo) || docNo <= 0) return;
+    void touchRecentAct({
+      docNo,
+      docNumber: String(act?.doc_number || act?.DOC_NUMBER || '').trim(),
+      actionType: 'view',
+      snapshot: act,
+    });
+  }, [touchRecentAct]);
+
+  const handleActSearchOpenFile = useCallback((act) => {
+    const docNo = Number(act?.doc_no ?? act?.DOC_NO);
+    if (!Number.isFinite(docNo) || docNo <= 0) return;
+    void touchRecentAct({
+      docNo,
+      docNumber: String(act?.doc_number || act?.DOC_NUMBER || '').trim(),
+      actionType: 'open_file',
+      snapshot: act,
+    });
+  }, [touchRecentAct]);
 
   const handleCombinedSearchKeyDown = useCallback((event) => {
     if (!isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS) {
@@ -1348,24 +1435,55 @@ function Database() {
           />
         )}
 
-        <Paper variant="outlined" sx={{ mb: isMobile ? 0.75 : 2, p: isMobile ? 0.25 : 0.5 }}>
+        <Paper
+          elevation={0}
+          sx={getOfficeActionTraySx(ui, {
+            mb: isMobile ? 0.5 : 1.25,
+            p: isMobile ? 0 : 0.25,
+            borderRadius: '4px',
+          })}
+        >
           <Tabs
             value={dataMode}
             onChange={handleDataModeChange}
             variant="fullWidth"
-            sx={isMobile ? {
-              minHeight: 36,
-              '& .MuiTab-root': { minHeight: 36, py: 0.5, fontSize: '0.8rem' },
-            } : undefined}
+            sx={{
+              minHeight: isMobile ? 34 : 40,
+              '& .MuiTab-root': {
+                minHeight: isMobile ? 34 : 40,
+                py: 0.35,
+                fontSize: isMobile ? '0.78rem' : '0.875rem',
+                textTransform: 'none',
+                fontWeight: 500,
+              },
+              '& .MuiTabs-indicator': {
+                height: 2,
+                borderRadius: 1,
+              },
+            }}
           >
             <Tab value={DATA_MODE_EQUIPMENT} label="Оборудование" />
             <Tab value={DATA_MODE_CONSUMABLES} label="Расходники" />
           </Tabs>
         </Paper>
 
+        <DatabaseSearchBar
+          theme={theme}
+          ui={ui}
+          compact={isMobile}
+          isConsumablesMode={isConsumablesMode}
+          searchScope={searchScope}
+          onSearchScopeChange={handleSearchScopeChange}
+          value={searchQuery}
+          onChange={handleSearchChange}
+          onKeyDown={handleCombinedSearchKeyDown}
+          onClear={clearSearch}
+        />
+
         {isMobile && !isActsScope && (
           <DatabaseMobileControlStrip
             theme={theme}
+            ui={ui}
             isConsumablesMode={isConsumablesMode}
             canDatabaseWrite={canDatabaseWrite}
             branches={branches}
@@ -1381,73 +1499,97 @@ function Database() {
           />
         )}
 
-        <DatabaseSearchBar
-          theme={theme}
-          ui={ui}
-          compact={isMobile}
-          isConsumablesMode={isConsumablesMode}
-          searchScope={searchScope}
-          onSearchScopeChange={handleSearchScopeChange}
-          value={searchQuery}
-          onChange={handleSearchChange}
-          onKeyDown={handleCombinedSearchKeyDown}
-          onClear={clearSearch}
-        />
-
         {isActsScope ? (
-          <DatabaseActSearchResults
-            theme={theme}
-            ui={ui}
-            query={searchQuery}
-            results={actResults}
-            loading={actSearchLoading}
-            error={actSearchError}
-            truncated={actSearchTruncated}
-            formatDate={formatDate}
-            onOpenEquipment={handleOpenActSearchEquipment}
-            onPrefetchEquipment={prefetchActSearchEquipment}
-            onErrorClose={clearActSearchError}
-          />
+          <>
+            {isMobile ? (
+              <DatabaseRecentActsStrip
+                items={recentActs}
+                loading={recentActsLoading}
+                theme={theme}
+                onOpen={handleRecentActOpen}
+                onClear={clearRecentActs}
+              />
+            ) : (
+              <Box sx={{ mb: 1.25 }}>
+                <DatabaseRecentActs
+                  items={recentActs}
+                  loading={recentActsLoading}
+                  theme={theme}
+                  formatDate={formatDate}
+                  onOpen={handleRecentActOpen}
+                  onRemove={removeRecentAct}
+                  onClear={clearRecentActs}
+                  compact
+                />
+              </Box>
+            )}
+            <DatabaseActSearchResults
+              theme={theme}
+              ui={ui}
+              query={searchQuery}
+              results={actResults}
+              seededAct={seededAct}
+              loading={actSearchLoading}
+              error={actSearchError}
+              truncated={actSearchTruncated}
+              feedMode={actFeedMode}
+              formatDate={formatDate}
+              onOpenEquipment={handleOpenActSearchEquipment}
+              onPrefetchEquipment={prefetchActSearchEquipment}
+              onSelectAct={handleActSearchSelect}
+              onOpenActFile={handleActSearchOpenFile}
+              onErrorClose={clearActSearchError}
+            />
+          </>
         ) : (
           <>
-        {!isConsumablesMode && (
-          isMobile ? (
-            <DatabaseRecentCardsStrip
-              items={recentCards}
-              loading={recentCardsLoading}
+        {!isMobile && (
+          <Box
+            sx={{
+              mb: 1.5,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 0.5,
+            }}
+          >
+            <DatabaseDesktopToolbar
               theme={theme}
-              onOpen={handleRecentCardOpen}
-              onClear={clearRecentCards}
+              ui={ui}
+              isConsumablesMode={isConsumablesMode}
+              canDatabaseWrite={canDatabaseWrite}
+              identifyPCLoading={identifyPCLoading}
+              onOpenQrScanner={handleQrScannerOpen}
+              onIdentifyWorkspace={handleIdentifyWorkspace}
+              onOpenUploadAct={openUploadActModal}
+              onOpenAddEquipment={openAddEquipmentModal}
+              onOpenAddConsumable={openAddConsumableModal}
+              branches={branches}
+              selectedBranch={selectedBranch}
+              onBranchChange={handleBranchChange}
+              hasExpandedVisible={hasExpandedVisible}
+              onCollapseAll={handleCollapseAll}
             />
-          ) : (
-            <DatabaseRecentCards
-              items={recentCards}
-              loading={recentCardsLoading}
-              theme={theme}
-              onOpen={handleRecentCardOpen}
-              onRemove={removeRecentCard}
-              onClear={clearRecentCards}
-            />
-          )
+            {!isConsumablesMode && (
+              <DatabaseRecentCards
+                items={recentCards}
+                loading={recentCardsLoading}
+                theme={theme}
+                onOpen={handleRecentCardOpen}
+                onRemove={removeRecentCard}
+                onClear={clearRecentCards}
+                compact
+              />
+            )}
+          </Box>
         )}
 
-        {!isMobile && (
-          <DatabaseDesktopToolbar
+        {isMobile && !isConsumablesMode && (
+          <DatabaseRecentCardsStrip
+            items={recentCards}
+            loading={recentCardsLoading}
             theme={theme}
-            ui={ui}
-            isConsumablesMode={isConsumablesMode}
-            canDatabaseWrite={canDatabaseWrite}
-            identifyPCLoading={identifyPCLoading}
-            onOpenQrScanner={handleQrScannerOpen}
-            onIdentifyWorkspace={handleIdentifyWorkspace}
-            onOpenUploadAct={openUploadActModal}
-            onOpenAddEquipment={openAddEquipmentModal}
-            onOpenAddConsumable={openAddConsumableModal}
-            branches={branches}
-            selectedBranch={selectedBranch}
-            onBranchChange={handleBranchChange}
-            hasExpandedVisible={hasExpandedVisible}
-            onCollapseAll={handleCollapseAll}
+            onOpen={handleRecentCardOpen}
+            onClear={clearRecentCards}
           />
         )}
 
@@ -1613,6 +1755,10 @@ function Database() {
           onEmailErrorClear={() => setUploadActEmailError('')}
           onEmailSend={handleUploadActEmailSend}
           getEmailStatusItemSx={getUploadActEmailStatusItemSx}
+          downloading={uploadActDownloading}
+          downloadError={uploadActDownloadError}
+          onDownloadErrorClear={() => setUploadActDownloadError('')}
+          onDownload={handleUploadActDownload}
         />
 
         <AddEquipmentDialog

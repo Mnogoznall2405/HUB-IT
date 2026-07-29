@@ -82,6 +82,7 @@ export function filterBalancesByText(rows = [], query = '') {
       row?.series_number,
       row?.warehouse_name,
       row?.hub_employee_name,
+      row?.hub_employee_dept,
     ]
       .map((part) => String(part || '').toLowerCase())
       .join(' ');
@@ -110,4 +111,47 @@ export function isUsableHubPartNo(value) {
 
 export function isPendingHubPartNo(value) {
   return !isUsableHubPartNo(value) && !isNotIn1cPartNo(value);
+}
+
+/** Compare 1C qty vs Hub count for a balance row. */
+export function resolveHubBalanceMatch(row = {}) {
+  const hubRaw = row?.hub_count;
+  if (hubRaw === null || hubRaw === undefined || hubRaw === '') {
+    return { status: 'unknown', label: '' };
+  }
+  const hubCount = Number(hubRaw);
+  const qty1c = Number(row?.qty_1c_total ?? row?.qty_balance ?? 0);
+  if (!Number.isFinite(hubCount) || !Number.isFinite(qty1c)) {
+    return { status: 'unknown', label: '' };
+  }
+  if (Math.abs(qty1c - hubCount) < 1e-6) {
+    return { status: 'match', label: 'Сходится' };
+  }
+  if (hubCount > qty1c) {
+    // Same left-to-right order as table columns: В 1С → В Хабе.
+    return { status: 'hub_over', label: '1С < Хаб' };
+  }
+  return { status: 'hub_under', label: '1С > Хаб' };
+}
+
+/** Aggregate match statuses for a balances table summary. */
+export function summarizeHubBalanceMatches(rows = []) {
+  const list = Array.isArray(rows) ? rows : [];
+  let match = 0;
+  let mismatch = 0;
+  let unknown = 0;
+  for (const row of list) {
+    const status = resolveHubBalanceMatch(row).status;
+    if (status === 'match') match += 1;
+    else if (status === 'unknown') unknown += 1;
+    else mismatch += 1;
+  }
+  return {
+    total: list.length,
+    match,
+    mismatch,
+    unknown,
+    allMatch: list.length > 0 && mismatch === 0 && unknown === 0,
+    hasComparable: match + mismatch > 0,
+  };
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -18,13 +18,16 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import {
   Close as CloseIcon,
+  ContentCopyOutlined as ContentCopyOutlinedIcon,
   Download as DownloadIcon,
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
+import { formatIncidentUncPath } from '../../lib/scanIncidentInbox';
 
 const OBSERVATION_LABELS = {
   found_new: 'Найдено впервые',
@@ -139,6 +142,16 @@ function getIncidentSourceKind(incident) {
   return ext ? 'metadata' : '';
 }
 
+async function copyTextToClipboard(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  return false;
+}
+
 function IncidentFragments({ incident }) {
   const matches = Array.isArray(incident?.matched_patterns) ? incident.matched_patterns : [];
   if (matches.length === 0) {
@@ -155,6 +168,53 @@ function IncidentFragments({ incident }) {
           {!!String(item.snippet || '').trim() && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Фрагмент: {String(item.snippet)}</Typography>}
         </Paper>
       ))}
+    </Stack>
+  );
+}
+
+function IncidentUncPath({ incident, host }) {
+  const [pathCopied, setPathCopied] = useState(false);
+  const uncPath = formatIncidentUncPath({
+    ...incident,
+    hostname: String(incident?.hostname || host || '').trim(),
+  });
+  const canCopyPath = Boolean(uncPath && uncPath !== 'Путь не указан');
+
+  useEffect(() => {
+    setPathCopied(false);
+  }, [incident?.id, uncPath]);
+
+  const handleCopyPath = async () => {
+    if (!canCopyPath) return;
+    try {
+      const ok = await copyTextToClipboard(uncPath);
+      if (!ok) return;
+      setPathCopied(true);
+      window.setTimeout(() => setPathCopied(false), 1500);
+    } catch {
+      setPathCopied(false);
+    }
+  };
+
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="flex-start" sx={{ mb: 0.8 }}>
+      <Typography variant="body2" sx={{ overflowWrap: 'anywhere', minWidth: 0, flex: 1 }}>
+        {uncPath}
+      </Typography>
+      <Tooltip title={pathCopied ? 'Скопировано' : 'Скопировать путь'}>
+        <span>
+          <IconButton
+            type="button"
+            size="small"
+            aria-label="Скопировать путь"
+            onClick={() => void handleCopyPath()}
+            disabled={!canCopyPath}
+            sx={{ mt: -0.25 }}
+          >
+            <ContentCopyOutlinedIcon fontSize="small" color={pathCopied ? 'success' : 'inherit'} />
+          </IconButton>
+        </span>
+      </Tooltip>
     </Stack>
   );
 }
@@ -206,6 +266,7 @@ function ScanRunsTab({
   canScanRead,
   canScanAck,
   busyIncident,
+  host,
   scanPatterns,
   runs,
   runsTotal,
@@ -387,6 +448,7 @@ function ScanRunsTab({
             emptyText="В выбранном запуске находок нет."
             canScanAck={canScanAck}
             busyIncident={busyIncident}
+            host={host}
             onAckIncident={onAckIncident}
             onLoadMore={onLoadMoreFindings}
             resolveIncidentMeta={resolveIncidentMeta}
@@ -407,6 +469,7 @@ function IncidentList({
   emptyText,
   canScanAck,
   busyIncident,
+  host,
   onAckIncident,
   onLoadMore,
   resolveIncidentMeta,
@@ -430,7 +493,7 @@ function IncidentList({
                 )}
               </Stack>
             </Stack>
-            <Typography variant="body2" sx={{ mb: 0.8, overflowWrap: 'anywhere' }}>{incident.file_path || '-'}</Typography>
+            <IncidentUncPath incident={incident} host={host} />
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.4 }}>
               Тип: {getIncidentFileExt(incident) || '-'} · Источник: {getIncidentSourceKind(incident) || '-'}
             </Typography>
@@ -459,6 +522,7 @@ function AllFindingsTab({
   canScanAck,
   busyIncident,
   busyAckAll,
+  host,
   filters,
   sourceOptions,
   patternOptions,
@@ -529,6 +593,7 @@ function AllFindingsTab({
         emptyText="Инциденты по текущим фильтрам не найдены."
         canScanAck={canScanAck}
         busyIncident={busyIncident}
+        host={host}
         onAckIncident={onAckIncident}
         onLoadMore={onLoadMore}
         resolveIncidentMeta={resolveIncidentMeta}
@@ -610,6 +675,7 @@ export default function HostDrawer({
             canScanRead={canScanRead}
             canScanAck={canScanAck}
             busyIncident={busyIncident}
+            host={host}
             scanPatterns={scanPatterns}
             runs={scanRuns}
             runsTotal={scanRunsTotal}
@@ -644,6 +710,7 @@ export default function HostDrawer({
             canScanAck={canScanAck}
             busyIncident={busyIncident}
             busyAckAll={busyAckAll}
+            host={host}
             filters={filters}
             sourceOptions={sourceOptions}
             patternOptions={incidentPatternOptions}

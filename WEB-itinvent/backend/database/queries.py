@@ -15,6 +15,7 @@ from backend.utils.person_names import to_short_fio
 from backend.database.equipment_act_history_reads import (
     get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
     get_equipment_history_by_inv as _act_history_get_equipment_history_by_inv,
+    list_latest_equipment_acts as _act_history_list_latest_equipment_acts,
     search_equipment_acts as _act_history_search_equipment_acts,
 )
 from backend.database.equipment_directory_reads import (
@@ -131,6 +132,7 @@ QUERY_COUNT_UNIVERSAL = """
     WHERE i.CI_TYPE = 1 AND (i.SERIAL_NO LIKE ?
        OR i.HW_SERIAL_NO LIKE ?
        OR CAST(i.INV_NO AS VARCHAR(50)) LIKE ?
+       OR i.PART_NO LIKE ?
        OR m.MODEL_NAME LIKE ?
        OR v.VENDOR_NAME LIKE ?
        OR o.OWNER_DISPLAY_NAME LIKE ?
@@ -642,6 +644,18 @@ def search_equipment_acts(
     )
 
 
+def list_latest_equipment_acts(
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+) -> dict:
+    return _act_history_list_latest_equipment_acts(
+        limit=limit,
+        db_id=db_id,
+        get_db_fn=get_db,
+    )
+
+
 def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None) -> List[dict]:
     """
     Resolve equipment records by ITEMS.ID.
@@ -848,7 +862,7 @@ def _build_uploaded_act_addinfo(
     """Build DOCS.ADDINFO for uploaded transfer acts."""
     from_short = to_short_fio(from_employee) or "-"
     to_short = to_short_fio(to_employee) or "-"
-    date_str = doc_date.strftime("%d.%m.%Y") if doc_date else "-"
+    date_str = doc_date.strftime("%d.%m.%Y %H:%M") if doc_date else "-"
     return f"Акт {int(doc_no)} {from_short} - {to_short} от {date_str}"
 
 
@@ -2403,7 +2417,8 @@ def list_owners_compact(db_id: Optional[str] = None, limit: int = 20000) -> List
     query = f"""
         SELECT TOP {safe_limit}
             o.OWNER_NO,
-            o.OWNER_DISPLAY_NAME
+            o.OWNER_DISPLAY_NAME,
+            o.OWNER_DEPT
         FROM OWNERS o
         WHERE o.OWNER_DISPLAY_NAME IS NOT NULL
           AND LTRIM(RTRIM(o.OWNER_DISPLAY_NAME)) <> ''
@@ -2635,6 +2650,66 @@ def match_nomenclature_to_hub_query(
     return {"exact": exact, "candidates": candidates}
 
 
+def _resolve_hub_equipment_match_targets(
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+) -> tuple[List[str], str]:
+    """Resolve usable PART_NO list and model text for Hub «same equipment» matching."""
+    target_parts: List[str] = []
+    seen_parts: set[str] = set()
+    for raw in [part_no, *(part_nos or [])]:
+        text = str(raw or "").strip()
+        key = text.casefold()
+        if not _is_usable_hub_part_no(text) or key in seen_parts:
+            continue
+        seen_parts.add(key)
+        target_parts.append(text)
+
+    target_model = str(model_name or "").strip()
+    # Backward-compatible fallback for older callers.
+    if not target_parts and not target_model and hub_query:
+        source = str(hub_query_source or "model").strip().lower()
+        if source == "part_no" and _is_usable_hub_part_no(hub_query):
+            target_parts = [str(hub_query).strip()]
+        else:
+            target_model = str(hub_query).strip()
+    if not target_model and hub_query and str(hub_query_source or "").strip().lower() != "part_no":
+        target_model = str(hub_query).strip()
+    return target_parts, target_model
+
+
+def _hub_equipment_match_sql(
+    target_parts: List[str],
+    target_model: str,
+    params: List[Any],
+) -> str:
+    """Append match params and return SQL fragment for Hub equipment matching."""
+    model_like = f"%{target_model.casefold()}%" if target_model else ""
+    if target_parts:
+        part_placeholders = ", ".join(["?"] * len(target_parts))
+        params.extend(part.casefold() for part in target_parts)
+        if target_model:
+            params.append(model_like)
+            return f"""
+                (
+                    LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+                    OR (
+                        {_PART_NO_UNUSABLE_SQL}
+                        AND LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?
+                    )
+                )
+            """
+        return f"""
+            LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+        """
+    params.append(model_like)
+    return "LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?"
+
+
 def count_equipment_by_owners_hub_query(
     owner_nos: List[int],
     *,
@@ -2665,56 +2740,19 @@ def count_equipment_by_owners_hub_query(
     if not normalized_ids:
         return {}
 
-    target_parts: List[str] = []
-    seen_parts: set[str] = set()
-    for raw in [part_no, *(part_nos or [])]:
-        text = str(raw or "").strip()
-        key = text.casefold()
-        if not _is_usable_hub_part_no(text) or key in seen_parts:
-            continue
-        seen_parts.add(key)
-        target_parts.append(text)
-
-    target_model = str(model_name or "").strip()
-    # Backward-compatible fallback for older callers.
-    if not target_parts and not target_model and hub_query:
-        source = str(hub_query_source or "model").strip().lower()
-        if source == "part_no" and _is_usable_hub_part_no(hub_query):
-            target_parts = [str(hub_query).strip()]
-        else:
-            target_model = str(hub_query).strip()
-    if not target_model and hub_query and str(hub_query_source or "").strip().lower() != "part_no":
-        target_model = str(hub_query).strip()
-
+    target_parts, target_model = _resolve_hub_equipment_match_targets(
+        part_no=part_no,
+        part_nos=part_nos,
+        model_name=model_name,
+        hub_query=hub_query,
+        hub_query_source=hub_query_source,
+    )
     if not target_parts and not target_model:
         return {owner_no: 0 for owner_no in normalized_ids}
 
     placeholders = ", ".join(["?"] * len(normalized_ids))
     params: List[Any] = list(normalized_ids)
-    model_like = f"%{target_model.casefold()}%" if target_model else ""
-
-    if target_parts:
-        part_placeholders = ", ".join(["?"] * len(target_parts))
-        if target_model:
-            match_sql = f"""
-                (
-                    LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
-                    OR (
-                        {_PART_NO_UNUSABLE_SQL}
-                        AND LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?
-                    )
-                )
-            """
-            params.extend(part.casefold() for part in target_parts)
-            params.append(model_like)
-        else:
-            match_sql = f"""
-                LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
-            """
-            params.extend(part.casefold() for part in target_parts)
-    else:
-        match_sql = "LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?"
-        params.append(model_like)
+    match_sql = _hub_equipment_match_sql(target_parts, target_model, params)
 
     sql = f"""
         SELECT
@@ -2738,6 +2776,75 @@ def count_equipment_by_owners_hub_query(
             continue
         counts[owner_no] = hub_count
     return counts
+
+
+def count_all_owners_by_hub_query(
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+    db_id: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Count matching Hub CI_TYPE=1 items for every owner (not only 1C warehouses).
+
+    Used to surface Hub-only holders when enriching 1C balances.
+    """
+    target_parts, target_model = _resolve_hub_equipment_match_targets(
+        part_no=part_no,
+        part_nos=part_nos,
+        model_name=model_name,
+        hub_query=hub_query,
+        hub_query_source=hub_query_source,
+    )
+    if not target_parts and not target_model:
+        return []
+
+    safe_limit = max(1, min(int(limit or 500), 500))
+    params: List[Any] = []
+    match_sql = _hub_equipment_match_sql(target_parts, target_model, params)
+    sql = f"""
+        SELECT TOP {safe_limit}
+            i.EMPL_NO AS owner_no,
+            COUNT(*) AS hub_count,
+            MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, '')))) AS owner_display_name,
+            MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DEPT, '')))) AS owner_dept
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+        LEFT JOIN OWNERS o ON o.OWNER_NO = i.EMPL_NO
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IS NOT NULL
+          AND i.EMPL_NO > 0
+          AND ({match_sql})
+        GROUP BY i.EMPL_NO
+        ORDER BY COUNT(*) DESC, MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, '')))) ASC
+    """
+    db = get_db(db_id)
+    rows = db.execute_query(sql, tuple(params)) or []
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        if owner_no <= 0 or hub_count <= 0:
+            continue
+        result.append(
+            {
+                "owner_no": owner_no,
+                "hub_count": hub_count,
+                "owner_display_name": str(
+                    row.get("owner_display_name") or row.get("OWNER_DISPLAY_NAME") or ""
+                ).strip(),
+                "owner_dept": str(
+                    row.get("owner_dept") or row.get("OWNER_DEPT") or ""
+                ).strip(),
+            }
+        )
+    return result
 
 
 def count_equipment_by_owners_and_part_nos(

@@ -41,9 +41,14 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
 
     fake_queries = MagicMock()
     fake_queries.list_owners_compact.return_value = [
-        {"OWNER_NO": 10, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"},
+        {
+            "OWNER_NO": 10,
+            "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич",
+            "OWNER_DEPT": "IT-отдел",
+        },
     ]
     fake_queries.count_equipment_by_owners_hub_query.return_value = {10: 2}
+    fake_queries.count_all_owners_by_hub_query.return_value = []
 
     import backend.database.queries as db_queries
 
@@ -52,6 +57,11 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
         db_queries,
         "count_equipment_by_owners_hub_query",
         fake_queries.count_equipment_by_owners_hub_query,
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "count_all_owners_by_hub_query",
+        fake_queries.count_all_owners_by_hub_query,
     )
 
     monkeypatch.setattr(
@@ -84,6 +94,7 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
     person_row = rows[0]
     assert person_row["hub_owner_no"] == 10
     assert person_row["hub_count"] == 2
+    assert person_row["hub_employee_dept"] == "IT-отдел"
     assert person_row["exact_linked_count"] == 0
     assert person_row["unlinked_candidate_count"] == 2
     assert person_row["employment_status"] == "active"
@@ -92,6 +103,7 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
     warehouse_row = rows[1]
     assert warehouse_row["hub_count"] is None
     assert warehouse_row["hub_owner_no"] is None
+    assert warehouse_row["hub_employee_dept"] == ""
     assert warehouse_row["employment_status"] == "unknown"
     assert warehouse_row["employment_label"] == ""
 
@@ -135,6 +147,7 @@ def test_get_balances_with_hub_sums_counts_across_databases(monkeypatch):
 
     monkeypatch.setattr(db_queries, "list_owners_compact", fake_owners)
     monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", fake_counts)
+    monkeypatch.setattr(db_queries, "count_all_owners_by_hub_query", lambda **kwargs: [])
     monkeypatch.setattr(
         "backend.services.employment_status_service.resolve_employment_status_batch",
         lambda names, cache=None: {
@@ -182,6 +195,7 @@ def test_get_balances_with_hub_defaults_to_current_database_scope(monkeypatch):
         "list_owners_compact",
         lambda db_id=None: calls.append(db_id) or [],
     )
+    monkeypatch.setattr(db_queries, "count_all_owners_by_hub_query", lambda **kwargs: [])
     monkeypatch.setattr(
         "backend.services.employment_status_service.resolve_employment_status_batch",
         lambda names, cache=None: {},
@@ -224,6 +238,7 @@ def test_get_balances_with_hub_sums_duplicate_fio_owners(monkeypatch):
 
     monkeypatch.setattr(db_queries, "list_owners_compact", fake_owners)
     monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", fake_counts)
+    monkeypatch.setattr(db_queries, "count_all_owners_by_hub_query", lambda **kwargs: [])
     monkeypatch.setattr(
         "backend.services.employment_status_service.resolve_employment_status_batch",
         lambda names, cache=None: {
@@ -245,3 +260,163 @@ def test_get_balances_with_hub_sums_duplicate_fio_owners(monkeypatch):
 
     assert rows[0]["hub_count"] == 1
     assert rows[0]["hub_owner_no"] == 2630
+
+
+def test_get_balances_with_hub_appends_hub_only_owners(monkeypatch):
+    """Owners with the PART_NO only in Hub must appear as В 1С = 0 rows."""
+    service = Warehouse1CService()
+
+    async def fake_get_balances(**kwargs):
+        return [
+            {
+                "warehouse_ref": "w1",
+                "warehouse_name": "Манько Виталий Евгеньевич",
+                "qty_balance": 8,
+                "nomenclature_name": "Монитор",
+            },
+        ]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(
+        db_queries,
+        "list_owners_compact",
+        lambda db_id=None: [
+            {
+                "OWNER_NO": 10,
+                "OWNER_DISPLAY_NAME": "Манько Виталий Евгеньевич",
+                "OWNER_DEPT": "УМТО",
+            },
+            {
+                "OWNER_NO": 20,
+                "OWNER_DISPLAY_NAME": "Сидоров Пётр",
+                "OWNER_DEPT": "IT",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "count_equipment_by_owners_hub_query",
+        lambda owner_nos, **kwargs: {10: 0},
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "count_all_owners_by_hub_query",
+        lambda **kwargs: [
+            {
+                "owner_no": 10,
+                "hub_count": 0,
+                "owner_display_name": "Манько Виталий Евгеньевич",
+                "owner_dept": "УМТО",
+            },
+            {
+                "owner_no": 20,
+                "hub_count": 3,
+                "owner_display_name": "Сидоров Пётр",
+                "owner_dept": "IT",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {
+            "Манько Виталий Евгеньевич": {
+                "status": "active",
+                "label": "Сотрудник работает",
+                "matched_name": "Манько Виталий Евгеньевич",
+            },
+            "Сидоров Пётр": {
+                "status": "active",
+                "label": "Сотрудник работает",
+                "matched_name": "Сидоров Пётр",
+            },
+        },
+    )
+
+    rows = asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            part_no="ЦБ-00170664",
+            nomenclature_code="ЦБ-00170664",
+            db_id="ITINVENT",
+        )
+    )
+
+    assert len(rows) == 2
+    assert rows[0]["warehouse_name"] == "Манько Виталий Евгеньевич"
+    assert float(rows[0]["qty_balance"]) == 8
+    assert rows[0]["hub_count"] == 0
+
+    hub_only = rows[1]
+    assert hub_only["hub_owner_no"] == 20
+    assert hub_only["hub_count"] == 3
+    assert float(hub_only["qty_balance"]) == 0
+    assert float(hub_only["qty_1c_total"]) == 0
+    assert hub_only["owner_link_method"] == "hub_only"
+    assert hub_only["warehouse_name"] == "Сидоров Пётр"
+    assert hub_only["hub_employee_dept"] == "IT"
+    assert hub_only["employment_status"] == "active"
+
+
+def test_get_balances_with_hub_shows_hub_only_when_1c_empty(monkeypatch):
+    service = Warehouse1CService()
+
+    async def fake_get_balances(**kwargs):
+        return []
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(db_queries, "list_owners_compact", lambda db_id=None: [])
+    monkeypatch.setattr(
+        db_queries,
+        "count_equipment_by_owners_hub_query",
+        lambda owner_nos, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "count_all_owners_by_hub_query",
+        lambda **kwargs: [
+            {
+                "owner_no": 33,
+                "hub_count": 1,
+                "owner_display_name": "Только Хаб",
+                "owner_dept": "Склад",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {
+            "Только Хаб": {
+                "status": "active",
+                "label": "Сотрудник работает",
+                "matched_name": "Только Хаб",
+            },
+        },
+    )
+
+    rows = asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            part_no="ЦБ-00170664",
+            db_id="ITINVENT",
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["hub_owner_no"] == 33
+    assert rows[0]["hub_count"] == 1
+    assert float(rows[0]["qty_1c_total"]) == 0
+    assert rows[0]["owner_link_method"] == "hub_only"

@@ -221,6 +221,22 @@ describe('ScanCenter page', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /Агенты/i }));
   };
 
+  const findAgentRow = async (hostname = 'HOST-01') => {
+    const agentCell = (await screen.findAllByText(hostname)).find((node) => node.closest('tr'));
+    return agentCell.closest('tr');
+  };
+
+  const clickAgentScan = async (hostname = 'HOST-01') => {
+    const row = await findAgentRow(hostname);
+    fireEvent.click(within(row).getByRole('button', { name: /Сканировать/i }));
+  };
+
+  const clickAgentMenuItem = async (itemName, hostname = 'HOST-01') => {
+    const row = await findAgentRow(hostname);
+    fireEvent.click(within(row).getByRole('button', { name: /Действия/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: itemName }));
+  };
+
   const openIncidentsSection = async () => {
     fireEvent.click(await screen.findByRole('tab', { name: /Инциденты/i }));
   };
@@ -253,8 +269,10 @@ describe('ScanCenter page', () => {
     expect(screen.getByText('OCR p95')).toBeInTheDocument();
     expect(screen.getByText('5.8 с')).toBeInTheDocument();
     expect(screen.getByText('Крупные страницы')).toBeInTheDocument();
-    expect(screen.getByText(/Требуют обновления: 1 агентов/)).toBeInTheDocument();
-    expect(screen.getByText(/Ожидаемая версия — 1\.3\.7/)).toBeInTheDocument();
+    expect(screen.getByText('Обновить агенты')).toBeInTheDocument();
+    expect(screen.getByText(/Нужна версия 1\.3\.7\. Устарели 1/)).toBeInTheDocument();
+    expect(screen.getByText('Версия агентов')).toBeInTheDocument();
+    expect(screen.getByText(/обновить до 1\.3\.7/)).toBeInTheDocument();
   });
 
   it('shows the three-page OCR policy and incomplete files', async () => {
@@ -272,7 +290,7 @@ describe('ScanCenter page', () => {
 
     expect(await screen.findByText(/OCR — первые 3 страницы; текстовый слой — до 10 страниц/)).toBeInTheDocument();
     expect(await screen.findByText(/HOST-02 · C:\\Docs\\broken.pdf/)).toBeInTheDocument();
-    expect(screen.getByText('OCR timeout')).toBeInTheDocument();
+    expect(screen.getByText('Превышено время OCR')).toBeInTheDocument();
   });
 
   it('shows incomplete files separately and offers an explicit force rescan', async () => {
@@ -292,7 +310,7 @@ describe('ScanCenter page', () => {
     await openReviewSection();
 
     expect(await screen.findByText('C:\\Docs\\unreadable.pdf')).toBeInTheDocument();
-    expect(screen.getByText(/Превышено время анализа/)).toBeInTheDocument();
+    expect(screen.getByText('Превышено время OCR')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Пересканировать ПК/i }));
 
     expect(await screen.findByText('Какие файлы проверять')).toBeInTheDocument();
@@ -396,12 +414,7 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockClear();
 
     await openAgentsSection();
-
-    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
-    const agentRowElement = agentCell.closest('tr');
-    const buttons = within(agentRowElement).getAllByRole('button');
-
-    fireEvent.click(buttons[0]);
+    await clickAgentScan();
     fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
 
     await waitFor(() => {
@@ -434,12 +447,7 @@ describe('ScanCenter page', () => {
     });
 
     await openAgentsSection();
-
-    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
-    const agentRowElement = agentCell.closest('tr');
-    const buttons = within(agentRowElement).getAllByRole('button');
-
-    fireEvent.click(buttons[1]);
+    await clickAgentMenuItem(/Скан с 0/i);
     fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
 
     await waitFor(() => {
@@ -461,8 +469,7 @@ describe('ScanCenter page', () => {
     render(<ScanCenter />);
 
     await openAgentsSection();
-    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
-    fireEvent.click(within(agentCell.closest('tr')).getAllByRole('button')[0]);
+    await clickAgentScan();
 
     expect(await screen.findByText('Какие файлы проверять')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /Office и ODF/i })).not.toBeChecked();
@@ -493,8 +500,7 @@ describe('ScanCenter page', () => {
     });
     render(<ScanCenter />);
     await openAgentsSection();
-    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
-    fireEvent.click(within(agentCell.closest('tr')).getAllByRole('button')[0]);
+    await clickAgentScan();
 
     const dspCheckboxes = await screen.findAllByRole('checkbox', { name: /^ДСП/i });
     expect(dspCheckboxes).toHaveLength(1);
@@ -540,13 +546,12 @@ describe('ScanCenter page', () => {
 
     await openAgentsSection();
 
-    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
-    const agentRowElement = agentCell.closest('tr');
-    const buttons = within(agentRowElement).getAllByRole('button');
+    const agentRowElement = await findAgentRow();
+    expect(within(agentRowElement).getByRole('button', { name: /Сканировать/i })).toBeDisabled();
 
-    expect(buttons[0]).toBeDisabled();
-    expect(buttons[1]).toBeDisabled();
-    expect(buttons[2]).toBeDisabled();
+    fireEvent.click(within(agentRowElement).getByRole('button', { name: /Действия/i }));
+    expect(await screen.findByRole('menuitem', { name: /Скан с 0/i })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('menuitem', { name: /Проверить связь/i })).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('renders completed scan task as finished only after OCR is done', async () => {
@@ -655,6 +660,13 @@ describe('ScanCenter page', () => {
     expect(params).not.toHaveProperty('host');
     expect(params).not.toHaveProperty('agentId');
     expect(params).not.toHaveProperty('computer_name');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Все находки' }));
+    expect(await screen.findByText((_, node) => (
+      node?.children?.length === 0
+      && node?.textContent === '\\\\HOST-01\\C$\\Docs\\secret.pdf'
+    ))).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Скопировать путь' })).toBeInTheDocument();
   });
 
   it('exports incidents report for a selected scan run', async () => {
@@ -722,7 +734,10 @@ describe('ScanCenter page', () => {
       expect.objectContaining({ limit: 500, offset: 500 }),
       expect.objectContaining({ signal: expect.any(Object) }),
     );
-    expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+    expect(await screen.findByText('Находки')).toBeTruthy();
+    expect((await screen.findAllByText(/secret-0\.pdf/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/HOST-BATCH/)).length).toBeGreaterThan(0);
+    expect(screen.getByText((_, node) => node?.textContent === '\\\\HOST-BATCH\\C$\\Docs\\secret-0.pdf')).toBeTruthy();
 
     fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
 
@@ -775,7 +790,8 @@ describe('ScanCenter page', () => {
           expect.objectContaining({ signal: expect.any(Object) }),
         );
       });
-      expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+      expect(await screen.findByText('Находки')).toBeTruthy();
+      expect((await screen.findAllByText(/HOST-BATCH/)).length).toBeGreaterThan(0);
 
       fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
       await waitFor(() => {

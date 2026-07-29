@@ -24,6 +24,7 @@ from backend.ai_chat.retrieval_interface import ai_kb_retrieval
 from backend.ai_chat.tools import ai_tool_registry
 from backend.ai_chat.tools.context import (
     AI_TOOL_MULTI_DB_MODE_SINGLE,
+    AI_TOOL_FILES_CONVERT_DOCUMENT,
     AI_TOOL_FILES_CREATE,
     AI_TOOL_FILES_REPORT,
     AI_TOOL_GROUP_ITINVENT,
@@ -104,6 +105,7 @@ AI_RUN_STAGE_SEARCHING_EQUIPMENT = "searching_equipment"
 AI_RUN_STAGE_OPENING_EQUIPMENT_CARD = "opening_equipment_card"
 AI_RUN_STAGE_GENERATING_ANSWER = "generating_answer"
 AI_RUN_STAGE_GENERATING_FILES = "generating_files"
+AI_RUN_STAGE_CONVERTING_DOCUMENT = "converting_document"
 AI_RUN_STAGE_COMPLETED = "completed"
 AI_RUN_STAGE_FAILED = "failed"
 AI_RUN_STAGE_STATUS_TEXTS = {
@@ -113,12 +115,24 @@ AI_RUN_STAGE_STATUS_TEXTS = {
     AI_RUN_STAGE_RETRIEVING_KB: "Проверяю базу знаний и документы.",
     AI_RUN_STAGE_GENERATING_ANSWER: "Формирую ответ.",
     AI_RUN_STAGE_GENERATING_FILES: "Подготавливаю итоговые файлы.",
+    AI_RUN_STAGE_CONVERTING_DOCUMENT: "Распознаю документ и сохраняю структуру.",
     AI_RUN_STAGE_CHECKING_ITINVENT: "Проверяю данные ITinvent.",
     AI_RUN_STAGE_CHECKING_AD: "Проверяю данные Active Directory.",
     AI_RUN_STAGE_SEARCHING_EQUIPMENT: "Ищу оборудование.",
     AI_RUN_STAGE_OPENING_EQUIPMENT_CARD: "Открываю карточку устройства.",
     AI_RUN_STAGE_FAILED: "Не удалось обработать запрос.",
 }
+DOC_CONVERT_BOT_SLUG = "document-converter"
+DOC_CONVERT_BOT_SEED_SETTING_KEY = "ai_chat.document_converter_bot_seed_v1"
+DOC_CONVERT_BOT_TITLE = "Конвертер документов"
+DOC_CONVERT_BOT_DESCRIPTION = "Конвертация фото и PDF в Word, Excel, Markdown, PDF и текст с сохранением структуры."
+DOC_CONVERT_BOT_PROMPT = (
+    "Ты бот-конвертер документов. "
+    "Когда пользователь прикрепляет фото или PDF, вызывай инструмент ai.files.convert_document. "
+    "Если формат не указан явно, не выдумывай файл — инструмент покажет кнопки выбора формата. "
+    "Если пользователь просит конкретный формат (Word/Excel/PDF/Markdown/текст), передай format в инструмент. "
+    "Не используй другие инструменты. Отвечай кратко по-русски."
+)
 AI_CONTEXT_DB_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_DB_MESSAGE_WINDOW", "12"))
 AI_CONTEXT_RENDERED_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_RENDERED_MESSAGE_WINDOW", "10"))
 AI_CONTEXT_ATTACHMENT_NAME_LIMIT = int(os.environ.get("AI_CONTEXT_ATTACHMENT_NAME_LIMIT", "3"))
@@ -391,7 +405,11 @@ def _is_itinvent_tool_id(tool_id: object) -> bool:
 
 
 def _is_file_tool_id(tool_id: object) -> bool:
-    return _normalize_text(tool_id) in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT}
+    return _normalize_text(tool_id) in {
+        AI_TOOL_FILES_CREATE,
+        AI_TOOL_FILES_REPORT,
+        AI_TOOL_FILES_CONVERT_DOCUMENT,
+    }
 
 
 def _is_office_tool_id(tool_id: object) -> bool:
@@ -1201,9 +1219,12 @@ def _extract_generated_file_specs_from_tool_results(results: list[dict[str, Any]
     for result in list(results or []):
         if not isinstance(result, dict):
             continue
-        if _normalize_text(result.get("tool_id")) not in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT} or not bool(result.get("ok")):
+        tool_id = _normalize_text(result.get("tool_id"))
+        if tool_id not in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AI_TOOL_FILES_CONVERT_DOCUMENT} or not bool(result.get("ok")):
             continue
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if tool_id == AI_TOOL_FILES_CONVERT_DOCUMENT and bool(data.get("needs_format_choice")):
+            continue
         for item in list(data.get("files") or []):
             if not isinstance(item, dict):
                 continue
@@ -1213,6 +1234,7 @@ def _extract_generated_file_specs_from_tool_results(results: list[dict[str, Any]
                 "content": item.get("content"),
                 "rows": item.get("rows"),
                 "sheets": item.get("sheets"),
+                "metadata": item.get("metadata"),
             })
             if fingerprint in seen:
                 continue
@@ -1596,6 +1618,10 @@ class AiChatService:
             self.ensure_default_bot()
         except Exception as exc:
             logger.warning("Skipping AI chat bootstrap: %s", exc)
+        try:
+            self.ensure_doc_convert_bot()
+        except Exception as exc:
+            logger.warning("Skipping document converter bot bootstrap: %s", exc)
 
     def ensure_default_bot(self) -> dict[str, Any]:
         ensure_app_schema_initialized()
@@ -1663,6 +1689,52 @@ class AiChatService:
                         bot.tool_settings_json = _json_dumps(default_tool_settings)
                         bot.updated_at = _utc_now()
                         self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
+                self._ensure_bot_user(session=session, bot=bot)
+                return self._serialize_bot(bot)
+
+        return run_with_transient_lock_retry(_ensure_bot)
+
+    def ensure_doc_convert_bot(self) -> dict[str, Any]:
+        ensure_app_schema_initialized()
+
+        def _ensure_bot() -> dict[str, Any]:
+            with app_session() as session:
+                apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                seeded_once = self._read_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY)
+                bot = session.execute(
+                    select(AppAiBot).where(AppAiBot.slug == DOC_CONVERT_BOT_SLUG)
+                ).scalar_one_or_none()
+                if bot is None:
+                    now = _utc_now()
+                    bot = AppAiBot(
+                        id=str(uuid4()),
+                        slug=DOC_CONVERT_BOT_SLUG,
+                        title=DOC_CONVERT_BOT_TITLE,
+                        description=DOC_CONVERT_BOT_DESCRIPTION,
+                        system_prompt=DOC_CONVERT_BOT_PROMPT,
+                        model=DEFAULT_BOT_MODEL,
+                        temperature=0.1,
+                        max_tokens=1200,
+                        allowed_kb_scope_json="[]",
+                        enabled_tools_json=_json_dumps([AI_TOOL_FILES_CONVERT_DOCUMENT]),
+                        tool_settings_json=_json_dumps(_default_bot_tool_settings()),
+                        allow_file_input=True,
+                        allow_generated_artifacts=True,
+                        allow_kb_document_delivery=False,
+                        is_enabled=True,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(bot)
+                    session.flush()
+                    self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
+                elif not seeded_once:
+                    bot.enabled_tools_json = _json_dumps([AI_TOOL_FILES_CONVERT_DOCUMENT])
+                    bot.allow_file_input = True
+                    bot.allow_generated_artifacts = True
+                    bot.is_enabled = True
+                    bot.updated_at = _utc_now()
+                    self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
                 self._ensure_bot_user(session=session, bot=bot)
                 return self._serialize_bot(bot)
 
@@ -2395,6 +2467,7 @@ class AiChatService:
             enabled_tools=normalize_enabled_tools(_json_loads(getattr(bot, "enabled_tools_json", "[]"), [])),
             tool_settings=normalize_tool_settings(_json_loads(getattr(bot, "tool_settings_json", "{}"), {})),
             allow_generated_artifacts=bool(getattr(bot, "allow_generated_artifacts", False)),
+            trigger_message_id=_normalize_text(run_payload.get("trigger_message_id")),
         )
 
     def _execute_tool_calls(
@@ -2572,6 +2645,172 @@ class AiChatService:
 
         return tool_results, tool_traces
 
+    def _try_doc_convert_fast_path(
+        self,
+        *,
+        bot: AppAiBot,
+        run_payload: dict[str, Any],
+        tool_context: AiToolExecutionContext,
+        report_stage=None,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, str] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]] | None:
+        enabled = list(tool_context.enabled_tools or [])
+        if AI_TOOL_FILES_CONVERT_DOCUMENT not in enabled:
+            return None
+        only_convert = set(enabled) == {AI_TOOL_FILES_CONVERT_DOCUMENT}
+        is_convert_bot = _normalize_text(getattr(bot, "slug", None)) == DOC_CONVERT_BOT_SLUG
+        if not only_convert and not is_convert_bot:
+            return None
+        from backend.ai_chat.doc_convert_runtime import (
+            convert_attachments_to_markdown,
+            detect_format_from_text,
+            export_converted_markdown,
+            load_convert_sources_for_message,
+        )
+        from shared.doc_convert import DocConvertError
+
+        sources = load_convert_sources_for_message(
+            conversation_id=_normalize_text(run_payload.get("conversation_id")),
+            message_id=_normalize_text(run_payload.get("trigger_message_id")),
+        )
+        if not sources:
+            if only_convert or is_convert_bot:
+                return (
+                    "Прикрепите PDF или фото документа — затем выберите формат кнопками.",
+                    [],
+                    None,
+                    {},
+                    {"file_context": "", "trigger_text": "", "conversation_text": ""},
+                    [],
+                    [],
+                    [AI_TOOL_GROUP_FILES],
+                )
+            return None
+        if callable(report_stage):
+            report_stage(AI_RUN_STAGE_CONVERTING_DOCUMENT)
+        try:
+            converted = convert_attachments_to_markdown(
+                conversation_id=_normalize_text(run_payload.get("conversation_id")),
+                message_id=_normalize_text(run_payload.get("trigger_message_id")),
+            )
+        except DocConvertError as exc:
+            return (
+                f"Не удалось распознать документ: {_normalize_text(exc)}",
+                [],
+                None,
+                {},
+                {"file_context": "", "trigger_text": "", "conversation_text": ""},
+                [{"tool_id": AI_TOOL_FILES_CONVERT_DOCUMENT, "ok": False, "error": str(exc)}],
+                [],
+                [AI_TOOL_GROUP_FILES],
+            )
+
+        # Detect format from the latest user message body if present.
+        trigger_text = ""
+        with chat_session() as session:
+            trigger = session.get(ChatMessage, _normalize_text(run_payload.get("trigger_message_id")))
+            if trigger is not None:
+                trigger_text = _normalize_text(getattr(trigger, "body", None))
+        requested_format = detect_format_from_text(trigger_text)
+        warnings = list(converted.get("warnings") or [])
+        summary_bits = [
+            f"Страниц: {int(converted.get('page_count') or 0)}",
+            f"Таблиц: {int(converted.get('table_count') or 0)}",
+        ]
+        if converted.get("used_vision"):
+            summary_bits.append("распознавание через vision")
+        fidelity = float(converted.get("verify_fidelity") or 0.0)
+        if fidelity > 0:
+            summary_bits.append(f"точность: {fidelity:.0%}")
+        if warnings:
+            summary_bits.append("; ".join(warnings[:2]))
+
+        if requested_format:
+            if callable(report_stage):
+                report_stage(AI_RUN_STAGE_GENERATING_FILES)
+            exported = export_converted_markdown(
+                markdown=str(converted.get("markdown") or ""),
+                export_format=requested_format,
+                source_name=str(converted.get("title") or "document"),
+                title=str(converted.get("title") or ""),
+                structure_pages=list(converted.get("structure_pages") or []),
+                signatures=list(converted.get("signatures") or []),
+            )
+            import base64
+
+            content = bytes(exported.get("content") or b"")
+            content_b64 = base64.b64encode(content).decode("ascii")
+            file_spec = {
+                "format": requested_format,
+                "file_name": exported.get("file_name") or f"document.{requested_format}",
+                "title": converted.get("title") or "Документ",
+                "content": content.decode("utf-8") if requested_format in {"txt", "md"} else "",
+                "metadata": {"doc_convert": True, "content_b64": content_b64},
+            }
+            answer = (
+                f"Готово: {exported.get('file_name')}.\n\n"
+                + " · ".join(summary_bits)
+            )
+            if exported.get("warnings"):
+                answer += "\n\n" + "\n".join(f"- {item}" for item in exported.get("warnings") or [])
+            return (
+                answer,
+                [],
+                None,
+                {},
+                {"file_context": "", "trigger_text": trigger_text, "conversation_text": ""},
+                [
+                    {
+                        "tool_id": AI_TOOL_FILES_CONVERT_DOCUMENT,
+                        "ok": True,
+                        "data": {"needs_format_choice": False, "files": [file_spec], **converted},
+                    }
+                ],
+                [file_spec],
+                [AI_TOOL_GROUP_FILES],
+            )
+
+        from backend.ai_chat.action_cards import build_doc_convert_format_choice
+
+        build_doc_convert_format_choice(
+            conversation_id=_normalize_text(run_payload.get("conversation_id")),
+            run_id=_normalize_text(run_payload.get("id")),
+            requester_user_id=int(run_payload.get("user_id") or 0),
+            payload={
+                "markdown": converted.get("markdown"),
+                "title": converted.get("title") or "Документ",
+                "source_names": converted.get("source_names") or [],
+                "warnings": warnings,
+                "table_count": converted.get("table_count") or 0,
+                "page_count": converted.get("page_count") or 0,
+                "used_vision": bool(converted.get("used_vision")),
+                "formats": converted.get("formats") or ["docx", "txt", "md", "pdf", "xlsx"],
+                "structure_pages": converted.get("structure_pages") or [],
+                "signatures": converted.get("signatures") or [],
+                "high_fidelity": True,
+                "verify_fidelity": float(converted.get("verify_fidelity") or 0.0),
+            },
+        )
+        answer = (
+            "Документ распознан. Выберите формат кнопками ниже.\n\n"
+            + " · ".join(summary_bits)
+        )
+        return (
+            answer,
+            [],
+            None,
+            {},
+            {"file_context": "", "trigger_text": trigger_text, "conversation_text": ""},
+            [
+                {
+                    "tool_id": AI_TOOL_FILES_CONVERT_DOCUMENT,
+                    "ok": True,
+                    "data": {"needs_format_choice": True, **converted},
+                }
+            ],
+            [],
+            [AI_TOOL_GROUP_FILES],
+        )
+
     def _execute_run(
         self,
         *,
@@ -2593,6 +2832,14 @@ class AiChatService:
             user_payload=user_payload,
             request_context=request_context,
         )
+        fast_path = self._try_doc_convert_fast_path(
+            bot=bot,
+            run_payload=run_payload,
+            tool_context=tool_context,
+            report_stage=report_stage,
+        )
+        if fast_path is not None:
+            return fast_path
         context_started_at = time.perf_counter()
         extracted_context = self._build_conversation_context(
             conversation_id=run_payload["conversation_id"],
@@ -3205,6 +3452,42 @@ class AiChatService:
         ]
         kb_attachment_send = _normalize_kb_attachment_send(final_payload.get("kb_attachment_send"))
         generated_file_specs = _extract_generated_file_specs_from_tool_results(accumulated_tool_results)
+        for result in list(accumulated_tool_results or []):
+            if not isinstance(result, dict) or not bool(result.get("ok")):
+                continue
+            if _normalize_text(result.get("tool_id")) != AI_TOOL_FILES_CONVERT_DOCUMENT:
+                continue
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            if not bool(data.get("needs_format_choice")):
+                continue
+            from backend.ai_chat.action_cards import build_doc_convert_format_choice
+
+            build_doc_convert_format_choice(
+                conversation_id=_normalize_text(run_payload.get("conversation_id")),
+                run_id=_normalize_text(run_payload.get("id")),
+                requester_user_id=int(run_payload.get("user_id") or 0),
+                payload={
+                    "markdown": data.get("markdown"),
+                    "title": data.get("title") or "Документ",
+                    "source_names": data.get("source_names") or [],
+                    "warnings": data.get("warnings") or [],
+                    "table_count": data.get("table_count") or 0,
+                    "page_count": data.get("page_count") or 0,
+                    "used_vision": bool(data.get("used_vision")),
+                    "formats": data.get("formats") or ["docx", "txt", "md", "pdf", "xlsx"],
+                    "structure_pages": data.get("structure_pages") or [],
+                    "signatures": data.get("signatures") or [],
+                    "high_fidelity": True,
+                    "verify_fidelity": float(data.get("verify_fidelity") or 0.0),
+                },
+            )
+            answer_markdown = (
+                _normalize_text(answer_markdown)
+                or "Документ распознан. Выберите формат кнопками ниже."
+            )
+            generated_file_specs = []
+            artifacts = []
+            break
         if (
             report_file_intent
             and requested_report_format is None

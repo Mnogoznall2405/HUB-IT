@@ -54,6 +54,7 @@ import {
 } from '../feedback/toastActions';
 import {
   autoEnableWindowsNotificationsIfGranted,
+  clearNotificationPermissionBannerDismissed,
   createHubSystemNotification,
   createMailSystemNotification,
   getMailNotificationDisplay,
@@ -62,8 +63,10 @@ import {
   getHubNotificationNavigateTo,
   getWindowsNotificationState,
   hasShownMailSystemNotification,
+  isNotificationPermissionBannerDismissed,
   markMailSystemNotificationShown,
   requestBrowserNotificationPermission,
+  setNotificationPermissionBannerDismissed as persistNotificationPermissionBannerDismissed,
   setWindowsNotificationsEnabled,
   WINDOWS_NOTIFICATIONS_CHANGED_EVENT,
 } from '../../lib/windowsNotifications';
@@ -97,6 +100,7 @@ import { AccountAvatar, AccountIdentity } from '../account/AccountIdentity';
 import AccountMenu from '../account/AccountMenu';
 import { canAccessAdminArea } from '../account/accountNavigationConfig';
 import {
+  getMailNavigationBadgeMeta,
   getNavigationBadgeCount,
   getVisibleNavigationItems,
   isNavigationItemActive,
@@ -204,7 +208,9 @@ function MainLayout({
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
-  const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(false);
+  const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(
+    () => isNotificationPermissionBannerDismissed(),
+  );
   const topBannerRef = useRef(null);
   const appBarRef = useRef(null);
   const [topBannerOffset, setTopBannerOffset] = useState(0);
@@ -356,9 +362,15 @@ function MainLayout({
 
   useEffect(() => {
     if (windowsNotificationState?.permission !== 'default' && notificationPermissionBannerDismissed) {
+      clearNotificationPermissionBannerDismissed();
       setNotificationPermissionBannerDismissed(false);
     }
   }, [notificationPermissionBannerDismissed, windowsNotificationState?.permission]);
+
+  const handleDismissNotificationPermissionBanner = useCallback(() => {
+    persistNotificationPermissionBannerDismissed(true);
+    setNotificationPermissionBannerDismissed(true);
+  }, []);
 
   useEffect(() => {
     notificationsOpenRef.current = notificationsOpen;
@@ -1677,30 +1689,35 @@ useEffect(() => {
   const handleEnableBrowserNotifications = useCallback(async () => {
     try {
       const permission = await requestBrowserNotificationPermission();
+      setWindowsNotificationState(getWindowsNotificationState());
       if (permission === 'granted') {
         setWindowsNotificationsEnabled(true);
-      } else if (permission === 'denied') {
-        setWindowsNotificationsEnabled(false);
-      }
-      if (permission === 'granted') {
         if (user && hasAnyAppPushPermission(hasPermission)) {
           await syncChatPushSubscription({ user }).catch(() => {
             refreshChatNotificationState();
           });
         }
+        return;
       }
+      if (permission === 'denied') {
+        setWindowsNotificationsEnabled(false);
+        return;
+      }
+      // Permission stayed default (prompt closed) — hide banner so it does not stick.
+      handleDismissNotificationPermissionBanner();
     } catch {
-      // Ignore permission prompt errors.
+      handleDismissNotificationPermissionBanner();
     }
-  }, [hasPermission, user]);
+  }, [handleDismissNotificationPermissionBanner, hasPermission, user]);
 
   const renderNavigationItem = (item, compact = false) => {
     const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
     const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
     const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
-    const mailSnapshotState = item.path === '/mail' ? String(unreadCounts?.mail_state || 'unknown') : 'ok';
-    const mailStateNeedsAttention = ['stale', 'unknown', 'error'].includes(mailSnapshotState);
-    const badgeContent = mailStateNeedsAttention ? (badgeCount > 0 ? badgeCount : '?') : badgeCount;
+    const mailBadge = item.path === '/mail'
+      ? getMailNavigationBadgeMeta(unreadCounts?.mail_state, badgeCount)
+      : null;
+    const showNavBadge = mailBadge ? mailBadge.showBadge : badgeCount > 0;
     const button = (
       <ListItemButton
         data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
@@ -1744,11 +1761,11 @@ useEffect(() => {
         }}
       >
         <ListItemIcon>
-          {badgeCount > 0 || mailStateNeedsAttention ? (
+          {showNavBadge ? (
             <Badge
-              color={mailStateNeedsAttention ? 'warning' : 'error'}
-              badgeContent={badgeContent}
-              title={mailStateNeedsAttention ? `Почтовый снимок: ${mailSnapshotState}` : undefined}
+              color={mailBadge?.color || 'error'}
+              badgeContent={mailBadge ? mailBadge.badgeContent : badgeCount}
+              title={mailBadge?.title}
             >
               {item.icon}
             </Badge>
@@ -1983,12 +2000,26 @@ useEffect(() => {
           <Alert
             severity="info"
             variant="filled"
-            onClose={() => setNotificationPermissionBannerDismissed(true)}
-            action={
-              <Button color="inherit" size="small" onClick={() => { void handleEnableBrowserNotifications(); }}>
-                Включить
-              </Button>
-            }
+            action={(
+              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={handleDismissNotificationPermissionBanner}
+                >
+                  Не сейчас
+                </Button>
+                <Button
+                  color="inherit"
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void handleEnableBrowserNotifications(); }}
+                  sx={{ borderColor: 'currentColor' }}
+                >
+                  Включить
+                </Button>
+              </Stack>
+            )}
             sx={{
               borderRadius: 0,
               alignItems: 'center',
@@ -2504,14 +2535,14 @@ useEffect(() => {
           >
             {visibleMobileNavigationItems.map((item) => {
               const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
-              const mailSnapshotState = item.path === '/mail' ? String(unreadCounts?.mail_state || 'unknown') : 'ok';
-              const mailStateNeedsAttention = ['stale', 'unknown', 'error'].includes(mailSnapshotState);
-              const badgeContent = mailStateNeedsAttention ? (badgeCount > 0 ? badgeCount : '?') : badgeCount;
-              const icon = badgeCount > 0 || mailStateNeedsAttention ? (
+              const mailBadge = item.path === '/mail'
+                ? getMailNavigationBadgeMeta(unreadCounts?.mail_state, badgeCount)
+                : null;
+              const icon = (mailBadge ? mailBadge.showBadge : badgeCount > 0) ? (
                 <Badge
-                  color={mailStateNeedsAttention ? 'warning' : 'error'}
-                  badgeContent={badgeContent}
-                  title={mailStateNeedsAttention ? `Почтовый снимок: ${mailSnapshotState}` : undefined}
+                  color={mailBadge?.color || 'error'}
+                  badgeContent={mailBadge ? mailBadge.badgeContent : badgeCount}
+                  title={mailBadge?.title}
                 >
                   {item.icon}
                 </Badge>

@@ -46,6 +46,9 @@ describe('TicketRequestList', () => {
     expect(screen.getByText('Шифр объекта')).toBeInTheDocument();
     expect(screen.getByText('1234 / 567890')).toBeInTheDocument();
     expect(screen.getByText('Срочно')).toBeInTheDocument();
+    expect(screen.queryByText('Стоимость')).not.toBeInTheDocument();
+    expect(screen.queryByText('Возврат')).not.toBeInTheDocument();
+    expect(screen.queryByText('Статус')).not.toBeInTheDocument();
 
     const row = screen.getByText('Иванов И.И.').closest('tr');
     expect(row).toHaveStyle({ backgroundColor: STATUS_ROW_COLORS.at_cashier });

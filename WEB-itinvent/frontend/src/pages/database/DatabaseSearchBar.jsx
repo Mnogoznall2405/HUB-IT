@@ -31,62 +31,71 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   const panelBg = ui?.panelBg || alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.04);
   const panelSolid = ui?.panelSolid || theme.palette.background.paper;
   const borderSoft = ui?.borderSoft || theme.palette.divider;
+  const borderStrong = ui?.borderStrong || theme.palette.divider;
   const actionHover = ui?.actionHover || alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.06);
   const textSecondary = ui?.textSecondary || theme.palette.text.secondary;
   const textPrimary = ui?.textPrimary || theme.palette.text.primary;
-  const selectedBg = ui?.selectedBg || alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.12);
-  const selectedBorder = ui?.selectedBorder || alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.45 : 0.28);
+  const scopeHeight = compact ? 30 : 40;
 
   return (
-    <Box sx={{ mb: compact ? 0.75 : 2 }}>
+    <Box
+      sx={{
+        mb: compact ? 0.5 : 1.25,
+        display: 'flex',
+        alignItems: 'center',
+        gap: compact ? 0.5 : 1,
+        flexDirection: 'row',
+      }}
+    >
       {showScopeToggle ? (
-        <Box sx={{ mb: compact ? 0.75 : 1 }}>
-          <ToggleButtonGroup
-            exclusive
-            size="small"
-            value={searchScope}
-            onChange={(_, nextScope) => {
-              if (!nextScope) return;
-              onSearchScopeChange(nextScope);
-            }}
-            sx={{
-              bgcolor: panelBg,
-              border: '1px solid',
-              borderColor: borderSoft,
-              borderRadius: compact ? '10px' : '12px',
-              p: 0.25,
-              '& .MuiToggleButtonGroup-grouped': {
-                border: 0,
-                borderRadius: compact ? '8px !important' : '10px !important',
-                mx: 0.25,
-                px: compact ? 1.1 : 1.5,
-                py: compact ? 0.35 : 0.5,
-                textTransform: 'none',
-                fontSize: compact ? '0.78rem' : '0.85rem',
-                color: textSecondary,
-                '&.Mui-selected': {
-                  bgcolor: panelSolid,
-                  color: textPrimary,
-                  fontWeight: 600,
-                  boxShadow: theme.palette.mode === 'dark'
-                    ? '0 1px 4px rgba(0,0,0,0.45)'
-                    : '0 1px 3px rgba(15,23,42,0.10)',
-                  border: '1px solid',
-                  borderColor: selectedBorder,
-                  '&:hover': {
-                    bgcolor: panelSolid,
-                  },
-                },
-                '&:hover': {
-                  bgcolor: actionHover,
-                },
+        <ToggleButtonGroup
+          exclusive
+          size="small"
+          value={searchScope}
+          aria-label="Область поиска"
+          onChange={(_, nextScope) => {
+            if (!nextScope) return;
+            onSearchScopeChange(nextScope);
+          }}
+          sx={{
+            flexShrink: 0,
+            bgcolor: panelBg,
+            border: '1px solid',
+            borderColor: borderSoft,
+            borderRadius: '4px',
+            p: compact ? 0.1 : 0.15,
+            height: scopeHeight,
+            '& .MuiToggleButtonGroup-grouped': {
+              border: 0,
+              borderRadius: '3px !important',
+              mx: 0.05,
+              px: compact ? 0.55 : 1.25,
+              py: 0,
+              minWidth: compact ? 48 : 88,
+              minHeight: compact ? 26 : 36,
+              textTransform: 'none',
+              fontSize: compact ? '0.68rem' : '0.8125rem',
+              fontWeight: 500,
+              lineHeight: 1.2,
+              color: textSecondary,
+              '&.Mui-selected, &.Mui-selected:hover': {
+                // Neutral surface — no primary/blue wash (office segmented control).
+                bgcolor: `${panelSolid} !important`,
+                color: `${textPrimary} !important`,
+                fontWeight: 600,
+                boxShadow: 'none',
+                border: '1px solid',
+                borderColor: borderStrong,
               },
-            }}
-          >
-            <ToggleButton value={SEARCH_SCOPE_EQUIPMENT}>Оборудование</ToggleButton>
-            <ToggleButton value={SEARCH_SCOPE_ACTS}>Акты</ToggleButton>
-          </ToggleButtonGroup>
-        </Box>
+              '&:hover': {
+                bgcolor: actionHover,
+              },
+            },
+          }}
+        >
+          <ToggleButton value={SEARCH_SCOPE_EQUIPMENT}>Карточки</ToggleButton>
+          <ToggleButton value={SEARCH_SCOPE_ACTS}>Акты</ToggleButton>
+        </ToggleButtonGroup>
       ) : null}
 
       <TextField
@@ -95,7 +104,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
             ? 'Поиск по ID, типу, модели...'
             : isActsScope
               ? 'Поиск по № акта или фамилии...'
-              : 'Поиск по инв. №, модели, сотруднику...'
+              : 'Поиск по инв. №, парт. №, модели, сотруднику...'
         }
         value={value}
         onChange={onChange}
@@ -126,10 +135,13 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
           ) : null,
         }}
         sx={{
+          flex: 1,
+          minWidth: 0,
           '& .MuiOutlinedInput-root': {
-            borderRadius: compact ? 2 : 3,
+            borderRadius: '4px',
             bgcolor: panelBg,
             color: textPrimary,
+            height: scopeHeight,
             transition: theme.transitions.create(['background-color', 'box-shadow', 'border-color'], {
               duration: theme.transitions.duration.shorter,
             }),
@@ -151,8 +163,8 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
             },
           },
           '& .MuiOutlinedInput-input': {
-            py: compact ? 0.75 : 1.1,
-            fontSize: compact ? '0.85rem' : undefined,
+            py: 0,
+            fontSize: compact ? '0.85rem' : '0.875rem',
             '&::placeholder': {
               color: textSecondary,
               opacity: 1,

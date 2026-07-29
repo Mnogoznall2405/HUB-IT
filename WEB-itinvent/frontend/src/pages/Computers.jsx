@@ -41,10 +41,11 @@ import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEEN_CHANGES_STORAGE_KEY = 'computers_seen_changes_by_pc_v1';
 const USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY = 'computers_hide_system_user_profile_folders_v1';
+const HIDE_VM_172_STORAGE_KEY = 'computers_hide_vm_172';
 const AUTO_REFRESH_BASE_SEC = 60;
 const AUTO_REFRESH_STEP_SEC = 30;
 const AUTO_REFRESH_MAX_SEC = 120;
-const SEARCH_DEBOUNCE_MS = 350;
+const SEARCH_DEBOUNCE_MS = 200;
 const COMPUTERS_PAGE_SIZE = 50;
 const OUTLOOK_ARCHIVE_LIMIT_BYTES = 50 * 1024 * 1024 * 1024;
 const COMPUTER_SEARCH_FIELD_OPTIONS = [
@@ -57,6 +58,19 @@ const COMPUTER_SEARCH_FIELD_OPTIONS = [
   { key: 'database', label: 'БД' },
 ];
 const DEFAULT_COMPUTER_SEARCH_FIELDS = COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => item.key);
+
+function normalizeComputersSearchInput(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isRequestAbortedError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  const name = String(err?.name || '');
+  return code === 'ERR_CANCELED' || name === 'CanceledError' || name === 'AbortError';
+}
 
 function StatCard({ title, value, helper, color = 'inherit' }) {
   const theme = useTheme();
@@ -609,13 +623,15 @@ function Computers() {
   const [computers, setComputers] = useState([]);
   const [changes, setChanges] = useState({ totals: {}, daily: [] });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [hideActionLoading, setHideActionLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [open, setOpen] = useState(false);
 
   const [searchParams] = useSearchParams();
-  const initialQ = searchParams.get('q') || '';
+  const initialQ = normalizeComputersSearchInput(searchParams.get('q') || '');
   const [q, setQ] = useState(initialQ);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQ);
   const [searchFields, setSearchFields] = useState(DEFAULT_COMPUTER_SEARCH_FIELDS);
@@ -625,6 +641,8 @@ function Computers() {
   const [outlookStatus, setOutlookStatus] = useState('all');
   const [branch, setBranch] = useState('all');
   const [changedOnly, setChangedOnly] = useState(false);
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [hideVm172, setHideVm172] = useState(() => localStorage.getItem(HIDE_VM_172_STORAGE_KEY) !== '0');
   const [showAllComputers, setShowAllComputers] = useState(
     () => localStorage.getItem('computers_scope_all') !== '0',
   );
@@ -635,14 +653,19 @@ function Computers() {
   const [expandedUserProfiles, setExpandedUserProfiles] = useState({});
   const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
 
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
   const inFlightRef = useRef(false);
   const loadMoreSentinelRef = useRef(null);
   const pollTimerRef = useRef(null);
   const loadedCountRef = useRef(0);
   const retryDelaySecRef = useRef(AUTO_REFRESH_BASE_SEC);
   const hasInitializedRef = useRef(false);
+  const qRef = useRef(q);
+  const debouncedQueryRef = useRef(debouncedQuery);
 
   const scope = canViewAllComputers && showAllComputers ? 'all' : 'selected';
+  const searchDebouncePending = normalizeComputersSearchInput(q) !== normalizeComputersSearchInput(debouncedQuery);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current) {
@@ -659,15 +682,29 @@ function Computers() {
     q: debouncedQuery || undefined,
     searchFields,
     changedOnly,
-  }), [branch, changedOnly, debouncedQuery, outlookStatus, scope, searchFields, status]);
+    hiddenOnly,
+    hideVm172,
+  }), [branch, changedOnly, debouncedQuery, hiddenOnly, hideVm172, outlookStatus, scope, searchFields, status]);
 
-  const loadSummary = useCallback(async () => {
+  useEffect(() => {
+    qRef.current = q;
+  }, [q]);
+
+  useEffect(() => {
+    debouncedQueryRef.current = debouncedQuery;
+  }, [debouncedQuery]);
+
+  const loadSummary = useCallback(async ({ signal } = {}) => {
     try {
-      const summary = await equipmentAPI.getComputersSummary(searchFilterParams);
+      const summary = await equipmentAPI.getComputersSummary({
+        ...searchFilterParams,
+        signal,
+      });
       if (summary && typeof summary === 'object') {
         setSearchSummary(summary);
       }
     } catch (err) {
+      if (isRequestAbortedError(err)) return;
       console.error('Computers summary load failed', err);
     }
   }, [searchFilterParams]);
@@ -686,7 +723,7 @@ function Computers() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedQuery(String(q || '').trim());
+      setDebouncedQuery(normalizeComputersSearchInput(q));
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [q]);
@@ -696,11 +733,28 @@ function Computers() {
     return Math.min(500, loadedCount || COMPUTERS_PAGE_SIZE);
   }, []);
 
-  const load = useCallback(async ({ withLoader = false, append = false, offset = 0, limit = COMPUTERS_PAGE_SIZE } = {}) => {
-    if (inFlightRef.current) return false;
+  const load = useCallback(async ({
+    withLoader = false,
+    append = false,
+    offset = 0,
+    limit = COMPUTERS_PAGE_SIZE,
+    silent = false,
+  } = {}) => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    if (!append && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    if (!append) {
+      abortControllerRef.current = controller;
+    }
     inFlightRef.current = true;
+    const showFullLoader = Boolean(withLoader) && !hasInitializedRef.current;
+    const showRefreshOverlay = !append && !showFullLoader && (!silent || Boolean(withLoader));
     try {
-      if (withLoader) setLoading(true);
+      if (showFullLoader) setLoading(true);
+      if (showRefreshOverlay) setRefreshing(true);
       if (append) setLoadingMore(true);
       const pcPayload = await equipmentAPI.searchAgentComputers({
         ...searchFilterParams,
@@ -709,7 +763,9 @@ function Computers() {
         limit,
         offset,
         includeSummary: false,
+        signal: append ? undefined : controller.signal,
       });
+      if (requestId !== requestIdRef.current) return false;
       const items = Array.isArray(pcPayload?.items) ? pcPayload.items : (Array.isArray(pcPayload) ? pcPayload : []);
       setComputers((prev) => {
         const next = append ? [...prev, ...items] : items;
@@ -726,13 +782,19 @@ function Computers() {
       retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
       return true;
     } catch (err) {
+      if (isRequestAbortedError(err) || requestId !== requestIdRef.current) {
+        return false;
+      }
       console.error('Computers load failed', err);
       retryDelaySecRef.current = Math.min(retryDelaySecRef.current + AUTO_REFRESH_STEP_SEC, AUTO_REFRESH_MAX_SEC);
       return false;
     } finally {
-      if (withLoader) setLoading(false);
-      if (append) setLoadingMore(false);
-      inFlightRef.current = false;
+      if (requestId === requestIdRef.current) {
+        if (showFullLoader) setLoading(false);
+        if (showRefreshOverlay) setRefreshing(false);
+        if (append) setLoadingMore(false);
+        inFlightRef.current = false;
+      }
     }
   }, [searchFilterParams]);
 
@@ -745,7 +807,18 @@ function Computers() {
         clearPollTimer();
         return;
       }
-      await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+      const queryPending = normalizeComputersSearchInput(qRef.current) !== normalizeComputersSearchInput(debouncedQueryRef.current);
+      if (queryPending || inFlightRef.current) {
+        scheduleNextPoll(Math.min(5, retryDelaySecRef.current));
+        return;
+      }
+      await load({
+        withLoader: false,
+        silent: true,
+        append: false,
+        offset: 0,
+        limit: getBackgroundRefreshLimit(),
+      });
       await loadSummary();
       loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
@@ -754,7 +827,7 @@ function Computers() {
 
   const handleManualRefresh = useCallback(async () => {
     await Promise.all([
-      load({ withLoader: true, append: false, offset: 0, limit: getBackgroundRefreshLimit() }),
+      load({ withLoader: true, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() }),
       loadSummary(),
     ]);
     loadChangesDeferred();
@@ -762,7 +835,7 @@ function Computers() {
   }, [getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore || !searchMeta.has_more) return;
+    if (loadingMore || !searchMeta.has_more || inFlightRef.current) return;
     const nextOffset = Number(searchMeta.next_offset ?? computers.length);
     if (!Number.isFinite(nextOffset) || nextOffset < 0) return;
     await load({ withLoader: false, append: true, offset: nextOffset, limit: COMPUTERS_PAGE_SIZE });
@@ -770,7 +843,7 @@ function Computers() {
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
-    if (!sentinel || loading || loadingMore || !searchMeta.has_more) return undefined;
+    if (!sentinel || loading || loadingMore || refreshing || !searchMeta.has_more) return undefined;
     if (typeof IntersectionObserver !== 'function') return undefined;
 
     const observer = new IntersectionObserver((entries) => {
@@ -784,7 +857,7 @@ function Computers() {
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [handleLoadMore, loading, loadingMore, searchMeta.has_more]);
+  }, [handleLoadMore, loading, loadingMore, refreshing, searchMeta.has_more]);
 
   const openComputerDetail = useCallback(async (pc) => {
     if (!pc) return;
@@ -805,6 +878,44 @@ function Computers() {
     }
   }, [scope]);
 
+  const handleHideSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.hideComputer(macAddress);
+      setOpen(false);
+      setSelected(null);
+      await Promise.all([
+        load({ withLoader: false, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        loadSummary(),
+      ]);
+    } catch (err) {
+      console.error('Computer hide failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [hideActionLoading, load, loadSummary, selected]);
+
+  const handleUnhideSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.unhideComputer(macAddress);
+      setOpen(false);
+      setSelected(null);
+      await Promise.all([
+        load({ withLoader: false, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        loadSummary(),
+      ]);
+    } catch (err) {
+      console.error('Computer unhide failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [hideActionLoading, load, loadSummary, selected]);
+
   const toggleSearchField = useCallback((fieldKey) => {
     setSearchFields((prev) => {
       const current = Array.isArray(prev) ? prev : DEFAULT_COMPUTER_SEARCH_FIELDS;
@@ -821,7 +932,13 @@ function Computers() {
     const init = async () => {
       loadedCountRef.current = 0;
       await Promise.all([
-        load({ withLoader: !hasInitializedRef.current, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        load({
+          withLoader: !hasInitializedRef.current,
+          silent: false,
+          append: false,
+          offset: 0,
+          limit: COMPUTERS_PAGE_SIZE,
+        }),
         loadSummary(),
       ]);
       if (!isActive) return;
@@ -835,6 +952,9 @@ function Computers() {
     return () => {
       isActive = false;
       clearPollTimer();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, [clearPollTimer, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
@@ -844,7 +964,17 @@ function Computers() {
         clearPollTimer();
         return;
       }
-      await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+      if (normalizeComputersSearchInput(qRef.current) !== normalizeComputersSearchInput(debouncedQueryRef.current)) {
+        scheduleNextPoll(retryDelaySecRef.current);
+        return;
+      }
+      await load({
+        withLoader: false,
+        silent: true,
+        append: false,
+        offset: 0,
+        limit: getBackgroundRefreshLimit(),
+      });
       await loadSummary();
       loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
@@ -855,7 +985,6 @@ function Computers() {
 
   useEffect(() => {
     const reloadAfterDbSwitch = async () => {
-      // If auto-refresh request is in-flight, wait briefly and then reload for the new DB.
       let guard = 0;
       while (inFlightRef.current && guard < 30) {
         // eslint-disable-next-line no-await-in-loop
@@ -866,7 +995,7 @@ function Computers() {
       setOpen(false);
       loadedCountRef.current = 0;
       await Promise.all([
-        load({ withLoader: true, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        load({ withLoader: true, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
         loadSummary(),
       ]);
       loadChangesDeferred();
@@ -897,6 +1026,10 @@ function Computers() {
   useEffect(() => {
     localStorage.setItem('computers_show_location', showLocation ? '1' : '0');
   }, [showLocation]);
+
+  useEffect(() => {
+    localStorage.setItem(HIDE_VM_172_STORAGE_KEY, hideVm172 ? '1' : '0');
+  }, [hideVm172]);
 
   useEffect(() => {
     localStorage.setItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY, hideSystemUserProfileFolders ? '1' : '0');
@@ -1158,7 +1291,14 @@ function Computers() {
                 label="Поиск"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                onPaste={(e) => {
+                  const pasted = e.clipboardData?.getData('text');
+                  if (pasted == null) return;
+                  e.preventDefault();
+                  setQ(normalizeComputersSearchInput(pasted));
+                }}
                 placeholder="ПК, ФИО, профиль, PST/OST, IP, MAC"
+                helperText={searchDebouncePending || refreshing ? 'Обновляем список…' : undefined}
               />
             </Grid>
             <Grid item xs={12} md={8}>
@@ -1224,8 +1364,34 @@ function Computers() {
                 label="Изменения"
               />
             </Grid>
+            <Grid item xs={12}>
+              <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Chip
+                  size="small"
+                  clickable
+                  color={hideVm172 ? 'primary' : 'default'}
+                  variant={hideVm172 ? 'filled' : 'outlined'}
+                  label="Скрыть 172/VM"
+                  onClick={() => setHideVm172((prev) => !prev)}
+                  sx={{ height: 28 }}
+                />
+                <Chip
+                  size="small"
+                  clickable
+                  color={hiddenOnly ? 'warning' : 'default'}
+                  variant={hiddenOnly ? 'filled' : 'outlined'}
+                  label="Скрытые"
+                  onClick={() => setHiddenOnly((prev) => !prev)}
+                  sx={{ height: 28 }}
+                />
+              </Stack>
+            </Grid>
           </Grid>
         </Paper>
+
+        {(refreshing || searchDebouncePending) && !loading ? (
+          <LinearProgress sx={{ mb: 1.5, borderRadius: 1 }} />
+        ) : null}
 
         {loading ? (
           <Box sx={{ py: 8, display: 'flex', justifyContent: 'center' }}><CircularProgress /></Box>
@@ -1428,6 +1594,32 @@ function Computers() {
                     {selected.has_hardware_changes && hasUnseenChanges(selected) ? (
                       <Chip size="small" color="warning" label="Есть изменения" />
                     ) : null}
+                    {selected.is_hidden || selected.hidden_at ? (
+                      <Chip size="small" color="warning" variant="outlined" label="Скрыт" />
+                    ) : null}
+                  </Stack>
+                  <Stack direction="row" spacing={0.8} sx={{ mb: 0.8 }}>
+                    {selected.is_hidden || selected.hidden_at || hiddenOnly ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="success"
+                        disabled={hideActionLoading || detailLoading}
+                        onClick={() => { void handleUnhideSelected(); }}
+                      >
+                        Вернуть
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="warning"
+                        disabled={hideActionLoading || detailLoading}
+                        onClick={() => { void handleHideSelected(); }}
+                      >
+                        Скрыть
+                      </Button>
+                    )}
                   </Stack>
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
                     Последняя активность: {formatTs(selected.last_seen_at || selected.timestamp)} · Возраст: {formatAge(selected.age_seconds)}
@@ -1687,6 +1879,39 @@ function Computers() {
                   <Typography variant="body2">Загрузка CPU: {formatPercent(selectedRuntime.cpu)}</Typography>
                   <Typography variant="body2">Загрузка RAM: {formatPercent(selectedRuntime.ram)}</Typography>
                 </Paper>
+
+                {selected?.ops_health && typeof selected.ops_health === 'object' ? (
+                  <>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Ops health</Typography>
+                    <Paper variant="outlined" sx={{ p: 1.4 }}>
+                      <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mb: 0.8 }}>
+                        {selected.ops_health.low_disk ? <Chip size="small" color="error" label="Мало места" /> : null}
+                        {selected.ops_health.pending_reboot ? <Chip size="small" color="warning" label="Нужен reboot" /> : null}
+                        {selected.ops_health.legacy_itinvent_present ? (
+                          <Chip size="small" color="warning" variant="outlined" label="Legacy IT-Invent" />
+                        ) : null}
+                      </Stack>
+                      <Typography variant="body2">
+                        Свободно на системном диске:{' '}
+                        {selected.ops_health.system_drive_free_gb != null
+                          ? `${Number(selected.ops_health.system_drive_free_gb).toFixed(1)} ГБ`
+                          : '-'}
+                      </Typography>
+                      <Typography variant="body2">
+                        Pending reboot: {selected.ops_health.pending_reboot ? 'да' : 'нет'}
+                        {Array.isArray(selected.ops_health.pending_reboot_reasons) && selected.ops_health.pending_reboot_reasons.length
+                          ? ` (${selected.ops_health.pending_reboot_reasons.join(', ')})`
+                          : ''}
+                      </Typography>
+                      <Typography variant="body2">
+                        Reminder: {selected.ops_health.last_reboot_reminder_at ? formatTs(selected.ops_health.last_reboot_reminder_at) : '-'}
+                      </Typography>
+                      <Typography variant="body2">
+                        Задача агента: {selected.ops_health.agent_task_name || '-'}
+                      </Typography>
+                    </Paper>
+                  </>
+                ) : null}
 
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Outlook</Typography>
                 <Paper variant="outlined" sx={{ p: 1.4 }}>

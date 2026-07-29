@@ -39,13 +39,30 @@ def test_collect_forwarded_attachments_skips_inline_and_unsupported_items():
                 payload=("report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", b"xlsx"),
             ),
             SimpleNamespace(
+                name="with-cid.pdf",
+                content_id="<pdf-cid>",
+                content_type="application/pdf",
+                downloadable=True,
+                payload=("with-cid.pdf", "application/pdf", b"pdf-cid"),
+            ),
+            SimpleNamespace(
+                name="inline-flagged.pdf",
+                content_id="<inline-pdf>",
+                content_type="application/pdf",
+                is_inline=True,
+                downloadable=True,
+                payload=("inline-flagged.pdf", "application/pdf", b"pdf-inline"),
+            ),
+            SimpleNamespace(
                 name="logo.png",
                 content_id="<logo>",
+                content_type="image/png",
                 downloadable=True,
                 payload=("logo.png", "image/png", b"png"),
             ),
             SimpleNamespace(
                 name="embedded-signature.png",
+                content_type="image/png",
                 is_inline=True,
                 downloadable=True,
                 payload=("embedded-signature.png", "image/png", b"png"),
@@ -56,6 +73,8 @@ def test_collect_forwarded_attachments_skips_inline_and_unsupported_items():
 
     assert service._collect_forwarded_attachments(item=item, account=account) == [
         ("report.xlsx", b"xlsx"),
+        ("with-cid.pdf", b"pdf-cid"),
+        ("inline-flagged.pdf", b"pdf-inline"),
     ]
 
 

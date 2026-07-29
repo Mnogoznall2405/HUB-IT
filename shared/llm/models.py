@@ -33,6 +33,12 @@ _PURPOSE_CHAINS: dict[str, tuple[str, ...]] = {
     "ocr": (
         "OCR_MODEL",
     ),
+    "doc_convert": (
+        "DOC_CONVERT_MODEL",
+        "OPENROUTER_MODEL_CHAT",
+        "ACT_PARSE_MODEL",
+        "OCR_MODEL",
+    ),
 }
 
 

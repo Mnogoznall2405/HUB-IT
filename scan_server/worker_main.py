@@ -137,6 +137,7 @@ def main() -> None:
         agent_online_timeout_sec=config.agent_online_timeout_sec,
         resolve_agent_sql_context=config.resolve_agent_sql_context,
         job_processing_timeout_sec=config.job_processing_timeout_sec,
+        database_url=config.database_url,
     )
 
     worker = ScanWorker(store=store, config=config, stop_event=stop_event)

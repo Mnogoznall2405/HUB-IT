@@ -193,6 +193,8 @@ describe('Login hybrid internal/external flow', () => {
     mockGetLoginMode.mockResolvedValue({
       network_zone: 'internal',
       biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
     });
 
     installMatchMedia({ mobile: false });
@@ -236,6 +238,25 @@ describe('Login hybrid internal/external flow', () => {
     expect(screen.queryByTestId('biometric-hero-button')).not.toBeInTheDocument();
     expect(mockGetLoginMode).toHaveBeenCalledTimes(1);
     expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+  });
+
+  it('shows a dismissible VPN hint when login-mode reports outside Russia', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+      client_country_code: 'DE',
+      show_vpn_hint: true,
+    });
+
+    render(<Login />);
+
+    expect(await screen.findByTestId('login-vpn-hint')).toBeInTheDocument();
+    expect(screen.getByText('Похоже, вы не в России')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Скрыть подсказку про VPN' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('login-vpn-hint')).not.toBeInTheDocument();
+    });
+    expect(sessionStorage.getItem('hubit.login.vpn-hint.dismissed')).toBe('1');
   });
 
   it('renders mobile login shell with the primary password action reachable', async () => {

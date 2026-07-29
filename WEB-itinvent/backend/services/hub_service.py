@@ -379,9 +379,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         self._user_directory_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._user_directory_cache_lock = Lock()
         self._user_directory_cache_ttl_sec = 300.0
-        self._task_analytics_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._task_analytics_cache_lock = Lock()
-        self._task_analytics_cache_ttl_sec = 90.0
         if self._use_app_db and self._database_url:
             initialize_app_schema(self._database_url)
         self._ensure_schema()
@@ -1308,7 +1305,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         except Exception:
             return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
+            # Frontend sends due_at as local wall-clock without offset
+            # (e.g. "2026-07-23T11:00"). Treat naive values as server-local,
+            # not UTC — otherwise UTC+5 shows 11:00 as 16:00 in emails/overdue.
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            return parsed.replace(tzinfo=local_tz).astimezone(timezone.utc)
         return parsed.astimezone(timezone.utc)
 
     @staticmethod
@@ -2417,10 +2418,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                             "entity_type": normalized_entity_type,
                             "entity_id": _normalize_text(entity_id),
                         },
-                        ttl=120,
+                        ttl=12 * 60 * 60,
                     )
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Failed to send hub push recipient_user_id=%s channel=%s notification_id=%s",
+                        int(recipient_user_id),
+                        channel,
+                        notification_id,
+                        exc_info=True,
+                    )
         return notification_id
 
     def _notification_exists(
@@ -4371,7 +4378,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             SELECT {protocol_basis} AS bucket_date, COUNT(*) AS created
             FROM {self._TASKS_TABLE}{where_sql}
             GROUP BY {protocol_basis}
-            HAVING bucket_date IS NOT NULL AND TRIM(bucket_date) <> ''
+            HAVING {protocol_basis} IS NOT NULL AND TRIM({protocol_basis}) <> ''
             """,
             tuple(params),
         ).fetchall()
@@ -4389,7 +4396,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                        AND completed_at <= due_at THEN 1 ELSE 0 END) AS completed_on_time
             FROM {self._TASKS_TABLE}{completed_where}
             GROUP BY substr(completed_at, 1, 10)
-            HAVING bucket_date IS NOT NULL AND TRIM(bucket_date) <> ''
+            HAVING substr(completed_at, 1, 10) IS NOT NULL
+               AND TRIM(substr(completed_at, 1, 10)) <> ''
             """,
             tuple(params),
         ).fetchall()
@@ -4552,24 +4560,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             truncated = True
         return visible_ids, truncated
 
-    def _task_analytics_cache_key(self, *, current_user: Any, payload: dict[str, Any]) -> str:
-        user_id = 0
-        if current_user is not None:
-            user_id = self._as_int(getattr(current_user, "id", None) or current_user.get("id"))
-        return json.dumps({"user_id": user_id, **payload}, sort_keys=True, ensure_ascii=False)
-
-    def _get_cached_task_analytics(self, cache_key: str) -> dict[str, Any] | None:
-        now_mono = time.monotonic()
-        with self._task_analytics_cache_lock:
-            cached = self._task_analytics_cache.get(cache_key)
-            if cached is not None and (now_mono - cached[0]) < self._task_analytics_cache_ttl_sec:
-                return dict(cached[1])
-        return None
-
-    def _store_task_analytics_cache(self, cache_key: str, payload: dict[str, Any]) -> None:
-        with self._task_analytics_cache_lock:
-            self._task_analytics_cache[cache_key] = (time.monotonic(), dict(payload))
-
     def get_task_analytics(
         self,
         *,
@@ -4589,21 +4579,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_project_ids = {_normalize_text(item) for item in (project_ids or []) if _normalize_text(item)}
         normalized_object_ids = {_normalize_text(item) for item in (object_ids or []) if _normalize_text(item)}
         normalized_participants = {self._as_int(item) for item in (participant_user_ids or []) if self._as_int(item) > 0}
-        cache_key = self._task_analytics_cache_key(
-            current_user=current_user,
-            payload={
-                "start_date": start_iso,
-                "end_date": end_iso,
-                "date_basis": basis,
-                "project_ids": sorted(normalized_project_ids),
-                "object_ids": sorted(normalized_object_ids),
-                "participant_user_ids": sorted(normalized_participants),
-            },
-        )
-        cached_payload = self._get_cached_task_analytics(cache_key)
-        if cached_payload is not None:
-            return cached_payload
-
         analytics_where, analytics_params = self._build_analytics_filter_clauses(
             basis=basis,
             start_iso=start_iso,
@@ -4652,7 +4627,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                             "participant_user_ids": sorted(normalized_participants),
                         },
                     }
-                    self._store_task_analytics_cache(cache_key, empty_payload)
                     return empty_payload
                 id_placeholders = ", ".join(["?"] * len(visible_ids))
                 where_clauses.append(f"id IN ({id_placeholders})")
@@ -4797,7 +4771,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "participant_user_ids": sorted(normalized_participants),
             },
         }
-        self._store_task_analytics_cache(cache_key, payload)
         return payload
 
     def list_tasks(

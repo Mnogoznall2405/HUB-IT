@@ -1626,12 +1626,13 @@ function Mail() {
   }, [mailCacheScope]);
 
   useEffect(() => {
-    if (!mailAccessReady) {
-      setFolderSummary({});
-      setFolderTree([]);
-      return;
-    }
-  }, [mailAccessReady]);
+    if (mailAccessReady || mailConfigLoading) return;
+    // Keep recent cache visible while bootstrap is in flight; clear only after
+    // config resolved without access and we are about to show the credentials gate.
+    if (!mailRequiresPassword && !mailRequiresRelogin) return;
+    setFolderSummary({});
+    setFolderTree([]);
+  }, [mailAccessReady, mailConfigLoading, mailRequiresPassword, mailRequiresRelogin]);
 
   useEffect(() => {
     if (!mailAccessReady) return;
@@ -3282,11 +3283,9 @@ function Mail() {
     >
       <Stack spacing={1.4} sx={{ maxWidth: 540, width: '100%' }}>
         <Typography variant="h6" sx={{ fontWeight: 700 }}>
-          {mailConfigLoading
-            ? 'Проверяем доступ к почте...'
-            : mailRequiresRelogin
-              ? (canSaveMailForAllDevices ? 'Сохраните пароль корпоративной почты' : 'Для доступа к почте войдите заново')
-              : 'Требуется корпоративный пароль'}
+          {mailRequiresRelogin
+            ? (canSaveMailForAllDevices ? 'Сохраните пароль корпоративной почты' : 'Для доступа к почте войдите заново')
+            : 'Требуется корпоративный пароль'}
         </Typography>
         <Typography variant="body2" color="text.secondary">
           {mailRequiresRelogin
@@ -3311,7 +3310,6 @@ function Mail() {
             <Box>
               <Button
                 variant="contained"
-                disabled={mailConfigLoading}
                 onClick={() => openMailCredentialsDialog(mailboxInfo, { reason: canSaveMailForAllDevices ? 'shared' : 'missing' })}
               >
                 {canSaveMailForAllDevices ? 'Сохранить пароль для всех устройств' : 'Ввести пароль'}
@@ -3327,18 +3325,28 @@ function Mail() {
     || (Array.isArray(folderTree) && folderTree.length > 0)
     || (Array.isArray(listData?.items) && listData.items.length > 0)
   );
-  const showRecentMailFallback = Boolean(
-    !mailRequiresPassword
-    && !mailRequiresRelogin
-    && !mailboxInfo
-    && recentHydratedScope === mailCacheScope
-    && hasHydratedMailScreen
+  // Password / relogin gate only after bootstrap/config finished — never flash it while checking.
+  const showMailCredentialsGate = Boolean(
+    !mailConfigLoading
+    && (mailRequiresPassword || mailRequiresRelogin)
   );
-  const canRenderMailArea = Boolean(mailAccessReady || showRecentMailFallback);
+  const showRecentMailFallback = Boolean(
+    !showMailCredentialsGate
+    && hasHydratedMailScreen
+    && (
+      mailConfigLoading
+      || !mailboxInfo
+      || recentHydratedScope === mailCacheScope
+      || recentHydratedScope === initialMailCacheScope
+    )
+  );
+  const canRenderMailArea = Boolean(
+    !showMailCredentialsGate
+    && (mailAccessReady || showRecentMailFallback)
+  );
   const showInitialMailLoading = Boolean(
-    !mailRequiresPassword
-    && !mailRequiresRelogin
-    && !hasHydratedMailScreen
+    !showMailCredentialsGate
+    && !canRenderMailArea
     && (mailConfigLoading || loading)
   );
   const showQuotasSection = canQuotasRead && mailShellSection === 'quotas';
@@ -3523,10 +3531,12 @@ function Mail() {
               <MailQuotaReport isMobile={isMobile} />
             </Box>
           </Box>
-        ) : showInitialMailLoading ? (
-          <MailInitialLoadingState ui={ui} />
+        ) : showMailCredentialsGate ? (
+          mailCredentialsPanel
+        ) : canRenderMailArea ? (
+          mainMailArea
         ) : (
-          canRenderMailArea ? mainMailArea : mailCredentialsPanel
+          <MailInitialLoadingState ui={ui} />
         )}
 
         {canRenderMailArea && !showQuotasSection && !isMobileFullscreenPreview && !composeOpen ? (

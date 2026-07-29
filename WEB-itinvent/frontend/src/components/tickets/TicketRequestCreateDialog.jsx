@@ -7,15 +7,18 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
-  InputLabel,
   LinearProgress,
-  MenuItem,
-  Select,
   Stack,
   TextField,
+  Typography,
+  createFilterOptions,
 } from '@mui/material';
 import { ticketsAPI } from '../../api/tickets';
+import {
+  formatSettlementRoute,
+  settlementOptionLabel,
+  settlementOptionSecondary,
+} from '../../data/russianCities';
 import { getErrorMessage } from './ticketUi';
 
 const todayInputValue = () => new Date().toISOString().slice(0, 10);
@@ -23,10 +26,26 @@ const todayInputValue = () => new Date().toISOString().slice(0, 10);
 const EMPTY_FORM = {
   employee_id: null,
   object_id: '',
-  submitted_at: todayInputValue(),
-  arrival_date: '',
   route: '',
 };
+
+const zupOptionLabel = (option) => {
+  if (!option) return '';
+  const parts = [option.full_name];
+  if (option.position) parts.push(option.position);
+  if (option.department) parts.push(option.department);
+  return parts.filter(Boolean).join(' — ');
+};
+
+const objectOptionLabel = (option) => {
+  if (!option) return '';
+  if (option.code && option.name) return `${option.name} (${option.code})`;
+  return option.name || option.code || '';
+};
+
+const filterObjects = createFilterOptions({
+  stringify: (option) => `${option.name || ''} ${option.code || ''}`,
+});
 
 export default function TicketRequestCreateDialog({
   open,
@@ -35,58 +54,159 @@ export default function TicketRequestCreateDialog({
   onCreated,
 }) {
   const [form, setForm] = useState(EMPTY_FORM);
-  const [employees, setEmployees] = useState([]);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [selectedObject, setSelectedObject] = useState(null);
+  const [zupOptions, setZupOptions] = useState([]);
+  const [localEmployees, setLocalEmployees] = useState([]);
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [settlementOptions, setSettlementOptions] = useState([]);
+  const [settlementSearch, setSettlementSearch] = useState('');
+  const [settlementLoading, setSettlementLoading] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open) return undefined;
-    setForm({ ...EMPTY_FORM, submitted_at: todayInputValue() });
+    setForm({ ...EMPTY_FORM });
+    setSelectedEmployee(null);
+    setSelectedObject(null);
     setEmployeeSearch('');
+    setZupOptions([]);
+    setLocalEmployees([]);
+    setSettlementOptions([]);
+    setSettlementSearch('');
     setError('');
     return undefined;
   }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
+    const query = employeeSearch.trim();
+    if (query.length < 2) {
+      setZupOptions([]);
+      setLocalEmployees([]);
+      return undefined;
+    }
+
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setLoading(true);
       setError('');
       try {
-        const data = await ticketsAPI.listEmployees({
-          search: employeeSearch.trim(),
-          page_size: 50,
-        });
-        if (!cancelled) {
-          setEmployees(Array.isArray(data?.items) ? data.items : []);
-        }
+        const [zupData, localData] = await Promise.all([
+          ticketsAPI.searchZupEmployees({ q: query, limit: 20 }),
+          ticketsAPI.listEmployees({ search: query, page_size: 20 }),
+        ]);
+        if (cancelled) return;
+        setZupOptions(Array.isArray(zupData?.items) ? zupData.items : []);
+        setLocalEmployees(Array.isArray(localData?.items) ? localData.items : []);
       } catch (err) {
         if (!cancelled) setError(getErrorMessage(err));
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }, employeeSearch.trim() ? 300 : 0);
+    }, 300);
+
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
   }, [employeeSearch, open]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const query = settlementSearch.trim();
+    if (query.length < 2) {
+      setSettlementOptions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setSettlementLoading(true);
+      ticketsAPI.searchSettlements({ q: query, limit: 40 })
+        .then((data) => {
+          if (cancelled) return;
+          setSettlementOptions(Array.isArray(data?.items) ? data.items : []);
+        })
+        .catch(() => {
+          if (!cancelled) setSettlementOptions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSettlementLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, settlementSearch]);
+
+  const employeeOptions = useMemo(() => {
+    const localCodes = new Set(
+      localEmployees
+        .map((item) => String(item.zup_employee_code || '').trim())
+        .filter(Boolean),
+    );
+    const localNames = new Set(
+      localEmployees.map((item) => String(item.full_name || '').trim().toLowerCase()).filter(Boolean),
+    );
+    const zupOnly = zupOptions
+      .filter((item) => {
+        const code = String(item.employee_code || '').trim();
+        const name = String(item.full_name || '').trim().toLowerCase();
+        if (code && localCodes.has(code)) return false;
+        if (name && localNames.has(name)) return false;
+        return Boolean(item.full_name);
+      })
+      .map((item) => ({ ...item, _source: 'zup' }));
+
+    return [
+      ...localEmployees.map((item) => ({ ...item, _source: 'local' })),
+      ...zupOnly,
+    ];
+  }, [localEmployees, zupOptions]);
+
   const activeObjects = useMemo(
     () => objects.filter((item) => item.is_active !== false),
     [objects],
   );
 
-  const selectedEmployee = useMemo(
-    () => employees.find((item) => item.id === form.employee_id) || null,
-    [employees, form.employee_id],
-  );
-
   const update = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const selectEmployee = async (value) => {
+    if (!value) {
+      setSelectedEmployee(null);
+      update('employee_id', null);
+      return;
+    }
+    if (value._source === 'local' && value.id) {
+      setSelectedEmployee(value);
+      update('employee_id', value.id);
+      return;
+    }
+    if (!value.employee_code) {
+      setError('У выбранного сотрудника ЗУП нет кода.');
+      return;
+    }
+    setImporting(true);
+    setError('');
+    try {
+      const employee = await ticketsAPI.ensureEmployeeFromZup(value.employee_code);
+      setSelectedEmployee({ ...employee, _source: 'local' });
+      update('employee_id', employee.id);
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Не удалось импортировать сотрудника из ЗУП.');
+      setSelectedEmployee(null);
+      update('employee_id', null);
+    } finally {
+      setImporting(false);
+    }
   };
 
   const save = async () => {
@@ -94,7 +214,7 @@ export default function TicketRequestCreateDialog({
     setError('');
     try {
       if (!form.employee_id) {
-        setError('Выберите сотрудника.');
+        setError('Выберите сотрудника из ЗУП или уже добавленного.');
         return;
       }
       if (!form.object_id) {
@@ -104,8 +224,7 @@ export default function TicketRequestCreateDialog({
       const created = await ticketsAPI.createRequest({
         employee_id: Number(form.employee_id),
         object_id: Number(form.object_id),
-        submitted_at: form.submitted_at || todayInputValue(),
-        arrival_date: form.arrival_date || null,
+        submitted_at: todayInputValue(),
         route: form.route.trim() || null,
         status: 'not_started',
         source: 'manual',
@@ -119,73 +238,144 @@ export default function TicketRequestCreateDialog({
   };
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md">
+    <Dialog open={open} onClose={saving || importing ? undefined : onClose} fullWidth maxWidth="md">
       <DialogTitle>Создать заявку</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {loading ? <LinearProgress /> : null}
+          {loading || importing ? <LinearProgress /> : null}
           {error ? <Alert severity="error">{error}</Alert> : null}
 
           <Autocomplete
-            options={employees}
+            options={employeeOptions}
             value={selectedEmployee}
-            onChange={(_, value) => update('employee_id', value?.id || null)}
-            onInputChange={(_, value) => setEmployeeSearch(value)}
-            getOptionLabel={(option) => option.full_name || ''}
-            isOptionEqualToValue={(option, value) => option.id === value.id}
-            renderInput={(params) => (
-              <TextField {...params} label="Сотрудник" size="small" required />
+            filterOptions={(options) => options}
+            onChange={(_, value) => {
+              void selectEmployee(value);
+            }}
+            onInputChange={(_, value, reason) => {
+              if (reason === 'input' || reason === 'clear') {
+                setEmployeeSearch(value);
+              }
+            }}
+            getOptionLabel={(option) => (
+              option._source === 'zup' ? zupOptionLabel(option) : (option.full_name || '')
             )}
+            isOptionEqualToValue={(option, value) => {
+              if (option._source === 'zup' || value._source === 'zup') {
+                return option.employee_code === value.employee_code
+                  || option.zup_employee_code === value.employee_code
+                  || option.employee_code === value.zup_employee_code;
+              }
+              return option.id === value.id;
+            }}
+            renderOption={(props, option) => (
+              <li {...props} key={`${option._source}-${option.id || option.employee_code || option.full_name}`}>
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{option.full_name}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {option._source === 'zup'
+                      ? ['ЗУП', option.position, option.department].filter(Boolean).join(' · ')
+                      : ['В билетах', option.position, option.department].filter(Boolean).join(' · ')}
+                  </Typography>
+                </Stack>
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Сотрудник"
+                size="small"
+                required
+                helperText="Сначала ищите в ЗУП — сотрудник подтянется сам. Вручную добавляйте только тех, кого нет в ЗУП."
+              />
+            )}
+            noOptionsText={employeeSearch.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
           />
 
-          <FormControl size="small" fullWidth>
-            <InputLabel>Объект</InputLabel>
-            <Select
-              value={form.object_id}
-              label="Объект"
-              onChange={(event) => update('object_id', event.target.value)}
-            >
-              {activeObjects.map((item) => (
-                <MenuItem key={item.id} value={String(item.id)}>
-                  {item.code} — {item.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          <Autocomplete
+            options={activeObjects}
+            value={selectedObject}
+            filterOptions={filterObjects}
+            onChange={(_, value) => {
+              setSelectedObject(value);
+              update('object_id', value?.id ? String(value.id) : '');
+            }}
+            getOptionLabel={objectOptionLabel}
+            isOptionEqualToValue={(option, value) => option.id === value.id}
+            renderOption={(props, option) => (
+              <li {...props} key={option.id}>
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{option.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Код: {option.code || '—'}
+                  </Typography>
+                </Stack>
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Объект"
+                size="small"
+                required
+                helperText="Начните вводить название или код объекта"
+              />
+            )}
+            noOptionsText="Объект не найден"
+          />
 
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-            <TextField
-              label="Дата подачи"
-              type="date"
-              value={form.submitted_at}
-              onChange={(event) => update('submitted_at', event.target.value)}
-              size="small"
-              InputLabelProps={{ shrink: true }}
-              fullWidth
-            />
-            <TextField
-              label="Дата прибытия"
-              type="date"
-              value={form.arrival_date}
-              onChange={(event) => update('arrival_date', event.target.value)}
-              size="small"
-              InputLabelProps={{ shrink: true }}
-              fullWidth
-            />
-          </Stack>
-
-          <TextField
-            label="Город вылета / купить билет из города"
+          <Autocomplete
+            freeSolo
+            options={settlementOptions}
             value={form.route}
-            onChange={(event) => update('route', event.target.value)}
-            size="small"
-            fullWidth
+            filterOptions={(options) => options}
+            loading={settlementLoading}
+            getOptionLabel={settlementOptionLabel}
+            isOptionEqualToValue={(option, value) => {
+              const left = typeof option === 'string' ? option : option?.name;
+              const right = typeof value === 'string' ? value : value?.name;
+              return left === right;
+            }}
+            onChange={(_, value) => {
+              const route = formatSettlementRoute(value);
+              update('route', route);
+              setSettlementSearch(typeof value === 'string' ? value : (value?.name || ''));
+            }}
+            onInputChange={(_, value, reason) => {
+              if (reason === 'input' || reason === 'clear') {
+                update('route', value || '');
+                setSettlementSearch(value || '');
+              }
+            }}
+            renderOption={(props, option) => (
+              <li {...props} key={`${option.name}-${option.type}-${option.region}`}>
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{option.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {settlementOptionSecondary(option) || 'Россия'}
+                  </Typography>
+                </Stack>
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Город / населённый пункт вылета"
+                size="small"
+                helperText="Поиск по городам, посёлкам, сёлам и деревням России"
+              />
+            )}
+            noOptionsText={
+              settlementSearch.trim().length < 2
+                ? 'Введите минимум 2 символа'
+                : 'Не найдено — можно ввести свой вариант'
+            }
           />
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={saving}>Отмена</Button>
-        <Button variant="contained" onClick={save} disabled={saving}>Создать</Button>
+        <Button onClick={onClose} disabled={saving || importing}>Отмена</Button>
+        <Button variant="contained" onClick={save} disabled={saving || importing}>Создать</Button>
       </DialogActions>
     </Dialog>
   );

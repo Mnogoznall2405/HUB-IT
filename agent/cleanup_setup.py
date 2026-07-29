@@ -104,17 +104,17 @@ msi_data = {
 
 bdist_msi_options = {
     "add_to_path": False,
-    "initial_target_dir": r"[ProgramFiles64Folder]\\IT-Invent\\AgentCleanup",
+    "initial_target_dir": r"[ProgramFiles64Folder]\\HUB-IT\\AgentCleanup",
     "all_users": True,
     "upgrade_code": CLEANUP_UPGRADE_CODE,
     "data": msi_data,
 }
 
 setup(
-    name="IT-Invent Agent Cleanup",
+    name="HUB-IT Agent Cleanup",
     version=CLEANUP_VERSION,
-    author="IT-Invent",
-    description="IT-Invent Agent cleanup package",
+    author="HUB-IT",
+    description="HUB-IT Agent cleanup package",
     options={
         "build_exe": build_exe_options,
         "bdist_msi": bdist_msi_options,

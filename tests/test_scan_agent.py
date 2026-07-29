@@ -23,8 +23,9 @@ def _make_config() -> dict:
     return {
         "server_base": "https://hubit.zsgp.ru/api/v1/scan",
         "api_key": "test-key",
-        "poll_interval": 600,
-        "poll_jitter_sec": 120,
+        "poll_interval": 60,
+        "poll_interval_slow": 300,
+        "poll_jitter_sec": 30,
         "timeout": 20,
         "max_file_bytes": 1024 * 1024,
         "run_scan_on_start": False,
@@ -36,7 +37,11 @@ def _make_config() -> dict:
         "outbox_max_items": 5000,
         "outbox_max_age_days": 14,
         "outbox_max_total_mb": 512,
-        "outbox_drain_batch": 10,
+        "outbox_drain_batch": 50,
+        "outbox_drain_batch_slow": 10,
+        "outbox_drain_interval_sec": 10,
+        "outbox_drain_interval_slow_sec": 120,
+        "server_queue_slow_threshold": 2000,
     }
 
 
@@ -70,9 +75,11 @@ def test_read_env_defaults_to_on_demand(monkeypatch):
 
     assert config["run_scan_on_start"] is False
     assert config["watchdog_enabled"] is False
-    assert config["poll_interval"] == 600
-    assert config["poll_jitter_sec"] == 120
-    assert config["outbox_drain_batch"] == 10
+    assert config["poll_interval"] == 60
+    assert config["poll_jitter_sec"] == 30
+    assert config["outbox_drain_batch"] == 50
+    assert config["outbox_drain_interval_sec"] == 10
+    assert config["server_queue_slow_threshold"] == 2000
 
 
 def test_read_env_never_falls_back_to_a_shared_legacy_key(monkeypatch):

@@ -19,6 +19,7 @@ from agent_version import AGENT_VERSION
 
 from .pattern_filters import expand_incident_pattern_filter
 from .pdf_spool import PdfSpoolStore
+from .pg_compat import NullLock, PgConnection
 from .scan_agent_read_store import ScanAgentReadStore
 from .scan_host_read_store import ScanHostReadStore
 from .scan_task_report_store import ScanTaskIncidentReportStore
@@ -34,11 +35,32 @@ ACTIVE_TASK_STATUSES = ("queued", "delivered", "acknowledged")
 FINAL_TASK_STATUSES = ("completed", "failed", "expired")
 PENDING_JOB_STATUSES = ("queued", "processing")
 FINAL_JOB_STATUSES = ("done_clean", "done_with_incident", "analysis_incomplete", "failed")
+# User-facing text written into scan_jobs.error_text; keep EN for legacy reopen matching.
+MISSING_TRANSIENT_PDF_PAYLOAD = "Отсутствует временный файл PDF на сервере"
+MISSING_TRANSIENT_PDF_PAYLOAD_MESSAGES = frozenset(
+    {
+        MISSING_TRANSIENT_PDF_PAYLOAD,
+        "Missing transient PDF payload",
+    }
+)
 _SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Hostnames / agent ids pasted into Scan Center search (ASCII labels, no spaces).
+_HOSTNAME_LIKE_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,62}$")
+_LIST_PATTERN_PREVIEW_LIMIT = 8
+_LIST_PATTERN_VALUE_LIMIT = 120
+_LIST_PATTERN_SNIPPET_LIMIT = 240
 _SCAN_RUNTIME_COLUMNS = {
     "scan_jobs": {"event_id", "scan_task_id", "attempt_count", "metrics_json"},
     "scan_incidents": {"resolved_at", "resolved_reason", "resolved_by_task_id"},
+    "scan_agents": {"outbox_depth", "dead_letter_depth", "last_ingest_ok_at"},
 }
+
+
+def _as_nonneg_int(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return max(0, int(default or 0))
 
 
 def _quote_sqlite_identifier(identifier: Any) -> str:
@@ -86,8 +108,32 @@ def _is_sqlite_busy_error(exc: BaseException) -> bool:
     )
 
 
+def _is_transient_db_error(exc: BaseException) -> bool:
+    if _is_sqlite_busy_error(exc):
+        return True
+    text = str(exc or "").lower()
+    return (
+        "deadlock detected" in text
+        or "lock_not_available" in text
+        or "could not serialize" in text
+        or "55p03" in text
+        or "40p01" in text
+    )
+
+
+def _strip_null_chars(value: Any) -> Any:
+    """Remove NUL chars so PostgreSQL can cast stored JSON to jsonb later."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_strip_null_chars(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_null_chars(item) for key, item in value.items()}
+    return value
+
+
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(_strip_null_chars(value), ensure_ascii=False)
 
 
 def _json_loads(value: Any, default: Any) -> Any:
@@ -135,6 +181,46 @@ def _file_ext_from_values(file_name: Any, file_path: Any) -> str:
     if "." not in name_part:
         return ""
     return name_part.rsplit(".", 1)[-1].strip().lower()
+
+
+def looks_like_hostname_query(value: Any) -> bool:
+    """True when q looks like a hostname/agent id (fast path, no JSON scan).
+
+    Avoid treating hyphenated file basenames (e.g. unique-secret-name) as hosts:
+    require a digit, a dot (FQDN), or a short site-style prefix (TMN-PC…).
+    """
+    text = str(value or "").strip()
+    if len(text) < 3 or len(text) > 63:
+        return False
+    if not _HOSTNAME_LIKE_QUERY_RE.fullmatch(text):
+        return False
+    if any(ch.isdigit() for ch in text) or "." in text:
+        return True
+    return bool(re.match(r"^[A-Za-z]{2,5}-[A-Za-z0-9]", text))
+
+
+def _slim_matched_patterns_for_list(patterns: Any) -> List[Dict[str, Any]]:
+    """Keep list payloads small: pattern ids/names + short value/snippet only."""
+    if not isinstance(patterns, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in patterns[:_LIST_PATTERN_PREVIEW_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        pattern_id = str(item.get("pattern") or item.get("pattern_id") or "").strip()
+        pattern_name = str(item.get("pattern_name") or pattern_id or "").strip()
+        slim: Dict[str, Any] = {
+            "pattern": pattern_id,
+            "pattern_name": pattern_name or pattern_id,
+        }
+        value = str(item.get("value") or "").strip()
+        if value:
+            slim["value"] = value[:_LIST_PATTERN_VALUE_LIMIT]
+        snippet = str(item.get("snippet") or "").strip()
+        if snippet:
+            slim["snippet"] = snippet[:_LIST_PATTERN_SNIPPET_LIMIT]
+        out.append(slim)
+    return out
 
 
 def _severity_rank(value: Any) -> int:
@@ -287,8 +373,12 @@ class ScanStore:
         sqlite_busy_timeout_ms: Optional[int] = None,
         sqlite_busy_retry_attempts: Optional[int] = None,
         sqlite_busy_retry_base_ms: Optional[int] = None,
+        database_url: str = "",
     ) -> None:
         self.db_path = Path(db_path)
+        self.database_url = str(database_url or "").strip()
+        self.backend = "postgres" if self.database_url else "sqlite"
+        self._pg_engine = None
         self.archive_dir = Path(archive_dir)
         self.transient_dir = self.db_path.parent / "transient_jobs"
         self._pdf_spool = PdfSpoolStore(self.transient_dir)
@@ -329,7 +419,12 @@ class ScanStore:
                 ),
             ),
         )
-        self._lock = threading.RLock()
+        # PostgreSQL handles concurrency in the engine; avoid process-wide read serialization.
+        self._lock = NullLock() if self.backend == "postgres" else threading.RLock()
+        if self.backend == "postgres":
+            from .db import get_scan_engine
+
+            self._pg_engine = get_scan_engine(self.database_url)
         self._scan_agent_read_store = ScanAgentReadStore(
             lock=self._lock,
             connect=self._connect,
@@ -344,6 +439,7 @@ class ScanStore:
             connect=self._connect,
             serialize_task_row=self._serialize_task_row,
             now=_now_ts,
+            is_postgres=lambda: self.is_postgres,
         )
         self._scan_task_report_store = ScanTaskIncidentReportStore(
             lock=self._lock,
@@ -356,7 +452,14 @@ class ScanStore:
         self.transient_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @property
+    def is_postgres(self) -> bool:
+        return self.backend == "postgres"
+
+    def _connect(self):
+        if self.is_postgres:
+            assert self._pg_engine is not None
+            return PgConnection(self._pg_engine)
         busy_timeout_ms = int(self.sqlite_busy_timeout_ms)
         conn = sqlite3.connect(
             self.db_path,
@@ -375,14 +478,15 @@ class ScanStore:
         for attempt in range(1, attempts + 1):
             try:
                 return operation()
-            except sqlite3.OperationalError as exc:
-                if not _is_sqlite_busy_error(exc) or attempt >= attempts:
+            except Exception as exc:
+                if not _is_transient_db_error(exc) or attempt >= attempts:
                     raise
                 delay_ms = min(30000, base_ms * (2 ** (attempt - 1)))
                 delay_ms += random.randint(0, base_ms)
                 logger.warning(
-                    "SQLite busy during %s; retry %s/%s in %sms",
+                    "DB busy during %s (%s); retry %s/%s in %sms",
                     context,
+                    self.backend,
                     attempt,
                     attempts,
                     delay_ms,
@@ -390,6 +494,23 @@ class ScanStore:
                 time.sleep(delay_ms / 1000.0)
 
     def _ensure_schema(self) -> None:
+        if self.is_postgres:
+            from .db import ensure_scan_schema
+
+            ensure_scan_schema(self._pg_engine)
+            with self._lock, self._connect() as conn:
+                cursor_tasks = conn.execute(
+                    "UPDATE scan_tasks SET status='queued', delivered_at=NULL WHERE status='delivered'"
+                )
+                if cursor_tasks.rowcount > 0:
+                    logger.info(
+                        "Found and reset %d stuck scan tasks from 'delivered' to 'queued'",
+                        cursor_tasks.rowcount,
+                    )
+                self._reconcile_scan_tasks_locked(conn)
+                conn.commit()
+            return
+
         with self._lock, self._connect() as conn:
             conn.executescript(
                 """
@@ -553,6 +674,9 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_status_hostname_created
                     ON scan_incidents(status, hostname, created_at DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_scan_incidents_hostname_lower_created
+                    ON scan_incidents(LOWER(hostname), created_at DESC);
+
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_job
                     ON scan_incidents(job_id);
 
@@ -655,6 +779,24 @@ class ScanStore:
                 column_name="resolved_by_task_id",
                 ddl="ALTER TABLE scan_incidents ADD COLUMN resolved_by_task_id TEXT NULL",
             )
+            self._ensure_column(
+                conn,
+                table_name="scan_agents",
+                column_name="outbox_depth",
+                ddl="ALTER TABLE scan_agents ADD COLUMN outbox_depth INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                conn,
+                table_name="scan_agents",
+                column_name="dead_letter_depth",
+                ddl="ALTER TABLE scan_agents ADD COLUMN dead_letter_depth INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                conn,
+                table_name="scan_agents",
+                column_name="last_ingest_ok_at",
+                ddl="ALTER TABLE scan_agents ADD COLUMN last_ingest_ok_at INTEGER NOT NULL DEFAULT 0",
+            )
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_jobs_event_id
@@ -672,7 +814,9 @@ class ScanStore:
             self._reconcile_scan_tasks_locked(conn)
             conn.commit()
 
-    def _ensure_column(self, conn: sqlite3.Connection, *, table_name: str, column_name: str, ddl: str) -> None:
+    def _ensure_column(self, conn, *, table_name: str, column_name: str, ddl: str) -> None:
+        if self.is_postgres:
+            return
         safe_table_name, safe_column_name = _require_scan_runtime_column(table_name, column_name)
         rows = conn.execute(f"PRAGMA table_info({_quote_sqlite_identifier(safe_table_name)})").fetchall()
         existing = {str(row["name"] or "").strip().lower() for row in rows}
@@ -861,7 +1005,7 @@ class ScanStore:
                         SET status='analysis_incomplete', finished_at=?, error_text=?
                         WHERE id=?
                         """,
-                        (now_ts, "Missing transient PDF payload", job_id),
+                        (now_ts, MISSING_TRANSIENT_PDF_PAYLOAD, job_id),
                     )
                     failed_jobs += 1
                     task_id = str(row["scan_task_id"] or "").strip()
@@ -1048,6 +1192,19 @@ class ScanStore:
         if not agent_id:
             agent_id = hostname or f"agent-{uuid.uuid4().hex[:8]}"
         now_ts = _now_ts()
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        has_outbox = "outbox_depth" in metadata or "outbox_depth" in payload
+        has_dead = "dead_letter_depth" in metadata or "dead_letter_depth" in payload
+        has_ingest_ok = "last_ingest_ok_at" in metadata or "last_ingest_ok_at" in payload
+        outbox_depth = _as_nonneg_int(metadata.get("outbox_depth", payload.get("outbox_depth")), 0) if has_outbox else None
+        dead_letter_depth = (
+            _as_nonneg_int(metadata.get("dead_letter_depth", payload.get("dead_letter_depth")), 0) if has_dead else None
+        )
+        last_ingest_ok_at = (
+            _as_nonneg_int(metadata.get("last_ingest_ok_at", payload.get("last_ingest_ok_at")), 0)
+            if has_ingest_ok
+            else None
+        )
         row = {
             "agent_id": agent_id,
             "hostname": hostname,
@@ -1058,15 +1215,19 @@ class ScanStore:
             "last_seen_at": int(payload.get("last_seen_at") or now_ts),
             "last_heartbeat_json": _json_dumps(payload),
             "updated_at": now_ts,
+            "outbox_depth": 0 if outbox_depth is None else outbox_depth,
+            "dead_letter_depth": 0 if dead_letter_depth is None else dead_letter_depth,
+            "last_ingest_ok_at": 0 if last_ingest_ok_at is None else last_ingest_ok_at,
         }
         def _write() -> None:
             with self._lock, self._connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO scan_agents(
-                        agent_id, hostname, branch, ip_address, version, status, last_seen_at, last_heartbeat_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(agent_id) DO UPDATE SET
+                        agent_id, hostname, branch, ip_address, version, status, last_seen_at,
+                        last_heartbeat_json, updated_at, outbox_depth, dead_letter_depth, last_ingest_ok_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (agent_id) DO UPDATE SET
                         hostname=excluded.hostname,
                         branch=excluded.branch,
                         ip_address=excluded.ip_address,
@@ -1074,7 +1235,10 @@ class ScanStore:
                         status=excluded.status,
                         last_seen_at=excluded.last_seen_at,
                         last_heartbeat_json=excluded.last_heartbeat_json,
-                        updated_at=excluded.updated_at
+                        updated_at=excluded.updated_at,
+                        outbox_depth=CASE WHEN ? <> 0 THEN excluded.outbox_depth ELSE scan_agents.outbox_depth END,
+                        dead_letter_depth=CASE WHEN ? <> 0 THEN excluded.dead_letter_depth ELSE scan_agents.dead_letter_depth END,
+                        last_ingest_ok_at=CASE WHEN ? <> 0 THEN excluded.last_ingest_ok_at ELSE scan_agents.last_ingest_ok_at END
                     """,
                     (
                         row["agent_id"],
@@ -1086,6 +1250,12 @@ class ScanStore:
                         row["last_seen_at"],
                         row["last_heartbeat_json"],
                         row["updated_at"],
+                        row["outbox_depth"],
+                        row["dead_letter_depth"],
+                        row["last_ingest_ok_at"],
+                        1 if has_outbox else 0,
+                        1 if has_dead else 0,
+                        1 if has_ingest_ok else 0,
                     ),
                 )
                 conn.commit()
@@ -1165,8 +1335,8 @@ class ScanStore:
         command = str(command or "").strip().lower()
         if not agent_id:
             raise ValueError("agent_id is required")
-        if command not in {"ping", "scan_now"}:
-            raise ValueError("command must be one of: ping, scan_now")
+        if command not in {"ping", "scan_now", "self_update"}:
+            raise ValueError("command must be one of: ping, scan_now, self_update")
 
         now_ts = _now_ts()
         ttl_at = now_ts + max(1, int(ttl_days)) * 24 * 60 * 60
@@ -1190,13 +1360,13 @@ class ScanStore:
                     if existing:
                         return dict(existing)
 
-                if command == "scan_now":
+                if command in {"scan_now", "self_update"}:
                     active_task = conn.execute(
                         """
                         SELECT id, command, status, created_at, ttl_at
                         FROM scan_tasks
                         WHERE agent_id=?
-                          AND command='scan_now'
+                          AND command IN ('scan_now', 'self_update')
                           AND status IN ('queued', 'delivered', 'acknowledged')
                           AND ttl_at > ?
                         ORDER BY created_at DESC
@@ -1221,7 +1391,7 @@ class ScanStore:
                     if active_job:
                         return {
                             "agent_id": agent_id,
-                            "command": "scan_now",
+                            "command": command,
                             "status": "blocked",
                             "blocked": True,
                             "blocking_job_id": str(active_job["id"] or ""),
@@ -1296,8 +1466,7 @@ class ScanStore:
             out: List[Dict[str, Any]] = []
             with self._lock, self._connect() as conn:
                 self._maintain_tasks(conn, now_ts)
-                rows = conn.execute(
-                    """
+                select_sql = """
                     SELECT id, command, payload_json, attempt_count, created_at, ttl_at
                     FROM scan_tasks
                     WHERE agent_id=?
@@ -1307,7 +1476,11 @@ class ScanStore:
                       AND ttl_at > ?
                     ORDER BY created_at ASC
                     LIMIT ?
-                    """,
+                    """
+                if self.is_postgres:
+                    select_sql += "\nFOR UPDATE SKIP LOCKED"
+                rows = conn.execute(
+                    select_sql,
                     (aid, now_ts, now_ts, now_ts, request_limit),
                 ).fetchall()
 
@@ -1553,18 +1726,46 @@ class ScanStore:
 
         def _write() -> int:
             with self._lock, self._connect() as conn:
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO scan_task_system_metrics(
-                        scan_task_id, captured_at, cpu_percent, memory_percent,
-                        memory_used_bytes, memory_available_bytes,
-                        disk_read_bytes, disk_write_bytes, disk_read_bps, disk_write_bps,
-                        network_sent_bytes, network_received_bytes,
-                        network_sent_bps, network_received_bps, process_rss_bytes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [(task_id, *values) for task_id in normalized_ids],
-                )
+                if self.is_postgres:
+                    conn.executemany(
+                        """
+                        INSERT INTO scan_task_system_metrics(
+                            scan_task_id, captured_at, cpu_percent, memory_percent,
+                            memory_used_bytes, memory_available_bytes,
+                            disk_read_bytes, disk_write_bytes, disk_read_bps, disk_write_bps,
+                            network_sent_bytes, network_received_bytes,
+                            network_sent_bps, network_received_bps, process_rss_bytes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (scan_task_id, captured_at) DO UPDATE SET
+                            cpu_percent=EXCLUDED.cpu_percent,
+                            memory_percent=EXCLUDED.memory_percent,
+                            memory_used_bytes=EXCLUDED.memory_used_bytes,
+                            memory_available_bytes=EXCLUDED.memory_available_bytes,
+                            disk_read_bytes=EXCLUDED.disk_read_bytes,
+                            disk_write_bytes=EXCLUDED.disk_write_bytes,
+                            disk_read_bps=EXCLUDED.disk_read_bps,
+                            disk_write_bps=EXCLUDED.disk_write_bps,
+                            network_sent_bytes=EXCLUDED.network_sent_bytes,
+                            network_received_bytes=EXCLUDED.network_received_bytes,
+                            network_sent_bps=EXCLUDED.network_sent_bps,
+                            network_received_bps=EXCLUDED.network_received_bps,
+                            process_rss_bytes=EXCLUDED.process_rss_bytes
+                        """,
+                        [(task_id, *values) for task_id in normalized_ids],
+                    )
+                else:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO scan_task_system_metrics(
+                            scan_task_id, captured_at, cpu_percent, memory_percent,
+                            memory_used_bytes, memory_available_bytes,
+                            disk_read_bytes, disk_write_bytes, disk_read_bps, disk_write_bps,
+                            network_sent_bytes, network_received_bytes,
+                            network_sent_bps, network_received_bps, process_rss_bytes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [(task_id, *values) for task_id in normalized_ids],
+                    )
                 conn.commit()
             return len(normalized_ids)
 
@@ -1959,7 +2160,7 @@ class ScanStore:
                 if existing is not None:
                     is_retryable_missing_payload = (
                         str(existing["status"] or "").strip().lower() in {"failed", "analysis_incomplete"}
-                        and str(existing["error_text"] or "").strip() == "Missing transient PDF payload"
+                        and str(existing["error_text"] or "").strip() in MISSING_TRANSIENT_PDF_PAYLOAD_MESSAGES
                         and bool(payload_pdf_bytes)
                     )
                     if is_retryable_missing_payload:
@@ -2242,8 +2443,35 @@ class ScanStore:
     def claim_next_jobs(self, limit: int) -> List[Dict[str, Any]]:
         batch_limit = max(1, min(100, int(limit or 1)))
         now_ts = _now_ts()
-        def _write() -> List[sqlite3.Row]:
+
+        def _write():
             with self._lock, self._connect() as conn:
+                if self.is_postgres:
+                    rows = conn.execute(
+                        """
+                        WITH cte AS (
+                            SELECT id
+                            FROM scan_jobs
+                            WHERE status='queued'
+                            ORDER BY created_at ASC
+                            LIMIT ?
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        UPDATE scan_jobs AS j
+                        SET status='processing',
+                            started_at=?,
+                            finished_at=NULL,
+                            error_text=NULL,
+                            attempt_count=COALESCE(attempt_count, 0) + 1
+                        FROM cte
+                        WHERE j.id = cte.id
+                        RETURNING j.*
+                        """,
+                        (batch_limit, now_ts),
+                    ).fetchall()
+                    conn.commit()
+                    return rows, True
+
                 rows = conn.execute(
                     """
                     SELECT *
@@ -2255,7 +2483,7 @@ class ScanStore:
                     (batch_limit,),
                 ).fetchall()
                 if not rows:
-                    return []
+                    return [], False
                 for row in rows:
                     conn.execute(
                         """
@@ -2270,12 +2498,15 @@ class ScanStore:
                         (now_ts, row["id"]),
                     )
                 conn.commit()
-                return rows
+                return rows, False
 
-        rows = self._run_write_transaction("claim_next_jobs", _write) or []
+        rows, already_updated = self._run_write_transaction("claim_next_jobs", _write) or ([], False)
         out: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            if already_updated:
+                out.append(item)
+                continue
             item["status"] = "processing"
             item["started_at"] = now_ts
             item["attempt_count"] = int(item.get("attempt_count") or 0) + 1
@@ -2480,10 +2711,16 @@ class ScanStore:
         category: str,
         matched_patterns: List[Dict[str, Any]],
         short_reason: str,
+        finalize_status: Optional[str] = None,
+        finalize_summary: Optional[str] = None,
+        finalize_error_text: Optional[str] = None,
     ) -> Dict[str, str]:
         now_ts = _now_ts()
         finding_id = uuid.uuid4().hex
         incident_id = uuid.uuid4().hex
+        job_id = str(job.get("id") or "").strip()
+        terminal_status = str(finalize_status or "").strip()
+
         def _write() -> None:
             with self._lock, self._connect() as conn:
                 conn.execute(
@@ -2494,7 +2731,7 @@ class ScanStore:
                     """,
                     (
                         finding_id,
-                        str(job.get("id") or ""),
+                        job_id,
                         severity,
                         category,
                         _json_dumps(matched_patterns),
@@ -2512,7 +2749,7 @@ class ScanStore:
                     (
                         incident_id,
                         finding_id,
-                        str(job.get("id") or ""),
+                        job_id,
                         str(job.get("agent_id") or ""),
                         str(job.get("hostname") or ""),
                         str(job.get("branch") or ""),
@@ -2529,7 +2766,7 @@ class ScanStore:
                     SET linked_incident_id=?, severity=?
                     WHERE linked_job_id=? AND linked_incident_id=''
                     """,
-                    (incident_id, severity, str(job.get("id") or "")),
+                    (incident_id, severity, job_id),
                 )
                 scan_task_id = str(job.get("scan_task_id") or "").strip()
                 if int(observation_update.rowcount or 0) == 0 and scan_task_id:
@@ -2542,15 +2779,34 @@ class ScanStore:
                         file_hash=str(job.get("file_hash") or ""),
                         event_id=str(job.get("event_id") or ""),
                         observation_type="found_new",
-                        linked_job_id=str(job.get("id") or ""),
+                        linked_job_id=job_id,
                         linked_incident_id=incident_id,
                         source_kind=str(job.get("source_kind") or ""),
                         severity=severity,
                         created_at=now_ts,
                     )
+                if terminal_status:
+                    conn.execute(
+                        """
+                        UPDATE scan_jobs
+                        SET status=?, finished_at=?, summary=?, error_text=?
+                        WHERE id=?
+                        """,
+                        (
+                            terminal_status,
+                            now_ts,
+                            str(finalize_summary or "").strip() or None,
+                            str(finalize_error_text or "").strip() or None,
+                            job_id,
+                        ),
+                    )
+                    if scan_task_id:
+                        self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
                 conn.commit()
 
         self._run_write_transaction("create_finding_and_incident", _write)
+        if terminal_status and job_id:
+            self.delete_job_pdf_spool(job_id=job_id)
         return {"finding_id": finding_id, "incident_id": incident_id}
 
     def _build_incident_where_clause(
@@ -2569,10 +2825,12 @@ class ScanStore:
         ack_by: Optional[str] = None,
         pattern_id: Optional[str] = None,
         table_alias: str = "i",
-    ) -> tuple[str, List[Any]]:
+    ) -> tuple[str, List[Any], bool, bool]:
         i_alias = str(table_alias or "i").strip() or "i"
         conditions: List[str] = []
         params: List[Any] = []
+        needs_findings_join = False
+        needs_jobs_join = False
         if status:
             conditions.append(f"{i_alias}.status = ?")
             params.append(str(status).strip())
@@ -2583,14 +2841,23 @@ class ScanStore:
             conditions.append(f"LOWER({i_alias}.branch) LIKE ?")
             params.append(f"%{str(branch).strip().lower()}%")
         if hostname:
-            conditions.append(f"LOWER({i_alias}.hostname) LIKE ?")
-            params.append(f"%{str(hostname).strip().lower()}%")
+            host_needle = str(hostname).strip().lower()
+            if looks_like_hostname_query(host_needle):
+                conditions.append(
+                    f"(LOWER({i_alias}.hostname) = ? OR LOWER({i_alias}.hostname) LIKE ?)"
+                )
+                params.extend([host_needle, f"{host_needle}%"])
+            else:
+                conditions.append(f"LOWER({i_alias}.hostname) LIKE ?")
+                params.append(f"%{host_needle}%")
         if source_kind:
+            needs_jobs_join = True
             conditions.append("LOWER(COALESCE(j.source_kind, '')) = ?")
             params.append(str(source_kind).strip().lower())
         if file_ext:
             ext = str(file_ext).strip().lower().lstrip(".")
             if ext:
+                needs_jobs_join = True
                 conditions.append(
                     f"(LOWER(COALESCE(j.file_name, '')) LIKE ? OR LOWER(COALESCE({i_alias}.file_path, '')) LIKE ?)"
                 )
@@ -2604,42 +2871,74 @@ class ScanStore:
             conditions.append(f"{i_alias}.created_at <= ?")
             params.append(int(date_to_ts))
         if has_fragment is True:
+            needs_findings_join = True
             conditions.append("LENGTH(TRIM(COALESCE(f.matched_patterns_json, ''))) > 2")
         elif has_fragment is False:
+            needs_findings_join = True
             conditions.append("LENGTH(TRIM(COALESCE(f.matched_patterns_json, ''))) <= 2")
         if ack_by:
             conditions.append(f"LOWER(COALESCE({i_alias}.ack_by, '')) LIKE ?")
             params.append(f"%{str(ack_by).strip().lower()}%")
         incident_pattern_ids = expand_incident_pattern_filter(pattern_id)
         if incident_pattern_ids:
+            needs_findings_join = True
             placeholders = ", ".join("?" for _ in incident_pattern_ids)
-            conditions.append(
-                "EXISTS ("
-                "SELECT 1 FROM json_each("
-                "CASE WHEN json_valid(COALESCE(f.matched_patterns_json, '[]')) "
-                "THEN COALESCE(f.matched_patterns_json, '[]') ELSE '[]' END"
-                ") pattern_row "
-                "WHERE LOWER(COALESCE("
-                "json_extract(pattern_row.value, '$.pattern'), "
-                "json_extract(pattern_row.value, '$.pattern_id'), ''"
-                f")) IN ({placeholders})"
-                ")"
-            )
+            if self.is_postgres:
+                # PostgreSQL jsonb forbids \u0000 inside JSON strings. Snippets from OCR/files
+                # sometimes contain that escape; strip it before casting so pattern filters
+                # (including the DSP group) do not 500 the whole inbox query.
+                sanitized_json = "REPLACE(COALESCE(f.matched_patterns_json, '[]'), E'\\\\u0000', '')"
+                conditions.append(
+                    "EXISTS ("
+                    "SELECT 1 FROM jsonb_array_elements("
+                    f"CASE WHEN LEFT(TRIM({sanitized_json}), 1) = '[' "
+                    f"THEN ({sanitized_json})::jsonb ELSE '[]'::jsonb END"
+                    ") AS pattern_row "
+                    "WHERE LOWER(COALESCE("
+                    "pattern_row->>'pattern', "
+                    "pattern_row->>'pattern_id', ''"
+                    f")) IN ({placeholders})"
+                    ")"
+                )
+            else:
+                conditions.append(
+                    "EXISTS ("
+                    "SELECT 1 FROM json_each("
+                    "CASE WHEN json_valid(COALESCE(f.matched_patterns_json, '[]')) "
+                    "THEN COALESCE(f.matched_patterns_json, '[]') ELSE '[]' END"
+                    ") pattern_row "
+                    "WHERE LOWER(COALESCE("
+                    "json_extract(pattern_row.value, '$.pattern'), "
+                    "json_extract(pattern_row.value, '$.pattern_id'), ''"
+                    f")) IN ({placeholders})"
+                    ")"
+                )
             params.extend(incident_pattern_ids)
-        if q:
-            needle = f"%{str(q).strip().lower()}%"
-            conditions.append(
-                "("
-                f"LOWER({i_alias}.hostname) LIKE ? OR LOWER({i_alias}.user_login) LIKE ? "
-                f"OR LOWER({i_alias}.user_full_name) LIKE ? OR LOWER({i_alias}.file_path) LIKE ? "
-                "OR LOWER(COALESCE(j.file_name, '')) LIKE ? "
-                "OR LOWER(COALESCE(j.source_kind, '')) LIKE ? OR LOWER(COALESCE(f.short_reason, '')) LIKE ? "
-                "OR LOWER(COALESCE(f.matched_patterns_json, '')) LIKE ?"
-                ")"
-            )
-            params.extend([needle, needle, needle, needle, needle, needle, needle, needle])
+        q_text = str(q or "").strip()
+        if q_text:
+            q_lower = q_text.lower()
+            if looks_like_hostname_query(q_text):
+                # Fast path: hostname equality/prefix only — skip findings/jobs/JSON scans.
+                conditions.append(
+                    f"(LOWER({i_alias}.hostname) = ? OR LOWER({i_alias}.hostname) LIKE ?)"
+                )
+                params.extend([q_lower, f"{q_lower}%"])
+            else:
+                needs_findings_join = True
+                needs_jobs_join = True
+                needle = f"%{q_lower}%"
+                # Multi-field text search without matched_patterns_json (OCR blobs are huge).
+                conditions.append(
+                    "("
+                    f"LOWER({i_alias}.hostname) LIKE ? OR LOWER({i_alias}.user_login) LIKE ? "
+                    f"OR LOWER({i_alias}.user_full_name) LIKE ? OR LOWER({i_alias}.file_path) LIKE ? "
+                    "OR LOWER(COALESCE(j.file_name, '')) LIKE ? "
+                    "OR LOWER(COALESCE(j.source_kind, '')) LIKE ? OR LOWER(COALESCE(f.short_reason, '')) LIKE ?"
+                    ")"
+                )
+                params.extend([needle, needle, needle, needle, needle, needle, needle])
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        return where_clause, params
+        return where_clause, params, needs_findings_join, needs_jobs_join
 
     def list_incidents(
         self,
@@ -2660,7 +2959,7 @@ class ScanStore:
         limit: int = 100,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        where_clause, params = self._build_incident_where_clause(
+        where_clause, params, needs_findings_join, needs_jobs_join = self._build_incident_where_clause(
             status=status,
             severity=severity,
             branch=branch,
@@ -2684,15 +2983,19 @@ class ScanStore:
             params.append(normalized_task_id)
         safe_limit = max(1, min(5000, int(limit)))
         safe_offset = max(0, int(offset))
+        count_joins: List[str] = []
+        if needs_findings_join:
+            count_joins.append("LEFT JOIN scan_findings f ON f.id = i.finding_id")
+        if needs_jobs_join:
+            count_joins.append("LEFT JOIN scan_jobs j ON j.id = i.job_id")
+        count_join_sql = ("\n                ".join(count_joins) + "\n                ") if count_joins else ""
 
         with self._lock, self._connect() as conn:
             total = conn.execute(
                 f"""
                 SELECT COUNT(*) as cnt
                 FROM scan_incidents i
-                LEFT JOIN scan_findings f ON f.id = i.finding_id
-                LEFT JOIN scan_jobs j ON j.id = i.job_id
-                {where_clause}
+                {count_join_sql}{where_clause}
                 """,
                 params,
             ).fetchone()["cnt"]
@@ -2719,7 +3022,9 @@ class ScanStore:
         items: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            item["matched_patterns"] = _json_loads(item.pop("matched_patterns_json", "[]"), [])
+            item["matched_patterns"] = _slim_matched_patterns_for_list(
+                _json_loads(item.pop("matched_patterns_json", "[]"), [])
+            )
             item["file_ext"] = _file_ext_from_values(item.get("file_name"), item.get("file_path"))
             items.append(item)
         next_offset = safe_offset + len(items)
@@ -2758,7 +3063,7 @@ class ScanStore:
         host_offset: int = 0,
         files_per_host: int = 25,
     ) -> Dict[str, Any]:
-        where_clause, params = self._build_incident_where_clause(
+        where_clause, params, needs_findings_join, needs_jobs_join = self._build_incident_where_clause(
             status=status,
             severity=severity,
             branch=branch,
@@ -2777,15 +3082,19 @@ class ScanStore:
         safe_files_per_host = max(1, min(100, int(files_per_host)))
         branch_needle = str(branch or "").strip().casefold()
         q_needle = str(q or "").strip().casefold()
+        count_joins: List[str] = []
+        if needs_findings_join:
+            count_joins.append("LEFT JOIN scan_findings f ON f.id = i.finding_id")
+        if needs_jobs_join:
+            count_joins.append("LEFT JOIN scan_jobs j ON j.id = i.job_id")
+        count_join_sql = ("\n                ".join(count_joins) + "\n                ") if count_joins else ""
 
         with self._lock, self._connect() as conn:
             total_incidents = conn.execute(
                 f"""
                 SELECT COUNT(*) as cnt
                 FROM scan_incidents i
-                LEFT JOIN scan_findings f ON f.id = i.finding_id
-                LEFT JOIN scan_jobs j ON j.id = i.job_id
-                {where_clause}
+                {count_join_sql}{where_clause}
                 """,
                 params,
             ).fetchone()["cnt"]
@@ -2998,7 +3307,7 @@ class ScanStore:
                     )
                     acked_count = cursor.rowcount if cursor.rowcount is not None else 0
                 else:
-                    where_clause, params = self._build_incident_where_clause(
+                    where_clause, params, needs_findings_join, needs_jobs_join = self._build_incident_where_clause(
                         status=filter_payload.get("status"),
                         severity=filter_payload.get("severity"),
                         branch=filter_payload.get("branch"),
@@ -3012,13 +3321,17 @@ class ScanStore:
                         ack_by=filter_payload.get("ack_by"),
                         pattern_id=filter_payload.get("pattern_id"),
                     )
+                    count_joins: List[str] = []
+                    if needs_findings_join:
+                        count_joins.append("LEFT JOIN scan_findings f ON f.id = i.finding_id")
+                    if needs_jobs_join:
+                        count_joins.append("LEFT JOIN scan_jobs j ON j.id = i.job_id")
+                    count_join_sql = ("\n                        ".join(count_joins) + "\n                        ") if count_joins else ""
                     total_matched = conn.execute(
                         f"""
                         SELECT COUNT(*)
                         FROM scan_incidents i
-                        LEFT JOIN scan_findings f ON f.id = i.finding_id
-                        LEFT JOIN scan_jobs j ON j.id = i.job_id
-                        {where_clause}
+                        {count_join_sql}{where_clause}
                         """,
                         params,
                     ).fetchone()[0]
@@ -3212,6 +3525,16 @@ class ScanStore:
                 "SELECT COUNT(*) as c FROM scan_agents WHERE last_seen_at >= ?",
                 (now_ts - self.agent_online_timeout_sec,),
             ).fetchone()["c"]
+            outbox_totals_row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(COALESCE(outbox_depth, 0)), 0) AS outbox_total,
+                    COALESCE(SUM(COALESCE(dead_letter_depth, 0)), 0) AS dead_letter_total,
+                    COALESCE(SUM(CASE WHEN COALESCE(outbox_depth, 0) > 0 THEN 1 ELSE 0 END), 0) AS agents_with_outbox,
+                    COALESCE(SUM(CASE WHEN COALESCE(dead_letter_depth, 0) > 0 THEN 1 ELSE 0 END), 0) AS agents_with_dead_letter
+                FROM scan_agents
+                """
+            ).fetchone()
             agent_version_rows = conn.execute(
                 """
                 SELECT COALESCE(NULLIF(TRIM(version), ''), 'unknown') AS version, COUNT(*) AS c
@@ -3220,6 +3543,38 @@ class ScanStore:
                 ORDER BY c DESC, version ASC
                 """
             ).fetchall()
+            # Cheap rollout counters from active/recent self_update tasks.
+            # Do NOT SELECT last_heartbeat_json for all agents — that payload is huge and
+            # holds the SQLite lock long enough to starve /agents/table and UI loads.
+            update_stuck_after_sec = 30 * 60
+            update_pending_row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM scan_tasks
+                WHERE command='self_update'
+                  AND status IN ('queued', 'delivered', 'acknowledged')
+                  AND ttl_at > ?
+                """,
+                (now_ts,),
+            ).fetchone()
+            update_stuck_row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM scan_tasks t
+                LEFT JOIN scan_agents a ON lower(a.agent_id) = lower(t.agent_id)
+                WHERE t.command='self_update'
+                  AND t.status IN ('acknowledged', 'completed')
+                  AND t.updated_at <= ?
+                  AND (
+                        t.result_json LIKE '%"pending_update": true%'
+                     OR t.result_json LIKE '%"phase": "installer_launched"%'
+                     OR t.result_json LIKE '%"phase": "verifying"%'
+                     OR t.result_json LIKE '%"installer_launched": true%'
+                  )
+                  AND COALESCE(NULLIF(TRIM(a.version), ''), '') != ?
+                """,
+                (now_ts - update_stuck_after_sec, str(AGENT_VERSION)),
+            ).fetchone()
             incidents_total = conn.execute(
                 "SELECT COUNT(*) as c FROM scan_incidents",
             ).fetchone()["c"]
@@ -3260,18 +3615,32 @@ class ScanStore:
                 LIMIT 10
                 """
             ).fetchall()
-            day_rows = conn.execute(
-                """
-                SELECT
-                    DATE(created_at, 'unixepoch') as day_key,
-                    COUNT(*) as c
-                FROM scan_incidents
-                WHERE created_at >= ?
-                GROUP BY day_key
-                ORDER BY day_key ASC
-                """,
-                (window_start,),
-            ).fetchall()
+            if self.is_postgres:
+                day_rows = conn.execute(
+                    """
+                    SELECT
+                        to_char(to_timestamp(created_at), 'YYYY-MM-DD') as day_key,
+                        COUNT(*) as c
+                    FROM scan_incidents
+                    WHERE created_at >= ?
+                    GROUP BY day_key
+                    ORDER BY day_key ASC
+                    """,
+                    (window_start,),
+                ).fetchall()
+            else:
+                day_rows = conn.execute(
+                    """
+                    SELECT
+                        DATE(created_at, 'unixepoch') as day_key,
+                        COUNT(*) as c
+                    FROM scan_incidents
+                    WHERE created_at >= ?
+                    GROUP BY day_key
+                    ORDER BY day_key ASC
+                    """,
+                    (window_start,),
+                ).fetchall()
             new_rows = conn.execute(
                 """
                 SELECT
@@ -3327,6 +3696,12 @@ class ScanStore:
             item["count"] for item in agent_versions if item["version"] == AGENT_VERSION
         )
         agents_outdated = max(0, int(agents_total) - int(agents_current))
+        agents_update_pending = int((update_pending_row["c"] if update_pending_row else 0) or 0)
+        agents_update_stuck = int((update_stuck_row["c"] if update_stuck_row else 0) or 0)
+        agents_outbox_total = int((outbox_totals_row["outbox_total"] if outbox_totals_row else 0) or 0)
+        agents_dead_letter_total = int((outbox_totals_row["dead_letter_total"] if outbox_totals_row else 0) or 0)
+        agents_with_outbox = int((outbox_totals_row["agents_with_outbox"] if outbox_totals_row else 0) or 0)
+        agents_with_dead_letter = int((outbox_totals_row["agents_with_dead_letter"] if outbox_totals_row else 0) or 0)
         daily_map = {str(row["day_key"]): int(row["c"] or 0) for row in day_rows}
         daily: List[Dict[str, Any]] = []
         start_day = window_start - (window_start % day_seconds)
@@ -3468,6 +3843,12 @@ class ScanStore:
                 "agents_offline": int(max(0, agents_total - agents_online)),
                 "agents_current_version": int(agents_current),
                 "agents_outdated": int(agents_outdated),
+                "agents_update_pending": int(agents_update_pending),
+                "agents_update_stuck": int(agents_update_stuck),
+                "agents_outbox_total": int(agents_outbox_total),
+                "agents_dead_letter_total": int(agents_dead_letter_total),
+                "agents_with_outbox": int(agents_with_outbox),
+                "agents_with_dead_letter": int(agents_with_dead_letter),
                 "incidents_total": int(incidents_total),
                 "incidents_new": int(incidents_new),
                 "queue_active": int(queue_active),
@@ -3524,7 +3905,7 @@ class ScanStore:
 
     def _delete_retention_batches_locked(
         self,
-        conn: sqlite3.Connection,
+        conn,
         *,
         table: str,
         where_sql: str,
@@ -3534,18 +3915,32 @@ class ScanStore:
         total = 0
         safe_batch_size = max(1, min(5000, int(batch_size or 1000)))
         while True:
-            cursor = conn.execute(
-                f"""
-                DELETE FROM {table}
-                WHERE rowid IN (
-                    SELECT rowid
-                    FROM {table}
-                    WHERE {where_sql}
-                    LIMIT ?
+            if self.is_postgres:
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE ctid IN (
+                        SELECT ctid
+                        FROM {table}
+                        WHERE {where_sql}
+                        LIMIT ?
+                    )
+                    """,
+                    (*params, safe_batch_size),
                 )
-                """,
-                (*params, safe_batch_size),
-            )
+            else:
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE rowid IN (
+                        SELECT rowid
+                        FROM {table}
+                        WHERE {where_sql}
+                        LIMIT ?
+                    )
+                    """,
+                    (*params, safe_batch_size),
+                )
             removed = int(cursor.rowcount or 0)
             if removed <= 0:
                 break

@@ -256,10 +256,11 @@ def test_is_image_unsupported_error_walks_cause_chain():
 def test_act_parser_empty_json_continues_to_next_model(monkeypatch):
     from backend.services import act_upload_service
 
-    calls = {"n": 0}
+    calls = {"n": 0, "kwargs": []}
 
     def _fake_complete_json(**kwargs):
         calls["n"] += 1
+        calls["kwargs"].append(kwargs)
         model = kwargs.get("model")
         if model == "model-a":
             return {}, {"model": model}
@@ -278,3 +279,58 @@ def test_act_parser_empty_json_continues_to_next_model(monkeypatch):
     assert payload["equipment_inv_nos"] == ["100887"]
     assert calls["n"] == 2
     assert any("пустой JSON" in w for w in warnings)
+    assert all(kwargs.get("response_healing") is True for kwargs in calls["kwargs"])
+    assert all(kwargs.get("max_tokens") == act_upload_service._ACT_PARSE_MAX_TOKENS for kwargs in calls["kwargs"])
+
+
+def test_pdf_text_looks_weak_for_scan_filenames():
+    from backend.services import act_upload_service
+
+    good_text = (
+        "\u0410\u043a\u0442 \u043f\u0440\u0438\u0435\u043c\u0430-\u043f\u0435\u0440\u0435\u0434\u0430\u0447\u0438. "
+        "\u0418\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440 100887. "
+        "\u0421\u0434\u0430\u043b \u0418\u0432\u0430\u043d\u043e\u0432. \u041f\u0440\u0438\u043d\u044f\u043b \u041f\u0435\u0442\u0440\u043e\u0432."
+    )
+    assert act_upload_service._pdf_text_looks_weak(good_text, file_name="IMG_0001.pdf") is True
+    assert act_upload_service._pdf_text_looks_weak(good_text, file_name="act.pdf") is False
+    assert act_upload_service._pdf_text_looks_weak("@@@ ###", file_name="doc.pdf") is True
+
+
+def test_act_parser_prefers_vision_for_scan_then_falls_back(monkeypatch):
+    from backend.services import act_upload_service
+
+    calls = []
+
+    def _fake_complete_json(**kwargs):
+        calls.append(kwargs)
+        content = kwargs.get("user_content")
+        uses_images = isinstance(content, list)
+        if uses_images:
+            return {}, {"model": kwargs.get("model")}
+        return {
+            "from_employee": "Ivanov",
+            "to_employee": "Petrov",
+            "doc_date": "2026-03-15",
+            "equipment_inv_nos": ["100887"],
+        }, {"model": kwargs.get("model")}
+
+    monkeypatch.setattr(act_upload_service, "resolve_model_candidates", lambda purpose="act": ["model-a"])
+    monkeypatch.setattr(act_upload_service.openrouter_client, "is_configured", lambda: True)
+    monkeypatch.setattr(act_upload_service.openrouter_client, "complete_json", _fake_complete_json)
+    monkeypatch.setattr(
+        act_upload_service,
+        "_extract_pdf_images_for_llm",
+        lambda file_bytes, max_pages=3: (["data:image/png;base64,aaa"], []),
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="IMG_0001.pdf",
+        pdf_text="\u0418\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440 100887",
+        file_bytes=b"%PDF-1.4",
+    )
+    assert payload["equipment_inv_nos"] == ["100887"]
+    assert len(calls) == 2
+    assert isinstance(calls[0]["user_content"], list)
+    assert isinstance(calls[1]["user_content"], str)
+    assert any("vision OCR" in w or "\u0441\u043a\u0430\u043d" in w for w in warnings)
+    assert calls[0]["response_healing"] is True

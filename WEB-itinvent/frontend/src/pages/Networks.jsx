@@ -3529,6 +3529,57 @@ function Networks() {
           deleteDevice={deleteDevice}
         />
 
+        <CreateBranchDialog
+          open={createBranchOpen}
+          onClose={() => setCreateBranchOpen(false)}
+          createBranchDbId={createBranchDbId}
+          setCreateBranchDbId={setCreateBranchDbId}
+          availableDatabases={availableDatabases}
+          createBranchName={createBranchName}
+          setCreateBranchName={setCreateBranchName}
+          createBranchDefaultSiteCode={createBranchDefaultSiteCode}
+          createPanelMode={createPanelMode}
+          setCreatePanelMode={setCreatePanelMode}
+          createPanelCount={createPanelCount}
+          setCreatePanelCount={setCreatePanelCount}
+          createPortsPerPanel={createPortsPerPanel}
+          setCreatePortsPerPanel={setCreatePortsPerPanel}
+          createPanels={createPanels}
+          addPanel={addPanel}
+          removePanel={removePanel}
+          updatePanelIndex={updatePanelIndex}
+          updatePanelPortCount={updatePanelPortCount}
+          createFillMode={createFillMode}
+          setCreateFillMode={setCreateFillMode}
+          createTemplateFile={createTemplateFile}
+          setCreateTemplateFile={setCreateTemplateFile}
+          createBranchSaving={createBranchSaving}
+          createBranchWithProfile={createBranchWithProfile}
+        />
+
+        <EditBranchDialog
+          open={branchEditDialogOpen}
+          onClose={() => setBranchEditDialogOpen(false)}
+          branchEditName={branchEditName}
+          setBranchEditName={setBranchEditName}
+          branchDefaultSiteCode={branchDefaultSiteCode}
+          setBranchDefaultSiteCode={setBranchDefaultSiteCode}
+          branchEditDbId={branchEditDbId}
+          setBranchEditDbId={setBranchEditDbId}
+          branchEditLoading={branchEditLoading}
+          availableDatabases={availableDatabases}
+          branchEditSaving={branchEditSaving}
+          saveBranchEdit={saveBranchEdit}
+        />
+
+        <DeleteBranchDialog
+          open={branchDeleteDialogOpen}
+          onClose={() => setBranchDeleteDialogOpen(false)}
+          branchDeleteName={branchDeleteName}
+          branchDeleteSaving={branchDeleteSaving}
+          confirmDeleteBranch={confirmDeleteBranch}
+        />
+
         {loading && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Загрузка...</Typography>}
 
       </PageShell>

@@ -14,8 +14,8 @@
 
 ## Настройка ПК-сборщика
 
-1. Скопировать скрипты в `C:\ProgramData\IT-Invent\MailboxQuota\scripts\`
-2. Создать `C:\ProgramData\IT-Invent\MailboxQuota\.env` по шаблону:
+1. Скопировать скрипты в `C:\ProgramData\HUB-IT\Mail\scripts\`
+2. Создать `C:\ProgramData\HUB-IT\Mail\.env` по шаблону:
 
 ```ini
 EXCHANGE_QUOTA_SERVER=tmn-srv-exch-01.zsgp.corp
@@ -28,15 +28,15 @@ MAIL_QUOTA_IMPORT_API_KEY=same_as_hub_env
 3. Зарегистрировать задачу (от администратора):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
+powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
 ```
 
-Задача: **SYSTEM**, триггер **Once + Repetition** (каждые N часов), `StartWhenAvailable`.
+Задача: **HUB-IT Mailbox Quota**, **SYSTEM**, триггер **Once + Repetition** (каждые N часов), `StartWhenAvailable`.
 
 Диагностика на ПК-сборщике:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Project\Image_scan\scripts\diagnose_mailbox_quota_task.ps1
+powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\diagnose_mailbox_quota_task.ps1
 ```
 
 ## Настройка HUB
@@ -77,4 +77,4 @@ Authorization: Bearer ...
 | 401 при POST | Сверить `MAIL_QUOTA_IMPORT_API_KEY` на HUB и в `.env` ПК |
 | Exchange connect failed | FQDN в `EXCHANGE_QUOTA_SERVER`, права учётки, Kerberos/Negotiate |
 | Нет данных в UI | ПК был выключен — дождаться `StartWhenAvailable` после включения |
-| Upload failed | Смотреть `C:\ProgramData\IT-Invent\MailboxQuota\sync.log` и `archive\failed_payload_*.json` |
+| Upload failed | Смотреть `C:\ProgramData\HUB-IT\Mail\sync.log` и `archive\failed_payload_*.json` |

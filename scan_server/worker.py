@@ -13,11 +13,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
-from .database import ScanStore
+from .database import MISSING_TRANSIENT_PDF_PAYLOAD, ScanStore
 from .document_conversion import DocumentConversionError, convert_document_to_pdf
 from .memory_guard import memory_pressure_active
 from .ocr import OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes_detailed
-from .patterns import allowed_pattern_ids, classify_severity, normalize_pattern_filter, normalize_scan_text, scan_text
+from .patterns import (
+    allowed_pattern_ids,
+    classify_severity,
+    is_furniture_dsp_context,
+    normalize_pattern_filter,
+    normalize_scan_text,
+    scan_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +45,6 @@ BLANK_PDF_NEAR_WHITE_THRESHOLD = 248
 # render with only ~0.63-0.84 near-white coverage, so keep this threshold loose.
 BLANK_PDF_WHITE_RATIO = 0.63
 IS_WINDOWS = os.name == "nt"
-MISSING_TRANSIENT_PDF_PAYLOAD = "Missing transient PDF payload"
 NON_RETRYABLE_PDF_FAILURE_OUTCOMES = {"ocr_error_non_retryable", "ocr_skipped_oversize_pdf"}
 
 
@@ -337,13 +343,18 @@ class ScanWorker(threading.Thread):
             pattern_id = str(item.get("pattern") or "unknown")
             if pattern_id not in allowed:
                 continue
+            value = str(item.get("value") or "")
+            snippet = str(item.get("snippet") or "")
+            # Drop agent-side furniture "ДСП" hits that slip past a stale exclusion list.
+            if pattern_id == "dsp_with_exclusion" and is_furniture_dsp_context(f"{snippet} {value}"):
+                continue
             out.append(
                 {
                     "pattern": pattern_id,
                     "pattern_name": str(item.get("pattern_name") or pattern_id),
                     "weight": str(item.get("weight") or ""),
-                    "value": str(item.get("value") or ""),
-                    "snippet": str(item.get("snippet") or ""),
+                    "value": value,
+                    "snippet": snippet,
                 }
             )
             if len(out) >= 100:
@@ -504,10 +515,10 @@ class ScanWorker(threading.Thread):
     ) -> Dict[str, Any]:
         metrics: Dict[str, Any] = {"pdf_bytes": len(pdf_bytes or b"")}
         if not pdf_bytes:
-            return {"matches": [], "outcome": "", "reason": "No PDF payload", "metrics": metrics}
+            return {"matches": [], "outcome": "", "reason": "Нет данных PDF", "metrics": metrics}
         pdf_max_bytes = int(getattr(self.config, "pdf_max_bytes", 0) or 0)
         if pdf_max_bytes > 0 and len(pdf_bytes) > pdf_max_bytes:
-            reason = f"Skipped OCR: PDF payload exceeds {pdf_max_bytes} bytes"
+            reason = f"OCR пропущен: размер PDF превышает {pdf_max_bytes} байт"
             self._log_pdf_outcome(
                 "ocr_skipped_oversize_pdf",
                 artifact_path=artifact_path,
@@ -534,7 +545,7 @@ class ScanWorker(threading.Thread):
             return {
                 "matches": [],
                 "outcome": "ocr_skipped_blank_pdf",
-                "reason": "Skipped OCR: blank/tiny PDF",
+                "reason": "OCR пропущен: пустой или слишком маленький PDF",
                 "metrics": metrics,
             }
 
@@ -550,10 +561,14 @@ class ScanWorker(threading.Thread):
                 return {
                     "matches": text_matches,
                     "outcome": "text_layer_match_ocr_blank" if text_matches else "ocr_skipped_blank_pdf",
-                    "reason": "OCR confirmed blank pages",
+                    "reason": "OCR подтвердил пустые страницы",
                     "metrics": metrics,
                 }
-            detail = "OCR returned no text for a nonblank page" if ocr_outcome in {"ocr_attempted_no_text", "ocr_incomplete"} else "OCR execution error"
+            detail = (
+                "OCR не распознал текст на непустой странице"
+                if ocr_outcome in {"ocr_attempted_no_text", "ocr_incomplete"}
+                else "Ошибка выполнения OCR"
+            )
             self._log_pdf_outcome(ocr_outcome, artifact_path=artifact_path, detail=detail)
             return {
                 "matches": text_matches,
@@ -574,7 +589,7 @@ class ScanWorker(threading.Thread):
             return {
                 "matches": matches,
                 "outcome": "analysis_incomplete",
-                "reason": "One or more OCR pages were not fully analyzed",
+                "reason": "Одна или несколько страниц OCR проанализированы не полностью",
                 "metrics": metrics,
             }
         if matches:
@@ -583,44 +598,44 @@ class ScanWorker(threading.Thread):
             return {
                 "matches": matches,
                 "outcome": outcome,
-                "reason": "Text layer and OCR analysis completed with matches",
+                "reason": "Анализ текстового слоя и OCR завершён, найдены совпадения",
                 "metrics": metrics,
             }
 
         self._log_pdf_outcome(
             "ocr_clean_no_match",
             artifact_path=artifact_path,
-            detail="OCR text had no pattern matches",
+            detail="В тексте OCR не найдено совпадений с правилами",
         )
         return {
             "matches": [],
             "outcome": "ocr_clean_no_match",
-            "reason": "OCR text had no pattern matches",
+            "reason": "В тексте OCR не найдено совпадений с правилами",
             "metrics": metrics,
         }
 
     def _pdf_outcome_summary(self, outcome: str, matches_count: int) -> str:
         if matches_count > 0:
             if outcome:
-                return f"Matches found: {matches_count} ({outcome})"
-            return f"Matches found: {matches_count}"
+                return f"Найдено совпадений: {matches_count} ({outcome})"
+            return f"Найдено совпадений: {matches_count}"
         if outcome == "text_layer_clean_skip":
-            return "No matches (text_layer_clean_skip)"
+            return "Совпадений нет (text_layer_clean_skip)"
         if outcome == "ocr_attempted_no_text":
-            return "No matches after OCR (ocr_attempted_no_text)"
+            return "После OCR совпадений нет (текст не распознан)"
         if outcome == "ocr_skipped_blank_pdf":
-            return "Skipped OCR: blank/tiny PDF (ocr_skipped_blank_pdf)"
+            return "OCR пропущен: пустой или слишком маленький PDF"
         if outcome == "ocr_skipped_oversize_pdf":
-            return "Skipped OCR: oversized PDF (ocr_skipped_oversize_pdf)"
+            return "OCR пропущен: PDF слишком большой"
         if outcome == "ocr_error_non_retryable":
-            return "No matches (ocr_error_non_retryable)"
+            return "Совпадений нет (неустранимая ошибка OCR)"
         if outcome == "ocr_error":
-            return "No matches (ocr_error)"
+            return "Совпадений нет (ошибка OCR)"
         if outcome == "ocr_clean_no_match":
-            return "No matches after OCR (ocr_clean_no_match)"
+            return "После OCR совпадений с правилами нет"
         if outcome == "analysis_incomplete":
-            return "Analysis incomplete"
-        return "No matches"
+            return "Анализ не завершён"
+        return "Совпадений нет"
 
     def _process_job(self, job: Dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")
@@ -665,7 +680,7 @@ class ScanWorker(threading.Thread):
                 finalize_terminal(
                     job_id=job_id,
                     status="analysis_incomplete",
-                    summary="Analysis rules unavailable",
+                    summary="Правила поиска недоступны",
                     error_text="patterns_unavailable",
                 )
                 return
@@ -686,12 +701,16 @@ class ScanWorker(threading.Thread):
                         category="policy_match",
                         matched_patterns=matches,
                         short_reason=", ".join(unique_patterns[:5]),
+                        finalize_status="analysis_incomplete",
+                        finalize_error_text=MISSING_TRANSIENT_PDF_PAYLOAD,
                     )
-                finalize_terminal(
-                    job_id=job_id,
-                    status="analysis_incomplete",
-                    error_text=MISSING_TRANSIENT_PDF_PAYLOAD,
-                )
+                    delete_spool = True
+                else:
+                    finalize_terminal(
+                        job_id=job_id,
+                        status="analysis_incomplete",
+                        error_text=MISSING_TRANSIENT_PDF_PAYLOAD,
+                    )
                 return
 
             if source_kind == "analysis_incomplete":
@@ -707,13 +726,18 @@ class ScanWorker(threading.Thread):
                         category="policy_match",
                         matched_patterns=matches,
                         short_reason=", ".join(unique_patterns[:5]),
+                        finalize_status="analysis_incomplete",
+                        finalize_summary=self._pdf_outcome_summary("analysis_incomplete", len(matches)),
+                        finalize_error_text=reason,
                     )
-                finalize_terminal(
-                    job_id=job_id,
-                    status="analysis_incomplete",
-                    summary=self._pdf_outcome_summary("analysis_incomplete", len(matches)),
-                    error_text=reason,
-                )
+                    delete_spool = True
+                else:
+                    finalize_terminal(
+                        job_id=job_id,
+                        status="analysis_incomplete",
+                        summary=self._pdf_outcome_summary("analysis_incomplete", len(matches)),
+                        error_text=reason,
+                    )
                 return
 
             if source_kind in {"image", "office"} and pdf_bytes:
@@ -747,7 +771,7 @@ class ScanWorker(threading.Thread):
                     finalize_terminal(
                         job_id=job_id,
                         status="analysis_incomplete",
-                        summary="Document conversion incomplete",
+                        summary="Преобразование документа не завершено",
                         error_text=str(exc),
                     )
                     return
@@ -777,26 +801,28 @@ class ScanWorker(threading.Thread):
                 severity = classify_severity(matches)
                 unique_patterns = sorted({str(row.get("pattern") or "unknown") for row in matches})
                 short_reason = ", ".join(unique_patterns[:5])
-                self.store.create_finding_and_incident(
-                    job=job,
-                    severity=severity,
-                    category="policy_match",
-                    matched_patterns=matches,
-                    short_reason=short_reason,
-                )
                 if pdf_outcome == "analysis_incomplete":
-                    finalize_terminal(
-                        job_id=job_id,
-                        status="analysis_incomplete",
-                        summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
-                        error_text=pdf_reason or "OCR analysis incomplete",
+                    self.store.create_finding_and_incident(
+                        job=job,
+                        severity=severity,
+                        category="policy_match",
+                        matched_patterns=matches,
+                        short_reason=short_reason,
+                        finalize_status="analysis_incomplete",
+                        finalize_summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
+                        finalize_error_text=pdf_reason or "Анализ OCR не завершён",
                     )
                 else:
-                    finalize_terminal(
-                        job_id=job_id,
-                        status="done_with_incident",
-                        summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
+                    self.store.create_finding_and_incident(
+                        job=job,
+                        severity=severity,
+                        category="policy_match",
+                        matched_patterns=matches,
+                        short_reason=short_reason,
+                        finalize_status="done_with_incident",
+                        finalize_summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
                     )
+                delete_spool = True
             else:
                 if pdf_outcome == "ocr_error":
                     attempts = int(job.get("attempt_count") or 0)
@@ -807,8 +833,8 @@ class ScanWorker(threading.Thread):
                         if callable(requeue_retry):
                             requeue_retry(
                                 job_id=job_id,
-                                error_text="OCR timeout",
-                                summary=f"OCR retry scheduled ({attempts}/{retry_limit})",
+                                error_text="Превышено время OCR",
+                                summary=f"Повтор OCR запланирован ({attempts}/{retry_limit})",
                             )
                             delete_spool = False
                             return
@@ -816,7 +842,7 @@ class ScanWorker(threading.Thread):
                         job_id=job_id,
                         status="analysis_incomplete",
                         summary=self._pdf_outcome_summary(pdf_outcome, 0),
-                        error_text="OCR timeout",
+                        error_text="Превышено время OCR",
                     )
                     return
                 if pdf_outcome == "analysis_incomplete":
@@ -824,7 +850,7 @@ class ScanWorker(threading.Thread):
                         job_id=job_id,
                         status="analysis_incomplete",
                         summary=self._pdf_outcome_summary(pdf_outcome, 0),
-                        error_text=pdf_reason or "OCR analysis incomplete",
+                        error_text=pdf_reason or "Анализ OCR не завершён",
                     )
                     return
                 if pdf_outcome in NON_RETRYABLE_PDF_FAILURE_OUTCOMES:

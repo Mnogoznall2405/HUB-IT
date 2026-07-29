@@ -70,6 +70,7 @@ QUERY_SEARCH_UNIVERSAL = """
     WHERE i.CI_TYPE = 1 AND (i.SERIAL_NO LIKE ?
        OR i.HW_SERIAL_NO LIKE ?
        OR CAST(i.INV_NO AS VARCHAR(50)) LIKE ?
+       OR i.PART_NO LIKE ?
        OR m.MODEL_NAME LIKE ?
        OR v.VENDOR_NAME LIKE ?
        OR o.OWNER_DISPLAY_NAME LIKE ?
@@ -129,7 +130,7 @@ def search_equipment_universal(
     logger.info(f"Query: {query[:200]}...")
 
     try:
-        equipment = db.execute_query(query, (pattern,) * 15)
+        equipment = db.execute_query(query, (pattern,) * 16)
         logger.info(f"Found {len(equipment)} results")
         total = len(equipment)
     except Exception as e:

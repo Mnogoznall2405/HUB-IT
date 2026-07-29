@@ -19,7 +19,7 @@ Scan-контур по умолчанию работает в on-demand режи
 
 После раскатки проверь:
 
-- `%ProgramData%\IT-Invent\ScanAgent\scan_agent.log`
+- `%ProgramData%\HUB-IT\ScanAgent\scan_agent.log`
 - `GET /api/v1/scan/agents`
 - `scan_now` из UI
 - task-mode settings: `ExecutionTimeLimit = PT0S`, `MultipleInstances = IgnoreNew`, repetition включён

@@ -82,6 +82,8 @@ class InventoryPayload(BaseModel):
     outlook: Optional[Dict[str, Any]] = None
     user_profile_sizes: Optional[Dict[str, Any]] = None
     agent_runtime: Optional[Dict[str, Any]] = None
+    ops_health: Optional[Dict[str, Any]] = None
+    software_inventory: Optional[Dict[str, Any]] = None
     timestamp: int
 
 

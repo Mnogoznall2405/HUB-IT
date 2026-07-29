@@ -13,9 +13,12 @@ import {
   getMailSystemNotificationId,
   hasShownHubSystemNotification,
   hasShownMailSystemNotification,
+  isNotificationPermissionBannerDismissed,
   isWindowsNotificationsEnabled,
   requestBrowserNotificationPermission,
+  setNotificationPermissionBannerDismissed,
   setWindowsNotificationsEnabled,
+  WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY,
 } from './windowsNotifications';
 
 describe('windowsNotifications helper', () => {
@@ -72,6 +75,13 @@ describe('windowsNotifications helper', () => {
     const nextPermission = await requestBrowserNotificationPermission();
     expect(nextPermission).toBe('granted');
     expect(getBrowserNotificationPermission()).toBe('granted');
+  });
+
+  it('persists notification permission banner dismissal', () => {
+    expect(isNotificationPermissionBannerDismissed()).toBe(false);
+    setNotificationPermissionBannerDismissed(true);
+    expect(isNotificationPermissionBannerDismissed()).toBe(true);
+    expect(window.localStorage.getItem(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY)).toBe('1');
   });
 
   it('creates a browser notification once per hub id and navigates on click', () => {

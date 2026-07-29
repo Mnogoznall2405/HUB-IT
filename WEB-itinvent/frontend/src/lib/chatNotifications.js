@@ -752,6 +752,7 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
       ...runtimeState,
       pushConfigured: true,
       pushSubscribed: true,
+      pendingResubscribe: false,
       lastEndpoint: String(subscription.endpoint || '').trim(),
       lastError: '',
     };
@@ -769,6 +770,19 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
 
   try {
     return await pushSyncPromise;
+  } catch (error) {
+    const errorCode = String(error?.name || error?.message || 'subscription_sync_failed')
+      .trim()
+      .slice(0, 160);
+    runtimeState = {
+      ...runtimeState,
+      pushSubscribed: false,
+      lastError: errorCode || 'subscription_sync_failed',
+    };
+    lastPushSyncCompletedAt = 0;
+    persistPushDiagnostics();
+    emitChange();
+    throw error;
   } finally {
     pushSyncPromise = null;
   }

@@ -127,3 +127,60 @@ def encrypt_my_files_share_token(value: str | None) -> str:
 def decrypt_my_files_share_token(token: str | None) -> str:
     return _decrypt_with_env_key(token, "MY_FILES_SHARE_TOKEN_KEY")
 
+
+def encrypt_docflow_secret(value: str | None) -> str:
+    """Encrypt a personal 1C secret with Fernet or user-scoped Windows DPAPI."""
+    plain = str(value or "")
+    if not plain:
+        return ""
+    if str(os.getenv("DOCFLOW_CREDENTIALS_KEY", "") or "").strip():
+        return "fernet:v1:" + _encrypt_with_env_key(plain, "DOCFLOW_CREDENTIALS_KEY")
+    if os.name == "nt":
+        try:
+            import win32crypt  # type: ignore
+
+            protected = win32crypt.CryptProtectData(
+                plain.encode("utf-8"),
+                "HUB-IT 1C Docflow credentials",
+                None,
+                None,
+                None,
+                0,
+            )
+            return "dpapi-user:v1:" + base64.urlsafe_b64encode(protected).decode("ascii")
+        except Exception as exc:
+            raise SecretCryptoError("Failed to protect docflow secret with Windows DPAPI") from exc
+    raise SecretCryptoError("DOCFLOW_CREDENTIALS_KEY is not configured")
+
+
+def decrypt_docflow_secret(token: str | None) -> str:
+    """Decrypt versioned Fernet/DPAPI values and legacy unprefixed Fernet values."""
+    encoded = str(token or "").strip()
+    if not encoded:
+        return ""
+    if encoded.startswith("dpapi-user:v1:"):
+        if os.name != "nt":
+            raise SecretCryptoError("Windows DPAPI docflow secret cannot be decrypted on this host")
+        try:
+            import win32crypt  # type: ignore
+
+            protected = base64.urlsafe_b64decode(encoded.removeprefix("dpapi-user:v1:").encode("ascii"))
+            _description, plain = win32crypt.CryptUnprotectData(protected, None, None, None, 0)
+            return plain.decode("utf-8")
+        except Exception as exc:
+            raise SecretCryptoError("Failed to decrypt Windows DPAPI docflow secret") from exc
+
+    if encoded.startswith("fernet:v1:"):
+        encoded = encoded.removeprefix("fernet:v1:")
+    last_error: Exception | None = None
+    for env_var in ("DOCFLOW_CREDENTIALS_KEY", "DOCFLOW_CREDENTIALS_KEY_LEGACY"):
+        if not str(os.getenv(env_var, "") or "").strip():
+            continue
+        try:
+            return _decrypt_with_env_key(encoded, env_var)
+        except SecretCryptoError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise SecretCryptoError("Failed to decrypt docflow secret") from last_error
+    raise SecretCryptoError("DOCFLOW_CREDENTIALS_KEY is not configured")
+

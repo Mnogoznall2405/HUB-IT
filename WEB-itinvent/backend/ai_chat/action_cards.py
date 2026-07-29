@@ -45,9 +45,18 @@ ACTION_OFFICE_TASK_CREATE = "office.task.create"
 ACTION_OFFICE_TASK_COMMENT = "office.task.comment"
 ACTION_OFFICE_TASK_STATUS = "office.task.status"
 ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
+ACTION_DOC_CONVERT_FORMAT_CHOICE = "ai.doc.convert.format_choice"
 
 DRAFT_EXPIRES_IN = timedelta(hours=1)
 REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv")
+DOC_CONVERT_FORMAT_CHOICES = ("docx", "txt", "md", "pdf", "xlsx")
+DOC_CONVERT_FORMAT_LABELS = {
+    "docx": "Word",
+    "txt": "Текст",
+    "md": "Markdown",
+    "pdf": "PDF",
+    "xlsx": "Excel",
+}
 
 
 def _utc_now() -> datetime:
@@ -497,6 +506,174 @@ def build_report_format_choice(
         payload=normalized_payload,
         preview=_build_report_format_preview(payload=normalized_payload, database_id=database_id),
     )
+
+
+def _normalize_doc_convert_format(value: object) -> str:
+    text = _normalize_text(value).lower().lstrip(".")
+    aliases = {
+        "word": "docx",
+        "document": "docx",
+        "doc": "docx",
+        "text": "txt",
+        "plaintext": "txt",
+        "markdown": "md",
+        "excel": "xlsx",
+        "xls": "xlsx",
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in DOC_CONVERT_FORMAT_CHOICES:
+        raise ValueError("Unsupported document convert format")
+    return normalized
+
+
+def _normalize_doc_convert_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    formats = [
+        item
+        for item in list(payload.get("formats") or DOC_CONVERT_FORMAT_CHOICES)
+        if _normalize_text(item).lower() in DOC_CONVERT_FORMAT_CHOICES
+    ]
+    if not formats:
+        formats = list(DOC_CONVERT_FORMAT_CHOICES)
+    structure_pages = [
+        item for item in list(payload.get("structure_pages") or []) if isinstance(item, dict)
+    ]
+    signatures = [
+        item for item in list(payload.get("signatures") or []) if isinstance(item, dict) and item.get("png_b64")
+    ]
+    return {
+        "markdown": str(payload.get("markdown") or ""),
+        "title": _normalize_text(payload.get("title")) or "Документ",
+        "source_names": [str(item) for item in list(payload.get("source_names") or []) if str(item).strip()],
+        "warnings": [str(item) for item in list(payload.get("warnings") or []) if str(item).strip()],
+        "table_count": int(payload.get("table_count") or 0),
+        "page_count": int(payload.get("page_count") or 0),
+        "used_vision": bool(payload.get("used_vision")),
+        "formats": formats,
+        "structure_pages": structure_pages,
+        "signatures": signatures,
+        "high_fidelity": bool(payload.get("high_fidelity", True)),
+        "verify_fidelity": float(payload.get("verify_fidelity") or 0.0),
+    }
+
+
+def _build_doc_convert_format_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_doc_convert_payload(payload)
+    summary_parts = [
+        f"Страниц: {normalized['page_count']}",
+        f"Таблиц: {normalized['table_count']}",
+    ]
+    if normalized["used_vision"]:
+        summary_parts.append("vision")
+    if normalized.get("structure_pages"):
+        summary_parts.append("high-fidelity")
+    fidelity = float(normalized.get("verify_fidelity") or 0.0)
+    if fidelity > 0:
+        summary_parts.append(f"точность: {fidelity:.0%}")
+    if normalized.get("signatures"):
+        summary_parts.append(f"подписей: {len(normalized['signatures'])}")
+    return {
+        "title": "Выберите формат",
+        "summary": "Документ распознан. Нажмите нужный формат.",
+        "formats": list(normalized["formats"]),
+        "format_labels": {key: DOC_CONVERT_FORMAT_LABELS.get(key, key) for key in normalized["formats"]},
+        "doc_convert": {
+            "title": normalized["title"],
+            "page_count": normalized["page_count"],
+            "table_count": normalized["table_count"],
+            "summary": " · ".join(summary_parts),
+            "warnings": list(normalized["warnings"]),
+        },
+    }
+
+
+def build_doc_convert_format_choice(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = _normalize_doc_convert_payload(payload)
+    if not _normalize_text(normalized_payload.get("markdown")):
+        raise ValueError("Converted markdown is empty")
+    return create_pending_action(
+        action_type=ACTION_DOC_CONVERT_FORMAT_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_doc_convert_format_preview(normalized_payload),
+    )
+
+
+def _execute_doc_convert_format_choice(
+    *,
+    row: AppAiPendingAction,
+    payload: dict[str, Any],
+    current_user: Any,
+    payload_overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requester_user_id = int(getattr(row, "requester_user_id", 0) or 0)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    if requester_user_id and requester_user_id != current_user_id:
+        raise PermissionError("Only the requester can choose the document format")
+    file_format = _normalize_doc_convert_format((payload_overrides or {}).get("format"))
+    markdown = str(payload.get("markdown") or "")
+    if not markdown.strip():
+        raise ValueError("Cached document markdown is empty")
+    from backend.ai_chat.doc_convert_runtime import build_upload_from_export, export_converted_markdown
+
+    exported = export_converted_markdown(
+        markdown=markdown,
+        export_format=file_format,
+        source_name=_normalize_text(payload.get("title")) or "document",
+        title=_normalize_text(payload.get("title")) or "Документ",
+        structure_pages=list(payload.get("structure_pages") or []),
+        signatures=list(payload.get("signatures") or []),
+    )
+    uploads: list[UploadFile] = []
+    try:
+        uploads = [build_upload_from_export(exported)]
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(row, fallback_user_id=current_user_id)
+        body_bits = [f"Файл: {exported.get('file_name')}"]
+        for warning in list(exported.get("warnings") or [])[:3]:
+            body_bits.append(str(warning))
+        message = chat_service.send_files(
+            current_user_id=sender_user_id,
+            conversation_id=_normalize_text(row.conversation_id),
+            body="\n".join(body_bits),
+            uploads=uploads,
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=_normalize_text(row.conversation_id), message_id=message_id)
+        return {
+            "success": True,
+            "keep_pending": True,
+            "format": file_format,
+            "message_id": message_id or None,
+            "generated_files": [
+                {
+                    "attachment_id": _normalize_text(item.get("id")) or None,
+                    "file_name": _normalize_text(item.get("file_name")) or None,
+                    "size_bytes": _to_int(item.get("file_size")),
+                }
+                for item in list(message.get("attachments") or [])
+                if isinstance(item, dict)
+            ],
+        }
+    finally:
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
 
 
 def create_pending_action(
@@ -1309,6 +1486,13 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                     current_user=current_user,
                     payload_overrides=payload_overrides,
                 )
+            elif row.action_type == ACTION_DOC_CONVERT_FORMAT_CHOICE:
+                result = _execute_doc_convert_format_choice(
+                    row=row,
+                    payload=payload,
+                    current_user=current_user,
+                    payload_overrides=payload_overrides,
+                )
             elif row.action_type == ACTION_OFFICE_TASK_CREATE:
                 result = _execute_office_task_create(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_OFFICE_TASK_COMMENT:
@@ -1317,9 +1501,14 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_office_task_status(payload=payload, current_user=current_user)
             else:
                 raise ValueError(f"Unsupported action_type: {row.action_type}")
-            row.status = ACTION_STATUS_CONFIRMED if bool(result.get("success", True)) else ACTION_STATUS_FAILED
-            row.result_json = _json_dumps(result)
-            row.error_text = None if row.status == ACTION_STATUS_CONFIRMED else _normalize_text(result.get("message")) or "Action failed"
+            if bool(result.get("keep_pending")) and bool(result.get("success", True)):
+                row.status = ACTION_STATUS_PENDING
+                row.result_json = _json_dumps(result)
+                row.error_text = None
+            else:
+                row.status = ACTION_STATUS_CONFIRMED if bool(result.get("success", True)) else ACTION_STATUS_FAILED
+                row.result_json = _json_dumps(result)
+                row.error_text = None if row.status == ACTION_STATUS_CONFIRMED else _normalize_text(result.get("message")) or "Action failed"
             row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
             row.updated_at = _utc_now()
         except PermissionError:

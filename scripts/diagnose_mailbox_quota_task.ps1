@@ -1,25 +1,37 @@
 param(
-    [string]$TaskName = "IT-Invent Mailbox Quota",
+    [string]$TaskName = "HUB-IT Mailbox Quota",
     [string]$RuntimeRoot = "",
     [int]$LogTail = 40
 )
 
 $ErrorActionPreference = "Continue"
 
-$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "IT-Invent\MailboxQuota"
+$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "HUB-IT\Mail"
 $resolvedRuntimeRoot = if ($RuntimeRoot) { $RuntimeRoot } else { $defaultRuntimeRoot }
 $envPath = Join-Path $resolvedRuntimeRoot ".env"
 $scriptPath = Join-Path $resolvedRuntimeRoot "scripts\mail_box_sync_domain.ps1"
+$installPath = Join-Path $resolvedRuntimeRoot "scripts\install_mailbox_quota_task.ps1"
 $logPath = Join-Path $resolvedRuntimeRoot "sync.log"
 
 function Format-TaskResult {
-    param([int]$Code)
-    switch ($Code) {
+    param([object]$Code)
+    $value = 0L
+    try {
+        $value = [int64]$Code
+    } catch {
+        return ("{0}" -f $Code)
+    }
+    # HRESULT from Task Scheduler may come as unsigned 32-bit (> Int32.MaxValue).
+    if ($value -lt 0) {
+        $value = $value -band 0xFFFFFFFFL
+    }
+    switch ($value) {
         0 { return "0 (OK)" }
         0x41301 { return "0x41301 (running)" }
         0x41303 { return "0x41303 (not run yet)" }
+        0x8007010B { return "0x8007010B (directory invalid / path missing)" }
         0x800710E0 { return "0x800710E0 (task disabled)" }
-        default { return "0x{0:X} ({1})" -f $Code, $Code }
+        default { return ("0x{0:X} ({1})" -f $value, $value) }
     }
 }
 
@@ -74,15 +86,24 @@ Write-Host ""
 Write-Host "--- Scheduled task ---" -f Yellow
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if (-not $task) {
-    Write-Host "Task '$TaskName' not found." -f Red
+    $legacy = Get-ScheduledTask -TaskName "IT-Invent Mailbox Quota" -ErrorAction SilentlyContinue
+    if ($legacy) {
+        Write-Host "Task '$TaskName' not found, but legacy 'IT-Invent Mailbox Quota' still exists." -f Yellow
+        $TaskName = "IT-Invent Mailbox Quota"
+        $task = $legacy
+    }
+}
+if (-not $task) {
+    Write-Host "Task 'HUB-IT Mailbox Quota' not found." -f Red
     Write-Host "Register with:"
-    Write-Host "  powershell -ExecutionPolicy Bypass -File C:\Project\Image_scan\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister"
+    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$installPath`" -RepeatHours 4 -StartAfterRegister"
     exit 1
 }
 
 $info = Get-ScheduledTaskInfo -TaskName $TaskName
 $lastRunText = if ($info.LastRunTime -and $info.LastRunTime.Year -gt 2000) { $info.LastRunTime.ToString() } else { "never" }
 $nextRunText = if ($info.NextRunTime -and $info.NextRunTime.Year -gt 2000) { $info.NextRunTime.ToString() } else { "not scheduled" }
+Write-Host ("Task name:    {0}" -f $TaskName)
 Write-Host ("State:        {0}" -f $task.State)
 Write-Host ("Last run:     {0}" -f $lastRunText)
 Write-Host ("Last result:  {0}" -f (Format-TaskResult $info.LastTaskResult))
@@ -102,7 +123,7 @@ foreach ($trigger in $task.Triggers) {
 if ($info.LastTaskResult -ne 0 -and $info.LastTaskResult -ne 0x41301 -and $info.LastTaskResult -ne 0x41303) {
     Write-Host ""
     Write-Host "Last run failed. Re-run manually:" -f Red
-    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$scriptPath`" -ResultSize 5 -WhatIf -SaveLocalJson"
+    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$scriptPath`" -RuntimeRoot `"$resolvedRuntimeRoot`" -ResultSize 5 -WhatIf -SaveLocalJson"
 }
 
 if (Test-Path -LiteralPath $logPath) {
@@ -116,4 +137,4 @@ if (Test-Path -LiteralPath $logPath) {
 
 Write-Host ""
 Write-Host "If Next run is empty or Last run is old, re-register task:" -f Cyan
-Write-Host "  powershell -ExecutionPolicy Bypass -File C:\Project\Image_scan\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister"
+Write-Host "  powershell -ExecutionPolicy Bypass -File `"$installPath`" -RepeatHours 4 -StartAfterRegister"

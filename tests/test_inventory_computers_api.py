@@ -562,6 +562,9 @@ def test_search_list_items_are_trimmed_and_detail_endpoint_is_full(monkeypatch):
     list_item = page["items"][0]
     assert "recent_changes" not in list_item
     assert "monitors" not in list_item
+    assert "devices" not in (list_item.get("network") or {})
+    assert list_item.get("logical_disks") is not None
+    assert "health_status" in (list_item.get("storage") or [{}])[0]
 
     detail = inventory.get_computer_detail(
         mac_address=list_item["mac_address"],
@@ -572,3 +575,151 @@ def test_search_list_items_are_trimmed_and_detail_endpoint_is_full(monkeypatch):
     assert detail["hostname"] == list_item["hostname"]
     assert isinstance(detail.get("recent_changes"), list)
     assert isinstance(detail.get("monitors"), list)
+
+
+def test_is_vm_only_172_host_rule():
+    assert inventory._is_vm_only_172_host({"ip_list": ["172.16.1.10", "172.31.0.2"]}) is True
+    assert inventory._is_vm_only_172_host({"ip_primary": "172.20.0.5", "ip_list": []}) is True
+    assert inventory._is_vm_only_172_host({"ip_list": ["10.10.1.11", "172.16.1.10"]}) is False
+    assert inventory._is_vm_only_172_host({"ip_list": ["172.15.0.1"]}) is False
+    assert inventory._is_vm_only_172_host({"ip_list": []}) is False
+
+
+def test_hide_vm_172_filters_only_172_hosts(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+    store = inventory.get_local_store()
+    records = store.load_json(inventory.INVENTORY_FILE)
+    records["AA-BB-CC-DD-EE-01"]["ip_list"] = ["172.16.8.1"]
+    records["AA-BB-CC-DD-EE-01"]["ip_primary"] = "172.16.8.1"
+    records["AA-BB-CC-DD-EE-01"]["network"] = {"active_ipv4": ["172.16.8.1"]}
+    records["AA-BB-CC-DD-EE-02"]["ip_list"] = ["10.10.1.22", "172.16.9.9"]
+    records["AA-BB-CC-DD-EE-02"]["ip_primary"] = "10.10.1.22"
+
+    visible = _get_computers(scope="selected", hide_vm_172=True)
+    assert [row["hostname"] for row in visible] == ["PC-02"]
+
+    all_rows = _get_computers(scope="selected", hide_vm_172=False)
+    assert [row["hostname"] for row in all_rows] == ["PC-01", "PC-02"]
+
+
+def test_hidden_only_filter_uses_hidden_at(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+    store = inventory.get_local_store()
+    records = store.load_json(inventory.INVENTORY_FILE)
+    records["AA-BB-CC-DD-EE-01"]["hidden_at"] = now_ts
+    records["AA-BB-CC-DD-EE-01"]["hidden_by"] = "tester"
+
+    default_rows = _get_computers(scope="selected")
+    assert [row["hostname"] for row in default_rows] == ["PC-02"]
+
+    hidden_rows = _get_computers(scope="selected", hidden_only=True)
+    assert [row["hostname"] for row in hidden_rows] == ["PC-01"]
+    assert hidden_rows[0]["is_hidden"] is True
+
+
+def test_hide_unhide_requires_app_store(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+    try:
+        inventory.hide_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user(), reason="noise")
+        assert False, "expected 503"
+    except inventory.HTTPException as exc:
+        assert exc.status_code == 503
+
+    class FakeAppStore:
+        def __init__(self):
+            self.calls = []
+
+        def set_host_hidden(self, mac_address, *, hidden, hidden_by=None, hidden_reason=None, hidden_at=None):
+            self.calls.append(
+                {
+                    "mac_address": mac_address,
+                    "hidden": hidden,
+                    "hidden_by": hidden_by,
+                    "hidden_reason": hidden_reason,
+                }
+            )
+            return {
+                "mac_address": mac_address,
+                "hidden_at": now_ts if hidden else None,
+                "hidden_by": hidden_by if hidden else None,
+                "hidden_reason": hidden_reason if hidden else None,
+                "is_hidden": hidden,
+            }
+
+    fake = FakeAppStore()
+    monkeypatch.setattr(inventory, "_get_inventory_app_store", lambda: fake)
+    hidden = inventory.hide_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user(), reason="noise")
+    assert hidden["ok"] is True
+    assert hidden["is_hidden"] is True
+    restored = inventory.unhide_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user())
+    assert restored["ok"] is True
+    assert restored["is_hidden"] is False
+    assert [item["hidden"] for item in fake.calls] == [True, False]
+
+
+def test_upsert_host_does_not_clear_soft_hide(monkeypatch):
+    """Agent ingest must keep operator soft-hide flags on existing rows."""
+    from backend.appdb import inventory_store as store_module
+
+    class FakeRow:
+        mac_address = "AABBCCDDEE01"
+        hostname = "PC-01"
+        user_login = None
+        user_full_name = None
+        ip_primary = None
+        report_type = "full_snapshot"
+        last_seen_at = 1
+        last_full_snapshot_at = 1
+        payload_json = "{}"
+        hidden_at = 1_710_000_000
+        hidden_by = "tester"
+        hidden_reason = "noise"
+        updated_at = None
+
+    class FakeSession:
+        def __init__(self, row):
+            self.row = row
+
+        def get(self, model, key):
+            return self.row
+
+        def flush(self):
+            return None
+
+        def add(self, row):
+            self.row = row
+
+    row = FakeRow()
+    session = FakeSession(row)
+
+    class FakeCtx:
+        def __enter__(self):
+            return session
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(store_module, "app_session", lambda *args, **kwargs: FakeCtx())
+    monkeypatch.setattr(
+        store_module.AppInventoryStore,
+        "_replace_search_indexes",
+        lambda self, session, host_key, payload, now: None,
+    )
+
+    app_store = store_module.AppInventoryStore(database_url=None)
+    app_store._database_url = "postgresql://test"
+    app_store.upsert_host(
+        {
+            "mac_address": "AA-BB-CC-DD-EE-01",
+            "hostname": "PC-01",
+            "report_type": "full_snapshot",
+            "last_seen_at": 1_710_000_100,
+            "timestamp": 1_710_000_100,
+        }
+    )
+    assert row.hidden_at == 1_710_000_000
+    assert row.hidden_by == "tester"
+    assert row.hidden_reason == "noise"

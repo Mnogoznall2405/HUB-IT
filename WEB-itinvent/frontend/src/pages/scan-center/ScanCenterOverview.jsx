@@ -13,6 +13,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   ArrowForwardRounded as ArrowForwardRoundedIcon,
   CheckCircleOutline as CheckCircleOutlineIcon,
@@ -21,7 +22,9 @@ import {
   GppMaybeOutlined as GppMaybeOutlinedIcon,
   PeopleAltOutlined as PeopleAltOutlinedIcon,
   ScheduleOutlined as ScheduleOutlinedIcon,
+  SystemUpdateAlt as SystemUpdateAltIcon,
 } from '@mui/icons-material';
+import { friendlyScanReason } from './scanReasonLabels';
 
 function formatDurationMs(value) {
   const milliseconds = Number(value);
@@ -43,18 +46,52 @@ function formatAgeSeconds(value) {
 
 function AttentionRow({ icon, title, description, value, tone, action, onClick }) {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, py: 1.35, '& + &': { borderTop: '1px solid', borderColor: 'divider' } }}>
-      <Box sx={{ width: 38, height: 38, borderRadius: 1.5, bgcolor: `${tone}.light`, color: `${tone}.dark`, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-        {icon}
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: { xs: 'flex-start', sm: 'center' },
+        flexDirection: { xs: 'column', sm: 'row' },
+        gap: 1.25,
+        py: 1.35,
+        '& + &': { borderTop: '1px solid', borderColor: 'divider' },
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25, width: '100%', minWidth: 0 }}>
+        <Box
+          sx={(theme) => {
+            const palette = theme.palette[tone] || theme.palette.warning;
+            return {
+              width: 38,
+              height: 38,
+              borderRadius: 1.5,
+              // Same soft tone as theme MuiChip — avoid *.light/*.dark (identical yellows in dark mode).
+              bgcolor: alpha(palette.main, theme.palette.mode === 'dark' ? 0.18 : 0.12),
+              color: palette.main,
+              display: 'grid',
+              placeItems: 'center',
+              flexShrink: 0,
+            };
+          }}
+        >
+          {icon}
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+            <Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography>
+            <Chip size="small" color={tone} label={value} />
+          </Stack>
+          <Typography variant="caption" color="text.secondary">{description}</Typography>
+        </Box>
       </Box>
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-          <Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography>
-          <Chip size="small" color={tone} label={value} />
-        </Stack>
-        <Typography variant="caption" color="text.secondary">{description}</Typography>
-      </Box>
-      <Button type="button" size="small" endIcon={<ArrowForwardRoundedIcon />} onClick={onClick}>{action}</Button>
+      <Button
+        type="button"
+        size="small"
+        endIcon={<ArrowForwardRoundedIcon />}
+        onClick={onClick}
+        sx={{ alignSelf: { xs: 'stretch', sm: 'center' }, flexShrink: 0 }}
+      >
+        {action}
+      </Button>
     </Box>
   );
 }
@@ -81,9 +118,14 @@ function Metric({ title, value, helper }) {
   );
 }
 
+const OUTBOX_WARN_TOTAL = 500;
+const DEAD_LETTER_WARN_TOTAL = 50;
+const SERVER_QUEUE_WARN_RATIO = 0.75;
+
 export default function ScanCenterOverview({ dashboard, dashboardLoading, reviewItems, onNavigate }) {
   const totals = dashboard?.totals || {};
   const performance = dashboard?.performance || {};
+  const ingestLimits = dashboard?.ingest_limits || {};
   const queueWait = performance.queue_wait_ms || {};
   const processing = performance.processing_ms || {};
   const ocr = performance.ocr_ms || {};
@@ -91,7 +133,23 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
   const incomplete = Number(totals.analysis_incomplete || totals.server_pdf_incomplete || 0);
   const agentsTotal = Number(totals.agents_total || 0);
   const agentsOnline = Number(totals.agents_online || 0);
+  const agentsOutdated = Number(totals.agents_outdated || 0);
+  const agentsUpdatePending = Number(totals.agents_update_pending || 0);
+  const agentsUpdateStuck = Number(totals.agents_update_stuck || 0);
+  const agentsOutboxTotal = Number(totals.agents_outbox_total || 0);
+  const agentsDeadLetterTotal = Number(totals.agents_dead_letter_total || 0);
+  const agentsWithOutbox = Number(totals.agents_with_outbox || 0);
+  const agentsWithDeadLetter = Number(totals.agents_with_dead_letter || 0);
+  const serverPdfPending = Number(totals.server_pdf_pending || 0);
+  const ingestMaxPending = Number(ingestLimits.max_pending_pdf_jobs || ingestLimits.max_pending_jobs || 2000);
+  const serverQueueWarnAt = Math.max(1, Math.floor(ingestMaxPending * SERVER_QUEUE_WARN_RATIO));
+  const agentsOffline = Math.max(0, agentsTotal - agentsOnline);
+  const expectedAgentVersion = dashboard?.expected_agent_version || 'не указана';
   const coverage = agentsTotal > 0 ? Math.round((agentsOnline / agentsTotal) * 100) : 0;
+  const agentsNeedUpdate = agentsOutdated > 0 || agentsUpdateStuck > 0;
+  const outboxPressure = agentsOutboxTotal >= OUTBOX_WARN_TOTAL || agentsDeadLetterTotal >= DEAD_LETTER_WARN_TOTAL;
+  const serverQueuePressure = serverPdfPending >= serverQueueWarnAt;
+  const contourWarning = incidents + incomplete > 0 || agentsNeedUpdate || outboxPressure || serverQueuePressure;
 
   return (
     <Stack spacing={1.5}>
@@ -122,14 +180,31 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
               onClick={() => onNavigate('review')}
             />
             <AttentionRow
-              icon={<PeopleAltOutlinedIcon />}
-              title="Агенты требуют внимания"
-              description={`Не в сети: ${Math.max(0, agentsTotal - agentsOnline)} · устаревшая версия: ${Number(totals.agents_outdated || 0)}`}
-              value={Math.max(0, agentsTotal - agentsOnline) + Number(totals.agents_outdated || 0)}
-              tone="info"
-              action="Проверить"
+              icon={agentsNeedUpdate ? <SystemUpdateAltIcon /> : <PeopleAltOutlinedIcon />}
+              title={agentsNeedUpdate ? 'Обновить агенты' : 'Агенты в порядке'}
+              description={
+                agentsNeedUpdate
+                  ? `Нужна версия ${expectedAgentVersion}. Устарели ${agentsOutdated}${agentsTotal ? ` из ${agentsTotal}` : ''}${agentsUpdateStuck > 0 ? ` · застряли: ${agentsUpdateStuck}` : ''}${agentsUpdatePending > 0 ? ` · в процессе: ${agentsUpdatePending}` : ''}${agentsOffline > 0 ? ` · не в сети: ${agentsOffline}` : ''}.`
+                  : (agentsOffline > 0
+                    ? `Версия актуальна. Не в сети: ${agentsOffline}${agentsUpdatePending > 0 ? ` · обновляется: ${agentsUpdatePending}` : ''}.`
+                    : `Все на версии ${expectedAgentVersion}.`)
+              }
+              value={agentsNeedUpdate ? Math.max(agentsOutdated, agentsUpdateStuck) : agentsOffline}
+              tone={agentsNeedUpdate || agentsOffline > 0 || agentsUpdateStuck > 0 ? 'warning' : 'success'}
+              action={agentsNeedUpdate ? 'К агентам' : 'Открыть'}
               onClick={() => onNavigate('agents')}
             />
+            {outboxPressure ? (
+              <AttentionRow
+                icon={<ScheduleOutlinedIcon />}
+                title="Агенты не досылают очередь"
+                description={`Локально не отправлено: ${agentsOutboxTotal} (хостов: ${agentsWithOutbox}). Dead-letter: ${agentsDeadLetterTotal} (хостов: ${agentsWithDeadLetter}). Это доставка с ПК, не инциденты.`}
+                value={Math.max(agentsOutboxTotal, agentsDeadLetterTotal)}
+                tone="warning"
+                action="К агентам"
+                onClick={() => onNavigate('agents')}
+              />
+            ) : null}
           </Paper>
         </Grid>
 
@@ -137,12 +212,35 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
           <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, height: '100%' }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="subtitle1" sx={{ fontWeight: 850 }}>Состояние контура</Typography>
-              {incidents + incomplete === 0 ? <CheckCircleOutlineIcon color="success" /> : <ScheduleOutlinedIcon color="warning" />}
+              {!contourWarning ? <CheckCircleOutlineIcon color="success" /> : <ScheduleOutlinedIcon color="warning" />}
             </Stack>
-            <PulseRow label="OCR-очередь" value={Number(totals.server_pdf_pending || 0)} helper={`старейшее ожидание: ${formatAgeSeconds(performance.pending_oldest_age_sec)}`} />
+            <PulseRow
+              label="OCR-очередь"
+              value={serverPdfPending}
+              helper={`лимит ${ingestMaxPending} · старейшее: ${formatAgeSeconds(performance.pending_oldest_age_sec)}`}
+              color={serverQueuePressure ? 'warning.main' : 'text.primary'}
+            />
+            <PulseRow
+              label="Локальные очереди"
+              value={agentsOutboxTotal}
+              helper={`хостов с очередью: ${agentsWithOutbox}`}
+              color={agentsOutboxTotal >= OUTBOX_WARN_TOTAL ? 'warning.main' : 'text.primary'}
+            />
+            <PulseRow
+              label="Dead-letter флота"
+              value={agentsDeadLetterTotal}
+              helper={`хостов: ${agentsWithDeadLetter}`}
+              color={agentsDeadLetterTotal >= DEAD_LETTER_WARN_TOTAL ? 'error.main' : 'text.primary'}
+            />
             <PulseRow label="Скорость за 24 часа" value={`${Number(performance.throughput_per_hour || 0)} файлов/ч`} helper={`обработано: ${Number(performance.completed || 0)}`} />
             <PulseRow label="Агенты на связи" value={`${agentsOnline}/${agentsTotal}`} helper={`${coverage}% покрытия`} color={coverage >= 90 ? 'success.main' : 'warning.main'} />
             <LinearProgress variant="determinate" value={Math.max(0, Math.min(100, coverage))} color={coverage >= 90 ? 'success' : 'warning'} sx={{ mt: 0.5, height: 7, borderRadius: 4 }} />
+            <PulseRow
+              label="Версия агентов"
+              value={agentsNeedUpdate ? `${agentsOutdated}/${agentsTotal || '—'}` : (expectedAgentVersion || '—')}
+              helper={agentsNeedUpdate ? `обновить до ${expectedAgentVersion}` : 'все на актуальной версии'}
+              color={agentsNeedUpdate ? 'warning.main' : 'success.main'}
+            />
           </Paper>
         </Grid>
       </Grid>
@@ -161,7 +259,7 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
               <Typography variant="body2" sx={{ fontWeight: 750, overflowWrap: 'anywhere' }}>
                 {item.hostname || item.agent_id || 'Неизвестный хост'} · {item.file_path || item.file_name || 'Путь не указан'}
               </Typography>
-              <Typography variant="caption" color="error.main">{item.reason || 'Анализ не завершён'}</Typography>
+              <Typography variant="caption" color="error.main">{friendlyScanReason(item.reason)}</Typography>
             </Box>
           ))}
         </Paper>

@@ -1,8 +1,10 @@
 param(
-    [string]$TaskName = "IT-Invent Agent",
+    [string]$TaskName = "HUB-IT Agent",
     [string]$OutlookTaskName = "ITInventOutlookProbe",
-    [string]$InstallPath = "C:\Program Files\IT-Invent\Agent",
-    [string]$RuntimeRoot = "C:\ProgramData\IT-Invent\Agent",
+    [string]$InstallPath = "C:\Program Files\HUB-IT\Agent",
+    [string]$RuntimeRoot = "C:\ProgramData\HUB-IT\Agent",
+    [string]$ProgramDataRoot = "C:\ProgramData\HUB-IT",
+    [string]$LegacyInstallPath = "C:\Program Files\IT-Invent\Agent",
     [string]$LegacyProgramDataRoot = "C:\ProgramData\IT-Invent",
     [string]$LogPath = "$env:TEMP\itinvent_agent_full_uninstall.log",
     [switch]$DryRun,
@@ -94,7 +96,7 @@ function Stop-AgentProcesses {
 }
 
 function Remove-AgentScheduledTasks {
-    foreach ($name in @($TaskName, $OutlookTaskName)) {
+    foreach ($name in @($TaskName, "IT-Invent Agent", $OutlookTaskName) | Select-Object -Unique) {
         if (-not $name) {
             continue
         }
@@ -132,8 +134,8 @@ function Get-AgentUninstallEntries {
             $publisher = [string]($props.Publisher)
             $installLocation = [string]($props.InstallLocation)
             $isCleanupPackage = $displayName -like "*Cleanup*"
-            $isExactAgentName = $displayName -eq "IT-Invent Agent"
-            $isAgentByPublisherAndPath = $publisher -eq "IT-Invent" -and $installLocation -match "\\IT-Invent\\Agent\\?$"
+            $isExactAgentName = $displayName -in @("HUB-IT Agent", "IT-Invent Agent")
+            $isAgentByPublisherAndPath = $publisher -in @("HUB-IT", "IT-Invent") -and $installLocation -match "\\(HUB-IT|IT-Invent)\\Agent\\?$"
 
             if (($isExactAgentName -or $isAgentByPublisherAndPath) -and -not $isCleanupPackage) {
                 $entries += [pscustomobject]@{
@@ -171,7 +173,7 @@ function Uninstall-AgentMsiProducts {
 
     $entries = Get-AgentUninstallEntries
     if ($entries.Count -eq 0) {
-        Write-Log "No old IT-Invent Agent MSI products found."
+        Write-Log "No old HUB-IT / IT-Invent Agent MSI products found."
         return
     }
 
@@ -224,18 +226,26 @@ function Clear-AgentMachineEnvironment {
     }
 }
 
-Write-Log "=== Starting IT-Invent Agent full uninstall cleanup ==="
+Write-Log "=== Starting HUB-IT Agent full uninstall cleanup ==="
 Stop-AgentProcesses
 Remove-AgentScheduledTasks
 Uninstall-AgentMsiProducts
 Stop-AgentProcesses
 Remove-AgentScheduledTasks
 Clear-AgentMachineEnvironment
-Remove-PathIfExists -TargetPath $RuntimeRoot -Recurse
-Remove-PathIfExists -TargetPath (Join-Path $LegacyProgramDataRoot ".env")
-Remove-PathIfExists -TargetPath (Join-Path $LegacyProgramDataRoot "Logs") -Recurse
-Remove-PathIfExists -TargetPath (Join-Path $LegacyProgramDataRoot "Spool") -Recurse
-Remove-PathIfExists -TargetPath (Join-Path $LegacyProgramDataRoot "ScanAgent") -Recurse
-Remove-PathIfExists -TargetPath $InstallPath -Recurse
+if ($RuntimeRoot -and ($RuntimeRoot -ne (Join-Path $ProgramDataRoot "Agent"))) {
+    Remove-PathIfExists -TargetPath $RuntimeRoot -Recurse
+}
+foreach ($root in @($ProgramDataRoot, $LegacyProgramDataRoot) | Select-Object -Unique) {
+    Remove-PathIfExists -TargetPath (Join-Path $root "Agent") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "ScanAgent") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "AgentUpgrade") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root ".env")
+    Remove-PathIfExists -TargetPath (Join-Path $root "Logs") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "Spool") -Recurse
+}
+foreach ($path in @($InstallPath, $LegacyInstallPath) | Select-Object -Unique) {
+    Remove-PathIfExists -TargetPath $path -Recurse
+}
 Remove-StaleAgentUninstallEntries
-Write-Log "=== IT-Invent Agent full uninstall cleanup completed ==="
+Write-Log "=== HUB-IT Agent full uninstall cleanup completed ==="

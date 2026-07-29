@@ -26,12 +26,14 @@ import multiprocessing as multiprocessing_module
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -51,6 +53,7 @@ DEFAULT_READ_OPERATIONS = frozenset(
     }
 )
 _OPERATION_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
+_WINDOWS_SPAWN_EXECUTABLE_LOCK = threading.Lock()
 
 
 class Warehouse1CProcessBridgeError(RuntimeError):
@@ -184,6 +187,31 @@ def _co_initialize() -> Any | None:
         # real Windows deployment will fail at dispatcher connection time if
         # pywin32 is absent, rather than silently changing its semantics.
         return None
+
+
+def _start_process_without_console(process: Any) -> None:
+    """Start a Windows spawn worker through pythonw and restore global state."""
+
+    if os.name != "nt":
+        process.start()
+        return
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        process.start()
+        return
+
+    # multiprocessing has no per-Process creation flags on Windows. Its spawn
+    # executable is global, so serialize the brief override across all 1C
+    # bridges and restore it immediately after CreateProcess returns.
+    from multiprocessing import spawn as multiprocessing_spawn
+
+    with _WINDOWS_SPAWN_EXECUTABLE_LOCK:
+        previous = multiprocessing_spawn.get_executable()
+        multiprocessing_module.set_executable(str(pythonw))
+        try:
+            process.start()
+        finally:
+            multiprocessing_module.set_executable(previous)
 
 
 def _worker_main(
@@ -503,7 +531,7 @@ class Warehouse1CProcessBridge:
             name=self._process_name,
             daemon=True,
         )
-        self._process.start()
+        _start_process_without_console(self._process)
         self._receiver_thread = threading.Thread(
             target=self._receive_loop,
             args=(generation, self._response_queue, self._receiver_stop),

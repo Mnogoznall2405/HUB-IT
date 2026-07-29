@@ -229,11 +229,21 @@ class TestCreateObject:
             )
 
     def test_create_object_empty_region(self, service):
-        with pytest.raises(ValueError, match="region is required"):
-            service.create_object(
-                {"code": "TST", "name": "Test", "region": ""},
-                _admin_user(),
-            )
+        result = service.create_object(
+            {"code": "TST", "name": "Test", "region": ""},
+            _admin_user(),
+        )
+        assert result["code"] == "TST"
+        assert result["region"] == ""
+
+    def test_create_object_auto_code_from_name_only(self, service):
+        first = service.create_object({"name": "Камчатка"}, _admin_user())
+        second = service.create_object({"name": "Магадан"}, _admin_user())
+        assert first["code"] == "O1"
+        assert second["code"] == "O2"
+        assert first["name"] == "Камчатка"
+        assert second["name"] == "Магадан"
+        assert first["region"] == ""
 
     def test_create_object_name_too_long(self, service):
         with pytest.raises(ValueError, match="150 characters"):

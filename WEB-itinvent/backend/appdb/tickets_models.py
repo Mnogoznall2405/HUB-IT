@@ -64,6 +64,7 @@ class TicketEmployee(AppBase):
     date_of_birth_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    zup_employee_code: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
     app_user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("app.users.id", ondelete="SET NULL"), nullable=True, index=True

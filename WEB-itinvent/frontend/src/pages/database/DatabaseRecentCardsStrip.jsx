@@ -35,20 +35,20 @@ function DatabaseRecentCardsStrip({
       sx={{
         display: 'flex',
         alignItems: 'center',
-        gap: 0.75,
-        mb: 0.5,
-        minHeight: 32,
+        gap: 0.5,
+        mb: 0.35,
+        minHeight: 26,
       }}
     >
-      <HistoryIcon fontSize="small" sx={{ color: primaryMain, flexShrink: 0 }} />
+      <HistoryIcon sx={{ color: primaryMain, flexShrink: 0, fontSize: 16 }} />
       <Box
         sx={{
           display: 'flex',
-          gap: 0.75,
+          gap: 0.5,
           overflowX: 'auto',
           flex: 1,
           minWidth: 0,
-          py: 0.25,
+          py: 0,
           WebkitOverflowScrolling: 'touch',
         }}
       >
@@ -66,15 +66,16 @@ function DatabaseRecentCardsStrip({
               onClick={() => onOpen?.(item)}
               sx={{
                 flexShrink: 0,
-                maxWidth: 140,
-                height: 26,
-                fontSize: '0.7rem',
-                bgcolor: alpha(primaryMain, 0.08),
-                borderColor: alpha(primaryMain, 0.2),
+                maxWidth: 128,
+                height: 22,
+                fontSize: '0.68rem',
+                bgcolor: alpha(primaryMain, 0.06),
+                borderColor: alpha(primaryMain, 0.14),
                 '& .MuiChip-label': {
                   display: 'block',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
+                  px: 0.75,
                 },
               }}
               variant="outlined"
@@ -88,8 +89,8 @@ function DatabaseRecentCardsStrip({
         </Typography>
       ) : null}
       <Tooltip title="Очистить последние">
-        <IconButton size="small" aria-label="Очистить последние" onClick={onClear}>
-          <ClearAllIcon fontSize="small" />
+        <IconButton size="small" aria-label="Очистить последние" onClick={onClear} sx={{ p: 0.35 }}>
+          <ClearAllIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
     </Box>

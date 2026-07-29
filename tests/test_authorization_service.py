@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from backend.services.authorization_service import (
     PERM_DASHBOARD_READ,
+    PERM_DOCFLOW_ACT,
+    PERM_DOCFLOW_CREATE,
+    PERM_DOCFLOW_READ,
     PERM_MY_FILES_AUDIT_READ,
     PERM_MY_FILES_READ,
     PERM_MY_FILES_SHARE,
@@ -44,6 +47,13 @@ def test_viewer_role_does_not_get_tickets_access_by_default():
     assert PERM_MY_FILES_WRITE in permissions
     assert PERM_MY_FILES_SHARE in permissions
     assert PERM_MY_FILES_AUDIT_READ not in permissions
+    assert PERM_DOCFLOW_READ in permissions
+    assert PERM_DOCFLOW_ACT not in permissions
+    assert PERM_DOCFLOW_CREATE not in permissions
+
+    operator_permissions = set(authorization_service.get_permissions_for_role("operator"))
+    assert PERM_DOCFLOW_ACT in operator_permissions
+    assert PERM_DOCFLOW_CREATE in operator_permissions
 
 
 def test_tickets_permissions_remain_available_for_manual_assignment():

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "configuration": "docflow",
+  "rules": [
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Ознакомление",
+      "configuration_fingerprint": "f3c90efde494b512cd56a3ea",
+      "evidence": "read-only inventory 2026-07-29: completed personal tasks use an empty result",
+      "actions": {
+        "acknowledge": {
+          "label": "Ознакомиться",
+          "result_value": "",
+          "comment_mode": "optional",
+          "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Согласование",
+      "configuration_fingerprint": "5100a47c76e3ea74efc0d33b",
+      "evidence": "pilot-only templates; must be confirmed on HUB-IT TEST tasks before broader rollout",
+      "actions": {
+        "approve": {
+          "label": "Согласовать",
+          "result_value": "Согласовано",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "reject": {
+          "label": "Отклонить",
+          "result_value": "Не согласовано: {comment}",
+          "comment_mode": "required",
+          "tone": "error"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Утверждение",
+      "configuration_fingerprint": "07db6e891e5ab2a1c924d16d",
+      "evidence": "pilot-only templates; must be confirmed on HUB-IT TEST tasks before broader rollout",
+      "actions": {
+        "approve": {
+          "label": "Утвердить",
+          "result_value": "Утверждено",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "reject": {
+          "label": "Не утвердить",
+          "result_value": "Не утверждено: {comment}",
+          "comment_mode": "required",
+          "tone": "error"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Исполнение",
+      "configuration_fingerprint": "580ba93a3f0ecdf399e081d1",
+      "evidence": "pilot-only template; must be confirmed on a HUB-IT TEST task before broader rollout",
+      "actions": {
+        "complete": {
+          "label": "Выполнить",
+          "result_value": "{comment}",
+          "comment_mode": "required",
+          "tone": "primary"
+        }
+      }
+    }
+  ]
+}

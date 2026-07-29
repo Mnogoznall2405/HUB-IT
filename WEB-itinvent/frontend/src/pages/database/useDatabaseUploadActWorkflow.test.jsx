@@ -10,6 +10,7 @@ vi.mock('../../api/client', () => ({
     parseUploadedAct: vi.fn(),
     commitUploadedActDraft: vi.fn(),
     sendUploadedActEmail: vi.fn(),
+    downloadEquipmentActFile: vi.fn(),
   },
 }));
 
@@ -54,8 +55,15 @@ describe('useDatabaseUploadActWorkflow', () => {
       failed_count: 0,
       recipients: [{ owner_no: 7, email: 'ivanov@example.test', status: 'sent' }],
     });
+    equipmentAPI.downloadEquipmentActFile.mockResolvedValue({
+      data: new Blob(['%PDF-1.4 act'], { type: 'application/pdf' }),
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="signed_act.pdf"',
+      },
+    });
 
-    URL.createObjectURL = vi.fn((file) => `blob:${file.name}`);
+    URL.createObjectURL = vi.fn((file) => `blob:${file?.name || 'download'}`);
     URL.revokeObjectURL = vi.fn();
   });
 
@@ -252,5 +260,56 @@ describe('useDatabaseUploadActWorkflow', () => {
       failedCount: 0,
     });
     expect(result.current.uploadActEmailLastRecipients).toHaveLength(2);
+  });
+
+  it('downloads committed act file via DOC_NO and triggers browser download', async () => {
+    const { result } = renderUploadActHook();
+    const appendSpy = vi.spyOn(document.body, 'appendChild');
+    const clickSpy = vi.fn();
+    const removeSpy = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tagName) => {
+      const el = originalCreateElement(tagName);
+      if (String(tagName).toLowerCase() === 'a') {
+        el.click = clickSpy;
+        el.remove = removeSpy;
+      }
+      return el;
+    });
+
+    act(() => {
+      result.current.handleUploadActFileSelect({ target: { files: [createPdfFile('uploaded.pdf')] } });
+      result.current.setUploadActCommitResult({ doc_no: 12, file_no: 34 });
+    });
+
+    await act(async () => {
+      await result.current.handleUploadActDownload();
+    });
+
+    expect(equipmentAPI.downloadEquipmentActFile).toHaveBeenCalledWith(12, expect.any(Object));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy).toHaveBeenCalled();
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    expect(result.current.uploadActDownloading).toBe(false);
+    expect(result.current.uploadActDownloadError).toBe('');
+  });
+
+  it('sets download error when committed act file cannot be fetched', async () => {
+    const { result } = renderUploadActHook();
+    equipmentAPI.downloadEquipmentActFile.mockRejectedValueOnce({
+      response: { data: { detail: 'Файл не найден' } },
+    });
+
+    act(() => {
+      result.current.setUploadActCommitResult({ doc_no: 99, file_no: 1 });
+    });
+    await act(async () => {
+      await result.current.handleUploadActDownload();
+    });
+
+    expect(result.current.uploadActDownloadError).toBe('Файл не найден');
+    expect(result.current.uploadActDownloading).toBe(false);
   });
 });

@@ -33,7 +33,7 @@ describe('TasksAnalyticsView', () => {
           filtersPanel={<div data-testid="filters-panel-content">filters</div>}
           analyticsKpis={[{ title: 'Всего', value: 12, helper: 'задач', color: '#2563eb' }]}
           analyticsStatusChartData={[]}
-          analyticsParticipantSectionMeta={{ title: 'По участникам', subtitle: '' }}
+          analyticsParticipantSectionMeta={{ title: 'По исполнителям', subtitle: '' }}
           analyticsScopeChart={{ title: 'Срез', rows: [] }}
         />
       </ThemeProvider>,
@@ -49,7 +49,7 @@ describe('TasksAnalyticsView', () => {
     expect(onExport).toHaveBeenCalledTimes(1);
   });
 
-  it('renders participant card when participant selected', () => {
+  it('renders executor card when executor selected', () => {
     render(
       <ThemeProvider theme={theme}>
         <TasksAnalyticsView
@@ -57,7 +57,7 @@ describe('TasksAnalyticsView', () => {
           analyticsFocusMeta={focusMeta}
           analyticsKpis={[]}
           analyticsStatusChartData={[]}
-          analyticsParticipantSectionMeta={{ title: 'По участникам', subtitle: '' }}
+          analyticsParticipantSectionMeta={{ title: 'По исполнителям', subtitle: '' }}
           analyticsScopeChart={{ title: 'Срез', rows: [] }}
           selectedAnalyticsParticipant={{
             participant_name: 'Иванов И.И.',
@@ -75,5 +75,32 @@ describe('TasksAnalyticsView', () => {
     );
 
     expect(screen.getByTestId('analytics-participant-card')).toHaveTextContent('Иванов И.И.');
+    expect(screen.getByText(/Исполнитель:/)).toBeInTheDocument();
+  });
+
+  it('shows a retry state without rendering false zero metrics', () => {
+    const onRetry = vi.fn();
+    render(
+      <ThemeProvider theme={theme}>
+        <TasksAnalyticsView
+          ui={ui}
+          onRetry={onRetry}
+          analyticsError={{
+            message: 'Не удалось загрузить аналитику задач. Повторите попытку.',
+            correlationId: 'correlation-500',
+          }}
+          analyticsHasCurrentPayload={false}
+          analyticsKpis={[{ title: 'Всего', value: 0, helper: 'задач', color: '#2563eb' }]}
+          analyticsParticipantSectionMeta={{ title: 'По исполнителям', subtitle: '' }}
+          analyticsScopeChart={{ title: 'Срез', rows: [] }}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Не удалось загрузить аналитику задач');
+    expect(screen.getByRole('alert')).toHaveTextContent('correlation-500');
+    expect(screen.queryByText('Всего')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });

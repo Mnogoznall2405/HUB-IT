@@ -31,7 +31,7 @@ export const buildSelectedAnalyticsParticipant = ({
   if (!fallbackUser) return null;
   return {
     participant_user_id: Number(selectedId),
-    participant_name: fallbackUser.full_name || fallbackUser.username || 'Участник',
+    participant_name: fallbackUser.full_name || fallbackUser.username || 'Исполнитель',
     total: 0,
     new: 0,
     in_progress: 0,
@@ -52,30 +52,30 @@ export const buildAnalyticsParticipantSectionMeta = ({
 } = {}) => {
   if (selectedObjects.length === 1) {
     return {
-      title: 'По участникам выбранного объекта',
+      title: 'По исполнителям выбранного объекта',
       subtitle: selectedObjects[0]?.name || '',
     };
   }
   if (selectedObjects.length > 1) {
     return {
-      title: 'По участникам выбранных объектов',
+      title: 'По исполнителям выбранных объектов',
       subtitle: selectedObjects.map((item) => item?.name).filter(Boolean).join(', '),
     };
   }
   if (selectedProjects.length === 1) {
     return {
-      title: 'По участникам выбранного проекта',
+      title: 'По исполнителям выбранного проекта',
       subtitle: selectedProjects[0]?.name || '',
     };
   }
   if (selectedProjects.length > 1) {
     return {
-      title: 'По участникам выбранных проектов',
+      title: 'По исполнителям выбранных проектов',
       subtitle: selectedProjects.map((item) => item?.name).filter(Boolean).join(', '),
     };
   }
   return {
-    title: 'По участникам',
+    title: 'По исполнителям',
     subtitle: '',
   };
 };

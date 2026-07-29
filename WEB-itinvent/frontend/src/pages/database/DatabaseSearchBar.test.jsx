@@ -10,7 +10,22 @@ describe('DatabaseSearchBar', () => {
   it('uses the equipment placeholder by default', () => {
     render(<DatabaseSearchBar value="" theme={theme} />);
 
-    expect(screen.getByPlaceholderText('Поиск по инв. №, модели, сотруднику...')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...')).toBeInTheDocument();
+  });
+
+  it('shows Карточки / Акты scope labels instead of duplicate Оборудование', () => {
+    const onSearchScopeChange = vi.fn();
+    render(
+      <DatabaseSearchBar
+        value=""
+        theme={theme}
+        onSearchScopeChange={onSearchScopeChange}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Карточки' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Акты' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Оборудование' })).not.toBeInTheDocument();
   });
 
   it('uses the consumables placeholder in consumables mode', () => {
@@ -27,7 +42,7 @@ describe('DatabaseSearchBar', () => {
 
     render(<DatabaseSearchBar value="" onChange={onChange} theme={theme} />);
 
-    fireEvent.change(screen.getByPlaceholderText('Поиск по инв. №, модели, сотруднику...'), {
+    fireEvent.change(screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...'), {
       target: { value: 'laser' },
     });
 

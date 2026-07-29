@@ -1,4 +1,4 @@
-# Развёртывание IT-Invent Agent через GPO / SCCM / Intune
+# Развёртывание HUB-IT Agent через GPO / SCCM / Intune
 
 ## 1. Подготовка MSI
 
@@ -14,10 +14,10 @@ python agent/setup.py bdist_msi
 
 После установки MSI автоматически:
 
-- ставит агент в `C:\Program Files\IT-Invent\Agent`
-- пишет runtime `.env` в `C:\ProgramData\IT-Invent\Agent\.env`
+- ставит агент в `C:\Program Files\HUB-IT\Agent`
+- пишет runtime `.env` в `C:\ProgramData\HUB-IT\Agent\.env`
 - мигрирует legacy `.env` из install directory, если он найден
-- создаёт Scheduled Task `IT-Invent Agent`
+- создаёт Scheduled Task `HUB-IT Agent` (старое имя `IT-Invent Agent` снимается при обновлении)
 - запускает задачу сразу после установки
 - форсирует:
   - `SCAN_AGENT_SCAN_ON_START=0`
@@ -28,12 +28,12 @@ python agent/setup.py bdist_msi
 Запускай новый MSI поверх установленной версии, без предварительного удаления:
 
 ```powershell
-msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_upgrade.log"
+msiexec /i "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_upgrade.log"
 ```
 
 У MSI сохранён постоянный `UpgradeCode`. Перед удалением старого продукта обновление временно сохраняет и затем восстанавливает:
 
-- `C:\ProgramData\IT-Invent\Agent\.env` и другие runtime-файлы;
+- `C:\ProgramData\HUB-IT\Agent\.env` и другие runtime-файлы;
 - локальную очередь inventory-agent;
 - состояние, outbox и очередь ScanAgent.
 
@@ -47,7 +47,7 @@ msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v 
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   ITINV_AGENT_INTERVAL_SEC="3600" `
@@ -83,7 +83,7 @@ msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v 
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan poll interval |
 | `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | `120` | Scan poll jitter |
 | `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | `D:\` | Extra PST/OST roots |
-| `INSTALLDIR` | Нет | `C:\Program Files\IT-Invent\Agent` | `D:\Apps\IT-Invent\Agent` | Custom install path |
+| `INSTALLDIR` | Нет | `C:\Program Files\HUB-IT\Agent` | `D:\Apps\HUB-IT\Agent` | Custom install path |
 
 ## 5. GPO / SCCM / Intune notes
 
@@ -130,13 +130,13 @@ Get-Content "C:\Windows\Temp\itinvent_agent_msi_helper.log" -Tail 200
 На клиенте проверь:
 
 ```powershell
-Test-Path "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe"
-Test-Path "C:\Program Files\IT-Invent\Agent\ITInventAgentMsiHelper.exe"
-Get-Content "C:\ProgramData\IT-Invent\Agent\.env"
-Get-ScheduledTask -TaskName "IT-Invent Agent"
-Get-ScheduledTask -TaskName "IT-Invent Agent" | % Settings | Format-List ExecutionTimeLimit, MultipleInstances, StartWhenAvailable
-Get-ScheduledTask -TaskName "IT-Invent Agent" | % Triggers | Select Enabled, @{n='RepetitionInterval';e={$_.Repetition.Interval}}, @{n='RepetitionDuration';e={$_.Repetition.Duration}}
-Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 100
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe"
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgentMsiHelper.exe"
+Get-Content "C:\ProgramData\HUB-IT\Agent\.env"
+Get-ScheduledTask -TaskName "HUB-IT Agent"
+Get-ScheduledTask -TaskName "HUB-IT Agent" | % Settings | Format-List ExecutionTimeLimit, MultipleInstances, StartWhenAvailable
+Get-ScheduledTask -TaskName "HUB-IT Agent" | % Triggers | Select Enabled, @{n='RepetitionInterval';e={$_.Repetition.Interval}}, @{n='RepetitionDuration';e={$_.Repetition.Duration}}
+Get-Content "C:\ProgramData\HUB-IT\Agent\Logs\itinvent_agent.log" -Tail 100
 ```
 
 Ожидаемое:
@@ -147,7 +147,7 @@ Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 100
 - `StartWhenAvailable : True`
 - `RepetitionInterval : PT1H`
 - `RepetitionDuration : P3650D`
-- `.env` существует в `C:\ProgramData\IT-Invent\Agent`
+- `.env` существует в `C:\ProgramData\HUB-IT\Agent`
 - в `.env` есть `SCAN_AGENT_SCAN_ON_START=0` и `SCAN_AGENT_WATCHDOG_ENABLED=0`
 
 ## 8. Проверка on-demand scan
@@ -156,7 +156,7 @@ Get-Content "C:\ProgramData\IT-Invent\Agent\Logs\itinvent_agent.log" -Tail 100
 
 Проверяем:
 
-1. В `C:\ProgramData\IT-Invent\Agent\.env` зафиксированы `0/0`.
+1. В `C:\ProgramData\HUB-IT\Agent\.env` зафиксированы `0/0`.
 2. В логах нет самопроизвольного scan сразу после install.
 3. Сканирование начинается только после серверной задачи `scan_now`.
 
@@ -166,21 +166,21 @@ Repair:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /fa "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+msiexec /fa "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
 ```
 
 Тихое удаление:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /x "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+msiexec /x "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
 ```
 
 Uninstall должен:
 
 - убрать Scheduled Task
 - остановить `ITInventAgent.exe` и `ITInventOutlookProbe.exe`
-- удалить `C:\ProgramData\IT-Invent\Agent`
+- удалить `C:\ProgramData\HUB-IT\Agent`
 - удалить install directory через MSI
 - очистить installer-created scan env vars
 
@@ -189,9 +189,9 @@ Uninstall должен:
 ```powershell
 Get-Process ITInventAgent -ErrorAction SilentlyContinue
 Get-Process ITInventOutlookProbe -ErrorAction SilentlyContinue
-Get-ScheduledTask -TaskName "IT-Invent Agent" -ErrorAction SilentlyContinue
-Test-Path "C:\Program Files\IT-Invent\Agent"
-Test-Path "C:\ProgramData\IT-Invent\Agent"
+Get-ScheduledTask -TaskName "HUB-IT Agent" -ErrorAction SilentlyContinue
+Test-Path "C:\Program Files\HUB-IT\Agent"
+Test-Path "C:\ProgramData\HUB-IT\Agent"
 ```
 
 ## 10. Troubleshooting
@@ -202,15 +202,15 @@ Test-Path "C:\ProgramData\IT-Invent\Agent"
 - проверь наличие:
 
 ```powershell
-Get-ChildItem "C:\Program Files\IT-Invent\Agent\scripts"
+Get-ChildItem "C:\Program Files\HUB-IT\Agent\scripts"
 ```
 
 - при необходимости выполни fallback вручную:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Program Files\IT-Invent\Agent\scripts\install_agent_task.ps1" `
-  -ExecutablePath "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe" `
-  -EnvFilePath "C:\ProgramData\IT-Invent\Agent\.env" `
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\HUB-IT\Agent\scripts\install_agent_task.ps1" `
+  -ExecutablePath "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe" `
+  -EnvFilePath "C:\ProgramData\HUB-IT\Agent\.env" `
   -StartAfterRegister
 ```
 

@@ -132,6 +132,73 @@ describe('useMailMessageFileActions', () => {
     );
   });
 
+  it('downloads the real Word attachment when preview only has a PDF blob', async () => {
+    const props = createProps({
+      mailAPI: {
+        getMessageHeaders: vi.fn(),
+        downloadMessageSource: vi.fn(),
+        downloadAttachment: vi.fn().mockResolvedValue({
+          data: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+          headers: {
+            'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'content-disposition': 'attachment; filename="memo.docx"',
+          },
+        }),
+        downloadAttachmentPreviewPdf: vi.fn().mockResolvedValue({
+          data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': 'attachment; filename="memo.pdf"',
+          },
+        }),
+      },
+    });
+    const { result } = renderHook(() => useMailMessageFileActions(props));
+    const message = { id: 'msg-1', mailbox_id: 'mb-1' };
+    const attachment = {
+      id: 'att-docx',
+      name: 'memo.docx',
+      content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+
+    await act(async () => {
+      await result.current.openAttachmentPreview(message, attachment);
+    });
+
+    expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
+      'msg-1',
+      'att-docx',
+      { mailboxId: 'mb-1' },
+    );
+    expect(result.current.attachmentPreview).toMatchObject({
+      open: true,
+      filename: 'memo.docx',
+      kind: 'office_pdf',
+      blob: null,
+    });
+    expect(result.current.attachmentPreview.previewBlob).toBeTruthy();
+
+    props.mailAPI.downloadAttachment.mockClear();
+    props.downloadBlobFileImpl.mockClear();
+
+    await act(async () => {
+      await result.current.downloadAttachmentPreview();
+    });
+
+    expect(props.mailAPI.downloadAttachment).toHaveBeenCalledWith(
+      'msg-1',
+      'att-docx',
+      { mailboxId: 'mb-1' },
+    );
+    expect(props.downloadBlobFileImpl).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'memo.docx',
+      { preferOpenFallback: true },
+    );
+    const savedBlob = props.downloadBlobFileImpl.mock.calls[0][0];
+    expect(savedBlob.type).not.toBe('application/pdf');
+  });
+
   it('deduplicates concurrent attachment downloads for the same message and attachment', async () => {
     let resolveDownload;
     const downloadPromise = new Promise((resolve) => {

@@ -178,14 +178,14 @@ function Field({
   );
 
   return (
-    <label htmlFor={id} className="relative block">
+    <label htmlFor={id} className="login-field relative block">
       {multiline ? (
         <textarea
           id={id}
           name={name}
           ref={inputRef}
           aria-label={label}
-          className={sharedInputClassName}
+          className={cn(sharedInputClassName, 'login-field-input')}
           value={value}
           onChange={onChange}
           autoComplete={autoComplete}
@@ -203,7 +203,7 @@ function Field({
           name={name}
           ref={inputRef}
           aria-label={label}
-          className={sharedInputClassName}
+          className={cn(sharedInputClassName, 'login-field-input')}
           value={value}
           onChange={onChange}
           type={type}
@@ -216,9 +216,9 @@ function Field({
           onFocus={onFocus}
         />
       )}
-      <span className={labelClassName}>{label}</span>
+      <span className={cn(labelClassName, 'login-field-label')}>{label}</span>
       {endAdornment ? (
-        <span className="absolute inset-y-0 right-4 flex items-center text-white/52">
+        <span className="login-field-adornment absolute inset-y-0 right-4 flex items-center text-white/72">
           {endAdornment}
         </span>
       ) : null}
@@ -252,6 +252,89 @@ function InfoBanner({ tone = 'info', children, variant = 'inline' }) {
     >
       {children}
     </div>
+  );
+}
+
+const VPN_HINT_DISMISS_KEY = 'hubit.login.vpn-hint.dismissed';
+
+function readVpnHintDismissed() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return window.sessionStorage.getItem(VPN_HINT_DISMISS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeVpnHintDismissed() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(VPN_HINT_DISMISS_KEY, '1');
+  } catch {
+    // Ignore storage failures (private mode / blocked storage).
+  }
+}
+
+function LoginVpnHintBanner({ visible, onDismiss, reducedMotion = false }) {
+  if (!visible) {
+    return null;
+  }
+
+  const shellStyle = {
+    paddingTop: 'max(12px, calc(env(safe-area-inset-top, 0px) + 8px))',
+  };
+  const content = (
+    <div
+      data-testid="login-vpn-hint"
+      className="pointer-events-auto mx-auto w-full max-w-[30rem] rounded-[18px] border border-amber-300/32 bg-[#1a1508] px-4 py-3 text-amber-50 shadow-[0_18px_48px_rgba(2,6,23,0.45)]"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="text-sm font-semibold tracking-[-0.01em]">Похоже, вы не в России</div>
+          <p className="text-sm leading-5 text-amber-50/78">
+            Отключите VPN и обновите страницу — так вход и почта работают стабильнее.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-amber-50/70 transition hover:bg-white/8 hover:text-amber-50"
+          aria-label="Скрыть подсказку про VPN"
+        >
+          Закрыть
+        </button>
+      </div>
+    </div>
+  );
+
+  if (reducedMotion) {
+    return (
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] px-4" style={shellStyle}>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        key="login-vpn-hint"
+        initial={{ opacity: 0, y: -14 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{ duration: 0.22, ease: 'easeOut' }}
+        className="pointer-events-none fixed inset-x-0 top-0 z-[60] px-4"
+        style={shellStyle}
+      >
+        {content}
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
@@ -382,6 +465,8 @@ function Login() {
   const [step, setStep] = useState('password');
   const [loginModeLoading, setLoginModeLoading] = useState(true);
   const [networkZone, setNetworkZone] = useState('external');
+  const [showVpnHint, setShowVpnHint] = useState(false);
+  const [vpnHintDismissed, setVpnHintDismissed] = useState(readVpnHintDismissed);
   const [biometricLoginEnabled, setBiometricLoginEnabled] = useState(false);
   const [loginChallengeId, setLoginChallengeId] = useState('');
   const [setupData, setSetupData] = useState(null);
@@ -465,6 +550,11 @@ function Login() {
   const reportLoginError = useCallback((message) => {
     showLoginNotice('error', message, 5200);
   }, [showLoginNotice]);
+
+  const dismissVpnHint = useCallback(() => {
+    writeVpnHintDismissed();
+    setVpnHintDismissed(true);
+  }, []);
 
   const handleCompactFieldFocus = useCallback((event) => {
     if (!isCompactViewport) {
@@ -697,14 +787,17 @@ function Login() {
           ? 'internal'
           : 'external';
         const nextBiometric = Boolean(mode?.biometric_login_enabled);
+        const nextVpnHint = Boolean(mode?.show_vpn_hint);
         setNetworkZone(nextZone);
         setBiometricLoginEnabled(nextBiometric);
+        setShowVpnHint(nextVpnHint);
       } catch {
         if (cancelled) {
           return;
         }
         setNetworkZone('external');
         setBiometricLoginEnabled(false);
+        setShowVpnHint(false);
       } finally {
         if (!cancelled) {
           setLoginModeLoading(false);
@@ -1544,7 +1637,7 @@ function Login() {
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
                     aria-label="toggle password visibility"
-                    className="rounded-full p-1 text-white/52 transition hover:text-white/86"
+                    className="login-field-eye rounded-full p-1 text-white/72 transition hover:text-white"
                   >
                     <EyeGlyph open={showPassword} className="h-5 w-5" />
                   </button>
@@ -1833,8 +1926,9 @@ function Login() {
   const rememberDialogTitle = rememberDeviceMode === 'platform'
     ? 'Запомнить ПК'
     : 'Запомнить устройство';
-  const mobileNoticeInset = topNotice?.message && isCompactViewport
-    ? 'max(88px, calc(env(safe-area-inset-top, 0px) + 72px))'
+  const vpnHintVisible = Boolean(showVpnHint && !vpnHintDismissed);
+  const mobileNoticeInset = (topNotice?.message || vpnHintVisible) && isCompactViewport
+    ? 'max(112px, calc(env(safe-area-inset-top, 0px) + 96px))'
     : undefined;
 
   return (
@@ -1871,6 +1965,11 @@ function Login() {
         />
       ) : null}
 
+      <LoginVpnHintBanner
+        visible={vpnHintVisible}
+        onDismiss={dismissVpnHint}
+        reducedMotion={prefersReducedMotion}
+      />
       <LoginTopNotice
         notice={topNotice}
         reducedMotion={prefersReducedMotion}

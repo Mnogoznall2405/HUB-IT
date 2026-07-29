@@ -3,7 +3,7 @@
   Collect Exchange mailbox quotas and POST JSON snapshot to HUB-IT.
 
 .DESCRIPTION
-  Reads credentials from C:\ProgramData\IT-Invent\MailboxQuota\.env
+  Reads credentials from C:\ProgramData\HUB-IT\Mail\.env
   Intended for Scheduled Task (SYSTEM) on a domain-joined collector PC.
 
 .EXAMPLE
@@ -11,6 +11,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$RuntimeRoot = '',
     [string]$EnvFile = '',
     [string]$ExchangeServer = '',
     [string]$ApiUrl = '',
@@ -25,10 +26,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'IT-Invent\MailboxQuota'
-$resolvedEnvFile = if ($EnvFile) { $EnvFile } else { Join-Path $defaultRuntimeRoot '.env' }
-$logPath = Join-Path $defaultRuntimeRoot 'sync.log'
-$archiveDir = Join-Path $defaultRuntimeRoot 'archive'
+$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'HUB-IT\Mail'
+$resolvedRuntimeRoot = if ($RuntimeRoot) { $RuntimeRoot } else { $defaultRuntimeRoot }
+$resolvedEnvFile = if ($EnvFile) { $EnvFile } else { Join-Path $resolvedRuntimeRoot '.env' }
+$logPath = Join-Path $resolvedRuntimeRoot 'sync.log'
+$archiveDir = Join-Path $resolvedRuntimeRoot 'archive'
 
 function Write-SyncLog {
     param([string]$Message)

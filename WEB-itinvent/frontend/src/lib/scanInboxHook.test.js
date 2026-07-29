@@ -1,30 +1,41 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useScanIncidentInbox } from './useScanIncidentInbox';
-import { scanAPI } from '../api/client';
-
-vi.mock('../api/client', () => ({
-  scanAPI: {
-    getIncidents: vi.fn(),
-  },
-}));
+import { INCIDENT_BATCH_SIZE, useScanIncidentInbox } from '../hooks/useScanIncidentInbox';
 
 describe('useScanIncidentInbox', () => {
+  let getIncidents;
+
   beforeEach(() => {
-    vi.clearAllMocks();
+    getIncidents = vi.fn();
+  });
+
+  it('uses a smaller default batch size for inbox pages', () => {
+    expect(INCIDENT_BATCH_SIZE).toBe(80);
+  });
+
+  it('skips fetching when enabled is false', async () => {
+    renderHook(() => useScanIncidentInbox(
+      { status: 'new' },
+      { batchSize: 1, enabled: false, getIncidents },
+    ));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getIncidents).not.toHaveBeenCalled();
   });
 
   it('loads only the first page initially and loads more explicitly', async () => {
-    scanAPI.getIncidents
+    getIncidents
       .mockResolvedValueOnce({ items: [{ id: 'i1' }], total: 3, next_offset: 1, has_more: true })
       .mockResolvedValueOnce({ items: [{ id: 'i2' }], total: 3, next_offset: 2, has_more: true });
 
     const filters = { status: 'new' };
-    const { result } = renderHook(() => useScanIncidentInbox(filters, { batchSize: 1 }));
+    const { result } = renderHook(() => useScanIncidentInbox(filters, { batchSize: 1, getIncidents }));
 
     await waitFor(() => expect(result.current.loaded).toBe(1));
-    expect(scanAPI.getIncidents).toHaveBeenCalledTimes(1);
-    expect(scanAPI.getIncidents).toHaveBeenNthCalledWith(
+    expect(getIncidents).toHaveBeenCalledTimes(1);
+    expect(getIncidents).toHaveBeenNthCalledWith(
       1,
       { status: 'new', limit: 1, offset: 0 },
       expect.objectContaining({ signal: expect.any(Object) }),
@@ -34,8 +45,8 @@ describe('useScanIncidentInbox', () => {
       await result.current.loadMore();
     });
 
-    expect(scanAPI.getIncidents).toHaveBeenCalledTimes(2);
-    expect(scanAPI.getIncidents).toHaveBeenNthCalledWith(
+    expect(getIncidents).toHaveBeenCalledTimes(2);
+    expect(getIncidents).toHaveBeenNthCalledWith(
       2,
       { status: 'new', limit: 1, offset: 1 },
       expect.objectContaining({ signal: expect.any(Object) }),

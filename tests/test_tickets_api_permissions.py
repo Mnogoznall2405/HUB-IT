@@ -86,6 +86,50 @@ def test_admin_only_notification_rule_update_rejects_operator(monkeypatch):
     assert called is False
 
 
+def test_zup_search_requires_tickets_read_permission(monkeypatch):
+    called = False
+
+    def _search_zup(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("service should not be called without permission")
+
+    monkeypatch.setattr(tickets_api.tickets_service, "search_zup_employees", _search_zup)
+    client = _client_for(lambda: _make_user(permissions=[]))
+
+    response = client.get("/tickets/employees/zup-search", params={"q": "иванов"})
+
+    assert response.status_code == 403
+    assert called is False
+
+
+def test_zup_search_allows_tickets_read(monkeypatch):
+    captured = {}
+
+    def _search(*, query="", limit=20, user_permissions=None):
+        captured["permissions"] = list(user_permissions or [])
+        return {
+            "items": [{"full_name": "Иванов", "employee_code": "1"}],
+            "total": 1,
+            "source": "zup",
+            "synced_at": None,
+            "include_personal": "tickets.personal_data.read" in (user_permissions or []),
+        }
+
+    monkeypatch.setattr(tickets_api.tickets_service, "search_zup_employees", _search)
+    client = _client_for(
+        lambda: _make_user(permissions=["tickets.read", "tickets.personal_data.read"])
+    )
+
+    response = client.get("/tickets/employees/zup-search", params={"q": "иванов", "limit": 10})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["full_name"] == "Иванов"
+    assert captured["permissions"] == ["tickets.read", "tickets.personal_data.read"]
+    assert response.json()["include_personal"] is True
+
+
 def test_admin_can_reach_notification_rule_update(monkeypatch):
     monkeypatch.setattr(
         tickets_api.tickets_notification_service,

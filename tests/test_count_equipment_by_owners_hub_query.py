@@ -52,3 +52,37 @@ def test_count_model_only_when_part_no_missing(monkeypatch):
     assert "MODEL_NAME" in sql
     assert params == (10, "%dell p2419h%")
     assert "LIKE ?" in sql
+
+
+def test_count_all_owners_by_hub_query_returns_positive_owners(monkeypatch):
+    fake_db = MagicMock()
+    fake_db.execute_query.return_value = [
+        {
+            "owner_no": 20,
+            "hub_count": 3,
+            "owner_display_name": "Сидоров Пётр",
+            "owner_dept": "IT",
+        },
+        {
+            "owner_no": 10,
+            "hub_count": 0,
+            "owner_display_name": "Нулевой",
+            "owner_dept": "",
+        },
+    ]
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: fake_db)
+
+    rows = db_queries.count_all_owners_by_hub_query(part_no="ЦБ-00170664", limit=50)
+
+    assert rows == [
+        {
+            "owner_no": 20,
+            "hub_count": 3,
+            "owner_display_name": "Сидоров Пётр",
+            "owner_dept": "IT",
+        },
+    ]
+    sql, params = fake_db.execute_query.call_args[0]
+    assert "TOP 50" in sql
+    assert "OWNER_DISPLAY_NAME" in sql
+    assert params == ("цб-00170664",)

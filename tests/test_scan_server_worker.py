@@ -293,7 +293,7 @@ def test_collect_pdf_matches_skips_blank_tiny_pdf_without_ocr(monkeypatch, temp_
 
     assert result["matches"] == []
     assert result["outcome"] == "ocr_skipped_blank_pdf"
-    assert result["reason"] == "Skipped OCR: blank/tiny PDF"
+    assert result["reason"] == "OCR пропущен: пустой или слишком маленький PDF"
 
 
 def test_collect_pdf_matches_does_not_treat_tiny_cover_as_whole_blank_document(monkeypatch, temp_dir):
@@ -371,7 +371,7 @@ def test_collect_pdf_matches_rejects_oversized_pdf_without_ocr(monkeypatch, temp
 
     assert result["matches"] == []
     assert result["outcome"] == "ocr_skipped_oversize_pdf"
-    assert "exceeds" in result["reason"]
+    assert "превышает" in result["reason"]
 
 
 def test_collect_pdf_matches_marks_nonblank_page_without_ocr_text_incomplete(monkeypatch, temp_dir):
@@ -445,7 +445,7 @@ def test_process_job_creates_incident_for_text_pdf_after_mandatory_ocr(monkeypat
     assert calls["finalize"] == {
         "job_id": "job-1",
         "status": "done_with_incident",
-        "summary": "Matches found: 1 (combined_match)",
+        "summary": "Найдено совпадений: 1 (combined_match)",
     }
 
 
@@ -504,7 +504,7 @@ def test_process_job_skips_blank_tiny_pdf_with_explicit_summary(monkeypatch, tem
     assert calls["finalize"] == {
         "job_id": "job-blank",
         "status": "done_clean",
-        "summary": "Skipped OCR: blank/tiny PDF (ocr_skipped_blank_pdf)",
+        "summary": "OCR пропущен: пустой или слишком маленький PDF",
     }
 
 
@@ -527,7 +527,7 @@ def test_process_job_refuses_clean_result_when_patterns_are_unavailable(monkeypa
     assert calls["finalize"] == {
         "job_id": "job-no-rules",
         "status": "analysis_incomplete",
-        "summary": "Analysis rules unavailable",
+        "summary": "Правила поиска недоступны",
         "error_text": "patterns_unavailable",
     }
 
@@ -611,7 +611,7 @@ def test_process_job_processes_pdf_in_memory_and_ocr_finds_match(monkeypatch, te
     assert not any(worker.config.archive_dir.rglob("*"))
     assert calls["finalize"]["job_id"] == "job-archive-fail"
     assert calls["finalize"]["status"] == "done_with_incident"
-    assert calls["finalize"]["summary"] == "Matches found: 1 (ocr_match)"
+    assert calls["finalize"]["summary"] == "Найдено совпадений: 1 (ocr_match)"
     assert "job-archive-fail" not in worker._test_spool_store
 
 
@@ -695,7 +695,7 @@ def test_process_job_fails_when_transient_pdf_payload_is_missing(temp_dir):
     assert calls["finalize"] == {
         "job_id": "job-missing",
         "status": "analysis_incomplete",
-        "error_text": "Missing transient PDF payload",
+        "error_text": "Отсутствует временный файл PDF на сервере",
     }
     assert calls["deleted"] == "job-missing"
 
@@ -776,8 +776,8 @@ def test_process_job_fails_oversized_pdf_without_retry(monkeypatch, temp_dir):
 
     assert "retry" not in calls
     assert calls["finalize"]["status"] == "analysis_incomplete"
-    assert calls["finalize"]["summary"] == "Skipped OCR: oversized PDF (ocr_skipped_oversize_pdf)"
-    assert "exceeds" in calls["finalize"]["error_text"]
+    assert calls["finalize"]["summary"] == "OCR пропущен: PDF слишком большой"
+    assert "превышает" in calls["finalize"]["error_text"]
     assert calls["deleted"] == "job-oversize"
 
 
@@ -819,8 +819,8 @@ def test_process_job_requeues_ocr_error_until_attempt_limit(monkeypatch, temp_di
 
     assert calls["retry"] == {
         "job_id": "job-retry",
-        "error_text": "OCR timeout",
-        "summary": "OCR retry scheduled (1/2)",
+        "error_text": "Превышено время OCR",
+        "summary": "Повтор OCR запланирован (1/2)",
     }
     assert "finalize" not in calls
     assert "deleted" not in calls
@@ -867,8 +867,8 @@ def test_process_job_fails_ocr_error_after_attempt_limit(monkeypatch, temp_dir):
     assert calls["finalize"] == {
         "job_id": "job-final",
         "status": "analysis_incomplete",
-        "summary": "No matches (ocr_error)",
-        "error_text": "OCR timeout",
+        "summary": "Совпадений нет (ошибка OCR)",
+        "error_text": "Превышено время OCR",
     }
     assert calls["deleted"] == "job-final"
 
@@ -1068,3 +1068,29 @@ def test_get_ocr_pool_uses_threads_on_windows(monkeypatch, temp_dir):
         assert isinstance(pool, ThreadPoolExecutor)
     finally:
         worker._shutdown_ocr_pool()
+
+
+def test_coerce_matches_drops_furniture_dsp_local_hits(temp_dir):
+    worker = _make_worker(temp_dir)
+
+    matches = worker._coerce_matches(
+        [
+            {
+                "pattern": "dsp_with_exclusion",
+                "pattern_name": "ДСП",
+                "weight": "0.8",
+                "value": "ДСП",
+                "snippet": "материал фасадов ДСП с пластиковым покрытием",
+            },
+            {
+                "pattern": "dsp_with_exclusion",
+                "pattern_name": "ДСП",
+                "weight": "0.8",
+                "value": "ДСП",
+                "snippet": "Гриф документа ДСП. Экз. № 2",
+            },
+        ]
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["snippet"].startswith("Гриф документа")

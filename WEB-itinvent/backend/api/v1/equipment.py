@@ -61,6 +61,7 @@ from backend.services.equipment_transfer_execution_service import (
     execute_equipment_location_transfer,
 )
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
+from backend.services.equipment_recent_acts_service import equipment_recent_acts_service
 from backend.services import transfer_act_job_service
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
@@ -114,6 +115,31 @@ def _remove_recent_card_for_equipment_safely(*, db_id: Optional[str], inv_no: An
         equipment_recent_cards_service.remove_for_equipment(db_id=db_id, inv_no=inv_no)
     except Exception:
         logger.warning("Failed to remove deleted equipment from recent cards", exc_info=True)
+
+
+def _touch_recent_act_safely(
+    *,
+    current_user: Any,
+    db_id: Optional[str],
+    doc_no: Any,
+    doc_number: Any = "",
+    action_type: str = "view",
+    snapshot: Any = None,
+) -> None:
+    user_id = _current_user_id(current_user)
+    if user_id <= 0:
+        return
+    try:
+        equipment_recent_acts_service.touch(
+            user_id=user_id,
+            db_id=db_id,
+            doc_no=doc_no,
+            doc_number=doc_number,
+            action_type=action_type,
+            snapshot=snapshot,
+        )
+    except Exception:
+        logger.warning("Failed to record equipment recent act activity", exc_info=True)
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -660,6 +686,30 @@ class EquipmentRecentCardsListResponse(BaseModel):
     total: int = 0
 
 
+class EquipmentRecentActTouchRequest(BaseModel):
+    """Record a user activity event for an equipment act document."""
+    doc_no: int = Field(..., ge=1)
+    doc_number: str = Field(default="", max_length=128)
+    action_type: str = Field(default="view", max_length=64)
+    snapshot: Optional[dict[str, Any]] = None
+
+
+class EquipmentRecentActResponse(BaseModel):
+    doc_no: int
+    doc_number: str = ""
+    db_id: str
+    last_action: str
+    last_action_label: str
+    last_activity_at: Optional[str] = None
+    activity_count: int = 0
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class EquipmentRecentActsListResponse(BaseModel):
+    items: list[EquipmentRecentActResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 @router.get("/search/serial", response_model=EquipmentSearchResponse)
 async def search_by_serial(
     q: str = Query(..., min_length=1, description="Serial number or inventory number to search"),
@@ -890,6 +940,65 @@ async def clear_recent_equipment_cards(
 ):
     """Clear all current-user recent equipment cards for the selected database."""
     return equipment_recent_cards_service.clear(user_id=current_user.id, db_id=db_id)
+
+
+@router.get("/acts/recent", response_model=EquipmentRecentActsListResponse)
+async def get_recent_equipment_acts(
+    limit: int = Query(8, ge=1, le=50),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get the current user's recent act documents for the selected ITINVENT database."""
+    items = equipment_recent_acts_service.list_recent(
+        user_id=current_user.id,
+        db_id=db_id,
+        limit=limit,
+    )
+    return EquipmentRecentActsListResponse(items=items, total=len(items))
+
+
+@router.post("/acts/recent/touch", response_model=EquipmentRecentActResponse)
+async def touch_recent_equipment_act(
+    payload: EquipmentRecentActTouchRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Upsert a current-user recent act document event."""
+    try:
+        item = equipment_recent_acts_service.touch(
+            user_id=current_user.id,
+            db_id=db_id,
+            doc_no=payload.doc_no,
+            doc_number=payload.doc_number,
+            action_type=payload.action_type,
+            snapshot=payload.snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return EquipmentRecentActResponse(**item)
+
+
+@router.delete("/acts/recent/{doc_no}", response_model=dict)
+async def remove_recent_equipment_act(
+    doc_no: int,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Remove one recent act from the current user's selected database scope."""
+    return equipment_recent_acts_service.remove(
+        user_id=current_user.id,
+        db_id=db_id,
+        doc_no=doc_no,
+    )
+
+
+@router.delete("/acts/recent", response_model=dict)
+async def clear_recent_equipment_acts(
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Clear all current-user recent acts for the selected database."""
+    return equipment_recent_acts_service.clear(user_id=current_user.id, db_id=db_id)
 
 
 @router.get("/branches", response_model=list[Branch])
@@ -2004,6 +2113,23 @@ async def commit_uploaded_act(
             action_type="act",
             snapshot=queries.get_equipment_by_inv(linked_inv_no, db_id) or {"inv_no": linked_inv_no},
         )
+    _touch_recent_act_safely(
+        current_user=current_user,
+        db_id=db_id,
+        doc_no=response_payload["doc_no"],
+        doc_number=response_payload["doc_number"],
+        action_type="upload",
+        snapshot={
+            "doc_no": response_payload["doc_no"],
+            "doc_number": response_payload["doc_number"],
+            "has_file": True,
+            "item_count": len(response_payload["linked_inv_nos"]),
+            "items": [
+                {"inv_no": inv_no}
+                for inv_no in response_payload["linked_inv_nos"][:20]
+            ],
+        },
+    )
     return UploadedActCommitResponse(**response_payload)
 
 
@@ -2178,6 +2304,17 @@ async def send_uploaded_act_email(
     )
 
 
+@router.get("/acts/latest", response_model=EquipmentActSearchResponse)
+async def list_latest_equipment_acts(
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of newest documents to return"),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """List newest act/transfer documents for the inventory Acts tab feed."""
+    payload = queries.list_latest_equipment_acts(limit=limit, db_id=db_id)
+    return EquipmentActSearchResponse(**payload)
+
+
 @router.get("/acts/search", response_model=EquipmentActSearchResponse)
 async def search_equipment_acts(
     q: str = Query("", description="Search by act number or employee surname/name"),
@@ -2187,6 +2324,7 @@ async def search_equipment_acts(
 ):
     """
     Search act/transfer documents linked to equipment items.
+    Empty/short query returns the latest-act feed.
     """
     payload = queries.search_equipment_acts(q, limit=limit, db_id=db_id)
     return EquipmentActSearchResponse(**payload)

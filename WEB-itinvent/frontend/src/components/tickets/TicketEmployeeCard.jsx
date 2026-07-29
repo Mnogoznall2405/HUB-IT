@@ -3,6 +3,7 @@ import {
   Alert,
   Autocomplete,
   Button,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -11,6 +12,7 @@ import {
   LinearProgress,
   Stack,
   TextField,
+  Typography,
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
 import { ticketsAPI } from '../../api/tickets';
@@ -42,7 +44,14 @@ const pickCurrentDocument = (documents = []) => (
 
 const buildFormFromEmployee = (employee, canReadPersonal) => {
   if (!employee || !canReadPersonal) {
-    return { ...EMPTY_FORM, full_name: employee?.full_name || '' };
+    return {
+      ...EMPTY_FORM,
+      full_name: employee?.full_name || '',
+      department: employee?.department || '',
+      position: employee?.position || '',
+      phone: employee?.phone || '',
+      email: employee?.email || '',
+    };
   }
   const document = pickCurrentDocument(employee.documents);
   return {
@@ -66,6 +75,14 @@ const buildFormFromEmployee = (employee, canReadPersonal) => {
       ? ''
       : (document?.registration_address || ''),
   };
+};
+
+const zupOptionLabel = (option) => {
+  if (!option) return '';
+  const parts = [option.full_name];
+  if (option.position) parts.push(option.position);
+  if (option.department) parts.push(option.department);
+  return parts.filter(Boolean).join(' — ');
 };
 
 const hasPassportInput = (form) => (
@@ -92,6 +109,12 @@ export default function TicketEmployeeCard({
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [zupOptions, setZupOptions] = useState([]);
+  const [zupSearch, setZupSearch] = useState('');
+  const [zupSelected, setZupSelected] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [zupLoading, setZupLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -123,6 +146,41 @@ export default function TicketEmployeeCard({
   }, [employeeSearch, loadEmployees, open]);
 
   useEffect(() => {
+    if (!open || !canWrite) {
+      setZupOptions([]);
+      return undefined;
+    }
+    const query = zupSearch.trim();
+    if (query.length < 2) {
+      setZupOptions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setZupLoading(true);
+      ticketsAPI.searchZupEmployees({ q: query, limit: 20 })
+        .then((data) => {
+          if (cancelled) return;
+          setZupOptions(Array.isArray(data?.items) ? data.items : []);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setZupOptions([]);
+          setError(getErrorMessage(err) || 'Не удалось загрузить сотрудников из ЗУП.');
+        })
+        .finally(() => {
+          if (!cancelled) setZupLoading(false);
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [canWrite, open, zupSearch]);
+
+  useEffect(() => {
     if (!open) {
       setForm(EMPTY_FORM);
       setSelectedId(null);
@@ -130,6 +188,10 @@ export default function TicketEmployeeCard({
       setError('');
       setSuccess('');
       setEmployeeSearch('');
+      setZupSearch('');
+      setZupSelected(null);
+      setZupOptions([]);
+      setManualOpen(false);
     }
   }, [open]);
 
@@ -138,17 +200,51 @@ export default function TicketEmployeeCard({
     [employees, selectedId],
   );
 
+  const applyEmployee = (employee, message) => {
+    const document = pickCurrentDocument(employee.documents);
+    setSelectedId(employee.id);
+    setSelectedDocumentId(document?.id || null);
+    setForm(buildFormFromEmployee(employee, canReadPersonal));
+    setManualOpen(true);
+    setSuccess(message);
+  };
+
   const openEmployee = async (id) => {
     setError('');
     setSuccess('');
+    setZupSelected(null);
+    setZupSearch('');
     try {
       const employee = await ticketsAPI.getEmployee(id);
-      setSelectedId(employee.id);
-      const document = pickCurrentDocument(employee.documents);
-      setSelectedDocumentId(document?.id || null);
-      setForm(buildFormFromEmployee(employee, canReadPersonal));
+      applyEmployee(employee, '');
     } catch (err) {
       setError(getErrorMessage(err));
+    }
+  };
+
+  const importFromZup = async (person) => {
+    if (!person?.employee_code) {
+      setError('У выбранного сотрудника ЗУП нет кода.');
+      return;
+    }
+    setImporting(true);
+    setError('');
+    setSuccess('');
+    try {
+      const employee = await ticketsAPI.ensureEmployeeFromZup(person.employee_code);
+      setZupSelected(person);
+      applyEmployee(
+        employee,
+        canReadPersonal
+          ? 'Сотрудник взят из ЗУП вместе с паспортными данными. Проверьте и при необходимости сохраните правки.'
+          : 'Сотрудник взят из ЗУП. Паспортные данные доступны только с правом на персональные данные.',
+      );
+      onChanged?.();
+      await loadEmployees();
+    } catch (err) {
+      setError(getErrorMessage(err) || 'Не удалось импортировать сотрудника из ЗУП.');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -197,11 +293,10 @@ export default function TicketEmployeeCard({
         ? await ticketsAPI.updateEmployee(selectedId, payload)
         : await ticketsAPI.createEmployee(payload);
 
-      const document = pickCurrentDocument(employee.documents);
-      setSelectedId(employee.id);
-      setSelectedDocumentId(document?.id || null);
-      setForm(buildFormFromEmployee(employee, canReadPersonal));
-      setSuccess(selectedId ? 'Данные сотрудника сохранены.' : 'Сотрудник создан.');
+      applyEmployee(
+        employee,
+        selectedId ? 'Данные сотрудника сохранены.' : 'Сотрудник создан вручную.',
+      );
       onChanged?.();
       await loadEmployees();
     } catch (err) {
@@ -212,13 +307,57 @@ export default function TicketEmployeeCard({
   };
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md">
-      <DialogTitle>{selectedId ? 'Карточка сотрудника' : 'Добавить сотрудника'}</DialogTitle>
+    <Dialog open={open} onClose={saving || importing ? undefined : onClose} fullWidth maxWidth="md">
+      <DialogTitle>Сотрудники</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {loading ? <LinearProgress /> : null}
+          {loading || zupLoading || importing ? <LinearProgress /> : null}
           {error ? <Alert severity="error">{error}</Alert> : null}
           {success ? <Alert severity="success">{success}</Alert> : null}
+
+          {canWrite ? (
+            <Autocomplete
+              options={zupOptions}
+              value={zupSelected}
+              filterOptions={(options) => options}
+              onChange={(_, value) => {
+                if (value) {
+                  void importFromZup(value);
+                } else {
+                  setZupSelected(null);
+                }
+              }}
+              onInputChange={(_, value, reason) => {
+                if (reason === 'input' || reason === 'clear') {
+                  setZupSearch(value);
+                }
+              }}
+              getOptionLabel={zupOptionLabel}
+              isOptionEqualToValue={(option, value) => (
+                (option.employee_code && option.employee_code === value.employee_code)
+                || option.full_name === value.full_name
+              )}
+              renderOption={(props, option) => (
+                <li {...props} key={option.employee_code || option.full_name}>
+                  <Stack spacing={0.25}>
+                    <Typography variant="body2">{option.full_name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {[option.position, option.department].filter(Boolean).join(' · ') || 'ЗУП'}
+                    </Typography>
+                  </Stack>
+                </li>
+              )}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Взять из ЗУП"
+                  size="small"
+                  helperText="Если сотрудник есть в ЗУП — выбирайте здесь. Он сразу попадёт в базу билетов с данными из ЗУП."
+                />
+              )}
+              noOptionsText={zupSearch.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено в ЗУП'}
+            />
+          ) : null}
 
           <Autocomplete
             options={employees}
@@ -236,156 +375,183 @@ export default function TicketEmployeeCard({
             getOptionLabel={(option) => option.full_name || ''}
             isOptionEqualToValue={(option, value) => option.id === value.id}
             renderInput={(params) => (
-              <TextField {...params} label="Найти существующего сотрудника" size="small" />
+              <TextField {...params} label="Уже добавленные в билеты" size="small" />
             )}
           />
 
-          <Grid container spacing={1.5}>
-            <Grid item xs={12} md={6}>
-              <TextField
-                size="small"
-                fullWidth
-                required
-                label="ФИО"
-                value={form.full_name}
-                onChange={(event) => updateField('full_name', event.target.value)}
-                disabled={!canWrite}
-              />
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <TextField
-                size="small"
-                fullWidth
-                label="Подразделение"
-                value={form.department}
-                onChange={(event) => updateField('department', event.target.value)}
-                disabled={!canWrite}
-              />
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <TextField
-                size="small"
-                fullWidth
-                label="Должность"
-                value={form.position}
-                onChange={(event) => updateField('position', event.target.value)}
-                disabled={!canWrite}
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                size="small"
-                fullWidth
-                label="Телефон"
-                value={form.phone}
-                onChange={(event) => updateField('phone', event.target.value)}
-                disabled={!canWrite}
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                size="small"
-                fullWidth
-                label="Email"
-                value={form.email}
-                onChange={(event) => updateField('email', event.target.value)}
-                disabled={!canWrite}
-              />
-            </Grid>
-          </Grid>
-
-          {canWrite && !canReadPersonal ? (
-            <Alert severity="warning">
-              Для ввода паспортных данных нужно право «Билеты: персональные данные».
-            </Alert>
+          {canWrite ? (
+            <Button
+              size="small"
+              onClick={() => {
+                setManualOpen((prev) => !prev);
+                if (!manualOpen) {
+                  setSelectedId(null);
+                  setSelectedDocumentId(null);
+                  setZupSelected(null);
+                  setForm(EMPTY_FORM);
+                  setSuccess('');
+                }
+              }}
+            >
+              {manualOpen ? 'Скрыть ручное добавление' : 'Добавить вручную (если нет в ЗУП)'}
+            </Button>
           ) : null}
 
-          {canEditPersonal ? (
-            <Grid container spacing={1.5}>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Дата рождения"
-                  type="date"
-                  value={form.date_of_birth}
-                  onChange={(event) => updateField('date_of_birth', event.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                />
+          <Collapse in={manualOpen || Boolean(selectedId)}>
+            <Stack spacing={2}>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={6}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    required
+                    label="ФИО"
+                    value={form.full_name}
+                    onChange={(event) => updateField('full_name', event.target.value)}
+                    disabled={!canWrite}
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Подразделение"
+                    value={form.department}
+                    onChange={(event) => updateField('department', event.target.value)}
+                    disabled={!canWrite}
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Должность"
+                    value={form.position}
+                    onChange={(event) => updateField('position', event.target.value)}
+                    disabled={!canWrite}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Телефон"
+                    value={form.phone}
+                    onChange={(event) => updateField('phone', event.target.value)}
+                    disabled={!canWrite}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Email"
+                    value={form.email}
+                    onChange={(event) => updateField('email', event.target.value)}
+                    disabled={!canWrite}
+                  />
+                </Grid>
               </Grid>
-              <Grid item xs={12} md={2}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Серия"
-                  value={form.passport_series}
-                  onChange={(event) => updateField('passport_series', event.target.value)}
-                />
-              </Grid>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Номер"
-                  value={form.passport_number}
-                  onChange={(event) => updateField('passport_number', event.target.value)}
-                />
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Дата выдачи"
-                  type="date"
-                  value={form.issue_date}
-                  onChange={(event) => updateField('issue_date', event.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              <Grid item xs={12} md={6}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Кем выдан"
-                  value={form.issued_by}
-                  onChange={(event) => updateField('issued_by', event.target.value)}
-                />
-              </Grid>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Код подразделения"
-                  value={form.issuer_code}
-                  onChange={(event) => updateField('issuer_code', event.target.value)}
-                />
-              </Grid>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Место рождения"
-                  value={form.birth_place}
-                  onChange={(event) => updateField('birth_place', event.target.value)}
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Прописка"
-                  value={form.registration_address}
-                  onChange={(event) => updateField('registration_address', event.target.value)}
-                />
-              </Grid>
-            </Grid>
-          ) : null}
+
+              {canWrite && !canReadPersonal ? (
+                <Alert severity="warning">
+                  Для паспортных данных нужно право «Билеты: персональные данные».
+                </Alert>
+              ) : null}
+
+              {canEditPersonal ? (
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Дата рождения"
+                      type="date"
+                      value={form.date_of_birth}
+                      onChange={(event) => updateField('date_of_birth', event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={2}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Серия"
+                      value={form.passport_series}
+                      onChange={(event) => updateField('passport_series', event.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Номер"
+                      value={form.passport_number}
+                      onChange={(event) => updateField('passport_number', event.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Дата выдачи"
+                      type="date"
+                      value={form.issue_date}
+                      onChange={(event) => updateField('issue_date', event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Кем выдан"
+                      value={form.issued_by}
+                      onChange={(event) => updateField('issued_by', event.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Код подразделения"
+                      value={form.issuer_code}
+                      onChange={(event) => updateField('issuer_code', event.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Место рождения"
+                      value={form.birth_place}
+                      onChange={(event) => updateField('birth_place', event.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Прописка"
+                      value={form.registration_address}
+                      onChange={(event) => updateField('registration_address', event.target.value)}
+                    />
+                  </Grid>
+                </Grid>
+              ) : null}
+            </Stack>
+          </Collapse>
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={saving}>Закрыть</Button>
-        {canWrite ? (
-          <Button variant="contained" startIcon={<SaveIcon />} onClick={save} disabled={saving}>
+        <Button onClick={onClose} disabled={saving || importing}>Закрыть</Button>
+        {canWrite && (manualOpen || selectedId) ? (
+          <Button
+            variant="contained"
+            startIcon={<SaveIcon />}
+            onClick={save}
+            disabled={saving || importing}
+          >
             Сохранить
           </Button>
         ) : null}

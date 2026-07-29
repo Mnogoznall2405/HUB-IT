@@ -1,13 +1,15 @@
 """Chat attachment download and preview endpoints."""
 from __future__ import annotations
 
-from backend.api.v1.chat._shim import chat_api
+import re
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse, Response
 
 from backend.api.deps import require_permission
+from backend.api.v1.chat._shim import chat_api
 from backend.chat.schemas import ChatMessageReadsResponse
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_CHAT_READ
@@ -41,8 +43,15 @@ async def download_chat_attachment(
 
 
 def _build_chat_attachment_content_disposition(filename: str, disposition: str = "attachment") -> str:
-    safe_name = str(filename or "attachment.bin").replace('"', "'")
-    return f'{disposition}; filename="{safe_name}"'
+    """Build Content-Disposition safe for Starlette (latin-1 headers) + UTF-8 filename*."""
+    source = str(filename or "attachment.bin").replace("\r", " ").replace("\n", " ").strip() or "attachment.bin"
+    normalized_disposition = "inline" if str(disposition or "").strip().lower() == "inline" else "attachment"
+    ascii_fallback = source.encode("ascii", "ignore").decode("ascii")
+    ascii_fallback = re.sub(r'[";\\]+', "_", ascii_fallback).strip(" .")
+    if not ascii_fallback:
+        ascii_fallback = "attachment.bin"
+    encoded = quote(source, safe="")
+    return f"{normalized_disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 @router.get("/messages/{message_id}/attachments/{attachment_id}/preview")

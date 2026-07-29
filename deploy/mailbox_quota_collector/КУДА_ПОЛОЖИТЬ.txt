@@ -1,26 +1,33 @@
-Два файла для доменного ПК-сборщика
-====================================
+Файлы для доменного ПК-сборщика
+================================
+
+Корень: C:\ProgramData\HUB-IT\Mail\
 
 1) mail_box_sync_domain.ps1
-   -> C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1
 
-2) collector.env  (переименовать в .env)
-   -> C:\ProgramData\IT-Invent\MailboxQuota\.env
+2) install_mailbox_quota_task.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\install_mailbox_quota_task.ps1
 
-Перед запуском: в .env впишите ZSGP\логин и пароль Exchange.
+3) diagnose_mailbox_quota_task.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\diagnose_mailbox_quota_task.ps1
+
+4) .env  (создать вручную)
+   -> C:\ProgramData\HUB-IT\Mail\.env
+
+Перед запуском: в .env впишите ZSGP\логин и пароль Exchange,
+MAIL_QUOTA_IMPORT_API_URL и MAIL_QUOTA_IMPORT_API_KEY (как на HUB).
 
 Тест (5 ящиков, без отправки на сервер):
-  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1 -ResultSize 5 -WhatIf -SaveLocalJson
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1 -ResultSize 5 -WhatIf -SaveLocalJson
 
 Полный прогон:
-  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1
 
-Автозапуск (от администратора; если NextRunTime пустой — перерегистрировать):
-  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
+Автозапуск (от администратора):
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
 
-Скопировать install_mailbox_quota_task.ps1 рядом со sync-скриптом или из deploy\mailbox_quota_collector\
+Диагностика:
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\diagnose_mailbox_quota_task.ps1
 
-Если не бежит каждые 4 ч — диагностика:
-  powershell -ExecutionPolicy Bypass -File C:\Project\Image_scan\scripts\diagnose_mailbox_quota_task.ps1
-
-Лог: C:\ProgramData\IT-Invent\MailboxQuota\sync.log
+Лог: C:\ProgramData\HUB-IT\Mail\sync.log

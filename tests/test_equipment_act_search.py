@@ -89,7 +89,7 @@ def test_search_equipment_acts_matches_doc_number_and_enriches_type_name(monkeyp
     assert "i.SERIAL_NO" not in where_sql
     assert "FROM DOCS d" in search_query
     assert "INNER JOIN DOCS_LIST dl" in search_query
-    assert "NOT LIKE N'%аннулир%'" in search_query
+    assert "NOT LIKE N'%аннулир%'" not in search_query
 
 
 def test_search_equipment_acts_groups_multiple_items_for_one_act(monkeypatch):

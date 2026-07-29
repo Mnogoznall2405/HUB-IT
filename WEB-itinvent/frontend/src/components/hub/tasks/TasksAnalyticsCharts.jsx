@@ -26,6 +26,13 @@ import {
   getOfficePanelSx,
 } from '../../../theme/officeUiTokens';
 
+const TREND_GRANULARITY_LABELS = {
+  day: 'по дням',
+  week: 'по неделям',
+  month: 'по месяцам',
+  quarter: 'по кварталам',
+};
+
 export default function TasksAnalyticsCharts({
   ui,
   analyticsGridStroke,
@@ -39,12 +46,12 @@ export default function TasksAnalyticsCharts({
   const gridStroke = analyticsGridStroke || ui?.borderSoft || 'rgba(148,163,184,0.22)';
 
   return (
-    <Grid container spacing={1.2} sx={{ width: '100%' }}>
-      <Grid item xs={12} lg={4}>
-        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%' }}>
+    <Grid container spacing={1.2} sx={{ width: '100%', minWidth: 0 }}>
+      <Grid item xs={12} lg={4} sx={{ minWidth: 0 }}>
+        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%', minWidth: 0 }}>
           <Typography sx={{ fontWeight: 900, mb: 1 }}>Статусы</Typography>
           {analyticsStatusChartData.some((item) => Number(item?.value || 0) > 0) ? (
-            <Box sx={{ width: '100%', height: 280 }}>
+            <Box sx={{ width: '100%', height: 280, minWidth: 0 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={analyticsStatusChartData} dataKey="value" nameKey="label" innerRadius={56} outerRadius={88} paddingAngle={2}>
@@ -63,14 +70,14 @@ export default function TasksAnalyticsCharts({
         </Card>
       </Grid>
 
-      <Grid item xs={12} lg={8}>
-        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%' }}>
+      <Grid item xs={12} lg={8} sx={{ minWidth: 0 }}>
+        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%', minWidth: 0 }}>
           <Typography sx={{ fontWeight: 900, mb: 0.8 }}>Постановка и выполнение по времени</Typography>
           <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mb: 0.8 }}>
-            Гранулярность: {analyticsPayload?.trend?.granularity || 'day'}
+            Группировка {TREND_GRANULARITY_LABELS[analyticsPayload?.trend?.granularity] || TREND_GRANULARITY_LABELS.day}. Отбор задач — по выбранной базе дат; линии показывают даты постановки и завершения.
           </Typography>
           {analyticsTrendItems.length > 0 ? (
-            <Box sx={{ width: '100%', height: 280 }}>
+            <Box sx={{ width: '100%', height: 280, minWidth: 0 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={analyticsTrendItems}>
                   <CartesianGrid strokeDasharray="3 3" stroke={alpha(gridStroke, 0.7)} />
@@ -92,8 +99,8 @@ export default function TasksAnalyticsCharts({
         </Card>
       </Grid>
 
-      <Grid item xs={12} lg={6}>
-        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%' }}>
+      <Grid item xs={12} lg={6} sx={{ minWidth: 0 }}>
+        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%', minWidth: 0 }}>
           <Typography sx={{ fontWeight: 900, mb: 0.2 }}>{analyticsParticipantSectionMeta.title}</Typography>
           {analyticsParticipantSectionMeta.subtitle ? (
             <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mb: 0.9 }}>
@@ -101,7 +108,7 @@ export default function TasksAnalyticsCharts({
             </Typography>
           ) : <Box sx={{ mb: 0.9 }} />}
           {analyticsParticipantChartData.length > 0 ? (
-            <Box sx={{ width: '100%', height: 320 }}>
+            <Box sx={{ width: '100%', height: 320, minWidth: 0 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={analyticsParticipantChartData} layout="vertical" margin={{ left: 16, right: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={alpha(gridStroke, 0.7)} />
@@ -111,23 +118,23 @@ export default function TasksAnalyticsCharts({
                   <Legend />
                   <Bar dataKey="open" name="Открыто" stackId="participant" fill="#2563eb" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="done" name="Выполнено" stackId="participant" fill="#059669" radius={[0, 0, 0, 0]} />
-                  <Bar dataKey="overdue" name="Просрочено" stackId="participant" fill="#dc2626" radius={[0, 6, 6, 0]} />
+                  <Bar dataKey="overdue" name="Просрочено" fill="#dc2626" radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </Box>
           ) : (
             <Box sx={getOfficeEmptyStateSx(ui, { p: 2, minHeight: 240 })}>
-              <Typography sx={{ fontWeight: 800 }}>Нет участников по текущим фильтрам.</Typography>
+              <Typography sx={{ fontWeight: 800 }}>Нет исполнителей по текущим фильтрам.</Typography>
             </Box>
           )}
         </Card>
       </Grid>
 
-      <Grid item xs={12} lg={6}>
-        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%' }}>
+      <Grid item xs={12} lg={6} sx={{ minWidth: 0 }}>
+        <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%', minWidth: 0 }}>
           <Typography sx={{ fontWeight: 900, mb: 1 }}>{analyticsScopeChart.title}</Typography>
           {analyticsScopeChart.rows.length > 0 ? (
-            <Box sx={{ width: '100%', height: 320 }}>
+            <Box sx={{ width: '100%', height: 320, minWidth: 0 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={analyticsScopeChart.rows}>
                   <CartesianGrid strokeDasharray="3 3" stroke={alpha(gridStroke, 0.7)} />
@@ -137,7 +144,7 @@ export default function TasksAnalyticsCharts({
                   <Legend />
                   <Bar dataKey="open" name="Открыто" stackId="scope" fill="#2563eb" />
                   <Bar dataKey="done" name="Выполнено" stackId="scope" fill="#059669" />
-                  <Bar dataKey="overdue" name="Просрочено" stackId="scope" fill="#dc2626" />
+                  <Bar dataKey="overdue" name="Просрочено" fill="#dc2626" />
                 </BarChart>
               </ResponsiveContainer>
             </Box>

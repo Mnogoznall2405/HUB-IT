@@ -53,17 +53,17 @@ export default function ScanCenterHeader({
       <Paper variant="outlined" sx={{ p: { xs: 1.25, md: 1.5 }, borderRadius: 2 }}>
         <Stack spacing={1.25}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, mr: 'auto' }}>
-              <Box sx={{ width: 36, height: 36, borderRadius: 1.5, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'grid', placeItems: 'center' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, mr: { sm: 'auto' }, width: { xs: '100%', sm: 'auto' } }}>
+              <Box sx={{ width: 36, height: 36, borderRadius: 1.5, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                 <ShieldOutlinedIcon fontSize="small" />
               </Box>
-              <Box sx={{ minWidth: 0 }}>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography variant="h6" sx={{ fontWeight: 850, lineHeight: 1.2 }}>Контроль документов</Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflowWrap: 'anywhere' }}>
                   OCR: страницы 1–3 · текст PDF: страницы 1–10 · {dashboard?.analysis_version || 'текущая версия правил'}
                 </Typography>
               </Box>
-              <Chip size="small" color={health.color} label={health.label} />
+              <Chip size="small" color={health.color} label={health.label} sx={{ flexShrink: 0 }} />
             </Box>
 
             <Autocomplete
@@ -75,26 +75,29 @@ export default function ScanCenterHeader({
               clearOnEscape
               noOptionsText="Филиалы не найдены"
               loadingText="Загрузка филиалов…"
-              sx={{ width: { xs: '100%', sm: 270 } }}
+              sx={{ width: { xs: '100%', sm: 270 }, minWidth: 0 }}
               renderInput={(params) => <TextField {...params} label="Филиал" placeholder="Все филиалы" />}
             />
 
-            <Button type="button" variant="contained" startIcon={<PlayArrowOutlinedIcon />} onClick={onOpenAgents}>
-              Запустить скан
-            </Button>
-            <Tooltip title="Обновить данные сейчас">
-              <span>
-                <Button
-                  type="button"
-                  variant="outlined"
-                  startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
-                  onClick={onRefresh}
-                  disabled={refreshing}
-                >
-                  Обновить
-                </Button>
-              </span>
-            </Tooltip>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ width: { xs: '100%', sm: 'auto' } }}>
+              <Button type="button" variant="contained" startIcon={<PlayArrowOutlinedIcon />} onClick={onOpenAgents} sx={{ flex: { xs: '1 1 auto', sm: '0 0 auto' } }}>
+                Запустить скан
+              </Button>
+              <Tooltip title="Обновить данные сейчас">
+                <span style={{ flex: '1 1 auto' }}>
+                  <Button
+                    type="button"
+                    variant="outlined"
+                    fullWidth
+                    startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
+                    onClick={onRefresh}
+                    disabled={refreshing}
+                  >
+                    Обновить
+                  </Button>
+                </span>
+              </Tooltip>
+            </Stack>
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
@@ -111,11 +114,6 @@ export default function ScanCenterHeader({
       </Paper>
 
       {taskNotice ? <Alert severity={taskNotice.severity} onClose={onDismissNotice}>{taskNotice.text}</Alert> : null}
-      {Number(totals.agents_outdated || 0) > 0 ? (
-        <Alert severity="warning">
-          Требуют обновления: {Number(totals.agents_outdated || 0)} агентов. Ожидаемая версия — {dashboard?.expected_agent_version || 'не указана сервером'}.
-        </Alert>
-      ) : null}
     </Stack>
   );
 }

@@ -78,6 +78,76 @@ class MailRuntimeSnapshotService:
                 "last_error": str(row.last_error or ""),
             }
 
+    def read_notification_feeds(self, *, user_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """Read delivery checkpoints for a worker batch in one transaction.
+
+        ``notification_feed`` is a compatibility fallback for deployments that
+        predate the dedicated checkpoint row. Checkpoints deliberately remain
+        usable after their UI cache TTL expires: they represent the last mail
+        considered for push delivery, not fresh mailbox data.
+        """
+        normalized_user_ids = sorted({int(value) for value in user_ids if int(value or 0) > 0})
+        if not self._enabled or not normalized_user_ids:
+            return {}
+        with app_session(self._database_url) as session:
+            rows = list(
+                session.scalars(
+                    select(AppMailRuntimeSnapshot).where(
+                        AppMailRuntimeSnapshot.user_id.in_(normalized_user_ids),
+                        AppMailRuntimeSnapshot.mailbox_id == "aggregate",
+                        AppMailRuntimeSnapshot.snapshot_type.in_(
+                            ("notification_delivery_checkpoint", "notification_feed")
+                        ),
+                        AppMailRuntimeSnapshot.context_key == "default",
+                    )
+                ).all()
+            )
+
+        checkpoints: dict[int, dict[str, Any]] = {}
+        legacy_feeds: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(str(row.payload_json or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            target = (
+                checkpoints
+                if str(row.snapshot_type or "") == "notification_delivery_checkpoint"
+                else legacy_feeds
+            )
+            target[int(row.user_id)] = payload
+        return {
+            user_id: checkpoints[user_id] if user_id in checkpoints else legacy_feeds[user_id]
+            for user_id in set(checkpoints) | set(legacy_feeds)
+        }
+
+    def persist_notification_checkpoints(
+        self,
+        *,
+        feeds_by_user_id: dict[int, dict[str, Any]],
+    ) -> None:
+        """Persist only baselines that were initialized or delivered."""
+        if not self._enabled or not feeds_by_user_id:
+            return
+        now = _utcnow()
+        with app_session(self._database_url) as session:
+            for raw_user_id, feed in feeds_by_user_id.items():
+                user_id = int(raw_user_id or 0)
+                if user_id <= 0 or not isinstance(feed, dict):
+                    continue
+                self._write_success_row(
+                    session,
+                    user_id=user_id,
+                    mailbox_id="aggregate",
+                    snapshot_type="notification_delivery_checkpoint",
+                    context_key="default",
+                    payload=feed,
+                    ttl_seconds=30 * 24 * 60 * 60,
+                    now=now,
+                )
+
     def write_success(
         self,
         *,

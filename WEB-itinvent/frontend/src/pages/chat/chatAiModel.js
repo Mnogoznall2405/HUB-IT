@@ -68,6 +68,7 @@ const AI_STATUS_FALLBACK_TEXTS = {
   opening_equipment_card: 'Открываю карточку устройства.',
   generating_answer: 'Формирую ответ.',
   generating_files: 'Подготавливаю итоговые файлы.',
+  converting_document: 'Распознаю документ и сохраняю структуру.',
   failed: 'Не удалось обработать запрос.',
 };
 

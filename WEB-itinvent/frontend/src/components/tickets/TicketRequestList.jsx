@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   FormControl,
   InputLabel,
   LinearProgress,
@@ -23,14 +22,11 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import { ticketsAPI } from '../../api/tickets';
 import {
-  STATUS_COLORS,
-  STATUS_LABELS,
   STATUS_ROW_COLORS,
   TICKET_STATUS_OPTIONS,
   downloadBlob,
   formatArrivalRoute,
   formatDate,
-  formatMoney,
   getErrorMessage,
   isMaskedPersonalValue,
 } from './ticketUi';
@@ -166,9 +162,6 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
               <TableCell>№ заявки</TableCell>
               <TableCell>Шифр объекта</TableCell>
               <TableCell>Примечание</TableCell>
-              <TableCell align="right">Стоимость</TableCell>
-              <TableCell align="right">Возврат</TableCell>
-              <TableCell>Статус</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -203,20 +196,11 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
                 <TableCell sx={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {row.note || '-'}
                 </TableCell>
-                <TableCell align="right">{formatMoney(row.total_cost)}</TableCell>
-                <TableCell align="right">{formatMoney(row.refund_loss)}</TableCell>
-                <TableCell>
-                  <Chip
-                    size="small"
-                    color={STATUS_COLORS[row.status] || 'default'}
-                    label={STATUS_LABELS[row.status] || row.status}
-                  />
-                </TableCell>
               </TableRow>
             ))}
             {!loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={20}>
+                <TableCell colSpan={17}>
                   <Typography color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>
                     Заявки не найдены
                   </Typography>

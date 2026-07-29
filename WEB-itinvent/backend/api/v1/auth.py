@@ -67,6 +67,7 @@ from backend.services.authorization_service import (
 )
 from backend.services.trusted_device_service import TrustedDeviceServiceError, trusted_device_service
 from backend.database.connection import set_user_database
+from backend.utils.client_geo import resolve_client_geo
 from backend.utils.request_network import build_request_network_context, resolve_twofa_policy
 
 
@@ -695,13 +696,22 @@ async def safari_password_beacon(request: Request):
 @router.get("/login-mode", response_model=LoginModeResponse)
 async def get_login_mode(request: Request):
     network_context = build_request_network_context(request)
+    network_zone = str(network_context.network_zone or "external").strip().lower() or "external"
     biometric_enabled = (
         _is_passkey_login_available()
-        and _is_passkey_allowed_for_zone(network_context.network_zone)
+        and _is_passkey_allowed_for_zone(network_zone)
+    )
+    geo = await run_in_threadpool(
+        resolve_client_geo,
+        request=request,
+        client_ip=str(network_context.client_ip or ""),
+        network_zone=network_zone,
     )
     return LoginModeResponse(
-        network_zone=str(network_context.network_zone or "external").strip().lower() or "external",
+        network_zone=network_zone,
         biometric_login_enabled=bool(biometric_enabled),
+        client_country_code=geo.country_code,
+        show_vpn_hint=bool(geo.show_vpn_hint),
     )
 
 

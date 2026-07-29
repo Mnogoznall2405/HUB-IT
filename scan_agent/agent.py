@@ -11,17 +11,22 @@ import os
 from pathlib import Path
 import random
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 import uuid
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 import requests
 import yaml
 from agent_version import AGENT_VERSION, SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
+
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 try:
     import winreg  # type: ignore
@@ -42,14 +47,22 @@ except Exception:
 
 
 DEFAULT_SERVER_BASE = "https://hubit.zsgp.ru/api/v1/scan"
-DEFAULT_POLL_INTERVAL = 600
-DEFAULT_POLL_JITTER = 120
+DEFAULT_POLL_INTERVAL = 60
+DEFAULT_POLL_JITTER = 30
+DEFAULT_POLL_INTERVAL_SLOW = 300
 DEFAULT_HTTP_TIMEOUT = 20
 DEFAULT_MAX_FILE_SIZE_MB = 50
 DEFAULT_OUTBOX_MAX_ITEMS = 5000
 DEFAULT_OUTBOX_MAX_AGE_DAYS = 14
 DEFAULT_OUTBOX_MAX_TOTAL_MB = 512
-DEFAULT_OUTBOX_DRAIN_BATCH = 10
+DEFAULT_OUTBOX_DRAIN_BATCH = 50
+DEFAULT_OUTBOX_DRAIN_BATCH_SLOW = 10
+DEFAULT_OUTBOX_DRAIN_INTERVAL_SEC = 10
+DEFAULT_OUTBOX_DRAIN_INTERVAL_SLOW_SEC = 120
+DEFAULT_SERVER_QUEUE_SLOW_THRESHOLD = 2000
+DEFAULT_OUTBOX_REQUEUE_BATCH = 20
+DEFAULT_OUTBOX_REQUEUE_INTERVAL_SEC = 15 * 60
+DEAD_LETTER_NO_REQUEUE_REASONS = frozenset({"OUTBOX_CORRUPT", "OUTBOX_INVALID_PAYLOAD"})
 ANALYSIS_VERSION = SCAN_ANALYSIS_VERSION
 PDF_OCR_PAGE_LIMIT = SCAN_OCR_PAGE_LIMIT
 PDF_TEXT_PAGE_LIMIT = SCAN_TEXT_PAGE_LIMIT
@@ -87,7 +100,16 @@ OFFICE_EXTENSIONS = {
 }
 SUPPORTED_SCAN_EXTENSIONS = frozenset({".pdf", *TEXT_EXTENSIONS, *IMAGE_EXTENSIONS, *OFFICE_EXTENSIONS})
 
-PROGRAM_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent" / "ScanAgent"
+PROGRAM_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "ScanAgent"
+LEGACY_PROGRAM_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent" / "ScanAgent"
+# Stage self-update MSI outside ScanAgent: upgrade uninstall of older builds recursively
+# deletes ProgramData\\...\\ScanAgent (including updates\\) and would remove the
+# msiexec source mid-install (Error 1316 / 1603).
+SELF_UPDATE_STAGING_DIR = (
+    Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "AgentUpgrade" / "package"
+)
+SELF_UPDATE_MARKER_PATH = SELF_UPDATE_STAGING_DIR.parent / "pending_update.json"
+LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
 
 LOG_FILE = "scan_agent.log"
@@ -98,6 +120,11 @@ OUTBOX_DEAD_DIR = "dead_letter"
 STATUS_FILE = "scan_agent_status.json"
 STATUS_UPDATE_INTERVAL_SEC = 30
 ENV_FILE_NAME = ".env"
+UPDATE_VERIFY_TIMEOUT_SEC = 45 * 60
+UPDATE_POST_EXIT_GRACE_SEC = 180
+OUTBOX_STALE_AGE_SEC = 30 * 60
+LOW_DISK_FREE_GB = 5.0
+MSI_SUCCESS_EXIT_CODES = frozenset({0, 3010, 1641})
 
 
 def _setup_paths() -> Tuple[Path, Path, Path, Path, Path]:
@@ -146,7 +173,10 @@ def bootstrap_env_from_files() -> List[str]:
     for parent in list(current.parents)[:4]:
         candidates.append(parent / ENV_FILE_NAME)
     candidates.append(Path.cwd() / ENV_FILE_NAME)
+    candidates.append(PROGRAM_DATA.parent / "Agent" / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA.parent / "Agent" / ENV_FILE_NAME)
     candidates.append(PROGRAM_DATA.parent / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA.parent / ENV_FILE_NAME)
 
     for raw_path in candidates:
         try:
@@ -179,17 +209,43 @@ def bootstrap_env_from_files() -> List[str]:
 
 
 def setup_logging() -> None:
-    handlers: List[logging.Handler] = [
-        RotatingFileHandler(LOG_PATH, maxBytes=8 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    ]
-    if hasattr(os.sys.stdout, "isatty") and os.sys.stdout.isatty():
-        handlers.append(logging.StreamHandler())
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+    """Configure scan agent file logging.
+
+    When embedded as inventory sidecar, root logging is already configured by
+    agent.py — ``basicConfig`` becomes a no-op, so we still attach our own
+    RotatingFileHandler to ``LOG_PATH`` if it is missing.
+    """
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=handlers,
     )
+    file_handler = RotatingFileHandler(
+        LOG_PATH, maxBytes=8 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    target = str(LOG_PATH.resolve()).lower()
+    already = False
+    for handler in list(root.handlers):
+        base = getattr(handler, "baseFilename", None)
+        if base and str(Path(base).resolve()).lower() == target:
+            already = True
+            break
+    if not already:
+        # basicConfig only applies when no handlers exist yet (standalone scan agent).
+        if not root.handlers:
+            handlers: List[logging.Handler] = [file_handler]
+            if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+                stream = logging.StreamHandler()
+                stream.setFormatter(formatter)
+                handlers.append(stream)
+            logging.basicConfig(level=logging.INFO, handlers=handlers)
+        else:
+            root.addHandler(file_handler)
+            if root.level > logging.INFO or root.level == logging.NOTSET:
+                root.setLevel(logging.INFO)
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -213,8 +269,205 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
     os.replace(str(temp_path), str(path))
 
 
+def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_update_marker(marker: Dict[str, Any]) -> None:
+    _atomic_write_text(SELF_UPDATE_MARKER_PATH, json.dumps(marker, ensure_ascii=False), encoding="utf-8")
+
+
+def _read_update_marker() -> Optional[Dict[str, Any]]:
+    return _read_json_file(SELF_UPDATE_MARKER_PATH)
+
+
+def _clear_update_marker() -> None:
+    try:
+        SELF_UPDATE_MARKER_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _read_msi_exit_code(path: Path) -> Optional[int]:
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    try:
+        return int(text.splitlines()[0].strip())
+    except Exception:
+        return None
+
+
+def _msi_log_tail(path: Path, max_lines: int = 40) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        try:
+            lines = path.read_text(encoding="cp1251", errors="ignore").splitlines()
+        except Exception:
+            return ""
+    return "\n".join(lines[-max(1, int(max_lines)) :])
+
+
+def classify_msi_exit(code: Optional[int]) -> str:
+    if code is None:
+        return "pending"
+    if code in MSI_SUCCESS_EXIT_CODES:
+        if code == 3010:
+            return "success_reboot_required"
+        if code == 1641:
+            return "success_reboot_initiated"
+        return "success"
+    if code == 1603:
+        return "fatal_install_error"
+    if code == 1618:
+        return "another_install_in_progress"
+    if code == 1638:
+        return "another_version_installed"
+    return f"msiexec_exit_{code}"
+
+
+def evaluate_pending_update(
+    marker: Dict[str, Any],
+    *,
+    current_version: str,
+    now_ts: Optional[int] = None,
+    verify_timeout_sec: int = UPDATE_VERIFY_TIMEOUT_SEC,
+    post_exit_grace_sec: int = UPDATE_POST_EXIT_GRACE_SEC,
+) -> Dict[str, Any]:
+    """Decide next self_update phase from marker + MSI exit file + current agent version."""
+    now_value = int(now_ts if now_ts is not None else time.time())
+    expected = str(marker.get("expected_version") or "").strip()
+    previous = str(marker.get("previous_version") or "").strip()
+    launched_at = int(marker.get("launched_at") or 0)
+    exit_path = Path(str(marker.get("exit_code_path") or "").strip())
+    log_path = Path(str(marker.get("log_path") or "").strip())
+    exit_code = _read_msi_exit_code(exit_path) if str(exit_path) else None
+    log_tail = _msi_log_tail(log_path) if str(log_path) else ""
+    version_ok = (not expected) or (str(current_version or "").strip() == expected)
+
+    base = {
+        "installer_launched": True,
+        "pending_update": True,
+        "expected_version": expected,
+        "previous_version": previous,
+        "current_version": current_version,
+        "msi_path": str(marker.get("msi_path") or ""),
+        "log_path": str(log_path) if str(log_path) else "",
+        "log_tail": log_tail,
+        "msi_sha256": str(marker.get("msi_sha256") or ""),
+    }
+
+    if exit_code is None:
+        if launched_at and (now_value - launched_at) > int(verify_timeout_sec):
+            return {
+                **base,
+                "phase": "failed",
+                "verified": False,
+                "pending_update": False,
+                "msi_exit_code": None,
+                "msi_exit_class": "timeout",
+                "error": f"MSI did not finish within {verify_timeout_sec}s",
+                "terminal": True,
+                "status": "failed",
+            }
+        return {
+            **base,
+            "phase": "verifying",
+            "verified": False,
+            "msi_exit_code": None,
+            "msi_exit_class": "pending",
+            "terminal": False,
+            "status": "acknowledged",
+        }
+
+    exit_recorded_at = int(marker.get("exit_recorded_at") or 0) or now_value
+    exit_class = classify_msi_exit(exit_code)
+    base["msi_exit_code"] = exit_code
+    base["msi_exit_class"] = exit_class
+    base["exit_recorded_at"] = exit_recorded_at
+
+    if exit_code in MSI_SUCCESS_EXIT_CODES and version_ok:
+        return {
+            **base,
+            "phase": "verified",
+            "verified": True,
+            "pending_update": False,
+            "terminal": True,
+            "status": "completed",
+        }
+
+    if exit_code in MSI_SUCCESS_EXIT_CODES and not version_ok:
+        if (now_value - exit_recorded_at) < int(post_exit_grace_sec):
+            return {
+                **base,
+                "phase": "verifying",
+                "verified": False,
+                "terminal": False,
+                "status": "acknowledged",
+            }
+        return {
+            **base,
+            "phase": "failed",
+            "verified": False,
+            "pending_update": False,
+            "error": (
+                f"MSI exit {exit_code} ({exit_class}) but agent version "
+                f"is {current_version or '?'} (expected {expected or '?'})"
+            ),
+            "terminal": True,
+            "status": "failed",
+        }
+
+    return {
+        **base,
+        "phase": "failed",
+        "verified": False,
+        "pending_update": False,
+        "error": f"MSI failed with exit {exit_code} ({exit_class})",
+        "terminal": True,
+        "status": "failed",
+    }
+
+
+def _system_drive_free_gb() -> Optional[float]:
+    drive = str(os.environ.get("SystemDrive") or "C:").strip() or "C:"
+    root = drive if drive.endswith("\\") else f"{drive}\\"
+    try:
+        usage = shutil.disk_usage(root)
+    except Exception:
+        return None
+    return round(float(usage.free) / (1024.0**3), 2)
+
+
+def _agent_install_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable).resolve().parent)
+    return str(Path(__file__).resolve().parent)
+
+
 def _read_env() -> Dict[str, Any]:
     poll = max(30, _to_int(os.getenv("SCAN_AGENT_POLL_INTERVAL_SEC", str(DEFAULT_POLL_INTERVAL)), DEFAULT_POLL_INTERVAL))
+    poll_slow = max(
+        60,
+        _to_int(
+            os.getenv("SCAN_AGENT_POLL_INTERVAL_SLOW_SEC", str(DEFAULT_POLL_INTERVAL_SLOW)),
+            DEFAULT_POLL_INTERVAL_SLOW,
+        ),
+    )
     poll_jitter = max(
         0,
         min(300, _to_int(os.getenv("SCAN_AGENT_POLL_JITTER_SEC", str(DEFAULT_POLL_JITTER)), DEFAULT_POLL_JITTER)),
@@ -228,6 +481,7 @@ def _read_env() -> Dict[str, Any]:
         "server_base": str(os.getenv("SCAN_AGENT_SERVER_BASE", DEFAULT_SERVER_BASE)).strip().rstrip("/"),
         "api_key": api_key,
         "poll_interval": poll,
+        "poll_interval_slow": poll_slow,
         "poll_jitter_sec": poll_jitter,
         "timeout": max(5, _to_int(os.getenv("SCAN_AGENT_HTTP_TIMEOUT_SEC", str(DEFAULT_HTTP_TIMEOUT)), DEFAULT_HTTP_TIMEOUT)),
         "max_file_bytes": max_size_mb * 1024 * 1024,
@@ -241,7 +495,55 @@ def _read_env() -> Dict[str, Any]:
         "outbox_max_items": max(100, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_ITEMS", str(DEFAULT_OUTBOX_MAX_ITEMS)), DEFAULT_OUTBOX_MAX_ITEMS)),
         "outbox_max_age_days": max(1, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_AGE_DAYS", str(DEFAULT_OUTBOX_MAX_AGE_DAYS)), DEFAULT_OUTBOX_MAX_AGE_DAYS)),
         "outbox_max_total_mb": max(32, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_TOTAL_MB", str(DEFAULT_OUTBOX_MAX_TOTAL_MB)), DEFAULT_OUTBOX_MAX_TOTAL_MB)),
-        "outbox_drain_batch": max(1, min(100, _to_int(os.getenv("SCAN_AGENT_OUTBOX_DRAIN_BATCH", str(DEFAULT_OUTBOX_DRAIN_BATCH)), DEFAULT_OUTBOX_DRAIN_BATCH))),
+        "outbox_drain_batch": max(
+            1,
+            min(100, _to_int(os.getenv("SCAN_AGENT_OUTBOX_DRAIN_BATCH", str(DEFAULT_OUTBOX_DRAIN_BATCH)), DEFAULT_OUTBOX_DRAIN_BATCH)),
+        ),
+        "outbox_drain_batch_slow": max(
+            1,
+            min(
+                100,
+                _to_int(
+                    os.getenv("SCAN_AGENT_OUTBOX_DRAIN_BATCH_SLOW", str(DEFAULT_OUTBOX_DRAIN_BATCH_SLOW)),
+                    DEFAULT_OUTBOX_DRAIN_BATCH_SLOW,
+                ),
+            ),
+        ),
+        "outbox_drain_interval_sec": max(
+            1,
+            _to_int(
+                os.getenv("SCAN_AGENT_OUTBOX_DRAIN_INTERVAL_SEC", str(DEFAULT_OUTBOX_DRAIN_INTERVAL_SEC)),
+                DEFAULT_OUTBOX_DRAIN_INTERVAL_SEC,
+            ),
+        ),
+        "outbox_drain_interval_slow_sec": max(
+            5,
+            _to_int(
+                os.getenv("SCAN_AGENT_OUTBOX_DRAIN_INTERVAL_SLOW_SEC", str(DEFAULT_OUTBOX_DRAIN_INTERVAL_SLOW_SEC)),
+                DEFAULT_OUTBOX_DRAIN_INTERVAL_SLOW_SEC,
+            ),
+        ),
+        "server_queue_slow_threshold": max(
+            1,
+            _to_int(
+                os.getenv("SCAN_AGENT_SERVER_QUEUE_SLOW_THRESHOLD", str(DEFAULT_SERVER_QUEUE_SLOW_THRESHOLD)),
+                DEFAULT_SERVER_QUEUE_SLOW_THRESHOLD,
+            ),
+        ),
+        "outbox_requeue_batch": max(
+            1,
+            min(
+                100,
+                _to_int(os.getenv("SCAN_AGENT_OUTBOX_REQUEUE_BATCH", str(DEFAULT_OUTBOX_REQUEUE_BATCH)), DEFAULT_OUTBOX_REQUEUE_BATCH),
+            ),
+        ),
+        "outbox_requeue_interval_sec": max(
+            60,
+            _to_int(
+                os.getenv("SCAN_AGENT_OUTBOX_REQUEUE_INTERVAL_SEC", str(DEFAULT_OUTBOX_REQUEUE_INTERVAL_SEC)),
+                DEFAULT_OUTBOX_REQUEUE_INTERVAL_SEC,
+            ),
+        ),
     }
 
 
@@ -317,7 +619,15 @@ _SPACED_DSP_PHRASE_RE = re.compile(
     r"(?i)д\s*л\s*я\s*с\s*л\s*у\s*ж\s*е\s*б\s*н\s*о\s*г\s*о\s*п\s*о\s*л\s*ь\s*з\s*о\s*в\s*а\s*н\s*и\s*я"
 )
 _SPACED_CYRILLIC_WORD_RE = re.compile(r"(?<!\w)(?:[а-яё][ \t]){3,}[а-яё](?!\w)", re.IGNORECASE)
-_DSP_FURNITURE_RE = re.compile(r"(?i)(?:столешниц|мебел|плит|лист|дсп\s*22\s*мм|\b\d+\s*мм\b)")
+# Particle-board / furniture "ДСП" (древесно-стружечная плита), not secrecy stamp.
+_DSP_FURNITURE_RE = re.compile(
+    r"(?i)(?:"
+    r"столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|"
+    r"материал|покрыти|пластик|пенополиуретан|ламинат|оргтехник|"
+    r"плит[аыеу]?|дсп\s*лист|лист[аы]?\s*дсп|"
+    r"\bмдф\b|\bhdf\b|дсп\s*22\s*мм|дсп\s*[+с]\s*пластик|\b\d+\s*мм\b"
+    r")"
+)
 _OCR_LATIN_TO_CYRILLIC = str.maketrans(
     "AaBCcEeHKMOoPpTXYxyD",
     "АаВСсЕеНКМОоРрТХУхуД",
@@ -738,6 +1048,8 @@ class ScanAgent:
         self._last_ingest_ok_at: Optional[int] = None
         self._last_error: str = ""
         self._last_status_write_at: int = 0
+        self._last_dead_requeue_at: int = 0
+        self._server_queue_pending: int = 0
 
     def _url(self, suffix: str) -> str:
         return f"{self.config['server_base']}/{suffix.lstrip('/')}"
@@ -745,6 +1057,48 @@ class ScanAgent:
     def _send(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         kwargs.setdefault("timeout", self.config["timeout"])
         return self.session.request(method=method, url=url, **kwargs)
+
+    def _note_server_queue_from_payload(self, data: Any) -> None:
+        if not isinstance(data, dict):
+            return
+        for key in ("server_queue_pending", "total_pending"):
+            if key in data and data.get(key) is not None:
+                self._server_queue_pending = max(0, _to_int(data.get(key), 0))
+                return
+        detail = data.get("detail")
+        if isinstance(detail, dict):
+            for key in ("server_queue_pending", "total_pending"):
+                if key in detail and detail.get(key) is not None:
+                    self._server_queue_pending = max(0, _to_int(detail.get(key), 0))
+                    return
+
+    def _note_server_queue_from_response(self, response: Any) -> None:
+        try:
+            data = response.json() if getattr(response, "content", None) else {}
+        except Exception:
+            return
+        self._note_server_queue_from_payload(data)
+
+    def _server_queue_slow_threshold(self) -> int:
+        return max(1, _to_int(self.config.get("server_queue_slow_threshold"), DEFAULT_SERVER_QUEUE_SLOW_THRESHOLD))
+
+    def _outbox_mode(self) -> str:
+        return "slow" if self._server_queue_pending >= self._server_queue_slow_threshold() else "fast"
+
+    def _effective_poll_interval(self) -> int:
+        if self._outbox_mode() == "slow":
+            return max(60, _to_int(self.config.get("poll_interval_slow"), DEFAULT_POLL_INTERVAL_SLOW))
+        return max(30, _to_int(self.config.get("poll_interval"), DEFAULT_POLL_INTERVAL))
+
+    def _effective_drain_batch(self) -> int:
+        if self._outbox_mode() == "slow":
+            return max(1, min(100, _to_int(self.config.get("outbox_drain_batch_slow"), DEFAULT_OUTBOX_DRAIN_BATCH_SLOW)))
+        return max(1, min(100, _to_int(self.config.get("outbox_drain_batch"), DEFAULT_OUTBOX_DRAIN_BATCH)))
+
+    def _effective_drain_interval(self) -> int:
+        if self._outbox_mode() == "slow":
+            return max(5, _to_int(self.config.get("outbox_drain_interval_slow_sec"), DEFAULT_OUTBOX_DRAIN_INTERVAL_SLOW_SEC))
+        return max(1, _to_int(self.config.get("outbox_drain_interval_sec"), DEFAULT_OUTBOX_DRAIN_INTERVAL_SEC))
 
     def _write_status(self, force: bool = False) -> None:
         now_ts = int(time.time())
@@ -772,6 +1126,83 @@ class ScanAgent:
 
     def _outbox_depth(self) -> int:
         return len(self._outbox_paths())
+
+    def _outbox_oldest_age_sec(self) -> Optional[int]:
+        paths = self._outbox_paths()
+        if not paths:
+            return None
+        try:
+            oldest = min(path.stat().st_mtime for path in paths)
+        except Exception:
+            return None
+        return max(0, int(time.time() - oldest))
+
+    def _ops_metadata(self) -> Dict[str, Any]:
+        free_gb = _system_drive_free_gb()
+        oldest_age = self._outbox_oldest_age_sec()
+        marker = _read_update_marker()
+        pending_update = None
+        if isinstance(marker, dict) and marker:
+            pending_update = {
+                "task_id": str(marker.get("task_id") or "").strip(),
+                "expected_version": str(marker.get("expected_version") or "").strip(),
+                "previous_version": str(marker.get("previous_version") or "").strip(),
+                "launched_at": int(marker.get("launched_at") or 0),
+                "msi_exit_code": marker.get("msi_exit_code"),
+            }
+        return {
+            "last_ingest_ok_at": self._last_ingest_ok_at,
+            "last_error": self._last_error or "",
+            "outbox_oldest_age_sec": oldest_age,
+            "outbox_stale": bool(oldest_age is not None and oldest_age >= OUTBOX_STALE_AGE_SEC),
+            "server_queue_pending": int(self._server_queue_pending or 0),
+            "outbox_mode": self._outbox_mode(),
+            "install_dir": _agent_install_dir(),
+            "program_data_root": str(PROGRAM_DATA),
+            "legacy_itinvent_present": LEGACY_PROGRAM_DATA_ROOT.exists(),
+            "pending_update": pending_update,
+            "system_drive_free_gb": free_gb,
+            "low_disk": bool(free_gb is not None and free_gb < LOW_DISK_FREE_GB),
+        }
+
+    def _process_pending_update(self) -> Optional[Dict[str, Any]]:
+        marker = _read_update_marker()
+        if not isinstance(marker, dict) or not marker:
+            return None
+
+        decision = evaluate_pending_update(marker, current_version=AGENT_VERSION)
+        exit_code = decision.get("msi_exit_code")
+        if exit_code is not None and not marker.get("exit_recorded_at"):
+            marker["exit_recorded_at"] = int(time.time())
+            marker["msi_exit_code"] = exit_code
+            _write_update_marker(marker)
+            decision = evaluate_pending_update(marker, current_version=AGENT_VERSION)
+
+        task_id = str(marker.get("task_id") or "").strip()
+        status_value = str(decision.get("status") or "acknowledged")
+        result = {
+            key: value
+            for key, value in decision.items()
+            if key not in {"terminal", "status"}
+        }
+        error_text = str(decision.get("error") or "") if status_value == "failed" else ""
+
+        if task_id:
+            self._task_result(task_id, status_value, result=result, error_text=error_text)
+
+        if decision.get("terminal"):
+            if status_value == "failed":
+                self._last_error = error_text or "self_update failed"
+            _clear_update_marker()
+            logging.info(
+                "Self-update terminal status=%s verified=%s exit=%s version=%s expected=%s",
+                status_value,
+                decision.get("verified"),
+                decision.get("msi_exit_code"),
+                AGENT_VERSION,
+                decision.get("expected_version"),
+            )
+        return decision
 
     def _outbox_paths_for_task(self, task_id: str, *, exclude: Optional[Path] = None) -> List[Path]:
         normalized_task_id = str(task_id or "").strip()
@@ -805,6 +1236,75 @@ class ScanAgent:
         if not OUTBOX_DEAD_PATH.exists():
             return 0
         return sum(1 for row in OUTBOX_DEAD_PATH.glob("*.json") if row.is_file())
+
+    def _dead_letter_paths(self) -> List[Path]:
+        if not OUTBOX_DEAD_PATH.exists():
+            return []
+        return sorted([row for row in OUTBOX_DEAD_PATH.glob("*.json") if row.is_file()], key=lambda row: row.name)
+
+    def _requeue_dead_letter(self, max_items: int = DEFAULT_OUTBOX_REQUEUE_BATCH) -> int:
+        """Move recoverable dead-letter items back to pending outbox."""
+        now_ts = int(time.time())
+        interval = max(
+            60,
+            _to_int(
+                self.config.get("outbox_requeue_interval_sec"),
+                DEFAULT_OUTBOX_REQUEUE_INTERVAL_SEC,
+            ),
+        )
+        if self._last_dead_requeue_at and (now_ts - self._last_dead_requeue_at) < interval:
+            return 0
+        self._last_dead_requeue_at = now_ts
+        batch = max(1, min(100, int(max_items or DEFAULT_OUTBOX_REQUEUE_BATCH)))
+        moved = 0
+        for path in self._dead_letter_paths()[:batch]:
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logging.warning("Dead-letter requeue skipped (unreadable): %s", path.name)
+                continue
+            if not isinstance(raw, dict):
+                continue
+            reason = str(raw.get("dropped_reason") or "").strip().upper()
+            if reason in DEAD_LETTER_NO_REQUEUE_REASONS:
+                continue
+            payload = raw.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            event_id = str(raw.get("event_id") or payload.get("event_id") or "").strip()
+            if not event_id:
+                continue
+            if self._outbox_has_event(event_id):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception as exc:
+                    logging.warning("Dead-letter delete after pending dedupe failed (%s): %s", path, exc)
+                continue
+            item_id = str(raw.get("id") or uuid.uuid4().hex)
+            pending_path = OUTBOX_PENDING_PATH / f"{now_ts:010d}_{item_id}.json"
+            item = {
+                "id": item_id,
+                "event_id": event_id,
+                "created_at": _to_int(raw.get("created_at"), now_ts),
+                "payload": payload,
+                "attempts": 0,
+                "next_attempt_at": now_ts,
+                "last_error": "",
+                "requeued_from_dead": True,
+                "previous_dropped_reason": reason or str(raw.get("dropped_reason") or ""),
+            }
+            if isinstance(raw.get("task_result"), dict):
+                item["task_result"] = dict(raw["task_result"])
+            try:
+                OUTBOX_PENDING_PATH.mkdir(parents=True, exist_ok=True)
+                self._outbox_write(pending_path, item)
+                path.unlink(missing_ok=True)
+                moved += 1
+            except Exception as exc:
+                logging.warning("Dead-letter requeue failed (%s): %s", path, exc)
+        if moved:
+            logging.info("Dead-letter requeued to outbox: count=%s", moved)
+        return moved
 
     def _outbox_read(self, path: Path) -> Optional[Dict[str, Any]]:
         try:
@@ -1166,6 +1666,9 @@ class ScanAgent:
                 self._last_error = f"INGEST_DOCUMENT_UNAVAILABLE_{response.status_code}"
                 return {"success": False, "deduped": False, "fallback": False}
             if response.status_code == 429:
+                self._note_server_queue_from_response(response)
+                if self._server_queue_pending < self._server_queue_slow_threshold():
+                    self._server_queue_pending = self._server_queue_slow_threshold()
                 retry_after = self._retry_after_seconds(response)
                 result = {"success": False, "deduped": False, "fallback": False}
                 if retry_after:
@@ -1177,6 +1680,7 @@ class ScanAgent:
             self._last_ingest_ok_at = int(time.time())
             self._last_error = ""
             data = response.json() if response.content else {}
+            self._note_server_queue_from_payload(data if isinstance(data, dict) else {})
             return {"success": True, "deduped": bool((data or {}).get("deduped")), "fallback": False}
         except Exception as exc:
             logging.warning("Document ingest request error: %s", exc)
@@ -1210,6 +1714,9 @@ class ScanAgent:
                 self._last_error = f"INGEST_PDF_SLICE_UNAVAILABLE_{response.status_code}"
                 return {"success": False, "deduped": False, "fallback": True}
             if response.status_code == 429:
+                self._note_server_queue_from_response(response)
+                if self._server_queue_pending < self._server_queue_slow_threshold():
+                    self._server_queue_pending = self._server_queue_slow_threshold()
                 retry_after = self._retry_after_seconds(response)
                 logging.warning("PDF slice ingest backpressure status=429 retry_after=%s", retry_after)
                 self._last_error = f"INGEST_HTTP_429_RETRY_AFTER_{retry_after}"
@@ -1226,6 +1733,7 @@ class ScanAgent:
             data = response.json() if response.content else {}
             if not isinstance(data, dict):
                 data = {}
+            self._note_server_queue_from_payload(data)
             return {"success": True, "deduped": bool(data.get("deduped")), "fallback": False}
         except Exception as exc:
             logging.warning("PDF slice ingest request error: %s", exc)
@@ -1246,6 +1754,9 @@ class ScanAgent:
         try:
             response = self._send("POST", self._url("ingest"), json=payload)
             if response.status_code == 429:
+                self._note_server_queue_from_response(response)
+                if self._server_queue_pending < self._server_queue_slow_threshold():
+                    self._server_queue_pending = self._server_queue_slow_threshold()
                 retry_after = self._retry_after_seconds(response)
                 logging.warning("Ingest backpressure status=429 retry_after=%s", retry_after)
                 self._last_error = f"INGEST_HTTP_429_RETRY_AFTER_{retry_after}"
@@ -1262,6 +1773,7 @@ class ScanAgent:
             data = response.json() if response.content else {}
             if not isinstance(data, dict):
                 data = {}
+            self._note_server_queue_from_payload(data)
             return {"success": True, "deduped": bool(data.get("deduped"))}
         except Exception as exc:
             logging.warning("Ingest request error: %s", exc)
@@ -1277,10 +1789,16 @@ class ScanAgent:
             }
         return {"success": bool(result), "deduped": False, "retry_after": 0}
 
-    def _drain_outbox(self, max_items: int = DEFAULT_OUTBOX_DRAIN_BATCH) -> int:
+    def _drain_outbox(self, max_items: Optional[int] = None) -> int:
         now_ts = int(time.time())
         sent_count = 0
-        for path in self._outbox_paths()[: max(1, max_items)]:
+        peek_limit = max(
+            self._effective_drain_batch(),
+            _to_int(self.config.get("outbox_drain_batch"), DEFAULT_OUTBOX_DRAIN_BATCH),
+        )
+        for path in self._outbox_paths()[: max(1, peek_limit)]:
+            if sent_count >= (max_items if max_items is not None else self._effective_drain_batch()):
+                break
             item = self._outbox_read(path)
             if not item:
                 self._outbox_move_to_dead(path, None, "OUTBOX_CORRUPT")
@@ -1740,6 +2258,22 @@ class ScanAgent:
         self._write_status(force=False)
 
     def heartbeat(self) -> None:
+        try:
+            self._process_pending_update()
+        except Exception as exc:
+            logging.warning("Pending update verify failed: %s", exc)
+
+        metadata = {
+            "mac_address": _mac_address(),
+            "watchdog_enabled": bool(self._observer is not None),
+            "analysis_version": ANALYSIS_VERSION,
+            "ocr_page_limit": PDF_OCR_PAGE_LIMIT,
+            "text_page_limit": PDF_TEXT_PAGE_LIMIT,
+            "supported_formats": sorted(SUPPORTED_SCAN_EXTENSIONS),
+            "outbox_depth": self._outbox_depth(),
+            "dead_letter_depth": self._dead_letter_depth(),
+        }
+        metadata.update(self._ops_metadata())
         payload = {
             "agent_id": self.agent_id,
             "hostname": _hostname(),
@@ -1749,23 +2283,18 @@ class ScanAgent:
             "status": "online",
             "queue_pending": len(self._pending_paths) + self._outbox_depth(),
             "last_seen_at": int(time.time()),
-            "metadata": {
-                "mac_address": _mac_address(),
-                "watchdog_enabled": bool(self._observer is not None),
-                "analysis_version": ANALYSIS_VERSION,
-                "ocr_page_limit": PDF_OCR_PAGE_LIMIT,
-                "text_page_limit": PDF_TEXT_PAGE_LIMIT,
-                "supported_formats": sorted(SUPPORTED_SCAN_EXTENSIONS),
-                "outbox_depth": self._outbox_depth(),
-                "dead_letter_depth": self._dead_letter_depth(),
-            },
+            "metadata": metadata,
         }
         try:
             response = self._send("POST", self._url("heartbeat"), json=payload)
             if response.status_code >= 300:
                 logging.warning("Heartbeat failed status=%s", response.status_code)
+                self._last_error = f"Heartbeat failed status={response.status_code}"
+            else:
+                self._note_server_queue_from_response(response)
         except Exception as exc:
             logging.warning("Heartbeat error: %s", exc)
+            self._last_error = f"Heartbeat error: {exc}"
 
     def _task_result(self, task_id: str, status_value: str, result: Optional[Dict[str, Any]] = None, error_text: str = "") -> bool:
         payload = {
@@ -1783,6 +2312,158 @@ class ScanAgent:
         except Exception as exc:
             logging.warning("Task result send error: %s", exc)
             return False
+
+    def _sha256_file(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _resolve_powershell(self) -> str:
+        system_root = str(os.environ.get("SystemRoot") or r"C:\Windows").strip() or r"C:\Windows"
+        candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if candidate.is_file():
+            return str(candidate)
+        return "powershell.exe"
+
+    def _download_agent_package(self, msi_url: str, destination: Path) -> None:
+        text = str(msi_url or "").strip()
+        if not text:
+            raise ValueError("msi_url is empty")
+
+        # Relative path from scan API base (server injects "agent-package").
+        if "://" not in text and not text.startswith("\\\\"):
+            url = self._url(text)
+            with self._send("GET", url, stream=True, timeout=max(60, int(self.config["timeout"]))) as response:
+                if response.status_code >= 300:
+                    raise RuntimeError(f"Package download failed status={response.status_code}")
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            handle.write(chunk)
+            return
+
+        # UNC / local path copy.
+        if text.startswith("\\\\") or (len(text) > 2 and text[1] == ":"):
+            source = Path(text)
+            if not source.is_file():
+                raise FileNotFoundError(f"Package path not found: {source}")
+            shutil.copy2(source, destination)
+            return
+
+        parsed = urlparse(text)
+        if parsed.scheme in {"http", "https"}:
+            with self.session.get(text, stream=True, timeout=max(60, int(self.config["timeout"]))) as response:
+                if response.status_code >= 300:
+                    raise RuntimeError(f"Package download failed status={response.status_code}")
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            handle.write(chunk)
+            return
+
+        raise ValueError(f"Unsupported msi_url scheme: {text}")
+
+    def _schedule_msi_install(self, msi_path: Path, log_path: Path, exit_code_path: Path) -> None:
+        msi_literal = str(msi_path).replace("'", "''")
+        log_literal = str(log_path).replace("'", "''")
+        exit_literal = str(exit_code_path).replace("'", "''")
+        # Wait inside a detached PowerShell process so the scan loop is not blocked,
+        # but the exit code is persisted for the next heartbeat verify cycle.
+        command = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "Start-Sleep -Seconds 8; "
+            f"$msi='{msi_literal}'; "
+            f"$log='{log_literal}'; "
+            f"$exitFile='{exit_literal}'; "
+            "$p = Start-Process -FilePath 'msiexec.exe' "
+            "-ArgumentList @('/i', $msi, '/qn', '/norestart', '/l*v', $log) "
+            "-WindowStyle Hidden -Wait -PassThru; "
+            "try { [IO.File]::WriteAllText($exitFile, [string]$p.ExitCode) } catch {}"
+        )
+        subprocess.Popen(
+            [
+                self._resolve_powershell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                command,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+
+    def run_self_update(self, payload: Dict[str, Any], *, task_id: str = "") -> Dict[str, Any]:
+        msi_url = str(payload.get("msi_url") or "").strip()
+        expected_sha = str(payload.get("msi_sha256") or "").strip().lower()
+        expected_version = str(payload.get("expected_version") or "").strip()
+        filename = str(payload.get("filename") or "HUB-IT-Agent-update.msi").strip() or "HUB-IT-Agent-update.msi"
+        if not msi_url:
+            raise ValueError("self_update payload missing msi_url")
+        if not expected_sha or len(expected_sha) != 64:
+            raise ValueError("self_update payload missing valid msi_sha256")
+
+        work_dir = SELF_UPDATE_STAGING_DIR
+        work_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^\w.\-]+", "_", filename) or "HUB-IT-Agent-update.msi"
+        if not safe_name.lower().endswith(".msi"):
+            safe_name = f"{safe_name}.msi"
+        msi_path = work_dir / safe_name
+        stamp = int(time.time())
+        log_path = work_dir / f"msiexec-{stamp}.log"
+        exit_code_path = work_dir / f"msiexec-{stamp}.exitcode"
+
+        logging.info(
+            "Self-update download start url=%s expected_version=%s current=%s",
+            msi_url,
+            expected_version or "?",
+            AGENT_VERSION,
+        )
+        self._download_agent_package(msi_url, msi_path)
+        actual_sha = self._sha256_file(msi_path)
+        if actual_sha != expected_sha:
+            try:
+                msi_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Package SHA256 mismatch: expected={expected_sha} actual={actual_sha}"
+            )
+
+        self._schedule_msi_install(msi_path, log_path, exit_code_path)
+        marker = {
+            "task_id": str(task_id or "").strip(),
+            "expected_version": expected_version,
+            "previous_version": AGENT_VERSION,
+            "msi_path": str(msi_path),
+            "log_path": str(log_path),
+            "exit_code_path": str(exit_code_path),
+            "launched_at": stamp,
+            "msi_sha256": actual_sha,
+        }
+        _write_update_marker(marker)
+        logging.info("Self-update installer scheduled msi=%s log=%s", msi_path, log_path)
+        return {
+            "phase": "installer_launched",
+            "installer_launched": True,
+            "pending_update": True,
+            "verified": False,
+            "expected_version": expected_version,
+            "previous_version": AGENT_VERSION,
+            "current_version": AGENT_VERSION,
+            "msi_sha256": actual_sha,
+            "msi_path": str(msi_path),
+            "log_path": str(log_path),
+            "exit_code_path": str(exit_code_path),
+        }
 
     def poll_tasks(self) -> None:
         try:
@@ -1808,6 +2489,29 @@ class ScanAgent:
             scan_extensions = _normalize_scan_extensions(payload.get("scan_extensions"))
             if not task_id:
                 continue
+
+            if command == "self_update":
+                self._task_result(
+                    task_id,
+                    "acknowledged",
+                    result={
+                        "phase": "downloading",
+                        "expected_version": str(payload.get("expected_version") or "").strip(),
+                        "current_version": AGENT_VERSION,
+                        "verified": False,
+                        "pending_update": True,
+                    },
+                )
+                try:
+                    stats = self.run_self_update(payload, task_id=task_id)
+                    # Keep task active until heartbeat verifies MSI exit + agent version.
+                    self._task_result(task_id, "acknowledged", result=stats)
+                except Exception as exc:
+                    logging.exception("Self-update failed task_id=%s", task_id)
+                    _clear_update_marker()
+                    self._task_result(task_id, "failed", error_text=str(exc))
+                continue
+
             self._task_result(
                 task_id,
                 "acknowledged",
@@ -1899,11 +2603,16 @@ class ScanAgent:
 
     def run_forever(self) -> None:
         self.refresh_roots(force=True)
+        try:
+            self._process_pending_update()
+        except Exception as exc:
+            logging.warning("Startup update verify failed: %s", exc)
         if self.config["run_scan_on_start"]:
             self.run_scan_once()
         self._start_watchdog()
 
         next_poll_ts = 0.0
+        next_drain_ts = 0.0
         next_roots_refresh_ts = 0.0
 
         try:
@@ -1914,11 +2623,32 @@ class ScanAgent:
                     self.heartbeat()
                     self.poll_tasks()
                     self._outbox_prune_limits()
-                    drained = self._drain_outbox(max_items=int(self.config.get("outbox_drain_batch", DEFAULT_OUTBOX_DRAIN_BATCH)))
-                    if drained:
-                        logging.info("Outbox drained on heartbeat cycle: sent=%s", drained)
+                    requeued = self._requeue_dead_letter(
+                        max_items=int(self.config.get("outbox_requeue_batch", DEFAULT_OUTBOX_REQUEUE_BATCH))
+                    )
+                    if requeued:
+                        logging.info("Dead-letter requeued on heartbeat cycle: count=%s", requeued)
                     poll_jitter = random.randint(0, int(self.config.get("poll_jitter_sec", 0) or 0))
-                    next_poll_ts = now + self.config["poll_interval"] + poll_jitter
+                    next_poll_ts = now + self._effective_poll_interval() + poll_jitter
+
+                if now >= next_drain_ts:
+                    if self._outbox_depth() > 0:
+                        mode_before = self._outbox_mode()
+                        drained = self._drain_outbox()
+                        if drained:
+                            logging.info(
+                                "Outbox drained: sent=%s mode=%s server_queue_pending=%s",
+                                drained,
+                                self._outbox_mode(),
+                                self._server_queue_pending,
+                            )
+                        elif mode_before != self._outbox_mode():
+                            logging.info(
+                                "Outbox mode switched to %s (server_queue_pending=%s)",
+                                self._outbox_mode(),
+                                self._server_queue_pending,
+                            )
+                    next_drain_ts = now + self._effective_drain_interval()
 
                 if now >= next_roots_refresh_ts:
                     self.refresh_roots(force=False)
@@ -1934,9 +2664,10 @@ class ScanAgent:
                         summary["deferred"],
                     )
                     self._outbox_prune_limits()
-                    drained = self._drain_outbox(max_items=int(self.config.get("outbox_drain_batch", DEFAULT_OUTBOX_DRAIN_BATCH)))
+                    drained = self._drain_outbox()
                     if drained:
                         logging.info("Outbox drained after watchdog batch: sent=%s", drained)
+                    next_drain_ts = now + self._effective_drain_interval()
 
                 if self._state_dirty and int(now) % 15 == 0:
                     self._persist_state()
@@ -1951,7 +2682,7 @@ class ScanAgent:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="IT-Invent Scan Agent")
+    parser = argparse.ArgumentParser(description="HUB-IT Scan Agent")
     parser.add_argument("--once", action="store_true", help="Run one scan and exit")
     parser.add_argument("--heartbeat", action="store_true", help="Send heartbeat and exit")
     parser.add_argument("--no-watchdog", action="store_true", help="Disable watchdog for current run")

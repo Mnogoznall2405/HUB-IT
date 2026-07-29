@@ -11,12 +11,17 @@ from typing import Dict, List, Mapping, Optional, Sequence
 import psutil
 
 
-DEFAULT_TASK_NAME = "IT-Invent Agent"
+DEFAULT_TASK_NAME = "HUB-IT Agent"
+LEGACY_TASK_NAMES = ("IT-Invent Agent",)
 DEFAULT_REPEAT_MINUTES = 60
-DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\IT-Invent\Agent")
-DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
+DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\HUB-IT\Agent")
+LEGACY_INSTALL_DIR = Path(r"C:\Program Files\IT-Invent\Agent")
+DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT"
+LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 DEFAULT_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "Agent"
+DEFAULT_SCAN_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent"
 DEFAULT_UPGRADE_BACKUP_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "AgentUpgrade"
+LEGACY_UPGRADE_BACKUP_ROOT = LEGACY_PROGRAM_DATA_ROOT / "AgentUpgrade"
 EXECUTABLE_NAME = "ITInventAgent.exe"
 SCAN_AGENT_EXECUTABLE_NAME = "ITInventScanAgent.exe"
 MSI_HELPER_EXECUTABLE_NAME = "ITInventAgentMsiHelper.exe"
@@ -37,8 +42,11 @@ AGENT_RUNTIME_PROCESS_NAMES = (
 FORCED_SCAN_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_SEC": "600",
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
-    "SCAN_AGENT_POLL_INTERVAL_SEC": "600",
-    "SCAN_AGENT_POLL_JITTER_SEC": "120",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
+    "SCAN_AGENT_POLL_JITTER_SEC": "30",
+    "SCAN_AGENT_OUTBOX_DRAIN_BATCH": "50",
+    "SCAN_AGENT_OUTBOX_DRAIN_INTERVAL_SEC": "10",
+    "SCAN_AGENT_SERVER_QUEUE_SLOW_THRESHOLD": "2000",
     "SCAN_AGENT_SCAN_ON_START": "0",
     "SCAN_AGENT_WATCHDOG_ENABLED": "0",
 }
@@ -49,8 +57,9 @@ MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
     "SCAN_AGENT_SERVER_BASE": "https://hubit.zsgp.ru/api/v1/scan",
-    "SCAN_AGENT_POLL_INTERVAL_SEC": "600",
-    "SCAN_AGENT_POLL_JITTER_SEC": "120",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
+    "SCAN_AGENT_POLL_JITTER_SEC": "30",
+    "SCAN_AGENT_OUTBOX_DRAIN_BATCH": "50",
     "ITINV_OUTLOOK_SEARCH_ROOTS": "D:\\",
 }
 MSI_REQUIRED_SILENT_KEYS = (
@@ -211,7 +220,10 @@ def read_env_map(path: Path) -> Dict[str, str]:
 def _legacy_env_paths(install_dir: Path, env_file_path: Path) -> List[Path]:
     candidates = [
         install_dir / ENV_FILE_NAME,
+        LEGACY_INSTALL_DIR / ENV_FILE_NAME,
         DEFAULT_PROGRAM_DATA_ROOT / ENV_FILE_NAME,
+        LEGACY_PROGRAM_DATA_ROOT / "Agent" / ENV_FILE_NAME,
+        LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME,
     ]
     normalized_current = str(env_file_path.resolve() if env_file_path.exists() else env_file_path).lower()
     legacy_paths: List[Path] = []
@@ -262,16 +274,103 @@ def _restore_directory_contents(source: Path, target: Path) -> None:
     source.rmdir()
 
 
+def _resolve_upgrade_backup_root() -> Optional[Path]:
+    for candidate in (DEFAULT_UPGRADE_BACKUP_ROOT, LEGACY_UPGRADE_BACKUP_ROOT):
+        path = Path(candidate)
+        if path.exists() and path.is_dir():
+            return path
+    return None
+
+
+def migrate_legacy_runtime_roots(
+    *,
+    runtime_root: Optional[Path] = None,
+    scan_runtime_root: Optional[Path] = None,
+) -> bool:
+    """Copy runtime from IT-Invent → HUB-IT when the new tree is still empty."""
+    inventory_target = Path(runtime_root or DEFAULT_RUNTIME_ROOT)
+    scan_target = Path(scan_runtime_root or DEFAULT_SCAN_RUNTIME_ROOT)
+    legacy_inventory = LEGACY_PROGRAM_DATA_ROOT / "Agent"
+    legacy_scan = LEGACY_PROGRAM_DATA_ROOT / "ScanAgent"
+    moved = False
+
+    if legacy_inventory.exists() and not (inventory_target / ENV_FILE_NAME).exists():
+        inventory_target.mkdir(parents=True, exist_ok=True)
+        for item in legacy_inventory.iterdir():
+            destination = inventory_target / item.name
+            if destination.exists():
+                continue
+            if item.is_dir():
+                shutil.copytree(item, destination)
+            else:
+                shutil.copy2(item, destination)
+            moved = True
+
+    if legacy_scan.exists() and not scan_target.exists():
+        shutil.copytree(legacy_scan, scan_target)
+        moved = True
+
+    return moved
+
+
+def _remove_path_tree(path: Path, logger) -> bool:
+    if not path.exists():
+        return False
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        logger.info("Removed legacy path: %s", path)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to remove legacy path %s: %s", path, exc)
+        return False
+
+
+def cleanup_orphaned_legacy_itinvent(*, current_install_dir: Path, logger) -> bool:
+    """Remove leftover IT-Invent trees after HUB-IT install.
+
+    Failed major upgrades often unregister the old MSI while leaving
+    Program Files\\IT-Invent and ProgramData\\IT-Invent behind. In that case
+    FindRelatedProducts / RemoveExistingProducts never run on the next install.
+    """
+    removed = False
+    try:
+        current = current_install_dir.resolve()
+    except Exception:
+        current = current_install_dir
+    try:
+        legacy_install = LEGACY_INSTALL_DIR.resolve()
+    except Exception:
+        legacy_install = LEGACY_INSTALL_DIR
+
+    if str(legacy_install).lower() != str(current).lower():
+        removed = _remove_path_tree(legacy_install, logger) or removed
+
+    for name in ("Agent", "ScanAgent", "AgentUpgrade", "Logs", "Spool"):
+        removed = _remove_path_tree(LEGACY_PROGRAM_DATA_ROOT / name, logger) or removed
+    removed = _remove_path_tree(LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME, logger) or removed
+    try:
+        if LEGACY_PROGRAM_DATA_ROOT.exists() and not any(LEGACY_PROGRAM_DATA_ROOT.iterdir()):
+            LEGACY_PROGRAM_DATA_ROOT.rmdir()
+            logger.info("Removed empty legacy ProgramData root: %s", LEGACY_PROGRAM_DATA_ROOT)
+            removed = True
+    except Exception as exc:
+        logger.warning("Failed to remove empty legacy ProgramData root: %s", exc)
+    return removed
+
+
 def restore_upgrade_runtime_backup(
     *,
     runtime_root: Optional[Path] = None,
     scan_runtime_root: Optional[Path] = None,
 ) -> bool:
-    backup_root = Path(DEFAULT_UPGRADE_BACKUP_ROOT)
-    if not backup_root.exists() or not backup_root.is_dir():
+    backup_root = _resolve_upgrade_backup_root()
+    if backup_root is None:
         return False
     inventory_target = Path(runtime_root or DEFAULT_RUNTIME_ROOT)
-    scan_target = Path(scan_runtime_root or (DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent"))
+    scan_target = Path(scan_runtime_root or DEFAULT_SCAN_RUNTIME_ROOT)
     _restore_directory_contents(backup_root / "Agent", inventory_target)
     _restore_directory_contents(backup_root / "ScanAgent", scan_target)
     if backup_root.exists() and not any(backup_root.iterdir()):
@@ -475,21 +574,31 @@ def run_msi_install(namespace, logger) -> int:
     task_name = str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME)
 
     stop_scheduled_task(task_name, logger)
+    for legacy_name in LEGACY_TASK_NAMES:
+        if legacy_name != task_name:
+            stop_scheduled_task(legacy_name, logger)
     stopped_pids = stop_agent_processes(skip_pid=os.getpid())
     if stopped_pids:
-        logger.info("Stopped old IT-Invent agent processes before install: %s", stopped_pids)
+        logger.info("Stopped old HUB-IT agent processes before install: %s", stopped_pids)
 
     if restore_upgrade_runtime_backup(
         runtime_root=env_file_path.parent,
-        scan_runtime_root=DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent",
+        scan_runtime_root=DEFAULT_SCAN_RUNTIME_ROOT,
     ):
         logger.info("Restored preserved agent runtime after MSI major upgrade")
+    elif migrate_legacy_runtime_roots(
+        runtime_root=env_file_path.parent,
+        scan_runtime_root=DEFAULT_SCAN_RUNTIME_ROOT,
+    ):
+        logger.info("Migrated legacy IT-Invent runtime into HUB-IT ProgramData")
 
     overrides = namespace_to_env_overrides(namespace)
     existing = read_runtime_env_map(env_file_path, install_dir)
     merged = build_runtime_env_values(existing, overrides)
     upsert_env_file(env_file_path, merged)
     cleanup_legacy_env_files(install_dir, env_file_path, logger)
+    if cleanup_orphaned_legacy_itinvent(current_install_dir=install_dir, logger=logger):
+        logger.info("Cleaned orphaned IT-Invent install/runtime leftovers")
 
     missing = missing_required_keys(merged)
     if missing:
@@ -533,8 +642,12 @@ def run_msi_uninstall_cleanup(namespace, logger) -> int:
             str(install_dir),
             "-RuntimeRoot",
             str(runtime_root),
-            "-LegacyProgramDataRoot",
+            "-ProgramDataRoot",
             str(DEFAULT_PROGRAM_DATA_ROOT),
+            "-LegacyInstallPath",
+            str(LEGACY_INSTALL_DIR),
+            "-LegacyProgramDataRoot",
+            str(LEGACY_PROGRAM_DATA_ROOT),
             "-SkipInstallPathRemoval",
             "-ClearInstallerEnv",
         ],
@@ -556,8 +669,12 @@ def run_msi_full_uninstall_cleanup(namespace, logger) -> int:
         str(install_dir),
         "-RuntimeRoot",
         str(runtime_root),
-        "-LegacyProgramDataRoot",
+        "-ProgramDataRoot",
         str(DEFAULT_PROGRAM_DATA_ROOT),
+        "-LegacyInstallPath",
+        str(LEGACY_INSTALL_DIR),
+        "-LegacyProgramDataRoot",
+        str(LEGACY_PROGRAM_DATA_ROOT),
         "-ClearInstallerEnv",
     ]
     if log_path:

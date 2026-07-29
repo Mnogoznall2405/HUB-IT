@@ -35,6 +35,7 @@ ITINVENT_TOOL_ACTION_CONSUMABLE_CONSUME_DRAFT = "itinvent.action.consumable_cons
 ITINVENT_TOOL_ACTION_CONSUMABLE_QTY_DRAFT = "itinvent.action.consumable_qty_draft"
 AI_TOOL_FILES_CREATE = "ai.files.create"
 AI_TOOL_FILES_REPORT = "ai.files.report"
+AI_TOOL_FILES_CONVERT_DOCUMENT = "ai.files.convert_document"
 OFFICE_TOOL_MAIL_SEARCH = "office.mail.search"
 OFFICE_TOOL_MAIL_GET_MESSAGE = "office.mail.get_message"
 OFFICE_TOOL_MAIL_CONTACTS_RESOLVE = "office.mail.contacts.resolve"
@@ -160,7 +161,7 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_ITINVENT
     if normalized.startswith("office."):
         return AI_TOOL_GROUP_OFFICE
-    if normalized in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT}:
+    if normalized in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AI_TOOL_FILES_CONVERT_DOCUMENT}:
         return AI_TOOL_GROUP_FILES
     if normalized.startswith("mfu."):
         return AI_TOOL_GROUP_MFU
@@ -308,6 +309,7 @@ class AiToolExecutionContext:
     enabled_tools: list[str]
     tool_settings: dict[str, Any]
     allow_generated_artifacts: bool = True
+    trigger_message_id: str = ""
 
     @property
     def is_admin(self) -> bool:

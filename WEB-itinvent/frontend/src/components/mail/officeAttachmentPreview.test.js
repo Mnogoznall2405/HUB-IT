@@ -33,6 +33,9 @@ describe('buildOfficeAttachmentPreviewState', () => {
       objectUrl: 'blob:preview',
       pdfFilename: 'memo.pdf',
       sourceKind: 'word',
+      blob: null,
+      filename: 'memo.docx',
     });
+    expect(result.previewBlob).toBeTruthy();
   });
 });

@@ -391,6 +391,9 @@ class MailService:
         "logon failure",
         "password is incorrect",
         "password incorrect",
+        "password has expired",
+        "password expired",
+        "must change password",
         "user name or password is incorrect",
         "the specified network password is not correct",
         "network password is not correct",
@@ -1994,6 +1997,18 @@ class MailService:
             break
 
         if last_error is not None:
+            auth_code = self.classify_mail_error_code(last_error)
+            if auth_code == "MAIL_AUTH_INVALID":
+                logger.warning(
+                    "Exchange folder resolution auth failure: alias=%s error=%s",
+                    alias,
+                    last_error,
+                )
+                raise MailServiceError(
+                    str(last_error),
+                    code="MAIL_AUTH_INVALID",
+                    status_code=409,
+                ) from last_error
             logger.warning(
                 "Temporary Exchange folder resolution failure: alias=%s error=%s",
                 alias,
@@ -3312,8 +3327,13 @@ class MailService:
             attachment_id = self._extract_attachment_raw_id(attachment)
             if retain_attachment_ids is not None and attachment_id not in retain_attachment_ids:
                 continue
+            # Outlook/Exchange often stamps Content-ID on regular file attachments
+            # (e.g. PDFs). Skip only true inline images so downloadable files still forward.
             content_id = self._normalize_attachment_content_id(getattr(attachment, "content_id", None))
-            if bool(getattr(attachment, "is_inline", False)) or content_id:
+            content_type = _normalize_text(getattr(attachment, "content_type", "")).lower()
+            is_image = content_type.startswith("image/")
+            is_inline = bool(getattr(attachment, "is_inline", False))
+            if is_image and (is_inline or content_id):
                 continue
             if not self._is_downloadable_attachment(attachment):
                 continue
@@ -3498,12 +3518,18 @@ class MailService:
         except Exception:
             return 0
 
-    def list_notification_feed(self, *, user_id: int, limit: int = 20) -> dict[str, Any]:
+    def list_notification_feed(
+        self,
+        *,
+        user_id: int,
+        limit: int = 20,
+        unread_only: bool = True,
+    ) -> dict[str, Any]:
         safe_limit = max(1, min(50, int(limit or 20)))
         cached = self._cache_get(
             user_id=int(user_id),
             bucket="notification_feed",
-            extra=str(safe_limit),
+            extra=f"{safe_limit}:{int(bool(unread_only))}",
             mailbox_scope="aggregate",
         )
         if cached is not None:
@@ -3520,7 +3546,7 @@ class MailService:
                     mailbox_id=row_id,
                     folder="inbox",
                     folder_scope="current",
-                    unread_only=True,
+                    unread_only=bool(unread_only),
                     limit=safe_limit,
                     offset=0,
                 )
@@ -3558,7 +3584,7 @@ class MailService:
         return self._cache_set(
             user_id=int(user_id),
             bucket="notification_feed",
-            extra=str(safe_limit),
+            extra=f"{safe_limit}:{int(bool(unread_only))}",
             value=payload,
             ttl_sec=max(10, min(self.mail_cache_ttl_sec, 30)),
             mailbox_scope="aggregate",

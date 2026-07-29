@@ -73,7 +73,7 @@ export default function Tickets() {
                     Создать заявку
                   </Button>
                   <Button startIcon={<PersonAddIcon />} variant="outlined" onClick={() => setEmployeeOpen(true)}>
-                    Добавить сотрудника
+                    Сотрудники
                   </Button>
                   <Button startIcon={<BusinessIcon />} variant="outlined" onClick={() => setObjectsOpen(true)}>
                     Справочник объектов

@@ -6,7 +6,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.ai_chat.artifact_generator import GeneratedFileError, normalize_generated_file_specs
 from backend.ai_chat.tools.base import AiTool, AiToolResult
-from backend.ai_chat.tools.context import AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AiToolExecutionContext
+from backend.ai_chat.tools.context import (
+    AI_TOOL_FILES_CONVERT_DOCUMENT,
+    AI_TOOL_FILES_CREATE,
+    AI_TOOL_FILES_REPORT,
+    AiToolExecutionContext,
+)
 from backend.ai_chat.tools.registry import ai_tool_registry
 
 
@@ -423,5 +428,134 @@ class FilesReportTool(AiTool):
         )
 
 
+class FilesConvertDocumentArgs(BaseModel):
+    format: Optional[Literal["docx", "txt", "md", "pdf", "xlsx", "word", "excel", "text", "markdown"]] = None
+    attachment_id: Optional[str] = Field(default=None, max_length=64)
+    file_name: Optional[str] = Field(default=None, max_length=180)
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def _normalize_format_field(cls, value):
+        if value is None or value == "":
+            return None
+        return _normalize_format(value)
+
+    @field_validator("attachment_id", "file_name", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class FilesConvertDocumentTool(AiTool):
+    tool_id = AI_TOOL_FILES_CONVERT_DOCUMENT
+    description = (
+        "Convert attached scanned photos or PDF documents into Word/Text/Markdown/PDF/Excel "
+        "while preserving structure via vision LLM. "
+        "If format is omitted, recognition runs and the user should pick a format with buttons. "
+        "Prefer this tool whenever the user asks to convert/digitize a scan or PDF attachment."
+    )
+    input_model = FilesConvertDocumentArgs
+    stage = "converting_document"
+
+    def execute(self, *, context: AiToolExecutionContext, args: FilesConvertDocumentArgs) -> AiToolResult:
+        if not bool(context.allow_generated_artifacts):
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error="Generated files are disabled for this bot.",
+            )
+        import base64
+
+        from backend.ai_chat.doc_convert_runtime import (
+            convert_attachments_to_markdown,
+            export_converted_markdown,
+        )
+        from shared.doc_convert import DocConvertError
+
+        trigger_message_id = _normalize_text(getattr(context, "trigger_message_id", None))
+        if not trigger_message_id:
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error="Trigger message is missing for document conversion.",
+            )
+        try:
+            converted = convert_attachments_to_markdown(
+                conversation_id=context.conversation_id,
+                message_id=trigger_message_id,
+            )
+        except DocConvertError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=f"Document conversion failed: {exc}")
+
+        base_data = {
+            "needs_format_choice": True,
+            "markdown": converted.get("markdown"),
+            "source_names": converted.get("source_names") or [],
+            "warnings": list(converted.get("warnings") or []),
+            "table_count": converted.get("table_count") or 0,
+            "page_count": converted.get("page_count") or 0,
+            "used_vision": bool(converted.get("used_vision")),
+            "formats": converted.get("formats") or ["docx", "txt", "md", "pdf", "xlsx"],
+            "title": converted.get("title") or "document",
+            "structure_pages": converted.get("structure_pages") or [],
+            "signatures": converted.get("signatures") or [],
+            "high_fidelity": True,
+            "verify_fidelity": float(converted.get("verify_fidelity") or 0.0),
+            "files": [],
+            "count": 0,
+        }
+        file_format = _normalize_format(args.format) if args.format else ""
+        if file_format not in {"docx", "txt", "md", "pdf", "xlsx"}:
+            return AiToolResult(tool_id=self.tool_id, ok=True, data=base_data)
+
+        try:
+            exported = export_converted_markdown(
+                markdown=str(converted.get("markdown") or ""),
+                export_format=file_format,
+                source_name=args.file_name or (converted.get("title") or "document"),
+                title=str(converted.get("title") or ""),
+                structure_pages=list(converted.get("structure_pages") or []),
+                signatures=list(converted.get("signatures") or []),
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc), data=base_data)
+
+        content = bytes(exported.get("content") or b"")
+        content_b64 = base64.b64encode(content).decode("ascii")
+        file_spec = {
+            "format": file_format,
+            "file_name": exported.get("file_name") or f"document.{file_format}",
+            "title": converted.get("title") or "Документ",
+            "content": content.decode("utf-8") if file_format in {"txt", "md"} else "",
+            "metadata": {"doc_convert": True, "content_b64": content_b64},
+        }
+        base_data.update(
+            {
+                "needs_format_choice": False,
+                "warnings": list(base_data["warnings"]) + list(exported.get("warnings") or []),
+                "export": {
+                    "format": exported.get("format"),
+                    "file_name": exported.get("file_name"),
+                    "mime_type": exported.get("mime_type"),
+                    "content_b64": content_b64,
+                },
+                "files": [file_spec],
+                "count": 1,
+                "generated_files": [
+                    {
+                        "file_name": exported.get("file_name"),
+                        "format": file_format,
+                        "size_bytes": len(content),
+                    }
+                ],
+            }
+        )
+        return AiToolResult(tool_id=self.tool_id, ok=True, data=base_data)
+
+
 ai_tool_registry.register(FilesCreateTool())
 ai_tool_registry.register(FilesReportTool())
+ai_tool_registry.register(FilesConvertDocumentTool())

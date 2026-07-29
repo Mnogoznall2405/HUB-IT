@@ -4,7 +4,43 @@ vi.mock('../../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
 }));
 
-import { resolveMobileNavigationItems } from './navigationConfig';
+import { getMailNavigationBadgeMeta, resolveMobileNavigationItems } from './navigationConfig';
+
+describe('getMailNavigationBadgeMeta', () => {
+  it('does not treat stale as attention and hides zero-count badge', () => {
+    expect(getMailNavigationBadgeMeta('stale', 0)).toMatchObject({
+      needsAttention: false,
+      badgeContent: 0,
+      showBadge: false,
+    });
+  });
+
+  it('keeps a numeric badge for stale with unread mail', () => {
+    expect(getMailNavigationBadgeMeta('stale', 3)).toMatchObject({
+      needsAttention: false,
+      badgeContent: 3,
+      showBadge: true,
+      color: 'error',
+    });
+  });
+
+  it('shows ? only for unknown and error when count is zero', () => {
+    expect(getMailNavigationBadgeMeta('unknown', 0)).toMatchObject({
+      needsAttention: true,
+      badgeContent: '?',
+      showBadge: true,
+      color: 'warning',
+      title: 'Почтовый снимок: unknown',
+    });
+    expect(getMailNavigationBadgeMeta('error', 0)).toMatchObject({
+      needsAttention: true,
+      badgeContent: '?',
+      showBadge: true,
+      color: 'warning',
+      title: 'Почтовый снимок: error',
+    });
+  });
+});
 
 describe('resolveMobileNavigationItems', () => {
   const user = { role: 'operator' };

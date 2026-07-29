@@ -440,8 +440,8 @@ def test_agent_installer_build_runtime_env_values_preserves_existing_and_forces_
     assert values["ITINV_SCAN_ENABLED"] == "0"
     assert values["ITINV_AGENT_HEARTBEAT_SEC"] == "600"
     assert values["ITINV_AGENT_HEARTBEAT_JITTER_SEC"] == "120"
-    assert values["SCAN_AGENT_POLL_INTERVAL_SEC"] == "600"
-    assert values["SCAN_AGENT_POLL_JITTER_SEC"] == "120"
+    assert values["SCAN_AGENT_POLL_INTERVAL_SEC"] == "60"
+    assert values["SCAN_AGENT_POLL_JITTER_SEC"] == "30"
     assert values["SCAN_AGENT_SCAN_ON_START"] == "0"
     assert values["SCAN_AGENT_WATCHDOG_ENABLED"] == "0"
     assert values["ITINV_OUTLOOK_SEARCH_ROOTS"] == "D:\\"
@@ -531,13 +531,19 @@ def test_agent_installer_upsert_env_file_updates_existing_values(temp_dir):
 def test_agent_installer_run_msi_install_writes_env_and_calls_task_script(monkeypatch, temp_dir):
     install_dir = Path(temp_dir) / "Agent"
     install_dir.mkdir(parents=True, exist_ok=True)
-    runtime_root = Path(temp_dir) / "ProgramData" / "IT-Invent" / "Agent"
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
     env_path = runtime_root / ".env"
     script_path = install_dir / "scripts" / "install_agent_task.ps1"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text("Write-Host test", encoding="utf-8")
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
     monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", runtime_root.parent / "ScanAgent")
+    monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", runtime_root.parent / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_UPGRADE_BACKUP_ROOT", legacy_root / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", Path(temp_dir) / "LegacyAgent")
 
     captured = {}
 
@@ -558,7 +564,7 @@ def test_agent_installer_run_msi_install_writes_env_and_calls_task_script(monkey
         {
             "install_dir": str(install_dir),
             "env_file_path": "",
-            "task_name": "IT-Invent Agent",
+            "task_name": "HUB-IT Agent",
             "repeat_minutes": 60,
             "itinv_agent_server_url": "https://hub.example/api/v1/inventory",
             "itinv_agent_api_key": "secure-token",
@@ -578,12 +584,12 @@ def test_agent_installer_run_msi_install_writes_env_and_calls_task_script(monkey
     assert "ITINV_AGENT_SERVER_URL=https://hub.example/api/v1/inventory" in env_text
     assert "ITINV_AGENT_HEARTBEAT_SEC=600" in env_text
     assert "ITINV_AGENT_HEARTBEAT_JITTER_SEC=120" in env_text
-    assert "SCAN_AGENT_POLL_INTERVAL_SEC=600" in env_text
-    assert "SCAN_AGENT_POLL_JITTER_SEC=120" in env_text
+    assert "SCAN_AGENT_POLL_INTERVAL_SEC=60" in env_text
+    assert "SCAN_AGENT_POLL_JITTER_SEC=30" in env_text
     assert "SCAN_AGENT_SCAN_ON_START=0" in env_text
     assert "SCAN_AGENT_WATCHDOG_ENABLED=0" in env_text
     assert captured["script"] == script_path
-    assert captured["stopped_task"] == "IT-Invent Agent"
+    assert captured["stopped_task"] == "HUB-IT Agent"
     assert captured["stopped_processes"]["skip_pid"] > 0
     assert "-StartAfterRegister" in captured["args"]
     assert captured["args"][captured["args"].index("-EnvFilePath") + 1] == str(env_path)
@@ -594,24 +600,71 @@ def test_agent_installer_run_msi_install_migrates_legacy_install_dir_env(monkeyp
     install_dir.mkdir(parents=True, exist_ok=True)
     legacy_env_path = install_dir / ".env"
     legacy_env_path.write_text("ITINV_AGENT_SERVER_URL=https://legacy.example/api/v1/inventory\n", encoding="utf-8")
-    runtime_root = Path(temp_dir) / "ProgramData" / "IT-Invent" / "Agent"
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
     env_path = runtime_root / ".env"
     script_path = install_dir / "scripts" / "install_agent_task.ps1"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text("Write-Host test", encoding="utf-8")
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
     monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", runtime_root.parent / "ScanAgent")
+    monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", runtime_root.parent / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_UPGRADE_BACKUP_ROOT", legacy_root / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", Path(temp_dir) / "LegacyAgent")
     monkeypatch.setattr(agent_installer, "resolve_script_path", lambda name: script_path)
     monkeypatch.setattr(agent_installer, "resolve_executable_path", lambda _: install_dir / "ITInventAgent.exe")
     monkeypatch.setattr(agent_installer, "_run_powershell_script", lambda script, args: None)
     monkeypatch.setattr(agent_installer, "stop_scheduled_task", lambda task_name, logger=None: 0)
     monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda **kwargs: [])
 
-    args = type("Args", (), {"install_dir": str(install_dir), "env_file_path": "", "task_name": "IT-Invent Agent", "repeat_minutes": 60})()
+    args = type("Args", (), {"install_dir": str(install_dir), "env_file_path": "", "task_name": "HUB-IT Agent", "repeat_minutes": 60})()
 
     assert agent_installer.run_msi_install(args, agent.logging) == 0
     assert "ITINV_AGENT_SERVER_URL=https://legacy.example/api/v1/inventory" in env_path.read_text(encoding="utf-8")
     assert not legacy_env_path.exists()
+
+
+def test_agent_installer_run_msi_install_removes_orphaned_legacy_itinvent(monkeypatch, temp_dir):
+    install_dir = Path(temp_dir) / "HUB-IT" / "Agent"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    legacy_install = Path(temp_dir) / "IT-Invent" / "Agent"
+    legacy_install.mkdir(parents=True, exist_ok=True)
+    (legacy_install / "ITInventAgent.exe").write_text("old", encoding="utf-8")
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
+    legacy_agent = legacy_root / "Agent"
+    legacy_agent.mkdir(parents=True, exist_ok=True)
+    (legacy_agent / ".env").write_text("ITINV_AGENT_SERVER_URL=https://legacy.example/api\n", encoding="utf-8")
+    (legacy_root / "ScanAgent").mkdir(parents=True, exist_ok=True)
+    (legacy_root / "ScanAgent" / "state.json").write_text("{}", encoding="utf-8")
+    env_path = runtime_root / ".env"
+    script_path = install_dir / "scripts" / "install_agent_task.ps1"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("Write-Host test", encoding="utf-8")
+
+    monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
+    monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", runtime_root.parent / "ScanAgent")
+    monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", runtime_root.parent / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_UPGRADE_BACKUP_ROOT", legacy_root / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", legacy_install)
+    monkeypatch.setattr(agent_installer, "resolve_script_path", lambda name: script_path)
+    monkeypatch.setattr(agent_installer, "resolve_executable_path", lambda _: install_dir / "ITInventAgent.exe")
+    monkeypatch.setattr(agent_installer, "_run_powershell_script", lambda script, args: None)
+    monkeypatch.setattr(agent_installer, "stop_scheduled_task", lambda task_name, logger=None: 0)
+    monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda **kwargs: [])
+
+    args = type("Args", (), {"install_dir": str(install_dir), "env_file_path": "", "task_name": "HUB-IT Agent", "repeat_minutes": 60})()
+
+    assert agent_installer.run_msi_install(args, agent.logging) == 0
+    assert env_path.exists()
+    assert "ITINV_AGENT_SERVER_URL=https://legacy.example/api" in env_path.read_text(encoding="utf-8")
+    assert not legacy_install.exists()
+    assert not legacy_root.exists()
+    assert install_dir.exists()
 
 
 def test_agent_installer_stops_all_agent_process_names(monkeypatch):
@@ -652,13 +705,17 @@ def test_agent_installer_run_msi_uninstall_cleanup_uses_safe_script_flags(monkey
     script_path = install_dir / "scripts" / "uninstall_agent_task.ps1"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text("Write-Host test", encoding="utf-8")
-    runtime_root = Path(temp_dir) / "ProgramData" / "IT-Invent" / "Agent"
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
+    legacy_install = Path(temp_dir) / "LegacyAgent"
 
     captured = {}
 
     monkeypatch.setattr(agent_installer, "resolve_script_path", lambda name: script_path)
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
     monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", legacy_install)
     monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda **kwargs: [111])
 
     def fake_run_ps(script, args):
@@ -667,7 +724,7 @@ def test_agent_installer_run_msi_uninstall_cleanup_uses_safe_script_flags(monkey
 
     monkeypatch.setattr(agent_installer, "_run_powershell_script", fake_run_ps)
 
-    args = type("Args", (), {"install_dir": str(install_dir), "env_file_path": "", "task_name": "IT-Invent Agent"})()
+    args = type("Args", (), {"install_dir": str(install_dir), "env_file_path": "", "task_name": "HUB-IT Agent"})()
 
     assert agent_installer.run_msi_uninstall_cleanup(args, agent.logging) == 0
     assert captured["script"] == script_path
@@ -675,19 +732,25 @@ def test_agent_installer_run_msi_uninstall_cleanup_uses_safe_script_flags(monkey
     assert "-SkipInstallPathRemoval" in captured["args"]
     assert "-ClearInstallerEnv" in captured["args"]
     assert captured["args"][captured["args"].index("-RuntimeRoot") + 1] == str(runtime_root)
-    assert captured["args"][captured["args"].index("-LegacyProgramDataRoot") + 1] == str(runtime_root.parent)
+    assert captured["args"][captured["args"].index("-ProgramDataRoot") + 1] == str(runtime_root.parent)
+    assert captured["args"][captured["args"].index("-LegacyProgramDataRoot") + 1] == str(legacy_root)
+    assert captured["args"][captured["args"].index("-LegacyInstallPath") + 1] == str(legacy_install)
 
 
 def test_agent_installer_run_msi_full_uninstall_cleanup_uses_full_cleanup_script(monkeypatch, temp_dir):
     script_path = Path(temp_dir) / "scripts" / "full_uninstall_agent.ps1"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text("Write-Host test", encoding="utf-8")
-    runtime_root = Path(temp_dir) / "ProgramData" / "IT-Invent" / "Agent"
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
+    legacy_install = Path(temp_dir) / "LegacyAgent"
 
     captured = {}
 
     monkeypatch.setattr(agent_installer, "resolve_script_path", lambda name: script_path)
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", legacy_install)
 
     def fake_run_ps(script, args):
         captured["script"] = script
@@ -702,7 +765,7 @@ def test_agent_installer_run_msi_full_uninstall_cleanup_uses_full_cleanup_script
         {
             "install_dir": str(Path(temp_dir) / "Agent"),
             "env_file_path": str(runtime_root / ".env"),
-            "task_name": "IT-Invent Agent",
+            "task_name": "HUB-IT Agent",
             "log_path": str(Path(temp_dir) / "cleanup.log"),
             "self_uninstall_product_code": "{11111111-1111-1111-1111-111111111111}",
         },
@@ -713,6 +776,9 @@ def test_agent_installer_run_msi_full_uninstall_cleanup_uses_full_cleanup_script
     assert "-ClearInstallerEnv" in captured["args"]
     assert "-InstallPath" in captured["args"]
     assert captured["args"][captured["args"].index("-RuntimeRoot") + 1] == str(runtime_root)
+    assert captured["args"][captured["args"].index("-ProgramDataRoot") + 1] == str(runtime_root.parent)
+    assert captured["args"][captured["args"].index("-LegacyProgramDataRoot") + 1] == str(legacy_root)
+    assert captured["args"][captured["args"].index("-LegacyInstallPath") + 1] == str(legacy_install)
     assert captured["args"][captured["args"].index("-LogPath") + 1] == str(Path(temp_dir) / "cleanup.log")
     assert captured["product_code"] == "{11111111-1111-1111-1111-111111111111}"
 
@@ -778,17 +844,37 @@ def test_agent_setup_defines_msi_custom_actions_and_script_assets():
     assert '"fontTools"' in setup_text
     assert 'agent_msi_helper.py' in setup_text
     assert '--install-dir "[TARGETDIR]."' in setup_text
-    assert '--env-file-path "[CommonAppDataFolder]IT-Invent\\\\Agent\\\\.env"' in setup_text
+    assert '--env-file-path "[CommonAppDataFolder]HUB-IT\\\\Agent\\\\.env"' in setup_text
+    assert r'[ProgramFiles64Folder]\\HUB-IT\\Agent' in setup_text
     assert 'lib/certifi/cacert.pem' in setup_text
     assert 'UPGRADE_CODE = "{A285621C-4B2F-4BE6-9AD3-799896D4F901}"' in setup_text
     assert '"upgrade_code": UPGRADE_CODE' in setup_text
     assert "A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE" in setup_text
     assert '"REMOVEOLDVERSION"' in setup_text
     assert "1401" in setup_text
-    assert '"A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "TARGETDIR"' in setup_text
+    assert 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE' in setup_text
+    assert "A_RESTORE_MSI_SOURCE_AFTER_UPGRADE" in setup_text
+    assert "AgentUpgrade\\\\ScanAgent\\\\updates" in setup_text
+    assert "AgentUpgrade\\\\package" in setup_text
+    assert "$legacy='[CommonAppDataFolder]IT-Invent';" in setup_text
+    assert "$root='[CommonAppDataFolder]HUB-IT';" in setup_text
+    assert "1550" in setup_text
+    assert '("WindowsFolder", "TARGETDIR", ".")' in setup_text
+    # Working dir must exist before HUB-IT folders are created (legacy IT-Invent hosts).
+    assert '"A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "WindowsFolder"' in setup_text
+    assert '"A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "TARGETDIR"' not in setup_text
+    assert (
+        '"A_RESTORE_MSI_SOURCE_AFTER_UPGRADE",\n'
+        '            34 + 64,\n'
+        '            "WindowsFolder",\n'
+        "            _build_restore_msi_source_after_upgrade_target(),"
+    ) in setup_text
     assert '"[SystemFolder]WindowsPowerShell\\\\v1.0\\\\powershell.exe"' in setup_text
     assert "Start-Process -FilePath 'schtasks.exe'" in setup_text
-    assert "-ArgumentList @('/End','/TN','IT-Invent Agent')" in setup_text
+    assert "foreach($taskName in @('HUB-IT Agent','IT-Invent Agent')){" in setup_text
+    assert "-ArgumentList @('/End','/TN',$taskName)" in setup_text
+    # Must not leave a bare Start-Process before the foreach (breaks PowerShell / MSI 1603).
+    assert "Start-Process -FilePath 'schtasks.exe' foreach" not in setup_text.replace("\n", "")
     assert "Get-ScheduledTask" not in setup_text
     assert "Stop-ScheduledTask" not in setup_text
     assert "Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force" in setup_text
@@ -818,29 +904,40 @@ def test_upgrade_backup_custom_action_copies_runtime_with_open_log(temp_dir):
 
     setup_path = PROJECT_ROOT / "agent" / "setup.py"
     setup_tree = ast.parse(setup_path.read_text(encoding="utf-8"))
-    function_node = next(
+    function_nodes = [
         node
         for node in setup_tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_upgrade_backup_custom_action_target"
-    )
-    isolated_tree = ast.Module(body=[function_node], type_ignores=[])
+        if isinstance(node, ast.FunctionDef)
+        and node.name
+        in {
+            "_powershell_custom_action_command",
+            "_build_upgrade_backup_custom_action_target",
+        }
+    ]
+    isolated_tree = ast.Module(body=function_nodes, type_ignores=[])
     ast.fix_missing_locations(isolated_tree)
     namespace = {}
     exec(compile(isolated_tree, str(setup_path), "exec"), namespace)
     target = namespace["_build_upgrade_backup_custom_action_target"]()
     script = target.split('-Command "', 1)[1].rsplit('"', 1)[0]
 
-    program_data_root = Path(temp_dir) / "IT-Invent"
-    runtime_root = program_data_root / "Agent"
+    program_data_root = Path(temp_dir) / "HUB-IT"
+    legacy_root = Path(temp_dir) / "IT-Invent"
+    runtime_root = legacy_root / "Agent"
     locked_log = runtime_root / "Logs" / "itinvent_agent.log"
     locked_log.parent.mkdir(parents=True)
     locked_log.write_text("open log", encoding="utf-8")
     (runtime_root / ".env").write_text("ITINV_AGENT_API_KEY=test\n", encoding="utf-8")
 
     escaped_root = str(program_data_root).replace("'", "''")
+    escaped_legacy = str(legacy_root).replace("'", "''")
     script = script.replace(
-        "$root='[CommonAppDataFolder]IT-Invent';",
+        "$root='[CommonAppDataFolder]HUB-IT';",
         f"$root='{escaped_root}';",
+    )
+    script = script.replace(
+        "$legacy='[CommonAppDataFolder]IT-Invent';",
+        f"$legacy='{escaped_legacy}';",
     )
     script = script.replace("'IT-Invent Agent'", "'IT-Invent Agent Upgrade Regression Test'")
     script = script.replace(
@@ -882,7 +979,7 @@ def test_upgrade_backup_custom_action_copies_runtime_with_open_log(temp_dir):
 
 
 def test_agent_installer_restores_runtime_backup_before_upgrade_install(monkeypatch, temp_dir):
-    program_data_root = Path(temp_dir) / "IT-Invent"
+    program_data_root = Path(temp_dir) / "HUB-IT"
     backup_root = program_data_root / "AgentUpgrade"
     runtime_root = program_data_root / "Agent"
     scan_root = program_data_root / "ScanAgent"
@@ -897,6 +994,8 @@ def test_agent_installer_restores_runtime_backup_before_upgrade_install(monkeypa
 
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", program_data_root)
     monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", backup_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", scan_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_UPGRADE_BACKUP_ROOT", Path(temp_dir) / "IT-Invent" / "AgentUpgrade")
 
     restored = agent_installer.restore_upgrade_runtime_backup(
         runtime_root=runtime_root,
@@ -917,7 +1016,7 @@ def test_agent_cleanup_setup_defines_separate_cleanup_msi():
     root = Path(__file__).resolve().parents[1]
     setup_text = (root / "agent" / "cleanup_setup.py").read_text(encoding="utf-8")
 
-    assert 'name="IT-Invent Agent Cleanup"' in setup_text
+    assert 'name="HUB-IT Agent Cleanup"' in setup_text
     assert 'CLEANUP_VERSION = "1.0.0"' in setup_text
     assert 'CLEANUP_UPGRADE_CODE = "{9B2E7F7D-641F-4577-BA8E-5B2C3E7796F5}"' in setup_text
     assert "{A285621C-4B2F-4BE6-9AD3-799896D4F901}" not in setup_text
@@ -926,7 +1025,7 @@ def test_agent_cleanup_setup_defines_separate_cleanup_msi():
     assert "--self-uninstall-product-code" in setup_text
     assert "[ProductCode]" in setup_text
     assert "ARPSYSTEMCOMPONENT" in setup_text
-    assert '"IT-Invent Agent Cleanup"' in setup_text
+    assert '"HUB-IT Agent Cleanup"' in setup_text
     assert "AgentCleanup" in setup_text
     assert "FULL_UNINSTALL_SCRIPT_NAME" in setup_text
     assert '"upgrade_code": CLEANUP_UPGRADE_CODE' in setup_text
@@ -944,7 +1043,7 @@ def test_full_uninstall_script_assets_are_synced_and_skip_cleanup_package():
     assert "SkipMsi" in runtime_text
     assert "ClearInstallerEnv" in runtime_text
     assert 'displayName -like "*Cleanup*"' in runtime_text
-    assert 'displayName -eq "IT-Invent Agent"' in runtime_text
+    assert 'displayName -in @("HUB-IT Agent", "IT-Invent Agent")' in runtime_text
     assert "msiexec.exe" in runtime_text
     assert "ITINV_*" in runtime_text
     assert "SCAN_AGENT_*" in runtime_text

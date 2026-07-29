@@ -4,6 +4,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   List,
   ListItemButton,
@@ -19,6 +20,8 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import SearchIcon from '@mui/icons-material/Search';
 
@@ -36,8 +39,10 @@ import {
   formatWarehouseQty,
   isUsableHubPartNo,
   NomenclatureCell,
+  resolveHubBalanceMatch,
   resolveWarehouseErrorMessage,
   sortBalancesByWarehouse,
+  summarizeHubBalanceMatches,
 } from './warehouse1cShared';
 
 const NOMENCLATURE_SEARCH_LIMIT = 50;
@@ -140,6 +145,7 @@ export default function EquipmentDetailWarehouse1CTab({
   onOpenEmployee = null,
 }) {
   const navigate = useNavigate();
+  const theme = useTheme();
   const searchPlan = useMemo(() => buildDefaultSearchPlan(data), [data]);
   const defaultSearchText = searchPlan.primaryQuery || searchPlan.fallbackQuery || '';
   const invNo = String(readFirst(data, ['INV_NO', 'inv_no'], '')).trim();
@@ -181,6 +187,10 @@ export default function EquipmentDetailWarehouse1CTab({
   const visibleWarehouseBalances = useMemo(
     () => filterBalancesByText(balances, warehouseFilterText),
     [balances, warehouseFilterText],
+  );
+  const balancesMatchSummary = useMemo(
+    () => summarizeHubBalanceMatches(visibleWarehouseBalances),
+    [visibleWarehouseBalances],
   );
   const balancesIncomplete = isWarehouse1cListIncomplete(balancesMeta);
 
@@ -501,8 +511,9 @@ export default function EquipmentDetailWarehouse1CTab({
               </Typography>
               <Typography variant="caption" color="text.secondary">
                 В Хабе: совпадение парт. № (карточка / код номенклатуры 1С); если у единицы
-                парт. № нет — по модели. С другим парт. № не считаем. Статус сотрудника — по
-                адресной книге. Клик по ФИО открывает карточку сотрудника.
+                парт. № нет — по модели. С другим парт. № не считаем. Сотрудники с этой
+                позицией только в Хабе показываются отдельно (В 1С = 0). Статус сотрудника —
+                по адресной книге. Клик по ФИО открывает карточку сотрудника.
               </Typography>
               {balancesMeta?.asOf ? (
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
@@ -540,11 +551,16 @@ export default function EquipmentDetailWarehouse1CTab({
 
           {!balancesLoading && balances.length > 0 ? (
             <Stack spacing={1}>
+              {balancesMatchSummary.allMatch ? (
+                <Alert severity="success" icon={<CheckCircleOutlineIcon fontSize="inherit" />}>
+                  Все сравнимые остатки сходятся: в 1С и в Хабе одинаковые количества.
+                </Alert>
+              ) : null}
               <TextField
                 size="small"
                 fullWidth
-                label="Фильтр по складу / сотруднику"
-                placeholder="ФИО или название склада"
+                label="Фильтр по складу / сотруднику / отделу"
+                placeholder="ФИО, склад или отдел"
                 value={warehouseFilterText}
                 onChange={(event) => setWarehouseFilterText(event.target.value)}
               />
@@ -553,15 +569,17 @@ export default function EquipmentDetailWarehouse1CTab({
                   <TableHead>
                     <TableRow>
                       <TableCell>Склад / сотрудник</TableCell>
+                      <TableCell>Отдел</TableCell>
                       <TableCell align="right">В 1С</TableCell>
                       <TableCell align="right">В Хабе</TableCell>
+                      <TableCell>Сверка</TableCell>
                       <TableCell>Сотрудник</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {visibleWarehouseBalances.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4}>
+                        <TableCell colSpan={6}>
                           <Typography variant="body2" color="text.secondary">
                             По фильтру ничего не найдено.
                           </Typography>
@@ -578,6 +596,16 @@ export default function EquipmentDetailWarehouse1CTab({
                     const employeeDisplayName = String(
                       row.hub_employee_name || row.warehouse_name || '',
                     ).trim();
+                    const employeeDept = String(row.hub_employee_dept || '').trim();
+                    const match = resolveHubBalanceMatch(row);
+                    const matchChipColor = match.status === 'match'
+                      ? 'success'
+                      : match.status === 'unknown'
+                        ? 'default'
+                        : 'warning';
+                    const rowBg = match.status === 'match'
+                      ? alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.14 : 0.08)
+                      : undefined;
                     return (
                       <TableRow
                         key={`${row.warehouse_ref || row.warehouse_name}|${index}`}
@@ -591,7 +619,10 @@ export default function EquipmentDetailWarehouse1CTab({
                           });
                         }}
                         onDoubleClick={() => openWarehousePage(row)}
-                        sx={{ cursor: isMeaningful1cRef(row.warehouse_ref) ? 'pointer' : 'default' }}
+                        sx={{
+                          cursor: isMeaningful1cRef(row.warehouse_ref) ? 'pointer' : 'default',
+                          bgcolor: selectedRow ? undefined : rowBg,
+                        }}
                       >
                         <TableCell>
                           <Stack spacing={0.25}>
@@ -617,8 +648,26 @@ export default function EquipmentDetailWarehouse1CTab({
                             ) : null}
                           </Stack>
                         </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" color={employeeDept ? 'text.primary' : 'text.secondary'}>
+                            {employeeDept || '—'}
+                          </Typography>
+                        </TableCell>
                         <TableCell align="right">{formatWarehouseQty(row.qty_balance)}</TableCell>
                         <TableCell align="right">{hubCountLabel}</TableCell>
+                        <TableCell>
+                          {match.label ? (
+                            <Chip
+                              size="small"
+                              color={matchChipColor}
+                              variant={match.status === 'match' ? 'filled' : 'outlined'}
+                              icon={match.status === 'match' ? <CheckCircleOutlineIcon /> : undefined}
+                              label={match.label}
+                            />
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">—</Typography>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <EmploymentStatusChip
                             status={row.employment_status}

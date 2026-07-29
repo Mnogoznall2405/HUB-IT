@@ -81,9 +81,8 @@ async def _main() -> None:
     )
 
     await mail_notification_service.start()
-    wait_forever = asyncio.Event()
     try:
-        await wait_forever.wait()
+        await mail_notification_service.wait()
     finally:
         await mail_notification_service.stop()
         if worker_lock is not None:

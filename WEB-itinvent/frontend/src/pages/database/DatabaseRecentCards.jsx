@@ -74,6 +74,7 @@ function DatabaseRecentCards({
   onOpen,
   onRemove,
   onClear,
+  compact = false,
 }) {
   const [collapsed, setCollapsed] = useState(true);
 
@@ -81,40 +82,86 @@ function DatabaseRecentCards({
 
   const palette = theme?.palette || {};
   const primaryMain = palette.primary?.main || '#2563eb';
-  const borderColor = alpha(primaryMain, 0.16);
-  const surfaceColor = alpha(primaryMain, 0.035);
+  const borderColor = alpha(primaryMain, collapsed && compact ? 0.1 : 0.16);
+  const surfaceColor = collapsed && compact
+    ? 'transparent'
+    : alpha(primaryMain, 0.035);
+
+  const toggleCollapsed = () => setCollapsed((value) => !value);
 
   return (
     <Paper
       variant="outlined"
       data-testid="database-recent-cards"
       sx={{
-        mb: 1.25,
-        p: { xs: 0.75, sm: 1 },
-        borderColor,
+        mb: compact ? 0 : 1.25,
+        p: collapsed && compact ? 0.35 : { xs: 0.75, sm: 1 },
+        borderColor: collapsed && compact ? 'transparent' : borderColor,
         bgcolor: surfaceColor,
+        boxShadow: 'none',
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-        <HistoryIcon fontSize="small" sx={{ color: primaryMain }} />
-        <Typography variant="subtitle2" sx={{ fontWeight: 800, flex: 1 }} noWrap>
+      <Box
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? EXPAND_LABEL : COLLAPSE_LABEL}
+        onClick={toggleCollapsed}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleCollapsed();
+          }
+        }}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: compact ? 0.5 : 0.75,
+          cursor: 'pointer',
+          borderRadius: '4px',
+          mx: collapsed && compact ? 0 : -0.25,
+          px: collapsed && compact ? 0.5 : 0.25,
+          py: collapsed && compact ? 0.15 : 0,
+          minHeight: collapsed && compact ? 28 : undefined,
+          '&:hover': { bgcolor: alpha(primaryMain, 0.06) },
+          '&:focus-visible': {
+            outline: `2px solid ${alpha(primaryMain, 0.45)}`,
+            outlineOffset: 1,
+          },
+        }}
+      >
+        <HistoryIcon
+          fontSize="small"
+          sx={{ color: primaryMain, fontSize: compact ? 16 : undefined }}
+        />
+        <Typography
+          variant="caption"
+          sx={{
+            fontWeight: collapsed && compact ? 600 : 700,
+            flex: 1,
+            fontSize: collapsed && compact ? '0.75rem' : '0.8125rem',
+            color: 'text.secondary',
+          }}
+          noWrap
+        >
           {RECENT_TITLE}
         </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-          {loading ? 'Обновление...' : items.length}
+        <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, opacity: 0.85 }}>
+          {loading ? '…' : items.length}
         </Typography>
-        <Tooltip title={collapsed ? EXPAND_LABEL : COLLAPSE_LABEL}>
+        {collapsed ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ExpandLessIcon sx={{ fontSize: 18 }} />}
+        <Tooltip title={CLEAR_LABEL}>
           <IconButton
             size="small"
-            aria-label={collapsed ? EXPAND_LABEL : COLLAPSE_LABEL}
-            onClick={() => setCollapsed((value) => !value)}
+            aria-label={CLEAR_LABEL}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onClear?.();
+            }}
+            sx={{ p: compact ? 0.25 : 0.5 }}
           >
-            {collapsed ? <ExpandMoreIcon fontSize="small" /> : <ExpandLessIcon fontSize="small" />}
-          </IconButton>
-        </Tooltip>
-        <Tooltip title={CLEAR_LABEL}>
-          <IconButton size="small" aria-label={CLEAR_LABEL} onClick={onClear}>
-            <ClearAllIcon fontSize="small" />
+            <ClearAllIcon sx={{ fontSize: compact ? 16 : 20 }} />
           </IconButton>
         </Tooltip>
       </Box>

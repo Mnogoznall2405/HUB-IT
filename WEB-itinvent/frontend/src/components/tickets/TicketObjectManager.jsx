@@ -27,17 +27,25 @@ export default function TicketObjectManager({
   isAdmin = false,
   onChanged,
 }) {
-  const [form, setForm] = useState({ code: '', name: '', region: '' });
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const create = async () => {
+    if (!name.trim()) {
+      setError('Укажите название объекта.');
+      return;
+    }
+    setSaving(true);
     setError('');
     try {
-      await ticketsAPI.createObject(form);
-      setForm({ code: '', name: '', region: '' });
+      await ticketsAPI.createObject({ name: name.trim() });
+      setName('');
       onChanged?.();
     } catch (err) {
       setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -52,17 +60,35 @@ export default function TicketObjectManager({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md">
       <DialogTitle>Справочник объектов</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           {error ? <Alert severity="error">{error}</Alert> : null}
           {canWrite && isAdmin ? (
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-              <TextField size="small" label="Код" value={form.code} onChange={(event) => setForm((prev) => ({ ...prev, code: event.target.value }))} />
-              <TextField size="small" label="Название" value={form.name} onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))} sx={{ flex: 1 }} />
-              <TextField size="small" label="Регион" value={form.region} onChange={(event) => setForm((prev) => ({ ...prev, region: event.target.value }))} />
-              <Button startIcon={<AddIcon />} variant="contained" onClick={create}>Создать</Button>
+              <TextField
+                size="small"
+                label="Название"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void create();
+                  }
+                }}
+                sx={{ flex: 1 }}
+                helperText="Код присвоится автоматически"
+              />
+              <Button
+                startIcon={<AddIcon />}
+                variant="contained"
+                onClick={create}
+                disabled={saving}
+              >
+                Создать
+              </Button>
             </Stack>
           ) : null}
           {!isAdmin ? <Alert severity="info">Управление объектами доступно только администратору.</Alert> : null}
@@ -71,7 +97,6 @@ export default function TicketObjectManager({
               <TableRow>
                 <TableCell>Код</TableCell>
                 <TableCell>Название</TableCell>
-                <TableCell>Регион</TableCell>
                 <TableCell>Статус</TableCell>
                 <TableCell />
               </TableRow>
@@ -81,10 +106,19 @@ export default function TicketObjectManager({
                 <TableRow key={item.id}>
                   <TableCell>{item.code}</TableCell>
                   <TableCell>{item.name}</TableCell>
-                  <TableCell>{item.region}</TableCell>
-                  <TableCell><Chip size="small" color={item.is_active ? 'success' : 'default'} label={item.is_active ? 'Активен' : 'Отключен'} /></TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      color={item.is_active ? 'success' : 'default'}
+                      label={item.is_active ? 'Активен' : 'Отключен'}
+                    />
+                  </TableCell>
                   <TableCell align="right">
-                    {canWrite && isAdmin ? <Button size="small" onClick={() => toggle(item)}>{item.is_active ? 'Отключить' : 'Включить'}</Button> : null}
+                    {canWrite && isAdmin ? (
+                      <Button size="small" onClick={() => toggle(item)}>
+                        {item.is_active ? 'Отключить' : 'Включить'}
+                      </Button>
+                    ) : null}
                   </TableCell>
                 </TableRow>
               ))}
@@ -93,7 +127,7 @@ export default function TicketObjectManager({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Закрыть</Button>
+        <Button onClick={onClose} disabled={saving}>Закрыть</Button>
       </DialogActions>
     </Dialog>
   );

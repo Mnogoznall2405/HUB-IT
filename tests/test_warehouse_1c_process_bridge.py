@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -22,6 +23,7 @@ from backend.services.warehouse_1c_process_bridge import (  # noqa: E402
     Warehouse1CProcessBridgeUnavailable,
 )
 from backend.services import warehouse_1c_process_dispatcher  # noqa: E402
+from backend.services import warehouse_1c_process_bridge as bridge_module  # noqa: E402
 
 
 def bridge_test_dispatcher(operation: str, payload: dict):
@@ -72,6 +74,25 @@ def test_process_bridge_runs_json_read_dispatcher_and_exposes_metrics():
 
         with pytest.raises(Warehouse1CProcessBridgeConfigurationError):
             bridge.call("write_document", {}, timeout=1)
+    finally:
+        bridge.shutdown()
+
+
+def test_process_bridge_uses_pythonw_for_hidden_windows_worker(monkeypatch):
+    if os.name != "nt":
+        return
+    observed = []
+    original = bridge_module.multiprocessing_module.set_executable
+
+    def record(executable):
+        observed.append(os.fsdecode(executable))
+        return original(executable)
+
+    monkeypatch.setattr(bridge_module.multiprocessing_module, "set_executable", record)
+    bridge = _bridge()
+    try:
+        bridge.start()
+        assert any(Path(value).name.casefold() == "pythonw.exe" for value in observed)
     finally:
         bridge.shutdown()
 

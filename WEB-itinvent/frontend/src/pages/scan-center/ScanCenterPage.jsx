@@ -28,14 +28,18 @@ import MainLayout from '../../components/layout/MainLayout';
 import MobileShellPageHeader from '../../components/layout/MobileShellPageHeader';
 import PageShell from '../../components/layout/PageShell';
 import { scanAPI } from '../../api/client';
+import { scanIncidentsAPI } from '../../api/scanIncidents';
 import { useAuth } from '../../contexts/AuthContext';
 import { useScanIncidentInbox, INCIDENT_BATCH_SIZE } from '../../hooks/useScanIncidentInbox';
 import { buildOfficeUiTokens, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
 import {
-  flattenIncidentGroups,
+  formatIncidentUncPath,
+  formatSeverityLabel,
   getIncidentFileExt as getInboxIncidentFileExt,
+  getIncidentFileName,
+  getIncidentPatternLabel,
   getIncidentSourceKind as getInboxIncidentSourceKind,
-  groupIncidentsByHostFile,
+  sortIncidentsForInbox,
 } from '../../lib/scanIncidentInbox';
 import HostDrawer from './HostDrawer';
 import AgentsSection from './AgentsSection';
@@ -158,7 +162,7 @@ function downloadBlobResponse(response, fallbackName) {
   window.URL.revokeObjectURL(url);
 }
 
-function useDebouncedValue(value, delayMs = 300) {
+function useDebouncedValue(value, delayMs = 200) {
   const [debounced, setDebounced] = useState(value);
 
   useEffect(() => {
@@ -167,6 +171,14 @@ function useDebouncedValue(value, delayMs = 300) {
   }, [value, delayMs]);
 
   return debounced;
+}
+
+function normalizeSearchQuery(value) {
+  const text = String(value ?? '');
+  // Paste from Excel/shell often includes trailing CR/LF; strip those without
+  // killing intentional spaces while the user is still typing a multi-word query.
+  if (/[\r\n]/.test(text)) return text.replace(/[\r\n]+/g, ' ').trim();
+  return text;
 }
 
 function formatTs(ts) {
@@ -245,8 +257,24 @@ function taskStatusLabel(status) {
   return '-';
 }
 
-function taskStatusColor(status) {
-  const normalized = String(status || '').trim().toLowerCase();
+function taskStatusColor(statusOrTask) {
+  // Accept status string or full task — self_update "completed"+installer_launched is NOT success.
+  if (statusOrTask && typeof statusOrTask === 'object') {
+    const task = statusOrTask;
+    const status = String(task.status || '').trim().toLowerCase();
+    const command = String(task.command || '').trim().toLowerCase();
+    const result = task.result && typeof task.result === 'object' ? task.result : {};
+    if (
+      command === 'self_update'
+      && status === 'completed'
+      && !result.verified
+      && (result.installer_launched || result.pending_update || String(result.phase || '').toLowerCase() === 'installer_launched')
+    ) {
+      return 'warning';
+    }
+    return taskStatusColor(status);
+  }
+  const normalized = String(statusOrTask || '').trim().toLowerCase();
   if (normalized === 'acknowledged') return 'info';
   if (normalized === 'completed') return 'success';
   if (normalized === 'failed' || normalized === 'expired') return 'error';
@@ -277,21 +305,45 @@ function commandLabel(command, task = null) {
   const normalized = String(command || '').trim().toLowerCase();
   if (normalized === 'scan_now') return isForceScanTask(task) ? 'Скан с 0' : 'Скан';
   if (normalized === 'ping') return 'Проверка связи';
+  if (normalized === 'self_update') return 'Обновление агента';
   return normalized || '-';
+}
+
+function summarizeSelfUpdateResult(result) {
+  if (result.verified) {
+    const current = String(result.current_version || '').trim();
+    return current ? `Обновление подтверждено → ${current}` : 'Обновление подтверждено';
+  }
+  if (result.installer_launched || result.pending_update) {
+    const expected = String(result.expected_version || '').trim();
+    const phase = String(result.phase || '').trim().toLowerCase();
+    if (phase === 'verifying') {
+      return expected ? `Проверка обновления → ${expected}` : 'Проверка обновления';
+    }
+    if (phase === 'downloading') {
+      return expected ? `Скачивание MSI → ${expected}` : 'Скачивание MSI';
+    }
+    return expected ? `Установщик запущен → ${expected}` : 'Установщик запущен';
+  }
+  return 'Обновление агента';
 }
 
 function summarizeTaskResult(task) {
   if (!task) return '-';
   const status = String(task.status || '').trim().toLowerCase();
+  const command = String(task.command || '').toLowerCase();
   const result = task.result && typeof task.result === 'object' ? task.result : {};
   if (status === 'failed') {
     return String(task.error_text || 'Ошибка выполнения').trim() || 'Ошибка выполнения';
   }
+  if (command === 'self_update' && (status === 'completed' || status === 'acknowledged')) {
+    return summarizeSelfUpdateResult(result);
+  }
   if (status !== 'completed') return '-';
-  if (String(task.command || '').toLowerCase() === 'ping') {
+  if (command === 'ping') {
     return result.pong ? 'Связь подтверждена' : 'Проверка завершена';
   }
-  if (String(task.command || '').toLowerCase() === 'scan_now') {
+  if (command === 'scan_now') {
     return `Скан: ${Number(result.scanned || 0)} · отправлено: ${Number(result.queued || 0)} · пропущено: ${Number(result.skipped || 0)}`;
   }
   return 'Задача выполнена';
@@ -310,6 +362,18 @@ function renderTaskStatusLabel(task) {
   const command = String(task.command || '').trim().toLowerCase();
   const result = task.result && typeof task.result === 'object' ? task.result : {};
   const phase = String(result.phase || '').trim().toLowerCase();
+  if (normalized === 'acknowledged' && command === 'self_update') {
+    if (phase === 'downloading') return 'Скачивание MSI';
+    if (phase === 'installer_launched') return 'Установщик запущен';
+    if (phase === 'verifying') return 'Проверка версии';
+  }
+  if (normalized === 'completed' && command === 'self_update') {
+    if (result.verified) return 'Обновление подтверждено';
+    if (result.installer_launched || result.pending_update || phase === 'installer_launched') {
+      return 'Не подтверждено';
+    }
+    return 'Завершено';
+  }
   if (normalized === 'acknowledged' && command === 'scan_now') {
     if (phase === 'local_scan') return 'Локальное сканирование';
     if (phase === 'agent_outbox') return 'Локальная очередь отправки';
@@ -353,7 +417,8 @@ const RESOLVED_STATUS_LABELS = {
 
 function fileStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
-  return RESOLVED_STATUS_LABELS[normalized] || (normalized === 'new' ? 'Актуален' : (normalized === 'ack' ? 'ACK' : normalized || '-'));
+  return RESOLVED_STATUS_LABELS[normalized]
+    || (normalized === 'new' ? 'Новый' : (normalized === 'ack' ? 'Просмотрен' : normalized || '-'));
 }
 
 function fileStatusColor(status) {
@@ -423,8 +488,13 @@ function renderTaskSummary(task) {
 function ScanCenterPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
+  // Side-by-side scan nav only from lg. Below that use horizontal tabs — sticky vertical
+  // nav in a column layout overlaps Agents/Incidents content when the page scrolls.
+  const isScanDesktop = useMediaQuery(theme.breakpoints.up('lg'), { defaultMatches: false });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 360px)';
+  const incidentWorkAreaHeight = isMobile
+    ? 'min(70dvh, 640px)'
+    : 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 360px)';
   const { hasPermission } = useAuth();
   const canScanRead = hasPermission('scan.read');
   const canScanAck = hasPermission('scan.ack');
@@ -510,7 +580,6 @@ function ScanCenterPage() {
   const [busyAckInbox, setBusyAckInbox] = useState(false);
   const [bulkAckDialog, setBulkAckDialog] = useState({ open: false, scope: 'inbox', count: 0 });
   const [selectedInboxIncidentId, setSelectedInboxIncidentId] = useState('');
-  const [expandedIncidentRows, setExpandedIncidentRows] = useState({});
   const [hostOverviewOpen, setHostOverviewOpen] = useState(false);
   const [hostOverviewData, setHostOverviewData] = useState(null);
   const [hostOverviewLoading, setHostOverviewLoading] = useState(false);
@@ -573,19 +642,38 @@ function ScanCenterPage() {
     incidentHasFragment,
   ]);
 
-  const incidentInbox = useScanIncidentInbox(incidentInboxFilters, { batchSize: INCIDENT_BATCH_SIZE });
+  const incidentInbox = useScanIncidentInbox(incidentInboxFilters, {
+    batchSize: INCIDENT_BATCH_SIZE,
+    getIncidents: scanIncidentsAPI.getIncidents,
+  });
   // Lightweight server-side count of "new" incidents matching the current filters
   // (independent of the status tab and of how many rows are actually loaded on the page),
   // used to correctly enable/disable bulk-ack actions and their pending counters.
+  // When the inbox itself is already filtered to status=new, reuse its total.
   const incidentNewCountFilters = useMemo(() => ({
     ...incidentInboxFilters,
     status: 'new',
   }), [incidentInboxFilters]);
-  const incidentNewCount = useScanIncidentInbox(incidentNewCountFilters, { batchSize: 1 });
-  const incidentGroups = useMemo(() => groupIncidentsByHostFile(incidentInbox.items), [incidentInbox.items]);
+  const needsSeparateNewCount = incidentStatus !== 'new';
+  const incidentNewCountInbox = useScanIncidentInbox(incidentNewCountFilters, {
+    batchSize: 1,
+    enabled: needsSeparateNewCount,
+    getIncidents: scanIncidentsAPI.getIncidents,
+  });
+  const incidentNewCount = useMemo(() => (
+    needsSeparateNewCount
+      ? incidentNewCountInbox
+      : {
+          ...incidentNewCountInbox,
+          total: incidentInbox.total,
+          loadingInitial: incidentInbox.loadingInitial,
+          refreshFirstPage: incidentInbox.refreshFirstPage,
+          reload: incidentInbox.reload,
+        }
+  ), [needsSeparateNewCount, incidentNewCountInbox, incidentInbox.total, incidentInbox.loadingInitial, incidentInbox.refreshFirstPage, incidentInbox.reload]);
   const incidentRows = useMemo(
-    () => flattenIncidentGroups(incidentGroups, expandedIncidentRows),
-    [expandedIncidentRows, incidentGroups],
+    () => sortIncidentsForInbox(incidentInbox.items),
+    [incidentInbox.items],
   );
   const selectedInboxIncident = useMemo(() => (
     incidentInbox.items.find((item) => String(item?.id || '') === String(selectedInboxIncidentId || ''))
@@ -986,7 +1074,9 @@ function ScanCenterPage() {
       skipInitialAgentsEffectRef.current = false;
       return;
     }
-    loadAgents({ silent: agentRows.length > 0 });
+    // Always show loading on filter/search changes so paste/type does not look "stuck"
+    // on the previous result set (silent refresh hid the spinner when rows already existed).
+    loadAgents({ silent: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedAgentQ, debouncedBranch, agentOnline, agentTaskStatus, agentPage, agentRowsPerPage, agentSortBy, agentSortDir]);
 
@@ -995,7 +1085,7 @@ function ScanCenterPage() {
       skipInitialHostsEffectRef.current = false;
       return;
     }
-    loadHosts({ silent: hostRows.length > 0 });
+    loadHosts({ silent: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedHostQ, debouncedBranch, hostStatus, hostSeverity, hostPage, hostRowsPerPage, hostSortBy, hostSortDir]);
 
@@ -1294,21 +1384,6 @@ function ScanCenterPage() {
     setIncidentHasFragment(false);
   };
 
-  const expandAllIncidentRows = () => {
-    const next = {};
-    incidentGroups.forEach((host) => {
-      next[host.id] = true;
-      (Array.isArray(host.files) ? host.files : []).forEach((file) => {
-        next[file.id] = true;
-      });
-    });
-    setExpandedIncidentRows(next);
-  };
-
-  const collapseAllIncidentRows = () => {
-    setExpandedIncidentRows({});
-  };
-
   const openHostDetails = (hostname) => {
     const host = String(hostname || '').trim();
     if (!host) return;
@@ -1396,6 +1471,20 @@ function ScanCenterPage() {
     });
   };
 
+  const enqueueSelfUpdateTask = (agentId) => {
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId) return;
+    const expected = String(dashboard?.expected_agent_version || '').trim() || 'актуальной';
+    if (!window.confirm(
+      `Обновить агент ${normalizedAgentId} до версии ${expected}?\n\nНа ПК будет скачан MSI и запущен тихий установщик. Это займёт несколько минут.`,
+    )) {
+      return;
+    }
+    enqueueTask(normalizedAgentId, 'self_update', {
+      dedupeKey: `self_update:${normalizedAgentId}`,
+    });
+  };
+
   const openScanLaunchDialog = (agentId, forceRescan = false) => {
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return;
@@ -1480,13 +1569,6 @@ function ScanCenterPage() {
     return String(incident?.ip_address || meta.ip || '').trim() || '-';
   };
 
-  const toggleIncidentRow = (rowId, defaultExpanded = false) => {
-    setExpandedIncidentRows((prev) => {
-      const current = Object.prototype.hasOwnProperty.call(prev, rowId) ? Boolean(prev[rowId]) : Boolean(defaultExpanded);
-      return { ...prev, [rowId]: !current };
-    });
-  };
-
   const renderInboxFragments = (incident) => {
     const matches = Array.isArray(incident?.matched_patterns) ? incident.matched_patterns : [];
     if (matches.length === 0) return <Typography variant="body2" color="text.secondary">Фрагменты не найдены</Typography>;
@@ -1512,98 +1594,50 @@ function ScanCenterPage() {
   };
 
   const renderIncidentVirtualRow = ({ index, style }) => {
-    const row = incidentRows[index];
-    if (!row) return null;
-    if (row.type === 'host') {
-      const host = row.host;
-      const expanded = expandedIncidentRows[host.id] === true;
-      return (
-        <Box style={style} sx={{ px: 1, py: 0.5 }}>
-          <Paper
-            variant="outlined"
-            onClick={() => toggleIncidentRow(host.id, false)}
-            sx={{
-              p: 1,
-              borderRadius: 1.5,
-              cursor: 'pointer',
-              bgcolor: ui.panelBg,
-              borderColor: ui.borderSoft,
-            }}
-          >
-            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>{expanded ? '▾' : '▸'} {host.hostname}</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                  {host.branch || 'Без филиала'} · {host.user || '-'} · {host.ip_address || '-'}
-                </Typography>
-              </Box>
-              <Stack direction="row" spacing={0.8}>
-                <Chip size="small" color={Number(host.incidents_new || 0) > 0 ? 'warning' : 'default'} label={`NEW ${Number(host.incidents_new || 0)}`} />
-                <Chip size="small" label={`Всего ${Number(host.incidents_total || 0)}`} />
-                <Chip size="small" color={severityColor(host.top_severity)} label={host.top_severity} />
-              </Stack>
-            </Stack>
-          </Paper>
-        </Box>
-      );
-    }
-    if (row.type === 'file') {
-      const file = row.file;
-      const selected = file.incidents.some((incident) => String(incident?.id || '') === String(selectedInboxIncident?.id || ''));
-      return (
-        <Box style={style} sx={{ pl: 3, pr: 1, py: 0.45 }}>
-          <Paper
-            variant="outlined"
-            onClick={() => {
-              setSelectedInboxIncidentId(String(file.incidents[0]?.id || ''));
-              toggleIncidentRow(file.id, false);
-            }}
-            sx={{
-              p: 1,
-              borderRadius: 1.2,
-              cursor: 'pointer',
-              borderColor: selected ? 'primary.main' : ui.borderSoft,
-              bgcolor: selected ? ui.selectedBg : ui.panelSolid,
-            }}
-          >
-            <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="body2" sx={{ fontWeight: 750, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {expandedIncidentRows[file.id] ? '▾' : '▸'} {file.file_path}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {file.file_ext || '-'} · {file.source_kind || '-'} · {formatTs(file.last_incident_at)}
-                </Typography>
-              </Box>
-              <Stack direction="row" spacing={0.7} sx={{ flexShrink: 0 }}>
-                <Chip size="small" color={Number(file.incidents_new || 0) > 0 ? 'warning' : 'default'} label={Number(file.incidents_new || 0)} />
-                <Chip size="small" color={severityColor(file.top_severity)} label={file.top_severity} />
-              </Stack>
-            </Stack>
-          </Paper>
-        </Box>
-      );
-    }
-    const incident = row.incident;
+    const incident = incidentRows[index];
+    if (!incident) return null;
     const selected = String(incident?.id || '') === String(selectedInboxIncident?.id || '');
+    const hostLabel = String(incident?.hostname || '').trim() || 'Неизвестный компьютер';
+    const userLabel = String(incident?.user_full_name || incident?.user_login || '').trim();
+    const patternLabel = getIncidentPatternLabel(incident, incidentPatternOptions);
+    const statusNormalized = String(incident?.status || '').trim().toLowerCase();
+    const showStatusChip = incidentStatus !== 'new' && statusNormalized && statusNormalized !== 'new';
     return (
-      <Box style={style} sx={{ pl: 5, pr: 1, py: 0.35 }}>
+      <Box style={style} sx={{ px: 1, py: 0.4 }}>
         <Paper
           variant="outlined"
           onClick={() => setSelectedInboxIncidentId(String(incident?.id || ''))}
           sx={{
-            p: 0.8,
-            borderRadius: 1,
+            p: 0.9,
+            borderRadius: 1.2,
             cursor: 'pointer',
             borderColor: selected ? 'primary.main' : ui.borderSoft,
-            bgcolor: selected ? ui.selectedBg : 'transparent',
+            bgcolor: selected ? ui.selectedBg : ui.panelSolid,
           }}
         >
-          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-            <Typography variant="caption" sx={{ fontWeight: 700 }}>
-              {incident?.severity || '-'} · {formatTs(incident?.created_at)}
-            </Typography>
-            <Chip size="small" color={fileStatusColor(incident?.status)} label={fileStatusLabel(incident?.status)} />
+          <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                  {getIncidentFileName(incident)}
+                </Typography>
+                {patternLabel ? (
+                  <Chip size="small" variant="outlined" label={patternLabel} sx={{ maxWidth: 140, height: 22, '& .MuiChip-label': { px: 0.7, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+                ) : null}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                {hostLabel}{userLabel ? ` · ${userLabel}` : ''} · {formatTs(incident?.created_at)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {formatIncidentUncPath(incident)}
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={0.6} sx={{ flexShrink: 0 }} useFlexGap flexWrap="wrap" justifyContent="flex-end">
+              <Chip size="small" color={severityColor(incident?.severity)} label={formatSeverityLabel(incident?.severity)} />
+              {showStatusChip ? (
+                <Chip size="small" color={fileStatusColor(incident?.status)} label={fileStatusLabel(incident?.status)} />
+              ) : null}
+            </Stack>
           </Stack>
         </Paper>
       </Box>
@@ -1633,10 +1667,10 @@ function ScanCenterPage() {
           }}
         />
 
-        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', lg: 'row' }, gap: 2, alignItems: 'flex-start' }}>
+        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', lg: 'row' }, gap: 2, alignItems: 'stretch' }}>
           <ScanCenterNavigation
             active={activeSection}
-            compact={isMobile}
+            compact={!isScanDesktop}
             counts={{
               overview: null,
               incidents: Number(incidentInbox.total || 0),
@@ -1647,7 +1681,7 @@ function ScanCenterPage() {
             onChange={setActiveSection}
           />
 
-          <Box component="section" sx={{ flex: 1, width: '100%', minWidth: 0 }}>
+          <Box component="section" sx={{ flex: '1 1 auto', width: { xs: '100%', lg: 'auto' }, minWidth: 0, maxWidth: '100%' }}>
 
         {activeSection === 'overview' && (
           <ScanCenterOverview
@@ -1683,11 +1717,6 @@ function ScanCenterPage() {
               busyAckInbox={busyAckInbox}
               busyIncident={busyIncident}
               ui={ui}
-              quietActionSx={{
-                neutral: getOfficeQuietActionSx(ui, theme, 'neutral'),
-                primary: getOfficeQuietActionSx(ui, theme, 'primary'),
-                warning: getOfficeQuietActionSx(ui, theme, 'warning', { alignSelf: 'flex-start' }),
-              }}
               panelSx={getOfficePanelSx(ui, {
                 p: 2,
                 height: incidentWorkAreaHeight,
@@ -1705,11 +1734,8 @@ function ScanCenterPage() {
               }}
               renderVirtualRow={renderIncidentVirtualRow}
               renderFragments={renderInboxFragments}
-              onReload={() => incidentInbox.reload({ silent: false })}
               onResetFilters={resetIncidentFilters}
               onOpenHostOverview={handleOpenHostOverview}
-              onExpandAll={expandAllIncidentRows}
-              onCollapseAll={collapseAllIncidentRows}
               onAckFiltered={handleAckInboxFiltered}
               onFilterChange={(name, value) => {
                 const setters = {
@@ -1722,7 +1748,8 @@ function ScanCenterPage() {
                   dateFrom: setIncidentDateFrom,
                   dateTo: setIncidentDateTo,
                 };
-                setters[name]?.(value);
+                const nextValue = name === 'q' || name === 'fileExt' ? normalizeSearchQuery(value) : value;
+                setters[name]?.(nextValue);
               }}
               onToggleFragments={() => setIncidentHasFragment((previous) => !previous)}
               onAckIncident={handleAckIncident}
@@ -1762,6 +1789,8 @@ function ScanCenterPage() {
           canScanTasks={canScanTasks}
           busyTaskAgent={busyTaskAgent}
           expectedAgentVersion={dashboard?.expected_agent_version}
+          outdatedAgents={Number(dashboard?.totals?.agents_outdated || 0)}
+          agentsOnlineTotal={Number(dashboard?.totals?.agents_total || 0)}
           formatters={{
             commandLabel,
             formatLastSeen,
@@ -1774,7 +1803,7 @@ function ScanCenterPage() {
             taskStatusLabel,
             taskTimestampLabel,
           }}
-          onQueryChange={(value) => { setAgentQ(value); setAgentPage(0); }}
+          onQueryChange={(value) => { setAgentQ(normalizeSearchQuery(value)); setAgentPage(0); }}
           onOnlineChange={(value) => { setAgentOnline(value); setAgentPage(0); }}
           onTaskStatusChange={(value) => { setAgentTaskStatus(value); setAgentPage(0); }}
           onSort={(key) => {
@@ -1785,6 +1814,7 @@ function ScanCenterPage() {
           onRowsPerPageChange={(value) => { setAgentRowsPerPage(value); setAgentPage(0); }}
           onOpenScan={openScanLaunchDialog}
           onPing={(agentId) => enqueueTask(agentId, 'ping')}
+          onSelfUpdate={enqueueSelfUpdateTask}
           onOpenHost={openHostDetails}
         />}
 
@@ -1803,7 +1833,7 @@ function ScanCenterPage() {
           sortDir={hostSortDir}
           formatTs={formatTs}
           severityColor={severityColor}
-          onQueryChange={(value) => { setHostQ(value); setHostPage(0); }}
+          onQueryChange={(value) => { setHostQ(normalizeSearchQuery(value)); setHostPage(0); }}
           onStatusChange={(value) => { setHostStatus(value); setHostPage(0); }}
           onSeverityChange={(value) => { setHostSeverity(value); setHostPage(0); }}
           onSort={(key) => {
@@ -1880,7 +1910,8 @@ function ScanCenterPage() {
               dateFrom: setIncidentDateFrom,
               dateTo: setIncidentDateTo,
             };
-            setters[name]?.(value);
+            const nextValue = name === 'q' || name === 'fileExt' ? normalizeSearchQuery(value) : value;
+            setters[name]?.(nextValue);
           }}
           onToggleFragments={() => setIncidentHasFragment((previous) => !previous)}
           onAckAll={handleAckAllHostIncidents}

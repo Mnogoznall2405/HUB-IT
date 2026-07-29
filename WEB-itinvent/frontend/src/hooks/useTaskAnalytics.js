@@ -22,7 +22,6 @@ import { buildAnalyticsRequestParams } from '../pages/tasks/taskUrlSync';
 
 export default function useTaskAnalytics({
   enabled = false,
-  onError,
   activeTaskObjects = [],
   activeTaskProjects = [],
   getAssigneeById,
@@ -31,6 +30,8 @@ export default function useTaskAnalytics({
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [payload, setPayload] = useState(EMPTY_ANALYTICS_PAYLOAD);
+  const [loadedParamsKey, setLoadedParamsKey] = useState('');
+  const [error, setError] = useState(null);
   const [filters, setFilters] = useState(() => ({
     preset: '30d',
     ...buildAnalyticsRangeFromPreset('30d'),
@@ -41,28 +42,47 @@ export default function useTaskAnalytics({
   }));
 
   const requestParams = useMemo(() => buildAnalyticsRequestParams(filters), [filters]);
+  const requestParamsKey = useMemo(() => JSON.stringify(requestParams), [requestParams]);
   const lastLoadedParamsKeyRef = useRef('');
   const loadRequestIdRef = useRef(0);
+  const inFlightParamsKeysRef = useRef(new Set());
 
   const loadAnalytics = useCallback(async ({ force = false } = {}) => {
-    const paramsKey = JSON.stringify(requestParams);
-    if (!force && lastLoadedParamsKeyRef.current === paramsKey) return;
+    if (inFlightParamsKeysRef.current.has(requestParamsKey)) return;
+    if (!force && lastLoadedParamsKeyRef.current === requestParamsKey) return;
 
     const requestId = loadRequestIdRef.current + 1;
     loadRequestIdRef.current = requestId;
+    inFlightParamsKeysRef.current.add(requestParamsKey);
+    setError(null);
     setLoading(true);
     try {
       const response = await hubTaskAnalyticsAPI.getTaskAnalytics(requestParams);
       if (loadRequestIdRef.current !== requestId) return;
       setPayload(response || EMPTY_ANALYTICS_PAYLOAD);
-      lastLoadedParamsKeyRef.current = paramsKey;
+      lastLoadedParamsKeyRef.current = requestParamsKey;
+      setLoadedParamsKey(requestParamsKey);
     } catch (err) {
       if (loadRequestIdRef.current !== requestId) return;
-      onError?.(err?.response?.data?.detail || err?.message || 'Ошибка загрузки аналитики задач');
+      const status = Number(err?.response?.status || 0) || null;
+      const correlationId = String(
+        err?.response?.headers?.['x-correlation-id']
+        || err?.response?.headers?.['x-request-id']
+        || '',
+      ).trim();
+      setError({
+        paramsKey: requestParamsKey,
+        status,
+        correlationId,
+        message: status === 403
+          ? 'Недостаточно прав для просмотра аналитики задач.'
+          : 'Не удалось загрузить аналитику задач. Повторите попытку.',
+      });
     } finally {
+      inFlightParamsKeysRef.current.delete(requestParamsKey);
       if (loadRequestIdRef.current === requestId) setLoading(false);
     }
-  }, [onError, requestParams]);
+  }, [requestParams, requestParamsKey]);
 
   const prefetchAnalytics = useCallback(() => {
     void loadAnalytics();
@@ -87,7 +107,10 @@ export default function useTaskAnalytics({
     setFilters((prev) => ({ ...prev, object_ids: nextObjectIds }));
   }, [filters.object_ids, objectOptions]);
 
-  const summary = useMemo(() => payload?.summary || {}, [payload]);
+  const hasCurrentPayload = loadedParamsKey === requestParamsKey;
+  const currentPayload = hasCurrentPayload ? payload : EMPTY_ANALYTICS_PAYLOAD;
+  const currentError = error?.paramsKey === requestParamsKey ? error : null;
+  const summary = useMemo(() => currentPayload?.summary || {}, [currentPayload]);
   const selectedParticipantId = useMemo(
     () => String(filters.participant_user_id || '').trim(),
     [filters.participant_user_id],
@@ -99,10 +122,10 @@ export default function useTaskAnalytics({
   const selectedParticipant = useMemo(
     () => buildSelectedAnalyticsParticipant({
       participantId: selectedParticipantId,
-      byParticipant: payload?.by_participant,
+      byParticipant: currentPayload?.by_participant,
       fallbackUser: selectedParticipantOption,
     }),
-    [payload?.by_participant, selectedParticipantId, selectedParticipantOption],
+    [currentPayload?.by_participant, selectedParticipantId, selectedParticipantOption],
   );
 
   const selectedObjects = useMemo(() => {
@@ -135,27 +158,27 @@ export default function useTaskAnalytics({
   );
   const statusChartData = useMemo(
     () => buildAnalyticsStatusChartData({
-      statusBreakdown: payload?.status_breakdown,
+      statusBreakdown: currentPayload?.status_breakdown,
       summary,
     }),
-    [payload?.status_breakdown, summary],
+    [currentPayload?.status_breakdown, summary],
   );
   const participantChartData = useMemo(
-    () => buildAnalyticsParticipantChartData(payload?.by_participant),
-    [payload?.by_participant],
+    () => buildAnalyticsParticipantChartData(currentPayload?.by_participant),
+    [currentPayload?.by_participant],
   );
   const scopeChart = useMemo(
     () => buildAnalyticsScopeChart({
       objectIds: filters.object_ids,
       projectIds: filters.project_ids,
-      byObject: payload?.by_object,
-      byProject: payload?.by_project,
+      byObject: currentPayload?.by_object,
+      byProject: currentPayload?.by_project,
     }),
-    [filters.object_ids, filters.project_ids, payload?.by_object, payload?.by_project],
+    [currentPayload?.by_object, currentPayload?.by_project, filters.object_ids, filters.project_ids],
   );
   const trendItems = useMemo(
-    () => buildAnalyticsTrendItems(payload?.trend),
-    [payload?.trend],
+    () => buildAnalyticsTrendItems(currentPayload?.trend),
+    [currentPayload?.trend],
   );
   const kpis = useMemo(() => buildAnalyticsKpis(summary), [summary]);
   const projectObjectCounts = useMemo(
@@ -181,7 +204,9 @@ export default function useTaskAnalytics({
     loading,
     exporting,
     setExporting,
-    payload,
+    payload: currentPayload,
+    error: currentError,
+    hasCurrentPayload,
     filters,
     setFilters,
     requestParams,

@@ -76,6 +76,8 @@ class LoginResponse(BaseModel):
 class LoginModeResponse(BaseModel):
     network_zone: Literal["internal", "external"] = "external"
     biometric_login_enabled: bool = False
+    client_country_code: Optional[str] = None
+    show_vpn_hint: bool = False
 
 
 class TwoFactorSetupStartRequest(BaseModel):

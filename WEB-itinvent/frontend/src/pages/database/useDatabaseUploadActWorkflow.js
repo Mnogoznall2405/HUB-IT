@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
+import { fileNameFromContentDisposition } from '../../lib/documentPreviewKind';
 import { normalizeDbId } from './databaseRecordModel';
 import {
   buildUploadActCommitPayload,
@@ -22,6 +23,7 @@ import {
 } from './uploadAct';
 
 const noop = () => {};
+const UPLOAD_ACT_DOWNLOAD_ERROR = 'Не удалось скачать файл акта.';
 
 const createUploadActInitialForm = () => ({
   from_employee: '',
@@ -70,6 +72,8 @@ export function useDatabaseUploadActWorkflow({
   const [uploadActEmailStatus, setUploadActEmailStatus] = useState('');
   const [uploadActEmailLastRecipients, setUploadActEmailLastRecipients] = useState([]);
   const [uploadActEmailSummary, setUploadActEmailSummary] = useState(createEmptyUploadActEmailSummary);
+  const [uploadActDownloading, setUploadActDownloading] = useState(false);
+  const [uploadActDownloadError, setUploadActDownloadError] = useState('');
 
   useEffect(() => {
     uploadActAutoEmailRef.current = uploadActAutoEmail;
@@ -199,6 +203,8 @@ export function useDatabaseUploadActWorkflow({
     setUploadActEmailStatus('');
     setUploadActEmailLastRecipients([]);
     setUploadActEmailSummary(createEmptyUploadActEmailSummary());
+    setUploadActDownloading(false);
+    setUploadActDownloadError('');
     setUploadActForm(createUploadActInitialForm());
   }, []);
 
@@ -546,6 +552,55 @@ export function useDatabaseUploadActWorkflow({
     }
   }, [canDatabaseWrite, uploadActCommitResult, uploadActEmailRecipients, uploadActEmailSubject, uploadActEmailBody]);
 
+  const handleUploadActDownload = useCallback(async () => {
+    const docNo = Number(uploadActCommitResult?.doc_no);
+    if (!Number.isFinite(docNo) || docNo <= 0) {
+      setUploadActDownloadError('Акт ещё не записан в базу — скачать нельзя.');
+      return;
+    }
+
+    setUploadActDownloading(true);
+    setUploadActDownloadError('');
+    try {
+      const params = {};
+      const selectedDb = normalizeDbId(localStorage.getItem('selected_database') || '');
+      if (selectedDb) params.db_id = selectedDb;
+
+      const response = await equipmentAPI.downloadEquipmentActFile(docNo, params);
+      const contentType = String(response?.headers?.['content-type'] || 'application/pdf');
+      const blob = response?.data instanceof Blob
+        ? response.data
+        : new Blob([response?.data], { type: contentType });
+
+      if (!blob.size) {
+        throw new Error('empty');
+      }
+
+      const originalName = String(uploadActFile?.name || '').trim();
+      const downloadName = fileNameFromContentDisposition(response?.headers?.['content-disposition'])
+        || (originalName.toLowerCase().endsWith('.pdf') ? originalName : '')
+        || `act_${docNo}.pdf`;
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const apiDetail = error?.response?.data?.detail;
+      setUploadActDownloadError(
+        typeof apiDetail === 'string' && apiDetail.trim()
+          ? apiDetail.trim()
+          : UPLOAD_ACT_DOWNLOAD_ERROR
+      );
+    } finally {
+      setUploadActDownloading(false);
+    }
+  }, [uploadActCommitResult?.doc_no, uploadActFile?.name]);
+
   return {
     uploadActModalOpen,
     setUploadActModalOpen,
@@ -590,6 +645,9 @@ export function useDatabaseUploadActWorkflow({
     uploadActEmailStatus,
     uploadActEmailLastRecipients,
     uploadActEmailSummary,
+    uploadActDownloading,
+    uploadActDownloadError,
+    setUploadActDownloadError,
     uploadActStep,
     uploadActInvVerification,
     uploadActCommitDisabled,
@@ -609,6 +667,7 @@ export function useDatabaseUploadActWorkflow({
     handleUploadActInvNosChange,
     handleUploadActCommit,
     handleUploadActEmailSend,
+    handleUploadActDownload,
     getUploadActEmailStatusItemSx: getEmailStatusItemSx,
   };
 }

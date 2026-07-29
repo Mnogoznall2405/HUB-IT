@@ -18,11 +18,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
+from .agent_package import package_payload, resolve_agent_package
 from .config import config
 from .database import ScanStore
 from .memory_guard import get_process_rss_bytes
@@ -121,6 +122,7 @@ store = ScanStore(
     sqlite_busy_timeout_ms=config.sqlite_busy_timeout_ms,
     sqlite_busy_retry_attempts=config.sqlite_busy_retry_attempts,
     sqlite_busy_retry_base_ms=config.sqlite_busy_retry_base_ms,
+    database_url=config.database_url,
 )
 stop_event = threading.Event()
 watchdog_stop_event = threading.Event()
@@ -345,19 +347,33 @@ def _is_pdf_ingest_payload(data: Dict[str, Any], pdf_bytes: Optional[bytes] = No
     return source_kind in {"pdf", "pdf_slice"} or bool(data.get("pdf_slice_b64")) or bool(pdf_bytes)
 
 
+def _server_queue_pending() -> int:
+    try:
+        counts = store.job_status_counts()
+        return int(counts.get("pending") or 0)
+    except Exception:
+        return 0
+
+
 def _backpressure_exception(status_payload: Dict[str, Any], *, is_pdf: bool) -> HTTPException:
     retry_after_sec = int(status_payload.get("retry_after_sec") or config.ingest_retry_after_sec)
+    detail = {
+        "error": "scan_pdf_ingest_backpressure" if is_pdf else "scan_ingest_backpressure",
+        "message": (
+            "PDF scan queue is temporarily overloaded"
+            if is_pdf
+            else "Scan ingest queue is temporarily overloaded"
+        ),
+        **status_payload,
+    }
+    detail["server_queue_pending"] = int(
+        detail.get("server_queue_pending")
+        or detail.get("total_pending")
+        or 0
+    )
     return HTTPException(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail={
-            "error": "scan_pdf_ingest_backpressure" if is_pdf else "scan_ingest_backpressure",
-            "message": (
-                "PDF scan queue is temporarily overloaded"
-                if is_pdf
-                else "Scan ingest queue is temporarily overloaded"
-            ),
-            **status_payload,
-        },
+        detail=detail,
         headers={"Retry-After": str(retry_after_sec)},
     )
 
@@ -385,7 +401,9 @@ def _queue_ingest_blocking(data: Dict[str, Any], *, request_ip: str, pdf_bytes: 
         metadata={"last_source": "ingest"},
     )
     queued = store.queue_job(data, pdf_bytes=pdf_bytes)
-    return {"success": True, **queued}
+    # Prefer pressure snapshot + 1 to avoid a second full GROUP BY on the hot path.
+    pending = int(pressure.get("total_pending") or 0) + 1
+    return {"success": True, "server_queue_pending": pending, **queued}
 
 
 def _get_ingest_semaphore() -> asyncio.Semaphore:
@@ -582,8 +600,13 @@ async def health() -> Dict[str, Any]:
         "time": _now_ts(),
         "pid": os.getpid(),
         "rss_mb": round(rss_bytes / (1024 * 1024), 1) if rss_bytes else 0.0,
-        "db_size_mb": _path_size_mb(config.db_path),
-        "wal_size_mb": _path_size_mb(Path(str(config.db_path) + "-wal")),
+        "storage_backend": getattr(store, "backend", "sqlite"),
+        "db_size_mb": _path_size_mb(config.db_path) if not getattr(store, "is_postgres", False) else None,
+        "wal_size_mb": (
+            _path_size_mb(Path(str(config.db_path) + "-wal"))
+            if not getattr(store, "is_postgres", False)
+            else None
+        ),
         "api_lock_pid": _read_lock_pid("scan_server.lock"),
         "worker_lock_pid": _read_lock_pid("scan_worker.lock"),
         "ingest": {
@@ -631,7 +654,12 @@ def heartbeat(
         data["ip_address"] = _request_ip(request)
     data["last_seen_at"] = int(data.get("last_seen_at") or _now_ts())
     row = store.upsert_agent_heartbeat(data)
-    return {"success": True, "agent_id": row["agent_id"], "last_seen_at": row["last_seen_at"]}
+    return {
+        "success": True,
+        "agent_id": row["agent_id"],
+        "last_seen_at": row["last_seen_at"],
+        "server_queue_pending": _server_queue_pending(),
+    }
 
 
 @app.post("/api/v1/scan/ingest")
@@ -768,18 +796,63 @@ def task_result(
     return {"success": True, **result}
 
 
+@app.get("/api/v1/scan/agent-package")
+def download_agent_package(
+    x_api_key: Optional[str] = Header(None),
+) -> FileResponse:
+    """Stream the configured MSI to agents (API key auth)."""
+    _check_agent_key(x_api_key)
+    try:
+        info = resolve_agent_package(
+            package_path=config.agent_package_path,
+            package_url=config.agent_package_url,
+            package_sha256=config.agent_package_sha256,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if info.local_path is None or not info.local_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Local MSI is not configured; agents must download from SCAN_AGENT_PACKAGE_URL",
+        )
+    return FileResponse(
+        path=str(info.local_path),
+        filename=info.filename,
+        media_type="application/octet-stream",
+        headers={"X-Agent-Package-Sha256": info.msi_sha256},
+    )
+
+
 @app.post("/api/v1/scan/tasks")
 def create_task(
     payload: TaskCreatePayload,
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_TASKS)),
 ) -> Dict[str, Any]:
     command = str(payload.command or "").strip().lower()
-    if command not in {"ping", "scan_now"}:
+    if command not in {"ping", "scan_now", "self_update"}:
         raise HTTPException(status_code=400, detail="Unsupported command")
+
+    task_payload = payload.payload if isinstance(payload.payload, dict) else {}
+    if command == "self_update":
+        # Never trust client URL/hash — only server-side package config.
+        try:
+            info = resolve_agent_package(
+                package_path=config.agent_package_path,
+                package_url=config.agent_package_url,
+                package_sha256=config.agent_package_sha256,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        task_payload = package_payload(info)
+
     created = store.create_task(
         agent_id=payload.agent_id,
         command=command,
-        payload=payload.payload,
+        payload=task_payload,
         ttl_days=config.task_ttl_days,
         dedupe_key=payload.dedupe_key,
     )
@@ -952,6 +1025,11 @@ def dashboard(
             transient_max_gb=config.transient_max_gb,
             max_pending_jobs=getattr(config, "ingest_max_pending_jobs", None),
         )
+        payload["ingest_limits"] = {
+            "max_pending_pdf_jobs": int(config.ingest_max_pending_pdf_jobs),
+            "max_pending_jobs": int(config.ingest_max_pending_jobs),
+            "max_concurrency": int(config.ingest_max_concurrency),
+        }
     except Exception as exc:
         stale = _get_stale_dashboard(now_value)
         if stale is not None and _is_sqlite_busy_error(exc):

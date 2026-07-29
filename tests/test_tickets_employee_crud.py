@@ -24,6 +24,7 @@ from backend.services.tickets_service import (
     TicketsService,
     TicketsValidationError,
     _parse_date,
+    map_zup_person_to_ticket_employee,
 )
 
 
@@ -594,3 +595,201 @@ class TestEncryptionRoundTrip:
     def test_none_value(self):
         assert encrypt_secret(None) == ""
         assert decrypt_secret(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: ZUP / Address Book prefill
+# ---------------------------------------------------------------------------
+
+
+class TestMapZupPersonToTicketEmployee:
+    def test_maps_core_fields_and_contacts(self):
+        mapped = map_zup_person_to_ticket_employee({
+            "full_name": "Иванов Иван Иванович",
+            "employee_code": "000123",
+            "department": "Отдел логистики",
+            "department_location": "Москва",
+            "position": "Менеджер",
+            "work_phones": [{"value": "+7 (999) 111-22-33"}],
+            "personal_phones": [{"value": "+7 (999) 000-00-00"}],
+            "work_emails": [{"value": "ivanov@example.com"}],
+            "personal_emails": [{"value": "ivan@mail.ru"}],
+        })
+        assert mapped == {
+            "full_name": "Иванов Иван Иванович",
+            "department": "Отдел логистики г. Москва",
+            "position": "Менеджер",
+            "phone": "+7 (999) 111-22-33",
+            "email": "ivanov@example.com",
+            "employee_code": "000123",
+        }
+
+    def test_maps_personal_fields_when_allowed(self):
+        mapped = map_zup_person_to_ticket_employee(
+            {
+                "full_name": "Иванов Иван Иванович",
+                "employee_code": "000123",
+            },
+            personal={
+                "date_of_birth": "1990-05-01",
+                "birth_place": "г. Москва",
+                "passport_series": "4509",
+                "passport_number": "123456",
+                "issued_by": "ОВД",
+                "issuer_code": "770-001",
+                "issue_date": "2010-06-15",
+                "registration_address": "Москва, ул. Тверская, 1",
+            },
+            include_personal=True,
+        )
+        assert mapped["date_of_birth"] == "1990-05-01"
+        assert mapped["passport_series"] == "4509"
+        assert mapped["passport_number"] == "123456"
+        assert mapped["registration_address"] == "Москва, ул. Тверская, 1"
+        assert "date_of_birth" not in map_zup_person_to_ticket_employee(
+            {"full_name": "Иванов"},
+            personal={"date_of_birth": "1990-05-01"},
+            include_personal=False,
+        )
+
+    def test_falls_back_to_personal_contacts(self):
+        mapped = map_zup_person_to_ticket_employee({
+            "full_name": "Петров Пётр",
+            "personal_phones": [{"value": "89001234567"}],
+            "personal_emails": [{"value": "petrov@mail.ru"}],
+        })
+        assert mapped["phone"] == "89001234567"
+        assert mapped["email"] == "petrov@mail.ru"
+        assert mapped["department"] is None
+        assert mapped["position"] is None
+
+    def test_empty_input(self):
+        assert map_zup_person_to_ticket_employee(None)["full_name"] == ""
+        assert map_zup_person_to_ticket_employee({})["full_name"] == ""
+
+
+class TestSearchZupEmployees:
+    def test_search_maps_address_book_items(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            lambda query, limit: {
+                "items": [
+                    {
+                        "full_name": "Сидоров Сидор",
+                        "employee_code": "42",
+                        "department": "IT",
+                        "department_location": "",
+                        "position": "Инженер",
+                        "work_phones": [{"value": "123"}],
+                        "work_emails": [{"value": "sidorov@example.com"}],
+                    },
+                    {"full_name": "", "employee_code": "skip"},
+                ],
+                "updated_at": "2026-07-23T00:00:00Z",
+            },
+        )
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            lambda codes: {
+                "42": {
+                    "date_of_birth": "1988-02-02",
+                    "passport_series": "4500",
+                    "passport_number": "654321",
+                }
+            },
+        )
+
+        result = service.search_zup_employees(
+            "сидор",
+            limit=10,
+            user_permissions=["tickets.personal_data.read"],
+        )
+
+        assert result["source"] == "zup"
+        assert result["include_personal"] is True
+        assert result["total"] == 1
+        assert result["synced_at"] == "2026-07-23T00:00:00Z"
+        assert result["items"][0]["full_name"] == "Сидоров Сидор"
+        assert result["items"][0]["phone"] == "123"
+        assert result["items"][0]["email"] == "sidorov@example.com"
+        assert result["items"][0]["passport_number"] == "654321"
+        assert result["items"][0]["date_of_birth"] == "1988-02-02"
+
+    def test_search_hides_personal_without_permission(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            lambda query, limit: {
+                "items": [
+                    {
+                        "full_name": "Сидоров Сидор",
+                        "employee_code": "42",
+                        "department": "IT",
+                        "work_phones": [],
+                        "work_emails": [],
+                    }
+                ],
+                "updated_at": "2026-07-23T00:00:00Z",
+            },
+        )
+        called = {"personal": False}
+
+        def _personal(codes):
+            called["personal"] = True
+            return {"42": {"passport_number": "1"}}
+
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            _personal,
+        )
+
+        result = service.search_zup_employees("сидор", user_permissions=["tickets.read"])
+        assert result["include_personal"] is False
+        assert "passport_number" not in result["items"][0]
+        assert called["personal"] is False
+
+
+class TestEnsureEmployeeFromZup:
+    def test_creates_employee_with_personal_data(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_person_by_code",
+            lambda code: {
+                "full_name": "Сидоров Сидор",
+                "employee_code": code,
+                "department": "IT",
+                "department_location": "",
+                "position": "Инженер",
+                "work_phones": [{"value": "123"}],
+                "work_emails": [{"value": "sidorov@example.com"}],
+            },
+        )
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            lambda codes: {
+                "42": {
+                    "date_of_birth": "1991-03-03",
+                    "passport_series": "4500",
+                    "passport_number": "111222",
+                    "issued_by": "ОВД",
+                    "issuer_code": "770-001",
+                    "issue_date": "2011-04-04",
+                    "birth_place": "0,г. Тюмень,,,",
+                    "registration_address": "Тюмень",
+                }
+            },
+        )
+
+        created = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert created["full_name"] == "Сидоров Сидор"
+        assert created["zup_employee_code"] == "42"
+        assert created["date_of_birth"] == "1991-03-03"
+        assert created["documents"][0]["passport_number"] == "111222"
+        assert created["documents"][0]["birth_place"] == "г. Тюмень"
+
+        again = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert again["id"] == created["id"]

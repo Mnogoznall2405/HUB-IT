@@ -18,6 +18,7 @@ import pytest
 
 from backend.chat.push_service import (
     CHAT_PUSH_TTL_SEC,
+    DEFAULT_PUSH_TTL_SEC,
     ChatPushSendResult,
     ChatPushService,
     _decode_base64url,
@@ -89,7 +90,7 @@ def test_send_notification_builds_generic_payload_without_type_error(monkeypatch
     )
 
     assert result.sent == 1
-    assert captured["ttl"] == 90
+    assert captured["ttl"] == DEFAULT_PUSH_TTL_SEC
     assert captured["headers"] == {"Urgency": "high"}
     payload = captured["payload"]
     assert payload["channel"] == "mail"
@@ -330,7 +331,7 @@ def test_send_chat_message_notification_skips_duplicate_delivery_within_idempote
     assert len(send_calls) == 1
 
 
-def test_send_chat_message_notification_uses_single_best_subscription(monkeypatch):
+def test_send_chat_message_notification_uses_all_distinct_subscriptions(monkeypatch):
     service = ChatPushService()
     captured: dict[str, object] = {}
 
@@ -365,8 +366,7 @@ def test_send_chat_message_notification_uses_single_best_subscription(monkeypatc
     )
 
     subscriptions = captured["subscriptions"]
-    assert len(subscriptions) == 1
-    assert subscriptions[0].id == 1
+    assert [item.id for item in subscriptions] == [2, 1]
 
 
 def test_send_chat_message_notification_skips_native_when_web_subscriptions_exist(monkeypatch):

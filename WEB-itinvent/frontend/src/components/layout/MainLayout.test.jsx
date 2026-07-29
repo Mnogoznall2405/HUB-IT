@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   WINDOWS_NOTIFICATIONS_ENABLED_KEY,
   WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY,
+  WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY,
 } from '../../lib/windowsNotifications';
 
 const {
@@ -1425,6 +1426,7 @@ describe('MainLayout hub Windows notifications', () => {
   it('shows a browser notification permission banner for users without permission and enables notifications on accept', async () => {
     window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY);
     window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY);
+    window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY);
     notificationPermission = 'default';
     window.Notification.requestPermission = vi.fn(async () => {
       notificationPermission = 'granted';
@@ -1454,6 +1456,32 @@ describe('MainLayout hub Windows notifications', () => {
     expect(window.localStorage.getItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY)).toBe('1');
     expect(window.localStorage.getItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY)).toBe('1');
     expect(mockSyncChatPushSubscription).toHaveBeenCalled();
+    expect(screen.queryByText('Разрешите уведомления браузера, чтобы получать новые задачи, сообщения и почту.')).toBeNull();
+  });
+
+  it('hides the browser notification permission banner when the user declines', async () => {
+    window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY);
+    window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY);
+    window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY);
+    notificationPermission = 'default';
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Разрешите уведомления браузера, чтобы получать новые задачи, сообщения и почту.')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Не сейчас'));
+
+    expect(window.localStorage.getItem(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY)).toBe('1');
+    expect(screen.queryByText('Разрешите уведомления браузера, чтобы получать новые задачи, сообщения и почту.')).toBeNull();
   });
 
   it('auto-enables hub Windows notifications once when permission is already granted and no explicit choice exists', async () => {

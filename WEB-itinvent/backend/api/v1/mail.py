@@ -191,7 +191,13 @@ def _mail_http_exception(
 ) -> HTTPException:
     resolved_user_id = int(user_id or getattr(current_user, "id", 0) or 0)
     resolved_message = str(exc)
-    resolved_code = mail_service.classify_mail_error_code(resolved_message) or str(getattr(exc, "code", "") or "").strip()
+    # Prefer message markers, then the original Exchange cause (wrappers may rewrite text),
+    # then the explicit MailServiceError.code.
+    resolved_code = (
+        mail_service.classify_mail_error_code(resolved_message)
+        or mail_service.classify_mail_error_code(getattr(exc, "__cause__", None))
+        or str(getattr(exc, "code", "") or "").strip()
+    )
     headers: dict[str, str] = {}
     if resolved_code == "MAIL_AUTH_INVALID":
         if resolved_user_id > 0:

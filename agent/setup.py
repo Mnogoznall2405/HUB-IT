@@ -109,7 +109,7 @@ executables = [
         str(AGENT_ENTRY),
         base=base,
         target_name=EXECUTABLE_NAME,
-        shortcut_name="IT-Invent Agent",
+        shortcut_name="HUB-IT Agent",
     ),
     Executable(
         str(SCAN_AGENT_ENTRY),
@@ -170,7 +170,7 @@ def _build_install_custom_action_target() -> str:
     parts = [
         "--msi-install",
         '--install-dir "[TARGETDIR]."',
-        '--env-file-path "[CommonAppDataFolder]IT-Invent\\Agent\\.env"',
+        '--env-file-path "[CommonAppDataFolder]HUB-IT\\Agent\\.env"',
         f'--task-name "{DEFAULT_TASK_NAME}"',
         f"--repeat-minutes {DEFAULT_REPEAT_MINUTES}",
         _format_property_arg("--itinv-agent-server-url", "ITINV_AGENT_SERVER_URL"),
@@ -192,40 +192,93 @@ def _build_uninstall_custom_action_target() -> str:
         [
             "--msi-uninstall-cleanup",
             '--install-dir "[TARGETDIR]."',
-            '--env-file-path "[CommonAppDataFolder]IT-Invent\\Agent\\.env"',
+            '--env-file-path "[CommonAppDataFolder]HUB-IT\\Agent\\.env"',
             f'--task-name "{DEFAULT_TASK_NAME}"',
         ]
     )
 
 
-def _build_upgrade_backup_custom_action_target() -> str:
-    script = (
-        "$ErrorActionPreference='Stop';"
-        "$root='[CommonAppDataFolder]IT-Invent';"
-        "$backup=Join-Path $root 'AgentUpgrade';"
-        "Start-Process -FilePath 'schtasks.exe' "
-        "-ArgumentList @('/End','/TN','IT-Invent Agent') "
-        "-WindowStyle Hidden -Wait -ErrorAction SilentlyContinue|Out-Null;"
-        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe')){"
-        "Get-Process -Name $processName -ErrorAction SilentlyContinue|"
-        "Stop-Process -Force -ErrorAction SilentlyContinue};"
-        "New-Item -ItemType Directory -Force -Path $backup|Out-Null;"
-        "foreach($name in @('Agent','ScanAgent')){"
-        "$source=Join-Path $root $name;$destination=Join-Path $backup $name;"
-        "if(Test-Path -LiteralPath $source){"
-        "if(Test-Path -LiteralPath $destination){Remove-Item -LiteralPath $destination -Recurse -Force};"
-        "Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force}}"
-    )
+def _powershell_custom_action_command(script: str) -> str:
     return (
         '"[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive '
         f'-ExecutionPolicy Bypass -WindowStyle Hidden -Command "{script}"'
     )
 
 
+def _build_upgrade_backup_custom_action_target() -> str:
+    # Keep this script syntactically simple: MSI expands it into a single -Command string.
+    # A stray Start-Process without -ArgumentList previously aborted upgrades with 1603/1722.
+    # Backup into HUB-IT\\AgentUpgrade from both HUB-IT and legacy IT-Invent trees.
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$root='[CommonAppDataFolder]HUB-IT';"
+        "$legacy='[CommonAppDataFolder]IT-Invent';"
+        "$backup=Join-Path $root 'AgentUpgrade';"
+        "foreach($taskName in @('HUB-IT Agent','IT-Invent Agent')){"
+        "Start-Process -FilePath 'schtasks.exe' "
+        "-ArgumentList @('/End','/TN',$taskName) "
+        "-WindowStyle Hidden -Wait|Out-Null};"
+        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe')){"
+        "Get-Process -Name $processName -ErrorAction SilentlyContinue|"
+        "Stop-Process -Force -ErrorAction SilentlyContinue};"
+        "New-Item -ItemType Directory -Force -Path $backup|Out-Null;"
+        "foreach($base in @($legacy,$root)){"
+        "foreach($name in @('Agent','ScanAgent')){"
+        "$source=Join-Path $base $name;$destination=Join-Path $backup $name;"
+        "if(Test-Path -LiteralPath $source){"
+        "if(Test-Path -LiteralPath $destination){Remove-Item -LiteralPath $destination -Recurse -Force};"
+        "Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force}}}"
+    )
+    return _powershell_custom_action_command(script)
+
+
+def _build_restore_msi_source_after_upgrade_target() -> str:
+    # Older agents stage the MSI under ScanAgent\\updates. RemoveExistingProducts then runs the
+    # previous product's uninstall cleanup, which deletes ScanAgent and triggers Error 1316 when
+    # the new package re-resolves its launched-from source. Restore that folder from the upgrade
+    # backup taken before RemoveExistingProducts. Also restore AgentUpgrade\\package for newer staging.
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$root='[CommonAppDataFolder]HUB-IT';"
+        "$legacy='[CommonAppDataFolder]IT-Invent';"
+        "$backupUpdates=Join-Path $root 'AgentUpgrade\\ScanAgent\\updates';"
+        "$backupPackage=Join-Path $root 'AgentUpgrade\\package';"
+        "foreach($base in @($legacy,$root)){"
+        "$liveUpdates=Join-Path $base 'ScanAgent\\updates';"
+        "if(Test-Path -LiteralPath $backupUpdates){"
+        "New-Item -ItemType Directory -Force -Path $liveUpdates|Out-Null;"
+        "Copy-Item -Path (Join-Path $backupUpdates '*') -Destination $liveUpdates -Recurse -Force};"
+        "$livePackage=Join-Path $base 'AgentUpgrade\\package';"
+        "if(Test-Path -LiteralPath $backupPackage){"
+        "New-Item -ItemType Directory -Force -Path $livePackage|Out-Null;"
+        "Copy-Item -Path (Join-Path $backupPackage '*') -Destination $livePackage -Recurse -Force}}"
+    )
+    return _powershell_custom_action_command(script)
+
+
 msi_data = {
+    # Type-34 CustomAction Source must be a Directory table key. Standard folder properties
+    # like WindowsFolder are NOT auto-added by bdist_msi — without this row MSI fails with
+    # Error 2727 / install state 1603 on A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE.
+    "Directory": [
+        ("WindowsFolder", "TARGETDIR", "."),
+    ],
     "CustomAction": [
         ("A_SET_TARGETDIR_FROM_INSTALLDIR", 256 + 51, "TARGETDIR", "[INSTALLDIR]"),
-        ("A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "TARGETDIR", _build_upgrade_backup_custom_action_target()),
+        # Type-34 Source is the *working directory* for CreateProcess. It must already exist
+        # on disk. On hosts that still have only legacy IT-Invent, TARGETDIR points at
+        # Program Files\\HUB-IT\\Agent which is not created yet → MSI Error 1721
+        # ("A program required for this install to complete could not be run").
+        # Always use WindowsFolder (Directory row above). Backup still copies both
+        # IT-Invent and HUB-IT ProgramData trees via absolute CommonAppDataFolder paths.
+        # Restore after RemoveExistingProducts also uses WindowsFolder + Continue (64).
+        ("A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "WindowsFolder", _build_upgrade_backup_custom_action_target()),
+        (
+            "A_RESTORE_MSI_SOURCE_AFTER_UPGRADE",
+            34 + 64,
+            "WindowsFolder",
+            _build_restore_msi_source_after_upgrade_target(),
+        ),
         (
             "A_RUN_AGENT_MSI_INSTALL",
             18 + 3072 + 8192,
@@ -237,7 +290,12 @@ msi_data = {
     "InstallExecuteSequence": [
         ("A_SET_TARGETDIR_FROM_INSTALLDIR", 'NOT INSTALLDIR=""', 403),
         ("A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", "REMOVEOLDVERSION", 1401),
-        ("A_RUN_AGENT_MSI_UNINSTALL", 'REMOVE="ALL"', 3499),
+        # After RemoveExistingProducts (~1499) / InstallInitialize (1500), before ProcessComponents.
+        ("A_RESTORE_MSI_SOURCE_AFTER_UPGRADE", "REMOVEOLDVERSION", 1550),
+        # Skip destructive ProgramData cleanup during major-upgrade uninstall of the
+        # previous product. Otherwise RemoveExistingProducts can delete the MSI source
+        # under ScanAgent\\updates while the new package still needs it (Error 1316).
+        ("A_RUN_AGENT_MSI_UNINSTALL", 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE', 3499),
         ("A_RUN_AGENT_MSI_INSTALL", 'NOT REMOVE="ALL"', 6501),
     ],
     "InstallUISequence": [
@@ -253,17 +311,17 @@ if any(arg.lower() == "bdist_msi" for arg in sys.argv[1:]):
 
 bdist_msi_options = {
     "add_to_path": False,
-    "initial_target_dir": r"[ProgramFiles64Folder]\\IT-Invent\\Agent",
+    "initial_target_dir": r"[ProgramFiles64Folder]\\HUB-IT\\Agent",
     "all_users": True,
     "upgrade_code": UPGRADE_CODE,
     "data": msi_data,
 }
 
 setup(
-    name="IT-Invent Agent",
+    name="HUB-IT Agent",
     version=AGENT_VERSION,
-    author="IT-Invent",
-    description="IT-Invent Unified Agent (Inventory + Scan)",
+    author="HUB-IT",
+    description="HUB-IT Agent (Inventory + Scan)",
     options={
         "build_exe": build_exe_options,
         "bdist_msi": bdist_msi_options,

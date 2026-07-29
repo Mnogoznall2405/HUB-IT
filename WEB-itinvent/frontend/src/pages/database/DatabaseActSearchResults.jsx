@@ -45,12 +45,16 @@ function normalizeActItems(items = []) {
 const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
   query = '',
   results = [],
+  seededAct = null,
   loading = false,
   error = '',
   truncated = false,
+  feedMode = 'latest',
   formatDate = (value) => value,
   onOpenEquipment,
   onPrefetchEquipment = null,
+  onSelectAct = null,
+  onOpenActFile = null,
   onErrorClose,
   theme,
   ui,
@@ -69,7 +73,15 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
   const selectedBorder = ui?.selectedBorder || alpha(theme.palette.primary.main, 0.35);
   const panelInset = ui?.panelInset || theme.palette.action.hover;
 
-  const acts = useMemo(() => (Array.isArray(results) ? results : []), [results]);
+  const normalizedQuery = String(query || '').trim();
+  const searchActive = normalizedQuery.length >= 2;
+  const acts = useMemo(() => {
+    if (Array.isArray(results) && results.length > 0) return results;
+    if (!searchActive && seededAct) return [seededAct];
+    return Array.isArray(results) ? results : [];
+  }, [results, searchActive, seededAct]);
+  const showingSeededOnly = !searchActive && Boolean(seededAct) && acts.length > 0 && results.length === 0;
+  const showingLatestFeed = !searchActive && !showingSeededOnly && feedMode === 'latest';
 
   useEffect(() => {
     if (!acts.length) {
@@ -101,21 +113,28 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
     return () => window.clearTimeout(timer);
   }, [onPrefetchEquipment, selectedItems]);
 
-  const normalizedQuery = String(query || '').trim();
-  if (normalizedQuery.length < 2) {
+  const handleOpenSelectedActFile = () => {
+    if (!selectedAct) return;
+    if (typeof onOpenActFile === 'function') {
+      onOpenActFile(selectedAct);
+    }
+    void openActFile(selectedAct);
+  };
+
+  if (loading && acts.length === 0) {
     return (
-      <Paper variant="outlined" sx={{ ...emptyStateSx, mb: 2 }}>
-        <Typography variant="body2" sx={{ color: textSecondary }}>
-          Введите номер акта или фамилию сотрудника
-        </Typography>
+      <Paper variant="outlined" sx={{ ...panelSx, mb: 2, p: 2 }}>
+        <LoadingSpinner message={searchActive ? 'Поиск актов...' : 'Загрузка актов...'} />
       </Paper>
     );
   }
 
-  if (loading) {
+  if (!searchActive && !showingSeededOnly && acts.length === 0 && !error) {
     return (
-      <Paper variant="outlined" sx={{ ...panelSx, mb: 2, p: 2 }}>
-        <LoadingSpinner message="Поиск актов..." />
+      <Paper variant="outlined" sx={{ ...emptyStateSx, mb: 2 }}>
+        <Typography variant="body2" sx={{ color: textSecondary }}>
+          Акты не найдены. Введите номер акта или фамилию сотрудника для поиска.
+        </Typography>
       </Paper>
     );
   }
@@ -135,33 +154,61 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
   return (
     <Box sx={{ mb: 2 }}>
       <Paper variant="outlined" sx={panelSx}>
-        <Box sx={{ ...headerBandSx, px: 2, py: 1.25 }}>
+        <Box sx={{ ...headerBandSx, px: { xs: 1.25, sm: 2 }, py: { xs: 0.75, sm: 1.25 } }}>
           <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={0.5}
-            alignItems={{ sm: 'center' }}
+            direction="row"
+            spacing={1}
+            alignItems="center"
             justifyContent="space-between"
           >
-            <Box>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 700, color: textPrimary }}>
-                Результаты поиска актов
+                {showingSeededOnly
+                  ? 'Выбранный акт'
+                  : (showingLatestFeed ? 'Все акты' : 'Результаты поиска актов')}
               </Typography>
-              <Typography variant="caption" sx={{ color: textSecondary, display: 'block', mt: 0.25 }}>
-                Запрос: {normalizedQuery}
-                {acts.length ? ` · найдено ${acts.length}` : ''}
+              <Typography variant="caption" sx={{ color: textSecondary, display: 'block', mt: 0.15 }}>
+                {showingSeededOnly
+                  ? 'Из последних актов'
+                  : showingLatestFeed
+                    ? `${acts.length ? `Показано ${acts.length}` : 'Нет документов'}${truncated ? ' · уточните поиск для остальных' : ''}`
+                    : `Запрос: ${normalizedQuery}${acts.length ? ` · найдено ${acts.length}` : ''}`}
               </Typography>
             </Box>
             {selectedAct && selectedHasFile ? (
-              <Button
-                size="small"
-                variant="contained"
-                startIcon={<DescriptionOutlinedIcon />}
-                disabled={isOpeningSelected}
-                onClick={() => void openActFile(selectedAct)}
-                sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
-              >
-                Открыть файл акта
-              </Button>
+              <>
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<DescriptionOutlinedIcon />}
+                  disabled={isOpeningSelected}
+                  onClick={handleOpenSelectedActFile}
+                  sx={{
+                    display: { xs: 'inline-flex', sm: 'none' },
+                    flexShrink: 0,
+                    textTransform: 'none',
+                    whiteSpace: 'nowrap',
+                    minWidth: 0,
+                    px: 0.75,
+                  }}
+                >
+                  {isOpeningSelected ? '…' : 'Файл'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<DescriptionOutlinedIcon />}
+                  disabled={isOpeningSelected}
+                  onClick={handleOpenSelectedActFile}
+                  sx={{
+                    display: { xs: 'none', sm: 'inline-flex' },
+                    flexShrink: 0,
+                    textTransform: 'none',
+                  }}
+                >
+                  Открыть файл акта
+                </Button>
+              </>
             ) : null}
           </Stack>
         </Box>
@@ -175,7 +222,9 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
 
           {truncated ? (
             <Alert severity="info" sx={{ mb: 1.5 }}>
-              Показаны первые 50 актов. Уточните запрос, если нужного документа нет в списке.
+              {showingLatestFeed
+                ? 'Показаны последние 50 актов. Уточните поиск по номеру или фамилии, если нужного документа нет в списке.'
+                : 'Показаны первые 50 актов. Уточните запрос, если нужного документа нет в списке.'}
             </Alert>
           ) : null}
 
@@ -210,7 +259,7 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
                     АКТЫ
                   </Typography>
                 </Box>
-                <List dense disablePadding sx={{ overflow: 'auto', maxHeight: { xs: 280, md: 480 } }}>
+                <List dense disablePadding sx={{ overflow: 'auto', maxHeight: { xs: 'min(52vh, 420px)', md: 480 } }}>
                   {acts.map((act) => {
                     const key = getActKey(act);
                     const docNumber = String(readFirst(act, ['doc_number', 'DOC_NUMBER'], '-')).trim() || '-';
@@ -231,11 +280,16 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
                       <ListItemButton
                         key={key || docNumber}
                         selected={selected}
-                        onClick={() => setSelectedKey(key)}
+                        onClick={() => {
+                          setSelectedKey(key);
+                          if (typeof onSelectAct === 'function') {
+                            onSelectAct(act);
+                          }
+                        }}
                         sx={{
                           alignItems: 'flex-start',
-                          py: 1.1,
-                          px: 1.5,
+                          py: { xs: 0.85, sm: 1.1 },
+                          px: { xs: 1.1, sm: 1.5 },
                           borderLeft: '3px solid',
                           borderLeftColor: selected ? theme.palette.primary.main : 'transparent',
                           bgcolor: selected ? selectedBg : 'transparent',
@@ -299,10 +353,10 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
                   overflow: 'hidden',
                   display: 'flex',
                   flexDirection: 'column',
-                  minHeight: { xs: 240, md: 'auto' },
+                  minHeight: { xs: 0, md: 'auto' },
                 }}
               >
-                <Box sx={{ px: 1.75, py: 1.25, borderBottom: '1px solid', borderColor: borderSoft }}>
+                <Box sx={{ px: { xs: 1.25, sm: 1.75 }, py: { xs: 0.85, sm: 1.25 }, borderBottom: '1px solid', borderColor: borderSoft }}>
                   {selectedAct ? (
                     <Stack spacing={0.35}>
                       <Typography variant="caption" sx={{ color: textSecondary, fontWeight: 700, letterSpacing: 0.3 }}>

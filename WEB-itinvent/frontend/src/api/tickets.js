@@ -94,6 +94,24 @@ export const ticketsAPI = {
     const response = await apiClient.get('/tickets/employees', { params: compactParams(params) });
     return response.data;
   },
+  searchZupEmployees: async ({ q = '', limit = 20 } = {}) => {
+    const response = await apiClient.get('/tickets/employees/zup-search', {
+      params: compactParams({ q, limit }),
+    });
+    return response.data;
+  },
+  searchSettlements: async ({ q = '', limit = 30 } = {}) => {
+    const response = await apiClient.get('/tickets/settlements/search', {
+      params: compactParams({ q, limit }),
+    });
+    return response.data;
+  },
+  ensureEmployeeFromZup: async (employeeCode) => {
+    const response = await apiClient.post('/tickets/employees/from-zup', {
+      employee_code: employeeCode,
+    });
+    return response.data;
+  },
   getEmployee: async (employeeId) => {
     const response = await apiClient.get(`/tickets/employees/${encodeURIComponent(employeeId)}`);
     return response.data;

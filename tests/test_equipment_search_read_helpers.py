@@ -59,7 +59,7 @@ def test_equipment_search_helpers_preserve_query_params_and_shapes(monkeypatch):
     assert db_ids == ["main", "main", "main", "main"]
     assert fake_db.calls == [
         (db_queries.QUERY_SEARCH_BY_SERIAL, ("%SN-1001%", "%SN-1001%", "%SN-1001%")),
-        (db_queries.QUERY_SEARCH_UNIVERSAL.format(limit=7), ("%Dell%",) * 15),
+        (db_queries.QUERY_SEARCH_UNIVERSAL.format(limit=7), ("%Dell%",) * 16),
         (db_queries.QUERY_COUNT_EMPLOYEES, ("%User%", "%User%")),
         (db_queries.QUERY_SEARCH_BY_EMPLOYEE, ("%User%", "%User%", 10, 10)),
         (db_queries.QUERY_GET_EQUIPMENT_BY_OWNER, (501,)),
@@ -78,5 +78,5 @@ def test_universal_equipment_search_preserves_error_fallback(monkeypatch):
         "pages": 1,
     }
     assert fake_db.calls == [
-        (db_queries.QUERY_SEARCH_UNIVERSAL.format(limit=4), ("%monitor%",) * 15),
+        (db_queries.QUERY_SEARCH_UNIVERSAL.format(limit=4), ("%monitor%",) * 16),
     ]

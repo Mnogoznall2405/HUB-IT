@@ -76,6 +76,10 @@ function UploadActDialog({
   onEmailErrorClear,
   onEmailSend,
   getEmailStatusItemSx,
+  downloading = false,
+  downloadError = '',
+  onDownloadErrorClear,
+  onDownload,
 }) {
   const hasCommitResult = Boolean(commitResult);
 
@@ -217,6 +221,11 @@ function UploadActDialog({
                 {emailError && (
                   <Alert severity="warning">{emailError}</Alert>
                 )}
+                {downloadError && (
+                  <Alert severity="warning" onClose={() => onDownloadErrorClear?.()}>
+                    {downloadError}
+                  </Alert>
+                )}
 
                 <UploadActEmailStatusList
                   recipients={emailLastRecipients}
@@ -227,14 +236,23 @@ function UploadActDialog({
           </Collapse>
         </Box>
       </DialogContent>
-      <DialogActions sx={{ p: 2 }}>
+      <DialogActions sx={{ p: 2, gap: 1, flexWrap: 'wrap' }}>
         <Button
           onClick={onClose}
           variant="outlined"
-          disabled={parsing || committing || emailLoading}
+          disabled={parsing || committing || emailLoading || downloading}
         >
           {hasCommitResult ? 'Готово' : 'Закрыть'}
         </Button>
+        {hasCommitResult && (
+          <Button
+            onClick={onDownload}
+            variant="contained"
+            disabled={downloading || emailLoading || committing || !commitResult?.doc_no}
+          >
+            {downloading ? 'Скачивание...' : 'Скачать акт'}
+          </Button>
+        )}
         {!hasCommitResult && (
           <Button
             onClick={onCommit}

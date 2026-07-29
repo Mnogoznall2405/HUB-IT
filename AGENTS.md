@@ -157,8 +157,8 @@ OpenAPI в dev: `http://localhost:8001/docs`
 
 | Компонент | Entry | Runtime на ПК |
 |-----------|-------|----------------|
-| Inventory | `agent.py` | `C:\ProgramData\IT-Invent\Agent\` |
-| Scan sidecar | `scan_agent/agent.py` | `C:\ProgramData\IT-Invent\ScanAgent\` |
+| Inventory | `agent.py` | `C:\ProgramData\HUB-IT\Agent\` |
+| Scan sidecar | `scan_agent/agent.py` | `C:\ProgramData\HUB-IT\ScanAgent\` |
 | MSI / GPO | `agent/`, `agent_installer.py` | см. `agent/README.md`, `agent/docs/` |
 
 ### scan_server
@@ -167,7 +167,7 @@ OpenAPI в dev: `http://localhost:8001/docs`
 |-----|-----|
 | API | `scan_server/app.py` |
 | Worker | `scan_server/worker.py`, `worker_main.py` |
-| БД | SQLite `data/scan_server/scan_server.db` |
+| БД | PostgreSQL schema `scan` (`SCAN_DATABASE_URL`) или SQLite `data/scan_server/scan_server.db` |
 | OCR/PDF | `scan_server/ocr.py`, `pdf_spool.py` |
 
 ### inventory_server
@@ -186,7 +186,7 @@ OpenAPI в dev: `http://localhost:8001/docs`
 | **SQL Server** | Основная БД оборудования (legacy ITINVENT) | `SQL_SERVER_*`, `DB_{ID}_*` |
 | **PostgreSQL** | App-owned runtime (production) | `APP_DATABASE_URL`, `CHAT_DATABASE_URL` |
 | **JSON** | Перемещения, работы, кэши | `data/*.json` — [data/README.md](./data/README.md) |
-| **SQLite** | Scan server | `data/scan_server/scan_server.db` |
+| **PostgreSQL `scan`** | Scan Center runtime | `SCAN_DATABASE_URL` (fallback SQLite `data/scan_server/scan_server.db`) |
 
 **Важно:** `data/*.json` общие для **bot** и **web**. При записи учитывать гонки (атомарная запись, блокировки — смотреть существующие паттерны в `bot/local_json_store.py` и backend JSON API).
 

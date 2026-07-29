@@ -24,6 +24,7 @@ const menuActionsMock = {
 
 const selectedActionsMock = {
   copySelectedMessages: vi.fn(),
+  deleteSelectedMessages: vi.fn(),
   openForwardSelectedMessages: vi.fn(),
   replyToSelectedMessage: vi.fn(),
 };

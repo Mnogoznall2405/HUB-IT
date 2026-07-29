@@ -9,8 +9,14 @@ from backend.services.address_book_service import (
     AddressBookService,
     deduplicate_email_records,
     deduplicate_phone_records,
+    employee_query,
+    merge_personal_document_records,
+    merge_personal_profile_records,
     normalize_email,
     normalize_phone,
+    one_c_date_iso,
+    personal_documents_query,
+    personal_profile_query,
 )
 
 
@@ -120,6 +126,93 @@ def test_normalize_email_lowercases_value():
     assert normalize_email("User@Example.COM") == "user@example.com"
 
 
+def test_employee_query_selects_department_code():
+    query = employee_query()
+    assert "КАК DepartmentCode" in query
+    assert "Подразделение.Код" in query
+
+
+def test_personal_queries_target_zup_registers():
+    assert "ДатаРождения" in personal_profile_query()
+    assert "Адрес по прописке" in personal_profile_query()
+    assert "ДокументыФизическихЛиц" in personal_documents_query()
+    assert "ЯвляетсяДокументомУдостоверяющимЛичность" in personal_documents_query()
+
+
+def test_one_c_date_iso_handles_python_dates_and_zero_dates():
+    connection = SimpleNamespace(String=lambda value: str(value))
+    assert one_c_date_iso(connection, SimpleNamespace(year=1990, month=5, day=1)) == "1990-05-01"
+    assert one_c_date_iso(connection, SimpleNamespace(year=1, month=1, day=1)) == ""
+    assert one_c_date_iso(connection, "2010-06-15T00:00:00") == "2010-06-15"
+
+
+def test_merge_personal_records_prefers_passport_and_propiska():
+    profiles = merge_personal_profile_records(
+        [
+            {
+                "employee_code": "E1",
+                "date_of_birth": "1990-01-01",
+                "birth_place": "Москва",
+                "address_kind": "Адрес проживания",
+                "registration_address": "временный",
+            },
+            {
+                "employee_code": "E1",
+                "date_of_birth": "",
+                "birth_place": "",
+                "address_kind": "Адрес по прописке",
+                "registration_address": "прописка",
+            },
+        ]
+    )
+    assert profiles["E1"]["registration_address"] == "прописка"
+
+    docs = merge_personal_document_records(
+        [
+            {
+                "employee_code": "E1",
+                "document_kind": "Водительское удостоверение",
+                "passport_series": "99",
+                "passport_number": "111111",
+                "issued_by": "ГИБДД",
+                "issuer_code": "",
+                "issue_date": "2015-01-01",
+            },
+            {
+                "employee_code": "E1",
+                "document_kind": "Паспорт РФ",
+                "passport_series": "4509",
+                "passport_number": "123456",
+                "issued_by": "ОВД",
+                "issuer_code": "770-001",
+                "issue_date": "2010-01-01",
+            },
+        ]
+    )
+    assert docs["E1"]["passport_number"] == "123456"
+    assert "document_kind" not in docs["E1"]
+
+
+def test_get_personal_by_codes_reads_separate_cache_bucket():
+    manager = MemoryDataManager(
+        {
+            "items": [{"full_name": "Иванов", "employee_code": "E1"}],
+            "personal_by_code": {
+                "E1": {
+                    "date_of_birth": "1990-01-01",
+                    "passport_number": "123456",
+                    "ignored": "x",
+                }
+            },
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+    assert service.search("иванов")["items"][0].get("passport_number") is None
+    assert service.get_personal_by_codes(["E1"]) == {
+        "E1": {"date_of_birth": "1990-01-01", "passport_number": "123456"}
+    }
+
+
 def test_search_matches_name_department_position_city_and_phone():
     manager = MemoryDataManager(
         {
@@ -128,6 +221,7 @@ def test_search_matches_name_department_position_city_and_phone():
                 {
                     "full_name": "Иванов Иван Иванович",
                     "department": "Отдел мониторинга",
+                    "department_code": "00ЗК-6031",
                     "department_location": "г. Санкт-Петербург",
                     "position": "Ведущий специалист",
                     "work_phones": [{"kind": "Рабочий телефон", "value": "83452384202", "normalized": "73452384202"}],
@@ -138,6 +232,7 @@ def test_search_matches_name_department_position_city_and_phone():
                 {
                     "full_name": "Петров Петр Петрович",
                     "department": "Сметный отдел",
+                    "department_code": "00ЗК-6051",
                     "department_location": "Тюмень",
                     "position": "Инженер",
                     "work_phones": [],
@@ -155,6 +250,42 @@ def test_search_matches_name_department_position_city_and_phone():
     assert service.search("санкт специалист")["total"] == 1
     assert service.search("9199568055")["items"][0]["full_name"] == "Петров Петр Петрович"
     assert service.search("ivanov@zsgp.ru")["items"][0]["full_name"] == "Иванов Иван Иванович"
+    assert service.search("00зк-6031")["items"][0]["full_name"] == "Иванов Иван Иванович"
+
+
+def test_list_people_by_department_codes_and_department_code_catalog():
+    manager = MemoryDataManager(
+        {
+            "updated_at": "2026-07-22T10:00:00+00:00",
+            "items": [
+                {
+                    "full_name": "Абабков Данил Павлович",
+                    "department": "Отделение буровых работ",
+                    "department_code": "00ЗК-6942",
+                    "position": "Помощник",
+                },
+                {
+                    "full_name": "Иванов Иван",
+                    "department": "Отделение буровых работ",
+                    "department_code": "00ЗК-6942",
+                    "position": "Машинист",
+                },
+                {
+                    "full_name": "Петров",
+                    "department": "Бухгалтерия",
+                    "department_code": "000000008",
+                    "position": "Бухгалтер",
+                },
+            ],
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+    people = service.list_people_by_department_codes(["00ЗК-6942"])
+    assert len(people) == 2
+    catalog = service.list_department_codes("буров")
+    assert catalog["total"] == 1
+    assert catalog["items"][0]["department_code"] == "00ЗК-6942"
+    assert catalog["items"][0]["people_count"] == 2
 
 
 def test_search_ranks_name_matches_before_other_fields_and_sorts_empty_query():
@@ -245,12 +376,23 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
                 }
             }
 
-    items = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
+        def _load_personal_data(self, connection):
+            calls.append("personal")
+            return {
+                "E1": {
+                    "date_of_birth": "1990-01-15",
+                    "passport_series": "4509",
+                    "passport_number": "123456",
+                }
+            }
 
-    assert calls == ["init", "connect", "employees", "phones", "emails", "uninit"]
+    items, personal = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
+
+    assert calls == ["init", "connect", "employees", "phones", "emails", "personal", "uninit"]
     assert items[0]["employee_code"] == "E1"
     assert items[0]["work_emails"][0]["value"] == "ivanov@zsgp.ru"
     assert items[0]["work_phones"][0]["value"] == "83452384202"
+    assert personal["E1"]["passport_number"] == "123456"
 
 
 def test_sync_error_keeps_previous_cache():

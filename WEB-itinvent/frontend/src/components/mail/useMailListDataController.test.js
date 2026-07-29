@@ -505,6 +505,60 @@ describe('useMailListDataController', () => {
     expect(result.current.refs.recentHydratedListContextsRef.current.has(requestContext.contextKey)).toBe(false);
   });
 
+  it('opens credentials flow when bootstrap fails with auth error even with recent hydration', async () => {
+    const requestError = Object.assign(new Error('auth'), {
+      response: {
+        status: 409,
+        headers: { 'x-mail-error-code': 'MAIL_AUTH_INVALID' },
+        data: { detail: 'Пароль корпоративной почты устарел или неверен. Введите новый пароль.' },
+      },
+    });
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(async () => {
+        throw requestError;
+      }),
+    });
+    const handleMailCredentialsRequired = vi.fn(async () => true);
+    const hydratedList = {
+      items: [createMessage('cached-msg')],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+      next_offset: null,
+      append_offset: 1,
+      loaded_pages: 1,
+    };
+    const { result } = renderController({
+      mailAPI,
+      initialState: {
+        listData: hydratedList,
+        mailboxInfo: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+      },
+      props: {
+        handleMailCredentialsRequired,
+        recentHydratedScope: 'mailbox-1',
+      },
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+
+    expect(handleMailCredentialsRequired).toHaveBeenCalledWith(
+      requestError,
+      'Не удалось загрузить почтовый экран.'
+    );
+    expect(result.current.state.listData.items).toEqual([]);
+    expect(result.current.state.mailboxInfo).toEqual({
+      id: 'mailbox-1',
+      mailbox_email: 'mailbox@example.com',
+    });
+    expect(result.current.props.setError).not.toHaveBeenCalledWith(
+      'Не удалось загрузить почтовый экран.'
+    );
+  });
+
   it('clears visible items but preserves list metadata when credentials are required', async () => {
     const initialList = {
       items: [createMessage('msg-1')],

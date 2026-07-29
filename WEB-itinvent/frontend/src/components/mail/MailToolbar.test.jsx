@@ -44,6 +44,9 @@ describe('MailToolbar', () => {
       />,
     );
 
+    expect(screen.getByTestId('mail-toolbar-mobile-header')).toHaveStyle({
+      paddingTop: 'calc(12px + env(safe-area-inset-top, 0px))',
+    });
     expect(screen.getByTestId('mail-toolbar-open-navigation')).toBeTruthy();
     expect(screen.getByTestId('mail-toolbar-mobile-mailbox-switcher')).toBeTruthy();
     expect(screen.getByTestId('mail-toolbar-open-tools')).toBeTruthy();

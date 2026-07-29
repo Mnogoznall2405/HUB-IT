@@ -15,16 +15,8 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 
 const noop = () => {};
 
-const iconButtonSx = {
-  width: 36,
-  height: 36,
-  borderRadius: 1.5,
-  border: '1px solid',
-  borderColor: 'divider',
-  flexShrink: 0,
-};
-
 function DatabaseMobileControlStrip({
+  ui = null,
   isConsumablesMode = false,
   canDatabaseWrite = false,
   branches = [],
@@ -39,6 +31,19 @@ function DatabaseMobileControlStrip({
   onOpenMore = noop,
 }) {
   const branchLabel = selectedBranch || 'Все филиалы';
+  const borderSoft = ui?.borderSoft || 'divider';
+  const actionBg = ui?.actionBg || 'action.hover';
+  const actionHover = ui?.actionHover || 'action.selected';
+
+  const iconButtonSx = {
+    width: 34,
+    height: 34,
+    borderRadius: '4px',
+    border: 'none',
+    bgcolor: actionBg,
+    flexShrink: 0,
+    '&:hover': { bgcolor: actionHover },
+  };
 
   return (
     <Box
@@ -47,12 +52,12 @@ function DatabaseMobileControlStrip({
         display: 'flex',
         alignItems: 'center',
         gap: 0.5,
-        mb: 0.75,
+        mb: 0.5,
         position: 'sticky',
         top: 0,
         zIndex: 10,
         bgcolor: 'background.paper',
-        py: 0.25,
+        py: 0.15,
       }}
     >
       {branches.length > 0 ? (
@@ -65,11 +70,15 @@ function DatabaseMobileControlStrip({
             renderValue={() => branchLabel}
             inputProps={{ 'aria-label': 'Филиал' }}
             sx={{
-              height: 36,
-              borderRadius: 1.5,
-              fontSize: '0.8rem',
+              height: 34,
+              borderRadius: '4px',
+              fontSize: '0.78rem',
+              bgcolor: actionBg,
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: borderSoft,
+              },
               '& .MuiSelect-select': {
-                py: 0.75,
+                py: 0.65,
                 pr: '28px !important',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -98,7 +107,17 @@ function DatabaseMobileControlStrip({
       {canDatabaseWrite && !isConsumablesMode && (
         <>
           <Tooltip title="Добавить оборудование">
-            <IconButton size="small" aria-label="Добавить" onClick={onOpenAddEquipment} sx={iconButtonSx}>
+            <IconButton
+              size="small"
+              aria-label="Добавить"
+              onClick={onOpenAddEquipment}
+              sx={{
+                ...iconButtonSx,
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': { bgcolor: 'primary.dark' },
+              }}
+            >
               <AddIcon sx={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
@@ -112,7 +131,17 @@ function DatabaseMobileControlStrip({
 
       {canDatabaseWrite && isConsumablesMode && (
         <Tooltip title="Добавить расходник">
-          <IconButton size="small" aria-label="Добавить" onClick={onOpenAddConsumable} sx={iconButtonSx}>
+          <IconButton
+            size="small"
+            aria-label="Добавить"
+            onClick={onOpenAddConsumable}
+            sx={{
+              ...iconButtonSx,
+              bgcolor: 'primary.main',
+              color: 'primary.contrastText',
+              '&:hover': { bgcolor: 'primary.dark' },
+            }}
+          >
             <AddIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>

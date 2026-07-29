@@ -1,7 +1,7 @@
 # PostgreSQL — App runtime store (HUB-IT)
 
 Справочник по **собственной** БД платформы HUB-IT (`APP_DATABASE_URL`; в `.env` часто `APP_DATABASE_URL=${CHAT_DATABASE_URL}`).  
-Это **не** **Equipment catalog (ITINVENT)** (SQL Server) и **не** SQLite **Scan server**.
+Это **не** **Equipment catalog (ITINVENT)** (SQL Server). Scan Center runtime — отдельный URL `SCAN_DATABASE_URL` / schema `scan` (см. [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md)); legacy fallback — SQLite.
 
 **Язык домена:** [CONTEXT.md](../../CONTEXT.md)  
 **Колонки, PK, FK, индексы (live):** [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md)  
@@ -14,13 +14,14 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-07-16 04:17 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-07-29 08:52 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **94** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **100** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **1** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
+| **`scan`** | **9** | — |
 
 Полные колонки: [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md).
 
@@ -28,7 +29,7 @@ _Обновлено: 2026-07-16 04:17 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 1 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (94 таблиц)
+## Схема `app` (100 таблиц)
 
 ### Auth и пользователи
 
@@ -155,6 +156,10 @@ _Обновлено: 2026-07-16 04:17 UTC_ · инстанс `127.0.0.1:5432/hub
 
 | Таблица | Назначение |
 |---------|------------|
+| `docflow_audit_events` | — |
+| `docflow_commands` | — |
+| `docflow_credentials` | — |
+| `equipment_recent_acts` | — |
 | `equipment_recent_cards` | — |
 | `mailbox_quota_rows` | — |
 | `mailbox_quota_snapshots` | — |
@@ -170,6 +175,8 @@ _Обновлено: 2026-07-16 04:17 UTC_ · инстанс `127.0.0.1:5432/hub
 | `one_c_item_links` | — |
 | `one_c_reconcile_events` | — |
 | `one_c_warehouse_owner_links` | — |
+| `org_structure_department_links` | — |
+| `org_structure_nodes` | — |
 | `password_vault_audit` | — |
 | `password_vault_entries` | — |
 | `password_vault_groups` | — |
@@ -213,6 +220,22 @@ _Обновлено: 2026-07-16 04:17 UTC_ · инстанс `127.0.0.1:5432/hub
 | `mfu_runtime_state` | MFU: runtime / retry |
 | `migration_checkpoints` | Чекпоинты миграций |
 | `session_auth_context` | Exchange login + encrypted password для сессии |
+
+## Схема `scan` (9 таблиц)
+
+### Таблицы
+
+| Таблица | Назначение |
+|---------|------------|
+| `alembic_version` | Текущая ревизия Alembic |
+| `scan_agents` | — |
+| `scan_artifacts` | — |
+| `scan_findings` | — |
+| `scan_incidents` | — |
+| `scan_jobs` | — |
+| `scan_task_file_observations` | — |
+| `scan_task_system_metrics` | — |
+| `scan_tasks` | — |
 
 <!-- pg-schema-docs:auto:end -->
 
@@ -262,7 +285,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 | **ITINVENT branch** | SQL Server | `BRANCH_NO`, `BRANCH_NAME` |
 | **Inventory SQL context** | `app.inventory_host_sql_contexts` | `branch_no`, `branch_name` |
 | **Network branch** | `app.network_branches` | + `network_branch_db_map` |
-| **Scan branch label** | SQLite Scan server | строка `branch`, не FK в PG |
+| **Scan branch label** | Scan runtime (`SCAN_DATABASE_URL` / SQLite) | строка `branch`, не FK в app schema |
 
 ---
 
@@ -272,7 +295,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 |-----------|------------|----------|
 | Equipment catalog | SQL Server | `WEB-itinvent/backend/database/` |
 | Shared JSON ledger | `data/*.json` | [data/README.md](../../data/README.md) |
-| Scan runtime | SQLite | [SCAN_ARCHITECTURE.md](./SCAN_ARCHITECTURE.md) |
+| Scan runtime | PostgreSQL schema `scan` (`SCAN_DATABASE_URL`) или SQLite fallback | [SCAN_ARCHITECTURE.md](./SCAN_ARCHITECTURE.md), [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md) |
 
 ---
 
@@ -280,7 +303,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-07-16:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 94, `chat` 1, `system` 8).
+- **2026-07-29:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 100, `chat` 1, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

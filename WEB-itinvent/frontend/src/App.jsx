@@ -12,7 +12,6 @@ import { canAccessAdminArea } from './components/account/accountNavigationConfig
 import { forceAppHardReload } from './lib/routeChunkRecovery';
 import {
   applyChatPushDiagnostic,
-  disableChatPushSubscription,
   getChatNotificationState,
   refreshChatNotificationState,
   requestChatPushSyncDrain,
@@ -21,13 +20,16 @@ import {
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
+import { WINDOWS_NOTIFICATIONS_CHANGED_EVENT } from './lib/windowsNotifications';
 import {
   loadAddressBookRoute,
+  loadCompanyStructureRoute,
   loadChatRoute,
   loadComputersRoute,
   loadDashboardRoute,
   loadDashboardNewsRoute,
   loadDatabaseRoute,
+  loadDocflowRoute,
   loadLoginRoute,
   loadMailRoute,
   loadMobileMenuRoute,
@@ -70,7 +72,9 @@ const MobileMenu = lazy(loadMobileMenuRoute);
 const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
+const CompanyStructure = lazy(loadCompanyStructureRoute);
 const Warehouse1C = lazy(loadWarehouse1CRoute);
+const Docflow = lazy(loadDocflowRoute);
 const Passwords = lazy(loadPasswordsRoute);
 const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
@@ -92,6 +96,7 @@ const routePermissions = [
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
   { path: '/warehouse-1c', permissions: ['warehouse_1c.read'] },
+  { path: '/docflow', permissions: ['docflow.read'] },
   { path: '/passwords', permissions: ['passwords.read'] },
   { path: '/groups-access', permissions: ['groups_access.read'] },
   { path: '/my-files', permissions: ['my_files.read'] },
@@ -161,7 +166,7 @@ const AdminAreaRoute = ({ children }) => {
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
-const AppPushBootstrap = () => {
+export const AppPushBootstrap = () => {
   const { user, hasPermission } = useAuth();
   const location = useLocation();
   const hasAppPushPermission = hasAnyAppPushPermission(hasPermission, {
@@ -171,9 +176,9 @@ const AppPushBootstrap = () => {
 
   const runPushSync = useCallback((force = false) => {
     if (!hasAppPushPermission || !user) {
-      void disableChatPushSubscription({ removeServer: Boolean(user) }).catch(() => {
-        refreshChatNotificationState();
-      });
+      // AppPushBootstrap mounts before AuthProvider finishes restoring the
+      // cookie session. Unsubscribing here invalidates a healthy browser
+      // endpoint on every cold start. Explicit logout/revocation owns cleanup.
       return;
     }
     void syncChatPushSubscription({ user, force }).catch(() => {
@@ -185,8 +190,7 @@ const AppPushBootstrap = () => {
   const schedulePushSync = useCallback(({ force = false } = {}) => {
     const currentState = getChatNotificationState();
     const needsFastBootstrap = Boolean(
-      currentState?.enabled
-      && currentState?.permission === 'granted'
+      currentState?.permission === 'granted'
       && (!currentState?.pushSubscribed || currentState?.pendingResubscribe)
     );
     if (!isChatRoute) {
@@ -257,7 +261,6 @@ const AppPushBootstrap = () => {
 
     const retryTimer = window.setInterval(() => {
       const currentState = getChatNotificationState();
-      if (!currentState?.enabled) return;
       if (currentState?.permission !== 'granted') return;
       if (currentState?.pushSubscribed && !currentState?.pendingResubscribe) return;
       runPushSync(Boolean(currentState?.pendingResubscribe));
@@ -267,6 +270,20 @@ const AppPushBootstrap = () => {
       window.clearInterval(retryTimer);
     };
   }, [hasAppPushPermission, runPushSync, user]);
+
+  useEffect(() => {
+    const handleNotificationSettingsChange = () => {
+      if (document.visibilityState === 'hidden') return;
+      const currentState = getChatNotificationState();
+      if (currentState?.permission !== 'granted') return;
+      runPushSync(false);
+    };
+
+    window.addEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, handleNotificationSettingsChange);
+    return () => {
+      window.removeEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, handleNotificationSettingsChange);
+    };
+  }, [runPushSync]);
 
   useEffect(() => {
     const handleSyncRequest = () => {
@@ -493,8 +510,16 @@ function App() {
                   element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
                 />
                 <Route
+                  path="/company-structure"
+                  element={<PermissionRoute permission="company_structure.read"><CompanyStructure /></PermissionRoute>}
+                />
+                <Route
                   path="/warehouse-1c"
                   element={<PermissionRoute permission="warehouse_1c.read"><Warehouse1C /></PermissionRoute>}
+                />
+                <Route
+                  path="/docflow"
+                  element={<PermissionRoute permission="docflow.read"><Docflow /></PermissionRoute>}
                 />
                 <Route
                   path="/passwords"

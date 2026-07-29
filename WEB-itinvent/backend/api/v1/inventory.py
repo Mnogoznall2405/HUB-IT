@@ -89,6 +89,16 @@ INVENTORY_NETWORK_SCOPE_RULES = _parse_inventory_network_scope_map(
 )
 
 
+def _query_bool(value: Any, default: bool = False) -> bool:
+    """Resolve FastAPI Query() placeholders when endpoint functions are called directly in tests."""
+    if isinstance(value, bool):
+        return value
+    default_value = getattr(value, "default", default)
+    if isinstance(default_value, bool):
+        return default_value
+    return bool(default)
+
+
 def _inventory_database_url() -> Optional[str]:
     if not is_app_database_configured():
         return None
@@ -103,6 +113,8 @@ def _get_inventory_app_store() -> Optional[AppInventoryStore]:
     if not database_url:
         return None
     return AppInventoryStore(database_url=database_url)
+
+
 def _inventory_record_key(record: Dict[str, Any]) -> str:
     mac_address = _normalize_text(record.get("mac_address"))
     if mac_address:
@@ -110,11 +122,20 @@ def _inventory_record_key(record: Dict[str, Any]) -> str:
     return _normalize_text(record.get("hostname")).lower()
 
 
-def _load_inventory_snapshot(host_keys: Optional[set[str]] = None) -> Dict[str, Dict[str, Any]]:
+def _load_inventory_snapshot(
+    host_keys: Optional[set[str]] = None,
+    *,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+) -> Dict[str, Dict[str, Any]]:
     app_store = _get_inventory_app_store()
     if app_store is not None:
         snapshot: Dict[str, Dict[str, Any]] = {}
-        for row in app_store.list_hosts(host_keys=host_keys):
+        for row in app_store.list_hosts(
+            host_keys=host_keys,
+            include_hidden=include_hidden or hidden_only,
+            hidden_only=hidden_only,
+        ):
             if isinstance(row, dict):
                 snapshot[_inventory_record_key(row)] = row
         return snapshot
@@ -124,16 +145,31 @@ def _load_inventory_snapshot(host_keys: Optional[set[str]] = None) -> Dict[str, 
     if not isinstance(payload, dict):
         return {}
     if host_keys is None:
-        return payload
-    normalized_keys = {_normalize_mac(item) or _normalize_text(item).lower() for item in host_keys if _normalize_text(item)}
-    if not normalized_keys:
-        return {}
-    return {
-        key: value
-        for key, value in payload.items()
-        if isinstance(value, dict)
-        and ((_normalize_mac(value.get("mac_address")) in normalized_keys) or (_normalize_text(value.get("hostname")).lower() in normalized_keys))
-    }
+        filtered = payload
+    else:
+        normalized_keys = {_normalize_mac(item) or _normalize_text(item).lower() for item in host_keys if _normalize_text(item)}
+        if not normalized_keys:
+            return {}
+        filtered = {
+            key: value
+            for key, value in payload.items()
+            if isinstance(value, dict)
+            and ((_normalize_mac(value.get("mac_address")) in normalized_keys) or (_normalize_text(value.get("hostname")).lower() in normalized_keys))
+        }
+    # JSON fallback has no hidden_* columns; include_hidden/hidden_only only apply to app-db.
+    if hidden_only:
+        return {
+            key: value
+            for key, value in filtered.items()
+            if isinstance(value, dict) and value.get("hidden_at") not in (None, "", 0)
+        }
+    if not include_hidden:
+        return {
+            key: value
+            for key, value in filtered.items()
+            if not (isinstance(value, dict) and value.get("hidden_at") not in (None, "", 0))
+        }
+    return filtered
 
 
 def _get_inventory_host(mac_address: str) -> Optional[Dict[str, Any]]:
@@ -289,6 +325,8 @@ class InventoryPayload(BaseModel):
     outlook: Optional[Dict[str, Any]] = None
     user_profile_sizes: Optional[Dict[str, Any]] = None
     agent_runtime: Optional[Dict[str, Any]] = None
+    ops_health: Optional[Dict[str, Any]] = None
+    software_inventory: Optional[Dict[str, Any]] = None
     timestamp: int
 
 
@@ -1384,21 +1422,93 @@ def _trim_computer_list_record(
     outlook_raw = record.get("outlook") if isinstance(record.get("outlook"), dict) else {}
     profile_sizes = record.get("user_profile_sizes") if isinstance(record.get("user_profile_sizes"), dict) else {}
     storage_rows = record.get("storage") if isinstance(record.get("storage"), list) else []
+    logical_disks = record.get("logical_disks") if isinstance(record.get("logical_disks"), list) else []
+    network_raw = record.get("network") if isinstance(record.get("network"), dict) else {}
     problem_storage = 0
+    slim_storage: List[Dict[str, Any]] = []
     for disk in storage_rows:
+        if not isinstance(disk, dict):
+            continue
         status_text = _normalize_text(disk.get("health_status")).lower()
         if any(token in status_text for token in ("warning", "critical", "fail", "degrad", "unhealthy")):
             problem_storage += 1
-    trimmed = dict(record)
-    trimmed.pop("recent_changes", None)
-    trimmed.pop("monitors", None)
-    trimmed["storage"] = storage_rows
-    trimmed["storage_problem_count"] = problem_storage
-    trimmed["outlook"] = {
-        "status": record.get("outlook_status"),
-        "confidence": record.get("outlook_confidence"),
-        "active_store": outlook_raw.get("active_store") if isinstance(outlook_raw.get("active_store"), dict) else None,
-        "total_outlook_size_bytes": record.get("outlook_total_size_bytes"),
+        slim_storage.append(
+            {
+                "name": disk.get("name") or disk.get("model") or disk.get("device"),
+                "health_status": disk.get("health_status"),
+                "size_gb": disk.get("size_gb"),
+                "media_type": disk.get("media_type"),
+            }
+        )
+    slim_logical: List[Dict[str, Any]] = []
+    for disk in logical_disks:
+        if not isinstance(disk, dict):
+            continue
+        slim_logical.append(
+            {
+                "mountpoint": disk.get("mountpoint") or disk.get("device"),
+                "device": disk.get("device"),
+                "fstype": disk.get("fstype"),
+                "total_gb": disk.get("total_gb") or disk.get("size_gb"),
+                "free_gb": disk.get("free_gb"),
+                "used_percent": disk.get("used_percent") or disk.get("percent"),
+                "percent": disk.get("percent") or disk.get("used_percent"),
+            }
+        )
+    network_link = record.get("network_link") if isinstance(record.get("network_link"), dict) else None
+    active_store = outlook_raw.get("active_store") if isinstance(outlook_raw.get("active_store"), dict) else None
+    trimmed = {
+        "mac_address": record.get("mac_address"),
+        "hostname": record.get("hostname"),
+        "status": record.get("status"),
+        "age_seconds": record.get("age_seconds"),
+        "last_seen_at": record.get("last_seen_at"),
+        "timestamp": record.get("timestamp"),
+        "ip_primary": record.get("ip_primary"),
+        "ip_list": record.get("ip_list") if isinstance(record.get("ip_list"), list) else [],
+        "user_login": record.get("user_login"),
+        "user_full_name": record.get("user_full_name"),
+        "current_user": record.get("current_user"),
+        "branch_name": record.get("branch_name"),
+        "location_name": record.get("location_name"),
+        "database_id": record.get("database_id"),
+        "database_name": record.get("database_name"),
+        "inventory_inv_no": record.get("inventory_inv_no"),
+        "inventory_model_name": record.get("inventory_model_name"),
+        "is_unassigned": record.get("is_unassigned"),
+        "assignment_source": record.get("assignment_source"),
+        "branch_source": record.get("branch_source"),
+        "has_hardware_changes": record.get("has_hardware_changes"),
+        "changes_count_30d": record.get("changes_count_30d"),
+        "last_change_at": record.get("last_change_at"),
+        "cpu_model": record.get("cpu_model"),
+        "cpu_load_percent": record.get("cpu_load_percent"),
+        "ram_gb": record.get("ram_gb"),
+        "ram_used_percent": record.get("ram_used_percent"),
+        "uptime_seconds": record.get("uptime_seconds"),
+        "last_reboot_at": record.get("last_reboot_at"),
+        "outlook_status": record.get("outlook_status"),
+        "outlook_confidence": record.get("outlook_confidence"),
+        "outlook_active_size_bytes": record.get("outlook_active_size_bytes"),
+        "outlook_active_path": record.get("outlook_active_path"),
+        "outlook_active_stores_count": record.get("outlook_active_stores_count"),
+        "outlook_total_size_bytes": record.get("outlook_total_size_bytes"),
+        "outlook_archives_count": record.get("outlook_archives_count"),
+        "storage_problem_count": problem_storage,
+        "storage": slim_storage,
+        "logical_disks": slim_logical,
+        "network_link": network_link,
+        "network": {"active_ipv4": network_raw.get("active_ipv4")},
+        "outlook": {
+            "status": record.get("outlook_status"),
+            "confidence": record.get("outlook_confidence"),
+            "active_store": active_store,
+            "total_outlook_size_bytes": record.get("outlook_total_size_bytes"),
+        },
+        "is_hidden": bool(record.get("is_hidden") or record.get("hidden_at")),
+        "hidden_at": record.get("hidden_at"),
+        "hidden_by": record.get("hidden_by"),
+        "hidden_reason": record.get("hidden_reason"),
     }
     if include_profile_rows:
         trimmed["user_profile_sizes"] = profile_sizes
@@ -1410,6 +1520,37 @@ def _trim_computer_list_record(
             "partial": profile_sizes.get("partial") or record.get("user_profile_sizes_partial"),
         }
     return trimmed
+
+
+def _is_rfc1918_172(ip_text: str) -> bool:
+    text = _normalize_text(ip_text)
+    if not text or ":" in text:
+        return False
+    parts = text.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(part) for part in parts]
+    except Exception:
+        return False
+    if any(octet < 0 or octet > 255 for octet in octets):
+        return False
+    # 172.16.0.0/12
+    return octets[0] == 172 and 16 <= octets[1] <= 31
+
+
+def _is_vm_only_172_host(record: Dict[str, Any]) -> bool:
+    """True when host has IPv4 and every address is in 172.16.0.0/12 (typical Hyper-V guest)."""
+    ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+    candidates = [_normalize_text(item) for item in ip_list if _normalize_text(item)]
+    if not candidates:
+        primary = _normalize_text(record.get("ip_primary"))
+        if primary:
+            candidates = [primary]
+    ipv4 = [item for item in candidates if item and ":" not in item and item != "127.0.0.1"]
+    if not ipv4:
+        return False
+    return all(_is_rfc1918_172(item) for item in ipv4)
 
 
 def _heavy_enrich_computer_records(
@@ -1518,6 +1659,9 @@ def _collect_scoped_computer_records(
     sort_by: str = "hostname",
     sort_dir: str = "asc",
     changed_only: bool = False,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+    hide_vm_172: bool = False,
 ) -> List[Dict[str, Any]]:
     fields = _parse_computer_search_fields(search_fields)
     app_store = _get_inventory_app_store()
@@ -1536,7 +1680,11 @@ def _collect_scoped_computer_records(
     if scoped_keys is not None and len(scoped_keys) == 0:
         return []
 
-    current_data = _load_inventory_snapshot(host_keys=scoped_keys)
+    current_data = _load_inventory_snapshot(
+        host_keys=scoped_keys,
+        include_hidden=include_hidden or hidden_only,
+        hidden_only=hidden_only,
+    )
     if not isinstance(current_data, dict):
         current_data = {}
 
@@ -1698,6 +1846,9 @@ def _collect_scoped_computer_records(
     if changed_only:
         records = [item for item in records if bool(item.get("has_hardware_changes"))]
 
+    if hide_vm_172:
+        records = [item for item in records if not _is_vm_only_172_host(item)]
+
     if _normalize_text(q) and "network" not in fields:
         records = _apply_search_filter(records, q, fields)
 
@@ -1828,6 +1979,9 @@ def _build_computers_search_payload(
     sort_by: str = "hostname",
     sort_dir: str = "asc",
     changed_only: bool = False,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+    hide_vm_172: bool = False,
     limit: Optional[int] = None,
     offset: int = 0,
     include_summary: bool = False,
@@ -1845,6 +1999,9 @@ def _build_computers_search_payload(
         sort_by=sort_by,
         sort_dir=sort_dir,
         changed_only=changed_only,
+        include_hidden=include_hidden,
+        hidden_only=hidden_only,
+        hide_vm_172=hide_vm_172,
     )
 
     needle = _normalize_text(q).lower()
@@ -2006,7 +2163,7 @@ def _build_computer_detail_payload(
     app_store = _get_inventory_app_store()
     database_name_map = _get_database_name_map()
 
-    snapshot = _load_inventory_snapshot(host_keys={normalized_mac})
+    snapshot = _load_inventory_snapshot(host_keys={normalized_mac}, include_hidden=True)
     raw = None
     for item in snapshot.values():
         if isinstance(item, dict):
@@ -2186,8 +2343,15 @@ def get_computers_summary(
     q: Optional[str] = Query(None),
     search_fields: str = Query("", min_length=0),
     changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
 ):
     """Return aggregate counts for computers matching the current filters."""
+    include_hidden = _query_bool(include_hidden, False)
+    hidden_only = _query_bool(hidden_only, False)
+    hide_vm_172 = _query_bool(hide_vm_172, False)
+    changed_only = _query_bool(changed_only, False)
     records = _collect_scoped_computer_records(
         current_user=current_user,
         db_id_selected=db_id_selected,
@@ -2198,6 +2362,9 @@ def get_computers_summary(
         q=q,
         search_fields=search_fields,
         changed_only=changed_only,
+        include_hidden=include_hidden,
+        hidden_only=hidden_only,
+        hide_vm_172=hide_vm_172,
     )
     fields = _parse_computer_search_fields(search_fields)
     needle = _normalize_text(q).lower()
@@ -2249,6 +2416,9 @@ def search_computers(
     sort_by: str = Query("hostname"),
     sort_dir: str = Query("asc"),
     changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     include_summary: bool = Query(False),
@@ -2265,10 +2435,13 @@ def search_computers(
         search_fields=search_fields,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        changed_only=changed_only,
+        changed_only=_query_bool(changed_only, False),
+        include_hidden=_query_bool(include_hidden, False),
+        hidden_only=_query_bool(hidden_only, False),
+        hide_vm_172=_query_bool(hide_vm_172, False),
         limit=limit,
         offset=offset,
-        include_summary=include_summary,
+        include_summary=_query_bool(include_summary, False),
     )
 
 
@@ -2285,6 +2458,9 @@ def get_computers(
     sort_by: str = Query("hostname"),
     sort_dir: str = Query("asc"),
     changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
 ):
     """
     Return all collected computers from the active inventory store.
@@ -2300,7 +2476,10 @@ def get_computers(
         search_fields=search_fields,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        changed_only=changed_only,
+        changed_only=_query_bool(changed_only, False),
+        include_hidden=_query_bool(include_hidden, False),
+        hidden_only=_query_bool(hidden_only, False),
+        hide_vm_172=_query_bool(hide_vm_172, False),
         limit=None,
         offset=0,
         include_summary=False,
@@ -2322,3 +2501,60 @@ def get_computer_detail(
         db_id_selected=db_id_selected,
         scope=scope,
     )
+
+
+@router.post("/computers/{mac_address}/hide")
+def hide_computer(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    reason: Optional[str] = Query(None),
+):
+    """Soft-hide an inventory host (operator-owned; agent ingest does not clear the flag)."""
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory app database is not configured",
+        )
+    hidden_by = _normalize_text(getattr(current_user, "username", None) or getattr(current_user, "login", None))
+    result = app_store.set_host_hidden(
+        mac_address,
+        hidden=True,
+        hidden_by=hidden_by or None,
+        hidden_reason=_normalize_text(reason) or None,
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+    return {
+        "ok": True,
+        "mac_address": result.get("mac_address") or mac_address,
+        "is_hidden": True,
+        "hidden_at": result.get("hidden_at"),
+        "hidden_by": result.get("hidden_by"),
+        "hidden_reason": result.get("hidden_reason"),
+    }
+
+
+@router.post("/computers/{mac_address}/unhide")
+def unhide_computer(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+):
+    """Restore a soft-hidden inventory host to the default list."""
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory app database is not configured",
+        )
+    result = app_store.set_host_hidden(mac_address, hidden=False)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+    return {
+        "ok": True,
+        "mac_address": result.get("mac_address") or mac_address,
+        "is_hidden": False,
+        "hidden_at": None,
+        "hidden_by": None,
+        "hidden_reason": None,
+    }

@@ -1,12 +1,12 @@
 import React, { memo } from 'react';
 import {
-  Badge,
   Box,
   Paper,
   Tab,
   Tabs,
   Typography,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   ComputerOutlined as ComputerOutlinedIcon,
   DashboardOutlined as DashboardOutlinedIcon,
@@ -23,42 +23,101 @@ const NAV_ITEMS = [
   { id: 'hosts', label: 'Компьютеры', helper: 'Устройства с рисками', icon: ComputerOutlinedIcon },
 ];
 
+function formatNavCount(count) {
+  const value = Number(count);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (value >= 100000) return `${Math.round(value / 1000)}k`;
+  if (value >= 10000) return `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+  return String(Math.trunc(value));
+}
+
 function NavigationLabel({ item, count, compact }) {
   const Icon = item.icon;
+  const countLabel = count === null || count === undefined ? null : formatNavCount(count);
   if (compact) {
     return (
-      <Badge badgeContent={count} color={item.id === 'review' ? 'warning' : 'primary'} max={999}>
-        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.7 }}>
-          <Icon fontSize="small" />
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.75,
+          minWidth: 0,
+          maxWidth: '100%',
+        }}
+      >
+        <Icon fontSize="small" sx={{ flexShrink: 0 }} />
+        <Box component="span" sx={{ fontWeight: 800, whiteSpace: 'nowrap' }}>
           {item.label}
         </Box>
-      </Badge>
+        {countLabel ? (
+          <Box
+            component="span"
+            sx={(theme) => {
+              const alert = item.id === 'review' && Number(count) > 0;
+              return {
+                flexShrink: 0,
+                minWidth: 22,
+                px: 0.6,
+                py: 0.15,
+                borderRadius: 5,
+                bgcolor: alert
+                  ? alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.18 : 0.12)
+                  : alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.12),
+                color: alert ? 'warning.main' : 'primary.main',
+                border: `1px solid ${alpha(
+                  alert ? theme.palette.warning.main : theme.palette.primary.main,
+                  theme.palette.mode === 'dark' ? 0.34 : 0.22,
+                )}`,
+                fontSize: 11,
+                fontWeight: 800,
+                lineHeight: 1.35,
+              };
+            }}
+          >
+            {countLabel}
+          </Box>
+        ) : null}
+      </Box>
     );
   }
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, width: '100%', minWidth: 0 }}>
-      <Icon fontSize="small" />
+      <Icon fontSize="small" sx={{ flexShrink: 0 }} />
       <Box sx={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
         <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.25 }}>{item.label}</Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>{item.helper}</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.helper}</Typography>
       </Box>
-      {count !== null ? (
+      {countLabel ? (
         <Box
           component="span"
-          sx={{
-            minWidth: 28,
-            px: 0.7,
-            py: 0.2,
-            borderRadius: 5,
-            bgcolor: item.id === 'review' && count > 0 ? 'warning.light' : 'action.hover',
-            color: item.id === 'review' && count > 0 ? 'warning.dark' : 'text.secondary',
-            fontSize: 12,
-            fontWeight: 800,
-            textAlign: 'center',
+          sx={(theme) => {
+            const alert = item.id === 'review' && Number(count) > 0;
+            return {
+              minWidth: 28,
+              maxWidth: 64,
+              px: 0.7,
+              py: 0.2,
+              borderRadius: 5,
+              // warning.light + warning.dark in dark theme is near-identical yellow — unreadable.
+              bgcolor: alert
+                ? alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.18 : 0.12)
+                : 'action.hover',
+              color: alert ? 'warning.main' : 'text.secondary',
+              border: alert
+                ? `1px solid ${alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.34 : 0.22)}`
+                : '1px solid transparent',
+              fontSize: 12,
+              fontWeight: 800,
+              textAlign: 'center',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              flexShrink: 0,
+            };
           }}
         >
-          {count}
+          {countLabel}
         </Box>
       ) : null}
     </Box>
@@ -73,10 +132,13 @@ function ScanCenterNavigation({ active, counts, compact, onChange }) {
       variant="outlined"
       sx={{
         width: compact ? '100%' : 236,
+        maxWidth: '100%',
         flexShrink: 0,
-        alignSelf: 'flex-start',
+        alignSelf: compact ? 'stretch' : 'flex-start',
+        // Sticky only in desktop side-by-side mode. In column layouts sticky overlaps content.
         position: compact ? 'static' : 'sticky',
         top: compact ? undefined : 12,
+        zIndex: compact ? 'auto' : 2,
         overflow: 'hidden',
         borderRadius: 2,
       }}
@@ -94,16 +156,18 @@ function ScanCenterNavigation({ active, counts, compact, onChange }) {
         scrollButtons={compact ? 'auto' : false}
         allowScrollButtonsMobile
         sx={{
-          minHeight: compact ? 52 : undefined,
+          minHeight: compact ? 48 : undefined,
           borderTop: compact ? 0 : '1px solid',
           borderColor: 'divider',
+          '& .MuiTabs-flexContainer': compact ? { gap: 0.5 } : undefined,
           '& .MuiTabs-indicator': compact ? undefined : { left: 0, right: 'auto', width: 3 },
           '& .MuiTab-root': {
-            minHeight: compact ? 52 : 62,
-            minWidth: compact ? 132 : '100%',
-            px: compact ? 1.5 : 1.75,
-            py: 1,
-            alignItems: 'stretch',
+            minHeight: compact ? 48 : 62,
+            minWidth: compact ? 'auto' : '100%',
+            maxWidth: 'none',
+            px: compact ? 1.25 : 1.75,
+            py: compact ? 0.75 : 1,
+            alignItems: 'center',
             textTransform: 'none',
           },
         }}

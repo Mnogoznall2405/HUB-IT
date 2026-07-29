@@ -34,6 +34,7 @@ def main() -> int:
         sqlite_busy_timeout_ms=config.sqlite_busy_timeout_ms,
         sqlite_busy_retry_attempts=config.sqlite_busy_retry_attempts,
         sqlite_busy_retry_base_ms=config.sqlite_busy_retry_base_ms,
+        database_url=config.database_url,
     )
     result = store.cleanup_retention(
         retention_days=config.retention_days,

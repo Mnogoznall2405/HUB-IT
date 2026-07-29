@@ -254,10 +254,25 @@ export default function useMailListDataController({
           if (freshResult?.data) {
             applyBootstrapPayload(freshResult.data || {}, { applyList: shouldApplyBootstrapList });
           }
-        }).catch(() => {});
+        }).catch(async (requestError) => {
+          if (await handleMailCredentialsRequired(requestError, 'Не удалось загрузить почтовый экран.')) {
+            setListData((prev) => ({ ...prev, items: [] }));
+          }
+        });
       }
       return result?.data || null;
     } catch (requestError) {
+      if (await handleMailCredentialsRequired(requestError, 'Не удалось загрузить почтовый экран.')) {
+        if (!cachedBootstrap?.data && !hasRecentHydration) {
+          setMailboxInfo(null);
+          setFolderSummary({});
+          setFolderTree([]);
+          setListData(createEmptyListData());
+        } else {
+          setListData((prev) => ({ ...prev, items: [] }));
+        }
+        return null;
+      }
       if (!cachedBootstrap?.data && !hasRecentHydration) {
         setMailboxInfo(null);
         setFolderSummary({});
@@ -278,6 +293,7 @@ export default function useMailListDataController({
     currentContextUsesBootstrapList,
     currentListContextKey,
     getMailErrorDetail,
+    handleMailCredentialsRequired,
     mailAPI,
     mailBootstrapLimit,
     mailCacheScope,

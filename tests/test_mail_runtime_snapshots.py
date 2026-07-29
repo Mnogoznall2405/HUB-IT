@@ -163,6 +163,26 @@ def test_mail_notification_cycle_persists_count_and_feed_together(tmp_path):
     assert notification_feed["payload"] == feed
 
 
+def test_mail_notification_delivery_checkpoint_overrides_legacy_feed(tmp_path):
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-delivery-checkpoint.db').as_posix()}"
+    initialize_app_schema(database_url)
+    service = MailRuntimeSnapshotService(database_url)
+    legacy_feed = {"total_unread": 1, "items": [{"id": "msg-legacy"}]}
+    delivered_feed = {"total_unread": 2, "items": [{"id": "msg-delivered"}]}
+
+    service.write_success(
+        user_id=54,
+        mailbox_id=None,
+        snapshot_type="notification_feed",
+        payload=legacy_feed,
+    )
+    assert service.read_notification_feeds(user_ids=[54]) == {54: legacy_feed}
+
+    service.persist_notification_checkpoints(feeds_by_user_id={54: delivered_feed})
+
+    assert service.read_notification_feeds(user_ids=[54]) == {54: delivered_feed}
+
+
 def test_mail_preferences_write_through_updates_bootstrap_without_refreshing_its_age(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-preferences-snapshot.db').as_posix()}"
     initialize_app_schema(database_url)

@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from typing import Any, Optional, Union
 
@@ -220,8 +221,8 @@ def _normalize_user_content(user_prompt: str = "", user_content: UserContent | N
 class OpenRouterClient:
     def __init__(self, *, request_timeout_sec: float = 45.0) -> None:
         self.request_timeout_sec = float(request_timeout_sec)
-        self._cached_client: Any = None
-        self._cached_client_key: tuple[str, str, float] | None = None
+        # Thread-local cache: shared OpenAI/httpx clients are not safe across threads.
+        self._thread_local = threading.local()
 
     def is_configured(self) -> bool:
         return bool(self._resolve_api_key())
@@ -256,15 +257,17 @@ class OpenRouterClient:
         base_url = self._resolve_base_url()
         resolved_timeout = self._resolve_timeout(timeout)
         cache_key = (api_key, base_url, resolved_timeout)
-        if self._cached_client is not None and self._cached_client_key == cache_key:
-            return self._cached_client
+        cached_client = getattr(self._thread_local, "client", None)
+        cached_key = getattr(self._thread_local, "client_key", None)
+        if cached_client is not None and cached_key == cache_key:
+            return cached_client
         client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=resolved_timeout,
         )
-        self._cached_client = client
-        self._cached_client_key = cache_key
+        self._thread_local.client = client
+        self._thread_local.client_key = cache_key
         return client
 
     def _with_transient_retry(self, *, model: str, call):

@@ -53,7 +53,9 @@ export default function TasksListLayout() {
             ui={ui.ui}
             mobileTasksCopy={filters.mobileTasksCopy}
             modeLabel={filters.mobileModeLabel}
-            itemCount={list.visibleTaskItems.length}
+            itemCount={filters.pageMode === 'analytics'
+              ? Number(analytics.analyticsPayload?.summary?.total || 0)
+              : list.visibleTaskItems.length}
             subtitle={filters.mobileHeaderSubtitle}
             isTaskDataMode={list.isTaskDataMode}
             searchOpen={filters.mobileSearchOpen}

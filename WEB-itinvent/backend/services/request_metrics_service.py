@@ -344,6 +344,7 @@ async def request_metrics_middleware(
     started_at = time.perf_counter()
     status_code = 500
     correlation_id = str(request.headers.get("X-Correlation-ID") or request.headers.get("X-Request-ID") or uuid.uuid4())
+    request.state.correlation_id = correlation_id
     borrowed_tokens = None
     try:
         response = await call_next(request)

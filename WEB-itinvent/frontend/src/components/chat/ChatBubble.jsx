@@ -242,10 +242,16 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
   const isOfficeMail = actionType.startsWith('office.mail.');
   const isReportFormatChoice = actionType === 'ai.report.format_choice';
+  const isDocConvertFormatChoice = actionType === 'ai.doc.convert.format_choice';
   const report = preview.report && typeof preview.report === 'object' ? preview.report : null;
+  const docConvert = preview.doc_convert && typeof preview.doc_convert === 'object' ? preview.doc_convert : null;
+  const formatLabels = preview.format_labels && typeof preview.format_labels === 'object' ? preview.format_labels : {};
   const reportFormats = (Array.isArray(preview.formats) ? preview.formats : ['xlsx', 'pdf', 'docx', 'csv'])
     .map((format) => String(format || '').trim().toLowerCase())
     .filter((format) => ['xlsx', 'pdf', 'docx', 'csv'].includes(format));
+  const docConvertFormats = (Array.isArray(preview.formats) ? preview.formats : ['docx', 'txt', 'md', 'pdf', 'xlsx'])
+    .map((format) => String(format || '').trim().toLowerCase())
+    .filter((format) => ['docx', 'txt', 'md', 'pdf', 'xlsx'].includes(format));
   const statusLabel = {
     pending: 'Ожидает подтверждения',
     confirmed: 'Выполнено',
@@ -324,6 +330,11 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             {`Tables: ${Number(report.table_count || 0)} · Rows: ${Number(report.row_count || 0)}${report.source ? ` · Source: ${report.source}` : ''}`}
           </Typography>
         ) : null}
+        {docConvert ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            {docConvert.summary || `Страниц: ${Number(docConvert.page_count || 0)} · Таблиц: ${Number(docConvert.table_count || 0)}`}
+          </Typography>
+        ) : null}
         {items.length > 0 ? (
           <Stack spacing={0.35}>
             {items.slice(0, 4).map((row, index) => (
@@ -398,17 +409,17 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
         ) : null}
         {isPending ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
-            {isReportFormatChoice ? (
-              reportFormats.map((format) => (
+            {isReportFormatChoice || isDocConvertFormatChoice ? (
+              (isDocConvertFormatChoice ? docConvertFormats : reportFormats).map((format) => (
                 <Button
                   key={format}
                   size="small"
                   variant="contained"
                   onClick={() => runReportFormat(format)}
                   disabled={Boolean(busy)}
-                  sx={{ borderRadius: 1.2, textTransform: 'uppercase', fontWeight: 800, minWidth: 68 }}
+                  sx={{ borderRadius: 1.2, textTransform: isDocConvertFormatChoice ? 'none' : 'uppercase', fontWeight: 800, minWidth: 68 }}
                 >
-                  {busy === `format:${format}` ? '...' : format}
+                  {busy === `format:${format}` ? '...' : (formatLabels[format] || format)}
                 </Button>
               ))
             ) : (

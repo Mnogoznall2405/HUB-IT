@@ -59,6 +59,7 @@ describe('databaseListModel', () => {
       INV_NO: 'INV-1',
       SERIAL_NO: 'SER-1',
       HW_SERIAL_NO: 'HW-1',
+      PART_NO: 'PN-400-ABC',
       MODEL_NAME: 'LaserJet 400',
       TYPE_NAME: 'Printer',
       OWNER_DISPLAY_NAME: 'Ivan Petrov',
@@ -92,6 +93,7 @@ describe('databaseListModel', () => {
     expect(index[0].searchable).toContain('inv-1');
     expect(index[0].searchable).toContain('ser-1');
     expect(index[0].searchable).toContain('hw-1');
+    expect(index[0].searchable).toContain('pn-400-abc');
     expect(index[0].searchable).toContain('laserjet 400');
     expect(index[0].searchable).toContain('printer');
     expect(index[0].searchable).toContain('ivan petrov');

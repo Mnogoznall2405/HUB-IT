@@ -652,12 +652,15 @@ class ScanAgentReadStore:
         normalized_sort_dir = _normalize_sort_dir(sort_dir)
         normalized_q = str(q or "").strip()
         normalized_branch = str(branch or "").strip()
-        if (
-            self._resolve_agent_sql_context_enabled()
-            or str(task_status or "").strip()
-            or any(ord(ch) > 127 for ch in normalized_q)
-            or any(ord(ch) > 127 for ch in normalized_branch)
-        ):
+        # Prefer SQL for hostname/agent_id search. Fall back to Python when we need
+        # task-status filtering, non-ASCII needles, or branch filter that depends on
+        # external SQL-context branch resolution.
+        needs_python = bool(str(task_status or "").strip())
+        needs_python = needs_python or any(ord(ch) > 127 for ch in normalized_q)
+        needs_python = needs_python or any(ord(ch) > 127 for ch in normalized_branch)
+        if normalized_branch and self._resolve_agent_sql_context_enabled():
+            needs_python = True
+        if needs_python:
             return self._list_agents_table_python(
                 q=q,
                 branch=branch,
@@ -730,19 +733,35 @@ class ScanAgentReadStore:
             where_parts.append("LOWER(base.resolved_branch) LIKE ?")
             params.append(f"%{branch_needle}%")
         if needle:
-            where_parts.append(
-                """
-                (
-                    base.hostname_sort LIKE ?
-                    OR base.agent_id_sort LIKE ?
-                    OR base.branch_sort LIKE ?
-                    OR base.ip_address_sort LIKE ?
-                    OR base.version_sort LIKE ?
+            from .database import looks_like_hostname_query
+
+            if looks_like_hostname_query(needle):
+                where_parts.append(
+                    """
+                    (
+                        base.hostname_sort = ?
+                        OR base.hostname_sort LIKE ?
+                        OR base.agent_id_sort = ?
+                        OR base.agent_id_sort LIKE ?
+                    )
+                    """
                 )
-                """
-            )
-            like_value = f"%{needle}%"
-            params.extend([like_value, like_value, like_value, like_value, like_value])
+                prefix = f"{needle}%"
+                params.extend([needle, prefix, needle, prefix])
+            else:
+                where_parts.append(
+                    """
+                    (
+                        base.hostname_sort LIKE ?
+                        OR base.agent_id_sort LIKE ?
+                        OR base.branch_sort LIKE ?
+                        OR base.ip_address_sort LIKE ?
+                        OR base.version_sort LIKE ?
+                    )
+                    """
+                )
+                like_value = f"%{needle}%"
+                params.extend([like_value, like_value, like_value, like_value, like_value])
         if online_filter is not None:
             where_parts.append("base.is_online = ?")
             params.append(1 if online_filter else 0)

@@ -7,7 +7,6 @@ export default function useTasksAnalyticsPanel({
   activeTaskObjects,
   activeTaskProjects,
   getAssigneeById,
-  setError,
   isAnalyticsMobile,
   mobileBoardFiltersOpen,
   setMobileBoardFiltersOpen,
@@ -27,6 +26,8 @@ export default function useTasksAnalyticsPanel({
     exporting: analyticsExporting,
     setExporting: setAnalyticsExporting,
     payload: analyticsPayload,
+    error: analyticsError,
+    hasCurrentPayload: analyticsHasCurrentPayload,
     filters: analyticsFilters,
     setFilters: setAnalyticsFilters,
     requestParams: analyticsRequestParams,
@@ -53,7 +54,6 @@ export default function useTasksAnalyticsPanel({
     activeTaskObjects,
     activeTaskProjects,
     getAssigneeById,
-    onError: (message) => setError(message),
   });
 
   const analyticsTableColumns = useMemo(() => buildAnalyticsTableColumns(), []);
@@ -134,6 +134,8 @@ export default function useTasksAnalyticsPanel({
     analyticsExporting,
     setAnalyticsExporting,
     analyticsPayload,
+    analyticsError,
+    analyticsHasCurrentPayload,
     analyticsFilters,
     setAnalyticsFilters,
     analyticsRequestParams,

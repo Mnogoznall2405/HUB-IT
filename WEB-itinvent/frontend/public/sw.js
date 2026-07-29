@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-06-20T15:15:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-20-15-15';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-20-15-15';
+const SW_VERSION = '2026-07-23T12:35:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-07-23-12-35';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-07-23-12-35';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -43,60 +43,24 @@ function extractBuildAssetUrls(html) {
 }
 
 const CHAT_PUSH_DEDUPE_MS = 60_000;
-const CHAT_NOTIFICATION_VISIBLE_MS = 6_000;
 const recentChatPushMessageIds = new Map();
 const inFlightChatPushMessageIds = new Set();
 const chatBackgroundNotificationQueue = [];
 let chatBackgroundNotificationDrainPromise = null;
 
-function sleepMs(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, Math.max(0, Number(ms) || 0));
-  });
-}
-
-async function closeNotificationsByTag(tag) {
-  const normalizedTag = String(tag || '').trim();
-  if (!normalizedTag || typeof self.registration?.getNotifications !== 'function') return;
-  try {
-    const notifications = await self.registration.getNotifications({ tag: normalizedTag });
-    notifications.forEach((item) => {
-      try {
-        item.close();
-      } catch {
-        // Ignore close failures.
-      }
-    });
-  } catch {
-    // Ignore lookup failures.
-  }
-}
-
-async function closeVisibleChatNotifications() {
-  if (typeof self.registration?.getNotifications !== 'function') return;
-  try {
-    const notifications = await self.registration.getNotifications();
-    notifications.forEach((item) => {
-      const channel = String(item?.data?.channel || '').trim();
-      const messageId = String(item?.data?.message_id || '').trim();
-      if (channel === 'chat' || messageId) {
-        try {
-          item.close();
-        } catch {
-          // Ignore close failures.
-        }
-      }
-    });
-  } catch {
-    // Ignore lookup failures.
-  }
-}
-
 function enqueueChatBackgroundNotification(title, options, diagnosticContext = {}) {
+  let resolveDelivery;
+  let rejectDelivery;
+  const deliveryPromise = new Promise((resolve, reject) => {
+    resolveDelivery = resolve;
+    rejectDelivery = reject;
+  });
   chatBackgroundNotificationQueue.push({
     title,
     options,
     diagnosticContext,
+    resolveDelivery,
+    rejectDelivery,
   });
   if (!chatBackgroundNotificationDrainPromise) {
     chatBackgroundNotificationDrainPromise = drainChatBackgroundNotificationQueue()
@@ -104,41 +68,68 @@ function enqueueChatBackgroundNotification(title, options, diagnosticContext = {
         chatBackgroundNotificationDrainPromise = null;
       });
   }
-  return chatBackgroundNotificationDrainPromise;
+  return deliveryPromise;
+}
+
+function buildMinimalNotificationOptions(options = {}) {
+  return {
+    body: String(options?.body || '').trim(),
+    tag: String(options?.tag || '').trim() || 'system',
+    icon: String(options?.icon || '/pwa-192.png').trim() || '/pwa-192.png',
+    data: options?.data && typeof options.data === 'object' ? options.data : {},
+  };
+}
+
+async function showNotificationWithFallback(title, options) {
+  try {
+    await self.registration.showNotification(title, options);
+    return { fallback_used: false, initial_error: '' };
+  } catch (initialError) {
+    await self.registration.showNotification(title, buildMinimalNotificationOptions(options));
+    return {
+      fallback_used: true,
+      initial_error: String(initialError || 'advanced_notification_options_failed'),
+    };
+  }
 }
 
 async function drainChatBackgroundNotificationQueue() {
   while (chatBackgroundNotificationQueue.length > 0) {
     const nextItem = chatBackgroundNotificationQueue.shift();
     if (!nextItem) continue;
-    const { title, options, diagnosticContext } = nextItem;
+    const {
+      title,
+      options,
+      diagnosticContext,
+      resolveDelivery,
+      rejectDelivery,
+    } = nextItem;
     const tag = String(options?.tag || '').trim();
     try {
-      await closeVisibleChatNotifications();
-      await self.registration.showNotification(title, options);
+      const displayResult = await showNotificationWithFallback(title, options);
       await reportPushDiagnostic('sw_show_notification_success', {
         channel: 'chat',
         tag,
         route: String(options?.data?.route || diagnosticContext?.route || '/').trim() || '/',
-        delivery_mode: 'background_serial',
-        visible_ms: CHAT_NOTIFICATION_VISIBLE_MS,
+        delivery_mode: 'background',
         queue_remaining: chatBackgroundNotificationQueue.length,
         require_interaction: options?.requireInteraction === true,
         vibrate_count: Array.isArray(options?.vibrate) ? options.vibrate.length : 0,
         actions_count: Array.isArray(options?.actions) ? options.actions.length : 0,
+        ...displayResult,
         ...diagnosticContext,
       });
-      await sleepMs(CHAT_NOTIFICATION_VISIBLE_MS);
-      await closeNotificationsByTag(tag);
+      resolveDelivery?.(displayResult);
     } catch (error) {
       await reportPushDiagnostic('sw_show_notification_failed', {
         channel: 'chat',
         tag,
         route: String(options?.data?.route || diagnosticContext?.route || '/').trim() || '/',
         error: String(error || 'show_notification_failed'),
-        delivery_mode: 'background_serial',
+        delivery_mode: 'background',
         ...diagnosticContext,
       });
+      rejectDelivery?.(error);
     }
   }
 }
@@ -429,7 +420,12 @@ function buildOfflineShellResponse() {
 }
 
 async function notifyClients(type, detail = {}) {
-  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  let clients = [];
+  try {
+    clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  } catch {
+    return;
+  }
   await Promise.all(clients.map(async (client) => {
     try {
       client.postMessage({ type, detail });
@@ -562,7 +558,12 @@ async function handleChatMediaVariantRequest(request, event) {
 }
 
 async function collectClientVisibilitySnapshot() {
-  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  let clients = [];
+  try {
+    clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  } catch {
+    clients = [];
+  }
   const windowClients = clients.map((client) => ({
     url: String(client?.url || '').trim(),
     visibility_state: String(client?.visibilityState || 'unknown').trim() || 'unknown',
@@ -597,6 +598,7 @@ function hasVisibleClientViewingConversation(clientSnapshot, conversationId) {
   if (!normalizedConversationId) return false;
   return (clientSnapshot?.clients || []).some((client) => (
     client?.visibility_state === 'visible'
+    && client?.focused === true
     && getConversationIdFromClientUrl(client?.url) === normalizedConversationId
   ));
 }
@@ -687,12 +689,18 @@ async function clearPendingPushSync() {
 }
 
 async function reportPushDiagnostic(stage, detail = {}) {
-  await notifyClients('itinvent:push-diagnostic', {
-    stage: String(stage || '').trim() || 'unknown',
-    detail: detail && typeof detail === 'object' ? detail : {},
-    sw_version: SW_VERSION,
-    ts: new Date().toISOString(),
-  });
+  const normalizedStage = String(stage || '').trim() || 'unknown';
+  const normalizedDetail = detail && typeof detail === 'object' ? detail : {};
+  try {
+    await notifyClients('itinvent:push-diagnostic', {
+      stage: normalizedStage,
+      detail: normalizedDetail,
+      sw_version: SW_VERSION,
+      ts: new Date().toISOString(),
+    });
+  } catch {
+    // Diagnostics are best-effort and must never block notification delivery.
+  }
   try {
     await fetch('/api/v1/settings/notifications/push-debug', {
       method: 'POST',
@@ -703,8 +711,11 @@ async function reportPushDiagnostic(stage, detail = {}) {
       },
       cache: 'no-store',
       body: JSON.stringify({
-        stage: String(stage || '').trim() || 'unknown',
-        detail: detail && typeof detail === 'object' ? detail : {},
+        stage: normalizedStage,
+        detail: {
+          ...normalizedDetail,
+          sw_version: SW_VERSION,
+        },
       }),
     });
   } catch {
@@ -726,20 +737,25 @@ async function flushPendingPushSync() {
   }
 
   try {
-    await Promise.allSettled([
-      oldEndpoint ? deletePushSubscription(oldEndpoint) : Promise.resolve(),
-      upsertPushSubscription({
+    const restoredSubscription = {
+      endpoint: String(subscriptionPayload.endpoint || '').trim(),
+      toJSON: () => ({
         endpoint: String(subscriptionPayload.endpoint || '').trim(),
-        toJSON: () => ({
-          endpoint: String(subscriptionPayload.endpoint || '').trim(),
-          expirationTime: subscriptionPayload.expiration_time ?? null,
-          keys: {
-            p256dh: String(subscriptionPayload.p256dh_key || '').trim(),
-            auth: String(subscriptionPayload.auth_key || '').trim(),
-          },
-        }),
+        expirationTime: subscriptionPayload.expiration_time ?? null,
+        keys: {
+          p256dh: String(subscriptionPayload.p256dh_key || '').trim(),
+          auth: String(subscriptionPayload.auth_key || '').trim(),
+        },
       }),
-    ]);
+    };
+    await upsertPushSubscription(restoredSubscription);
+    if (oldEndpoint && oldEndpoint !== restoredSubscription.endpoint) {
+      try {
+        await deletePushSubscription(oldEndpoint);
+      } catch {
+        // The replacement is registered; stale endpoint cleanup is best-effort.
+      }
+    }
     await clearPendingPushSync();
     await reportPushDiagnostic('sw_pending_sync_flushed', {
       old_endpoint_present: Boolean(oldEndpoint),
@@ -780,10 +796,14 @@ async function renewPushSubscription(event) {
 
   const serializedSubscription = serializeSubscription(subscription);
   try {
-    await Promise.allSettled([
-      oldEndpoint ? deletePushSubscription(oldEndpoint) : Promise.resolve(),
-      upsertPushSubscription(subscription),
-    ]);
+    await upsertPushSubscription(subscription);
+    if (oldEndpoint && oldEndpoint !== String(subscription?.endpoint || '').trim()) {
+      try {
+        await deletePushSubscription(oldEndpoint);
+      } catch {
+        // The new endpoint is already safe; stale cleanup can retry server-side.
+      }
+    }
     await clearPendingPushSync();
     await notifyClients('itinvent:push-subscription-updated', {
       endpoint: String(subscription?.endpoint || '').trim(),
@@ -897,12 +917,13 @@ self.addEventListener('push', (event) => {
       pushChannel === 'chat'
       && hasVisibleClientViewingConversation(clientSnapshot, pushConversationId)
     );
-    const shouldForwardToVisibleClientOnly = (
-      Boolean(clientSnapshot.has_focused_visible_client)
-      || isVisibleConversationOpen
-    );
+    // A focused PWA window must not suppress phone notifications for mail,
+    // tasks, or a different chat. WindowClient focus can also remain stale
+    // around Android task switching. Only the exact chat being actively read
+    // is safe to keep as an in-app-only notification.
+    const shouldForwardToVisibleClientOnly = isVisibleConversationOpen;
 
-    await reportPushDiagnostic('sw_push_received', {
+    const receivedDiagnosticPromise = reportPushDiagnostic('sw_push_received', {
       channel: String(payload?.channel || 'system').trim() || 'system',
       tag,
       route,
@@ -919,9 +940,9 @@ self.addEventListener('push', (event) => {
       clients: clientSnapshot.clients,
     });
 
-    if (pushChannel !== 'chat') {
-      await applyPushAppBadge(payload);
-    }
+    const badgePromise = pushChannel !== 'chat'
+      ? applyPushAppBadge(payload)
+      : Promise.resolve();
 
     if (shouldForwardToVisibleClientOnly) {
       await notifyClients('itinvent:push-foreground-notification', {
@@ -941,10 +962,12 @@ self.addEventListener('push', (event) => {
         visible_client_count: clientSnapshot.visible_client_count,
         focused_visible_client_count: clientSnapshot.focused_visible_client_count,
       });
+      await Promise.allSettled([receivedDiagnosticPromise, badgePromise]);
       return;
     }
 
     if (pushChannel === 'chat' && pushMessageId && await hasExistingChatNotification(pushMessageId)) {
+      await Promise.allSettled([receivedDiagnosticPromise, badgePromise]);
       await reportPushDiagnostic('sw_push_duplicate_suppressed', {
         channel: pushChannel,
         tag,
@@ -1007,10 +1030,12 @@ self.addEventListener('push', (event) => {
           focused_visible_client_count: clientSnapshot.focused_visible_client_count,
           route,
         });
+        await Promise.allSettled([receivedDiagnosticPromise, badgePromise]);
         return;
       }
 
-      await self.registration.showNotification(title, notificationOptions);
+      const displayResult = await showNotificationWithFallback(title, notificationOptions);
+      await Promise.allSettled([receivedDiagnosticPromise, badgePromise]);
       await reportPushDiagnostic('sw_show_notification_success', {
         channel: String(payload?.channel || 'system').trim() || 'system',
         tag: normalizedTag,
@@ -1022,8 +1047,10 @@ self.addEventListener('push', (event) => {
         require_interaction: payload?.require_interaction === true,
         vibrate_count: vibratePattern.length,
         actions_count: notificationActions.length,
+        ...displayResult,
       });
     } catch (error) {
+      await Promise.allSettled([receivedDiagnosticPromise, badgePromise]);
       await reportPushDiagnostic('sw_show_notification_failed', {
         channel: String(payload?.channel || 'system').trim() || 'system',
         tag,
@@ -1036,6 +1063,11 @@ self.addEventListener('push', (event) => {
       });
       throw error;
     }
+    } catch (error) {
+      if (chatPushDeliveryStarted) {
+        recentChatPushMessageIds.delete(pushMessageId);
+      }
+      throw error;
     } finally {
       if (chatPushDeliveryStarted) {
         endChatPushDelivery(pushMessageId);

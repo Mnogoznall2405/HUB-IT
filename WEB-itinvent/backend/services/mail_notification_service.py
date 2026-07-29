@@ -51,6 +51,22 @@ class MailNotificationService:
             return 90
 
     @property
+    def snapshot_ttl_sec(self) -> int:
+        """TTL for shared unread/feed snapshots written by the poller.
+
+        Must exceed poll_interval so snapshots do not flip to ``stale`` in the gap
+        between cycles (UI otherwise shows a yellow ``?`` badge).
+        """
+        raw = str(os.getenv("MAIL_NOTIFICATION_SNAPSHOT_TTL_SEC", "") or "").strip()
+        if raw:
+            try:
+                return max(self.poll_interval_sec + 30, min(900, int(raw)))
+            except Exception:
+                pass
+        interval = self.poll_interval_sec
+        return max(interval + 60, min(600, interval * 2))
+
+    @property
     def batch_size(self) -> int:
         raw = str(os.getenv("MAIL_NOTIFICATION_BATCH_SIZE", "50")).strip()
         try:
@@ -74,6 +90,13 @@ class MailNotificationService:
             return 15
 
     @property
+    def candidate_timeout_sec(self) -> int:
+        try:
+            return max(15, min(300, int(str(os.getenv("MAIL_NOTIFICATION_CANDIDATE_TIMEOUT_SEC", "60")))))
+        except Exception:
+            return 60
+
+    @property
     def background_enabled(self) -> bool:
         return str(os.getenv("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1") or "").strip().lower() in {
             "1",
@@ -87,11 +110,13 @@ class MailNotificationService:
             "background_enabled": self.background_enabled,
             "task_running": bool(self._task and not self._task.done()),
             "poll_interval_sec": self.poll_interval_sec,
+            "snapshot_ttl_sec": self.snapshot_ttl_sec,
             "batch_size": self.batch_size,
             "max_concurrency": self.max_concurrency,
             "snapshot_count": len(self._snapshots),
             "shared_snapshot": True,
             "user_timeout_sec": self.user_timeout_sec,
+            "candidate_timeout_sec": self.candidate_timeout_sec,
             "open_circuits": sum(1 for value in self._circuit_open_until.values() if value > time.monotonic()),
             "last_poll_duration_ms": round(self._last_poll_duration_ms, 1),
             "last_error_count": self._last_error_count,
@@ -102,6 +127,11 @@ class MailNotificationService:
             return
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run_loop(), name="mail-notification-poller")
+
+    async def wait(self) -> None:
+        if self._task is None:
+            raise RuntimeError("Mail notification worker has not been started")
+        await self._task
 
     async def stop(self) -> None:
         if self._stop_event is not None:
@@ -206,17 +236,37 @@ class MailNotificationService:
     def _should_emit(self, *, previous: Optional[MailNotificationSnapshot], current: MailNotificationSnapshot) -> bool:
         if previous is None:
             return False
-        if current.unread_count <= 0:
+        if not current.last_message_id:
             return False
         last_message_changed = bool(current.last_message_id and current.last_message_id != previous.last_message_id)
         received_newer = bool(current.last_received_at and current.last_received_at > previous.last_received_at)
         unread_increased = int(current.unread_count or 0) > int(previous.unread_count or 0)
-        return bool(last_message_changed or (unread_increased and received_newer))
+        if not previous.last_message_id:
+            # A legacy unread-only checkpoint has no message when the mailbox is
+            # fully read. Establish the latest-message baseline without sending
+            # old read mail, while preserving notification of a new unread item.
+            return bool(unread_increased)
+        return bool(
+            last_message_changed
+            and (
+                received_newer
+                or (
+                    unread_increased
+                    and current.last_received_at == previous.last_received_at
+                )
+            )
+        )
 
     def _list_notification_feed_sync(self, *, user_id: int, session_id: str | None) -> dict:
         token = push_request_session_id(session_id)
         try:
-            return mail_service.list_notification_feed(user_id=user_id, limit=5)
+            # Arrival detection must not depend on read state: Outlook or the
+            # HUB preview can mark a message read before the next poll.
+            return mail_service.list_notification_feed(
+                user_id=user_id,
+                limit=5,
+                unread_only=False,
+            )
         finally:
             pop_request_session_id(token)
 
@@ -224,11 +274,8 @@ class MailNotificationService:
         return app_push_service.send_notification(**kwargs)
 
     def _delivery_succeeded(self, result) -> bool:
-        if result is None:
-            return True
         sent = int(getattr(result, "sent", 0) or 0)
-        failed = int(getattr(result, "failed", 0) or 0)
-        return bool(sent > 0 or failed <= 0)
+        return sent > 0
 
     async def _fetch_candidate_feed(self, payload: dict, semaphore: asyncio.Semaphore) -> dict:
         user = payload["user"]
@@ -269,7 +316,10 @@ class MailNotificationService:
         error_count = 0
         try:
             try:
-                candidates = await asyncio.to_thread(self._iter_candidate_users)
+                candidates = await asyncio.wait_for(
+                    asyncio.to_thread(self._iter_candidate_users),
+                    timeout=self.candidate_timeout_sec,
+                )
             except Exception:
                 error_count += 1
                 raise
@@ -281,12 +331,30 @@ class MailNotificationService:
             results = await asyncio.gather(
                 *(self._fetch_candidate_feed(payload, semaphore) for payload in candidates),
             )
+            missing_snapshot_user_ids = [
+                int(result.get("user_id", 0) or 0)
+                for result in results
+                if result.get("error") is None
+                and int(result.get("user_id", 0) or 0) > 0
+                and int(result.get("user_id", 0) or 0) not in self._snapshots
+            ]
+            if missing_snapshot_user_ids:
+                persisted_feeds = await asyncio.to_thread(
+                    mail_runtime_snapshot_service.read_notification_feeds,
+                    user_ids=missing_snapshot_user_ids,
+                )
+                for user_id, persisted_feed in persisted_feeds.items():
+                    self._snapshots.setdefault(
+                        int(user_id),
+                        self._build_snapshot(feed=persisted_feed),
+                    )
             await asyncio.to_thread(
                 mail_runtime_snapshot_service.persist_notification_results,
                 results=results,
-                ttl_seconds=self.poll_interval_sec,
+                ttl_seconds=self.snapshot_ttl_sec,
             )
 
+            checkpoint_updates: dict[int, dict] = {}
             for result in results:
                 user_id = int(result.get("user_id", 0) or 0)
                 if result.get("error") is not None:
@@ -298,6 +366,7 @@ class MailNotificationService:
                 previous = self._snapshots.get(user_id)
                 if not self._should_emit(previous=previous, current=current):
                     self._snapshots[user_id] = current
+                    checkpoint_updates[user_id] = feed
                     continue
 
                 items = feed.get("items") or []
@@ -305,6 +374,7 @@ class MailNotificationService:
                 message_id = str(top_item.get("id") or "").strip()
                 if not message_id:
                     self._snapshots[user_id] = current
+                    checkpoint_updates[user_id] = feed
                     continue
                 sender = str(top_item.get("sender") or "").strip()
                 subject = str(top_item.get("subject") or "").strip() or "РќРѕРІРѕРµ РїРёСЃСЊРјРѕ"
@@ -337,10 +407,11 @@ class MailNotificationService:
                             "mailbox_label": mailbox_label or None,
                             "mailbox_email": mailbox_email or None,
                         },
-                        ttl=120,
+                        ttl=12 * 60 * 60,
                     )
                     if self._delivery_succeeded(delivery_result):
                         self._snapshots[user_id] = current
+                        checkpoint_updates[user_id] = feed
                         notified_count += 1
                     else:
                         error_count += 1
@@ -354,6 +425,11 @@ class MailNotificationService:
                 except Exception:
                     error_count += 1
                     logger.warning("Failed to send mail push for user_id=%s", user_id, exc_info=True)
+            if checkpoint_updates:
+                await asyncio.to_thread(
+                    mail_runtime_snapshot_service.persist_notification_checkpoints,
+                    feeds_by_user_id=checkpoint_updates,
+                )
         finally:
             self._last_poll_duration_ms = (time.perf_counter() - started_at) * 1000.0
             self._last_error_count = error_count

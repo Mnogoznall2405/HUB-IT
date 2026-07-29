@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -150,6 +151,11 @@ class AppInventoryStore:
             payload["last_seen_at"] = int(row.last_seen_at)
         if row.last_full_snapshot_at is not None:
             payload["last_full_snapshot_at"] = int(row.last_full_snapshot_at)
+        hidden_at = int(row.hidden_at) if getattr(row, "hidden_at", None) not in (None, "") else None
+        payload["hidden_at"] = hidden_at
+        payload["hidden_by"] = str(getattr(row, "hidden_by", None) or "").strip() or None
+        payload["hidden_reason"] = str(getattr(row, "hidden_reason", None) or "").strip() or None
+        payload["is_hidden"] = hidden_at is not None
         return payload
 
     def get_host(self, mac_address: str) -> Optional[dict[str, Any]]:
@@ -162,7 +168,13 @@ class AppInventoryStore:
                 return None
             return self._row_payload(row)
 
-    def list_hosts(self, host_keys: set[str] | list[str] | None = None) -> list[dict[str, Any]]:
+    def list_hosts(
+        self,
+        host_keys: set[str] | list[str] | None = None,
+        *,
+        include_hidden: bool = False,
+        hidden_only: bool = False,
+    ) -> list[dict[str, Any]]:
         with app_session(self._database_url) as session:
             stmt = select(AppInventoryHost).order_by(AppInventoryHost.mac_address.asc())
             if host_keys is not None:
@@ -171,6 +183,10 @@ class AppInventoryStore:
                 if not normalized_keys:
                     return []
                 stmt = stmt.where(AppInventoryHost.mac_address.in_(normalized_keys))
+            if hidden_only:
+                stmt = stmt.where(AppInventoryHost.hidden_at.is_not(None))
+            elif not include_hidden:
+                stmt = stmt.where(AppInventoryHost.hidden_at.is_(None))
             rows = session.scalars(stmt).all()
             return [self._row_payload(row) for row in rows]
 
@@ -420,8 +436,37 @@ class AppInventoryStore:
             )
             row.payload_json = json.dumps(payload, ensure_ascii=False)
             row.updated_at = now
+            # Soft-hide flags are operator-owned; agent ingest must not clear them.
             if row.report_type != "heartbeat":
                 self._replace_search_indexes(session, host_key, payload, now)
+
+    def set_host_hidden(
+        self,
+        mac_address: str,
+        *,
+        hidden: bool,
+        hidden_by: str | None = None,
+        hidden_reason: str | None = None,
+        hidden_at: int | None = None,
+    ) -> Optional[dict[str, Any]]:
+        host_key = _normalize_mac(mac_address)
+        if not host_key:
+            return None
+        with app_session(self._database_url) as session:
+            row = session.get(AppInventoryHost, host_key)
+            if row is None:
+                return None
+            if hidden:
+                row.hidden_at = int(hidden_at if hidden_at is not None else time.time())
+                row.hidden_by = str(hidden_by or "").strip() or None
+                row.hidden_reason = str(hidden_reason or "").strip() or None
+            else:
+                row.hidden_at = None
+                row.hidden_by = None
+                row.hidden_reason = None
+            row.updated_at = _utcnow()
+            session.flush()
+            return self._row_payload(row)
 
     def touch_host_presence(
         self,

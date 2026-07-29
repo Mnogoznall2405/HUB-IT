@@ -7,7 +7,7 @@ import os
 import re
 import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from backend.json_db.manager import JSONDataManager
 
@@ -30,6 +30,67 @@ def normalize_text(value: Any) -> str:
 
 def normalize_search_text(value: Any) -> str:
     return re.sub(r"\s+", " ", normalize_text(value)).casefold()
+
+
+def format_department_label(department: Any, department_location: Any = "") -> str:
+    """Combine ZUP department + площадка into one label as users see it.
+
+    Cache stores them separately (department=«Отдел логистики»,
+    location=«Владивосток»), while UI/1C cards often show
+    «Отдел логистики г. Владивосток».
+    """
+    dept = normalize_text(department)
+    loc = normalize_text(department_location)
+    if not dept:
+        return loc
+    if not loc:
+        return dept
+    loc_fold = loc.casefold()
+    dept_fold = dept.casefold()
+    if loc_fold in dept_fold:
+        return dept
+    if loc_fold.startswith("г.") or loc_fold.startswith("г "):
+        return f"{dept} {loc}"
+    return f"{dept} г. {loc}"
+
+
+# Only these (department, location) pairs become a separate selectable subdivision.
+# Everyone else stays under the bare ZUP department name (cities ignored for binding).
+_DEPARTMENT_CITY_SPLIT_RULES: tuple[tuple[str, str], ...] = (
+    ("отдел логистики", "владивосток"),  # Махов и площадка Владивосток
+)
+
+
+def _is_special_city_split(department: str, location: str) -> bool:
+    dept_key = normalize_search_text(department)
+    loc_key = normalize_search_text(location)
+    if not dept_key or not loc_key:
+        return False
+    for dept_rule, loc_rule in _DEPARTMENT_CITY_SPLIT_RULES:
+        if dept_key == dept_rule and loc_rule in loc_key:
+            return True
+    return False
+
+
+def build_department_label_resolver(items: Iterable[dict[str, Any]] | None = None):
+    """Resolve binding label for an address-book person.
+
+    Default: bare department (city ignored) so «Отдел наземной и авиа логистики»
+    stays one subdivision for all cities. Exception: special rules (Махов /
+    «Отдел логистики г. Владивосток»).
+    """
+    del items  # resolver is rule-based; signature kept for call-site compatibility
+
+    def resolve(item: dict[str, Any]) -> str:
+        base = normalize_text(item.get("department"))
+        if not base:
+            return ""
+        loc = normalize_text(item.get("department_location"))
+        if _is_special_city_split(base, loc):
+            return format_department_label(base, loc)
+        return base
+
+    return resolve
 
 
 def normalize_phone(value: str) -> str:
@@ -251,6 +312,13 @@ def employee_query() -> str:
             ЕСТЬNULL(ПриемСписком.Подразделение, Текущие.ТекущееПодразделение)
         )
     ) КАК Department,
+    ЕСТЬNULL(
+        История.Подразделение.Код,
+        ЕСТЬNULL(
+            Прием.Подразделение.Код,
+            ЕСТЬNULL(ПриемСписком.Подразделение.Код, Текущие.ТекущееПодразделение.Код)
+        )
+    ) КАК DepartmentCode,
     ПодразделенияДополнительныеРеквизиты.Значение КАК DepartmentLocation,
     ЕСТЬNULL(
         История.Должность,
@@ -364,13 +432,179 @@ def emails_query() -> str:
 """
 
 
+def personal_profile_query() -> str:
+    """Birth data + registration address from ФизическиеЛица."""
+    return """
+ВЫБРАТЬ РАЗЛИЧНЫЕ
+    Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ФизическоеЛицо.ДатаРождения КАК DateOfBirth,
+    Текущие.ФизическоеЛицо.МестоРождения КАК BirthPlace,
+    Адреса.Вид КАК AddressKind,
+    Адреса.Представление КАК RegistrationAddress
+ИЗ
+    РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
+
+        ЛЕВОЕ СОЕДИНЕНИЕ Справочник.ФизическиеЛица.КонтактнаяИнформация КАК Адреса
+        ПО Адреса.Ссылка = Текущие.ФизическоеЛицо
+            И (
+                Адреса.Вид.Наименование ПОДОБНО "%прописк%"
+                ИЛИ Адреса.Вид.Наименование ПОДОБНО "%регистрац%"
+                ИЛИ Адреса.Вид.Наименование = "Адрес по прописке"
+            )
+ГДЕ
+    Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+"""
+
+
+def personal_documents_query() -> str:
+    """Identity documents (passport) from ДокументыФизическихЛиц."""
+    return """
+ВЫБРАТЬ РАЗЛИЧНЫЕ
+    Текущие.Сотрудник.Код КАК EmployeeCode,
+    Документы.ВидДокумента КАК DocumentKind,
+    Документы.Серия КАК PassportSeries,
+    Документы.Номер КАК PassportNumber,
+    Документы.КемВыдан КАК IssuedBy,
+    Документы.КодПодразделения КАК IssuerCode,
+    Документы.ДатаВыдачи КАК IssueDate
+ИЗ
+    РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
+
+        ВНУТРЕННЕЕ СОЕДИНЕНИЕ РегистрСведений.ДокументыФизическихЛиц.СрезПоследних(
+            ,
+            ЯвляетсяДокументомУдостоверяющимЛичность = ИСТИНА
+        ) КАК Документы
+        ПО Документы.Физлицо = Текущие.ФизическоеЛицо
+ГДЕ
+    Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+"""
+
+
+PERSONAL_CACHE_KEYS = (
+    "date_of_birth",
+    "birth_place",
+    "passport_series",
+    "passport_number",
+    "issued_by",
+    "issuer_code",
+    "issue_date",
+    "registration_address",
+)
+
+
 def empty_cache() -> dict[str, Any]:
     return {
         "items": [],
+        "personal_by_code": {},
         "updated_at": "",
         "last_attempt_at": "",
         "last_error": "",
     }
+
+
+def one_c_date_iso(connection: Any, value: Any) -> str:
+    """Convert 1C date/datetime to YYYY-MM-DD; empty for null/zero dates."""
+    if value is None:
+        return ""
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        try:
+            year = int(value.year)
+            if year <= 1:
+                return ""
+            return f"{year:04d}-{int(value.month):02d}-{int(value.day):02d}"
+        except Exception:
+            pass
+    text = one_c_text(connection, value)
+    if not text:
+        return ""
+    digits = re.sub(r"\D+", "", text)
+    if len(digits) >= 8:
+        year = int(digits[:4])
+        if year <= 1:
+            return ""
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    if "T" in text:
+        return text.split("T", 1)[0]
+    return text[:10] if len(text) >= 10 else ""
+
+
+def is_passport_document_kind(kind: Any) -> bool:
+    text = normalize_search_text(kind)
+    return "паспорт" in text
+
+
+def clean_zup_birth_place(value: Any) -> str:
+    """Normalize ZUP birth place like ``0,г. Тюмень,,,`` → ``г. Тюмень``."""
+    text = normalize_text(value)
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(",") if part.strip() and part.strip() != "0"]
+    return ", ".join(parts) if parts else text
+
+
+def merge_personal_profile_records(records: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Collapse profile rows (birth/address) keyed by employee_code."""
+    result: dict[str, dict[str, str]] = {}
+    for record in records:
+        code = normalize_text(record.get("employee_code"))
+        if not code:
+            continue
+        current = result.setdefault(
+            code,
+            {
+                "date_of_birth": "",
+                "birth_place": "",
+                "registration_address": "",
+            },
+        )
+        if not current["date_of_birth"] and record.get("date_of_birth"):
+            current["date_of_birth"] = normalize_text(record.get("date_of_birth"))
+        if not current["birth_place"] and record.get("birth_place"):
+            current["birth_place"] = normalize_text(record.get("birth_place"))
+        address = normalize_text(record.get("registration_address"))
+        if address and (
+            not current["registration_address"]
+            or "прописк" in normalize_search_text(record.get("address_kind"))
+        ):
+            current["registration_address"] = address
+    return result
+
+
+def merge_personal_document_records(records: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Pick best identity document per employee (prefer RF passport)."""
+    result: dict[str, dict[str, str]] = {}
+    for record in records:
+        code = normalize_text(record.get("employee_code"))
+        if not code:
+            continue
+        candidate = {
+            "passport_series": normalize_text(record.get("passport_series")),
+            "passport_number": normalize_text(record.get("passport_number")),
+            "issued_by": normalize_text(record.get("issued_by")),
+            "issuer_code": normalize_text(record.get("issuer_code")),
+            "issue_date": normalize_text(record.get("issue_date")),
+            "document_kind": normalize_text(record.get("document_kind")),
+        }
+        if not any(
+            candidate[key]
+            for key in ("passport_series", "passport_number", "issued_by", "issuer_code", "issue_date")
+        ):
+            continue
+        existing = result.get(code)
+        if existing is None:
+            result[code] = candidate
+            continue
+        if is_passport_document_kind(candidate["document_kind"]) and not is_passport_document_kind(
+            existing.get("document_kind")
+        ):
+            result[code] = candidate
+    for item in result.values():
+        item.pop("document_kind", None)
+    return result
 
 
 def env_positive_int(name: str, default: int, minimum: int) -> int:
@@ -393,6 +627,46 @@ class AddressBookService:
         result.update(payload)
         if not isinstance(result.get("items"), list):
             result["items"] = []
+        personal = result.get("personal_by_code")
+        if not isinstance(personal, dict):
+            result["personal_by_code"] = {}
+        return result
+
+    def get_person_by_code(self, employee_code: str) -> dict[str, Any] | None:
+        code = normalize_text(employee_code)
+        if not code:
+            return None
+        for item in self.load_cache().get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if normalize_text(item.get("employee_code")) == code:
+                return item
+        return None
+
+    def get_personal_by_codes(self, codes: Iterable[str] | None = None) -> dict[str, dict[str, str]]:
+        """Return personal ZUP fields keyed by employee_code (not exposed via search API)."""
+        cache = self.load_cache()
+        personal = cache.get("personal_by_code") or {}
+        if not isinstance(personal, dict):
+            return {}
+        if codes is None:
+            selected_codes = list(personal.keys())
+        else:
+            selected_codes = [normalize_text(code) for code in codes if normalize_text(code)]
+        result: dict[str, dict[str, str]] = {}
+        for code in selected_codes:
+            raw = personal.get(code)
+            if not isinstance(raw, dict):
+                continue
+            cleaned = {
+                key: normalize_text(raw.get(key))
+                for key in PERSONAL_CACHE_KEYS
+                if normalize_text(raw.get(key))
+            }
+            if cleaned.get("birth_place"):
+                cleaned["birth_place"] = clean_zup_birth_place(cleaned["birth_place"])
+            if cleaned:
+                result[code] = cleaned
         return result
 
     def save_cache(self, payload: dict[str, Any]) -> None:
@@ -436,8 +710,10 @@ class AddressBookService:
                 [
                     normalize_text(item.get("full_name")),
                     normalize_text(item.get("department")),
+                    normalize_text(item.get("department_code")),
                     normalize_text(item.get("department_location")),
                     normalize_text(item.get("position")),
+                    normalize_text(item.get("employee_code")),
                     " ".join(normalize_text(phone.get("value")) for phone in phones if isinstance(phone, dict)),
                     " ".join(normalize_text(phone.get("kind")) for phone in phones if isinstance(phone, dict)),
                     " ".join(normalize_text(email.get("value")) for email in emails if isinstance(email, dict)),
@@ -538,10 +814,170 @@ class AddressBookService:
             self._field_match_score(item.get("full_name"), tokens, contains_score=120, prefix_score=160)
             + self._field_match_score(item.get("position"), tokens, contains_score=45)
             + self._field_match_score(item.get("department"), tokens, contains_score=35)
+            + self._field_match_score(item.get("department_code"), tokens, contains_score=50, prefix_score=70)
+            + self._field_match_score(item.get("employee_code"), tokens, contains_score=40, prefix_score=60)
             + self._field_match_score(item.get("department_location"), tokens, contains_score=30)
             + self._phone_match_score(phones, tokens)
             + self._email_match_score(emails, tokens)
         )
+
+    def list_people_by_department_codes(
+        self,
+        department_codes: Iterable[str],
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        codes = {
+            normalize_text(code)
+            for code in (department_codes or [])
+            if normalize_text(code)
+        }
+        if not codes:
+            return []
+        cache = self.load_cache()
+        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        matched = [
+            item
+            for item in items
+            if normalize_text(item.get("department_code")) in codes
+        ]
+        matched.sort(key=lambda item: normalize_search_text(item.get("full_name")))
+        limited = max(1, min(int(limit or 500), 2000))
+        return matched[:limited]
+
+    def list_people_by_department_names(
+        self,
+        department_names: Iterable[str],
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        names = {
+            normalize_search_text(name)
+            for name in (department_names or [])
+            if normalize_text(name)
+        }
+        if not names:
+            return []
+        cache = self.load_cache()
+        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        resolve_label = build_department_label_resolver(items)
+        matched: list[dict[str, Any]] = []
+        for item in items:
+            label = normalize_search_text(resolve_label(item))
+            if label and label in names:
+                matched.append(item)
+        matched.sort(key=lambda item: normalize_search_text(item.get("full_name")))
+        limited = max(1, min(int(limit or 500), 2000))
+        return matched[:limited]
+
+    def list_department_names(self, query: str = "", limit: int = 50) -> dict[str, Any]:
+        cache = self.load_cache()
+        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        resolve_label = build_department_label_resolver(items)
+        by_name: dict[str, dict[str, Any]] = {}
+        for item in items:
+            base = normalize_text(item.get("department"))
+            if not base:
+                continue
+            location = normalize_text(item.get("department_location"))
+            label = resolve_label(item)
+            if not label:
+                continue
+            key = normalize_search_text(label)
+            current = by_name.get(key)
+            if current is None:
+                by_name[key] = {
+                    "department": label,
+                    "department_base": base,
+                    "department_location": location if label != base else "",
+                    "people_count": 1,
+                    "department_codes": (
+                        [normalize_text(item.get("department_code"))]
+                        if normalize_text(item.get("department_code"))
+                        else []
+                    ),
+                }
+            else:
+                current["people_count"] = int(current.get("people_count") or 0) + 1
+                code = normalize_text(item.get("department_code"))
+                if code and code not in current["department_codes"]:
+                    current["department_codes"].append(code)
+
+        rows = list(by_name.values())
+        tokens = normalize_search_text(query).split()
+        if tokens:
+            rows = [
+                row
+                for row in rows
+                if all(
+                    token in normalize_search_text(
+                        f"{row.get('department')} {row.get('department_location')}"
+                    )
+                    for token in tokens
+                )
+            ]
+        rows.sort(
+            key=lambda row: (
+                -int(row.get("people_count") or 0),
+                normalize_search_text(row.get("department")),
+            )
+        )
+        # The org-structure importer may need the complete ZUP department catalog.
+        # Public API endpoints still enforce their own smaller query limit.
+        limited = max(1, min(int(limit or 50), 2000))
+        return {
+            "items": rows[:limited],
+            "total": len(rows),
+            "limit": limited,
+            "updated_at": normalize_text(cache.get("updated_at")),
+        }
+
+    def list_department_codes(self, query: str = "", limit: int = 50) -> dict[str, Any]:
+        cache = self.load_cache()
+        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        by_code: dict[str, dict[str, Any]] = {}
+        for item in items:
+            code = normalize_text(item.get("department_code"))
+            if not code:
+                continue
+            current = by_code.get(code)
+            if current is None:
+                by_code[code] = {
+                    "department_code": code,
+                    "department": normalize_text(item.get("department")),
+                    "people_count": 1,
+                }
+            else:
+                current["people_count"] = int(current.get("people_count") or 0) + 1
+                if not current.get("department"):
+                    current["department"] = normalize_text(item.get("department"))
+
+        rows = list(by_code.values())
+        tokens = normalize_search_text(query).split()
+        if tokens:
+            filtered = []
+            for row in rows:
+                hay = normalize_search_text(
+                    f"{row.get('department_code')} {row.get('department')}"
+                )
+                if all(token in hay for token in tokens):
+                    filtered.append(row)
+            rows = filtered
+
+        rows.sort(
+            key=lambda row: (
+                -int(row.get("people_count") or 0),
+                normalize_search_text(row.get("department")),
+                normalize_search_text(row.get("department_code")),
+            )
+        )
+        limited = max(1, min(int(limit or 50), 200))
+        return {
+            "items": rows[:limited],
+            "total": len(rows),
+            "limit": limited,
+            "updated_at": normalize_text(cache.get("updated_at")),
+        }
 
     def sync_from_1c(self) -> dict[str, Any]:
         if not self._sync_lock.acquire(blocking=False):
@@ -552,9 +988,10 @@ class AddressBookService:
         cache = self.load_cache()
         cache["last_attempt_at"] = utc_now_iso()
         try:
-            items = self._load_items_from_1c()
+            items, personal_by_code = self._load_items_from_1c()
             next_cache = {
                 "items": items,
+                "personal_by_code": personal_by_code,
                 "updated_at": utc_now_iso(),
                 "last_attempt_at": cache["last_attempt_at"],
                 "last_error": "",
@@ -562,6 +999,7 @@ class AddressBookService:
             self.save_cache(next_cache)
             return {
                 "count": len(items),
+                "personal_count": len(personal_by_code),
                 "updated_at": next_cache["updated_at"],
                 "last_attempt_at": next_cache["last_attempt_at"],
                 "last_error": "",
@@ -575,7 +1013,7 @@ class AddressBookService:
         finally:
             self._sync_lock.release()
 
-    def _load_items_from_1c(self) -> list[dict[str, Any]]:
+    def _load_items_from_1c(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
         pythoncom = None
         connection = None
         com_initialized = False
@@ -590,6 +1028,7 @@ class AddressBookService:
             employees = self._load_employees(connection)
             phones = self._load_phones(connection)
             emails = self._load_emails(connection)
+            personal_by_code = self._load_personal_data(connection)
             for employee in employees:
                 employee_code = employee.pop("_employee_code", "")
                 # Keep the stable ZUP key in the cache.  It is deliberately
@@ -604,7 +1043,7 @@ class AddressBookService:
                 employee["work_emails"] = employee_emails.get("work", [])
                 employee["personal_emails"] = employee_emails.get("personal", [])
             employees.sort(key=lambda item: normalize_search_text(item.get("full_name")))
-            return employees
+            return employees, personal_by_code
         finally:
             connection = None
             if com_initialized and pythoncom is not None:
@@ -632,6 +1071,7 @@ class AddressBookService:
                     "full_name": one_c_text(connection, selection.FullName),
                     "_employee_code": one_c_text(connection, selection.EmployeeCode),
                     "department": one_c_text(connection, selection.Department),
+                    "department_code": one_c_text(connection, selection.DepartmentCode),
                     "department_location": one_c_text(connection, selection.DepartmentLocation),
                     "position": one_c_text(connection, selection.Position),
                 }
@@ -664,6 +1104,60 @@ class AddressBookService:
                 }
             )
         return deduplicate_email_records(records)
+
+    def _load_personal_data(self, connection: Any) -> dict[str, dict[str, str]]:
+        """Load passport/birth/registration from ZUP; failures must not break directory sync."""
+        personal: dict[str, dict[str, str]] = {}
+        try:
+            profile_records: list[dict[str, str]] = []
+            selection = execute_query(connection, personal_profile_query())
+            while selection.Next():
+                profile_records.append(
+                    {
+                        "employee_code": one_c_text(connection, selection.EmployeeCode),
+                        "date_of_birth": one_c_date_iso(connection, selection.DateOfBirth),
+                        "birth_place": one_c_text(connection, selection.BirthPlace),
+                        "address_kind": one_c_text(connection, selection.AddressKind),
+                        "registration_address": one_c_text(connection, selection.RegistrationAddress),
+                    }
+                )
+            personal = {
+                code: dict(values)
+                for code, values in merge_personal_profile_records(profile_records).items()
+            }
+        except Exception:
+            logger.exception("Address book personal profile sync failed")
+
+        try:
+            document_records: list[dict[str, str]] = []
+            selection = execute_query(connection, personal_documents_query())
+            while selection.Next():
+                document_records.append(
+                    {
+                        "employee_code": one_c_text(connection, selection.EmployeeCode),
+                        "document_kind": one_c_text(connection, selection.DocumentKind),
+                        "passport_series": one_c_text(connection, selection.PassportSeries),
+                        "passport_number": one_c_text(connection, selection.PassportNumber),
+                        "issued_by": one_c_text(connection, selection.IssuedBy),
+                        "issuer_code": one_c_text(connection, selection.IssuerCode),
+                        "issue_date": one_c_date_iso(connection, selection.IssueDate),
+                    }
+                )
+            for code, document in merge_personal_document_records(document_records).items():
+                personal.setdefault(code, {}).update(document)
+        except Exception:
+            logger.exception("Address book personal documents sync failed")
+
+        cleaned: dict[str, dict[str, str]] = {}
+        for code, values in personal.items():
+            item = {
+                key: normalize_text(values.get(key))
+                for key in PERSONAL_CACHE_KEYS
+                if normalize_text(values.get(key))
+            }
+            if item:
+                cleaned[code] = item
+        return cleaned
 
 
 address_book_service = AddressBookService()

@@ -1,7 +1,7 @@
 param(
-    [string]$TaskName = "IT-Invent Scan Agent",
+    [string]$TaskName = "HUB-IT Scan Agent",
     [string]$PythonExe = "C:\Python312\python.exe",
-    [string]$ScriptPath = "C:\Program Files\IT-Invent\ScanAgent\agent.py",
+    [string]$ScriptPath = "C:\Program Files\HUB-IT\Agent\scan_agent\agent.py",
     [int]$RepeatMinutes = 1,
     [string]$EnvFilePath = ""
 )

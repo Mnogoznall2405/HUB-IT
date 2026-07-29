@@ -17,6 +17,7 @@ const rolePermissionFallback = {
     'chat.ai.use',
     'mail.access',
     'settings.read',
+    'company_structure.read',
   ],
   operator: [
     'dashboard.read',
@@ -42,6 +43,7 @@ const rolePermissionFallback = {
     'mail.access',
     'settings.read',
     'vcs.read',
+    'company_structure.read',
   ],
   admin: [
     'dashboard.read',
@@ -83,6 +85,8 @@ const rolePermissionFallback = {
     'tickets.write',
     'tickets.personal_data.read',
     'address_book.read',
+    'company_structure.read',
+    'company_structure.write',
   ],
 };
 

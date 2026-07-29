@@ -167,6 +167,40 @@ def _extract_pdf_images_for_llm(file_bytes: bytes, max_pages: int = 3) -> tuple[
     return images, warnings
 
 
+# Reasoning models (Gemini etc.) spend most of max_tokens on reasoning; keep headroom for JSON.
+_ACT_PARSE_MAX_TOKENS = 4000
+_ACT_PARSE_WEAK_TEXT_MARKERS = (
+    "инвентар",
+    "inv_no",
+    "inv no",
+    "акт",
+    "сдал",
+    "принял",
+    "переда",
+    "employee",
+)
+
+
+def _pdf_text_looks_weak(pdf_text: str, *, file_name: str = "") -> bool:
+    """Heuristic: scanned/garbage text layers should prefer vision OCR."""
+    text = str(pdf_text or "").strip()
+    name = str(file_name or "").strip().lower()
+    if name.startswith("img_") or name.startswith("scan") or name.startswith("image"):
+        return True
+    if not text:
+        return True
+    if len(text) < 40:
+        return True
+    lower = text.lower()
+    has_act_signal = any(marker in lower for marker in _ACT_PARSE_WEAK_TEXT_MARKERS)
+    if not has_act_signal:
+        return True
+    letters = sum(1 for ch in text if ch.isalpha())
+    if letters and (letters / max(len(text), 1)) < 0.25:
+        return True
+    return False
+
+
 def _normalize_date(value: Any) -> Optional[datetime]:
     if value is None:
         return None
@@ -566,10 +600,25 @@ def _call_openrouter_act_parser(
 
     text_for_model = pdf_text[:50000]
     image_urls: list[str] = []
-    if not text_for_model.strip() and file_bytes:
+    images_prepared = False
+    prefer_images_first = _pdf_text_looks_weak(text_for_model, file_name=file_name)
+
+    def _ensure_images() -> list[str]:
+        nonlocal image_urls, images_prepared
+        if images_prepared:
+            return image_urls
+        images_prepared = True
+        if not file_bytes:
+            return image_urls
         rendered_images, image_warnings = _extract_pdf_images_for_llm(file_bytes=file_bytes, max_pages=3)
         warnings.extend(image_warnings)
         image_urls = rendered_images
+        return image_urls
+
+    if prefer_images_first:
+        _ensure_images()
+        if image_urls and text_for_model.strip():
+            warnings.append("Текст PDF слабый или похож на скан — приоритет vision OCR.")
 
     if not text_for_model.strip() and not image_urls:
         warnings.append(
@@ -604,24 +653,53 @@ def _call_openrouter_act_parser(
             return content
         return user_prompt_header + f"Document text:\n{text_for_model}"
 
+    def _attempt_modes_for_model() -> list[bool]:
+        modes: list[bool] = []
+        has_text = bool(text_for_model.strip()) and text_for_model.strip() != "[PDF_TEXT_EMPTY]"
+        if prefer_images_first:
+            if image_urls:
+                modes.append(True)
+            if has_text:
+                modes.append(False)
+        else:
+            if has_text:
+                modes.append(False)
+            # Vision fallback prepared lazily after text failure.
+        if not modes and image_urls:
+            modes.append(True)
+        if not modes and has_text:
+            modes.append(False)
+        return modes
+
     system_prompt = (
         "Extract structured data from a signed transfer act and return strict JSON. "
         "Be conservative: return only exact inventory numbers and never guess."
     )
 
     last_exc: Optional[Exception] = None
-    logger.info("Uploaded act parse: model candidates=%s", model_candidates)
+    logger.info(
+        "Uploaded act parse: model candidates=%s prefer_images_first=%s text_len=%s",
+        model_candidates,
+        prefer_images_first,
+        len(text_for_model),
+    )
 
     for model in model_candidates:
-        attempt_modes = [True, False] if image_urls else [False]
-        for use_images in attempt_modes:
-            if use_images and not image_urls:
-                continue
+        attempt_modes = _attempt_modes_for_model()
+        tried_images = False
+        mode_index = 0
+        while mode_index < len(attempt_modes):
+            use_images = attempt_modes[mode_index]
+            mode_index += 1
+            if use_images:
+                tried_images = True
+                if not image_urls:
+                    continue
             if (not use_images) and (not text_for_model.strip()):
                 continue
             try:
                 logger.info(
-                    "Uploaded act parse: sending request to OpenRouter (file=%s, model=%s, text_len=%s, images=%s)",
+                    "Uploaded act parse: sending request to OpenRouter (file=%s, model=%s, text_len=%s, images=%s, healing=1)",
                     file_name,
                     model,
                     len(text_for_model),
@@ -633,9 +711,9 @@ def _call_openrouter_act_parser(
                     model=model,
                     purpose="act",
                     temperature=0,
-                    max_tokens=900,
+                    max_tokens=_ACT_PARSE_MAX_TOKENS,
                     response_schema=None,
-                    response_healing=False,
+                    response_healing=True,
                 )
                 logger.info(
                     "Uploaded act parse: OpenRouter response received (file=%s, model=%s, use_images=%s)",
@@ -656,6 +734,15 @@ def _call_openrouter_act_parser(
                         file_name,
                         model,
                         use_images,
+                    )
+                    continue
+                # Accept only payloads that look useful; otherwise keep trying.
+                has_inv = bool(payload.get("equipment_inv_nos"))
+                has_people = bool(str(payload.get("from_employee") or "").strip() or str(payload.get("to_employee") or "").strip())
+                has_date = bool(str(payload.get("doc_date") or "").strip())
+                if not (has_inv or has_people or has_date):
+                    warnings.append(
+                        f"Модель {model} вернула JSON без полезных полей, пробую следующий режим/модель."
                     )
                     continue
                 logger.info("Uploaded act parse: OpenRouter JSON parsed successfully (file=%s)", file_name)
@@ -694,6 +781,13 @@ def _call_openrouter_act_parser(
                     use_images,
                     exc,
                 )
+
+            # After text-mode failure, prepare vision fallback once per model.
+            if (not use_images) and (not tried_images) and file_bytes:
+                _ensure_images()
+                if image_urls and True not in attempt_modes[mode_index:]:
+                    attempt_modes.append(True)
+                    warnings.append("Текстовый режим не сработал — пробую vision OCR.")
 
     detail = provider_error_text(last_exc) if last_exc else ""
     warnings.append(f"Ошибка OpenRouter: {detail}" if detail else "Ошибка OpenRouter: пустой ответ.")
@@ -797,14 +891,14 @@ def create_uploaded_act_draft(
 
     from_employee = ""
     to_employee = ""
-    parsed_doc_date: Optional[datetime] = None
     inv_nos: list[str] = []
     legacy_inv_nos: list[str] = []
+    # DOC_DATE / CREATE_DATE must reflect upload time, not the date printed in the act PDF.
+    upload_doc_date = datetime.now()
 
     if isinstance(parsed_payload, dict):
         from_employee = str(parsed_payload.get("from_employee") or "").strip()
         to_employee = str(parsed_payload.get("to_employee") or "").strip()
-        parsed_doc_date = _extract_doc_date_from_payload(parsed_payload)
         inv_nos, rejected_inv_nos = _collect_inv_nos(parsed_payload.get("equipment_inv_nos"))
         if rejected_inv_nos:
             warnings.append(
@@ -821,13 +915,6 @@ def create_uploaded_act_draft(
             if legacy_inv_nos and not inv_nos:
                 inv_nos = legacy_inv_nos
                 warnings.append("Модель вернула ITEMS.ID, выполнена конвертация в INV_NO.")
-
-    if parsed_doc_date is None:
-        parsed_doc_date = _extract_doc_date_from_text(pdf_text)
-        if parsed_doc_date:
-            warnings.append("Дата акта определена из текста PDF (fallback).")
-        else:
-            warnings.append("Не удалось автоматически определить дату акта.")
 
     if not inv_nos:
         fallback_inv_nos = _parse_inv_nos_from_text(pdf_text)
@@ -882,7 +969,7 @@ def create_uploaded_act_draft(
         "file_bytes": bytes(file_bytes),
         "from_employee": from_employee,
         "to_employee": to_employee,
-        "doc_date": parsed_doc_date.strftime("%Y-%m-%d") if parsed_doc_date else None,
+        "doc_date": upload_doc_date.strftime("%Y-%m-%d %H:%M:%S"),
         "equipment_inv_nos": inv_nos,
         "resolved_items": resolved_items,
         "warnings": warnings,
@@ -963,19 +1050,29 @@ def commit_uploaded_act_draft(
 
     original_file_bytes = bytes(draft.get("file_bytes") or b"")
 
+    # Prefer explicit form datetime; otherwise use draft upload time / now.
+    # Never fall back to the date printed inside the PDF act.
+    # Date-only values (midnight) get the current clock time so DOC_DATE is not 00:00.
     raw_doc_date = payload.get("doc_date")
     if raw_doc_date in (None, ""):
         raw_doc_date = draft.get("doc_date")
     parsed_doc_date = _normalize_date(raw_doc_date)
-    if parsed_doc_date is None and original_file_bytes:
-        pdf_text_for_date, _ = _extract_pdf_text(original_file_bytes)
-        parsed_doc_date = _extract_doc_date_from_text(pdf_text_for_date)
-        if parsed_doc_date:
-            logger.info(
-                "Uploaded act commit: doc_date fallback from PDF text (draft_id=%s, date=%s)",
-                key,
-                parsed_doc_date.strftime("%Y-%m-%d"),
-            )
+    now = datetime.now()
+    if parsed_doc_date is None:
+        parsed_doc_date = now
+    elif (
+        parsed_doc_date.hour == 0
+        and parsed_doc_date.minute == 0
+        and parsed_doc_date.second == 0
+        and parsed_doc_date.microsecond == 0
+        and not re.search(r"\d{1,2}:\d{2}", str(raw_doc_date or ""))
+    ):
+        parsed_doc_date = parsed_doc_date.replace(
+            hour=now.hour,
+            minute=now.minute,
+            second=now.second,
+            microsecond=now.microsecond,
+        )
 
     result = queries.create_uploaded_transfer_act(
         from_employee=final_from_employee,

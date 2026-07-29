@@ -19,6 +19,34 @@ if str(WEB_ROOT) not in sys.path:
 notification_module = importlib.import_module("backend.services.mail_notification_service")
 
 
+@pytest.fixture(autouse=True)
+def isolate_shared_snapshot_store(monkeypatch):
+    def read_notification_feeds(*, user_ids):
+        return {}
+
+    def persist_notification_results(**_kwargs):
+        return None
+
+    def persist_notification_checkpoints(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "read_notification_feeds",
+        read_notification_feeds,
+    )
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "persist_notification_results",
+        persist_notification_results,
+    )
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "persist_notification_checkpoints",
+        persist_notification_checkpoints,
+    )
+
+
 def _candidate(user_id: int, *, session_id: str | None = None) -> dict:
     payload = {
         "user": {
@@ -70,6 +98,59 @@ def test_should_emit_when_latest_message_changes_without_unread_growth():
             last_received_at="2026-06-09T08:01:00Z",
         ),
     )
+
+
+def test_snapshot_ttl_exceeds_poll_interval_by_default(monkeypatch):
+    service = notification_module.MailNotificationService()
+    monkeypatch.setenv("MAIL_NOTIFICATION_POLL_INTERVAL_SEC", "90")
+    monkeypatch.delenv("MAIL_NOTIFICATION_SNAPSHOT_TTL_SEC", raising=False)
+
+    assert service.poll_interval_sec == 90
+    assert service.snapshot_ttl_sec == 180
+    assert service.snapshot_ttl_sec > service.poll_interval_sec
+
+
+def test_snapshot_ttl_env_override_respects_minimum_slack(monkeypatch):
+    service = notification_module.MailNotificationService()
+    monkeypatch.setenv("MAIL_NOTIFICATION_POLL_INTERVAL_SEC", "90")
+    monkeypatch.setenv("MAIL_NOTIFICATION_SNAPSHOT_TTL_SEC", "100")
+
+    assert service.snapshot_ttl_sec == 120
+
+
+@pytest.mark.asyncio
+async def test_poll_once_persists_snapshots_with_snapshot_ttl(monkeypatch):
+    service = notification_module.MailNotificationService()
+    persist_kwargs = {}
+
+    def _candidates():
+        return [_candidate(11, session_id="sess-11")]
+
+    def _feed_sync(*, user_id: int, session_id: str | None):
+        return _feed("msg-11", 1)
+
+    def _persist(*, results, ttl_seconds):
+        persist_kwargs["results"] = results
+        persist_kwargs["ttl_seconds"] = ttl_seconds
+
+    async def _fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setenv("MAIL_NOTIFICATION_POLL_INTERVAL_SEC", "90")
+    monkeypatch.delenv("MAIL_NOTIFICATION_SNAPSHOT_TTL_SEC", raising=False)
+    monkeypatch.setattr(service, "_iter_candidate_users", _candidates)
+    monkeypatch.setattr(service, "_list_notification_feed_sync", _feed_sync)
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "persist_notification_results",
+        _persist,
+    )
+    monkeypatch.setattr(notification_module.asyncio, "to_thread", _fake_to_thread)
+
+    await service.poll_once()
+
+    assert persist_kwargs["ttl_seconds"] == service.snapshot_ttl_sec
+    assert persist_kwargs["ttl_seconds"] == 180
 
 
 @pytest.mark.asyncio
@@ -127,6 +208,7 @@ async def test_poll_once_emits_notification_on_unread_increase_and_offloads_push
 
     def _send_sync(**kwargs):
         send_calls.append(kwargs)
+        return SimpleNamespace(sent=1, failed=0, disabled=0)
 
     async def _fake_to_thread(func, /, *args, **kwargs):
         thread_calls.append(getattr(func, "__name__", repr(func)))
@@ -184,6 +266,150 @@ async def test_poll_once_retries_same_mail_when_push_delivery_fully_fails(monkey
 
     assert [item["tag"] for item in send_calls] == ["mail:msg-2", "mail:msg-2"]
     assert service._snapshots[7].last_message_id == "msg-1"
+
+
+@pytest.mark.asyncio
+async def test_poll_once_retries_when_no_push_subscription_received_the_mail(monkeypatch):
+    service = notification_module.MailNotificationService()
+    send_calls = []
+    checkpoint_writes = []
+    feeds = iter([
+        _feed("msg-1", 1),
+        _feed("msg-2", 2, subject="Waiting for subscription"),
+        _feed("msg-2", 2, subject="Waiting for subscription"),
+    ])
+
+    monkeypatch.setattr(service, "_iter_candidate_users", lambda: [_candidate(9)])
+    monkeypatch.setattr(
+        service,
+        "_list_notification_feed_sync",
+        lambda **_kwargs: next(feeds),
+    )
+
+    def _send_sync(**kwargs):
+        send_calls.append(kwargs)
+        return SimpleNamespace(sent=0, failed=0, disabled=0)
+
+    async def _fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_send_notification_sync", _send_sync)
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "persist_notification_checkpoints",
+        lambda *, feeds_by_user_id: checkpoint_writes.append(dict(feeds_by_user_id)),
+    )
+    monkeypatch.setattr(notification_module.asyncio, "to_thread", _fake_to_thread)
+
+    await service.poll_once()
+    await service.poll_once()
+    await service.poll_once()
+
+    assert [item["tag"] for item in send_calls] == ["mail:msg-2", "mail:msg-2"]
+    assert service._snapshots[9].last_message_id == "msg-1"
+    assert [feed[9]["items"][0]["id"] for feed in checkpoint_writes] == ["msg-1"]
+
+
+def test_should_emit_when_newest_message_was_read_before_poll():
+    service = notification_module.MailNotificationService()
+
+    assert service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-1",
+            last_received_at="2026-07-23T05:20:00Z",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-2",
+            last_received_at="2026-07-23T05:24:01Z",
+        ),
+    )
+
+
+def test_should_not_emit_old_read_mail_when_upgrading_empty_legacy_checkpoint():
+    service = notification_module.MailNotificationService()
+
+    assert not service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="",
+            last_received_at="",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="existing-read-message",
+            last_received_at="2026-07-23T05:24:01Z",
+        ),
+    )
+
+
+def test_should_not_emit_when_reading_latest_reveals_an_older_message():
+    service = notification_module.MailNotificationService()
+
+    assert not service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=2,
+            last_message_id="newest-message",
+            last_received_at="2026-07-23T05:24:01Z",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=1,
+            last_message_id="older-message",
+            last_received_at="2026-07-23T05:20:00Z",
+        ),
+    )
+
+
+def test_worker_notification_feed_includes_read_messages(monkeypatch):
+    service = notification_module.MailNotificationService()
+    calls = []
+
+    def _list_notification_feed(**kwargs):
+        calls.append(kwargs)
+        return {"total_unread": 0, "items": []}
+
+    monkeypatch.setattr(notification_module.mail_service, "list_notification_feed", _list_notification_feed)
+
+    assert service._list_notification_feed_sync(user_id=38, session_id=None) == {
+        "total_unread": 0,
+        "items": [],
+    }
+    assert calls == [{"user_id": 38, "limit": 5, "unread_only": False}]
+
+
+@pytest.mark.asyncio
+async def test_poll_once_restores_persisted_baseline_after_worker_restart(monkeypatch):
+    service = notification_module.MailNotificationService()
+    send_calls = []
+
+    monkeypatch.setattr(service, "_iter_candidate_users", lambda: [_candidate(12)])
+    monkeypatch.setattr(
+        service,
+        "_list_notification_feed_sync",
+        lambda **_kwargs: _feed("msg-2", 2, subject="Arrived while worker restarted"),
+    )
+    monkeypatch.setattr(
+        notification_module.mail_runtime_snapshot_service,
+        "read_notification_feeds",
+        lambda *, user_ids: {12: _feed("msg-1", 1)},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_notification_sync",
+        lambda **kwargs: send_calls.append(kwargs) or SimpleNamespace(sent=1, failed=0, disabled=0),
+    )
+
+    async def _fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(notification_module.asyncio, "to_thread", _fake_to_thread)
+
+    await service.poll_once()
+
+    assert [item["tag"] for item in send_calls] == ["mail:msg-2"]
+
 
 
 @pytest.mark.asyncio

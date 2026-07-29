@@ -35,15 +35,17 @@ export default function TasksAnalyticsView({
   filtersVisible = true,
   onToggleFilters,
   onExport,
+  onRetry,
   analyticsLoading = false,
   analyticsExporting = false,
   analyticsAccentColor = '#2563eb',
   analyticsGridStroke,
-  analyticsFocusMeta,
   filtersPanel = null,
   filtersPanelProps = null,
   analyticsKpis = [],
   analyticsPayload = null,
+  analyticsError = null,
+  analyticsHasCurrentPayload = true,
   analyticsProjectSectionMeta = null,
   selectedAnalyticsProjects = [],
   selectedAnalyticsObjects = [],
@@ -99,7 +101,7 @@ export default function TasksAnalyticsView({
                               Сначала выберите проект, потом при необходимости сузьте отчёт до объекта. Ниже появится отдельный срез по выбранному фокусу.
                             </Typography>
                           </Box>
-                          <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.7} sx={{ width: { xs: '100%', md: 'auto' }, alignItems: { xs: 'stretch', md: 'flex-start' } }}>
+                          <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.7} sx={{ width: { xs: '100%', md: 'auto' }, alignItems: { xs: 'stretch', md: 'flex-start' }, flexShrink: 0 }}>
                             <Button
                               variant="contained"
                               size="small"
@@ -119,19 +121,6 @@ export default function TasksAnalyticsView({
                             >
                               {filtersVisible ? 'Скрыть фильтры' : 'Показать фильтры'}
                             </Button>
-                            <Box
-                              sx={{
-                                ...getOfficeSubtlePanelSx(ui, { px: 0.95, py: 0.65, borderRadius: '12px' }),
-                                minWidth: { md: 300 },
-                                maxWidth: { md: 430 },
-                              }}
-                            >
-                              <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block' }}>Сейчас считаем</Typography>
-                              <Typography sx={{ fontWeight: 900, mt: 0.2 }}>{analyticsFocusMeta.title}</Typography>
-                              <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mt: 0.25 }}>
-                                {analyticsFocusMeta.description}
-                              </Typography>
-                            </Box>
                           </Stack>
                         </Stack>
 
@@ -146,6 +135,38 @@ export default function TasksAnalyticsView({
                   ) : null}
 
                   {analyticsLoading ? <LinearProgress sx={{ borderRadius: 999 }} /> : null}
+
+                  {analyticsError ? (
+                    <Alert
+                      severity={analyticsHasCurrentPayload ? 'warning' : 'error'}
+                      action={(
+                        <Button color="inherit" size="small" onClick={onRetry} disabled={analyticsLoading}>
+                          Повторить
+                        </Button>
+                      )}
+                    >
+                      <Typography sx={{ fontWeight: 800 }}>{analyticsError.message}</Typography>
+                      {analyticsHasCurrentPayload ? (
+                        <Typography variant="caption" sx={{ display: 'block', mt: 0.25 }}>
+                          Показаны данные последней успешной загрузки.
+                        </Typography>
+                      ) : null}
+                      {analyticsError.correlationId ? (
+                        <Typography variant="caption" sx={{ display: 'block', mt: 0.25 }}>
+                          ID ошибки: {analyticsError.correlationId}
+                        </Typography>
+                      ) : null}
+                    </Alert>
+                  ) : null}
+
+                  {!analyticsHasCurrentPayload && analyticsLoading ? (
+                    <Box sx={getOfficeEmptyStateSx(ui, { p: 2, minHeight: 120 })}>
+                      <Typography sx={{ fontWeight: 800 }}>Загрузка аналитики...</Typography>
+                    </Box>
+                  ) : null}
+
+                  {analyticsHasCurrentPayload ? (
+                    <>
 
                   <Grid container spacing={1}>
                   {analyticsKpis.map((item) => (
@@ -301,7 +322,7 @@ export default function TasksAnalyticsView({
                     <Stack spacing={1}>
                       <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.8}>
                         <Box>
-                          <Typography sx={{ fontWeight: 900 }}>Участник: {selectedAnalyticsParticipant.participant_name || '—'}</Typography>
+                          <Typography sx={{ fontWeight: 900 }}>Исполнитель: {selectedAnalyticsParticipant.participant_name || '—'}</Typography>
                           <Typography variant="caption" sx={{ color: ui.subtleText }}>
                             Детальная карточка выбранного исполнителя по текущим фильтрам.
                           </Typography>
@@ -335,7 +356,7 @@ export default function TasksAnalyticsView({
                       <Grid container spacing={1}>
                         <Grid item xs={12} lg={6}>
                           <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.95, borderRadius: '14px' }) }}>
-                            <Typography sx={{ fontWeight: 800, mb: 0.7 }}>По проектам участника</Typography>
+                            <Typography sx={{ fontWeight: 800, mb: 0.7 }}>Проекты исполнителя</Typography>
                             <Stack spacing={0.55}>
                               {(analyticsPayload?.by_project || []).length === 0 ? (
                                 <Typography variant="body2" sx={{ color: ui.mutedText }}>Нет данных по проектам.</Typography>
@@ -352,7 +373,7 @@ export default function TasksAnalyticsView({
                         </Grid>
                         <Grid item xs={12} lg={6}>
                           <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.95, borderRadius: '14px' }) }}>
-                            <Typography sx={{ fontWeight: 800, mb: 0.7 }}>По объектам участника</Typography>
+                            <Typography sx={{ fontWeight: 800, mb: 0.7 }}>Объекты исполнителя</Typography>
                             <Stack spacing={0.55}>
                               {(analyticsPayload?.by_object || []).length === 0 ? (
                                 <Typography variant="body2" sx={{ color: ui.mutedText }}>Нет данных по объектам.</Typography>
@@ -436,6 +457,8 @@ export default function TasksAnalyticsView({
                     </Grid>
                   ))}
                 </Grid>
+                    </>
+                  ) : null}
                 </Stack>
               </Box>
   );

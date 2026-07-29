@@ -19,19 +19,7 @@ import {
 } from '@mui/material';
 import { Replay as ReplayIcon } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
-
-function friendlyReason(value) {
-  const reason = String(value || '').trim();
-  const normalized = reason.toLowerCase();
-  if (!reason) return 'Анализ не завершён';
-  if (normalized.includes('timeout')) return `Превышено время анализа: ${reason}`;
-  if (normalized.includes('payload') && normalized.includes('large')) return 'Файл превышает допустимый размер передачи';
-  if (normalized.includes('payload')) return `Не удалось получить файл: ${reason}`;
-  if (normalized.includes('encrypt') || normalized.includes('password')) return 'Файл зашифрован или защищён паролем';
-  if (normalized.includes('tesseract') || normalized.includes('ocr')) return `Ошибка распознавания: ${reason}`;
-  if (normalized.includes('libreoffice') || normalized.includes('convert')) return `Ошибка преобразования документа: ${reason}`;
-  return reason;
-}
+import { friendlyScanReason as friendlyReason } from './scanReasonLabels';
 
 function outcomeLabel(item) {
   const outcomes = Array.isArray(item?.extraction_outcomes) ? item.extraction_outcomes : [];

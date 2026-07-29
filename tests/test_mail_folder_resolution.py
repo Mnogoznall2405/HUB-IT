@@ -33,6 +33,12 @@ class _BrokenInboxAccount:
         raise TimeoutError("EWS is still unavailable")
 
 
+class _InvalidCredentialsInboxAccount:
+    @property
+    def inbox(self):
+        raise RuntimeError("Invalid credentials for https://10.103.0.50/EWS/Exchange.asmx")
+
+
 def _service_without_runtime_initialization() -> MailService:
     return object.__new__(MailService)
 
@@ -57,3 +63,45 @@ def test_standard_inbox_resolution_keeps_exchange_failure_transient():
     assert error_info.value.status_code == 503
     assert error_info.value.code == "MAIL_FOLDER_TEMPORARILY_UNAVAILABLE"
     assert "Folder is not available" not in str(error_info.value)
+
+
+def test_standard_inbox_resolution_maps_invalid_credentials_to_auth_error():
+    service = _service_without_runtime_initialization()
+
+    with pytest.raises(MailServiceError) as error_info:
+        service._resolve_folder(_InvalidCredentialsInboxAccount(), "inbox")
+
+    assert error_info.value.status_code == 409
+    assert error_info.value.code == "MAIL_AUTH_INVALID"
+    assert "Invalid credentials" in str(error_info.value)
+    assert error_info.value.code != "MAIL_FOLDER_TEMPORARILY_UNAVAILABLE"
+
+
+def test_mail_http_exception_recovers_auth_code_from_wrapped_exchange_cause(monkeypatch):
+    from backend.api.v1 import mail as mail_api
+
+    invalidated: list[tuple[int, str | None]] = []
+
+    class _DummyMailService:
+        def classify_mail_error_code(self, value):
+            return MailService.classify_mail_error_code(value)
+
+        def invalidate_saved_password(self, *, user_id: int, mailbox_id: str | None = None) -> None:
+            invalidated.append((user_id, mailbox_id))
+
+    monkeypatch.setattr(mail_api, "mail_service", _DummyMailService())
+
+    cause = RuntimeError("Invalid credentials for https://10.103.0.50/EWS/Exchange.asmx")
+    wrapped = MailServiceError(
+        "Почтовая папка inbox временно недоступна из-за ошибки Exchange. Повторите попытку.",
+        code="MAIL_FOLDER_TEMPORARILY_UNAVAILABLE",
+        status_code=503,
+    )
+    wrapped.__cause__ = cause
+
+    http_exc = mail_api._mail_http_exception(wrapped, user_id=42)
+
+    assert http_exc.status_code == 409
+    assert http_exc.headers["X-Mail-Error-Code"] == "MAIL_AUTH_INVALID"
+    assert "парол" in str(http_exc.detail).lower()
+    assert invalidated == [(42, None)]

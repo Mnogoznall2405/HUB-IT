@@ -14,7 +14,7 @@ const baseForm = {
 
   to_employee: 'Петров П.П.',
 
-  doc_date: '2026-02-17',
+  doc_date: '2026-02-17 14:30:00',
 
   equipment_inv_nos_text: '100887, 100888',
 
@@ -36,7 +36,7 @@ describe('UploadActDetailsForm', () => {
 
     expect(screen.getByLabelText('На сотрудника')).toHaveValue('Петров П.П.');
 
-    expect(screen.getByLabelText('Дата документа (YYYY-MM-DD)')).toHaveValue('2026-02-17');
+    expect(screen.getByLabelText('Дата и время загрузки')).toHaveValue('2026-02-17 14:30:00');
 
     expect(screen.getByLabelText('Инв. № (через запятую)')).toHaveValue('100887, 100888');
 

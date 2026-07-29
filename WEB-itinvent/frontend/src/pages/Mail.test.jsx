@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { clearSWRCache } from '../lib/swrCache';
-import { writeMailRecentMessageDetail } from '../lib/mailRecentCache';
+import { writeMailRecentMessageDetail, writeMailRecentBootstrap, writeMailRecentList } from '../lib/mailRecentCache';
 import { MAIL_SELECTED_MAILBOX_STORAGE_KEY } from '../components/mail/mailMailboxModel';
+import { buildMailListRequestContext } from '../components/mail/mailListModel';
 
 const {
   mockGetBootstrap,
@@ -1318,6 +1319,8 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-initial-loading')).toBeTruthy();
     });
     expect(screen.queryByTestId('mail-toolbar')).toBeNull();
+    expect(screen.queryByText('Проверяем доступ к почте...')).toBeNull();
+    expect(screen.queryByText('Ввести пароль')).toBeNull();
 
     await act(async () => {
       resolveBootstrap(buildBootstrapPayload());
@@ -1346,6 +1349,60 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Входящие');
     });
     expect(screen.queryByTestId('mail-initial-loading')).toBeNull();
+  });
+
+  it('opens recent local cache immediately and never flashes the credentials gate while bootstrap refreshes', async () => {
+    const cachedMessage = buildMessage({ id: 'msg-cached-1', subject: 'Cached inbox item' });
+    const scope = '100';
+    const listContext = buildMailListRequestContext({
+      scope,
+      folder: 'inbox',
+      viewMode: 'messages',
+      limit: 50,
+      offset: 0,
+    });
+    writeMailRecentBootstrap({
+      scope,
+      folderSummary: { inbox: { total: 1, unread: 1 } },
+      folderTree: [
+        { id: 'inbox', label: 'Входящие', well_known_key: 'inbox' },
+        { id: 'sent', label: 'Отправленные', well_known_key: 'sent' },
+      ],
+    });
+    writeMailRecentList({
+      scope,
+      contextKey: listContext.contextKey,
+      listData: {
+        items: [cachedMessage],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        has_more: false,
+        next_offset: null,
+        search_limited: false,
+        searched_window: 0,
+      },
+    });
+
+    mockGetBootstrap.mockReset();
+    mockGetBootstrap.mockReturnValueOnce(new Promise(() => {}));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-cached-1')).toBeTruthy();
+    });
+    expect(screen.queryByText('Проверяем доступ к почте...')).toBeNull();
+    expect(screen.queryByText('Требуется корпоративный пароль')).toBeNull();
+    expect(screen.queryByText('Ввести пароль')).toBeNull();
+    expect(screen.queryByTestId('mail-initial-loading')).toBeNull();
+    expect(mockGetBootstrap).toHaveBeenCalled();
   });
 
   it('requests bootstrap with the reduced default limit', async () => {

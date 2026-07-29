@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getDashboard: vi.fn(),
   getChatUnread: vi.fn(),
   getMailUnread: vi.fn(),
+  getDocflowSummary: vi.fn(),
   savePreferences: vi.fn(),
 }));
 
@@ -25,6 +26,12 @@ vi.mock('../api/chatNotifications', () => ({
 vi.mock('../api/mailNotifications', () => ({
   mailNotificationsAPI: {
     getUnreadCount: (...args) => mocks.getMailUnread(...args),
+  },
+}));
+
+vi.mock('../api/docflow', () => ({
+  docflowAPI: {
+    getInboxSummary: (...args) => mocks.getDocflowSummary(...args),
   },
 }));
 
@@ -177,6 +184,12 @@ describe('Dashboard today page', () => {
     });
     mocks.getChatUnread.mockResolvedValue({ messages_unread_total: 3 });
     mocks.getMailUnread.mockResolvedValue({ unread_count: 4 });
+    mocks.getDocflowSummary.mockResolvedValue({
+      status: 'available',
+      count: 3,
+      truncated: false,
+      as_of: '2026-07-29T08:00:00Z',
+    });
     mocks.savePreferences.mockResolvedValue({
       dashboard_sections: ['attention', 'tasks', 'communication'],
     });

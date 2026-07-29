@@ -112,7 +112,7 @@ def _format_filter_labels(
 
     project_label = ", ".join(projects_by_id.get(item, item) for item in normalized_project_ids) or "Все проекты"
     object_label = ", ".join(objects_by_id.get(item, item) for item in normalized_object_ids) or "Все объекты"
-    participant_label = ", ".join(users_by_id.get(item, str(item)) for item in normalized_participant_ids) or "Все участники"
+    participant_label = ", ".join(users_by_id.get(item, str(item)) for item in normalized_participant_ids) or "Все исполнители"
 
     return {
         "projects": project_label,
@@ -178,7 +178,7 @@ def build_task_analytics_excel(
             ["База дат", _DATE_BASIS_LABELS.get(_normalize_text(filters.get("date_basis"), "protocol_date"), "По дате постановки")],
             ["Проекты", filter_labels["projects"]],
             ["Объекты", filter_labels["objects"]],
-            ["Участники", filter_labels["participants"]],
+            ["Исполнители", filter_labels["participants"]],
         ],
     )
 
@@ -201,10 +201,10 @@ def build_task_analytics_excel(
         ],
     )
 
-    participant_sheet = workbook.create_sheet(title="По участникам")
+    participant_sheet = workbook.create_sheet(title="По исполнителям")
     _append_table(
         participant_sheet,
-        ["Участник", *[label for label, _ in _ANALYTICS_TABLE_COLUMNS]],
+        ["Исполнитель", *[label for label, _ in _ANALYTICS_TABLE_COLUMNS]],
         _table_rows(analytics.get("by_participant") or [], label_key="participant_name"),
     )
 

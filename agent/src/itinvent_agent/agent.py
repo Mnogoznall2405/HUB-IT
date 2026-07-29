@@ -1,6 +1,7 @@
 ﻿import argparse
 import ctypes
 import getpass
+import hashlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -18,7 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import psutil
@@ -87,8 +88,13 @@ REBOOT_REMINDER_STATE_FILE_NAME = "reboot_reminder_state.json"
 AGENT_STATUS_FILE_NAME = "agent_status.json"
 OUTLOOK_SCAN_STATE_FILE_NAME = "outlook_scan_state.json"
 USER_PROFILE_SIZES_CACHE_FILE_NAME = "user_profile_sizes_cache.json"
+SOFTWARE_INVENTORY_STATE_FILE_NAME = "software_inventory_state.json"
 ENV_FILE_NAME = ".env"
-PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
+LOW_DISK_FREE_GB = 5.0
+DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS = 168
+AGENT_TASK_NAME = "HUB-IT Agent"
+PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT"
+LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 PROGRAM_DATA_AGENT_ROOT = PROGRAM_DATA_ROOT / "Agent"
 PROGRAM_DATA_DIR = PROGRAM_DATA_AGENT_ROOT / "Logs"
 PROGRAM_DATA_SPOOL_DIR = PROGRAM_DATA_AGENT_ROOT / "Spool"
@@ -340,6 +346,7 @@ def _candidate_env_paths() -> List[Path]:
         candidates.append(Path(explicit_path))
 
     candidates.append(PROGRAM_DATA_AGENT_ROOT / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA_ROOT / "Agent" / ENV_FILE_NAME)
     if getattr(sys, "frozen", False):
         candidates.append(Path(sys.executable).resolve().parent / ENV_FILE_NAME)
     else:
@@ -349,6 +356,7 @@ def _candidate_env_paths() -> List[Path]:
             candidates.append(parent / ENV_FILE_NAME)
     candidates.append(Path.cwd() / ENV_FILE_NAME)
     candidates.append(PROGRAM_DATA_ROOT / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME)
     return candidates
 
 
@@ -381,6 +389,20 @@ def _run_scan_sidecar(run_once: bool = False) -> None:
         return
 
     try:
+        # Sidecar inherits inventory process env; still bootstrap scan-specific keys
+        # and attach dedicated ScanAgent log file (otherwise only itinvent_agent.log exists).
+        try:
+            loaded = scan_agent_module.bootstrap_env_from_files()
+            if loaded:
+                logging.info("Scan sidecar loaded .env sources: %s", "; ".join(loaded))
+        except Exception as exc:
+            logging.debug("Scan sidecar env bootstrap skipped: %s", exc)
+        try:
+            scan_agent_module.setup_logging()
+            logging.info("Scan sidecar log file: %s", scan_agent_module.LOG_PATH)
+        except Exception as exc:
+            logging.warning("Scan sidecar logging setup failed: %s", exc)
+
         scan_config = scan_agent_module._read_env()
         if not str(scan_config.get("api_key") or "").strip():
             logging.error("Scan sidecar is disabled: SCAN_AGENT_API_KEY is not configured")
@@ -2175,6 +2197,197 @@ def mountpoint_rank(mountpoint: str) -> int:
     return 0 if re.match(r"^[A-Za-z]:\\$", mount) else 1
 
 
+def _reg_key_exists(root: Any, path: str) -> bool:
+    if winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(root, path):
+            return True
+    except Exception:
+        return False
+
+
+def get_pending_reboot_info() -> Dict[str, Any]:
+    reasons: List[str] = []
+    if winreg is not None:
+        checks = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending", "cbs_reboot_pending"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired", "windows_update_reboot_required"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager", "pending_file_rename"),
+        ]
+        for root, path, reason in checks:
+            if reason == "pending_file_rename":
+                try:
+                    with winreg.OpenKey(root, path) as key:
+                        winreg.QueryValueEx(key, "PendingFileRenameOperations")
+                    reasons.append(reason)
+                except Exception:
+                    pass
+            elif _reg_key_exists(root, path):
+                reasons.append(reason)
+    return {
+        "pending_reboot": bool(reasons),
+        "pending_reboot_reasons": reasons,
+    }
+
+
+def build_ops_health(logical_disks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    system_drive = str(os.environ.get("SystemDrive") or "C:").strip().upper() or "C:"
+    system_root = system_drive if system_drive.endswith("\\") else f"{system_drive}\\"
+    free_gb: Optional[float] = None
+    used_percent: Optional[float] = None
+    low_volumes: List[str] = []
+
+    for disk in logical_disks or []:
+        if not isinstance(disk, dict):
+            continue
+        mount = str(disk.get("mountpoint") or "").strip().upper()
+        try:
+            disk_free = float(disk.get("free_gb"))
+        except Exception:
+            disk_free = None
+        if disk_free is not None and disk_free < LOW_DISK_FREE_GB:
+            low_volumes.append(mount or str(disk.get("device") or "?"))
+        if mount.rstrip("\\") == system_drive.rstrip("\\") or mount == system_root:
+            free_gb = disk_free
+            try:
+                used_percent = float(disk.get("percent"))
+            except Exception:
+                used_percent = None
+
+    if free_gb is None:
+        try:
+            usage = psutil.disk_usage(system_root)
+            free_gb = round(usage.free / (1024.0**3), 2)
+            used_percent = float(usage.percent)
+            if free_gb < LOW_DISK_FREE_GB and system_drive not in low_volumes:
+                low_volumes.append(system_drive)
+        except Exception as exc:
+            logging.debug("ops_health disk probe failed: %s", exc)
+
+    reboot = get_pending_reboot_info()
+    reminder_state = _load_reboot_reminder_state()
+    last_reminder = reminder_state.get("last_sent_at") or reminder_state.get("last_reminder_at")
+    try:
+        last_reminder_at = int(last_reminder) if last_reminder is not None else None
+    except Exception:
+        last_reminder_at = None
+
+    return {
+        "system_drive_free_gb": free_gb,
+        "system_drive_percent": used_percent,
+        "low_disk": bool(free_gb is not None and free_gb < LOW_DISK_FREE_GB) or bool(low_volumes),
+        "low_disk_volumes": low_volumes,
+        "pending_reboot": bool(reboot.get("pending_reboot")),
+        "pending_reboot_reasons": list(reboot.get("pending_reboot_reasons") or []),
+        "last_reboot_reminder_at": last_reminder_at,
+        "agent_task_name": AGENT_TASK_NAME,
+        "program_data_root": str(PROGRAM_DATA_AGENT_ROOT),
+        "legacy_itinvent_present": LEGACY_PROGRAM_DATA_ROOT.exists(),
+    }
+
+
+def _software_inventory_state_path() -> Path:
+    return PROGRAM_DATA_AGENT_ROOT / SOFTWARE_INVENTORY_STATE_FILE_NAME
+
+
+def _software_inventory_interval_hours() -> int:
+    raw = str(os.getenv("ITINV_SOFTWARE_INVENTORY_INTERVAL_HOURS", str(DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS))).strip()
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS
+
+
+def _software_inventory_due(now_ts: int) -> bool:
+    interval_hours = _software_inventory_interval_hours()
+    if interval_hours <= 0:
+        return False
+    state_path = _software_inventory_state_path()
+    if not state_path.exists():
+        return True
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        last_at = int((data or {}).get("collected_at") or 0)
+    except Exception:
+        return True
+    return (now_ts - last_at) >= interval_hours * 3600
+
+
+def _iter_uninstall_software_items() -> List[Dict[str, str]]:
+    if winreg is None:
+        return []
+    roots = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    items: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for root, base in roots:
+        try:
+            with winreg.OpenKey(root, base) as parent:
+                count = winreg.QueryInfoKey(parent)[0]
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                with winreg.OpenKey(root, base) as parent:
+                    sub_name = winreg.EnumKey(parent, index)
+                with winreg.OpenKey(root, f"{base}\\{sub_name}") as key:
+                    def _read(name: str) -> str:
+                        try:
+                            value, _ = winreg.QueryValueEx(key, name)
+                            return sanitize_text(value)
+                        except Exception:
+                            return ""
+
+                    display_name = _read("DisplayName")
+                    if not display_name:
+                        continue
+                    dedupe_key = f"{display_name}|{_read('DisplayVersion')}|{_read('Publisher')}".lower()
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    items.append(
+                        {
+                            "display_name": display_name,
+                            "display_version": _read("DisplayVersion"),
+                            "publisher": _read("Publisher"),
+                            "install_date": _read("InstallDate"),
+                        }
+                    )
+            except Exception:
+                continue
+    items.sort(key=lambda row: row.get("display_name", "").lower())
+    return items
+
+
+def collect_software_inventory(*, limit: int = 2500) -> Dict[str, Any]:
+    items = _iter_uninstall_software_items()[: max(1, int(limit))]
+    digest = hashlib.sha256(
+        json.dumps(items, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    collected_at = int(time.time())
+    payload = {
+        "items": items,
+        "count": len(items),
+        "snapshot_hash": digest,
+        "collected_at": collected_at,
+    }
+    try:
+        _atomic_write_text(
+            _software_inventory_state_path(),
+            json.dumps(
+                {"collected_at": collected_at, "snapshot_hash": digest, "count": len(items)},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logging.warning("Software inventory state write failed: %s", exc)
+    return payload
+
+
 def get_logical_disks() -> List[Dict[str, Any]]:
     selected_by_device: Dict[str, Dict[str, Any]] = {}
     skipped: Dict[str, int] = {}
@@ -3012,14 +3225,16 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
         },
     }
 
+    logical_disks: Optional[List[Dict[str, Any]]] = None
     if include_full_snapshot:
+        logical_disks = get_logical_disks()
         payload.update(
             {
                 "system_serial": get_system_serial(),
                 "cpu_model": get_cpu_model(),
                 "ram_gb": round(psutil.virtual_memory().total / (1024.0 ** 3), 2),
                 "monitors": get_monitors(),
-                "logical_disks": get_logical_disks(),
+                "logical_disks": logical_disks,
                 "storage": get_storage_info(),
                 "os_info": get_os_info(),
                 "network": network_info or get_network_info(),
@@ -3028,6 +3243,13 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
                 "last_full_snapshot_at": now_ts,
             }
         )
+        if _software_inventory_due(now_ts):
+            try:
+                payload["software_inventory"] = collect_software_inventory()
+            except Exception as exc:
+                logging.warning("Software inventory collection failed: %s", exc)
+
+    payload["ops_health"] = build_ops_health(logical_disks)
 
     logging.info(
         "Inventory collected for host=%s user=%s type=%s",
@@ -3463,7 +3685,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     RUN_CMD_TIMEOUT_SEC = config.run_cmd_timeout_sec
     OUTLOOK_SCAN_CACHE_TTL_SEC = config.outlook_refresh_sec
 
-    logging.info("=== Starting IT-Invent Agent ===")
+    logging.info("=== Starting HUB-IT Agent ===")
     logging.info(
         "Config: server=%s heartbeat=%ss full_snapshot=%ss jitter=%ss outlook_refresh=%ss once=%s check=%s "
         "run_cmd_timeout=%ss inv_queue_batch=%s inv_queue_max_items=%s inv_queue_max_age_days=%s inv_queue_max_total_mb=%s "

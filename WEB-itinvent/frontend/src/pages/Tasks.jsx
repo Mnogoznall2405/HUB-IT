@@ -56,7 +56,7 @@ function TasksPageContent() {
 
         <TasksDialogsLayer />
 
-        {ui.isMobile && filters.canCreateTasks && !detail.detailsOpen && !create.createOpen ? (
+        {ui.isMobile && list.isTaskDataMode && filters.canCreateTasks && !detail.detailsOpen && !create.createOpen ? (
           <IconButton
             data-testid="tasks-create-fab"
             aria-label="Создать задачу"

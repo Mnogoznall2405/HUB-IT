@@ -1,10 +1,10 @@
-param(
+﻿param(
     [ValidateSet("status", "start", "restart", "stop")]
     [string]$Action = "restart",
     [string]$ServiceName = "itinvent-scan-agent",
-    [string]$TaskName = "IT-Invent Agent",
+    [string]$TaskName = "HUB-IT Agent",
     [string[]]$ProcessNames = @("ITInventAgent", "ITInventOutlookProbe"),
-    [string]$ExecutablePath = "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe"
+    [string]$ExecutablePath = "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe"
 )
 
 $ErrorActionPreference = "Stop"

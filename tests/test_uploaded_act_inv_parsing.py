@@ -1,3 +1,4 @@
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -78,10 +79,10 @@ def test_build_uploaded_act_addinfo_uses_act_line_format():
         1464,
         "Санду Андрей Олегович",
         "Козловский Андрей Михайлович",
-        datetime(2026, 6, 29),
+        datetime(2026, 6, 29, 14, 35),
     )
 
-    assert add_info == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026"
+    assert add_info == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35"
 
 
 def test_uploaded_act_items_descr_matches_document_addinfo_format():
@@ -89,9 +90,9 @@ def test_uploaded_act_items_descr_matches_document_addinfo_format():
         1464,
         "Санду Андрей Олегович",
         "Козловский Андрей Михайлович",
-        datetime(2026, 6, 29),
+        datetime(2026, 6, 29, 14, 35),
     )
-    assert line == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026"
+    assert line == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35"
     assert line.startswith("Акт 1464 ")
     assert "->" not in line
     assert ": акт №" not in line
@@ -102,12 +103,12 @@ def test_uploaded_act_file_name_uses_act_note_and_original_extension():
         1464,
         "Санду Андрей Олегович",
         "Козловский Андрей Михайлович",
-        datetime(2026, 6, 29),
+        datetime(2026, 6, 29, 14, 35),
     )
 
     file_name = queries._build_uploaded_act_file_name(line, "original_scan.PDF")
 
-    assert file_name == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026.PDF"
+    assert file_name == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35.PDF"
 
 
 def test_uploaded_act_file_name_falls_back_to_pdf_extension():
@@ -217,6 +218,10 @@ def test_create_uploaded_act_draft_keeps_only_confirmed_numeric_inv_nos(monkeypa
     assert draft["equipment_inv_nos"] == ["101795"]
     assert [item["inv_no"] for item in draft["resolved_items"]] == ["101795"]
     assert any("отброшены нечисловые кандидаты" in warning.lower() for warning in draft["warnings"])
+    # Upload datetime must be used, not the date printed in the act / returned by the model.
+    assert draft["doc_date"].startswith(datetime.now().strftime("%Y-%m-%d "))
+    assert draft["doc_date"] != "2026-03-17"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", draft["doc_date"])
 
 
 def test_create_uploaded_act_draft_filters_fallback_candidates_by_database(monkeypatch):

@@ -1,14 +1,16 @@
 param(
-    [string]$TaskName = "IT-Invent Agent",
-    [string]$ExecutablePath = "C:\Program Files\IT-Invent\Agent\ITInventAgent.exe",
+    [string]$TaskName = "HUB-IT Agent",
+    [string]$ExecutablePath = "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe",
     [int]$RepeatMinutes = 60,
     [string]$EnvFilePath = "",
     [switch]$StartAfterRegister
 )
 
+$LegacyTaskNames = @("IT-Invent Agent")
+
 $ErrorActionPreference = "Stop"
 
-$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "IT-Invent\Agent"
+$defaultRuntimeRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "HUB-IT\Agent"
 
 function Set-EnvFileValue {
     param(
@@ -60,8 +62,11 @@ function Set-ScanOnDemandDefaults {
     Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_WATCHDOG_ENABLED" -Value "0"
     Set-EnvFileValue -Path $EnvPath -Key "ITINV_AGENT_HEARTBEAT_SEC" -Value "600"
     Set-EnvFileValue -Path $EnvPath -Key "ITINV_AGENT_HEARTBEAT_JITTER_SEC" -Value "120"
-    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_INTERVAL_SEC" -Value "600"
-    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_JITTER_SEC" -Value "120"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_INTERVAL_SEC" -Value "60"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_JITTER_SEC" -Value "30"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_OUTBOX_DRAIN_BATCH" -Value "50"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_OUTBOX_DRAIN_INTERVAL_SEC" -Value "10"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_SERVER_QUEUE_SLOW_THRESHOLD" -Value "2000"
 }
 
 function Stop-ExistingAgentRuntime {
@@ -109,6 +114,15 @@ $envPath = if ($EnvFilePath) { $EnvFilePath } else { Join-Path $defaultRuntimeRo
 
 Set-ScanOnDemandDefaults -EnvPath $envPath
 Stop-ExistingAgentRuntime -TaskName $TaskName
+foreach ($legacyName in $LegacyTaskNames) {
+    if ($legacyName -eq $TaskName) { continue }
+    Stop-ExistingAgentRuntime -TaskName $legacyName
+    $legacyTask = Get-ScheduledTask -TaskName $legacyName -ErrorAction SilentlyContinue
+    if ($null -ne $legacyTask) {
+        Unregister-ScheduledTask -TaskName $legacyName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "[OK] Legacy scheduled task '$legacyName' removed."
+    }
+}
 
 $action = New-ScheduledTaskAction -Execute $ExecutablePath -WorkingDirectory $workDir
 $trigger = New-ScheduledTaskTrigger -AtStartup

@@ -45,8 +45,9 @@
 2. `scan_server/app.py` (FastAPI, порт `127.0.0.1:8011`)
 - API приема (`/ingest`, `/ingest/pdf-slice`, `/ingest/document`, `/heartbeat`), очереди задач
   (`/tasks/poll`, `/tasks/{id}/result`), UI (`/incidents`, `/review-items`, `/dashboard`, `/agents`).
-- SQLite база: `data/scan_server/scan_server.db`.
-- Worker обрабатывает задания последовательно и создает инциденты.
+- Хранилище: PostgreSQL schema `scan` при `SCAN_DATABASE_URL`, иначе SQLite `data/scan_server/scan_server.db`.
+  План/cutover: [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md).
+- Worker обрабатывает задания и создает инциденты (`FOR UPDATE SKIP LOCKED` на PostgreSQL).
 - OCR: `rus`, 300 DPI для страницы и усиленная проверка верхней/нижней области в масштабе 400 DPI. Для русскоязычных грифов это снижает путаницу похожих кириллических и латинских букв; типовые OCR-подмены дополнительно нормализуются правилами.
 - Неполный анализ получает финальный статус `analysis_incomplete` и никогда не считается `done_clean`.
 

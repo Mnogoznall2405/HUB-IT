@@ -37,43 +37,65 @@ function DatabaseDesktopToolbar({
   onBranchChange = noop,
   hasExpandedVisible = false,
   onCollapseAll = noop,
+  trailing = null,
+  sx = null,
 }) {
-  const showManagementRow = branches.length > 0 || hasExpandedVisible;
-  const buttonSx = (color) => getOfficeQuietActionSx(ui, theme, color, {
+  const secondarySx = getOfficeQuietActionSx(ui, theme, 'neutral', {
     whiteSpace: 'nowrap',
-    borderRadius: '12px',
+    borderRadius: '4px',
+    border: 'none',
+    bgcolor: 'transparent',
+    px: 1,
+    minHeight: 32,
+    '&:hover': {
+      border: 'none',
+      bgcolor: ui.actionHover,
+      boxShadow: 'none',
+    },
   });
+
+  const primarySx = {
+    whiteSpace: 'nowrap',
+    borderRadius: '4px',
+    boxShadow: 'none',
+    textTransform: 'none',
+    minHeight: 32,
+    '&:hover': { boxShadow: 'none' },
+  };
 
   return (
     <Paper
       elevation={0}
       sx={getOfficeActionTraySx(ui, {
-        p: 1.2,
-        mb: 2,
+        p: 0.75,
+        px: 1,
+        mb: 0,
         display: 'flex',
-        flexDirection: 'column',
-        gap: 1,
+        alignItems: 'center',
+        gap: 0.75,
+        flexWrap: 'wrap',
+        ...sx,
       })}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', minWidth: 0 }}>
         {!isConsumablesMode && (
           <>
             <Button
               size="small"
-              variant="outlined"
+              variant="text"
               startIcon={<QrCodeScannerIcon />}
               onClick={onOpenQrScanner}
-              sx={buttonSx('primary')}
+              sx={secondarySx}
             >
               QR Сканер
             </Button>
             <Button
               size="small"
-              variant="outlined"
+              variant="text"
               startIcon={<MyLocationIcon />}
               onClick={onIdentifyWorkspace}
               disabled={identifyPCLoading}
-              sx={buttonSx('warning')}
+              sx={secondarySx}
             >
               {identifyPCLoading ? 'Определение...' : 'Определить ПК'}
             </Button>
@@ -81,96 +103,105 @@ function DatabaseDesktopToolbar({
         )}
 
         {canDatabaseWrite && !isConsumablesMode && (
-          <>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<UploadFileIcon />}
-              onClick={onOpenUploadAct}
-              sx={buttonSx('primary')}
-            >
-              Загрузить акт
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<AddIcon />}
-              onClick={onOpenAddEquipment}
-              sx={buttonSx('success')}
-            >
-              Добавить оборудование
-            </Button>
-          </>
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<UploadFileIcon />}
+            onClick={onOpenUploadAct}
+            sx={secondarySx}
+          >
+            Загрузить акт
+          </Button>
+        )}
+
+        {canDatabaseWrite && !isConsumablesMode && (
+          <Button
+            size="small"
+            variant="contained"
+            color="primary"
+            startIcon={<AddIcon />}
+            onClick={onOpenAddEquipment}
+            sx={primarySx}
+          >
+            Добавить оборудование
+          </Button>
         )}
 
         {canDatabaseWrite && isConsumablesMode && (
           <Button
             size="small"
-            variant="outlined"
+            variant="contained"
+            color="primary"
             startIcon={<AddIcon />}
             onClick={onOpenAddConsumable}
-            sx={buttonSx('success')}
+            sx={primarySx}
           >
             Добавить расходник
           </Button>
         )}
       </Box>
 
-      {showManagementRow && (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1,
-            flexWrap: 'wrap',
-            pt: 1,
-            borderTop: '1px solid',
-            borderColor: ui.borderSoft,
-          }}
-        >
-          {branches.length > 0 && (
-            <FormControl
-              size="small"
-              sx={{
-                minWidth: 220,
-                maxWidth: 320,
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: '12px',
-                  bgcolor: ui.actionBg,
-                },
-              }}
-            >
-              <InputLabel shrink>Филиал</InputLabel>
-              <Select
-                value={selectedBranch}
-                onChange={(event) => onBranchChange(event.target.value)}
-                label="Филиал"
-                displayEmpty
-                renderValue={(value) => (value ? value : 'Все филиалы')}
-              >
-                <MenuItem value="">Все филиалы</MenuItem>
-                {branches.map((branch) => (
-                  <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
-                    {branch.BRANCH_NAME}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-
-          {hasExpandedVisible && (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />}
-              onClick={onCollapseAll}
-              sx={buttonSx('neutral')}
-            >
-              Свернуть разделы
-            </Button>
-          )}
+      {trailing ? (
+        <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+          {trailing}
         </Box>
-      )}
+      ) : null}
+
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.75,
+          flexWrap: 'wrap',
+          ml: { sm: 'auto' },
+        }}
+      >
+        {branches.length > 0 && (
+          <FormControl
+            size="small"
+            sx={{
+              minWidth: 160,
+              maxWidth: 240,
+              '& .MuiOutlinedInput-root': {
+                borderRadius: '4px',
+                bgcolor: ui.actionBg,
+                height: 32,
+              },
+              '& .MuiInputLabel-root': {
+                fontSize: '0.8125rem',
+              },
+            }}
+          >
+            <InputLabel shrink>Филиал</InputLabel>
+            <Select
+              value={selectedBranch}
+              onChange={(event) => onBranchChange(event.target.value)}
+              label="Филиал"
+              displayEmpty
+              renderValue={(value) => (value ? value : 'Все филиалы')}
+            >
+              <MenuItem value="">Все филиалы</MenuItem>
+              {branches.map((branch) => (
+                <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
+                  {branch.BRANCH_NAME}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
+        {hasExpandedVisible && (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />}
+            onClick={onCollapseAll}
+            sx={secondarySx}
+          >
+            Свернуть разделы
+          </Button>
+        )}
+      </Box>
     </Paper>
   );
 }

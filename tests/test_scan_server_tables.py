@@ -485,6 +485,134 @@ def test_list_incident_inbox_groups_returns_host_file_groups(temp_dir):
     assert first["incident_id"] != second["incident_id"]
 
 
+def test_list_incidents_hostname_like_q_uses_fast_path_and_skips_json_blob(temp_dir):
+    store = _make_store(temp_dir)
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="TMN-PC-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\a.pdf",
+        file_name="a.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    other = _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="OTHER-HOST",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\b.pdf",
+        file_name="b.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    # Put the hostname needle only inside matched_patterns_json of the other host.
+    with store._lock, store._connect() as conn:
+        finding_id = conn.execute(
+            "SELECT finding_id FROM scan_incidents WHERE id=?",
+            (other["incident_id"],),
+        ).fetchone()["finding_id"]
+        conn.execute(
+            "UPDATE scan_findings SET matched_patterns_json=? WHERE id=?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "pattern": "password",
+                            "pattern_name": "password",
+                            "value": "x",
+                            "snippet": "mention of TMN-PC-01 in OCR blob " + ("x" * 5000),
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                finding_id,
+            ),
+        )
+        conn.commit()
+
+    by_host_q = store.list_incidents(q="TMN-PC-01", limit=20)
+    assert by_host_q["total"] == 1
+    assert by_host_q["items"][0]["hostname"] == "TMN-PC-01"
+
+    by_prefix = store.list_incidents(q="TMN-PC", limit=20)
+    assert by_prefix["total"] == 1
+    assert by_prefix["items"][0]["hostname"] == "TMN-PC-01"
+
+
+def test_list_incidents_text_q_matches_file_name_not_json_and_slims_patterns(temp_dir):
+    store = _make_store(temp_dir)
+    seeded = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\unique-secret-name.pdf",
+        file_name="unique-secret-name.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    with store._lock, store._connect() as conn:
+        finding_id = conn.execute(
+            "SELECT finding_id FROM scan_incidents WHERE id=?",
+            (seeded["incident_id"],),
+        ).fetchone()["finding_id"]
+        huge_snippet = "OCR " + ("я" * 2000)
+        conn.execute(
+            "UPDATE scan_findings SET matched_patterns_json=? WHERE id=?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "pattern": "password",
+                            "pattern_name": "Password pattern",
+                            "value": "v" * 400,
+                            "snippet": huge_snippet,
+                        }
+                    ]
+                    + [{"pattern": f"p{i}", "pattern_name": f"p{i}", "value": "x"} for i in range(20)],
+                    ensure_ascii=False,
+                ),
+                finding_id,
+            ),
+        )
+        conn.commit()
+
+    by_name = store.list_incidents(q="unique-secret-name", limit=20)
+    assert by_name["total"] == 1
+    item = by_name["items"][0]
+    assert item["file_name"] == "unique-secret-name.pdf"
+    assert len(item["matched_patterns"]) <= 8
+    assert len(str(item["matched_patterns"][0].get("snippet") or "")) <= 240
+    assert len(str(item["matched_patterns"][0].get("value") or "")) <= 120
+
+    # Searching only inside former JSON blobs must not hit.
+    by_json_only = store.list_incidents(q="OCR " + ("я" * 20), limit=20)
+    assert by_json_only["total"] == 0
+
+
+def test_looks_like_hostname_query_helpers():
+    from scan_server.database import looks_like_hostname_query
+
+    assert looks_like_hostname_query("TMN-PC-01") is True
+    assert looks_like_hostname_query("TMN-PC") is True
+    assert looks_like_hostname_query("host.example.local") is True
+    assert looks_like_hostname_query("unique-secret-name") is False
+    assert looks_like_hostname_query("ab") is False
+    assert looks_like_hostname_query("конфиденциально") is False
+    assert looks_like_hostname_query("host name") is False
+
+
 def test_list_incidents_pages_beyond_500_and_returns_page_metadata(temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())
@@ -2190,7 +2318,7 @@ def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir
     task_result = json.loads(task_row["result_json"])
     assert result["failed_jobs"] == 1
     assert job_row["status"] == "analysis_incomplete"
-    assert job_row["error_text"] == "Missing transient PDF payload"
+    assert job_row["error_text"] == "Отсутствует временный файл PDF на сервере"
     assert task_row["status"] == "failed"
     assert task_result["jobs_failed"] == 0
     assert task_result["jobs_incomplete"] == 1
@@ -2251,7 +2379,7 @@ def test_reconcile_job_pdf_spool_fails_stale_processing_job_without_payload(temp
 
     assert result["failed_jobs"] == 1
     assert job_row["status"] == "analysis_incomplete"
-    assert job_row["error_text"] == "Missing transient PDF payload"
+    assert job_row["error_text"] == "Отсутствует временный файл PDF на сервере"
 
 
 def test_queue_job_reopens_missing_transient_payload_job_with_same_event_id(temp_dir):
@@ -2272,7 +2400,7 @@ def test_queue_job_reopens_missing_transient_payload_job_with_same_event_id(temp
     store.finalize_job(
         job_id=first["job_id"],
         status="failed",
-        error_text="Missing transient PDF payload",
+        error_text="Отсутствует временный файл PDF на сервере",
     )
 
     reopened = store.queue_job({**payload, "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 second")})

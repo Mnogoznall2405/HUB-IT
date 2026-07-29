@@ -48,6 +48,74 @@ EMPLOYEE_STATUSES = {"active", "dismissed", "archived"}
 MASKED_VALUE = "** **** ******"
 
 VALID_COMMENT_TYPES = {"normal", "problem", "clarification", "system"}
+
+
+def _first_contact_value(items: Any) -> str | None:
+    """Pick first non-empty `.value` from address-book phone/email list."""
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if value:
+            return value
+    return None
+
+
+def map_zup_person_to_ticket_employee(
+    item: dict[str, Any] | None,
+    *,
+    personal: dict[str, Any] | None = None,
+    include_personal: bool = False,
+) -> dict[str, Any]:
+    """Map Address Book / ZUP person into ticket employee form fields."""
+    from backend.services.address_book_service import format_department_label
+
+    source = item if isinstance(item, dict) else {}
+    full_name = str(source.get("full_name") or "").strip()
+    department = format_department_label(
+        source.get("department"),
+        source.get("department_location"),
+    ) or None
+    position = str(source.get("position") or "").strip() or None
+    phone = (
+        _first_contact_value(source.get("work_phones"))
+        or _first_contact_value(source.get("personal_phones"))
+    )
+    email = (
+        _first_contact_value(source.get("work_emails"))
+        or _first_contact_value(source.get("personal_emails"))
+    )
+    employee_code = str(source.get("employee_code") or "").strip() or None
+    result = {
+        "full_name": full_name,
+        "department": department,
+        "position": position,
+        "phone": phone,
+        "email": email,
+        "employee_code": employee_code,
+    }
+    if include_personal:
+        pdata = personal if isinstance(personal, dict) else {}
+        # Allow personal fields already merged onto the source item (tests / callers).
+        from backend.services.address_book_service import clean_zup_birth_place
+
+        for key in (
+            "date_of_birth",
+            "birth_place",
+            "passport_series",
+            "passport_number",
+            "issued_by",
+            "issuer_code",
+            "issue_date",
+            "registration_address",
+        ):
+            value = str(pdata.get(key) or source.get(key) or "").strip()
+            if key == "birth_place" and value:
+                value = clean_zup_birth_place(value)
+            result[key] = value or None
+    return result
 COMMENT_MIN_LENGTH = 1
 COMMENT_MAX_LENGTH = 2000
 HISTORY_PAGE_SIZE = 20
@@ -1156,18 +1224,22 @@ class TicketsService:
             ValueError: If code is invalid or already exists.
         """
         self._require_admin(user)
-        code = self._validate_object_code(data.get("code", ""))
+        raw_code = str(data.get("code") or "").strip()
         name = self._validate_object_name(data.get("name", ""))
         region = self._validate_object_region(data.get("region", ""))
         short_name = (data.get("short_name") or "")[:50] or None
         default_assignee_id = data.get("default_assignee_id")
 
         with app_session(self._database_url) as session:
-            existing = session.scalars(
-                select(TicketObject).where(TicketObject.code == code)
-            ).first()
-            if existing is not None:
-                raise ValueError(f"Object with code '{code}' already exists")
+            if raw_code:
+                code = self._validate_object_code(raw_code)
+                existing = session.scalars(
+                    select(TicketObject).where(TicketObject.code == code)
+                ).first()
+                if existing is not None:
+                    raise ValueError(f"Object with code '{code}' already exists")
+            else:
+                code = self._allocate_object_code(session)
 
             obj = TicketObject(
                 code=code,
@@ -1276,6 +1348,132 @@ class TicketsService:
             page_size=pagination.page_size,
         )
 
+    def search_zup_employees(
+        self,
+        query: str = "",
+        limit: int = 20,
+        user_permissions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Search employees in ZUP (Address Book cache) for ticket form prefill."""
+        from backend.services.address_book_service import address_book_service
+
+        include_personal = self._can_read_personal_data(user_permissions)
+        limited = max(1, min(int(limit or 20), 50))
+        result = address_book_service.search(str(query or ""), limited)
+        raw_items = result.get("items") if isinstance(result, dict) else None
+        personal_map: dict[str, dict[str, str]] = {}
+        if include_personal:
+            codes = [
+                str(raw.get("employee_code") or "").strip()
+                for raw in (raw_items or [])
+                if isinstance(raw, dict) and str(raw.get("employee_code") or "").strip()
+            ]
+            personal_map = address_book_service.get_personal_by_codes(codes)
+
+        items = []
+        for raw in raw_items or []:
+            if not isinstance(raw, dict):
+                continue
+            code = str(raw.get("employee_code") or "").strip()
+            mapped = map_zup_person_to_ticket_employee(
+                raw,
+                personal=personal_map.get(code),
+                include_personal=include_personal,
+            )
+            if not mapped.get("full_name"):
+                continue
+            items.append(mapped)
+        return {
+            "items": items,
+            "total": len(items),
+            "synced_at": (
+                result.get("updated_at")
+                if isinstance(result, dict)
+                else None
+            ),
+            "source": "zup",
+            "include_personal": include_personal,
+        }
+
+    def ensure_employee_from_zup(
+        self,
+        employee_code: str,
+        user_permissions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a ticket employee from a ZUP/address-book person."""
+        from backend.services.address_book_service import address_book_service
+
+        code = str(employee_code or "").strip()
+        if not code:
+            raise TicketsValidationError(["Укажите код сотрудника ЗУП."])
+
+        person = address_book_service.get_person_by_code(code)
+        if person is None:
+            raise TicketsNotFoundError(f"Сотрудник ЗУП с кодом {code} не найден в адресной книге")
+
+        include_personal = self._can_read_personal_data(user_permissions)
+        personal = None
+        if include_personal:
+            personal = address_book_service.get_personal_by_codes([code]).get(code)
+        mapped = map_zup_person_to_ticket_employee(
+            person,
+            personal=personal,
+            include_personal=include_personal,
+        )
+        if not mapped.get("full_name"):
+            raise TicketsValidationError(["В ЗУП нет ФИО для выбранного сотрудника."])
+
+        payload: dict[str, Any] = {
+            "full_name": mapped["full_name"],
+            "department": mapped.get("department"),
+            "position": mapped.get("position"),
+            "phone": mapped.get("phone"),
+            "email": mapped.get("email"),
+            "zup_employee_code": code,
+            "status": "active",
+        }
+        if include_personal:
+            if mapped.get("date_of_birth"):
+                payload["date_of_birth"] = mapped["date_of_birth"]
+            document = {
+                "passport_series": mapped.get("passport_series") or "",
+                "passport_number": mapped.get("passport_number") or "",
+                "issued_by": mapped.get("issued_by") or "",
+                "issuer_code": mapped.get("issuer_code") or "",
+                "birth_place": mapped.get("birth_place") or "",
+                "issue_date": mapped.get("issue_date") or "",
+                "registration_address": mapped.get("registration_address") or "",
+            }
+            if any(str(value or "").strip() for value in document.values()):
+                payload["documents"] = [document]
+
+        existing_id: int | None = None
+        current_document_id: int | None = None
+        with app_session(self._database_url) as session:
+            existing = session.scalars(
+                select(TicketEmployee)
+                .options(selectinload(TicketEmployee.documents))
+                .where(TicketEmployee.zup_employee_code == code)
+            ).first()
+            if existing is None:
+                full_name = mapped["full_name"]
+                existing = session.scalars(
+                    select(TicketEmployee)
+                    .options(selectinload(TicketEmployee.documents))
+                    .where(func.lower(TicketEmployee.full_name) == full_name.lower())
+                ).first()
+            if existing is not None:
+                existing_id = int(existing.id)
+                current_doc = _get_current_document(existing)
+                if current_doc is not None:
+                    current_document_id = int(current_doc.id)
+
+        if existing_id is not None:
+            if current_document_id and payload.get("documents"):
+                payload["documents"][0]["id"] = current_document_id
+            return self.update_employee(existing_id, payload, user_permissions=user_permissions)
+        return self.create_employee(payload, user_permissions=user_permissions)
+
     def get_employee(self, employee_id: int, user_permissions: list[str] | None = None) -> dict[str, Any]:
         """Get employee by ID with documents.
 
@@ -1333,6 +1531,7 @@ class TicketsService:
                 position=self._normalize_optional_str(data.get("position"), max_len=150),
                 phone=self._normalize_optional_str(data.get("phone"), max_len=30),
                 email=self._normalize_optional_str(data.get("email"), max_len=255),
+                zup_employee_code=self._normalize_optional_str(data.get("zup_employee_code"), max_len=64),
                 status=data.get("status") if data.get("status") in EMPLOYEE_STATUSES else "active",
                 app_user_id=data.get("app_user_id") or None,
                 date_of_birth_enc=encrypt_secret(data.get("date_of_birth", "")) if data.get("date_of_birth") else "",
@@ -1415,6 +1614,10 @@ class TicketsService:
                 employee.phone = self._normalize_optional_str(data.get("phone"), max_len=30)
             if "email" in data:
                 employee.email = self._normalize_optional_str(data.get("email"), max_len=255)
+            if "zup_employee_code" in data:
+                employee.zup_employee_code = self._normalize_optional_str(
+                    data.get("zup_employee_code"), max_len=64
+                )
             if "status" in data and data["status"] in EMPLOYEE_STATUSES:
                 employee.status = data["status"]
             if "app_user_id" in data:
@@ -1723,6 +1926,7 @@ class TicketsService:
             "position": employee.position,
             "phone": employee.phone,
             "email": employee.email,
+            "zup_employee_code": employee.zup_employee_code,
             "status": employee.status,
             "app_user_id": employee.app_user_id,
             "created_at": employee.created_at.isoformat() if employee.created_at else None,
@@ -1945,6 +2149,21 @@ class TicketsService:
         return code
 
     @staticmethod
+    def _allocate_object_code(session) -> str:
+        """Allocate next free auto code like O1, O2, ... (max 10 chars)."""
+        existing = {
+            str(value or "").strip().upper()
+            for value in session.scalars(select(TicketObject.code)).all()
+        }
+        for index in range(1, 100_000):
+            candidate = f"O{index}"
+            if len(candidate) > 10:
+                break
+            if candidate.upper() not in existing:
+                return candidate
+        raise ValueError("Unable to allocate object code")
+
+    @staticmethod
     def _validate_object_name(name: Any) -> str:
         """Validate object name: non-empty, up to 150 chars."""
         raw_name = str(name or "")
@@ -1958,10 +2177,8 @@ class TicketsService:
 
     @staticmethod
     def _validate_object_region(region: Any) -> str:
-        """Validate object region: non-empty, up to 100 chars."""
-        raw_region = str(region or "")
-        if not raw_region.strip():
-            raise ValueError("Object region is required")
+        """Validate object region: optional, up to 100 chars."""
+        raw_region = str(region or "").strip()
         if len(raw_region) > 100:
             raise ValueError(
                 f"Object region must be at most 100 characters, got {len(raw_region)}"

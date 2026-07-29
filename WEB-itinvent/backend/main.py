@@ -27,13 +27,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, system, passwords, my_files, debug_client_log, groups_access
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
 from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
+from backend.services.docflow_service import docflow_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
@@ -326,6 +327,10 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(warehouse_1c_service.shutdown)
     except Exception:
         logging.getLogger(__name__).exception("Warehouse 1C connection pool shutdown failed")
+    try:
+        await asyncio.to_thread(docflow_service.shutdown)
+    except Exception:
+        logging.getLogger(__name__).exception("Docflow 1C process bridge shutdown failed")
 
 
 # Create FastAPI app
@@ -423,7 +428,9 @@ app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
 app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
+app.include_router(company_structure.router, prefix="/api/v1/company-structure", tags=["Company Structure"])
 app.include_router(warehouse_1c.router, prefix="/api/v1/warehouse-1c", tags=["Warehouse 1C"])
+app.include_router(docflow.router, prefix="/api/v1/docflow", tags=["1C Document Management"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])

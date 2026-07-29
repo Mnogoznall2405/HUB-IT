@@ -191,6 +191,62 @@ describe('chatNotifications', () => {
     expect(snapshot.backgroundCapable).toBe(true);
   });
 
+  it('records browser subscription failures and allows a later retry', async () => {
+    const subscriptionError = new Error('Browser rejected push subscription');
+    subscriptionError.name = 'NotAllowedError';
+    mockSubscribe.mockRejectedValueOnce(subscriptionError);
+    const { getChatNotificationState, syncChatPushSubscription } = await import('./chatNotifications');
+
+    await expect(syncChatPushSubscription({ user: { id: 1 } })).rejects.toThrow(
+      'Browser rejected push subscription',
+    );
+    expect(getChatNotificationState()).toEqual(expect.objectContaining({
+      pushSubscribed: false,
+      lastError: 'NotAllowedError',
+    }));
+
+    const snapshot = await syncChatPushSubscription({ user: { id: 1 } });
+    expect(mockSubscribe).toHaveBeenCalledTimes(2);
+    expect(snapshot.pushSubscribed).toBe(true);
+    expect(snapshot.lastError).toBe('');
+  });
+
+  it('clears a pending resubscribe after the replacement subscription reaches the server', async () => {
+    window.localStorage.setItem('itinvent_chat_push_diagnostics', JSON.stringify({
+      pendingResubscribe: true,
+      lastPushStage: 'sw_pushsubscriptionchange_failed',
+    }));
+    const existingUnsubscribe = vi.fn().mockResolvedValue(true);
+    mockGetSubscription.mockResolvedValue({
+      endpoint: 'https://push.example/stale-sub',
+      unsubscribe: existingUnsubscribe,
+      toJSON: () => ({
+        endpoint: 'https://push.example/stale-sub',
+        expirationTime: null,
+        keys: {
+          p256dh: 'stale-p256dh',
+          auth: 'stale-auth',
+        },
+      }),
+    });
+
+    const { getChatNotificationState, syncChatPushSubscription } = await import('./chatNotifications');
+
+    expect(getChatNotificationState().pendingResubscribe).toBe(true);
+    const snapshot = await syncChatPushSubscription({ user: { id: 1 }, force: true });
+
+    expect(existingUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscribe).toHaveBeenCalledTimes(1);
+    expect(mockUpsertPushSubscription).toHaveBeenCalledTimes(1);
+    expect(snapshot).toEqual(expect.objectContaining({
+      pushSubscribed: true,
+      pendingResubscribe: false,
+      lastError: '',
+    }));
+    expect(JSON.parse(window.localStorage.getItem('itinvent_chat_push_diagnostics')))
+      .toEqual(expect.objectContaining({ pendingResubscribe: false }));
+  });
+
   it('reuses an existing Android push subscription instead of rotating endpoints on each app session', async () => {
     Object.defineProperty(navigator, 'userAgent', {
       configurable: true,
@@ -243,6 +299,39 @@ describe('chatNotifications', () => {
       browser_family: 'chrome',
       install_mode: 'standalone',
     });
+    expect(snapshot.pushSubscribed).toBe(true);
+  });
+
+  it('registers an installed iPhone Safari PWA for background push', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 Version/18.5 Mobile/15E148 Safari/604.1',
+    });
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: 'iPhone',
+    });
+    window.matchMedia = vi.fn().mockImplementation((query) => ({
+      matches: query === '(display-mode: standalone)',
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    const { syncChatPushSubscription } = await import('./chatNotifications');
+    const snapshot = await syncChatPushSubscription({ user: { id: 1 } });
+
+    expect(mockUpsertPushSubscription).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'https://push.example/sub',
+      platform: 'iPhone',
+      browser_family: 'safari',
+      install_mode: 'standalone',
+    }));
+    expect(snapshot.requiresInstalledPwa).toBe(false);
+    expect(snapshot.backgroundCapable).toBe(true);
     expect(snapshot.pushSubscribed).toBe(true);
   });
 

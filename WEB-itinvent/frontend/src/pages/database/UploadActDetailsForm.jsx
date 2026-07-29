@@ -76,7 +76,7 @@ const UploadActDetailsForm = memo(function UploadActDetailsForm({
 
           <TextField
 
-            label="Дата документа (YYYY-MM-DD)"
+            label="Дата и время загрузки"
 
             value={form?.doc_date || ''}
 
@@ -86,7 +86,9 @@ const UploadActDetailsForm = memo(function UploadActDetailsForm({
 
             size={fieldSize}
 
-            placeholder="2026-02-17"
+            helperText="По умолчанию — момент загрузки акта (с временем), не дата из PDF."
+
+            placeholder="2026-07-23 12:05:33"
 
           />
 

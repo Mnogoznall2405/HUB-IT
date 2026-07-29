@@ -1,6 +1,7 @@
 export const WINDOWS_NOTIFICATIONS_ENABLED_KEY = 'itinvent_windows_notifications_enabled';
 export const WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY = 'itinvent_windows_notifications_explicitly_set';
 export const WINDOWS_NOTIFICATIONS_SHOWN_KEY = 'itinvent_windows_notifications_shown_ids';
+export const WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY = 'itinvent_notification_permission_banner_dismissed';
 export const WINDOWS_NOTIFICATIONS_CHANGED_EVENT = 'itinvent:windows-notifications-changed';
 
 const MAX_SHOWN_NOTIFICATION_IDS = 300;
@@ -133,6 +134,24 @@ export function autoEnableWindowsNotificationsIfGranted() {
   writeStorage(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY, '1');
   dispatchWindowsNotificationStateChange();
   return true;
+}
+
+export function isNotificationPermissionBannerDismissed() {
+  return readStorage(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY, '0') === '1';
+}
+
+export function setNotificationPermissionBannerDismissed(dismissed = true) {
+  writeStorage(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY, dismissed ? '1' : '0');
+  return Boolean(dismissed);
+}
+
+export function clearNotificationPermissionBannerDismissed() {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_PERMISSION_BANNER_DISMISSED_KEY);
+  } catch {
+    // Ignore storage failures in private or restricted modes.
+  }
 }
 
 export async function requestBrowserNotificationPermission() {

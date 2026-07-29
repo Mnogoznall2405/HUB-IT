@@ -773,6 +773,17 @@ def _json_payload(item: dict[str, Any]) -> bytes:
 
 def _generated_file_payload(item: dict[str, Any]) -> tuple[bytes, str]:
     file_format = _normalize_format(item.get("format") or item.get("kind"))
+    raw_b64 = _normalize_text((item.get("metadata") or {}).get("content_b64") if isinstance(item.get("metadata"), dict) else "")
+    if not raw_b64:
+        raw_b64 = _normalize_text(item.get("content_b64"))
+    if raw_b64:
+        try:
+            import base64
+
+            payload = base64.b64decode(raw_b64.encode("ascii"), validate=False)
+            return payload, _CONTENT_TYPES.get(file_format) or "application/octet-stream"
+        except Exception:
+            pass
     if file_format == "csv":
         payload = _csv_payload(item)
     elif file_format == "xlsx":
