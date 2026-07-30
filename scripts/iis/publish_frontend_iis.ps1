@@ -1,6 +1,7 @@
 param(
     [string]$ProjectRoot = "C:\Project\Image_scan",
     [string]$IisSitePath = "C:\inetpub\wwwroot\itinvent",
+    [string]$CanonicalHost = 'hubit.zsgp.ru',
     [switch]$Mirror,
     [switch]$FreshInstall
 )
@@ -86,6 +87,28 @@ function Invoke-RobocopyDeploy {
     }
 }
 
+function Set-CanonicalHostInWebConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WebConfigPath,
+        [Parameter(Mandatory = $true)]
+        [string]$HostName
+    )
+
+    $normalizedHost = $HostName.Trim().ToLowerInvariant()
+    if ($normalizedHost -notmatch '^[a-z0-9.-]+$') {
+        throw 'CanonicalHost may contain only letters, digits, dots, and hyphens.'
+    }
+
+    $content = Get-Content -LiteralPath $WebConfigPath -Raw
+    if ($content -notlike '*__HUBIT_CANONICAL_HOST__*') {
+        throw "web.config canonical host marker is missing: $WebConfigPath"
+    }
+
+    $content.Replace('__HUBIT_CANONICAL_HOST__', $normalizedHost) |
+        Set-Content -LiteralPath $WebConfigPath -Encoding utf8
+}
+
 Add-ProjectNodeToPath -Root $ProjectRoot
 
 $frontendPath = Join-Path $ProjectRoot "WEB-itinvent\frontend"
@@ -97,6 +120,9 @@ if (-not (Test-Path $frontendPath)) {
 }
 
 Write-Host "Build frontend in: $frontendPath"
+$previousCanonicalHost = $env:VITE_CANONICAL_HOST
+$hadCanonicalHost = Test-Path 'Env:VITE_CANONICAL_HOST'
+$env:VITE_CANONICAL_HOST = $CanonicalHost
 Push-Location $frontendPath
 try {
     Install-FrontendDependencies -FrontendPath $frontendPath -ForceFreshInstall:$FreshInstall.IsPresent
@@ -104,11 +130,18 @@ try {
 }
 finally {
     Pop-Location
+    if ($hadCanonicalHost) {
+        $env:VITE_CANONICAL_HOST = $previousCanonicalHost
+    } else {
+        Remove-Item 'Env:VITE_CANONICAL_HOST' -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not (Test-Path $distIndexPath)) {
     throw "Build output not found: $distIndexPath"
 }
+
+Set-CanonicalHostInWebConfig -WebConfigPath (Join-Path $distPath 'web.config') -HostName $CanonicalHost
 
 New-Item -ItemType Directory -Force $IisSitePath | Out-Null
 Invoke-RobocopyDeploy -Source $distPath -Destination $IisSitePath -UseMirror:$Mirror.IsPresent

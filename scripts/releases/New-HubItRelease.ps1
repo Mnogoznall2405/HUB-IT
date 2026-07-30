@@ -16,6 +16,9 @@ param(
     [string]$Version,
     [string]$OutputDirectory = 'C:\Backups\hub-it\releases',
     [string]$Destination,
+    [ValidateSet('Development', 'Production')]
+    [string]$ReleaseEnvironment = 'Production',
+    [string]$CanonicalHost,
     [switch]$RunFrontendTests,
     [switch]$SkipFrontendBuild,
     [switch]$SkipWorkingTreeCheck
@@ -82,7 +85,11 @@ function Copy-ReleaseToIncoming {
         [Parameter(Mandatory = $true)]
         [string]$ReleaseVersion,
         [Parameter(Mandatory = $true)]
-        [string]$Sha256
+        [string]$Sha256,
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentName,
+        [Parameter(Mandatory = $true)]
+        [string]$HostName
     )
 
     if (-not (Test-Path -LiteralPath $IncomingDirectory)) {
@@ -117,6 +124,8 @@ function Copy-ReleaseToIncoming {
         version = $ReleaseVersion
         archive = $archiveName
         sha256 = $Sha256
+        environment = $EnvironmentName
+        canonical_host = $HostName
         published_at_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath $remoteReady -Encoding utf8
 }
@@ -146,6 +155,18 @@ finally {
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = 'v{0}-{1}' -f (Get-Date -Format 'yyyy.MM.dd.HHmm'), $shortCommit
 }
+
+$defaultHosts = @{
+    Development = 'hubitdev.zsgp.ru'
+    Production = 'hubit.zsgp.ru'
+}
+if ([string]::IsNullOrWhiteSpace($CanonicalHost)) {
+    $CanonicalHost = $defaultHosts[$ReleaseEnvironment]
+}
+$CanonicalHost = $CanonicalHost.Trim().ToLowerInvariant()
+if ($CanonicalHost -notmatch '^[a-z0-9.-]+$') {
+    throw 'CanonicalHost may contain only letters, digits, dots, and hyphens.'
+}
 if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
     throw 'Version may contain only letters, digits, dots, underscores, and hyphens.'
 }
@@ -160,16 +181,29 @@ if (-not (Test-Path -LiteralPath $FrontendRoot)) {
     throw "Frontend directory not found: $FrontendRoot"
 }
 
-if (-not $SkipFrontendBuild) {
-    Push-Location $FrontendRoot
-    try {
-        if ($RunFrontendTests) {
-            Invoke-CheckedCommand -FilePath 'npm' -Arguments @('run', 'test:run')
+$previousCanonicalHost = $env:VITE_CANONICAL_HOST
+$hadCanonicalHost = Test-Path 'Env:VITE_CANONICAL_HOST'
+$env:VITE_CANONICAL_HOST = $CanonicalHost
+
+try {
+    if (-not $SkipFrontendBuild) {
+        Push-Location $FrontendRoot
+        try {
+            if ($RunFrontendTests) {
+                Invoke-CheckedCommand -FilePath 'npm' -Arguments @('run', 'test:run')
+            }
+            Invoke-CheckedCommand -FilePath 'npm' -Arguments @('run', 'build')
         }
-        Invoke-CheckedCommand -FilePath 'npm' -Arguments @('run', 'build')
+        finally {
+            Pop-Location
+        }
     }
-    finally {
-        Pop-Location
+}
+finally {
+    if ($hadCanonicalHost) {
+        $env:VITE_CANONICAL_HOST = $previousCanonicalHost
+    } else {
+        Remove-Item 'Env:VITE_CANONICAL_HOST' -ErrorAction SilentlyContinue
     }
 }
 
@@ -207,6 +241,13 @@ try {
     Expand-Archive -LiteralPath $sourceArchive -DestinationPath $stagingPath -Force
     $stagedFrontend = Join-Path $stagingPath 'WEB-itinvent\frontend'
     Copy-Item -LiteralPath $distPath -Destination (Join-Path $stagedFrontend 'dist') -Recurse -Force
+    $stagedWebConfig = Join-Path $stagedFrontend 'dist\web.config'
+    $webConfig = Get-Content -LiteralPath $stagedWebConfig -Raw
+    if ($webConfig -notlike '*__HUBIT_CANONICAL_HOST__*') {
+        throw "Release web.config template marker is missing: $stagedWebConfig"
+    }
+    $webConfig.Replace('__HUBIT_CANONICAL_HOST__', $CanonicalHost) |
+        Set-Content -LiteralPath $stagedWebConfig -Encoding utf8
 
     $manifest = [ordered]@{
         schema_version = 1
@@ -214,6 +255,8 @@ try {
         version = $Version
         git_commit = $commit
         git_branch = $branch
+        environment = $ReleaseEnvironment
+        canonical_host = $CanonicalHost
         created_at_utc = [DateTime]::UtcNow.ToString('o')
         frontend_dist_included = $true
         runtime_files_excluded = @('.env', 'data runtime files', 'node_modules', 'Python virtual environments')
@@ -229,11 +272,12 @@ try {
     Set-Content -LiteralPath $checksumPath -Value ("{0}  {1}" -f $sha256, (Split-Path -Leaf $releaseArchive)) -Encoding ascii
 
     if ($Destination) {
-        Copy-ReleaseToIncoming -ReleaseArchive $releaseArchive -ManifestPath $manifestPath -ChecksumPath $checksumPath -IncomingDirectory $Destination -ReleaseVersion $Version -Sha256 $sha256
+        Copy-ReleaseToIncoming -ReleaseArchive $releaseArchive -ManifestPath $manifestPath -ChecksumPath $checksumPath -IncomingDirectory $Destination -ReleaseVersion $Version -Sha256 $sha256 -EnvironmentName $ReleaseEnvironment -HostName $CanonicalHost
         Write-Host "Published to: $Destination" -ForegroundColor Green
     }
 
     Write-Host "Release archive: $releaseArchive" -ForegroundColor Green
+    Write-Host "Profile:         $ReleaseEnvironment ($CanonicalHost)" -ForegroundColor Green
     Write-Host "Manifest:        $manifestPath" -ForegroundColor Green
     Write-Host "SHA-256:         $sha256" -ForegroundColor Green
 }

@@ -69,6 +69,29 @@ class Docflow1CFileStorageUnavailableError(Docflow1CError):
     code = "DOCFLOW_FILE_STORAGE_UNAVAILABLE"
 
 
+class Docflow1CDigitalSignatureRequiredError(Docflow1CError):
+    code = "DOCFLOW_DIGITAL_SIGNATURE_REQUIRED"
+
+
+_TASK_ACTION_STATE_FIELDS = (
+    "ref",
+    "task_type",
+    "process_ref",
+    "process_type",
+    "business_state",
+    "result",
+    "accepted",
+    "completed",
+    "completed_at",
+)
+
+
+def _task_action_state_matches(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Return true only when a post-error read proves the write was rolled back."""
+
+    return all(before.get(field) == after.get(field) for field in _TASK_ACTION_STATE_FIELDS)
+
+
 def _text(value: Any, *, maximum: int = 500) -> str:
     return str(value or "").strip()[:maximum]
 
@@ -1002,6 +1025,7 @@ class Docflow1CComClient:
 
         task_type = _identifier_from_env("DOCFLOW_1C_TASK_TYPE", "ЗадачаИсполнителя")
         result_field = _identifier_from_env("DOCFLOW_1C_TASK_RESULT_FIELD", "РезультатВыполнения")
+        accepted_field = _identifier_from_env("DOCFLOW_1C_TASK_ACCEPTED_FIELD", "ПринятаКИсполнению")
         task_reference = self._reference_from_uuid(
             connection,
             manager_names=("Задачи", "Tasks"),
@@ -1013,13 +1037,28 @@ class Docflow1CComClient:
         mutation_started = False
         try:
             task_object = _call_any(task_reference, ("ПолучитьОбъект", "GetObject"))
+            if before.get("accepted") is not True:
+                setattr(task_object, accepted_field, True)
             setattr(task_object, result_field, result_value)
             mutation_started = True
-            _call_any(task_object, ("ВыполнитьЗадачу", "CompleteTask"))
+            _call_any(task_object, ("ВыполнитьЗадачу", "ExecuteTask", "CompleteTask"))
         except Docflow1CError:
             raise
-        except Exception:
+        except Exception as exc:
             if mutation_started:
+                try:
+                    after_error, _ = self._task_context(connection, task_ref=task_ref)
+                except Exception:
+                    after_error = None
+                if isinstance(after_error, dict) and _task_action_state_matches(before, after_error):
+                    if "нарушение прав доступа" in str(exc).casefold():
+                        raise Docflow1CConflictError(
+                            "1С запретила выполнение задания через внешнее соединение. "
+                            "Требуется разрешённый серверный интерфейс или роль 1С"
+                        ) from None
+                    raise Docflow1CConflictError(
+                        "1С отклонила действие; задание не изменено"
+                    ) from None
                 raise Docflow1COutcomeUnknownError(
                     "1С не подтвердила результат выполнения задания"
                 ) from None

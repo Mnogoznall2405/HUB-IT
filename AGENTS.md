@@ -62,6 +62,8 @@ Image_scan/
 ├── scan_agent/           # scan sidecar (agent.py)
 ├── scan_server/          # python -m scan_server.app (:8011)
 ├── inventory_server/     # python -m inventory_server
+├── integrations/
+│   └── 1c/               # Исходники расширений/переходников 1С для HUB-IT
 ├── mobile-hub/           # Expo React Native (Android), см. mobile-hub/README.md
 ├── data/                 # JSON-хранилища (см. data/README.md)
 ├── documentation/        # user-guides + technical

@@ -253,6 +253,8 @@ describe('Docflow page', () => {
       items: [{
         ref: taskRef,
         title: 'Согласовать договор',
+        number: 'ГЛ-000000000000000000000000000000000001',
+        due_at: '2026-08-01T12:00:00',
         task_type: 'ЗадачаИсполнителя',
         task_type_label: 'Задача исполнителя',
         completed: false,
@@ -267,14 +269,29 @@ describe('Docflow page', () => {
       title: 'Согласовать договор',
       task_type: 'ЗадачаИсполнителя',
       task_type_label: 'Задача исполнителя',
+      number: 'ГЛ-000000000000000000000000000000000001',
       description: 'Полный текст задания из 1С.',
+      created_at: '2026-07-28T10:00:00',
+      due_at: '2026-08-01T12:00:00',
       completed: false,
+      related_objects: [{
+        ref: '33333333-3333-3333-3333-333333333333',
+        title: 'Служебная записка на согласование',
+        object_type: 'DMIncomingDocument',
+      }],
       files: [{
         ref: fileRef,
         name: 'Договор.docx',
+        xdto_type: 'DMFile',
         content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         size: 2048,
         preview_supported: true,
+      }, {
+        ref: '44444444-4444-4444-4444-444444444444',
+        name: 'ГЛ-000000000000000000000000000000000001',
+        xdto_type: 'DMFileVersion',
+        size: 0,
+        preview_supported: false,
       }],
     });
     docflowAPI.downloadFilePreviewPdf.mockResolvedValue({
@@ -287,13 +304,19 @@ describe('Docflow page', () => {
     });
 
     render(<Docflow />);
+    expect(await screen.findByText(/Срок исполнения: 01 авг. 2026/)).toBeInTheDocument();
+    expect(screen.queryByText('ГЛ-000000000000000000000000000000000001')).not.toBeInTheDocument();
     fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
 
     expect(await screen.findByText('Полный текст задания из 1С.')).toBeInTheDocument();
     expect(screen.getByText('Договор.docx')).toBeInTheDocument();
+    expect(screen.queryByText('ГЛ-000000000000000000000000000000000001')).not.toBeInTheDocument();
+    expect(screen.getByText('Служебная записка на согласование')).toBeInTheDocument();
+    expect(screen.queryByText('DMIncomingDocument')).not.toBeInTheDocument();
+    expect(screen.queryByText('Номер')).not.toBeInTheDocument();
     expect(docflowAPI.getTask).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть предпросмотр Договор.docx' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Договор\.docx/ }));
     expect(await screen.findByTestId('docflow-file-preview')).toHaveTextContent('Договор.docx');
     expect(docflowAPI.downloadFilePreviewPdf).toHaveBeenCalledWith(taskRef, fileRef);
 
@@ -347,15 +370,15 @@ describe('Docflow page', () => {
     render(<Docflow />);
     fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
 
-    fireEvent.change(screen.getByLabelText('Логин 1С'), { target: { value: 'personal.login' } });
-    fireEvent.change(screen.getByLabelText('Пароль 1С'), { target: { value: 'temporary-password' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Проверить и сохранить' }));
+    fireEvent.change(await screen.findByLabelText(/Логин 1С/), { target: { value: 'personal.login' } });
+    fireEvent.change(await screen.findByLabelText(/Пароль 1С/), { target: { value: 'temporary-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Подключить и сохранить' }));
 
     await waitFor(() => expect(docflowAPI.saveCredentials).toHaveBeenCalledWith({
       login: 'personal.login',
       password: 'temporary-password',
     }));
-    await waitFor(() => expect(screen.queryByLabelText('Пароль 1С')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByLabelText(/Пароль 1С/)).not.toBeInTheDocument());
     expect(screen.queryByDisplayValue('temporary-password')).not.toBeInTheDocument();
   });
 
@@ -368,12 +391,29 @@ describe('Docflow page', () => {
 
     render(<Docflow />);
     fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
-    fireEvent.change(screen.getByLabelText('Пароль 1С'), { target: { value: 'temporary-password' } });
+    fireEvent.change(await screen.findByLabelText(/Пароль 1С/), { target: { value: 'temporary-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
 
-    expect(screen.getByLabelText('Пароль 1С')).toHaveValue('');
+    expect(screen.getByLabelText(/Пароль 1С/)).toHaveValue('');
+  });
+
+  it('shows a touch-friendly credentials form on mobile', async () => {
+    useMediaQueryMock.mockReturnValue(true);
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: false,
+      login: null,
+      status: 'not_configured',
+    });
+
+    render(<Docflow />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
+
+    expect(screen.getByRole('heading', { name: 'Подключение к 1С' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Показать пароль' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Подключить и сохранить' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Проверить подключение' })).toBeEnabled();
   });
 
   it('shows a sanitized mapping error with correlation id and an explicit retry', async () => {
@@ -457,5 +497,156 @@ describe('Docflow page', () => {
       expect.any(String),
     );
     expect(await screen.findByText('1С подтвердила выполнение задания.')).toBeInTheDocument();
+  });
+
+  it('allows a manual retry only after 1C confirms the previous action was not applied', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111111';
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: taskRef,
+        title: 'Согласовать договор',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const action = {
+      code: 'approve',
+      label: 'Согласовать',
+      tone: 'success',
+      comment_mode: 'optional',
+    };
+    const actionTask = {
+      ref: taskRef,
+      title: 'Согласовать договор',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задача исполнителя',
+      completed: false,
+      state_token: 'signed-state-token-before',
+      available_actions: [action],
+      files: [],
+    };
+    const retryTask = {
+      ...actionTask,
+      state_token: 'signed-state-token-after-check',
+    };
+    docflowAPI.getTask.mockResolvedValue(actionTask);
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      status: 'state_unknown',
+      correlation_id: 'corr-unknown',
+      task: null,
+      error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+    });
+    docflowAPI.getCommand.mockResolvedValue({
+      command_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      status: 'rejected',
+      correlation_id: 'corr-check',
+      task: retryTask,
+      error_code: 'DOCFLOW_ACTION_NOT_APPLIED',
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Согласовать' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
+
+    expect(await screen.findByText(/Проверяем результат в 1С/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Действие с заданием' })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Проверить' }));
+
+    expect(await screen.findByText(/1С не применила действие/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
+    expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
+    expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires a comment for approval with comments and sends the new action code once', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111111';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{ ref: taskRef, title: 'Согласовать с замечаниями', completed: false }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const task = {
+      ref: taskRef,
+      title: 'Согласовать с замечаниями',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задание исполнителя',
+      completed: false,
+      state_token: 'signed-state-token-for-comments',
+      available_actions: [{
+        code: 'approve_with_comments',
+        label: 'Согласовать с замечаниями',
+        tone: 'warning',
+        comment_mode: 'required',
+      }],
+      files: [],
+    };
+    docflowAPI.getTask.mockResolvedValue(task);
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      status: 'applied',
+      correlation_id: 'corr-comments',
+      task: { ...task, completed: true, available_actions: [], state_token: null },
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать с замечаниями')).closest('[role="button"]'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Согласовать с замечаниями' }));
+    const confirmButton = screen.getAllByRole('button', { name: 'Согласовать с замечаниями' }).at(-1);
+    expect(confirmButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Комментарий или результат *'), { target: { value: 'Есть замечание' } });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1));
+    expect(docflowAPI.applyTaskAction).toHaveBeenCalledWith(
+      taskRef,
+      { action: 'approve_with_comments', comment: 'Есть замечание', state_token: 'signed-state-token-for-comments' },
+      expect.any(String),
+    );
+  });
+
+  it('shows only the official 1C link when a task requires a digital signature', async () => {
+    const taskRef = '22222222-2222-2222-2222-222222222222';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{ ref: taskRef, title: 'Подписать документ', completed: false }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    docflowAPI.getTask.mockResolvedValue({
+      ref: taskRef,
+      title: 'Подписать документ',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задание исполнителя',
+      completed: false,
+      requires_digital_signature: true,
+      open_in_1c_url: 'https://docflow.example/1c',
+      action_unavailable_reason: 'Для этого задания требуется электронная подпись. Выполните действие в 1С.',
+      available_actions: [],
+      files: [],
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Подписать документ')).closest('[role="button"]'));
+
+    const link = await screen.findByRole('link', { name: 'Выполнить в 1С' });
+    expect(link).toHaveAttribute('href', 'https://docflow.example/1c');
+    expect(screen.queryByRole('button', { name: 'Согласовать' })).not.toBeInTheDocument();
   });
 });

@@ -67,7 +67,7 @@ class DocflowTaskFileSummary(BaseModel):
 
 
 class DocflowAvailableAction(BaseModel):
-    code: Literal["acknowledge", "approve", "reject", "complete"]
+    code: Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
     label: str
     tone: Literal["primary", "success", "error", "warning"] = "primary"
     comment_mode: Literal["optional", "required"] = "optional"
@@ -81,14 +81,19 @@ class DocflowRelatedObject(BaseModel):
 
 
 class DocflowTaskDetail(DocflowTaskSummary):
+    xdto_task_type: str | None = None
     process_name: str | None = None
     process_ref: str | None = None
     process_type: str | None = None
     process_type_label: str | None = None
+    xdto_process_type: str | None = None
+    dm_version: str | None = None
     configuration_fingerprint: str | None = None
     state_token: str | None = None
     available_actions: list[DocflowAvailableAction] = Field(default_factory=list)
     action_unavailable_reason: str | None = None
+    requires_digital_signature: bool = False
+    open_in_1c_url: str | None = None
     related_objects: list[DocflowRelatedObject] = Field(default_factory=list)
     files: list[DocflowTaskFileSummary] = Field(default_factory=list)
 
@@ -119,7 +124,7 @@ class DocflowMetadataResponse(BaseModel):
 class DocflowTaskActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    action: Literal["acknowledge", "approve", "reject", "complete"]
+    action: Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
     comment: str = Field(default="", max_length=2000)
     state_token: str = Field(..., min_length=16, max_length=512)
 

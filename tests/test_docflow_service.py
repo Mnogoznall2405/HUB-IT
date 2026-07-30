@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +24,10 @@ from backend.api import deps  # noqa: E402
 from backend.api.v1 import docflow as docflow_api  # noqa: E402
 from backend.services import docflow_1c_client as docflow_1c_client_module  # noqa: E402
 from backend.models.auth import User  # noqa: E402
-from backend.services.docflow_1c_client import Docflow1CComClient  # noqa: E402
+from backend.services.docflow_1c_client import (  # noqa: E402
+    Docflow1CComClient,
+    Docflow1CConflictError,
+)
 from backend.services.docflow_1c_client import (  # noqa: E402
     Docflow1CFileStorageUnavailableError,
     Docflow1CNotFoundError,
@@ -36,6 +39,7 @@ from backend.services.docflow_service import (  # noqa: E402
     DocflowCredentialsInvalid,
     DocflowFileStorageUnavailable,
     DocflowService,
+    DocflowStateConflict,
 )
 from backend.services.docflow_action_rules import configuration_fingerprint, load_action_rules  # noqa: E402
 from backend.services.request_metrics_service import request_metrics_middleware  # noqa: E402
@@ -43,6 +47,9 @@ from backend.services.secret_crypto_service import (  # noqa: E402
     _build_fernet,
     decrypt_docflow_secret,
     encrypt_docflow_secret,
+)
+from backend.services.warehouse_1c_process_bridge import (  # noqa: E402
+    Warehouse1CProcessBridgeRemoteError,
 )
 
 
@@ -237,6 +244,7 @@ class FakeCommandStore:
 
 def _service(monkeypatch):
     monkeypatch.setenv("DOCFLOW_CREDENTIALS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("DOCFLOW_TRANSPORT", "com")
     monkeypatch.setenv("DOCFLOW_WRITE_CREDENTIAL_MIN_VERSION", "0")
     _build_fernet.cache_clear()
     adapter = FakeAdapter()
@@ -328,10 +336,60 @@ def test_versioned_default_rules_cover_all_pilot_processes(monkeypatch):
 
     assert actions_by_process == {
         "Ознакомление": ["acknowledge"],
-        "Согласование": ["approve", "reject"],
+        "Согласование": ["approve", "approve_with_comments", "reject"],
         "Утверждение": ["approve", "reject"],
         "Исполнение": ["complete"],
     }
+
+
+def test_default_acquaintance_rule_matches_live_dmservice_task_type(monkeypatch):
+    service, _adapter, _store = _service(monkeypatch)
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_JSON", raising=False)
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_FILE", raising=False)
+    monkeypatch.setenv("DOCFLOW_WRITE_ENABLED", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_ALL_USERS", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_TEST_ONLY", "0")
+    monkeypatch.setenv("DOCFLOW_ACTION_STATE_KEY", "test-state-key-that-is-longer-than-32-bytes")
+
+    detail = service._decorate_task_actions(
+        user_id=17,
+        detail={
+            "ref": "233c3a9c-8bff-11f1-bf5b-5cba2c62ec78",
+            "task_type": "ЗадачаИсполнителя",
+            "xdto_task_type": "DMBusinessProcessTask",
+            "title": "ФИО, дата рождения, предполагаемая должность",
+            "process_type": "Ознакомление",
+            "xdto_process_type": "DMBusinessProcessAcquaintance",
+            "dm_version": "2.1.37.5.CORP",
+            "completed": False,
+        },
+        can_act=True,
+    )
+
+    assert [item["code"] for item in detail["available_actions"]] == ["acknowledge"]
+    assert detail["state_token"]
+
+
+def test_http_dmservice_keeps_write_actions_fail_closed(monkeypatch):
+    service, adapter, _store, _command_store = _action_service(monkeypatch)
+    monkeypatch.setenv("DOCFLOW_TRANSPORT", "dmservice")
+    monkeypatch.setenv("DOCFLOW_DM_SERVICE_URL", "http://docflow.example/ws/DMService")
+    monkeypatch.setenv("DOCFLOW_DM_ALLOW_INSECURE_WRITES", "0")
+
+    detail = service._decorate_task_actions(
+        user_id=17,
+        detail={
+            "ref": "11111111-1111-1111-1111-111111111111",
+            "task_type": "ЗадачаИсполнителя",
+            "title": "HUB-IT TEST · Тестовое задание",
+            "process_type": "Согласование",
+            "completed": False,
+        },
+        can_act=True,
+    )
+
+    assert detail["available_actions"] == []
+    assert "без HTTPS" in detail["action_unavailable_reason"]
 
 
 def test_write_requires_credentials_resaved_after_incident_barrier(monkeypatch):
@@ -842,6 +900,54 @@ def test_unknown_action_outcome_is_never_replayed_automatically(monkeypatch):
     assert [operation for operation, _ in adapter.calls].count("task_action") == 1
 
 
+def test_explicit_command_check_releases_action_when_1c_state_is_unchanged(monkeypatch):
+    service, adapter, _store, command_store = _action_service(monkeypatch)
+    asyncio.run(service.save_credentials(
+        user_id=17,
+        login="owner.login",
+        password="temporary-test-password",
+        correlation_id="save",
+    ))
+    detail = asyncio.run(service.get_task_detail(
+        user_id=17,
+        task_ref="11111111-1111-1111-1111-111111111111",
+        correlation_id="detail",
+        can_act=True,
+    ))
+    original_call = adapter.call
+
+    async def rejected_before_write(operation, payload):
+        if operation == "task_action":
+            adapter.calls.append((operation, dict(payload)))
+            raise DocflowActionOutcomeUnknown("timeout")
+        return await original_call(operation, payload)
+
+    adapter.call = rejected_before_write
+    result = asyncio.run(service.apply_task_action(
+        user_id=17,
+        task_ref=detail["ref"],
+        action="approve",
+        comment="",
+        state_token=detail["state_token"],
+        idempotency_key="unchanged-command-1",
+        correlation_id="unknown",
+    ))
+    row = command_store.rows[result["command_id"]]
+    row.updated_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+    checked = asyncio.run(service.get_command(
+        user_id=17,
+        command_id=result["command_id"],
+        correlation_id="check",
+    ))
+
+    assert checked["status"] == "rejected"
+    assert checked["error_code"] == "DOCFLOW_ACTION_NOT_APPLIED"
+    assert checked["task"]["completed"] is False
+    assert [item["code"] for item in checked["task"]["available_actions"]] == ["approve", "reject"]
+    assert [operation for operation, _ in adapter.calls].count("task_action") == 1
+
+
 def test_api_rejects_extra_fields_and_does_not_return_password(monkeypatch):
     service, adapter, _ = _service(monkeypatch)
     monkeypatch.setattr(docflow_api, "docflow_service", service)
@@ -1075,6 +1181,143 @@ def test_com_client_fails_over_between_ordered_1c_nodes(monkeypatch):
     assert len(attempts) == 2
     assert 'Srvr="fast-node.example"' in attempts[0]
     assert 'Srvr="backup-node.example"' in attempts[1]
+
+
+def test_com_action_accepts_new_task_before_executing_it(monkeypatch):
+    """1C agreement tasks must be accepted before ExecuteTask is called."""
+    for name in (
+        "DOCFLOW_1C_TASK_TYPE",
+        "DOCFLOW_1C_TASK_RESULT_FIELD",
+        "DOCFLOW_1C_TASK_ACCEPTED_FIELD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    class AgreementTask:
+        def __init__(self) -> None:
+            self.completed = False
+            setattr(self, "ПринятаКИсполнению", False)
+            setattr(self, "РезультатВыполнения", "")
+
+        def ExecuteTask(self):
+            if not getattr(self, "ПринятаКИсполнению"):
+                raise RuntimeError("Задание не принято к исполнению")
+            self.completed = True
+
+    task = AgreementTask()
+    task_reference = SimpleNamespace(GetObject=lambda: task)
+    client = Docflow1CComClient()
+    monkeypatch.setattr(client, "_connect", lambda **_kwargs: object())
+    monkeypatch.setattr(client, "_reference_from_uuid", lambda *_args, **_kwargs: task_reference)
+
+    def task_context(_connection, *, task_ref):
+        return ({
+            "ref": task_ref,
+            "task_type": "ЗадачаИсполнителя",
+            "process_ref": "22222222-2222-2222-2222-222222222222",
+            "process_type": "Согласование",
+            "business_state": "Активен",
+            "result": getattr(task, "РезультатВыполнения"),
+            "accepted": getattr(task, "ПринятаКИсполнению"),
+            "completed": task.completed,
+        }, object())
+
+    monkeypatch.setattr(client, "_task_context", task_context)
+
+    result = client.apply_task_action(
+        login="test.user",
+        password="temporary-test-password",
+        task_ref="11111111-1111-1111-1111-111111111111",
+        action="approve",
+        result_template="Согласовано",
+        comment="",
+    )
+
+    assert getattr(task, "ПринятаКИсполнению") is True
+    assert getattr(task, "РезультатВыполнения") == "Согласовано"
+    assert result["task"]["completed"] is True
+
+
+def test_com_action_reports_a_definite_conflict_when_1c_rolls_back_the_write(monkeypatch):
+    """A rejected and rolled-back 1C call is not an unknown write outcome."""
+    for name in (
+        "DOCFLOW_1C_TASK_TYPE",
+        "DOCFLOW_1C_TASK_RESULT_FIELD",
+        "DOCFLOW_1C_TASK_ACCEPTED_FIELD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    class RejectedAgreementTask:
+        def __init__(self) -> None:
+            self.completed = False
+            self.accepted = False
+            self.result = ""
+
+        @property
+        def ПринятаКИсполнению(self):
+            return self.accepted
+
+        @ПринятаКИсполнению.setter
+        def ПринятаКИсполнению(self, value):
+            self.accepted = value
+
+        @property
+        def РезультатВыполнения(self):
+            return self.result
+
+        @РезультатВыполнения.setter
+        def РезультатВыполнения(self, value):
+            self.result = value
+
+        def ExecuteTask(self):
+            # 1C rolls the attempted changes back before returning its error.
+            self.accepted = False
+            self.result = ""
+            raise RuntimeError("Нарушение прав доступа!")
+
+    task = RejectedAgreementTask()
+    task_reference = SimpleNamespace(GetObject=lambda: task)
+    client = Docflow1CComClient()
+    monkeypatch.setattr(client, "_connect", lambda **_kwargs: object())
+    monkeypatch.setattr(client, "_reference_from_uuid", lambda *_args, **_kwargs: task_reference)
+
+    def task_context(_connection, *, task_ref):
+        return ({
+            "ref": task_ref,
+            "task_type": "ЗадачаИсполнителя",
+            "process_ref": "22222222-2222-2222-2222-222222222222",
+            "process_type": "Согласование",
+            "business_state": "Активен",
+            "result": task.result,
+            "accepted": task.accepted,
+            "completed": task.completed,
+        }, object())
+
+    monkeypatch.setattr(client, "_task_context", task_context)
+
+    try:
+        client.apply_task_action(
+            login="test.user",
+            password="temporary-test-password",
+            task_ref="11111111-1111-1111-1111-111111111111",
+            action="approve",
+            result_template="Согласовано",
+            comment="",
+        )
+    except Docflow1CConflictError as exc:
+        assert "внешнее соединение" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("a rolled-back 1C action was reported as successful or unknown")
+
+
+def test_docflow_adapter_preserves_the_safe_external_connection_denial():
+    mapped = Docflow1CAdapter._map_error(
+        Warehouse1CProcessBridgeRemoteError(
+            "Docflow1CConflictError: 1С запретила выполнение задания через внешнее соединение"
+        )
+    )
+
+    assert isinstance(mapped, DocflowStateConflict)
+    assert "внешнее соединение" in str(mapped)
 
 
 class _FakeRef:

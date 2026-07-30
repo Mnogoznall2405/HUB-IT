@@ -9,17 +9,19 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-DocflowActionCode = Literal["acknowledge", "approve", "reject", "complete"]
-_ACTION_CODES = frozenset({"acknowledge", "approve", "reject", "complete"})
+DocflowActionCode = Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
+_ACTION_CODES = frozenset({"acknowledge", "approve", "approve_with_comments", "reject", "complete"})
 _DEFAULT_LABELS = {
     "acknowledge": "Ознакомиться",
     "approve": "Согласовать",
+    "approve_with_comments": "Согласовать с замечаниями",
     "reject": "Отклонить",
     "complete": "Выполнить",
 }
 _DEFAULT_TONES = {
     "acknowledge": "primary",
     "approve": "success",
+    "approve_with_comments": "warning",
     "reject": "error",
     "complete": "primary",
 }
@@ -37,6 +39,10 @@ class DocflowActionRule:
     label: str
     tone: str
     comment_mode: Literal["optional", "required"]
+    dm_version: str = ""
+    xdto_task_type: str = ""
+    result_field: str = ""
+    result_object_id: str = ""
 
     def public_contract(self) -> dict[str, str]:
         return {
@@ -62,7 +68,7 @@ def _text(value: Any, *, maximum: int) -> str:
 def _comment_mode(action: str, value: Any) -> Literal["optional", "required"]:
     # Negative and free-form completion outcomes always require an explanation,
     # even if a deployment rule was accidentally configured as optional.
-    if action in {"reject", "complete"}:
+    if action in {"approve_with_comments", "reject", "complete"}:
         return "required"
     return "required" if str(value or "").strip().lower() == "required" else "optional"
 
@@ -103,6 +109,8 @@ def load_action_rules(raw: str | None = None) -> tuple[DocflowActionRule, ...]:
         process_type = _text(row.get("process_type"), maximum=128)
         fingerprint = _text(row.get("configuration_fingerprint"), maximum=64).lower()
         actions = row.get("actions")
+        dm_version = _text(row.get("dm_version"), maximum=64)
+        xdto_task_type = _text(row.get("xdto_task_type"), maximum=128)
         expected_fingerprint = configuration_fingerprint(
             configuration=configuration,
             task_type=task_type,
@@ -144,6 +152,10 @@ def load_action_rules(raw: str | None = None) -> tuple[DocflowActionRule, ...]:
                     label=_text(raw_spec.get("label") or _DEFAULT_LABELS[action], maximum=80),
                     tone=tone,
                     comment_mode=comment_mode,
+                    dm_version=dm_version,
+                    xdto_task_type=xdto_task_type,
+                    result_field=_text(raw_spec.get("result_field"), maximum=128),
+                    result_object_id=_text(raw_spec.get("result_object_id"), maximum=128),
                 )
             )
     return tuple(rules)

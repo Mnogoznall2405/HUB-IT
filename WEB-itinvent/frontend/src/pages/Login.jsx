@@ -38,7 +38,13 @@ import {
   waitForWebAuthnApi,
 } from '../lib/useWebAuthnAvailability';
 
-const CANONICAL_HOST = 'hubit.zsgp.ru';
+const DEFAULT_CANONICAL_HOST = 'hubit.zsgp.ru';
+const configuredCanonicalHost = String(import.meta.env.VITE_CANONICAL_HOST || '')
+  .trim()
+  .toLowerCase();
+const CANONICAL_HOST = /^[a-z0-9.-]+$/.test(configuredCanonicalHost)
+  ? configuredCanonicalHost
+  : DEFAULT_CANONICAL_HOST;
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const DASHBOARD_PATH = '/dashboard';
 
@@ -1752,7 +1758,7 @@ function Login() {
     );
 
     const setupHint = appleOtpSupported
-      ? 'Нажмите «Добавить в Пароли» и выберите сохранённую запись hubit.zsgp.ru.'
+      ? `Нажмите «Добавить в Пароли» и выберите сохранённую запись ${CANONICAL_HOST}.`
       : 'Откройте приложение кодов и добавьте HUB-IT.';
 
     const setupBody = (

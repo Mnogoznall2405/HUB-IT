@@ -462,7 +462,6 @@ if ($BackendSecondaryReadyUrl) {
     $chatRuntimeRows += Test-BackendChatRuntime -Name 'backend-secondary-chat-runtime' -Url $secondaryReadyUrl
 }
 $pm2RuntimeRows = @(
-    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-docflow-gateway'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-backend'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-mail-notification-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-chat-push-worker'

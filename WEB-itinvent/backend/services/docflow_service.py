@@ -32,6 +32,7 @@ from backend.services.docflow_1c_client import (
     Docflow1CAuthenticationError,
     Docflow1CComClient,
     Docflow1CConflictError,
+    Docflow1CDigitalSignatureRequiredError,
     Docflow1CError,
     Docflow1CFileStorageUnavailableError,
     Docflow1CFileTooLargeError,
@@ -41,6 +42,7 @@ from backend.services.docflow_1c_client import (
     Docflow1CUnavailableError,
     docflow_export_root,
 )
+from backend.services.docflow_dm_service_client import DocflowDMServiceClient
 from backend.services.mail_attachment_preview_service import (
     MailAttachmentPreviewError,
     build_office_preview_artifact,
@@ -130,6 +132,14 @@ class DocflowActionOutcomeUnknown(DocflowServiceError):
     status_code = 202
 
 
+class DocflowDigitalSignatureRequired(DocflowServiceError):
+    code = "DOCFLOW_DIGITAL_SIGNATURE_REQUIRED"
+    status_code = 409
+
+
+DOCFLOW_ACTION_NOT_APPLIED = "DOCFLOW_ACTION_NOT_APPLIED"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -190,7 +200,7 @@ class Docflow1CBridgePool:
 
 
 class Docflow1CAdapter:
-    """Routes COM reads through a killable, bounded child process by default."""
+    """Routes allowlisted operations through DMService or an explicit COM rollback."""
 
     _allowed_operations = frozenset(
         {
@@ -200,13 +210,26 @@ class Docflow1CAdapter:
         }
     )
 
-    def __init__(self, *, bridge: Warehouse1CProcessBridge | None = None, direct_client=None) -> None:
+    def __init__(
+        self,
+        *,
+        bridge: Warehouse1CProcessBridge | None = None,
+        direct_client=None,
+        dm_client=None,
+    ) -> None:
+        self._transport = str(os.getenv("DOCFLOW_TRANSPORT", "com") or "com").strip().casefold()
+        if self._transport not in {"com", "dmservice"}:
+            raise DocflowConfigurationError("DOCFLOW_TRANSPORT должен быть dmservice или com")
         self._direct_client = direct_client or Docflow1CComClient()
+        self._dm_client = dm_client
+        if self._transport == "dmservice" and self._dm_client is None:
+            self._dm_client = DocflowDMServiceClient()
         self._gateway_url = (
-            "" if _env_flag("DOCFLOW_GATEWAY_PROCESS") else str(os.getenv("DOCFLOW_GATEWAY_URL", "") or "").strip().rstrip("/")
+            "" if self._transport == "dmservice" or _env_flag("DOCFLOW_GATEWAY_PROCESS")
+            else str(os.getenv("DOCFLOW_GATEWAY_URL", "") or "").strip().rstrip("/")
         )
         self._gateway_token = docflow_gateway_token()
-        self._bridge_enabled = _env_flag("DOCFLOW_1C_PROCESS_BRIDGE_ENABLED", "1")
+        self._bridge_enabled = self._transport == "com" and _env_flag("DOCFLOW_1C_PROCESS_BRIDGE_ENABLED", "1")
         self._bridge = bridge
         self._bridge_error = ""
         self._metrics_lock = threading.Lock()
@@ -361,6 +384,10 @@ class Docflow1CAdapter:
 
     @staticmethod
     def _map_error(exc: BaseException) -> DocflowServiceError:
+        if isinstance(exc, Docflow1CDigitalSignatureRequiredError):
+            return DocflowDigitalSignatureRequired(
+                "Для этого задания требуется электронная подпись. Выполните действие в 1С"
+            )
         if isinstance(exc, Docflow1CAuthenticationError):
             return DocflowCredentialsInvalid("Логин или пароль 1С не принят")
         if isinstance(exc, Docflow1CMappingError):
@@ -394,6 +421,11 @@ class Docflow1CAdapter:
             if "Docflow1CMappingError" in message:
                 return DocflowMappingRequired("Метаданные заданий 1С требуют настройки")
             if "Docflow1CConflictError" in message:
+                if "внешнее соединение" in message.casefold():
+                    return DocflowStateConflict(
+                        "1С запретила выполнение задания через внешнее соединение. "
+                        "Требуется разрешённый серверный интерфейс или роль 1С"
+                    )
                 return DocflowStateConflict("Состояние задания изменилось в 1С")
             if "Docflow1CNotFoundError" in message:
                 return DocflowNotFound("Задание или файл не найден либо больше вам не доступен")
@@ -411,6 +443,79 @@ class Docflow1CAdapter:
                 )
             return DocflowUnavailable("Не удалось выполнить запрос к 1С Документооборот")
         return DocflowUnavailable("Не удалось выполнить запрос к 1С Документооборот")
+
+    async def _call_dm(self, operation: str, payload: dict[str, Any]) -> Any:
+        if self._dm_client is None:
+            raise DocflowConfigurationError("Клиент DMService не настроен")
+        credentials = {
+            "login": str(payload.get("login") or ""),
+            "password": str(payload.get("password") or ""),
+        }
+        if operation == "test_connection":
+            return await self._dm_client.test_connection(**credentials)
+        if operation == "metadata":
+            return await self._dm_client.metadata(**credentials)
+        if operation == "tasks":
+            return await self._dm_client.list_tasks(
+                **credentials,
+                scope=str(payload.get("scope") or "inbox"),
+                search=str(payload.get("search") or ""),
+                limit=int(payload.get("limit") or 50),
+            )
+        if operation == "task_detail":
+            return await self._dm_client.get_task_detail(
+                **credentials, task_ref=str(payload.get("task_ref") or "")
+            )
+        if operation == "task_state":
+            return await self._dm_client.get_task_state(
+                **credentials, task_ref=str(payload.get("task_ref") or "")
+            )
+        if operation == "task_action":
+            return await self._dm_client.apply_task_action(
+                **credentials,
+                task_ref=str(payload.get("task_ref") or ""),
+                action=str(payload.get("action") or ""),
+                result_template=str(payload.get("result_template") or ""),
+                comment=str(payload.get("comment") or ""),
+                result_field=str(payload.get("result_field") or ""),
+                result_object_id=str(payload.get("result_object_id") or ""),
+            )
+        if operation == "assignment_documents":
+            return await self._dm_client.search_assignment_documents(
+                **credentials,
+                search=str(payload.get("search") or ""),
+                limit=int(payload.get("limit") or 20),
+            )
+        if operation == "assignment_assignees":
+            return await self._dm_client.search_assignment_assignees(
+                **credentials,
+                search=str(payload.get("search") or ""),
+                limit=int(payload.get("limit") or 20),
+            )
+        if operation == "assignment_state":
+            return await self._dm_client.get_assignment_state(
+                **credentials, process_ref=str(payload.get("process_ref") or "")
+            )
+        if operation == "assignment_create":
+            return await self._dm_client.create_assignment(
+                **credentials,
+                process_ref=str(payload.get("process_ref") or ""),
+                document_type=str(payload.get("document_type") or ""),
+                document_ref=str(payload.get("document_ref") or ""),
+                assignee_ref=str(payload.get("assignee_ref") or ""),
+                controller_ref=str(payload.get("controller_ref") or ""),
+                due_at=str(payload.get("due_at") or ""),
+                importance=str(payload.get("importance") or "normal"),
+                title=str(payload.get("title") or ""),
+                description=str(payload.get("description") or ""),
+            )
+        if operation == "file_export":
+            return await self._dm_client.export_file(
+                **credentials,
+                task_ref=str(payload.get("task_ref") or ""),
+                file_ref=str(payload.get("file_ref") or ""),
+            )
+        raise DocflowMappingRequired("Операция docflow не разрешена")
 
     def _call_sync(self, operation: str, payload: dict[str, Any]) -> Any:
         try:
@@ -518,6 +623,13 @@ class Docflow1CAdapter:
         started = time.perf_counter()
         failed = False
         try:
+            if self._transport == "dmservice":
+                try:
+                    return await self._call_dm(operation, payload)
+                except DocflowServiceError:
+                    raise
+                except Exception as exc:
+                    raise self._map_error(exc) from None
             return await asyncio.to_thread(self._call_sync, operation, payload)
         except Exception:
             failed = True
@@ -528,8 +640,27 @@ class Docflow1CAdapter:
     def shutdown(self) -> None:
         if self._bridge is not None:
             self._bridge.shutdown()
+        if self._dm_client is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(self._dm_client.aclose())
+            else:
+                loop.create_task(self._dm_client.aclose())
+
+    async def aclose(self) -> None:
+        if self._bridge is not None:
+            await asyncio.to_thread(self._bridge.shutdown)
+        if self._dm_client is not None:
+            await self._dm_client.aclose()
 
     def get_status(self) -> dict[str, Any]:
+        if self._transport == "dmservice":
+            return {
+                "mode": "dmservice",
+                "configured": bool(getattr(self._dm_client, "service_url", "")),
+                "operations": self._operation_metrics_snapshot(),
+            }
         if self.gateway_enabled:
             return {"mode": "remote_gateway", "configured": True, "operations": self._operation_metrics_snapshot()}
         if self._bridge is None:
@@ -773,6 +904,13 @@ class DocflowService:
     def shutdown(self) -> None:
         self._adapter.shutdown()
 
+    async def aclose(self) -> None:
+        close = getattr(self._adapter, "aclose", None)
+        if close is not None:
+            await close()
+        else:
+            await asyncio.to_thread(self._adapter.shutdown)
+
     def gateway_status(self) -> dict[str, Any]:
         return self._adapter.get_status()
 
@@ -825,7 +963,10 @@ class DocflowService:
             return "Запись в 1С выключена серверной настройкой."
         if not _env_flag("DOCFLOW_CREATE_ENABLED"):
             return "Создание поручений ещё не включено для пилота."
-        if int(user_id) not in cls._create_pilot_user_ids():
+        transport_reason = cls._transport_write_unavailable_reason()
+        if transport_reason:
+            return transport_reason
+        if not _env_flag("DOCFLOW_CREATE_ALL_USERS") and int(user_id) not in cls._create_pilot_user_ids():
             return "Ваша учётная запись не включена в пилот создания поручений."
         if credential_reason:
             return credential_reason
@@ -838,6 +979,17 @@ class DocflowService:
     @staticmethod
     def _assignment_test_only() -> bool:
         return _env_flag("DOCFLOW_CREATE_TEST_ONLY", "1")
+
+    @staticmethod
+    def _transport_write_unavailable_reason() -> str | None:
+        if str(os.getenv("DOCFLOW_TRANSPORT", "com") or "com").strip().casefold() != "dmservice":
+            return None
+        service_url = str(os.getenv("DOCFLOW_DM_SERVICE_URL", "") or "").strip().casefold()
+        if service_url.startswith("http://") and not _env_flag("DOCFLOW_DM_ALLOW_INSECURE_WRITES"):
+            return (
+                "Действия временно доступны только для чтения: публикация DMService работает без HTTPS."
+            )
+        return None
 
     async def _ensure_assignment_enabled(self, user_id: int) -> None:
         credential_reason = await self._write_credential_unavailable_reason(int(user_id))
@@ -950,7 +1102,11 @@ class DocflowService:
         if not _env_flag("DOCFLOW_WRITE_ENABLED"):
             result["action_unavailable_reason"] = "Действия в 1С пока доступны только в пилотном режиме."
             return result
-        if int(user_id) not in cls._pilot_user_ids():
+        transport_reason = cls._transport_write_unavailable_reason()
+        if transport_reason:
+            result["action_unavailable_reason"] = transport_reason
+            return result
+        if not _env_flag("DOCFLOW_WRITE_ALL_USERS") and int(user_id) not in cls._pilot_user_ids():
             result["action_unavailable_reason"] = "Ваша учётная запись не включена в пилот действий 1С."
             return result
         if not cls._action_state_key():
@@ -967,7 +1123,21 @@ class DocflowService:
         if bool(result.get("completed")):
             result["action_unavailable_reason"] = "Задание уже завершено."
             return result
+        if bool(result.get("requires_digital_signature")):
+            result["action_unavailable_reason"] = (
+                "Для этого задания требуется электронная подпись. Выполните действие в 1С."
+            )
+            return result
         rules = cls._matching_rules(result)
+        dm_version = str(result.get("dm_version") or "").strip()
+        xdto_task_type = str(result.get("xdto_task_type") or "").strip()
+        if dm_version or xdto_task_type:
+            rules = tuple(
+                rule
+                for rule in rules
+                if (not rule.dm_version or rule.dm_version == dm_version)
+                and (not rule.xdto_task_type or rule.xdto_task_type == xdto_task_type)
+            )
         if not rules:
             result["action_unavailable_reason"] = "Для этого типа процесса нет проверенного правила выполнения."
             return result
@@ -1006,6 +1176,33 @@ class DocflowService:
             expected_hash,
             cls._result_hash(str(detail.get("result") or "")),
         )
+
+    @classmethod
+    def _state_matches_before(cls, row: AppDocflowCommand, detail: dict[str, Any]) -> bool:
+        try:
+            before = json.loads(str(row.remote_before_json or "{}"))
+        except (TypeError, ValueError):
+            return False
+        current = cls._task_state_payload(detail)
+        return bool(before.get("ref")) and all(
+            before.get(key) == current.get(key)
+            for key in current
+        )
+
+    @staticmethod
+    def _can_verify_not_applied(row: AppDocflowCommand) -> bool:
+        updated_at = getattr(row, "updated_at", None)
+        if not isinstance(updated_at, datetime):
+            return False
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        delay = _positive_int(
+            "DOCFLOW_ACTION_NOT_APPLIED_VERIFY_DELAY_SECONDS",
+            5,
+            minimum=1,
+            maximum=60,
+        )
+        return (_utcnow() - updated_at).total_seconds() >= delay
 
     @staticmethod
     def _profile(row: AppDocflowCredential | None) -> dict[str, Any]:
@@ -1580,13 +1777,41 @@ class DocflowService:
         user_id: int,
         row: AppDocflowCommand,
         can_act: bool,
+        allow_verified_not_applied: bool = False,
     ) -> tuple[AppDocflowCommand, dict[str, Any] | None]:
         try:
             state = await self._task_state(user_id=int(user_id), task_ref=str(row.task_ref))
         except DocflowServiceError:
             return row, None
         if not self._state_matches_command(row, state):
-            return row, state
+            if not (
+                allow_verified_not_applied
+                and self._can_verify_not_applied(row)
+                and self._state_matches_before(row, state)
+            ):
+                return row, state
+            updated = await asyncio.to_thread(
+                self._command_store.finish,
+                command_id=str(row.id),
+                status="rejected",
+                outcome="verified_not_applied",
+                error_code=DOCFLOW_ACTION_NOT_APPLIED,
+                remote_after_json=self._remote_snapshot(state),
+            )
+            try:
+                detail = await self.get_task_detail(
+                    user_id=int(user_id),
+                    task_ref=str(row.task_ref),
+                    correlation_id=str(row.correlation_id),
+                    can_act=can_act,
+                )
+            except DocflowServiceError:
+                detail = self._decorate_task_actions(
+                    user_id=int(user_id),
+                    detail=state,
+                    can_act=can_act,
+                )
+            return updated, detail
         updated = await asyncio.to_thread(
             self._command_store.finish,
             command_id=str(row.id),
@@ -1620,7 +1845,10 @@ class DocflowService:
             raise DocflowIdempotencyConflict("Передайте уникальный Idempotency-Key")
         if not _env_flag("DOCFLOW_WRITE_ENABLED"):
             raise DocflowWriteDisabled("Запись в 1С выключена серверной настройкой")
-        if int(user_id) not in self._pilot_user_ids():
+        transport_reason = self._transport_write_unavailable_reason()
+        if transport_reason:
+            raise DocflowWriteDisabled(transport_reason)
+        if not _env_flag("DOCFLOW_WRITE_ALL_USERS") and int(user_id) not in self._pilot_user_ids():
             raise DocflowActionUnavailable("Учётная запись не включена в пилот действий 1С")
         if not self._action_state_key():
             raise DocflowConfigurationError("DOCFLOW_ACTION_STATE_KEY не настроен")
@@ -1765,6 +1993,8 @@ class DocflowService:
                     "task_ref": str(task_ref),
                     "action": normalized_action,
                     "result_template": str(rule.result_value),
+                    "result_field": str(rule.result_field),
+                    "result_object_id": str(rule.result_object_id),
                     "comment": normalized_comment,
                 },
             )
@@ -1883,6 +2113,7 @@ class DocflowService:
                 user_id=int(user_id),
                 row=row,
                 can_act=True,
+                allow_verified_not_applied=True,
             )
         elif str(row.status) == "applied":
             detail = await self.get_task_detail(

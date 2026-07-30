@@ -328,7 +328,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("Warehouse 1C connection pool shutdown failed")
     try:
-        await asyncio.to_thread(docflow_service.shutdown)
+        await docflow_service.aclose()
     except Exception:
         logging.getLogger(__name__).exception("Docflow 1C process bridge shutdown failed")
 

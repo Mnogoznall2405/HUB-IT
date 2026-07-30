@@ -18,6 +18,7 @@ the production release directory name.
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\releases\New-HubItRelease.ps1 `
   -Version v2026.07.29.1 `
+  -ReleaseEnvironment Production `
   -RunFrontendTests
 ```
 
@@ -41,6 +42,7 @@ development release account, for example `\\PROD-APP\HUB-IT-Releases\incoming`.
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\releases\New-HubItRelease.ps1 `
   -Version v2026.07.29.1 `
+  -ReleaseEnvironment Production `
   -RunFrontendTests `
   -Destination '\\PROD-APP\HUB-IT-Releases\incoming'
 ```
@@ -48,6 +50,69 @@ powershell -ExecutionPolicy Bypass -File scripts\releases\New-HubItRelease.ps1 `
 The script copies the archive as `.uploading`, validates its SHA-256, renames
 it to `.zip`, then writes `.ready.json` last. A production receiver must ignore
 archives without the ready marker.
+
+For a development build, use the explicit profile:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\releases\New-HubItRelease.ps1 `
+  -Version v2026.07.29.1-dev.1 `
+  -ReleaseEnvironment Development
+```
+
+Profiles set both the frontend `VITE_CANONICAL_HOST` and the IIS redirect:
+
+- `Development` -> `hubitdev.zsgp.ru`;
+- `Production` -> `hubit.zsgp.ru`.
+
+## Per-server configuration
+
+The release archive does not contain `.env`. Before the first deployment,
+create a separate root `.env` on each host. Development and production must
+use different PostgreSQL databases, WebAuthn origins, and agent URLs.
+
+```env
+# Development host
+VITE_CANONICAL_HOST=hubitdev.zsgp.ru
+WEBAUTHN_RP_ID=hubitdev.zsgp.ru
+WEBAUTHN_ORIGIN=https://hubitdev.zsgp.ru
+CORS_ORIGINS=https://hubitdev.zsgp.ru,http://localhost:5173
+```
+
+```env
+# Production host
+VITE_CANONICAL_HOST=hubit.zsgp.ru
+WEBAUTHN_RP_ID=hubit.zsgp.ru
+WEBAUTHN_ORIGIN=https://hubit.zsgp.ru
+CORS_ORIGINS=https://hubit.zsgp.ru
+```
+
+The release profile overrides `VITE_CANONICAL_HOST` during frontend build and
+records the selected host in the release manifest. The deploy script rejects a
+release whose profile and host do not match its command-line target.
+
+## Deploy on a Windows IIS/PM2 host
+
+Copy the published archive and all three sidecars (`.sha256`, `.manifest.json`,
+`.ready.json`) to the production `incoming` directory. Verify first:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\releases\Deploy-HubItRelease.ps1 `
+  -ReleaseArchivePath 'C:\HUB-IT-Releases\incoming\HUB-IT-v2026.07.29.1.zip' `
+  -ReleaseEnvironment Production
+```
+
+After a verified PostgreSQL backup and a maintenance window, apply it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\releases\Deploy-HubItRelease.ps1 `
+  -ReleaseArchivePath 'C:\HUB-IT-Releases\incoming\HUB-IT-v2026.07.29.1.zip' `
+  -ReleaseEnvironment Production `
+  -Apply
+```
+
+The receiver is intentionally limited to the established
+`C:\Project\Image_scan` runtime path. It preserves `.env`, `data`, uploads,
+logs, Python environments, Node modules, tools, and Git metadata.
 
 ## Production receiver contract
 

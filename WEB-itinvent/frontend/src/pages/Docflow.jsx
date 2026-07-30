@@ -30,9 +30,12 @@ import { useTheme } from '@mui/material/styles';
 import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
 import AddTaskOutlinedIcon from '@mui/icons-material/AddTaskOutlined';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
@@ -100,34 +103,57 @@ export function resolveDocflowError(error, fallback = 'Не удалось вы�
 }
 
 function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
+  const loginInputRef = useRef(null);
+  const passwordInputRef = useRef(null);
   const [draft, setDraft] = useState(emptyCredentialDraft);
-  const [working, setWorking] = useState(false);
+  const [workingAction, setWorkingAction] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState(null);
+  const [attempted, setAttempted] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const working = Boolean(workingAction);
 
   useEffect(() => {
     if (!open) return;
     setDraft({ login: String(profile?.login || ''), password: '' });
     setTestResult(null);
     setError(null);
+    setAttempted(false);
+    setShowPassword(false);
   }, [open, profile?.login]);
 
   const payload = useMemo(() => ({
     login: draft.login.trim(),
     password: draft.password,
   }), [draft]);
-  const canSubmit = Boolean(payload.login && payload.password && !working);
+  const loginMissing = attempted && !payload.login;
+  const passwordMissing = attempted && !payload.password;
+
+  const validate = () => {
+    setAttempted(true);
+    if (!payload.login) {
+      loginInputRef.current?.focus();
+      return false;
+    }
+    if (!payload.password) {
+      passwordInputRef.current?.focus();
+      return false;
+    }
+    return true;
+  };
 
   const close = () => {
     setDraft(emptyCredentialDraft);
     setTestResult(null);
     setError(null);
+    setAttempted(false);
+    setShowPassword(false);
     onClose();
   };
 
   const testConnection = async () => {
-    if (!canSubmit) return;
-    setWorking(true);
+    if (!validate() || working) return;
+    setWorkingAction('test');
     setError(null);
     setTestResult(null);
     try {
@@ -136,13 +162,13 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
     } catch (requestError) {
       setError(resolveDocflowError(requestError, 'Не удалось проверить учётную запись 1С.'));
     } finally {
-      setWorking(false);
+      setWorkingAction('');
     }
   };
 
   const save = async () => {
-    if (!canSubmit) return;
-    setWorking(true);
+    if (!validate() || working) return;
+    setWorkingAction('save');
     setError(null);
     try {
       const nextProfile = await docflowAPI.saveCredentials(payload);
@@ -151,58 +177,150 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
     } catch (requestError) {
       setError(resolveDocflowError(requestError, 'Не удалось сохранить учётную запись 1С.'));
     } finally {
-      setWorking(false);
+      setWorkingAction('');
     }
   };
 
+  const updateDraft = (field) => (event) => {
+    setDraft((current) => ({ ...current, [field]: event.target.value }));
+    setTestResult(null);
+    setError(null);
+  };
+
   return (
-    <Dialog open={open} onClose={working ? undefined : close} fullWidth maxWidth="sm" fullScreen={mobile}>
-      <DialogTitle>Учётная запись 1С Документооборот</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity="info">
-            Данные проверяются в базе docflow и сохраняются только в зашифрованном виде. Пароль нельзя будет посмотреть после сохранения.
-          </Alert>
-          <TextField
-            autoFocus
-            label="Логин 1С"
-            value={draft.login}
-            onChange={(event) => setDraft((current) => ({ ...current, login: event.target.value }))}
-            inputProps={{ maxLength: 128 }}
-            autoComplete="username"
-            disabled={working}
-          />
-          <TextField
-            label="Пароль 1С"
-            type="password"
-            value={draft.password}
-            onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value }))}
-            inputProps={{ maxLength: 256 }}
-            autoComplete="current-password"
-            disabled={working}
-          />
-          {testResult?.connected ? (
-            <Alert severity="success">Подключение к базе {testResult.configuration} выполнено.</Alert>
-          ) : null}
-          {error ? (
-            <Alert severity="error">
-              {error.message}
-              {error.correlationId ? (
-                <Typography display="block" variant="caption" sx={{ mt: 0.5 }}>
-                  Код обращения: {error.correlationId}
-                </Typography>
-              ) : null}
-            </Alert>
-          ) : null}
-        </Stack>
-      </DialogContent>
-      <DialogActions sx={{ px: { xs: 2, sm: 3 }, pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 }, gap: { xs: 0.75, sm: 0 }, flexDirection: { xs: 'column-reverse', sm: 'row' }, '& > :not(style) ~ :not(style)': { ml: { xs: 0, sm: 1 } }, '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' }, minHeight: 44 } }}>
-        <Button onClick={close} disabled={working}>Отмена</Button>
-        <Button onClick={testConnection} disabled={!canSubmit}>Только проверить</Button>
-        <Button variant="contained" onClick={save} disabled={!canSubmit}>
-          {working ? <CircularProgress size={20} color="inherit" /> : 'Проверить и сохранить'}
-        </Button>
-      </DialogActions>
+    <Dialog
+      open={open}
+      onClose={working ? undefined : close}
+      fullWidth
+      maxWidth="sm"
+      fullScreen={mobile}
+      PaperProps={{ sx: { borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
+    >
+      <Box
+        component="form"
+        noValidate
+        onSubmit={(event) => { event.preventDefault(); void save(); }}
+        sx={{ display: 'flex', flexDirection: 'column', minHeight: mobile ? '100dvh' : 0 }}
+      >
+        <DialogTitle sx={{ px: { xs: 2, sm: 3 }, pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 28px)', sm: 3 }, pb: 1.5 }}>
+          <Stack spacing={1.25} alignItems={mobile ? 'center' : 'flex-start'} textAlign={mobile ? 'center' : 'start'}>
+            <Box
+              sx={{
+                width: 52,
+                height: 52,
+                display: 'grid',
+                placeItems: 'center',
+                borderRadius: 3,
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                boxShadow: (themeValue) => `0 10px 28px ${themeValue.palette.primary.main}33`,
+              }}
+            >
+              <LockOutlinedIcon />
+            </Box>
+            <Box>
+              <Typography component="h2" variant="h6" fontWeight={800} sx={{ textWrap: 'balance' }}>
+                Подключение к 1С
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 440, textWrap: 'pretty' }}>
+                Введите личный логин и пароль от 1С Документооборота.
+              </Typography>
+            </Box>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: 1.5, flex: 1 }}>
+          <Stack spacing={2} sx={{ width: '100%', maxWidth: 480, mx: 'auto' }}>
+            <Box sx={{ display: 'flex', gap: 1, p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover', color: 'text.secondary' }}>
+              <LockOutlinedIcon sx={{ fontSize: 19, mt: 0.1, flexShrink: 0 }} />
+              <Typography variant="body2" sx={{ lineHeight: 1.5 }}>
+                Данные проверяются в 1С и хранятся в зашифрованном виде. Сохранённый пароль нельзя просмотреть.
+              </Typography>
+            </Box>
+            <TextField
+              autoFocus={!mobile}
+              inputRef={loginInputRef}
+              required
+              fullWidth
+              name="docflow-username"
+              label="Логин 1С"
+              value={draft.login}
+              onChange={updateDraft('login')}
+              inputProps={{ maxLength: 128, spellCheck: false }}
+              autoComplete="username"
+              disabled={working}
+              error={loginMissing}
+              helperText={loginMissing ? 'Введите логин от 1С.' : 'Обычно совпадает с именем пользователя в 1С.'}
+              sx={{ '& .MuiInputBase-input': { fontSize: { xs: 16, sm: 'inherit' } } }}
+            />
+            <TextField
+              required
+              fullWidth
+              inputRef={passwordInputRef}
+              name="docflow-password"
+              label="Пароль 1С"
+              type={showPassword ? 'text' : 'password'}
+              value={draft.password}
+              onChange={updateDraft('password')}
+              inputProps={{ maxLength: 256 }}
+              autoComplete="current-password"
+              disabled={working}
+              error={passwordMissing}
+              helperText={passwordMissing ? 'Введите пароль от 1С.' : 'Можно вставить пароль из менеджера паролей.'}
+              sx={{ '& .MuiInputBase-input': { fontSize: { xs: 16, sm: 'inherit' } } }}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton
+                      edge="end"
+                      onClick={() => setShowPassword((value) => !value)}
+                      aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                      disabled={working}
+                      sx={{ width: 44, height: 44 }}
+                    >
+                      {showPassword ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
+            />
+            {testResult?.connected ? (
+              <Alert severity="success" role="status">Подключение к базе {testResult.configuration} работает.</Alert>
+            ) : null}
+            {error ? (
+              <Alert severity="error">
+                {error.message}
+                {error.correlationId ? (
+                  <Typography display="block" variant="caption" sx={{ mt: 0.5 }}>
+                    Код обращения: {error.correlationId}
+                  </Typography>
+                ) : null}
+              </Alert>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions
+          sx={{
+            px: { xs: 2, sm: 3 },
+            pt: 1.5,
+            pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 20px)', sm: 2.5 },
+            gap: 1,
+            flexDirection: { xs: 'column', sm: 'row' },
+            justifyContent: 'flex-end',
+            '& > :not(style) ~ :not(style)': { ml: 0 },
+            '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' }, minHeight: 46 },
+          }}
+        >
+          <Button variant="contained" type="submit" disabled={working} aria-busy={workingAction === 'save'}>
+            {workingAction === 'save' ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
+            Подключить и сохранить
+          </Button>
+          <Button variant="outlined" onClick={() => void testConnection()} disabled={working} aria-busy={workingAction === 'test'}>
+            {workingAction === 'test' ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
+            Проверить подключение
+          </Button>
+          <Button onClick={close} disabled={working}>Отмена</Button>
+        </DialogActions>
+      </Box>
     </Dialog>
   );
 }
@@ -703,7 +821,21 @@ export default function Docflow() {
         setCommandState(result);
       }
     } catch (error) {
-      setTaskActionError(resolveDocflowError(error, 'Не удалось выполнить действие в 1С.'));
+      const resolved = resolveDocflowError(error, 'Не удалось выполнить действие в 1С.');
+      if (resolved.code === 'DOCFLOW_DIGITAL_SIGNATURE_REQUIRED') {
+        const nextTask = {
+          ...selectedTask,
+          requires_digital_signature: true,
+          available_actions: [],
+          action_unavailable_reason: 'Для этого задания требуется электронная подпись. Выполните действие в 1С.',
+        };
+        detailCache.current.set(taskRef, nextTask);
+        if (selectedTaskRef.current === taskRef) setSelectedTask(nextTask);
+        setTaskAction(null);
+        setTaskActionNotice({ severity: 'info', message: resolved.message });
+      } else {
+        setTaskActionError(resolved);
+      }
     } finally {
       setTaskActionWorking(false);
     }
@@ -726,6 +858,17 @@ export default function Docflow() {
         setCommandState(null);
         setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
         await loadTasks();
+      } else if (result?.status === 'rejected' && result?.error_code === 'DOCFLOW_ACTION_NOT_APPLIED') {
+        const nextTask = result.task;
+        if (nextTask?.ref) {
+          detailCache.current.set(nextTask.ref, nextTask);
+          if (selectedTaskRef.current === nextTask.ref) setSelectedTask(nextTask);
+        }
+        setCommandState(null);
+        setTaskActionNotice({
+          severity: 'warning',
+          message: '1С не применила действие. Карточка обновлена — действие можно выполнить заново.',
+        });
       }
     } catch (error) {
       const resolved = resolveDocflowError(error, 'Не удалось проверить состояние команды в 1С.');
@@ -1122,9 +1265,6 @@ export default function Docflow() {
             </Paper>
           ) : null}
 
-          <Alert severity="info" variant="outlined">
-            Действия появляются в карточке только для проверенного типа процесса и пилотного тестового задания. Если кнопок нет, задание доступно только для чтения.
-          </Alert>
         </Stack>
       </PageShell>
 
