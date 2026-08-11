@@ -15,9 +15,10 @@ export const equipmentSearchAPI = {
     return response.data;
   },
 
-  searchByEmployee: async (query, page = 1, limit = 50) => {
+  searchByEmployee: async (query, page = 1, limit = 50, { signal } = {}) => {
     const response = await apiClient.get('/equipment/search/employee', {
       params: { q: query, page, limit },
+      ...(signal ? { signal } : {}),
     });
     return response.data;
   },

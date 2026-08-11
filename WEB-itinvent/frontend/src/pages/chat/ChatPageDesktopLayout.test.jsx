@@ -65,6 +65,7 @@ describe('ChatPageDesktopLayout', () => {
   it('renders sidebar and thread slots on desktop', () => {
     renderLayout();
 
+    expect(screen.getByTestId('chat-desktop-shell')).toHaveStyle({ borderBottom: 'none' });
     expect(screen.getByTestId('chat-sidebar-slot')).toBeInTheDocument();
     expect(screen.getByTestId('chat-thread-slot')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-mobile-inbox-screen')).not.toBeInTheDocument();
@@ -99,5 +100,20 @@ describe('ChatPageDesktopLayout', () => {
     expect(screen.getByTestId('chat-desktop-right-panel-persistent')).toBeInTheDocument();
     expect(screen.getByTestId('chat-right-panel-slot')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-desktop-right-panel-overlay')).not.toBeInTheDocument();
+  });
+
+  it('renders the chat thread on the left and task details on the right for task entry', () => {
+    renderLayout({
+      taskSplitLayout: true,
+      showTaskPanel: true,
+      renderDesktopRightPanel: true,
+    });
+
+    const threadPane = screen.getByTestId('chat-desktop-thread-pane');
+    const taskPane = screen.getByTestId('chat-desktop-task-pane');
+    expect(threadPane).toContainElement(screen.getByTestId('chat-thread-slot'));
+    expect(taskPane).toContainElement(screen.getByTestId('chat-right-panel-slot'));
+    expect(threadPane.compareDocumentPosition(taskPane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('chat-sidebar-slot')).not.toBeInTheDocument();
   });
 });

@@ -14,12 +14,12 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-07-30 10:41 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-08-10 11:27 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **100** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
-| **`chat`** | **1** | Мессенджер, outbox, push |
+| **`app`** | **127** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **9** | — |
 
@@ -27,9 +27,9 @@ _Обновлено: 2026-07-30 10:41 UTC_ · инстанс `127.0.0.1:5432/hub
 
 Документация пересобирается автоматически после `alembic upgrade` (см. `WEB-itinvent/backend/alembic/env.py`). Отключить: `SKIP_PG_SCHEMA_DOCS=1`.
 
-> **Chat:** на инстансе 1 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
+> **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (100 таблиц)
+## Схема `app` (127 таблиц)
 
 ### Auth и пользователи
 
@@ -52,10 +52,24 @@ _Обновлено: 2026-07-30 10:41 UTC_ · инстанс `127.0.0.1:5432/hub
 | Таблица | Назначение |
 |---------|------------|
 | `hub_announcement_attachments` | Вложения объявлений |
+| `hub_announcement_bookmarks` | — |
+| `hub_announcement_categories` | — |
+| `hub_announcement_comment_attachments` | — |
+| `hub_announcement_comment_mentions` | — |
+| `hub_announcement_comment_reactions` | — |
+| `hub_announcement_comments` | — |
+| `hub_announcement_likes` | — |
+| `hub_announcement_poll_options` | — |
+| `hub_announcement_poll_votes` | — |
+| `hub_announcement_polls` | — |
+| `hub_announcement_reactions` | — |
 | `hub_announcement_reads` | Прочтение / ACK объявлений |
+| `hub_announcement_tag_links` | — |
+| `hub_announcement_tags` | — |
 | `hub_announcements` | **Hub announcement** |
 | `hub_notification_reads` | Прочитанность уведомлений |
 | `hub_notifications` | **Hub notification** |
+| `hub_task_attachment_previews` | — |
 | `hub_task_attachments` | Вложения к задаче |
 | `hub_task_comment_reads` | Прочитанность комментариев |
 | `hub_task_comments` | Комментарии |
@@ -156,19 +170,29 @@ _Обновлено: 2026-07-30 10:41 UTC_ · инстанс `127.0.0.1:5432/hub
 
 | Таблица | Назначение |
 |---------|------------|
+| `browser_probe_media` | — |
+| `browser_probe_visits` | — |
 | `docflow_audit_events` | — |
 | `docflow_commands` | — |
 | `docflow_credentials` | — |
+| `document_preview_jobs` | — |
+| `employee_absences` | — |
 | `equipment_recent_acts` | — |
 | `equipment_recent_cards` | — |
+| `file_left_events` | — |
 | `mailbox_quota_rows` | — |
 | `mailbox_quota_snapshots` | — |
+| `max_probe_chats` | — |
+| `max_probe_media` | — |
 | `my_file_audit` | — |
 | `my_file_blobs` | — |
 | `my_file_download_grants` | — |
 | `my_file_previews` | — |
 | `my_files` | — |
 | `one_c_catalog_entries` | — |
+| `one_c_catalog_search_documents` | — |
+| `one_c_catalog_search_index_state` | — |
+| `one_c_catalog_search_token_stats` | — |
 | `one_c_catalog_snapshots` | — |
 | `one_c_catalog_tokens` | — |
 | `one_c_employee_owner_links` | — |
@@ -180,14 +204,20 @@ _Обновлено: 2026-07-30 10:41 UTC_ · инстанс `127.0.0.1:5432/hub
 | `password_vault_audit` | — |
 | `password_vault_entries` | — |
 | `password_vault_groups` | — |
+| `telegram_probe_chats` | — |
+| `telegram_probe_media` | — |
+| `telegram_probe_reports` | — |
 
-## Схема `chat` (1 таблиц)
+## Схема `chat` (4 таблиц)
 
 ### Таблицы
 
 | Таблица | Назначение |
 |---------|------------|
 | `chat_event_outbox` | Очередь chat-событий (realtime / fan-out) |
+| `chat_sticker_packs` | — |
+| `chat_stickers` | — |
+| `chat_user_sticker_packs` | — |
 
 ### В коде, но не на инстансе
 
@@ -303,7 +333,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-07-30:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 100, `chat` 1, `system` 8).
+- **2026-08-10:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 127, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

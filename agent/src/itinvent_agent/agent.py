@@ -378,6 +378,118 @@ def bootstrap_env_from_files() -> List[str]:
     return loaded
 
 
+def _run_fs_egress_sidecar() -> None:
+    if not _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True):
+        logging.info("fs_egress sidecar is disabled by ITINV_FS_EGRESS_ENABLED")
+        return
+    try:
+        from fs_egress import run_fs_egress_forever
+
+        logging.info("Starting fs_egress sidecar")
+        run_fs_egress_forever()
+    except Exception as exc:
+        logging.exception("fs_egress sidecar crashed: %s", exc)
+
+
+def _telegram_probe_process_running() -> bool:
+    names = {"itinventtelegramprobe", "itinventtelegramprobe.exe"}
+    for proc in psutil.process_iter(["name"]):
+        try:
+            name = str(proc.info.get("name") or "").strip().lower()
+            if name in names:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
+    """Best-effort: if probe enabled and not running, kick scheduled task."""
+    if not _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True):
+        return last_check_ts
+    # Don't thrash Task Scheduler.
+    if last_check_ts and (now_ts - last_check_ts) < 120:
+        return last_check_ts
+    if _telegram_probe_process_running():
+        return now_ts
+    task_name = str(
+        os.getenv("ITINV_TELEGRAM_PROBE_TASK_NAME", "") or agent_installer.TELEGRAM_PROBE_TASK_NAME
+    ).strip() or agent_installer.TELEGRAM_PROBE_TASK_NAME
+    try:
+        result = subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+            check=False,
+        )
+        if result.returncode == 0:
+            logging.info("Started Telegram probe task '%s' (was not running)", task_name)
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            logging.debug(
+                "Telegram probe task '%s' start skipped/failed: %s",
+                task_name,
+                detail,
+            )
+    except Exception as exc:
+        logging.debug("Telegram probe task watchdog error: %s", exc)
+    return now_ts
+
+
+def _browser_probe_process_running() -> bool:
+    """True if frozen exe or pilot python launcher (browser_probe_agent) is up."""
+    names = {"itinventbrowserprobe", "itinventbrowserprobe.exe"}
+    markers = ("browser_probe_agent", "itinventbrowserprobe", "run_browser_probe_dev")
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = str(proc.info.get("name") or "").strip().lower()
+            if name in names:
+                return True
+            cmdline = proc.info.get("cmdline") or []
+            joined = " ".join(str(x) for x in cmdline).lower().replace("\\", "/")
+            if any(marker in joined for marker in markers):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _ensure_browser_probe_task(now_ts: int, *, last_check_ts: int) -> int:
+    """Best-effort: if browser probe enabled and not running, kick scheduled task."""
+    if not _is_truthy(os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True):
+        return last_check_ts
+    if last_check_ts and (now_ts - last_check_ts) < 120:
+        return last_check_ts
+    if _browser_probe_process_running():
+        return now_ts
+    task_name = str(
+        os.getenv("ITINV_BROWSER_PROBE_TASK_NAME", "") or agent_installer.BROWSER_PROBE_TASK_NAME
+    ).strip() or agent_installer.BROWSER_PROBE_TASK_NAME
+    try:
+        result = subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+            check=False,
+        )
+        if result.returncode == 0:
+            logging.info("Started Browser probe task '%s' (was not running)", task_name)
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            logging.debug(
+                "Browser probe task '%s' start skipped/failed: %s",
+                task_name,
+                detail,
+            )
+    except Exception as exc:
+        logging.debug("Browser probe task watchdog error: %s", exc)
+    return now_ts
+
+
 def _run_scan_sidecar(run_once: bool = False) -> None:
     if not _is_truthy(os.getenv("ITINV_SCAN_ENABLED", "1"), default=True):
         logging.info("Scan sidecar is disabled by ITINV_SCAN_ENABLED")
@@ -3587,6 +3699,11 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
     scan_thread: Optional[threading.Thread] = None
     scan_restart_attempt = 0
     next_scan_restart_ts = 0
+    fs_egress_thread: Optional[threading.Thread] = None
+    fs_egress_restart_attempt = 0
+    next_fs_egress_restart_ts = 0
+    last_telegram_probe_check_ts = 0
+    last_browser_probe_check_ts = 0
     last_inventory_ok_at: Optional[int] = None
     last_error = ""
     last_status_write_ts = 0
@@ -3618,10 +3735,43 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
         next_scan_restart_ts = now_ts + delay
         logging.warning("Scan sidecar failed to start, next retry in %ss", delay)
 
+    def ensure_fs_egress_alive(now_ts: int) -> None:
+        nonlocal fs_egress_thread, fs_egress_restart_attempt, next_fs_egress_restart_ts
+        if fs_egress_thread is not None and fs_egress_thread.is_alive():
+            fs_egress_restart_attempt = 0
+            return
+        if now_ts < next_fs_egress_restart_ts:
+            return
+        if fs_egress_thread is not None:
+            logging.warning("fs_egress thread is not alive; restarting")
+        fs_egress_thread = threading.Thread(
+            target=_run_fs_egress_sidecar,
+            daemon=True,
+            name="fs-egress",
+        )
+        fs_egress_thread.start()
+        if fs_egress_thread.is_alive():
+            logging.info("fs_egress thread started")
+            fs_egress_restart_attempt = 0
+            next_fs_egress_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(fs_egress_restart_attempt, len(delays) - 1)]
+        fs_egress_restart_attempt += 1
+        next_fs_egress_restart_ts = now_ts + delay
+        logging.warning("fs_egress failed to start, next retry in %ss", delay)
+
     next_full_snapshot_ts = 0
     while True:
         now_ts = int(time.time())
         ensure_scan_sidecar_alive(now_ts)
+        ensure_fs_egress_alive(now_ts)
+        last_telegram_probe_check_ts = _ensure_telegram_probe_task(
+            now_ts, last_check_ts=last_telegram_probe_check_ts
+        )
+        last_browser_probe_check_ts = _ensure_browser_probe_task(
+            now_ts, last_check_ts=last_browser_probe_check_ts
+        )
         include_full_snapshot = now_ts >= next_full_snapshot_ts
         report_type = "full_snapshot" if include_full_snapshot else "heartbeat"
         try:

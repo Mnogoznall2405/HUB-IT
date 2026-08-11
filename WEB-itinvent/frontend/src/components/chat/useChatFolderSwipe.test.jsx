@@ -40,7 +40,7 @@ describe('useChatFolderSwipe', () => {
     fireEvent.touchMove(row, { touches: [{ clientX: 120, clientY: 302 }] });
     fireEvent.touchEnd(row);
 
-    expect(onFolderChange).toHaveBeenCalledWith('tasks');
+    expect(onFolderChange).toHaveBeenCalledWith('groups');
   });
 
   it('does not switch folders on vertical gesture', () => {

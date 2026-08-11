@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MailPdfPageTile from './MailPdfPageTile';
 
@@ -19,6 +19,28 @@ const renderWithTheme = (node) => render(
 );
 
 describe('MailPdfPageTile', () => {
+  beforeEach(() => {
+    renderPdfPage.mockReset();
+  });
+
+  it('uses the base fitted size for CSS while rendering zoom at higher resolution', async () => {
+    renderPdfPage.mockResolvedValueOnce({ height: 320 });
+
+    renderWithTheme(
+      <MailPdfPageTile
+        pageNumber={1}
+        pdf={{ numPages: 1 }}
+        fitScale={1.2}
+        displayScale={0.6}
+      />,
+    );
+
+    await waitFor(() => expect(renderPdfPage).toHaveBeenCalledWith(expect.objectContaining({
+      scale: 1.2,
+      cssScale: 0.6,
+    })));
+  });
+
   it('aborts an obsolete render when rotation changes and hides cancellation errors', async () => {
     let rejectFirst;
     renderPdfPage

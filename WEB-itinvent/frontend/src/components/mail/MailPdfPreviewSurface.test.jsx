@@ -7,13 +7,30 @@ import MailPdfPreviewSurface, { clampPage, normalizePreviewSheets } from './Mail
 const loadPdfDocumentFromUrl = vi.fn();
 const renderPdfPage = vi.fn();
 const resetTransformMock = vi.fn();
+let resolvedFitScale = 1;
+let pinchPanState = {
+  transform: { scale: 1, x: 0, y: 0 },
+  isZoomed: false,
+};
 
 vi.mock('./MailPdfPageTile', () => ({
-  default: forwardRef(({ pageNumber, onVisibilityChange }, ref) => {
+  default: forwardRef(({
+    pageNumber,
+    fitScale,
+    displayScale,
+    onVisibilityChange,
+  }, ref) => {
     useEffect(() => {
       onVisibilityChange?.(pageNumber, 1);
     }, [onVisibilityChange, pageNumber]);
-    return <div ref={ref} data-testid={`mail-pdf-page-tile-${pageNumber}`} />;
+    return (
+      <div
+        ref={ref}
+        data-testid={`mail-pdf-page-tile-${pageNumber}`}
+        data-fit-scale={fitScale}
+        data-display-scale={displayScale}
+      />
+    );
   }),
 }));
 
@@ -21,8 +38,8 @@ vi.mock('../../lib/useDocumentPinchPan', () => ({
   default: () => ({
     viewportRef: { current: null },
     contentRef: { current: null },
-    transform: { scale: 1, x: 0, y: 0 },
-    isZoomed: false,
+    transform: pinchPanState.transform,
+    isZoomed: pinchPanState.isZoomed,
     resetTransform: resetTransformMock,
     viewportSx: { overflowY: 'auto', overflowX: 'hidden' },
     contentSx: {},
@@ -35,7 +52,7 @@ vi.mock('../../lib/pdfPreview', () => ({
   isPdfRenderCancellation: (error) => (
     error?.name === 'AbortError' || error?.name === 'RenderingCancelledException'
   ),
-  resolveInitialPdfFitZoom: () => 1,
+  resolveInitialPdfFitZoom: () => resolvedFitScale,
   clampPdfDisplayScale: (value) => Number(value || 1),
   normalizePdfRotation: (value = 0) => ((Number(value || 0) % 360) + 360) % 360,
 }));
@@ -66,6 +83,11 @@ describe('MailPdfPreviewSurface helpers', () => {
 
 describe('MailPdfPreviewSurface', () => {
   beforeEach(() => {
+    resolvedFitScale = 1;
+    pinchPanState = {
+      transform: { scale: 1, x: 0, y: 0 },
+      isZoomed: false,
+    };
     loadPdfDocumentFromUrl.mockReset();
     renderPdfPage.mockReset();
     renderPdfPage.mockResolvedValue({ width: 600, height: 800 });
@@ -102,6 +124,24 @@ describe('MailPdfPreviewSurface', () => {
     expect(screen.getByText('1 / 4')).toBeTruthy();
     expect(screen.getByTestId('mail-pdf-preview-viewport')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Увеличить/i })).toBeNull();
+  });
+
+  it('keeps the mobile fitted size while increasing PDF render resolution after pinch zoom', async () => {
+    resolvedFitScale = 0.6;
+    pinchPanState = {
+      transform: { scale: 2, x: -80, y: -120 },
+      isZoomed: true,
+    };
+
+    renderWithTheme(
+      <MailPdfPreviewSurface objectUrl="blob:mobile-pinch" pageCount={1} fillContainer />,
+    );
+
+    const pageTile = await screen.findByTestId('mail-pdf-page-tile-1');
+    await waitFor(() => {
+      expect(pageTile.getAttribute('data-fit-scale')).toBe('1.2');
+      expect(pageTile.getAttribute('data-display-scale')).toBe('0.6');
+    });
   });
 
   it('aborts an obsolete compact canvas render when rotation changes', async () => {

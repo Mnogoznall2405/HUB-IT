@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-07-23T12:35:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-07-23-12-35';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-07-23-12-35';
+const SW_VERSION = '2026-08-02T20:30:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-08-02-20-30';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-08-02-20-30';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -47,6 +47,11 @@ const recentChatPushMessageIds = new Map();
 const inFlightChatPushMessageIds = new Set();
 const chatBackgroundNotificationQueue = [];
 let chatBackgroundNotificationDrainPromise = null;
+let runtimeActiveChatConversation = {
+  conversationId: '',
+  visible: false,
+  updatedAt: 0,
+};
 
 function enqueueChatBackgroundNotification(title, options, diagnosticContext = {}) {
   let resolveDelivery;
@@ -196,6 +201,29 @@ function shouldDeliverChatPush(messageId) {
 function normalizeRoute(route) {
   const target = String(route || '').trim() || '/';
   return new URL(target, self.location.origin).toString();
+}
+
+function toSpaPath(route) {
+  try {
+    const url = new URL(String(route || '/'), self.location.origin);
+    return `${url.pathname}${url.search}${url.hash}` || '/';
+  } catch {
+    const fallback = String(route || '/').trim();
+    return fallback.startsWith('/') ? fallback : '/';
+  }
+}
+
+function rankWindowClient(client, targetUrl = '') {
+  let score = 0;
+  if (client?.focused) score += 4;
+  if (String(client?.visibilityState || '') === 'visible') score += 2;
+  try {
+    const href = new URL(String(client?.url || ''), self.location.origin).href;
+    if (targetUrl && href === targetUrl) score += 1;
+  } catch {
+    // Ignore malformed client URLs.
+  }
+  return score;
 }
 
 function normalizeNotificationActions(actions, fallbackRoute) {
@@ -596,9 +624,21 @@ function getConversationIdFromClientUrl(url) {
 function hasVisibleClientViewingConversation(clientSnapshot, conversationId) {
   const normalizedConversationId = String(conversationId || '').trim();
   if (!normalizedConversationId) return false;
+
+  // Page-reported active conversation is authoritative on mobile: SPA history may
+  // omit ?conversation=, and WindowClient.focused is unreliable on Android PWAs.
+  if (
+    runtimeActiveChatConversation.visible
+    && runtimeActiveChatConversation.conversationId === normalizedConversationId
+    && Boolean(clientSnapshot?.has_visible_client)
+  ) {
+    return true;
+  }
+
+  // Fallback: visible client whose URL already points at this conversation.
+  // Do not require focused — Android often reports focused=false while the chat is open.
   return (clientSnapshot?.clients || []).some((client) => (
     client?.visibility_state === 'visible'
-    && client?.focused === true
     && getConversationIdFromClientUrl(client?.url) === normalizedConversationId
   ));
 }
@@ -839,9 +879,15 @@ async function broadcastRuntimeState(reason = 'snapshot') {
 }
 
 self.addEventListener('install', (event) => {
+  // Activate immediately so notificationclick fixes are not stuck behind a
+  // waiting worker while shell precache is still running.
   event.waitUntil((async () => {
-    await cacheShellAssets();
     await self.skipWaiting();
+    try {
+      await cacheShellAssets();
+    } catch {
+      // Precache is best-effort; activation must not be blocked by it.
+    }
   })());
 });
 
@@ -1128,6 +1174,17 @@ self.addEventListener('message', (event) => {
       await broadcastRuntimeState('update-available');
       await self.skipWaiting();
     })());
+    return;
+  }
+
+  if (messageType === 'itinvent:active-chat-conversation') {
+    const conversationId = String(event?.data?.conversationId || '').trim();
+    const visible = Boolean(event?.data?.visible) && Boolean(conversationId);
+    runtimeActiveChatConversation = {
+      conversationId: visible ? conversationId : '',
+      visible,
+      updatedAt: Date.now(),
+    };
   }
 });
 
@@ -1153,37 +1210,42 @@ self.addEventListener('notificationclick', (event) => {
     });
     const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const targetUrl = new URL(route, self.location.origin).href;
+    const spaPath = toSpaPath(route);
     const sameOriginClients = clientList.filter((client) => {
       try {
         return new URL(String(client?.url || ''), self.location.origin).origin === self.location.origin;
       } catch {
         return false;
       }
-    });
-    const exactTargetClient = sameOriginClients.find((client) => {
-      try {
-        return new URL(String(client?.url || ''), self.location.origin).href === targetUrl;
-      } catch {
-        return false;
-      }
-    });
-    const navigationCandidates = exactTargetClient
-      ? [exactTargetClient, ...sameOriginClients.filter((client) => client !== exactTargetClient)]
-      : sameOriginClients;
+    }).sort((left, right) => rankWindowClient(right, targetUrl) - rankWindowClient(left, targetUrl));
 
-    for (const client of navigationCandidates) {
+    // Prefer soft SPA navigation via postMessage. client.navigate() forces a
+    // full document reload and is a common source of "opens but hard-refreshes".
+    for (const client of sameOriginClients) {
       try {
-        const clientUrl = new URL(String(client?.url || ''), self.location.origin).href;
-        if (clientUrl !== targetUrl && 'navigate' in client) {
-          await client.navigate(route);
+        if (typeof client.postMessage === 'function') {
+          client.postMessage({
+            type: 'itinvent:navigate',
+            route: spaPath,
+            url: targetUrl,
+            source: 'notificationclick',
+          });
         }
-        await client.focus();
+        if (typeof client.focus === 'function') {
+          await client.focus();
+        }
+        await reportPushDiagnostic('sw_notification_click_spa', {
+          route: spaPath,
+          tag: String(event.notification?.tag || '').trim(),
+          channel: String(event.notification?.data?.channel || '').trim(),
+          focused: Boolean(client?.focused),
+        });
         return;
       } catch {
         // Try the next client or open a new one.
       }
     }
 
-    await self.clients.openWindow(route);
+    await self.clients.openWindow(spaPath);
   })());
 });

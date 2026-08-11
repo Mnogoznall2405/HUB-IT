@@ -136,4 +136,63 @@ describe('AppPushBootstrap', () => {
     expect(syncPushMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     vi.useRealTimers();
   });
+
+  it('hard-assigns chat targets from notification clicks instead of soft SPA navigate', async () => {
+    const assignMock = vi.fn();
+    const originalLocation = window.location;
+    const messageListeners = [];
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({ active: { postMessage: vi.fn() } }),
+        addEventListener: vi.fn((type, handler) => {
+          if (type === 'message') messageListeners.push(handler);
+        }),
+        removeEventListener: vi.fn((type, handler) => {
+          if (type !== 'message') return;
+          const index = messageListeners.indexOf(handler);
+          if (index >= 0) messageListeners.splice(index, 1);
+        }),
+      },
+    });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        origin: 'https://hub.example',
+        pathname: '/dashboard',
+        search: '',
+        hash: '',
+        assign: assignMock,
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <AppPushBootstrap />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(messageListeners.length).toBeGreaterThan(0);
+    });
+
+    act(() => {
+      messageListeners.forEach((listener) => {
+        listener({
+          data: {
+            type: 'itinvent:navigate',
+            route: '/chat?conversation=7&message=m1',
+            source: 'notificationclick',
+          },
+        });
+      });
+    });
+
+    expect(assignMock).toHaveBeenCalledWith('/chat?conversation=7&message=m1');
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
 });

@@ -166,6 +166,11 @@ bot.log*
 WEB-itinvent/uploads/
 /*.xlsx
 
+# HUB Desktop build artifacts
+/desktop/**/bin/
+/desktop/**/obj/
+/desktop/.vs/
+
 # Recovery / session temp artifacts
 _restored_from_git_*/
 _recovery_probe/

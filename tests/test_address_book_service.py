@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 
 from backend.services.address_book_service import (
     AddressBookService,
+    absence_overlaps_range,
+    build_absence_payload,
+    calculate_age,
+    classify_department_location,
     deduplicate_email_records,
     deduplicate_phone_records,
+    emails_query,
     employee_query,
+    employee_states_query,
+    map_absence_kind,
     merge_personal_document_records,
     merge_personal_profile_records,
     normalize_email,
@@ -32,10 +40,186 @@ class MemoryDataManager:
         return True
 
 
+class FakeSelection:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.index = -1
+
+    def Next(self):
+        self.index += 1
+        return self.index < len(self.rows)
+
+    def __getattr__(self, name):
+        if self.index < 0 or self.index >= len(self.rows):
+            raise AttributeError(name)
+        return getattr(self.rows[self.index], name)
+
+
+class Fake1CConnection:
+    @staticmethod
+    def String(value):
+        return str(value or "")
+
+
 def test_normalize_phone_treats_8_and_7_as_same_mobile_prefix():
     assert normalize_phone("8 (912) 996-24-54") == "79129962454"
     assert normalize_phone("+7 912 996-24-54") == "79129962454"
     assert normalize_phone("9129962454") == "79129962454"
+
+
+def test_map_absence_kind_from_zup_state_labels():
+    assert map_absence_kind("Работа") == ""
+    assert map_absence_kind("Отпуск основной") == "vacation"
+    assert map_absence_kind("Отпуск неоплачиваемый по разрешению работодателя") == "vacation"
+    assert map_absence_kind("Болезнь") == "sick"
+    assert map_absence_kind("Командировка") == "trip"
+    assert map_absence_kind("Работа в отпуске по уходу за ребенком") == "other"
+    assert map_absence_kind("Отсутствие по невыясненным причинам") == "other"
+
+
+def test_build_absence_payload_skips_work_and_keeps_return_date():
+    assert build_absence_payload(state_label="Работа", starts_on="2026-01-01") is None
+    payload = build_absence_payload(
+        state_label="Отпуск основной",
+        starts_on="2026-07-20",
+        returns_on="2026-08-03",
+    )
+    assert payload == {
+        "kind": "vacation",
+        "label": "Отпуск основной",
+        "starts_on": "2026-07-20",
+        "returns_on": "2026-08-03",
+        "source": "zup",
+    }
+    assert "СостоянияСотрудников" in employee_states_query()
+    assert "&НаДату" in employee_states_query()
+    assert "МАКСИМУМ(Состояния.Период)" in employee_states_query()
+    assert "СрезПоследних" not in employee_states_query()
+
+
+def test_load_employee_absences_prefers_newer_work_over_historical_sick(monkeypatch):
+    rows = [
+        SimpleNamespace(
+            EmployeeCode="E1",
+            StartsOn="20231228",
+            StateLabel="Болезнь",
+            ReturnsOn="20240117",
+        ),
+        SimpleNamespace(
+            EmployeeCode="E1",
+            StartsOn="20260720",
+            StateLabel="Работа",
+            ReturnsOn="",
+        ),
+    ]
+    monkeypatch.setattr(
+        "backend.services.address_book_service.execute_query",
+        lambda *_args, **_kwargs: FakeSelection(rows),
+    )
+
+    service = AddressBookService(data_manager=MemoryDataManager())
+
+    assert service._load_employee_absences(Fake1CConnection()) == {}
+
+
+def test_absence_overlaps_range_uses_day_before_return():
+    absence = {
+        "kind": "vacation",
+        "label": "Отпуск основной",
+        "starts_on": "2026-07-20",
+        "returns_on": "2026-08-03",
+    }
+    assert absence_overlaps_range(
+        absence,
+        range_start=date(2026, 7, 30),
+        range_end=date(2026, 8, 6),
+        today=date(2026, 7, 31),
+    )
+    # returns_on is first day back — 03.08 already at work
+    assert not absence_overlaps_range(
+        absence,
+        range_start=date(2026, 8, 3),
+        range_end=date(2026, 8, 3),
+        today=date(2026, 8, 3),
+    )
+    assert absence_overlaps_range(
+        absence,
+        range_start=date(2026, 8, 2),
+        range_end=date(2026, 8, 2),
+        today=date(2026, 8, 2),
+    )
+
+
+def test_absence_overlaps_range_drops_stale_open_ended():
+    stale = {"kind": "sick", "label": "Болезнь", "starts_on": "2020-01-01", "returns_on": None}
+    assert not absence_overlaps_range(
+        stale,
+        range_start=date(2026, 7, 30),
+        range_end=date(2026, 8, 6),
+        today=date(2026, 7, 31),
+    )
+    recent_open = {"kind": "sick", "label": "Болезнь", "starts_on": "2026-07-01", "returns_on": None}
+    assert absence_overlaps_range(
+        recent_open,
+        range_start=date(2026, 7, 30),
+        range_end=date(2026, 8, 6),
+        today=date(2026, 7, 31),
+    )
+
+
+def test_list_absences_from_address_book_cache():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "updated_at": "2026-07-31T05:00:00+00:00",
+                "items": [
+                    {
+                        "employee_code": "00ЗК-55848",
+                        "full_name": "Орлов Павел Максимович",
+                        "department": "ИТ",
+                        "position": "Инженер",
+                        "absence": {
+                            "kind": "vacation",
+                            "label": "Отпуск основной",
+                            "starts_on": "2026-07-20",
+                            "returns_on": "2026-08-03",
+                            "source": "zup",
+                        },
+                    },
+                    {
+                        "employee_code": "X-1",
+                        "full_name": "Старый Больничный",
+                        "department": "Склад",
+                        "absence": {
+                            "kind": "sick",
+                            "label": "Болезнь",
+                            "starts_on": "2020-01-01",
+                            "returns_on": None,
+                            "source": "zup",
+                        },
+                    },
+                    {
+                        "employee_code": "W-1",
+                        "full_name": "Работает",
+                        "department": "Офис",
+                    },
+                ],
+            }
+        )
+    )
+    payload = service.list_absences(
+        starts_on=date(2026, 7, 30),
+        ends_on=date(2026, 8, 6),
+        limit=50,
+    )
+    assert payload["count"] == 1
+    assert payload["as_of"] == "2026-07-31T05:00:00+00:00"
+    item = payload["items"][0]
+    assert item["display_name"] == "Орлов Павел Максимович"
+    assert item["source"] == "zup"
+    assert item["ends_on"] == "2026-08-02"
+    assert item["returns_on"] == "2026-08-03"
+    assert item["kind_label"] == "Отпуск основной"
 
 
 def test_deduplicate_phone_records_prefers_work_then_mobile():
@@ -95,7 +279,7 @@ def test_deduplicate_email_records_prefers_corporate_over_personal():
             },
             {
                 "employee_code": "E1",
-                "contact_kind": "Корпоративный E-mail",
+                "contact_kind": "Email Корпоративный",
                 "email": "work@example.com",
             },
             {
@@ -108,7 +292,7 @@ def test_deduplicate_email_records_prefers_corporate_over_personal():
 
     assert emails["E1"]["work"] == [
         {
-            "kind": "Корпоративный E-mail",
+            "kind": "Email Корпоративный",
             "value": "work@example.com",
             "normalized": "work@example.com",
         }
@@ -120,6 +304,12 @@ def test_deduplicate_email_records_prefers_corporate_over_personal():
             "normalized": "personal@example.com",
         }
     ]
+
+
+def test_emails_query_includes_actual_zup_corporate_contact_kind():
+    query = emails_query()
+
+    assert 'Контакты.Вид.Наименование = "Email Корпоративный"' in query
 
 
 def test_normalize_email_lowercases_value():
@@ -196,7 +386,14 @@ def test_merge_personal_records_prefers_passport_and_propiska():
 def test_get_personal_by_codes_reads_separate_cache_bucket():
     manager = MemoryDataManager(
         {
-            "items": [{"full_name": "Иванов", "employee_code": "E1"}],
+            "items": [{
+                "full_name": "Иванов",
+                "employee_code": "E1",
+                "work_phones": [{"value": "100"}],
+                "personal_phones": [{"value": "79990001122"}],
+                "work_emails": [{"value": "ivanov@zsgp.ru"}],
+                "personal_emails": [{"value": "ivanov@example.com"}],
+            }],
             "personal_by_code": {
                 "E1": {
                     "date_of_birth": "1990-01-01",
@@ -207,10 +404,39 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
         }
     )
     service = AddressBookService(data_manager=manager)
-    assert service.search("иванов")["items"][0].get("passport_number") is None
+    public_item = service.search("иванов")["items"][0]
+    assert public_item["age"] == calculate_age("1990-01-01")
+    assert public_item.get("date_of_birth") is None
+    assert public_item.get("passport_number") is None
     assert service.get_personal_by_codes(["E1"]) == {
         "E1": {"date_of_birth": "1990-01-01", "passport_number": "123456"}
     }
+
+    restricted_item = service.search(
+        "иванов",
+        include_age=False,
+        include_personal_emails=False,
+        include_personal_phones=False,
+    )["items"][0]
+    assert restricted_item.get("age") is None
+    assert restricted_item["work_phones"] == [{"value": "100"}]
+    assert restricted_item["personal_phones"] == []
+    assert restricted_item["work_emails"] == [{"value": "ivanov@zsgp.ru"}]
+    assert restricted_item["personal_emails"] == []
+
+    assert service.search("79990001122", include_personal_phones=False)["total"] == 0
+    assert service.search("79990001122", include_personal_phones=True)["total"] == 1
+    assert service.search("ivanov@example.com", include_personal_emails=False)["total"] == 0
+    assert service.search("ivanov@example.com", include_personal_emails=True)["total"] == 1
+
+
+def test_calculate_age_uses_birthday_and_rejects_invalid_dates():
+    today = date(2026, 8, 5)
+
+    assert calculate_age("1990-08-05", today=today) == 36
+    assert calculate_age("1990-08-06", today=today) == 35
+    assert calculate_age("not-a-date", today=today) is None
+    assert calculate_age("2027-01-01", today=today) is None
 
 
 def test_search_matches_name_department_position_city_and_phone():
@@ -286,6 +512,61 @@ def test_list_people_by_department_codes_and_department_code_catalog():
     assert catalog["total"] == 1
     assert catalog["items"][0]["department_code"] == "00ЗК-6942"
     assert catalog["items"][0]["people_count"] == 2
+    assert catalog["items"][0]["department_locations"] == [""]
+    assert catalog["items"][0]["binding_group"] == "object"
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ("Москва", "office"),
+        ("г. Санкт-Петербург", "office"),
+        ("СПб", "office"),
+        ("Тюмень", "office"),
+        ("г.Тюмень", "office"),
+        ("яТюмень2", "office"),
+        ("Новый Уренгой", "object"),
+        ("ДО отпуска", "object"),
+        ("", "object"),
+    ],
+)
+def test_classify_department_location(location, expected):
+    assert classify_department_location(location) == expected
+
+
+def test_department_code_catalog_returns_locations_and_mixed_binding_group():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {
+                        "full_name": "Офисный сотрудник",
+                        "department": "Управление главного энергетика",
+                        "department_code": "MIX-1",
+                        "department_location": "Тюмень",
+                    },
+                    {
+                        "full_name": "Сотрудник объекта",
+                        "department": "Управление главного энергетика",
+                        "department_code": "MIX-1",
+                        "department_location": "Новый Уренгой",
+                    },
+                ]
+            }
+        )
+    )
+
+    payload = service.list_department_codes("энергетика", limit=20)
+
+    assert payload["items"] == [
+        {
+            "department_code": "MIX-1",
+            "department": "Управление главного энергетика",
+            "people_count": 2,
+            "department_locations": ["Новый Уренгой", "Тюмень"],
+            "binding_group": "mixed",
+        }
+    ]
 
 
 def test_search_ranks_name_matches_before_other_fields_and_sorts_empty_query():

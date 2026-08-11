@@ -47,6 +47,7 @@ export default function TasksMobileNavigationDrawer({
   onStatusFilterChange,
   focusMode = '',
   focusCounts = {},
+  onFocusModeChange,
   taskDiscussionChatEnabled = false,
   boardFiltersPanel,
   onRefreshTasks,
@@ -233,6 +234,7 @@ export default function TasksMobileNavigationDrawer({
                     {focusOptions.map((option) => (
                       <Chip
                         key={option.value}
+                        data-testid={`tasks-mobile-focus-${option.value}`}
                         clickable
                         label={`${option.value === 'comments' ? getTaskUnreadFocusLabel(taskDiscussionChatEnabled) : option.label}: ${focusCounts[option.value] || 0}`}
                         onClick={() => runAndClose(() => onFocusModeChange?.(option.value))}

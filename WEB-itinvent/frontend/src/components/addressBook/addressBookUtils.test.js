@@ -1,12 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import {
+  absenceChipColor,
   collectAddressBookChatLookup,
+  formatAge,
+  formatAbsenceLabel,
   pickPrimaryEmail,
   pickPrimaryPhone,
   pickQuickActionPhone,
 } from './addressBookUtils';
 
 describe('addressBookUtils', () => {
+  it('formatAge uses the correct Russian plural form', () => {
+    expect(formatAge(21)).toBe('21 год');
+    expect(formatAge(32)).toBe('32 года');
+    expect(formatAge(45)).toBe('45 лет');
+    expect(formatAge(11)).toBe('11 лет');
+    expect(formatAge(null)).toBe('');
+  });
+
+  it('formatAbsenceLabel shows return date from ZUP', () => {
+    expect(formatAbsenceLabel({
+      kind: 'vacation',
+      label: 'Отпуск основной',
+      starts_on: '2026-07-20',
+      returns_on: '2026-08-03',
+    })).toBe('Отпуск основной · выйдет 03.08');
+    expect(absenceChipColor({ kind: 'sick' })).toBe('error');
+    expect(absenceChipColor({ kind: 'vacation' })).toBe('warning');
+  });
+
   it('pickQuickActionPhone prefers personal mobile over work phone', () => {
     const item = {
       work_phones: [{ kind: 'Рабочий телефон', value: '83452384202', normalized: '73452384202' }],

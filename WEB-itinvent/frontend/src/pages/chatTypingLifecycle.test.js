@@ -16,16 +16,32 @@ vi.mock('../lib/chatSocket', () => ({
 
 import { useEffect, useRef } from 'react';
 
+/**
+ * Mirrors the typing lifecycle in useChatSocketController:
+ * start once, refresh idle timer on keystrokes, stop on empty / idle / conversation leave.
+ */
 function useChatTypingLifecycle(activeConversationId, deferredMessageText) {
   const typingStopTimeoutRef = useRef(null);
   const typingStartedRef = useRef(false);
 
   useEffect(() => {
     if (!activeConversationId) return undefined;
+    const conversationId = activeConversationId;
+    return () => {
+      if (typingStartedRef.current) {
+        sendTyping(conversationId, false);
+        typingStartedRef.current = false;
+      }
+    };
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    if (!activeConversationId) return undefined;
+    const conversationId = activeConversationId;
     const normalizedMessageText = String(deferredMessageText || '').trim();
     if (!normalizedMessageText) {
       if (typingStartedRef.current) {
-        sendTyping(activeConversationId, false);
+        sendTyping(conversationId, false);
         typingStartedRef.current = false;
       }
       if (typingStopTimeoutRef.current) {
@@ -35,14 +51,14 @@ function useChatTypingLifecycle(activeConversationId, deferredMessageText) {
       return undefined;
     }
     if (!typingStartedRef.current) {
-      sendTyping(activeConversationId, true);
+      sendTyping(conversationId, true);
       typingStartedRef.current = true;
     }
     if (typingStopTimeoutRef.current) {
       window.clearTimeout(typingStopTimeoutRef.current);
     }
     typingStopTimeoutRef.current = window.setTimeout(() => {
-      sendTyping(activeConversationId, false);
+      sendTyping(conversationId, false);
       typingStartedRef.current = false;
       typingStopTimeoutRef.current = null;
     }, 1800);
@@ -50,10 +66,6 @@ function useChatTypingLifecycle(activeConversationId, deferredMessageText) {
       if (typingStopTimeoutRef.current) {
         window.clearTimeout(typingStopTimeoutRef.current);
         typingStopTimeoutRef.current = null;
-      }
-      if (typingStartedRef.current) {
-        sendTyping(activeConversationId, false);
-        typingStartedRef.current = false;
       }
     };
   }, [activeConversationId, deferredMessageText]);
@@ -92,5 +104,60 @@ describe('chat typing lifecycle', () => {
     });
 
     expect(sendTyping).toHaveBeenCalledWith('conv-a', false);
+  });
+
+  it('does not stop/start typing on every keystroke', () => {
+    const { rerender } = renderHook(
+      ({ conversationId, messageText }) => useChatTypingLifecycle(conversationId, messageText),
+      {
+        initialProps: {
+          conversationId: 'conv-a',
+          messageText: 'a',
+        },
+      },
+    );
+
+    expect(sendTyping).toHaveBeenCalledTimes(1);
+    expect(sendTyping).toHaveBeenCalledWith('conv-a', true);
+
+    act(() => {
+      rerender({ conversationId: 'conv-a', messageText: 'ab' });
+    });
+    act(() => {
+      rerender({ conversationId: 'conv-a', messageText: 'abc' });
+    });
+    act(() => {
+      rerender({ conversationId: 'conv-a', messageText: 'abcd' });
+    });
+
+    expect(sendTyping).toHaveBeenCalledTimes(1);
+    expect(sendTyping.mock.calls.every(([, isTyping]) => isTyping === true)).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(1800);
+    });
+
+    expect(sendTyping).toHaveBeenCalledTimes(2);
+    expect(sendTyping).toHaveBeenLastCalledWith('conv-a', false);
+  });
+
+  it('sends stop typing when composer is cleared', () => {
+    const { rerender } = renderHook(
+      ({ conversationId, messageText }) => useChatTypingLifecycle(conversationId, messageText),
+      {
+        initialProps: {
+          conversationId: 'conv-a',
+          messageText: 'hello',
+        },
+      },
+    );
+
+    expect(sendTyping).toHaveBeenCalledWith('conv-a', true);
+
+    act(() => {
+      rerender({ conversationId: 'conv-a', messageText: '' });
+    });
+
+    expect(sendTyping).toHaveBeenLastCalledWith('conv-a', false);
   });
 });

@@ -88,6 +88,7 @@ describe('useDatabaseSearch', () => {
     });
 
     expect(result.current.searchQuery).toBe('laser');
+    expect(result.current.appliedSearchQuery).toBe('');
     expect(result.current.filteredData).toBeNull();
     expect(setExpandedBranches).not.toHaveBeenCalled();
 
@@ -101,6 +102,7 @@ describe('useDatabaseSearch', () => {
     });
 
     expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
+    expect(result.current.appliedSearchQuery).toBe('laser');
     expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
     expect(setExpandedLocations).toHaveBeenLastCalledWith(new Set(['HQ::Office']));
   });
@@ -198,6 +200,7 @@ describe('useDatabaseSearch', () => {
     });
 
     expect(result.current.searchQuery).toBe('');
+    expect(result.current.appliedSearchQuery).toBe('');
     expect(result.current.filteredData).toBeNull();
     expect(setExpandedBranches).not.toHaveBeenCalled();
 

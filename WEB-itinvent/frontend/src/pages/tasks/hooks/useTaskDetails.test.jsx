@@ -65,3 +65,16 @@ describe('useTaskDetails canReviewTask', () => {
     expect(canReview).toBe(true);
   });
 });
+
+describe('useTaskDetails canDeleteTask', () => {
+  it('allows the task creator and blocks another user', () => {
+    const { result } = renderUseTaskDetails({ user: { id: 3 } });
+    const creatorTask = {
+      id: 'task-created-by-current-user',
+      created_by_user_id: 3,
+    };
+
+    expect(result.current.canDeleteTask(creatorTask)).toBe(true);
+    expect(result.current.canDeleteTask({ ...creatorTask, created_by_user_id: 4 })).toBe(false);
+  });
+});

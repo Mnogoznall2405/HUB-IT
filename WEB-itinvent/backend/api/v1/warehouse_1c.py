@@ -33,6 +33,7 @@ from backend.services.warehouse_1c_scope import (
     Warehouse1CAllScopeConfigurationError,
     allowlisted_reconcile_db_configs,
 )
+from backend.services.one_c_catalog_compact_flags import opaque_routing_user_key
 from backend.services.warehouse_1c_service import (
     Warehouse1CCatalogUnavailableError,
     Warehouse1CQueryError,
@@ -180,27 +181,51 @@ async def _require_expected_part_no(
 async def search_nomenclature(
     q: str = Query("", min_length=0, max_length=200),
     limit: int = Query(20, ge=1, le=50),
-    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
 ):
-    return await _run_or_raise(warehouse_1c_service.search_nomenclature(q, limit))
+    routing_key = opaque_routing_user_key(
+        getattr(current_user, "id", None),
+        username=getattr(current_user, "username", None),
+    )
+    return await _run_or_raise(
+        warehouse_1c_service.search_nomenclature(
+            q, limit, routing_user_key=routing_key or None
+        )
+    )
 
 
 @router.get("/warehouses/search")
 async def search_warehouses(
     q: str = Query("", min_length=0, max_length=200),
     limit: int = Query(20, ge=1, le=100),
-    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
 ):
-    return await _run_or_raise(warehouse_1c_service.search_warehouses(q, limit))
+    routing_key = opaque_routing_user_key(
+        getattr(current_user, "id", None),
+        username=getattr(current_user, "username", None),
+    )
+    return await _run_or_raise(
+        warehouse_1c_service.search_warehouses(
+            q, limit, routing_user_key=routing_key or None
+        )
+    )
 
 
 @router.get("/nomenclature/suggest")
 async def suggest_nomenclature(
     text: str = Query("", min_length=0, max_length=500),
     limit: int = Query(20, ge=1, le=50),
-    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
 ):
-    return await _run_or_raise(warehouse_1c_service.suggest_nomenclature(text, limit))
+    routing_key = opaque_routing_user_key(
+        getattr(current_user, "id", None),
+        username=getattr(current_user, "username", None),
+    )
+    return await _run_or_raise(
+        warehouse_1c_service.suggest_nomenclature(
+            text, limit, routing_user_key=routing_key or None
+        )
+    )
 
 
 @router.get("/employee-warehouse")

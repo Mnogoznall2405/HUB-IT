@@ -20,7 +20,7 @@ def _artifact(payload: bytes, *, filename: str = "preview.pdf") -> preview_servi
     )
 
 
-def test_classify_office_source_detects_word_and_excel():
+def test_classify_office_source_detects_word_excel_and_powerpoint():
     assert preview_service.classify_office_source(
         filename="report.docx",
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -29,6 +29,10 @@ def test_classify_office_source_detects_word_and_excel():
         filename="table.xlsx",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ) == "excel"
+    assert preview_service.classify_office_source(
+        filename="slides.pptx",
+        content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ) == "presentation"
     assert preview_service.classify_office_source(
         filename="notes.txt",
         content_type="text/plain",

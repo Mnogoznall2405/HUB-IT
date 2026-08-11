@@ -134,7 +134,7 @@ function ChatSidebar({
   onOpenGroup,
   sidebarScrollRef,
   onSidebarScroll,
-  activeFolderKey = 'all',
+  activeFolderKey = 'personal',
   onActiveFolderChange,
   customFolders = [],
   folderUnreadCounts = {},
@@ -186,7 +186,7 @@ function ChatSidebar({
     activeFolderKey,
     customFolders,
     onFolderChange: onActiveFolderChange,
-    includeAllTab: !compactMobile,
+    includeAllTab: false,
   });
   const folderPanelMotion = getChatFolderPanelMotionProps(reducedMotion, folderSwipeDirection);
   const {
@@ -327,6 +327,10 @@ function ChatSidebar({
         '--chat-sidebar-search-focus-bg': ui.sidebarSearchFocusBg || ui.sidebarSearchBg,
         '--chat-sidebar-row-active': ui.sidebarRowActive,
         '--chat-sidebar-row-hover': ui.sidebarRowHover,
+        '--chat-sidebar-row-unread': ui.sidebarRowUnread || ui.accentSoft,
+        '--chat-sidebar-row-unread-border': ui.sidebarRowUnreadBorder || alpha(ui.accentText || theme.palette.primary.main, 0.24),
+        '--chat-sidebar-unread-indicator': ui.sidebarUnreadIndicator || ui.accentText || theme.palette.primary.main,
+        '--chat-sidebar-unread-text': ui.sidebarUnreadText || ui.accentText || theme.palette.primary.main,
         '--chat-sidebar-divider': ui.sidebarDivider || ui.borderSoft,
         '--chat-border-soft': ui.borderSoft,
         '--chat-accent-soft': ui.accentSoft,
@@ -342,16 +346,20 @@ function ChatSidebar({
         '--chat-search-text': ui.searchText || theme.palette.text.primary,
         '--chat-search-placeholder': ui.searchPlaceholder || ui.textSecondary,
         '--chat-focus-ring': ui.focusRing || alpha(theme.palette.primary.main, 0.26),
-        '--chat-unread-bg': ui.accentText || theme.palette.primary.main,
-        '--chat-unread-text': ui.textOnAccent || theme.palette.primary.contrastText,
+        '--chat-unread-bg': ui.unreadBadgeBg || theme.palette.primary.dark,
+        '--chat-unread-text': ui.unreadBadgeText || theme.palette.primary.contrastText,
+        '--chat-unread-active-bg': ui.unreadActiveBadgeBg || '#ffffff',
+        '--chat-unread-active-text': ui.unreadActiveBadgeText || ui.sidebarRowActive || theme.palette.primary.dark,
         '--chat-info-card-bg': ui.infoCardBg || ui.surfaceMuted,
         '--chat-info-card-border': ui.infoCardBorder || ui.borderSoft,
         '--chat-info-card-text': ui.infoCardText || ui.textSecondary,
         '--chat-filter-strip-bg': ui.filterStripBg || ui.surfaceMuted,
         '--chat-filter-strip-border': ui.filterStripBorder || ui.borderSoft,
         '--chat-folder-tab-bg': 'transparent',
-        '--chat-folder-tab-active-bg': ui.accentText || theme.palette.primary.main,
-        '--chat-folder-tab-active-text': ui.textOnAccent || '#ffffff',
+        '--chat-folder-tab-active-bg': ui.folderTabActiveBg || ui.sidebarRowActive || theme.palette.primary.main,
+        '--chat-folder-tab-active-text': ui.folderTabActiveText || ui.textOnAccent || '#ffffff',
+        '--chat-folder-tab-active-badge-bg': ui.folderTabActiveBadgeBg || '#ffffff',
+        '--chat-folder-tab-active-badge-text': ui.folderTabActiveBadgeText || ui.sidebarRowActive || theme.palette.primary.dark,
         '--chat-skeleton-base': ui.skeletonBase || alpha(theme.palette.text.primary, 0.12),
         '--chat-skeleton-wave': ui.skeletonWave || alpha(theme.palette.common.white, 0.42),
         '--chat-header-action-bg': ui.headerActionBg || alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.05 : 0.06),
@@ -435,7 +443,7 @@ function ChatSidebar({
               folderUnreadCounts={folderUnreadCounts}
               onFolderChange={onActiveFolderChange}
               disableMotion={reducedMotion}
-              includeAllTab={!compactMobile}
+              includeAllTab={false}
             />
           </div>
         ) : null}

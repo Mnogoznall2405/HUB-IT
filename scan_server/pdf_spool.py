@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -73,21 +74,29 @@ class PdfSpoolStore:
         total_bytes = 0
         oldest_mtime = 0
         newest_mtime = 0
-        for path in self.root_dir.glob("*.pdf"):
-            try:
-                stat = path.stat()
-            except FileNotFoundError:
-                continue
-            except Exception as exc:
-                logger.debug("Failed to stat transient PDF payload %s: %s", path, exc)
-                continue
-            count += 1
-            total_bytes += int(stat.st_size or 0)
-            mtime = int(stat.st_mtime or 0)
-            if mtime and (oldest_mtime <= 0 or mtime < oldest_mtime):
-                oldest_mtime = mtime
-            if mtime and mtime > newest_mtime:
-                newest_mtime = mtime
+        # os.scandir is materially faster than Path.glob on large spool dirs.
+        try:
+            with os.scandir(self.root_dir) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except Exception as exc:
+                        logger.debug("Failed to stat transient PDF payload %s: %s", name, exc)
+                        continue
+                    count += 1
+                    total_bytes += int(stat.st_size or 0)
+                    mtime = int(stat.st_mtime or 0)
+                    if mtime and (oldest_mtime <= 0 or mtime < oldest_mtime):
+                        oldest_mtime = mtime
+                    if mtime and mtime > newest_mtime:
+                        newest_mtime = mtime
+        except FileNotFoundError:
+            pass
         stats = {
             "count": count,
             "bytes": total_bytes,

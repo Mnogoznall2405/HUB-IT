@@ -30,28 +30,31 @@ def _client_for(user_factory: Callable[[], User]) -> TestClient:
     return TestClient(app)
 
 
-def test_search_requires_address_book_read_permission(monkeypatch):
-    called = False
+def test_search_is_available_to_user_without_custom_permissions(monkeypatch):
+    captured: dict = {}
 
     def search(*args, **kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("service should not be called without permission")
+        captured.update(kwargs)
+        return {"items": [], "total": 0, "limit": 50}
 
     monkeypatch.setattr(address_book_api.address_book_service, "search", search)
     client = _client_for(lambda: _make_user(permissions=[]))
 
     response = client.get("/address-book/search?q=ivanov")
 
-    assert response.status_code == 403
-    assert called is False
+    assert response.status_code == 200
+    assert captured == {
+        "include_age": False,
+        "include_personal_emails": False,
+        "include_personal_phones": False,
+    }
 
 
 def test_search_returns_items_for_user_with_permission(monkeypatch):
     monkeypatch.setattr(
         address_book_api.address_book_service,
         "search",
-        lambda q, limit: {
+        lambda q, limit, **kwargs: {
             "items": [{"full_name": "Иванов Иван", "work_phones": [], "personal_phones": []}],
             "total": 1,
             "limit": limit,
@@ -66,6 +69,30 @@ def test_search_returns_items_for_user_with_permission(monkeypatch):
     assert response.status_code == 200
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["full_name"] == "Иванов Иван"
+
+
+def test_search_enables_each_personal_field_only_with_explicit_permissions(monkeypatch):
+    captured: dict = {}
+
+    def search(*args, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0, "limit": 50}
+
+    monkeypatch.setattr(address_book_api.address_book_service, "search", search)
+    client = _client_for(lambda: _make_user(permissions=[
+        "address_book.age.read",
+        "address_book.personal_email.read",
+        "address_book.personal_phone.read",
+    ]))
+
+    response = client.get("/address-book/search")
+
+    assert response.status_code == 200
+    assert captured == {
+        "include_age": True,
+        "include_personal_emails": True,
+        "include_personal_phones": True,
+    }
 
 
 def test_sync_is_admin_only(monkeypatch):

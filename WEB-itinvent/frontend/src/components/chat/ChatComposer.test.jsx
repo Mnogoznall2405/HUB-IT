@@ -52,6 +52,23 @@ describe('ChatComposer', () => {
     expect(screen.getByTestId('chat-composer-voice-button')).not.toBeDisabled();
   });
 
+  it('renders the desktop composer as a rectangle with attachment before text and emoji after it', () => {
+    renderComposer({
+      activeConversationId: 'conv-1',
+      onOpenEmojiPicker: vi.fn(),
+      onOpenComposerMenu: vi.fn(),
+    });
+
+    const capsule = screen.getByTestId('chat-composer-capsule');
+    const attachment = screen.getByTestId('chat-composer-menu-button');
+    const textarea = screen.getByTestId('chat-composer-textarea');
+    const emoji = screen.getByTestId('chat-composer-emoji-button');
+
+    expect(capsule).toHaveStyle({ borderRadius: '8px' });
+    expect(attachment.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(textarea.compareDocumentPosition(emoji) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('disables emoji, attach and voice controls without active conversation', () => {
     renderComposer({
       activeConversationId: '',

@@ -20,7 +20,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_CONVERT_LOCK = threading.Lock()
 _PREVIEW_CACHE_LOCK = threading.RLock()
 _PREVIEW_CACHE: OrderedDict[str, tuple[float, "PreviewArtifact"]] = OrderedDict()
 _PREVIEW_INFLIGHT: dict[str, Future["PreviewArtifact"]] = {}
@@ -56,6 +55,13 @@ def _bool_env(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+# Every conversion uses an isolated LibreOffice profile, so independent files
+# can be converted safely in parallel. Keep a small bound to protect CPU/RAM.
+_CONVERT_SEMAPHORE = threading.BoundedSemaphore(
+    _positive_int_env("MAIL_OFFICE_PREVIEW_MAX_CONCURRENCY", 2)
+)
 
 
 def _file_extension(filename: str) -> str:
@@ -98,6 +104,13 @@ def classify_office_source(*, filename: str, content_type: str) -> str:
         or extension in {"doc", "docx", "docm", "dot", "dotx", "rtf", "odt"}
     ):
         return "word"
+    if (
+        "presentationml" in normalized_type
+        or "ms-powerpoint" in normalized_type
+        or "opendocument.presentation" in normalized_type
+        or extension in {"ppt", "pptx", "pptm", "pot", "potx", "potm", "odp"}
+    ):
+        return "presentation"
     return ""
 
 
@@ -159,7 +172,7 @@ def _run_soffice_convert(*, soffice: Path, source_path: Path, output_dir: Path, 
         str(output_dir),
         str(source_path),
     ]
-    with _CONVERT_LOCK:
+    with _CONVERT_SEMAPHORE:
         completed = subprocess.run(
             command,
             stdout=subprocess.PIPE,

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   Autocomplete,
   Avatar,
@@ -83,6 +84,14 @@ function TasksCreateMobileSheetBody({
   departments,
   selectedCreateDepartment,
 }) {
+    const selectMenuProps = useMemo(() => ({
+      disableScrollLock: true,
+      sx: { zIndex: theme.zIndex.modal + 5 },
+      PaperProps: {
+        sx: { maxHeight: 320 },
+      },
+    }), [theme.zIndex.modal]);
+
     if (sheet === 'description') {
       return (
         <MobileCreateDescriptionEditor
@@ -247,6 +256,7 @@ function TasksCreateMobileSheetBody({
             onProjectNameChange={setCreateProjectName}
             onCreateProject={handleCreateProjectFromTaskDialog}
             createProjectSaving={createProjectSaving}
+            selectMenuProps={selectMenuProps}
           />
           <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
             Готово
@@ -301,7 +311,7 @@ function TasksCreateMobileSheetBody({
           <TextField label="Дата постановки задачи" type="date" value={createData.protocol_date} onChange={(event) => setCreateData((prev) => ({ ...prev, protocol_date: event.target.value }))} InputLabelProps={{ shrink: true }} fullWidth size="small" />
           <FormControl fullWidth size="small">
             <InputLabel id="create-priority-mobile-advanced-label">Приоритет</InputLabel>
-            <Select labelId="create-priority-mobile-advanced-label" label="Приоритет" value={createData.priority} onChange={(event) => setCreateData((prev) => ({ ...prev, priority: event.target.value }))}>
+            <Select labelId="create-priority-mobile-advanced-label" label="Приоритет" value={createData.priority} onChange={(event) => setCreateData((prev) => ({ ...prev, priority: event.target.value }))} MenuProps={selectMenuProps}>
               {priorityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
             </Select>
           </FormControl>
@@ -310,6 +320,7 @@ function TasksCreateMobileSheetBody({
             projects={activeTaskProjects}
             onProjectChange={(nextProjectId) => setCreateData((prev) => ({ ...prev, project_id: nextProjectId, object_id: '' }))}
             labelId="create-project-mobile-advanced-label"
+            selectMenuProps={selectMenuProps}
           />
           <Autocomplete
             fullWidth
@@ -336,7 +347,7 @@ function TasksCreateMobileSheetBody({
           />
           <FormControl fullWidth size="small">
             <InputLabel id="create-visibility-mobile-advanced-label">Видимость</InputLabel>
-            <Select labelId="create-visibility-mobile-advanced-label" label="Видимость" value={createData.visibility_scope} onChange={(event) => setCreateData((prev) => ({ ...prev, visibility_scope: event.target.value }))}>
+            <Select labelId="create-visibility-mobile-advanced-label" label="Видимость" value={createData.visibility_scope} onChange={(event) => setCreateData((prev) => ({ ...prev, visibility_scope: event.target.value }))} MenuProps={selectMenuProps}>
               {taskVisibilityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
             </Select>
           </FormControl>

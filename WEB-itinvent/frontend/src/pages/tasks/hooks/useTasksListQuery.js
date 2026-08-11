@@ -25,6 +25,7 @@ export default function useTasksListQuery({
   hasAttachments,
   unreadCommentsOnly,
   focusMode,
+  dateSortDirection = 'desc',
   pageMode,
   canManageAllTasks,
   createOpen = false,
@@ -136,7 +137,7 @@ export default function useTasksListQuery({
         unread_comments_only: unreadCommentsOnly || undefined,
         focus_mode: focusMode && focusMode !== 'all' ? focusMode : undefined,
         sort_by: pageMode === 'board' ? 'status' : (deadlineMode ? 'due_at' : 'updated_at'),
-        sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : 'desc',
+        sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : dateSortDirection,
         limit: TASKS_PAGE_SIZE,
         offset,
       });
@@ -167,6 +168,7 @@ export default function useTasksListQuery({
     assigneeFilter,
     canManageAllTasks,
     controllerFilter,
+    dateSortDirection,
     debouncedQ,
     departmentFilter,
     dueState,
@@ -184,6 +186,7 @@ export default function useTasksListQuery({
   }, [
     assigneeFilter,
     controllerFilter,
+    dateSortDirection,
     debouncedQ,
     departmentFilter,
     dueState,

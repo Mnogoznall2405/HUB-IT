@@ -221,6 +221,7 @@ export default function HubNomenclatureMatchDialog({
   onClose,
   onOpenInvNo = null,
   onOpenInWarehouse1C = null,
+  stackAboveParent = false,
 }) {
   const { hasPermission } = useAuth();
   const theme = useTheme();
@@ -339,6 +340,9 @@ export default function HubNomenclatureMatchDialog({
       maxWidth="sm"
       fullScreen={isMobile}
       scroll="paper"
+      sx={stackAboveParent ? {
+        zIndex: (t) => `${t.zIndex.modal + 4} !important`,
+      } : undefined}
     >
       <DialogTitle
         sx={{

@@ -15,7 +15,7 @@ describe('taskUrlState', () => {
   });
 
   it('reads task filters from query string', () => {
-    const filters = readTaskFilters('?task_mode=calendar&task_view=assignee&task_q=printer&task_status=new&task_due=today&task_focus=overdue&task_files=1&task_unread_comments=1');
+    const filters = readTaskFilters('?task_mode=calendar&task_view=assignee&task_q=printer&task_status=new&task_due=today&task_focus=overdue&task_files=1&task_unread_comments=1&task_date_sort=asc');
     expect(filters.taskMode).toBe('calendar');
     expect(filters.viewMode).toBe('assignee');
     expect(filters.q).toBe('printer');
@@ -24,6 +24,12 @@ describe('taskUrlState', () => {
     expect(filters.focusMode).toBe('overdue');
     expect(filters.hasAttachments).toBe(true);
     expect(filters.unreadCommentsOnly).toBe(true);
+    expect(filters.dateSortDirection).toBe('asc');
+  });
+
+  it('falls back to newest-first sorting for unsupported values', () => {
+    expect(readTaskFilters('').dateSortDirection).toBe('desc');
+    expect(readTaskFilters('?task_date_sort=sideways').dateSortDirection).toBe('desc');
   });
 
   it('resolves initial view mode from url, role, or manage-all', () => {

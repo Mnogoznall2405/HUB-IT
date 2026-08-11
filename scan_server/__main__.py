@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 from typing import BinaryIO, Optional
 
-if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+if sys.platform.startswith("win") and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import uvicorn
 
@@ -101,7 +101,7 @@ def main() -> None:
             host=config.host,
             port=config.port,
             reload=False,
-            loop="scan_server.uvicorn_loops:windows_selector_loop_factory",
+            loop="scan_server.uvicorn_loops:windows_proactor_loop_factory",
         )
     finally:
         lock_handle.close()

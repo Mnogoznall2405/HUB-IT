@@ -111,12 +111,13 @@ class UploadSessionCompletionMaterializer:
                     raise
 
                 mime_type = _normalize_text(file_payload.get("mime_type"))
+                media_kind = _normalize_text(file_payload.get("media_kind")).lower() or None
                 width, height = self._probe_image_dimensions(probe_bytes, mime_type)
                 moved_paths.append(final_path)
                 part_path.unlink(missing_ok=True)
 
                 # Compress video if applicable
-                if (mime_type or "").lower().startswith("video/"):
+                if (mime_type or "").lower().startswith("video/") and media_kind != "file":
                     try:
                         from backend.chat.video_compress import compress_video, probe_video_info
                         compressed_path = final_path.with_suffix(".compressed.mp4")
@@ -138,7 +139,7 @@ class UploadSessionCompletionMaterializer:
                         "attachment_id": _normalize_text(file_payload.get("attachment_id") or file_payload.get("file_id")),
                         "file_name": _normalize_text(file_payload.get("file_name")),
                         "mime_type": mime_type,
-                        "media_kind": _normalize_text(file_payload.get("media_kind")) or None,
+                        "media_kind": media_kind,
                         "file_size": file_size,
                         "width": width,
                         "height": height,

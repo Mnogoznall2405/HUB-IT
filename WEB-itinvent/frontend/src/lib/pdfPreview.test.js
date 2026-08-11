@@ -50,6 +50,14 @@ describe('pdfPreview helpers', () => {
       horizontalPadding: 24,
     })).toBe(1);
   });
+
+  it('fits an A4 page to a wider desktop preview surface', () => {
+    expect(resolveInitialPdfFitZoom({
+      pageWidth: 595,
+      containerWidth: 916,
+      horizontalPadding: 24,
+    })).toBeCloseTo(892 / 595, 5);
+  });
 });
 
 describe('renderPdfPageLayers', () => {
@@ -198,6 +206,38 @@ describe('renderPdfPage', () => {
       viewport: expect.objectContaining({ width: 400, height: 560 }),
       transform: [2, 0, 0, 2, 0, 0],
     });
+  });
+
+  it('keeps the fitted CSS size while rerendering a sharper pinch-zoom bitmap', async () => {
+    const render = vi.fn().mockReturnValue({ promise: Promise.resolve() });
+    const getViewport = vi.fn(({ scale }) => ({
+      width: 400 * scale,
+      height: 560 * scale,
+    }));
+    const canvas = {
+      width: 0,
+      height: 0,
+      style: {},
+      getContext: () => ({ setTransform: vi.fn(), clearRect: vi.fn() }),
+    };
+    const pdf = {
+      getPage: vi.fn().mockResolvedValue({ getViewport, render }),
+    };
+
+    const result = await renderPdfPage({
+      pdf,
+      pageNumber: 1,
+      scale: 1.2,
+      cssScale: 0.6,
+      canvas,
+      devicePixelRatio: 2,
+    });
+
+    expect(canvas.width).toBe(960);
+    expect(canvas.height).toBe(1344);
+    expect(canvas.style.width).toBe('240px');
+    expect(canvas.style.height).toBe('336px');
+    expect(result).toMatchObject({ width: 240, height: 336, renderScale: 1.2, displayScale: 0.6 });
   });
 
   it('passes normalized rotation to PDF.js viewport rendering', async () => {

@@ -5,12 +5,11 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Optional
 
 ACTIVE_TASK_STATUSES = ("queued", "delivered", "acknowledged")
-BRANCH_PREFIX_FALLBACKS = {
-    "TMN": "Тюмень",
-    "MSK": "Москва",
-    "SPB": "Санкт-Петербург",
-    "OBJ": "Объекты",
-}
+# Hostname/agent-id prefix invent removed (fail-closed unknown branch).
+BRANCH_SOURCE_AGENT = "agent"
+BRANCH_SOURCE_JOB = "job"
+BRANCH_SOURCE_INCIDENT = "incident"
+BRANCH_SOURCE_UNKNOWN = "unknown"
 
 
 def _json_loads(value: Any, default: Any) -> Any:
@@ -21,6 +20,49 @@ def _json_loads(value: Any, default: Any) -> Any:
         return json.loads(text)
     except Exception:
         return default
+
+
+# Agents table/list UI only needs a few heartbeat metadata signals. Full
+# last_heartbeat_json can be hundreds of KB/agent and blows list JSON budgets.
+_HEARTBEAT_TOP_KEYS = (
+    "mac_address",
+    "version",
+    "status",
+    "hostname",
+    "branch",
+    "ip_address",
+    "queue_pending",
+)
+_HEARTBEAT_META_KEYS = (
+    "agent_version",
+    "analysis_version",
+    "mac_address",
+    "outbox_depth",
+    "dead_letter_depth",
+    "outbox_stale",
+    "outbox_oldest_age_sec",
+    "pending_update",
+    "legacy_itinvent_present",
+    "low_disk",
+)
+
+
+def _slim_last_heartbeat(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in _HEARTBEAT_TOP_KEYS:
+        if key in payload and payload.get(key) not in (None, "", [], {}):
+            out[key] = payload.get(key)
+    meta_in = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    meta_out = {
+        key: meta_in.get(key)
+        for key in _HEARTBEAT_META_KEYS
+        if key in meta_in and meta_in.get(key) not in (None, "", [], {})
+    }
+    if meta_out:
+        out["metadata"] = meta_out
+    return out
 
 
 def _normalize_task_status_filter(value: Any) -> List[str]:
@@ -52,17 +94,6 @@ def _normalize_mac_for_lookup(value: Any) -> str:
     )
 
 
-def _infer_branch_from_agent_identity(agent_id: Any, hostname: Any) -> str:
-    for value in (hostname, agent_id):
-        text = str(value or "").strip().upper()
-        if not text:
-            continue
-        prefix = text.split("-", 1)[0].strip()
-        if prefix in BRANCH_PREFIX_FALLBACKS:
-            return BRANCH_PREFIX_FALLBACKS[prefix]
-    return ""
-
-
 def _normalize_sort_dir(value: Any) -> str:
     return "asc" if str(value or "").strip().lower() == "asc" else "desc"
 
@@ -89,6 +120,7 @@ class ScanAgentReadStore:
         agent_online_timeout_sec: Callable[[], int],
         resolve_agent_sql_context_enabled: Callable[[], bool],
         resolve_agent_sql_context: Callable[[Any, Any], Optional[Dict[str, Any]]],
+        is_postgres: Optional[Callable[[], bool]] = None,
     ) -> None:
         self._lock = lock
         self._connect = connect
@@ -97,22 +129,32 @@ class ScanAgentReadStore:
         self._agent_online_timeout_sec = agent_online_timeout_sec
         self._resolve_agent_sql_context_enabled = resolve_agent_sql_context_enabled
         self._resolve_agent_sql_context = resolve_agent_sql_context
+        self._is_postgres = is_postgres or (lambda: False)
 
-    def _serialize_job_as_task_row(self, row: sqlite3.Row, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    def _serialize_job_as_task_row(
+        self,
+        row: sqlite3.Row,
+        now_ts: Optional[int] = None,
+        *,
+        slim: bool = False,
+    ) -> Dict[str, Any]:
         current_ts = int(now_ts or self._now())
         item = dict(row)
         job_status = str(item.get("status") or "").strip().lower()
         created_at = int(item.get("created_at") or 0)
         started_at = int(item.get("started_at") or 0)
         finished_at = int(item.get("finished_at") or 0)
-        payload = _json_loads(item.get("payload_json"), {})
         mapped_status = "acknowledged" if job_status == "processing" else "queued"
         updated_at = finished_at or started_at or created_at
+        payload: Dict[str, Any] = {}
+        if not slim:
+            loaded = _json_loads(item.get("payload_json"), {})
+            payload = loaded if isinstance(loaded, dict) else {}
         return {
             "id": str(item.get("id") or ""),
             "agent_id": str(item.get("agent_id") or ""),
             "command": "scan_now",
-            "payload": payload if isinstance(payload, dict) else {},
+            "payload": payload,
             "result": {},
             "status": mapped_status,
             "error_text": str(item.get("error_text") or "").strip(),
@@ -133,18 +175,28 @@ class ScanAgentReadStore:
         agent_ids: List[str],
         *,
         now_ts: int,
+        slim: bool = False,
     ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
         normalized_ids = [str(agent_id or "").strip() for agent_id in agent_ids if str(agent_id or "").strip()]
         if not normalized_ids:
             return {}, {}
 
         placeholders = ", ".join("?" for _ in normalized_ids)
+        # Table/list paths must not pull payload_json/result_json blobs.
+        task_cols = (
+            "t.id, t.agent_id, t.command, t.status, t.error_text, t.attempt_count, "
+            "t.created_at, t.updated_at, t.delivered_at, t.acked_at, t.completed_at, "
+            "t.ttl_at, t.next_attempt_at, t.due_at, t.dedupe_key, "
+            "'{}' AS payload_json, '{}' AS result_json"
+            if slim
+            else "t.*"
+        )
         active_rows = conn.execute(
             f"""
             SELECT *
             FROM (
                 SELECT
-                    t.*,
+                    {task_cols},
                     ROW_NUMBER() OVER (
                         PARTITION BY t.agent_id
                         ORDER BY
@@ -171,7 +223,7 @@ class ScanAgentReadStore:
             SELECT *
             FROM (
                 SELECT
-                    t.*,
+                    {task_cols},
                     ROW_NUMBER() OVER (
                         PARTITION BY t.agent_id
                         ORDER BY
@@ -187,11 +239,11 @@ class ScanAgentReadStore:
         ).fetchall()
 
         active_map = {
-            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts)
+            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts, slim=slim)
             for row in active_rows
         }
         last_map = {
-            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts)
+            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts, slim=slim)
             for row in last_rows
         }
         return active_map, last_map
@@ -202,15 +254,22 @@ class ScanAgentReadStore:
         agent_ids: List[str],
         *,
         now_ts: int,
+        slim: bool = False,
     ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, int]]:
         normalized_ids = [str(agent_id or "").strip() for agent_id in agent_ids if str(agent_id or "").strip()]
         if not normalized_ids:
             return {}, {}, {}
         placeholders = ", ".join("?" for _ in normalized_ids)
+        job_cols = (
+            "j.id, j.agent_id, j.status, j.error_text, j.created_at, j.started_at, j.finished_at, "
+            "'{}' AS payload_json"
+            if slim
+            else "j.*"
+        )
 
         active_rows = conn.execute(
             f"""
-            SELECT *
+            SELECT {job_cols}
             FROM scan_jobs j
             JOIN (
                 SELECT
@@ -242,7 +301,7 @@ class ScanAgentReadStore:
 
         last_rows = conn.execute(
             f"""
-            SELECT j.*
+            SELECT {job_cols}
             FROM scan_jobs j
             JOIN (
                 SELECT
@@ -275,13 +334,13 @@ class ScanAgentReadStore:
         for row in active_rows:
             agent_id = str(row["agent_id"] or "").strip()
             if agent_id and agent_id not in active_map:
-                active_map[agent_id] = self._serialize_job_as_task_row(row, now_ts=now_ts)
+                active_map[agent_id] = self._serialize_job_as_task_row(row, now_ts=now_ts, slim=slim)
 
         last_map: Dict[str, Dict[str, Any]] = {}
         for row in last_rows:
             agent_id = str(row["agent_id"] or "").strip()
             if agent_id and agent_id not in last_map:
-                last_map[agent_id] = self._serialize_job_as_task_row(row, now_ts=now_ts)
+                last_map[agent_id] = self._serialize_job_as_task_row(row, now_ts=now_ts, slim=slim)
 
         count_map: Dict[str, int] = {
             str(row["agent_id"] or "").strip(): int(row["job_count"] or 0)
@@ -335,6 +394,80 @@ class ScanAgentReadStore:
             return str(sql_context.get("branch_name") or "").strip()
         return ""
 
+    def _batch_latest_branches(
+        self,
+        conn: sqlite3.Connection,
+        agent_ids: List[str],
+    ) -> Dict[str, str]:
+        """Bulk branch names from jobs then incidents (compat wrapper)."""
+        meta = self._batch_latest_branch_meta(conn, agent_ids)
+        return {agent_id: str(info.get("branch") or "") for agent_id, info in meta.items()}
+
+    def _batch_latest_branch_meta(
+        self,
+        conn: sqlite3.Connection,
+        agent_ids: List[str],
+    ) -> Dict[str, Dict[str, str]]:
+        """Bulk branch truth from jobs then incidents (no N+1, no hostname invent)."""
+        normalized_ids = [str(agent_id or "").strip() for agent_id in agent_ids if str(agent_id or "").strip()]
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        out: Dict[str, Dict[str, str]] = {}
+        job_rows = conn.execute(
+            f"""
+            SELECT agent_id, branch
+            FROM (
+                SELECT
+                    agent_id,
+                    branch,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY agent_id
+                        ORDER BY created_at DESC
+                    ) AS rn
+                FROM scan_jobs
+                WHERE agent_id IN ({placeholders})
+                  AND TRIM(COALESCE(branch, '')) <> ''
+            ) ranked
+            WHERE rn = 1
+            """,
+            normalized_ids,
+        ).fetchall()
+        for row in job_rows:
+            agent_id = str(row["agent_id"] or "").strip()
+            branch_name = str(row["branch"] or "").strip()
+            if agent_id and branch_name:
+                out[agent_id] = {"branch": branch_name, "source": BRANCH_SOURCE_JOB}
+        missing = [agent_id for agent_id in normalized_ids if agent_id not in out]
+        if not missing:
+            return out
+        miss_placeholders = ", ".join("?" for _ in missing)
+        incident_rows = conn.execute(
+            f"""
+            SELECT agent_id, branch
+            FROM (
+                SELECT
+                    agent_id,
+                    branch,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY agent_id
+                        ORDER BY created_at DESC
+                    ) AS rn
+                FROM scan_incidents
+                WHERE agent_id IN ({miss_placeholders})
+                  AND TRIM(COALESCE(branch, '')) <> ''
+            ) ranked
+            WHERE rn = 1
+            """,
+            missing,
+        ).fetchall()
+        for row in incident_rows:
+            agent_id = str(row["agent_id"] or "").strip()
+            branch_name = str(row["branch"] or "").strip()
+            if agent_id and branch_name and agent_id not in out:
+                out[agent_id] = {"branch": branch_name, "source": BRANCH_SOURCE_INCIDENT}
+        return out
+
     def _shape_agent_row(
         self,
         row: sqlite3.Row,
@@ -347,33 +480,56 @@ class ScanAgentReadStore:
         last_job_map: Dict[str, Dict[str, Any]],
         active_job_count_map: Dict[str, int],
         active_task_count_map: Optional[Dict[str, int]] = None,
-        sql_context_cache: Dict[str, Optional[Dict[str, Any]]],
+        sql_context_cache: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,
+        branch_source_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         item = dict(row)
-        item["branch"] = str(item.get("resolved_branch") or item.get("branch") or "").strip()
+        agent_col_branch = str(item.get("branch") or "").strip()
+        resolved = str(item.get("resolved_branch") or "").strip()
+        if agent_col_branch:
+            item["branch"] = agent_col_branch
+            item["branch_source"] = BRANCH_SOURCE_AGENT
+        elif resolved:
+            item["branch"] = resolved
+            item["branch_source"] = str(branch_source_hint or BRANCH_SOURCE_UNKNOWN).strip() or BRANCH_SOURCE_UNKNOWN
+        else:
+            item["branch"] = ""
+            item["branch_source"] = BRANCH_SOURCE_UNKNOWN
         item["ip_address"] = str(item.get("resolved_ip_address") or item.get("ip_address") or "").strip()
         item.pop("resolved_branch", None)
         item.pop("resolved_ip_address", None)
+        for noise_key in (
+            "hostname_sort",
+            "agent_id_sort",
+            "branch_sort",
+            "ip_address_sort",
+            "version_sort",
+            "is_online",
+        ):
+            item.pop(noise_key, None)
         age_sec = max(0, now_ts - int(item.get("last_seen_at") or 0))
         item["age_seconds"] = age_sec
         item["is_online"] = age_sec <= self._agent_online_timeout_sec()
-        item["last_heartbeat"] = _json_loads(item.get("last_heartbeat_json"), {})
-        item.pop("last_heartbeat_json", None)
-        heartbeat_payload = item["last_heartbeat"] if isinstance(item["last_heartbeat"], dict) else {}
-        heartbeat_meta = heartbeat_payload.get("metadata") if isinstance(heartbeat_payload.get("metadata"), dict) else {}
-        mac_address = str(
-            heartbeat_payload.get("mac_address")
-            or heartbeat_meta.get("mac_address")
-            or ""
-        ).strip()
-        if not item["branch"]:
-            item["branch"] = _infer_branch_from_agent_identity(item.get("agent_id"), item.get("hostname"))
-        if not item["branch"]:
-            item["branch"] = self._resolve_branch_from_sql_context(
-                sql_context_cache=sql_context_cache,
-                mac_address=mac_address,
-                hostname=item.get("hostname"),
-            )
+        raw_heartbeat_text = item.pop("last_heartbeat_json", None)
+        if raw_heartbeat_text is None:
+            # Table projection intentionally omits the huge heartbeat blob; synthesize
+            # the few UI signals from dedicated agent columns.
+            heartbeat_payload = {
+                "version": str(item.get("version") or "").strip(),
+                "hostname": str(item.get("hostname") or "").strip(),
+                "branch": str(item.get("branch") or "").strip(),
+                "ip_address": str(item.get("ip_address") or "").strip(),
+                "metadata": {
+                    "agent_version": str(item.get("version") or "").strip(),
+                    "outbox_depth": int(item.get("outbox_depth") or 0),
+                    "dead_letter_depth": int(item.get("dead_letter_depth") or 0),
+                },
+            }
+        else:
+            raw_heartbeat = _json_loads(raw_heartbeat_text, {})
+            heartbeat_payload = raw_heartbeat if isinstance(raw_heartbeat, dict) else {}
+        item["last_heartbeat"] = _slim_last_heartbeat(heartbeat_payload)
+        # No hostname/prefix invent and no external SQL context invent for branch.
 
         active_task = active_map.get(agent_id)
         active_job = active_job_map.get(agent_id)
@@ -460,12 +616,23 @@ class ScanAgentReadStore:
                 (now_ts,),
             ).fetchall()
             agent_ids = [str(row["agent_id"] or "").strip() for row in rows if str(row["agent_id"] or "").strip()]
+            need_meta_ids = [
+                str(row["agent_id"] or "").strip()
+                for row in rows
+                if str(row["agent_id"] or "").strip() and not str(row["branch"] or "").strip()
+            ]
+            branch_meta = self._batch_latest_branch_meta(conn, need_meta_ids)
             active_map, last_map = self._fetch_task_summaries(conn, agent_ids, now_ts=now_ts)
             active_job_map, last_job_map, active_job_count_map = self._fetch_job_summaries(conn, agent_ids, now_ts=now_ts)
         out: List[Dict[str, Any]] = []
-        sql_context_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         for row in rows:
             agent_id = str(row["agent_id"] or "").strip()
+            agent_col = str(row["branch"] or "").strip()
+            if agent_col:
+                source_hint = BRANCH_SOURCE_AGENT
+            else:
+                info = branch_meta.get(agent_id) or {}
+                source_hint = str(info.get("source") or BRANCH_SOURCE_UNKNOWN)
             out.append(
                 self._shape_agent_row(
                     row,
@@ -476,7 +643,7 @@ class ScanAgentReadStore:
                     active_job_map=active_job_map,
                     last_job_map=last_job_map,
                     active_job_count_map=active_job_count_map,
-                    sql_context_cache=sql_context_cache,
+                    branch_source_hint=source_hint,
                 )
             )
         return out
@@ -487,15 +654,46 @@ class ScanAgentReadStore:
         *,
         conn: sqlite3.Connection,
         now_ts: int,
+        slim: bool = False,
     ) -> List[Dict[str, Any]]:
-        agent_ids = [str(row["agent_id"] or "").strip() for row in rows if str(row["agent_id"] or "").strip()]
-        active_map, last_map = self._fetch_task_summaries(conn, agent_ids, now_ts=now_ts)
-        active_job_map, last_job_map, active_job_count_map = self._fetch_job_summaries(conn, agent_ids, now_ts=now_ts)
+        mutable_rows: List[Dict[str, Any]] = [dict(row) for row in rows]
+        agent_ids = [
+            str(row.get("agent_id") or "").strip()
+            for row in mutable_rows
+            if str(row.get("agent_id") or "").strip()
+        ]
+        need_branch_ids = [
+            str(row.get("agent_id") or "").strip()
+            for row in mutable_rows
+            if str(row.get("agent_id") or "").strip()
+            and not str(row.get("branch") or "").strip()
+            and not str(row.get("resolved_branch") or "").strip()
+        ]
+        branch_meta = self._batch_latest_branch_meta(conn, need_branch_ids)
+        source_by_agent: Dict[str, str] = {}
+        for row in mutable_rows:
+            agent_id = str(row.get("agent_id") or "").strip()
+            if str(row.get("branch") or "").strip():
+                source_by_agent[agent_id] = BRANCH_SOURCE_AGENT
+                continue
+            if str(row.get("resolved_branch") or "").strip():
+                source_by_agent[agent_id] = BRANCH_SOURCE_AGENT
+                continue
+            info = branch_meta.get(agent_id) or {}
+            bulk_branch = str(info.get("branch") or "").strip()
+            if bulk_branch:
+                row["resolved_branch"] = bulk_branch
+                source_by_agent[agent_id] = str(info.get("source") or BRANCH_SOURCE_UNKNOWN)
+            else:
+                source_by_agent[agent_id] = BRANCH_SOURCE_UNKNOWN
+        active_map, last_map = self._fetch_task_summaries(conn, agent_ids, now_ts=now_ts, slim=slim)
+        active_job_map, last_job_map, active_job_count_map = self._fetch_job_summaries(
+            conn, agent_ids, now_ts=now_ts, slim=slim
+        )
         active_task_count_map = self._fetch_active_task_counts(conn, agent_ids, now_ts=now_ts)
-        sql_context_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         out: List[Dict[str, Any]] = []
-        for row in rows:
-            agent_id = str(row["agent_id"] or "").strip()
+        for row in mutable_rows:
+            agent_id = str(row.get("agent_id") or "").strip()
             out.append(
                 self._shape_agent_row(
                     row,
@@ -507,7 +705,7 @@ class ScanAgentReadStore:
                     last_job_map=last_job_map,
                     active_job_count_map=active_job_count_map,
                     active_task_count_map=active_task_count_map,
-                    sql_context_cache=sql_context_cache,
+                    branch_source_hint=source_by_agent.get(agent_id),
                 )
             )
         return out
@@ -520,10 +718,21 @@ class ScanAgentReadStore:
         placeholders = ", ".join("?" for _ in unique_ids)
         now_ts = self._now()
         with self._lock, self._connect() as conn:
+            # Explicit columns + slim merge (same projection as agents/table).
             rows = conn.execute(
                 f"""
                 SELECT
-                    a.*,
+                    a.agent_id,
+                    a.hostname,
+                    a.branch,
+                    a.ip_address,
+                    a.version,
+                    a.status,
+                    a.last_seen_at,
+                    a.updated_at,
+                    a.outbox_depth,
+                    a.dead_letter_depth,
+                    a.last_ingest_ok_at,
                     COALESCE(NULLIF(a.branch, ''), '') AS resolved_branch,
                     COALESCE(NULLIF(a.ip_address, ''), '') AS resolved_ip_address,
                     0 AS queue_size
@@ -532,7 +741,7 @@ class ScanAgentReadStore:
                 """,
                 unique_ids,
             ).fetchall()
-            items = self._merge_agent_runtime_rows(list(rows), conn=conn, now_ts=now_ts)
+            items = self._merge_agent_runtime_rows(list(rows), conn=conn, now_ts=now_ts, slim=True)
         order_map = {agent_id: index for index, agent_id in enumerate(unique_ids)}
         items.sort(key=lambda item: order_map.get(str(item.get("agent_id") or "").strip(), len(order_map)))
         return {
@@ -650,17 +859,12 @@ class ScanAgentReadStore:
     ) -> Dict[str, Any]:
         normalized_sort_by = str(sort_by or "").strip().lower() or "online"
         normalized_sort_dir = _normalize_sort_dir(sort_dir)
-        normalized_q = str(q or "").strip()
-        normalized_branch = str(branch or "").strip()
-        # Prefer SQL for hostname/agent_id search. Fall back to Python when we need
-        # task-status filtering, non-ASCII needles, or branch filter that depends on
-        # external SQL-context branch resolution.
-        needs_python = bool(str(task_status or "").strip())
-        needs_python = needs_python or any(ord(ch) > 127 for ch in normalized_q)
-        needs_python = needs_python or any(ord(ch) > 127 for ch in normalized_branch)
-        if normalized_branch and self._resolve_agent_sql_context_enabled():
-            needs_python = True
-        if needs_python:
+        needle_probe = str(q or "").strip()
+        branch_probe = str(branch or "").strip()
+        # SQLite LOWER() is ASCII-only; Cyrillic filters need Python casefold there.
+        # PostgreSQL Unicode LOWER covers branch/non-ASCII q on the SQL path.
+        non_ascii_filter = any(ord(ch) > 127 for ch in (needle_probe + branch_probe))
+        if non_ascii_filter and not bool(self._is_postgres()):
             return self._list_agents_table_python(
                 q=q,
                 branch=branch,
@@ -671,7 +875,8 @@ class ScanAgentReadStore:
                 sort_by=sort_by,
                 sort_dir=sort_dir,
             )
-
+        # SQL path covers branch / Cyrillic q (PG) / task_status. Python only for
+        # unsupported sort keys (queue_size, active_task, last_result, …).
         sort_expr_map = {
             "online": "is_online",
             "hostname": "hostname_sort",
@@ -692,37 +897,14 @@ class ScanAgentReadStore:
                 sort_dir=sort_dir,
             )
 
-        resolved_branch_sql = """
-            COALESCE(
-                NULLIF(a.branch, ''),
-                (
-                    SELECT j.branch
-                    FROM scan_jobs j
-                    WHERE j.agent_id = a.agent_id AND j.branch <> ''
-                    ORDER BY j.created_at DESC
-                    LIMIT 1
-                ),
-                (
-                    SELECT i.branch
-                    FROM scan_incidents i
-                    WHERE i.agent_id = a.agent_id AND i.branch <> ''
-                    ORDER BY i.created_at DESC
-                    LIMIT 1
-                ),
-                CASE
-                    WHEN UPPER(COALESCE(a.hostname, '')) LIKE 'TMN-%' OR UPPER(COALESCE(a.agent_id, '')) LIKE 'TMN-%' THEN 'Тюмень'
-                    WHEN UPPER(COALESCE(a.hostname, '')) LIKE 'MSK-%' OR UPPER(COALESCE(a.agent_id, '')) LIKE 'MSK-%' THEN 'Москва'
-                    WHEN UPPER(COALESCE(a.hostname, '')) LIKE 'SPB-%' OR UPPER(COALESCE(a.agent_id, '')) LIKE 'SPB-%' THEN 'Санкт-Петербург'
-                    WHEN UPPER(COALESCE(a.hostname, '')) LIKE 'OBJ-%' OR UPPER(COALESCE(a.agent_id, '')) LIKE 'OBJ-%' THEN 'Объекты'
-                    ELSE ''
-                END,
-                ''
-            )
-        """
+        # Agent.branch first; empty filled later in _merge from jobs/incidents.
+        # Filter also checks jobs/incidents so SQL matches Python branch truth.
+        resolved_branch_sql = "COALESCE(NULLIF(a.branch, ''), '')"
         resolved_ip_sql = "COALESCE(NULLIF(a.ip_address, ''), '')"
         needle = str(q or "").strip().lower()
         branch_needle = str(branch or "").strip().lower()
         online_filter = _normalize_online_filter(online)
+        status_filters = _normalize_task_status_filter(task_status)
         safe_limit = max(1, min(200, int(limit)))
         safe_offset = max(0, int(offset))
         now_ts = self._now()
@@ -730,8 +912,25 @@ class ScanAgentReadStore:
         where_parts: List[str] = []
         params: List[Any] = [online_cutoff]
         if branch_needle:
-            where_parts.append("LOWER(base.resolved_branch) LIKE ?")
-            params.append(f"%{branch_needle}%")
+            branch_like = f"%{branch_needle}%"
+            where_parts.append(
+                """
+                (
+                    LOWER(base.resolved_branch) LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM scan_jobs j
+                        WHERE j.agent_id = base.agent_id
+                          AND LOWER(j.branch) LIKE ?
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM scan_incidents i
+                        WHERE i.agent_id = base.agent_id
+                          AND LOWER(i.branch) LIKE ?
+                    )
+                )
+                """
+            )
+            params.extend([branch_like, branch_like, branch_like])
         if needle:
             from .database import looks_like_hostname_query
 
@@ -765,18 +964,100 @@ class ScanAgentReadStore:
         if online_filter is not None:
             where_parts.append("base.is_online = ?")
             params.append(1 if online_filter else 0)
+        if status_filters:
+            active_exists = """
+                (
+                    EXISTS (
+                        SELECT 1 FROM scan_tasks t
+                        WHERE t.agent_id = base.agent_id
+                          AND t.status IN ('queued', 'delivered', 'acknowledged')
+                          AND t.ttl_at > ?
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM scan_jobs j
+                        WHERE j.agent_id = base.agent_id
+                          AND j.status IN ('queued', 'processing')
+                    )
+                )
+            """
+            if "none" in status_filters:
+                where_parts.append(f"NOT {active_exists}")
+                params.append(now_ts)
+            elif any(status_value in ACTIVE_TASK_STATUSES for status_value in status_filters):
+                active_statuses = [s for s in status_filters if s in ACTIVE_TASK_STATUSES]
+                placeholders = ", ".join("?" for _ in active_statuses)
+                # Jobs: processing≈acknowledged, queued≈queued (no delivered mapping).
+                job_statuses: List[str] = []
+                if "queued" in active_statuses:
+                    job_statuses.append("queued")
+                if "acknowledged" in active_statuses or "delivered" in active_statuses:
+                    job_statuses.append("processing")
+                job_clause = ""
+                job_params: List[Any] = []
+                if job_statuses:
+                    job_ph = ", ".join("?" for _ in job_statuses)
+                    job_clause = f"""
+                        OR EXISTS (
+                            SELECT 1 FROM scan_jobs j
+                            WHERE j.agent_id = base.agent_id
+                              AND j.status IN ({job_ph})
+                        )
+                    """
+                    job_params = list(job_statuses)
+                where_parts.append(
+                    f"""
+                    (
+                        EXISTS (
+                            SELECT 1 FROM scan_tasks t
+                            WHERE t.agent_id = base.agent_id
+                              AND t.status IN ({placeholders})
+                              AND t.ttl_at > ?
+                        )
+                        {job_clause}
+                    )
+                    """
+                )
+                params.extend([*active_statuses, now_ts, *job_params])
+            else:
+                # Final / last-task statuses.
+                placeholders = ", ".join("?" for _ in status_filters)
+                where_parts.append(
+                    f"""
+                    EXISTS (
+                        SELECT 1 FROM (
+                            SELECT t.status AS status
+                            FROM scan_tasks t
+                            WHERE t.agent_id = base.agent_id
+                            ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.created_at DESC
+                            LIMIT 1
+                        ) last_t
+                        WHERE LOWER(last_t.status) IN ({placeholders})
+                    )
+                    """
+                )
+                params.extend(list(status_filters))
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         order_clause = (
             f"{order_expr} {normalized_sort_dir.upper()}, base.last_seen_at DESC, base.agent_id_sort ASC"
-            if normalized_sort_by == "online"
-            else f"{order_expr} {normalized_sort_dir.upper()}, base.last_seen_at DESC, base.agent_id_sort ASC"
         )
 
         with self._lock, self._connect() as conn:
+            # Explicit columns: never SELECT last_heartbeat_json for table pages.
+            # Single page query with window total — avoids double CTE evaluation.
             base_cte = f"""
                 WITH base AS (
                     SELECT
-                        a.*,
+                        a.agent_id,
+                        a.hostname,
+                        a.branch,
+                        a.ip_address,
+                        a.version,
+                        a.status,
+                        a.last_seen_at,
+                        a.updated_at,
+                        a.outbox_depth,
+                        a.dead_letter_depth,
+                        a.last_ingest_ok_at,
                         {resolved_branch_sql} AS resolved_branch,
                         {resolved_ip_sql} AS resolved_ip_address,
                         CASE WHEN a.last_seen_at >= ? THEN 1 ELSE 0 END AS is_online,
@@ -789,21 +1070,16 @@ class ScanAgentReadStore:
                     FROM scan_agents a
                 )
             """
-            total = int(
-                conn.execute(
-                    f"""
-                    {base_cte}
-                    SELECT COUNT(*) AS cnt
-                    FROM base
-                    {where_clause}
-                    """,
-                    params,
-                ).fetchone()["cnt"]
-            )
             rows = conn.execute(
                 f"""
                 {base_cte}
-                SELECT *
+                SELECT
+                    agent_id, hostname, branch, ip_address, version, status,
+                    last_seen_at, updated_at, outbox_depth, dead_letter_depth,
+                    last_ingest_ok_at, resolved_branch, resolved_ip_address,
+                    is_online, hostname_sort, agent_id_sort, branch_sort,
+                    ip_address_sort, version_sort, queue_size,
+                    COUNT(*) OVER() AS total_count
                 FROM base
                 {where_clause}
                 ORDER BY {order_clause}
@@ -811,29 +1087,45 @@ class ScanAgentReadStore:
                 """,
                 [*params, safe_limit, safe_offset],
             ).fetchall()
-            items = self._merge_agent_runtime_rows(list(rows), conn=conn, now_ts=now_ts)
-        return {"total": total, "items": items}
+            if rows:
+                total = int(rows[0]["total_count"] or 0)
+            elif safe_offset > 0:
+                total = int(
+                    conn.execute(
+                        f"""
+                        {base_cte}
+                        SELECT COUNT(*) AS cnt
+                        FROM base
+                        {where_clause}
+                        """,
+                        params,
+                    ).fetchone()["cnt"]
+                    or 0
+                )
+            else:
+                total = 0
+            items = self._merge_agent_runtime_rows(list(rows), conn=conn, now_ts=now_ts, slim=True)
+        return {"total": total, "items": items, "view": "summary"}
 
     def list_branches(self) -> List[str]:
+        """Distinct branch names only — no full agents list / task merge.
+
+        Push WHERE into each arm so empty-branch fleets do not scan huge
+        scan_jobs just to return []. Agents + incidents cover the filter UI;
+        jobs rarely add unique labels and dominate cold latency (~400k rows).
+        """
         values: Dict[str, str] = {}
-
-        for item in self.list_agents():
-            branch_name = str(item.get("branch") or "").strip()
-            if branch_name:
-                values.setdefault(branch_name.casefold(), branch_name)
-
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT TRIM(branch) AS branch_name
                 FROM (
-                    SELECT branch FROM scan_incidents
-                    UNION ALL
-                    SELECT branch FROM scan_jobs
-                    UNION ALL
                     SELECT branch FROM scan_agents
+                    WHERE TRIM(COALESCE(branch, '')) <> ''
+                    UNION ALL
+                    SELECT branch FROM scan_incidents
+                    WHERE TRIM(COALESCE(branch, '')) <> ''
                 ) branches
-                WHERE TRIM(COALESCE(branch, '')) <> ''
                 """
             ).fetchall()
 

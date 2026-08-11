@@ -11,7 +11,6 @@ import { alpha } from '@mui/material/styles';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 
 import { MemoChatBubble } from './ChatBubble';
-import ChatFileUploadPanel from './ChatFileUploadPanel';
 import ChatTypingIndicator from './ChatTypingIndicator';
 import {
   buildTimelineItems,
@@ -252,7 +251,6 @@ const ChatMessageList = memo(function ChatMessageList({
   onToggleMessageSelection,
   onStartMessageSelection,
   highlightedMessageId,
-  isFileDragActive,
   getReadTargetRef,
   onToggleReaction,
   onScrollToMessage,
@@ -285,30 +283,6 @@ const ChatMessageList = memo(function ChatMessageList({
 
   return (
     <>
-      {isFileDragActive ? (
-        <Box
-          sx={{
-            position: 'sticky',
-            top: 12,
-            zIndex: 6,
-            mx: 'auto',
-            mb: 1.5,
-            display: 'flex',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-          }}
-        >
-          <ChatFileUploadPanel
-            mode="drop"
-            files={[]}
-            showActions={false}
-            showCaption={false}
-            theme={theme}
-            ui={ui}
-          />
-        </Box>
-      ) : null}
-
       {messagesLoading ? (
         <ThreadLoadingSkeleton compactMobile={compactMobile} />
       ) : normalizedMessages.length === 0 ? (

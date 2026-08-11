@@ -70,6 +70,10 @@ _Avoid_: hub task, задача Hub, «задача» без уточнения 
 In-app уведомление пользователю Hub, привязанное к сущности (`entity_type` / `entity_id`).
 _Avoid_: **Chat message**, Telegram, почтовое письмо
 
+**Отсутствие сотрудника**:
+Текущее кадровое состояние из ЗУП (`СостоянияСотрудников`: отпуск, болезнь, командировка и др.) с датой выхода; в кэше адресной книги поле `absence` (`kind`, `label`, `starts_on`, `returns_on`). Виджет Dashboard показывает отсутствующих сегодня; отдельно — ручной реестр Hub `app.employee_absences` для записей вне ЗУП.
+_Avoid_: **employment status** адресной книги (`active`/`dismissed` = работает/уволен), online/presence в чате, Exchange OOO
+
 ### Перемещение и акты
 
 **Equipment transfer**:
@@ -240,6 +244,10 @@ _Avoid_: **Equipment record**, **Inventory host**
 
 - **Один PostgreSQL или два:** в `.env` часто `APP_DATABASE_URL=${CHAT_DATABASE_URL}` — один инстанс; при раздельном `CHAT_DATABASE_URL` таблицы `chat_*` могут жить на другом хосте. Для агентов: смотреть фактический URL, не предполагать полный набор таблиц `chat` на app-инстансе ([POSTGRES_APP_SCHEMA.md](./documentation/technical/POSTGRES_APP_SCHEMA.md)).
 - **Обязателен ли Hub task для каждого перемещения:** **Equipment transfer** в JSON может существовать без **Transfer act reminder** / **Hub task**; напоминания и задачи — отдельный workflow.
+
+## Known limitations
+
+- **WRITE-CONTENTION-01:** create p95 exceeds 500 ms at closed-loop concurrency 20 on PostgreSQL; no errors or deadlocks; saturation begins between concurrency 10 and 20. Do not add write-path retries or optimize without separate profiling.
 
 ## Documentation decisions
 

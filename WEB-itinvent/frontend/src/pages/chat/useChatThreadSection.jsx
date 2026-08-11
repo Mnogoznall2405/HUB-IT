@@ -91,6 +91,7 @@ export default function useChatThreadSection(ctx) {
     scrollToMessage,
     emojiPickerOpen,
     insertEmojiAtSelection,
+    handleSendSticker,
     handleSendGif,
     voiceRecording,
     voiceRecordingDuration,
@@ -218,8 +219,9 @@ export default function useChatThreadSection(ctx) {
         onScrollToMessage={scrollToMessage}
         currentUserId={user?.id}
         mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
+        desktopEmojiPickerOpen={!isMobile && emojiPickerOpen}
         onInsertEmoji={insertEmojiAtSelection}
-        onSendSticker={insertEmojiAtSelection}
+        onSendSticker={handleSendSticker}
         onSendGif={handleSendGif}
         voiceRecording={voiceRecording}
         voiceRecordingDuration={voiceRecordingDuration}
@@ -271,6 +273,7 @@ export default function useChatThreadSection(ctx) {
       handleOpenPinnedMessage,
       handleReplyMessage,
       handleSendGif,
+      handleSendSticker,
       handleThreadScroll,
       handleToggleReaction,
       handleUnpinPinnedMessage,

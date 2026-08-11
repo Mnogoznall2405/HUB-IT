@@ -248,4 +248,24 @@ describe('MobileBottomNavSettingsCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'По умолчанию' }));
     expect(onChange).toHaveBeenCalledWith(['/dashboard', '/tasks', '/chat', '/mail']);
   });
+
+  it('provides a dedicated save action after the navigation preview', () => {
+    const onSave = vi.fn();
+    renderWithTheme(
+      <MobileBottomNavSettingsCard
+        availableItems={availableItems}
+        selectedPaths={['/dashboard', '/tasks', '/chat', '/mail']}
+        resolvedItems={[...availableItems.slice(0, 4), menuItem]}
+        onChange={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+
+    const preview = screen.getByText('Предпросмотр');
+    const saveButton = screen.getByRole('button', { name: 'Сохранить нижнее меню' });
+    expect(preview.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    fireEvent.click(saveButton);
+    expect(onSave).toHaveBeenCalledOnce();
+  });
 });

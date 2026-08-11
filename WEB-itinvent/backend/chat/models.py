@@ -158,6 +158,102 @@ class ChatMessageAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
 
 
+class ChatStickerPack(Base):
+    """Telegram sticker pack cached once and shared by users who add it."""
+
+    __tablename__ = "chat_sticker_packs"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    short_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    sticker_type: Mapped[str] = mapped_column(String(32), nullable=False, default="regular")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatSticker(Base):
+    """One locally cached sticker from a Telegram pack."""
+
+    __tablename__ = "chat_stickers"
+    __table_args__ = _table_args(
+        UniqueConstraint("pack_id", "telegram_file_unique_id", name="uq_chat_stickers_pack_file_unique"),
+        Index("ix_chat_stickers_pack_sort", "pack_id", "sort_order"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pack_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_sticker_packs"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    telegram_file_unique_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatUserStickerPack(Base):
+    """A sticker pack installed into one HUB-IT user's picker."""
+
+    __tablename__ = "chat_user_sticker_packs"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "pack_id", name="uq_chat_user_sticker_packs_user_pack"),
+        Index("ix_chat_user_sticker_packs_user_added", "user_id", "added_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    pack_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_sticker_packs"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatAttachmentPreview(Base):
+    """Durable Chat file-preview job and its published artifact metadata."""
+
+    __tablename__ = "chat_attachment_previews"
+    __table_args__ = _table_args(
+        Index("ix_chat_attachment_previews_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_chat_attachment_previews_lease_expires", "lease_expires_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    attachment_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_message_attachments"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    artifact_rel_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    pdf_filename: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sheets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ChatMessageRead(Base):
     __tablename__ = "chat_message_reads"
     __table_args__ = _table_args(

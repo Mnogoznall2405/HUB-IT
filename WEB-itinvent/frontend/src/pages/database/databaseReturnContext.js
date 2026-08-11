@@ -62,13 +62,14 @@ export const normalizeDatabaseReturnContext = (state) => {
   const invNo = String(reopenDetail?.invNo || state.invNo || '').trim();
   const ownerNo = String(reopenEmployee?.ownerNo || state.ownerNo || '').trim();
   const employeeName = String(reopenEmployee?.employeeName || state.employeeName || '').trim();
+  const warehouseRef = String(reopenEmployee?.warehouseRef || state.employeeWarehouseRef || '').trim();
   const detailTab = String(reopenDetail?.detailTab || state.detailTab || 'warehouse1c').trim() || 'warehouse1c';
   const detailData = reopenDetail?.detailData && typeof reopenDetail.detailData === 'object'
     ? reopenDetail.detailData
     : (state.detailData && typeof state.detailData === 'object' ? state.detailData : null);
   const returnTo = String(state.returnTo || '').trim() || '/database';
   const returnLabel = String(state.returnLabel || '').trim()
-    || (invNo ? 'Назад к карточке' : ownerNo ? 'Назад к сотруднику' : 'Назад в Инвентарь');
+    || (invNo ? 'Назад к карточке' : (ownerNo || employeeName || warehouseRef) ? 'Назад к сотруднику' : 'Назад в Инвентарь');
 
   if (!invNo && !ownerNo && !state.returnTo && !reopenDetail && !reopenEmployee) {
     return null;
@@ -78,6 +79,7 @@ export const normalizeDatabaseReturnContext = (state) => {
     invNo,
     ownerNo,
     employeeName,
+    warehouseRef,
     detailTab,
     detailData,
     returnTo,

@@ -96,7 +96,10 @@ class ChatMembership:
         dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
         query = select(ChatConversation).where(ChatConversation.id == normalized_conversation_id)
         if dialect_name == "postgresql":
-            query = query.with_for_update()
+            # populate_existing: after waiting on FOR UPDATE, refresh last_message_seq from DB.
+            # Without it the identity map keeps a stale seq and concurrent sends collide on
+            # idx_chat_messages_conversation_seq (UniqueViolation → "Command failed").
+            query = query.with_for_update().execution_options(populate_existing=True)
         conversation = session.execute(query).scalar_one_or_none()
         if conversation is None or bool(conversation.is_archived):
             raise LookupError("Conversation not found")

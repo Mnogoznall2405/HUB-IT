@@ -96,6 +96,7 @@ class DocflowTaskDetail(DocflowTaskSummary):
     open_in_1c_url: str | None = None
     related_objects: list[DocflowRelatedObject] = Field(default_factory=list)
     files: list[DocflowTaskFileSummary] = Field(default_factory=list)
+    files_incomplete: bool = False
 
 
 class DocflowTaskListResponse(BaseModel):
@@ -171,6 +172,7 @@ class DocflowAssignmentDocumentList(BaseModel):
     items: list[DocflowAssignmentDocument] = Field(default_factory=list)
     returned: int = 0
     truncated: bool = False
+    reason: str | None = None
     as_of: datetime
 
 
@@ -178,6 +180,7 @@ class DocflowAssignmentAssigneeList(BaseModel):
     items: list[DocflowAssignmentAssignee] = Field(default_factory=list)
     returned: int = 0
     truncated: bool = False
+    reason: str | None = None
     as_of: datetime
 
 

@@ -45,6 +45,7 @@ from backend.chat.chat_upload_orchestrator import ChatUploadOrchestrator
 from backend.chat.db import (
     ChatConfigurationError,
     chat_session,
+    chat_write_session,
     get_chat_database_url,
     initialize_chat_schema,
     is_chat_enabled,
@@ -409,7 +410,7 @@ class ChatService:
             push_service=chat_push_service,
         )
         self._text_message_persistence = ChatTextMessagePersistence(
-            session_factory=lambda: chat_session(),
+            session_factory=lambda: chat_write_session(),
             require_membership=lambda **kwargs: self._require_membership(**kwargs),
             lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
             conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
@@ -419,7 +420,7 @@ class ChatService:
             now=_utc_now,
         )
         self._file_message_persistence = ChatFileMessagePersistence(
-            session_factory=lambda: chat_session(),
+            session_factory=lambda: chat_write_session(),
             require_membership=lambda **kwargs: self._require_membership(**kwargs),
             lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
             conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
@@ -428,7 +429,7 @@ class ChatService:
             now=_utc_now,
         )
         self._forward_message_persistence = ChatForwardMessagePersistence(
-            session_factory=lambda: chat_session(),
+            session_factory=lambda: chat_write_session(),
             require_membership=lambda **kwargs: self._require_membership(**kwargs),
             lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
             conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
@@ -438,7 +439,7 @@ class ChatService:
         )
         self._system_message_persistence = ChatSystemMessagePersistence()
         self._task_share_message_persistence = ChatTaskShareMessagePersistence(
-            session_factory=lambda: chat_session(),
+            session_factory=lambda: chat_write_session(),
             require_membership=lambda **kwargs: self._require_membership(**kwargs),
             lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
             conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
@@ -542,8 +543,18 @@ class ChatService:
                 if key == "__all__" or needle in key.split(","):
                     self._presence_cache.pop(key, None)
 
-    def _invalidate_conversation_views_for_users(self, *, conversation_id: str, user_ids: list[int] | set[int] | tuple[int, ...]) -> None:
-        return self._cache._invalidate_conversation_views_for_users(conversation_id=conversation_id, user_ids=user_ids)
+    def _invalidate_conversation_views_for_users(
+        self,
+        *,
+        conversation_id: str,
+        user_ids: list[int] | set[int] | tuple[int, ...],
+        hard_drop_unread: bool = False,
+    ) -> None:
+        return self._cache._invalidate_conversation_views_for_users(
+            conversation_id=conversation_id,
+            user_ids=user_ids,
+            hard_drop_unread=hard_drop_unread,
+        )
     def _set_request_meta(self, **payload: Any) -> None:
         _chat_request_meta_var.set(dict(payload))
 
@@ -590,7 +601,12 @@ class ChatService:
         return self._runtime_status
 
     async def start(self) -> None:
+        import os
+
         self.cleanup_expired_upload_sessions(force=True)
+        # Diagnostic Chat Read surface: no outbox / push workers on the read process.
+        if str(os.getenv("CHAT_SURFACE", "full") or "full").strip().lower() == "read":
+            return
         try:
             from backend.chat.event_outbox_service import chat_event_outbox_service
 
@@ -638,7 +654,7 @@ class ChatService:
     async def _run_upload_session_cleanup_loop(self) -> None:
         while True:
             try:
-                self.cleanup_expired_upload_sessions(force=True)
+                await asyncio.to_thread(self.cleanup_expired_upload_sessions, force=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -698,25 +714,82 @@ class ChatService:
             read_cache_metrics = dict(chat_read_cache_redis.get_metrics() or {})
         except Exception:
             read_cache_metrics = {}
+        try:
+            from backend.chat.postgres_runtime_metrics import postgres_connection_metrics
+
+            postgres_connections = dict(postgres_connection_metrics.get_snapshot() or {})
+        except Exception:
+            postgres_connections = {"available": False, "reason": "metrics_unavailable"}
         redis_available = bool(realtime_metrics.get("redis_available"))
         redis_configured = bool(realtime_metrics.get("redis_configured"))
         pubsub_subscribed = bool(realtime_metrics.get("pubsub_subscribed"))
+        realtime_transport = _normalize_text(realtime_metrics.get("realtime_transport")) or (
+            "redis" if redis_configured else "local"
+        )
+        realtime_configured = bool(
+            realtime_metrics.get("realtime_configured", redis_configured or realtime_transport == "local")
+        )
+        realtime_available = bool(
+            realtime_metrics.get("realtime_available", redis_available or realtime_transport == "local")
+        )
+        realtime_subscriber_ready = bool(
+            realtime_metrics.get(
+                "realtime_subscriber_ready",
+                pubsub_subscribed or realtime_transport == "local",
+            )
+        )
         ai_worker_concurrency = 0
         try:
             ai_worker_concurrency = int(os.getenv("AI_CHAT_WORKER_CONCURRENCY", "2") or "2")
         except Exception:
             ai_worker_concurrency = 2
-        realtime_mode = "redis" if (redis_available and pubsub_subscribed) else ("local_fallback" if redis_configured else "local")
+        if realtime_available and realtime_subscriber_ready:
+            realtime_mode = realtime_transport
+        elif realtime_transport == "redis" and redis_configured:
+            realtime_mode = "local_fallback"
+        elif realtime_transport == "local":
+            realtime_mode = "local"
+        else:
+            realtime_mode = f"{realtime_transport}_unavailable"
         payload = {
             "enabled": bool(status.enabled),
             "configured": bool(status.configured),
             "available": bool(status.available),
             "database_url_masked": status.database_url_masked,
             "realtime_mode": realtime_mode,
+            "realtime_transport": realtime_transport,
+            "realtime_configured": realtime_configured,
+            "realtime_available": realtime_available,
+            "realtime_subscriber_ready": realtime_subscriber_ready,
             "redis_available": redis_available,
             "redis_configured": redis_configured,
             "pubsub_subscribed": pubsub_subscribed,
             "realtime_node_id": _normalize_text(realtime_metrics.get("realtime_node_id")) or None,
+            "publish_queue_depth": int(realtime_metrics.get("publish_queue_depth", 0) or 0),
+            "publish_queue_capacity": int(realtime_metrics.get("publish_queue_capacity", 0) or 0),
+            "publish_volatile_dropped": int(realtime_metrics.get("publish_volatile_dropped", 0) or 0),
+            "publish_critical_waiters": int(realtime_metrics.get("publish_critical_waiters", 0) or 0),
+            "publish_batches_total": int(realtime_metrics.get("publish_batches_total", 0) or 0),
+            "publish_events_total": int(realtime_metrics.get("publish_events_total", 0) or 0),
+            "publish_critical_total": int(realtime_metrics.get("publish_critical_total", 0) or 0),
+            "publish_background_total": int(realtime_metrics.get("publish_background_total", 0) or 0),
+            "publish_volatile_total": int(realtime_metrics.get("publish_volatile_total", 0) or 0),
+            "publish_batch_size_latest": int(realtime_metrics.get("publish_batch_size_latest", 0) or 0),
+            "publish_batch_size_p95": float(realtime_metrics.get("publish_batch_size_p95", 0.0) or 0.0),
+            "publish_batch_size_max": int(realtime_metrics.get("publish_batch_size_max", 0) or 0),
+            "publish_queue_wait_ms_critical_latest": float(realtime_metrics.get("publish_queue_wait_ms_critical_latest", 0.0) or 0.0),
+            "publish_queue_wait_ms_critical_p95": float(realtime_metrics.get("publish_queue_wait_ms_critical_p95", 0.0) or 0.0),
+            "publish_queue_wait_ms_critical_max": float(realtime_metrics.get("publish_queue_wait_ms_critical_max", 0.0) or 0.0),
+            "publish_queue_wait_ms_background_latest": float(realtime_metrics.get("publish_queue_wait_ms_background_latest", 0.0) or 0.0),
+            "publish_queue_wait_ms_background_p95": float(realtime_metrics.get("publish_queue_wait_ms_background_p95", 0.0) or 0.0),
+            "publish_queue_wait_ms_background_max": float(realtime_metrics.get("publish_queue_wait_ms_background_max", 0.0) or 0.0),
+            "relay_cursor": int(realtime_metrics.get("relay_cursor", 0) or 0),
+            "relay_caught_up": bool(realtime_metrics.get("relay_caught_up", False)),
+            "relay_current_batch_size": int(realtime_metrics.get("relay_current_batch_size", 0) or 0),
+            "relay_last_batch_size": int(realtime_metrics.get("relay_last_batch_size", 0) or 0),
+            "relay_db_dispatch_lag_ms_latest": float(realtime_metrics.get("relay_db_dispatch_lag_ms_latest", 0.0) or 0.0),
+            "relay_db_dispatch_lag_ms_p95": float(realtime_metrics.get("relay_db_dispatch_lag_ms_p95", 0.0) or 0.0),
+            "relay_db_dispatch_lag_ms_max": float(realtime_metrics.get("relay_db_dispatch_lag_ms_max", 0.0) or 0.0),
             "outbound_queue_depth": int(realtime_metrics.get("outbound_queue_depth", 0) or 0),
             "slow_consumer_disconnects": int(realtime_metrics.get("slow_consumer_disconnects", 0) or 0),
             "presence_watch_count": int(realtime_metrics.get("presence_watch_count", 0) or 0),
@@ -739,10 +812,35 @@ class ChatService:
             "ai_last_run_duration_ms": float(ai_runtime_metrics.get("last_run_duration_ms", 0.0) or 0.0),
             "route_metrics": route_metrics,
             "read_cache_metrics": read_cache_metrics,
+            "write_path": self._write_path_health_snapshot(),
+            "postgres_connections": postgres_connections,
         }
         with self._cache_lock:
             self._health_cache = (time.monotonic(), dict(payload))
         return payload
+
+    @staticmethod
+    def _write_path_health_snapshot() -> dict:
+        try:
+            from backend.chat.write_path_limits import write_slot_gauges
+            from backend.chat.write_path_metrics import (
+                queue_gauges_snapshot,
+                session_counters_snapshot,
+                stage_histogram_snapshot,
+            )
+            from backend.chat.db import estimated_chat_pg_connections
+
+            return {
+                "write_slots": write_slot_gauges(),
+                "queues": queue_gauges_snapshot(),
+                "session_counters": session_counters_snapshot(),
+                "stage_histograms": stage_histogram_snapshot(),
+                "pg_connection_estimate": estimated_chat_pg_connections(
+                    processes=int(os.getenv("CHAT_PROCESS_COUNT", "1") or 1)
+                ),
+            }
+        except Exception as exc:
+            return {"error": str(exc)[:200]}
 
     def _get_upload_session_lock(self, session_id: str) -> RLock:
         return self._upload_sessions.lock_for(session_id)
@@ -1253,11 +1351,14 @@ class ChatService:
         }
 
     def _cleanup_deleted_conversation_storage(self, *, conversation_id: str, member_user_ids: list[int]) -> None:
+        from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
+
         self._invalidate_conversation_views_for_users(
             conversation_id=conversation_id,
             user_ids=member_user_ids,
         )
         shutil.rmtree(self._attachments_root / conversation_id, ignore_errors=True)
+        chat_attachment_preview_service.delete_conversation_artifacts(conversation_id)
         self._upload_sessions.delete_for_conversation(conversation_id)
         try:
             hub_service.delete_notifications_for_entity(
@@ -1713,6 +1814,9 @@ class ChatService:
     ) -> None:
         file_names = [_normalize_text(item.get("file_name")) for item in prepared]
         notification_body = file_names[0] if len(file_names) == 1 else f"Files: {len(file_names)}"
+        if len(prepared) == 1 and _normalize_text(prepared[0].get("media_kind")).lower() == "sticker":
+            sticker_emoji = _normalize_text(prepared[0].get("sticker_emoji"))
+            notification_body = f"Стикер {sticker_emoji}".strip()
         notification_body = _normalize_text(body) or notification_body
         member_user_ids = self.get_conversation_member_ids(
             conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -1730,8 +1834,8 @@ class ChatService:
             sender_user_id=int(current_user_id),
             conversation_id=_normalize_text(payload.get("conversation_id")),
             message_id=_normalize_text(payload.get("id")),
-            event_type="chat.file_shared",
-            title="Files were sent to chat",
+            event_type="chat.sticker_sent" if len(prepared) == 1 and _normalize_text(prepared[0].get("media_kind")).lower() == "sticker" else "chat.file_shared",
+            title="Стикер в чате" if len(prepared) == 1 and _normalize_text(prepared[0].get("media_kind")).lower() == "sticker" else "Files were sent to chat",
             body=notification_body,
             defer_push_notifications=defer_push_notifications,
             mentioned_user_ids=mentioned_user_ids,
@@ -1832,19 +1936,47 @@ class ChatService:
                 attachment=attachment,
                 file_path=file_path,
             )
+            attachment_media_kind = _normalize_text(attachment.media_kind).lower() or None
             try:
                 if normalized_variant in {"thumb", "preview"} and _normalize_text(attachment.mime_type).lower().startswith("image/"):
-                    return self._ensure_image_variant(
+                    variant_path = self._resolve_attachment_variant_path(
                         conversation_id=message.conversation_id,
-                        attachment=attachment,
-                        source_path=file_path,
+                        attachment_id=attachment.id,
                         variant=normalized_variant,
                     )
-                if normalized_variant == "poster" and _normalize_text(attachment.mime_type).lower().startswith("video/"):
-                    return self._ensure_video_poster_variant(
-                        conversation_id=message.conversation_id,
+                    if variant_path.is_file():
+                        return {
+                            "path": str(variant_path),
+                            "file_name": variant_path.name,
+                            "mime_type": "image/png",
+                            "media_kind": attachment_media_kind,
+                        }
+                    from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
+
+                    chat_attachment_preview_service.enqueue_in_session(
+                        session=session,
                         attachment=attachment,
-                        source_path=file_path,
+                        requeue_ready=True,
+                    )
+                if normalized_variant == "poster" and _normalize_text(attachment.mime_type).lower().startswith("video/"):
+                    variant_path = self._resolve_attachment_variant_path(
+                        conversation_id=message.conversation_id,
+                        attachment_id=attachment.id,
+                        variant="poster",
+                    )
+                    if variant_path.is_file():
+                        return {
+                            "path": str(variant_path),
+                            "file_name": variant_path.name,
+                            "mime_type": "image/jpeg",
+                            "media_kind": attachment_media_kind,
+                        }
+                    from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
+
+                    chat_attachment_preview_service.enqueue_in_session(
+                        session=session,
+                        attachment=attachment,
+                        requeue_ready=True,
                     )
             except (OSError, ValueError, UnidentifiedImageError):
                 logger.exception(
@@ -1857,28 +1989,51 @@ class ChatService:
                 "path": str(file_path),
                 "file_name": attachment.file_name,
                 "mime_type": _normalize_text(attachment.mime_type) or "application/octet-stream",
+                "media_kind": attachment_media_kind,
             }
 
-    def _read_attachment_content(
+    def _get_attachment_preview_state(
         self,
         *,
         current_user_id: int,
         message_id: str,
         attachment_id: str,
-    ) -> tuple[str, str, bytes]:
-        meta = self.get_attachment_for_download(
-            current_user_id=int(current_user_id),
-            message_id=message_id,
-            attachment_id=attachment_id,
+        include_artifact_path: bool = False,
+    ) -> dict:
+        from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
+
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        normalized_attachment_id = _normalize_text(attachment_id)
+        if not normalized_message_id or not normalized_attachment_id:
+            raise ValueError("message_id and attachment_id are required")
+        preview_pdf_path = (
+            f"/api/v1/chat/messages/{normalized_message_id}/attachments/"
+            f"{normalized_attachment_id}/preview/pdf"
         )
-        file_path = Path(str(meta.get("path") or ""))
-        if not file_path.exists() or not file_path.is_file():
-            raise LookupError("Attachment file not found")
-        return (
-            str(meta.get("file_name") or "attachment.bin"),
-            _normalize_text(meta.get("mime_type")) or "application/octet-stream",
-            file_path.read_bytes(),
-        )
+        with chat_write_session() as session:
+            attachment = session.get(ChatMessageAttachment, normalized_attachment_id)
+            if attachment is None or attachment.message_id != normalized_message_id:
+                raise LookupError("Attachment not found")
+            message = session.get(ChatMessage, attachment.message_id)
+            if message is None:
+                raise LookupError("Message not found")
+            self._require_membership(
+                session=session,
+                conversation_id=message.conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            if include_artifact_path:
+                return chat_attachment_preview_service.get_ready_artifact_in_session(
+                    session=session,
+                    attachment=attachment,
+                    preview_pdf_path=preview_pdf_path,
+                )
+            return chat_attachment_preview_service.get_state_in_session(
+                session=session,
+                attachment=attachment,
+                preview_pdf_path=preview_pdf_path,
+            )
 
     def get_attachment_preview(
         self,
@@ -1887,36 +2042,10 @@ class ChatService:
         message_id: str,
         attachment_id: str,
     ) -> dict:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-            build_preview_metadata,
-            classify_office_source,
-        )
-
-        filename, content_type, content = self._read_attachment_content(
+        return self._get_attachment_preview_state(
             current_user_id=int(current_user_id),
             message_id=message_id,
             attachment_id=attachment_id,
-        )
-        if not classify_office_source(filename=filename, content_type=content_type):
-            raise ValueError("Attachment type is not supported for Office preview.")
-        try:
-            artifact = build_office_preview_artifact(
-                filename=filename,
-                content_type=content_type,
-                content=content,
-            )
-        except MailAttachmentPreviewError as exc:
-            raise ValueError(str(exc)) from exc
-        preview_pdf_path = (
-            f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/preview/pdf"
-        )
-        return build_preview_metadata(
-            filename=filename,
-            content_type=content_type,
-            artifact=artifact,
-            preview_pdf_path=preview_pdf_path,
         )
 
     def download_attachment_preview_pdf(
@@ -1925,29 +2054,13 @@ class ChatService:
         current_user_id: int,
         message_id: str,
         attachment_id: str,
-    ) -> tuple[str, bytes]:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-            classify_office_source,
-        )
-
-        filename, content_type, content = self._read_attachment_content(
+    ) -> dict:
+        return self._get_attachment_preview_state(
             current_user_id=int(current_user_id),
             message_id=message_id,
             attachment_id=attachment_id,
+            include_artifact_path=True,
         )
-        if not classify_office_source(filename=filename, content_type=content_type):
-            raise ValueError("Attachment type is not supported for Office preview.")
-        try:
-            artifact = build_office_preview_artifact(
-                filename=filename,
-                content_type=content_type,
-                content=content,
-            )
-        except MailAttachmentPreviewError as exc:
-            raise ValueError(str(exc)) from exc
-        return artifact.pdf_filename, artifact.pdf_bytes
 
     def create_direct_conversation(self, *, current_user_id: int, peer_user_id: int) -> dict:
         self._ensure_available()
@@ -1998,6 +2111,17 @@ class ChatService:
         self._ensure_available()
         return self._group_service.get_group_avatar_file_path(current_user_id=current_user_id, filename=filename)
 
+    def apply_delivery_state_for_message(self, *, message_id: str) -> bool:
+        """Synchronously claim/apply durable delivery-state outbox (tests / recovery)."""
+        from backend.chat.event_outbox_service import chat_event_outbox_service
+
+        job = chat_event_outbox_service.claim_delivery_state_job_for_message(message_id=message_id)
+        if job is None:
+            return False
+        chat_event_outbox_service.process_delivery_state_job_sync(job)
+        chat_event_outbox_service.mark_delivered(job_id=job.id)
+        return True
+
     def send_message(
         self,
         *,
@@ -2035,34 +2159,88 @@ class ChatService:
         dedup_hit = persisted.dedup_hit
         stage_metrics.update(persisted.stage_metrics)
 
-        stage_started_at = time.perf_counter()
-        self._invalidate_conversation_views_for_users(
-            conversation_id=_normalize_text(payload.get("conversation_id")),
-            user_ids=member_user_ids,
-        )
-        stage_metrics["invalidate_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
+        # Presence / cache invalidation must not delay ACK — schedule after critical enqueue.
+        stage_metrics["invalidate_ms"] = 0.0
+        payload["_deferred_presence_activity"] = {
+            "user_id": int(current_user_id),
+        }
+
+        # Lean message for critical fan-out; full enrich happens after ACK.
+        # Delivery-state outbox is deferred (aux TX after ACK), not discarded.
+        payload.pop("_deferred_delivery_state", None)
+        deferred_delivery_outbox = payload.pop("_deferred_delivery_outbox", None)
+        public_message = {
+            key: value
+            for key, value in dict(payload or {}).items()
+            if not str(key).startswith("_")
+        }
+        needs_enrichment = str(public_message.get("payload_mode") or "") == "lean"
+        payload["_deferred_realtime_publish"] = {
+            "conversation_id": _normalize_text(payload.get("conversation_id")) or _normalize_text(conversation_id),
+            "message_id": _normalize_text(payload.get("id")) or message_id,
+            "sender_user_id": int(current_user_id),
+            "member_user_ids": [int(item) for item in member_user_ids if int(item) > 0],
+            "invalidate_user_ids": [int(item) for item in member_user_ids if int(item) > 0],
+            "message": public_message,
+            "needs_enrichment": bool(needs_enrichment),
+        }
+        if isinstance(deferred_delivery_outbox, dict) and deferred_delivery_outbox:
+            payload["_deferred_delivery_outbox"] = deferred_delivery_outbox
 
         if not dedup_hit:
-            stage_started_at = time.perf_counter()
             mentioned_user_ids = self._resolve_mentioned_member_user_ids(
                 member_user_ids=member_user_ids,
                 sender_user_id=int(current_user_id),
                 body=normalized_body,
             )
-            notification_stats = self._create_chat_notifications(
-                sender_user_id=int(current_user_id),
-                conversation_id=_normalize_text(payload.get("conversation_id")),
-                message_id=_normalize_text(payload.get("id")),
-                event_type="chat.message_received",
-                title="Новое сообщение в чате",
-                body=_truncate_text(normalized_body),
-                defer_push_notifications=defer_push_notifications,
-                mentioned_user_ids=mentioned_user_ids,
-            )
-            stage_metrics["notifications_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
+            if defer_push_notifications:
+                # Keep notifications for every recipient, but do not block send ack on fan-out.
+                # Callers schedule _create_chat_notifications via chat message side-effects.
+                payload["_deferred_chat_notifications"] = {
+                    "sender_user_id": int(current_user_id),
+                    "conversation_id": _normalize_text(payload.get("conversation_id")),
+                    "message_id": _normalize_text(payload.get("id")),
+                    "event_type": "chat.message_received",
+                    "title": "Новое сообщение в чате",
+                    "body": _truncate_text(normalized_body),
+                    "mentioned_user_ids": list(mentioned_user_ids or []),
+                }
+                notification_stats = {
+                    "member_count": len(member_user_ids),
+                    "recipient_count": max(0, len(member_user_ids) - 1),
+                    "hub_count": 0,
+                    "push_count": 0,
+                    "deferred": 1,
+                }
+                stage_metrics["notifications_ms"] = 0.0
+            else:
+                stage_started_at = time.perf_counter()
+                notification_stats = self._create_chat_notifications(
+                    sender_user_id=int(current_user_id),
+                    conversation_id=_normalize_text(payload.get("conversation_id")),
+                    message_id=_normalize_text(payload.get("id")),
+                    event_type="chat.message_received",
+                    title="Новое сообщение в чате",
+                    body=_truncate_text(normalized_body),
+                    defer_push_notifications=False,
+                    mentioned_user_ids=mentioned_user_ids,
+                )
+                stage_metrics["notifications_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
         else:
             stage_metrics["notifications_ms"] = 0.0
 
+        stage_metrics["member_count"] = float(len(member_user_ids))
+        stage_metrics["total_persist_ms"] = (time.perf_counter() - send_started_at) * 1000.0
+        self._update_request_meta(
+            send_stage_metrics={
+                key: (round(float(value), 1) if isinstance(value, (int, float)) else value)
+                for key, value in stage_metrics.items()
+            },
+            message_id=message_id or _normalize_text(payload.get("id")) or None,
+            member_count=len(member_user_ids),
+            dedup_hit=int(dedup_hit),
+            conversation_kind=str(persisted.conversation_kind or "direct"),
+        )
         _log_chat_service_timing(
             "send_message",
             send_started_at,
@@ -2074,10 +2252,14 @@ class ChatService:
             client_message_id=normalized_client_message_id or None,
             dedup_hit=int(dedup_hit),
             has_reply=int(bool(_normalize_text(reply_to_message_id))),
+            db_pool_acquired_ms=f"{stage_metrics.get('db_pool_acquired_ms', 0.0):.1f}",
             membership_ms=f"{stage_metrics.get('membership_ms', 0.0):.1f}",
+            sequence_ms=f"{stage_metrics.get('sequence_ms', 0.0):.1f}",
             prepare_write_ms=f"{stage_metrics.get('prepare_write_ms', 0.0):.1f}",
             flush_ms=f"{stage_metrics.get('flush_ms', 0.0):.1f}",
+            commit_ms=f"{stage_metrics.get('commit_ms', 0.0):.1f}",
             serialize_ms=f"{stage_metrics.get('serialize_ms', 0.0):.1f}",
+            second_db_session=int(stage_metrics.get("second_db_session") or 0),
             invalidate_ms=f"{stage_metrics.get('invalidate_ms', 0.0):.1f}",
             notifications_ms=f"{stage_metrics.get('notifications_ms', 0.0):.1f}",
             notification_recipients=notification_stats.get("recipient_count"),
@@ -2358,77 +2540,177 @@ class ChatService:
         return payload
 
     def mark_read(self, *, current_user_id: int, conversation_id: str, message_id: str) -> dict:
+        """Mark conversation as read for the current user only.
+
+        Critical path avoids conversation FOR UPDATE (send sequence must not wait on mark_read)
+        and does not call hub SQLite synchronously — callers schedule hub clear after ACK.
+        """
+        from backend.chat.write_path_limits import mark_read_db_slot
+
         self._ensure_available()
         normalized_message_id = _normalize_text(message_id)
         if not normalized_message_id:
             raise ValueError("message_id is required")
 
-        member_user_ids: list[int] = []
-        with chat_session() as session:
-            conversation = self._require_membership(
-                session=session,
-                conversation_id=conversation_id,
-                current_user_id=int(current_user_id),
-            )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
-            member_user_ids = self._conversation_member_ids(session, conversation.id)
-            message = session.get(ChatMessage, normalized_message_id)
-            if message is None or message.conversation_id != conversation.id:
-                raise LookupError("Message not found")
+        service_t0 = time.perf_counter()
+        stages_ms: dict[str, float] = {}
+        changed = False
+        payload: dict[str, Any]
 
-            now = _utc_now()
-            state = self._get_or_create_conversation_state(
-                session=session,
-                conversation_id=conversation.id,
-                current_user_id=int(current_user_id),
-            )
-            current_last_read_seq = int(getattr(state, "last_read_seq", 0) or 0)
-            target_seq = int(getattr(message, "conversation_seq", 0) or 0)
-            next_last_read_seq = max(current_last_read_seq, target_seq)
-            if target_seq >= current_last_read_seq:
-                state.last_read_message_id = message.id
-                state.last_read_at = message.created_at
-            state.last_read_seq = next_last_read_seq
-            state.unread_count = max(0, int(getattr(conversation, "last_message_seq", 0) or 0) - next_last_read_seq)
-            state.opened_at = now
-            state.updated_at = now
+        with mark_read_db_slot(timeout_sec=5.0):
+            with chat_write_session() as session:
+                stage_started = time.perf_counter()
+                session.connection()
+                stages_ms["db_checkout_ms"] = (time.perf_counter() - stage_started) * 1000.0
 
-            existing_read = session.execute(
-                select(ChatMessageRead).where(
-                    ChatMessageRead.conversation_id == conversation.id,
-                    ChatMessageRead.user_id == int(current_user_id),
-                    ChatMessageRead.message_id == message.id,
+                stage_started = time.perf_counter()
+                conversation = self._require_membership(
+                    session=session,
+                    conversation_id=conversation_id,
+                    current_user_id=int(current_user_id),
                 )
-            ).scalar_one_or_none()
-            if existing_read is None:
-                session.add(
-                    ChatMessageRead(
-                        conversation_id=conversation.id,
-                        user_id=int(current_user_id),
-                        message_id=message.id,
-                        read_at=now,
-                    )
-                )
-            session.flush()
-            payload = {"conversation_id": conversation.id, "message_id": message.id, "read_at": _iso(now)}
+                stages_ms["membership_ms"] = (time.perf_counter() - stage_started) * 1000.0
 
-        self._invalidate_conversation_views_for_users(
-            conversation_id=_normalize_text(payload.get("conversation_id")),
-            user_ids=member_user_ids,
-        )
-        try:
-            hub_service.mark_chat_notifications_read(
+                stage_started = time.perf_counter()
+                message = session.get(ChatMessage, normalized_message_id)
+                if message is None or message.conversation_id != conversation.id:
+                    raise LookupError("Message not found")
+
+                now = _utc_now()
+                state = self._get_or_create_conversation_state(
+                    session=session,
+                    conversation_id=conversation.id,
+                    current_user_id=int(current_user_id),
+                )
+                current_last_read_seq = int(getattr(state, "last_read_seq", 0) or 0)
+                last_message_seq = int(getattr(conversation, "last_message_seq", 0) or 0)
+                client_target_seq = int(getattr(message, "conversation_seq", 0) or 0)
+                effective_target_seq = (
+                    min(client_target_seq, last_message_seq) if last_message_seq > 0 else client_target_seq
+                )
+                stages_ms["load_ms"] = (time.perf_counter() - stage_started) * 1000.0
+
+                if effective_target_seq <= current_last_read_seq and state.last_read_message_id == message.id:
+                    payload = {
+                        "conversation_id": conversation.id,
+                        "message_id": message.id,
+                        "read_at": _iso(getattr(state, "last_read_at", None) or now),
+                        "changed": False,
+                        "clear_hub_notifications": False,
+                    }
+                else:
+                    stage_started = time.perf_counter()
+                    existing_read = None
+                    if effective_target_seq <= current_last_read_seq:
+                        existing_read = session.execute(
+                            select(ChatMessageRead).where(
+                                ChatMessageRead.conversation_id == conversation.id,
+                                ChatMessageRead.user_id == int(current_user_id),
+                                ChatMessageRead.message_id == message.id,
+                            )
+                        ).scalar_one_or_none()
+
+                    if existing_read is not None and effective_target_seq <= current_last_read_seq:
+                        stages_ms["update_ms"] = (time.perf_counter() - stage_started) * 1000.0
+                        payload = {
+                            "conversation_id": conversation.id,
+                            "message_id": message.id,
+                            "read_at": _iso(getattr(existing_read, "read_at", None) or now),
+                            "changed": False,
+                            "clear_hub_notifications": False,
+                        }
+                    else:
+                        next_last_read_seq = max(current_last_read_seq, effective_target_seq)
+                        if next_last_read_seq != current_last_read_seq:
+                            changed = True
+                        if effective_target_seq >= current_last_read_seq:
+                            if state.last_read_message_id != message.id:
+                                changed = True
+                            state.last_read_message_id = message.id
+                            state.last_read_at = message.created_at
+                        state.last_read_seq = next_last_read_seq
+                        state.unread_count = max(0, last_message_seq - next_last_read_seq)
+                        state.opened_at = now
+                        state.updated_at = now
+
+                        if changed:
+                            receipt = session.execute(
+                                select(ChatMessageRead).where(
+                                    ChatMessageRead.conversation_id == conversation.id,
+                                    ChatMessageRead.user_id == int(current_user_id),
+                                    ChatMessageRead.message_id == message.id,
+                                )
+                            ).scalar_one_or_none()
+                            if receipt is None:
+                                session.add(
+                                    ChatMessageRead(
+                                        conversation_id=conversation.id,
+                                        user_id=int(current_user_id),
+                                        message_id=message.id,
+                                        read_at=now,
+                                    )
+                                )
+                        stages_ms["update_ms"] = (time.perf_counter() - stage_started) * 1000.0
+                        stage_started = time.perf_counter()
+                        session.flush()
+                        stages_ms["flush_ms"] = (time.perf_counter() - stage_started) * 1000.0
+                        payload = {
+                            "conversation_id": conversation.id,
+                            "message_id": message.id,
+                            "read_at": _iso(now),
+                            "changed": bool(changed),
+                            "clear_hub_notifications": bool(changed),
+                        }
+
+                commit_started = time.perf_counter()
+
+            stages_ms["commit_ms"] = (time.perf_counter() - commit_started) * 1000.0
+
+        stage_started = time.perf_counter()
+        if bool(payload.get("changed")):
+            self._invalidate_conversation_views_for_users(
                 conversation_id=_normalize_text(payload.get("conversation_id")),
-                user_id=int(current_user_id),
+                user_ids=[int(current_user_id)],
+                hard_drop_unread=True,
+            )
+        stages_ms["invalidate_ms"] = (time.perf_counter() - stage_started) * 1000.0
+
+        total_ms = (time.perf_counter() - service_t0) * 1000.0
+        accounted = float(sum(v for k, v in stages_ms.items() if k != "unaccounted_ms"))
+        stages_ms["unaccounted_ms"] = max(0.0, total_ms - accounted)
+        try:
+            from backend.chat.latency_profile import profile_trace
+
+            profile_trace(
+                "mark_read",
+                "mark_read_service",
+                total_ms,
+                changed=int(bool(payload.get("changed"))),
+                accounted_ms=round(accounted, 1),
+                **{key: round(float(value), 1) for key, value in stages_ms.items()},
+            )
+        except Exception:
+            pass
+        return payload
+
+    def clear_hub_notifications_after_mark_read(self, *, conversation_id: str, user_id: int) -> int:
+        """Idempotent hub notification clear; safe to call after mark_read ACK."""
+        try:
+            return int(
+                hub_service.mark_chat_notifications_read(
+                    conversation_id=_normalize_text(conversation_id),
+                    user_id=int(user_id),
+                )
+                or 0
             )
         except Exception:
             logger.warning(
                 "chat.mark_read: failed to clear hub notifications conversation_id=%s user_id=%s",
-                _normalize_text(payload.get("conversation_id")),
-                int(current_user_id),
+                _normalize_text(conversation_id),
+                int(user_id),
                 exc_info=True,
             )
-        return payload
+            return 0
 
     def _build_conversation_payload(
         self,
@@ -3016,34 +3298,6 @@ class ChatService:
             variant=variant,
         )
 
-    def _ensure_image_variant(
-        self,
-        *,
-        conversation_id: str,
-        attachment: ChatMessageAttachment,
-        source_path: Path,
-        variant: str,
-    ) -> dict[str, str]:
-        return self._attachment_media.ensure_image_variant(
-            conversation_id=conversation_id,
-            attachment=attachment,
-            source_path=source_path,
-            variant=variant,
-        )
-
-    def _ensure_video_poster_variant(
-        self,
-        *,
-        conversation_id: str,
-        attachment: ChatMessageAttachment,
-        source_path: Path | None = None,
-    ) -> dict[str, str]:
-        return self._attachment_media.ensure_video_poster_variant(
-            conversation_id=conversation_id,
-            attachment=attachment,
-            source_path=source_path,
-        )
-
     def _attachment_to_payload(self, attachment: ChatMessageAttachment) -> dict:
         return self._attachment_media.to_payload(attachment)
 
@@ -3178,6 +3432,8 @@ class ChatService:
         body: str,
         defer_push_notifications: bool = False,
         mentioned_user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None,
+        create_hub_notifications: bool = True,
+        enqueue_push_outbox: bool = True,
     ) -> dict[str, Any]:
         return self._notification_orchestrator._create_chat_notifications(
             sender_user_id=sender_user_id,
@@ -3188,6 +3444,8 @@ class ChatService:
             body=body,
             defer_push_notifications=defer_push_notifications,
             mentioned_user_ids=mentioned_user_ids,
+            create_hub_notifications=create_hub_notifications,
+            enqueue_push_outbox=enqueue_push_outbox,
         )
 
     def _get_presence_map(self, *, user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None) -> dict[int, dict]:

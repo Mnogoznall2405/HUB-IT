@@ -200,6 +200,25 @@ describe('ChatDialogs attachment preview', () => {
     expect(onClearSelectedFiles).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the media picker when adding to an all-media selection', () => {
+    const fileInput = document.createElement('input');
+    const mediaInput = document.createElement('input');
+    const clickFileInput = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
+    const clickMediaInput = vi.spyOn(mediaInput, 'click').mockImplementation(() => {});
+
+    renderWithTheme(buildProps({
+      fileDialogOpen: true,
+      fileInputRef: { current: fileInput },
+      mediaFileInputRef: { current: mediaInput },
+      selectedFiles: [new File(['image'], 'photo.jpg', { type: 'image/jpeg' })],
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    expect(clickMediaInput).toHaveBeenCalledTimes(1);
+    expect(clickFileInput).not.toHaveBeenCalled();
+  });
+
   it('renders the upload panel in light and dark themes', () => {
     const darkTheme = createTheme({ palette: { mode: 'dark' } });
     const lightProps = buildProps({

@@ -31,8 +31,8 @@ class TelegramConfig:
 class APIConfig:
     """РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ РІРЅРµС€РЅРёС… API"""
     openrouter_api_key: str
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    ocr_model: str = "qwen/qwen3-vl-8b-instruct"
+    openrouter_base_url: str = "https://routerai.ru/api/v1"
+    ocr_model: str = "google/gemini-3.6-flash"
 
 
 @dataclass
@@ -160,13 +160,21 @@ def load_config() -> AppConfig:
     )
     
     # API РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openrouter_key = os.getenv("ROUTERAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
     if not openrouter_key:
-        raise ValueError("OPENROUTER_API_KEY не установлен в .env")
+        raise ValueError("ROUTERAI_API_KEY не установлен в .env")
 
     api_config = APIConfig(
         openrouter_api_key=openrouter_key,
-        ocr_model=os.getenv("OCR_MODEL", "qwen/qwen3-vl-8b-instruct")
+        openrouter_base_url=(
+            os.getenv("ROUTERAI_BASE_URL")
+            or os.getenv("OPENROUTER_BASE_URL", "https://routerai.ru/api/v1")
+        ),
+        ocr_model=(
+            os.getenv("ROUTERAI_MODEL_OCR")
+            or os.getenv("ROUTERAI_MODEL")
+            or os.getenv("OCR_MODEL", "google/gemini-3.6-flash")
+        ),
     )
     
     # Database РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ

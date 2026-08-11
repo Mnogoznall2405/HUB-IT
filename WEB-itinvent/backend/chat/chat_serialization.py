@@ -500,7 +500,11 @@ class ChatSerialization:
                 message_ids=[getattr(last_message, "id", "")],
             ).get(getattr(last_message, "id", ""), []))
             if len(resolved_attachments) == 1:
-                preview = f"Файл: {_normalize_text(resolved_attachments[0].file_name)}"
+                attachment = resolved_attachments[0]
+                if _normalize_text(getattr(attachment, "media_kind", None)).lower() == "sticker":
+                    preview = "Стикер"
+                else:
+                    preview = f"Файл: {_normalize_text(attachment.file_name)}"
             elif len(resolved_attachments) > 1:
                 preview = f"Файлы: {len(resolved_attachments)}"
             else:
@@ -616,33 +620,49 @@ class ChatSerialization:
         member_user_ids: list[int],
         attachments: Optional[list[dict] | list[ChatMessageAttachment]] = None,
     ) -> dict[str, Any]:
-        payload_user_ids = self._service._collect_message_payload_user_ids(
-            session=session,
-            message=message,
-            current_user_id=int(current_user_id),
-        )
+        if session is None:
+            payload_user_ids = sorted({
+                int(user_id)
+                for user_id in (
+                    int(current_user_id or 0),
+                    int(getattr(message, "sender_user_id", 0) or 0),
+                )
+                if int(user_id) > 0
+            })
+            reply_previews: dict[str, dict] = {}
+            forward_previews: dict[str, dict] = {}
+            action_cards_by_message_id: dict[str, dict] = {}
+        else:
+            payload_user_ids = self._service._collect_message_payload_user_ids(
+                session=session,
+                message=message,
+                current_user_id=int(current_user_id),
+            )
+            action_cards_by_message_id = self._service._batch_action_cards_for_messages(
+                session=session,
+                message_ids=[message.id],
+            )
         presence_map = self._service._get_presence_map(user_ids=payload_user_ids)
         users_by_id = self._service._get_users_map(presence_map=presence_map, user_ids=payload_user_ids)
-        action_cards_by_message_id = self._service._batch_action_cards_for_messages(
-            session=session,
-            message_ids=[message.id],
-        )
+        if session is not None:
+            reply_previews = self._service._build_reply_previews(
+                session=session,
+                reply_to_message_ids=[getattr(message, "reply_to_message_id", None)],
+                users_by_id=users_by_id,
+            )
+            forward_previews = self._service._build_forward_previews(
+                session=session,
+                forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
+                users_by_id=users_by_id,
+            )
         return self._service._serialize_message(
             conversation_kind=conversation.kind,
             message=message,
             current_user_id=int(current_user_id),
             users_by_id=users_by_id,
             member_ids=member_user_ids,
-            reply_previews=self._service._build_reply_previews(
-                session=session,
-                reply_to_message_ids=[getattr(message, "reply_to_message_id", None)],
-                users_by_id=users_by_id,
-            ),
-            forward_previews=self._service._build_forward_previews(
-                session=session,
-                forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
-                users_by_id=users_by_id,
-            ),
+            reply_previews=reply_previews,
+            forward_previews=forward_previews,
             attachments=attachments,
             action_cards_by_message_id=action_cards_by_message_id,
         )

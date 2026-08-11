@@ -40,7 +40,7 @@ export default function useChatMobileNavigation({
     const staleMs = Math.max(0, Number(conversationsStaleTimeMs) || DEFAULT_CONVERSATIONS_STALE_MS);
     const lastLoadAt = Number(lastConversationsLoadAtRef.current || 0);
     if (!lastLoadAt || Date.now() - lastLoadAt > staleMs) {
-      void loadConversations({ silent: true }).catch(() => {});
+      void loadConversations({ silent: true, force: true }).catch(() => {});
     }
   }, [conversationsStaleTimeMs, lastConversationsLoadAtRef, loadConversations]);
 

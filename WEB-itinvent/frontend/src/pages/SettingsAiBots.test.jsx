@@ -55,6 +55,17 @@ describe('resolveAvailableSettingsTabs', () => {
 });
 
 describe('SETTINGS_PERMISSION_GROUPS', () => {
+  it('exposes separate address-book personal field permissions', () => {
+    const addressBookGroup = SETTINGS_PERMISSION_GROUPS.find((group) => group.group === 'Адресная книга');
+
+    expect(addressBookGroup?.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'address_book.read', alwaysGranted: true }),
+      expect.objectContaining({ value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' }),
+      expect.objectContaining({ value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' }),
+      expect.objectContaining({ value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' }),
+    ]));
+  });
+
   it('exposes the AI permissions in the user permission matrix', () => {
     const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
 
@@ -68,10 +79,10 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
     const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
 
     expect(flattened).toEqual(expect.arrayContaining([
-      expect.objectContaining({ value: 'my_files.read', label: 'Мои файлы: просмотр' }),
-      expect.objectContaining({ value: 'my_files.write', label: 'Мои файлы: загрузка и удаление' }),
-      expect.objectContaining({ value: 'my_files.share', label: 'Мои файлы: публичные ссылки' }),
-      expect.objectContaining({ value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' }),
+      expect.objectContaining({ value: 'my_files.read', label: 'Мой диск: просмотр' }),
+      expect.objectContaining({ value: 'my_files.write', label: 'Мой диск: загрузка и удаление' }),
+      expect.objectContaining({ value: 'my_files.share', label: 'Мой диск: публичные ссылки' }),
+      expect.objectContaining({ value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' }),
     ]));
   });
 

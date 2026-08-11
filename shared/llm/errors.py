@@ -1,5 +1,5 @@
-"""Shared OpenRouter / LLM errors."""
+"""Shared LLM provider errors."""
 
 
 class OpenRouterClientError(RuntimeError):
-    """Raised when OpenRouter interaction fails."""
+    """Raised when an LLM provider interaction fails (legacy class name)."""

@@ -81,6 +81,7 @@ export function TaskActivityTabs({
   onUploadAttachment,
   uploadingAttachment,
   onDownloadAttachment,
+  onPreviewAttachment,
   formatDateTime,
   formatFileSize,
   getInitials,
@@ -235,9 +236,22 @@ export function TaskActivityTabs({
                     key={attachment.id}
                     disableGutters
                     secondaryAction={(
-                      <IconButton size="small" onClick={() => onDownloadAttachment(attachment)}>
-                        <DownloadIcon fontSize="small" />
-                      </IconButton>
+                      <Stack direction="row" spacing={0.25}>
+                        <IconButton
+                          size="small"
+                          aria-label={`Предпросмотр ${attachment.file_name || 'файла'}`}
+                          onClick={() => onPreviewAttachment?.(attachment)}
+                        >
+                          <VisibilityOutlinedIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          aria-label={`Скачать ${attachment.file_name || 'файл'}`}
+                          onClick={() => onDownloadAttachment(attachment)}
+                        >
+                          <DownloadIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
                     )}
                   >
                     <ListItemAvatar sx={{ minWidth: 38 }}>

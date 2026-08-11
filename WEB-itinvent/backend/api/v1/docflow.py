@@ -6,7 +6,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from backend.api.deps import require_permission
@@ -296,6 +296,7 @@ async def get_my_docflow_task(
     request: Request,
     response: Response,
     current_user: User = Depends(require_permission(PERM_DOCFLOW_READ)),
+    include_related: bool = Query(True),
 ) -> DocflowTaskDetail:
     correlation = _correlation_id(request)
     _no_store(response)
@@ -305,10 +306,12 @@ async def get_my_docflow_task(
             task_ref=str(task_ref),
             correlation_id=correlation,
             can_act=_has_permission(current_user, PERM_DOCFLOW_ACT),
+            include_related=bool(include_related),
         )
     except DocflowServiceError as exc:
         _raise_service_error(exc, correlation)
-    return DocflowTaskDetail.model_validate(result)
+    detail = DocflowTaskDetail.model_validate(result)
+    return detail
 
 
 @router.post("/tasks/{task_ref}/actions", response_model=DocflowCommandResponse)
@@ -393,6 +396,35 @@ async def download_my_docflow_task_file(
     )
 
 
+@router.get("/tasks/{task_ref}/files/{file_ref}/preview")
+async def get_my_docflow_task_file_preview(
+    task_ref: uuid.UUID,
+    file_ref: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_DOCFLOW_READ)),
+):
+    try:
+        preview = await asyncio.to_thread(
+            docflow_service.get_file_preview_state,
+            user_id=int(current_user.id),
+            task_ref=str(task_ref),
+            file_ref=str(file_ref),
+        )
+    except DocflowServiceError as exc:
+        _raise_service_error(exc, _correlation_id(request))
+    preview_status = str(preview.get("status") or "queued").strip().lower()
+    if preview_status == "ready":
+        return preview
+    if preview_status == "failed":
+        return JSONResponse(content=preview, status_code=422)
+    retry_after_ms = max(100, int(preview.get("retry_after_ms") or 500))
+    return JSONResponse(
+        content=preview,
+        status_code=202,
+        headers={"Retry-After": str(max(1, (retry_after_ms + 999) // 1000))},
+    )
+
+
 @router.get("/tasks/{task_ref}/files/{file_ref}/preview/pdf")
 async def preview_my_docflow_task_file(
     task_ref: uuid.UUID,
@@ -400,23 +432,31 @@ async def preview_my_docflow_task_file(
     request: Request,
     current_user: User = Depends(require_permission(PERM_DOCFLOW_READ)),
 ):
-    correlation = _correlation_id(request)
     try:
-        preview = await docflow_service.build_file_preview(
+        preview = await asyncio.to_thread(
+            docflow_service.get_file_preview_artifact,
             user_id=int(current_user.id),
             task_ref=str(task_ref),
             file_ref=str(file_ref),
-            correlation_id=correlation,
         )
     except DocflowServiceError as exc:
-        _raise_service_error(exc, correlation)
-    filename = str(preview.get("filename") or "preview.pdf")
-    return Response(
-        content=preview["content"],
+        _raise_service_error(exc, _correlation_id(request))
+    preview_status = str(preview.get("status") or "queued").strip().lower()
+    if preview_status != "ready":
+        status_code = 422 if preview_status == "failed" else 202
+        headers = {}
+        if status_code == 202:
+            retry_after_ms = max(100, int(preview.get("retry_after_ms") or 500))
+            headers["Retry-After"] = str(max(1, (retry_after_ms + 999) // 1000))
+        return JSONResponse(content=preview, status_code=status_code, headers=headers)
+    filename = str(preview.get("pdf_filename") or "preview.pdf")
+    return FileResponse(
+        path=str(preview["path"]),
+        filename=filename,
         media_type="application/pdf",
+        content_disposition_type="inline",
         headers={
             "Cache-Control": "no-store",
-            "Content-Disposition": _content_disposition(filename),
             "X-Content-Type-Options": "nosniff",
             "X-Docflow-Preview-Source-Kind": str(preview.get("source_kind") or ""),
             "X-Docflow-Preview-Page-Count": str(int(preview.get("page_count") or 0)),

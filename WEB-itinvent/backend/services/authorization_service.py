@@ -11,7 +11,10 @@ PERM_DATABASE_WRITE = "database.write"
 PERM_DATABASE_DELETE = "database.delete"
 PERM_MFU_READ = "mfu.read"
 PERM_DASHBOARD_READ = "dashboard.read"
+PERM_ANNOUNCEMENTS_READ = "announcements.read"
 PERM_ANNOUNCEMENTS_WRITE = "announcements.write"
+PERM_ANNOUNCEMENTS_MODERATE = "announcements.moderate"
+PERM_HUB_ABSENCES_MANAGE = "hub.absences.manage"
 PERM_TASKS_READ = "tasks.read"
 PERM_TASKS_CREATE = "tasks.create"
 PERM_TASKS_WRITE = "tasks.write"
@@ -42,6 +45,9 @@ PERM_CHAT_READ = "chat.read"
 PERM_CHAT_WRITE = "chat.write"
 PERM_CHAT_AI_USE = "chat.ai.use"
 PERM_ADDRESS_BOOK_READ = "address_book.read"
+PERM_ADDRESS_BOOK_AGE_READ = "address_book.age.read"
+PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ = "address_book.personal_phone.read"
+PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ = "address_book.personal_email.read"
 PERM_WAREHOUSE_1C_READ = "warehouse_1c.read"
 PERM_WAREHOUSE_1C_RECONCILE_WRITE = "warehouse_1c.reconcile.write"
 PERM_DOCFLOW_READ = "docflow.read"
@@ -65,6 +71,12 @@ PERM_MY_FILES_READ = "my_files.read"
 PERM_MY_FILES_WRITE = "my_files.write"
 PERM_MY_FILES_SHARE = "my_files.share"
 PERM_MY_FILES_AUDIT_READ = "my_files.audit.read"
+
+_ALWAYS_GRANTED_PERMISSIONS = {
+    PERM_ADDRESS_BOOK_READ,
+    PERM_ANNOUNCEMENTS_READ,
+    PERM_COMPANY_STRUCTURE_READ,
+}
 
 _VIEWER_PERMISSIONS = {
     PERM_DASHBOARD_READ,
@@ -103,6 +115,7 @@ _OPERATOR_EXTRA_PERMISSIONS = {
 }
 
 _ADMIN_EXTRA_PERMISSIONS = {
+    PERM_ANNOUNCEMENTS_MODERATE,
     PERM_TASKS_REVIEW,
     PERM_TASKS_MANAGE_ALL,
     PERM_COMPUTERS_READ_ALL,
@@ -123,6 +136,7 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_WAREHOUSE_1C_READ,
     PERM_WAREHOUSE_1C_RECONCILE_WRITE,
     PERM_DOCFLOW_ADMIN,
+    PERM_HUB_ABSENCES_MANAGE,
     PERM_TICKETS_READ,
     PERM_TICKETS_WRITE,
     PERM_TICKETS_PERSONAL_DATA_READ,
@@ -130,6 +144,9 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_PASSWORDS_WRITE,
     PERM_DATABASE_DELETE,
     PERM_MY_FILES_AUDIT_READ,
+    PERM_ADDRESS_BOOK_AGE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
 }
 
 
@@ -137,7 +154,7 @@ class AuthorizationService:
     """Provides permission checks based on user role."""
 
     def __init__(self) -> None:
-        viewer = set(_VIEWER_PERMISSIONS)
+        viewer = set(_VIEWER_PERMISSIONS) | set(_ALWAYS_GRANTED_PERMISSIONS)
         operator = viewer | set(_OPERATOR_EXTRA_PERMISSIONS)
         admin = operator | set(_ADMIN_EXTRA_PERMISSIONS)
         self._permissions_by_role = {
@@ -173,7 +190,10 @@ class AuthorizationService:
         custom_permissions: Iterable[str] | None = None,
     ) -> list[str]:
         if bool(use_custom_permissions):
-            return self.normalize_permissions(custom_permissions)
+            return sorted(
+                set(self.normalize_permissions(custom_permissions))
+                | set(_ALWAYS_GRANTED_PERMISSIONS)
+            )
         return self.get_permissions_for_role(role)
 
     def has_permission(

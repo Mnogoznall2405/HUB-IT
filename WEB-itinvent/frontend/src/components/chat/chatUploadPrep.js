@@ -43,6 +43,7 @@ const normalizePreparedItem = (sourceFile, overrides = {}) => {
 
   return {
     signature: buildChatUploadSignature(sourceFile || preparedFile),
+    originalFile: sourceFile || preparedFile,
     file: preparedFile,
     transferFile,
     originalSize,
@@ -59,14 +60,14 @@ const normalizePreparedItem = (sourceFile, overrides = {}) => {
   };
 };
 
-const isImageFile = (file) => String(file?.type || '').toLowerCase().startsWith('image/');
+export const isChatImageFile = (file) => String(file?.type || '').toLowerCase().startsWith('image/');
 
-const isVideoFile = (file) => {
+export const isChatVideoFile = (file) => {
   const mimeType = String(file?.type || '').toLowerCase();
   return mimeType.startsWith('video/');
 };
 
-const isMediaFile = (file) => isImageFile(file) || isVideoFile(file);
+export const isChatMediaFile = (file) => isChatImageFile(file) || isChatVideoFile(file);
 
 const isGifFile = (file) => {
   const mimeType = String(file?.type || '').toLowerCase();
@@ -122,7 +123,7 @@ const readFileBytes = async (file) => {
 };
 
 const buildTransportCompressedFile = async (file, options = {}) => {
-  if (!file || options.disableTransportCompression || isMediaFile(file)) {
+  if (!file || options.disableTransportCompression || isChatMediaFile(file)) {
     return null;
   }
 
@@ -164,7 +165,7 @@ export const prepareChatUploadFile = async (file, options = {}) => {
   let changedFormat = false;
   let skippedReason = '';
 
-  if (isImageFile(file) && !isVideoFile(file)) {
+  if (isChatImageFile(file) && !isChatVideoFile(file)) {
     const isAnimated = await detectAnimatedGif(file);
     if (isAnimated) {
       skippedReason = 'animated-gif';

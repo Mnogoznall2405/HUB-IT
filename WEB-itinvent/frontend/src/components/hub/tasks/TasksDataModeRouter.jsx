@@ -102,6 +102,10 @@ function TasksDataModeRouter({
 
   taskListSections,
 
+  dateSortDirection = 'desc',
+
+  onDateSortDirectionChange,
+
   completedTasksOpen = false,
 
   onToggleCompletedTasks,
@@ -110,7 +114,11 @@ function TasksDataModeRouter({
 
   activeTaskProjects = [],
 
+  canDeleteTask,
+
   onOpenTask,
+
+  onDeleteTask,
 
   deadlineBuckets = [],
 
@@ -190,6 +198,10 @@ function TasksDataModeRouter({
 
         taskListSections={taskListSections}
 
+        dateSortDirection={dateSortDirection}
+
+        onDateSortDirectionChange={onDateSortDirectionChange}
+
         completedTasksOpen={completedTasksOpen}
 
         onToggleCompletedTasks={onToggleCompletedTasks}
@@ -198,7 +210,11 @@ function TasksDataModeRouter({
 
         activeTaskProjects={activeTaskProjects}
 
+        canDeleteTask={canDeleteTask}
+
         onOpenTask={onOpenTask}
+
+        onDeleteTask={onDeleteTask}
 
         hasMoreTasks={hasMoreTasks}
 

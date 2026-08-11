@@ -316,9 +316,13 @@ class SessionInfo(BaseModel):
     created_at: str
     last_seen_at: str
     expires_at: str
+    absolute_expires_at: Optional[str] = None
+    refresh_expires_at: Optional[str] = None
     idle_expires_at: Optional[str] = None
+    login_network_zone: Optional[str] = None
     is_active: bool = True
     status: str = "active"
     closed_at: Optional[str] = None
     closed_reason: Optional[str] = None
     device_label: Optional[str] = None
+    trusted_device_id: Optional[str] = None

@@ -27,6 +27,7 @@ import CodeOutlinedIcon from '@mui/icons-material/CodeOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import DriveFolderUploadOutlinedIcon from '@mui/icons-material/DriveFolderUploadOutlined';
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
@@ -55,6 +56,12 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { parseExcelWorkbookFromBlob } from '../lib/excelPreview';
+import {
+  collectDataTransferFiles,
+  isFolderFileSelection,
+  packFolderFilesToZip,
+  summarizeFolderSelection,
+} from '../lib/myFilesFolderZip';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const READY_STATUSES = new Set(['ready']);
@@ -209,6 +216,7 @@ export default function MyFiles() {
   const canWrite = hasPermission('my_files.write');
   const canShare = hasPermission('my_files.share');
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
   const [items, setItems] = useState([]);
   const [quota, setQuota] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -216,8 +224,11 @@ export default function MyFiles() {
   const [dragActive, setDragActive] = useState(false);
   const [retentionDays, setRetentionDays] = useState(1);
   const [pendingUploadFiles, setPendingUploadFiles] = useState([]);
+  const [pendingFolderFiles, setPendingFolderFiles] = useState([]);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [packingFolder, setPackingFolder] = useState(false);
+  const [readingDrop, setReadingDrop] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
   const [downloadingFileId, setDownloadingFileId] = useState('');
   const [shareDialog, setShareDialog] = useState({
@@ -260,6 +271,13 @@ export default function MyFiles() {
   }, [loadData]);
 
   useEffect(() => {
+    const input = folderInputRef.current;
+    if (!input) return;
+    input.setAttribute('webkitdirectory', '');
+    input.setAttribute('directory', '');
+  }, []);
+
+  useEffect(() => {
     if (!hasProcessingFiles) return undefined;
     const timer = window.setInterval(() => {
       void loadData({ silent: true });
@@ -278,6 +296,11 @@ export default function MyFiles() {
   useEffect(() => () => {
     revokePreviewObjectUrl();
   }, [revokePreviewObjectUrl]);
+
+  const resetFileInputs = useCallback(() => {
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (folderInputRef.current) folderInputRef.current.value = '';
+  }, []);
 
   const queueUploads = useCallback(async (files, selectedRetentionDays = retentionDays) => {
     const selected = normalizeFiles(files);
@@ -320,45 +343,152 @@ export default function MyFiles() {
       }
     } finally {
       setUploading(false);
+      setPackingFolder(false);
       setUploadProgress({});
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      resetFileInputs();
     }
-  }, [loadData, notifyApiError, notifySuccess, notifyWarning, retentionDays]);
+  }, [loadData, notifyApiError, notifySuccess, notifyWarning, resetFileInputs, retentionDays]);
 
-  const openUploadDialog = useCallback((files) => {
+  const openUploadDialog = useCallback((files, { asFolder = false } = {}) => {
     if (!canWrite) return;
     const selected = normalizeFiles(files);
     if (selected.length === 0) return;
+
+    const folderMode = asFolder || isFolderFileSelection(selected);
+    if (folderMode) {
+      const summary = summarizeFolderSelection(selected);
+      if (summary.fileCount === 0) {
+        notifyWarning('Папка пуста — нечего загружать.', { source: 'my-files-upload', dedupeMode: 'none' });
+        resetFileInputs();
+        return;
+      }
+      if (summary.totalBytes > MY_FILES_MAX_UPLOAD_BYTES) {
+        notifyWarning(
+          `Папка «${summary.folderName}» больше 1 ГБ (${formatFileSize(summary.totalBytes)}) и не может быть загружена как архив.`,
+          { source: 'my-files-upload', dedupeMode: 'none' },
+        );
+        resetFileInputs();
+        return;
+      }
+      setRetentionDays(1);
+      setPendingFolderFiles(selected);
+      setPendingUploadFiles([]);
+      setUploadDialogOpen(true);
+      return;
+    }
+
     setRetentionDays(1);
+    setPendingFolderFiles([]);
     setPendingUploadFiles(selected);
     setUploadDialogOpen(true);
-  }, [canWrite]);
+  }, [canWrite, notifyWarning, resetFileInputs]);
 
   const closeUploadDialog = useCallback(() => {
-    if (uploading) return;
+    if (uploading || packingFolder) return;
     setUploadDialogOpen(false);
     setPendingUploadFiles([]);
-  }, [uploading]);
+    setPendingFolderFiles([]);
+    resetFileInputs();
+  }, [packingFolder, resetFileInputs, uploading]);
 
   const confirmUpload = useCallback(() => {
-    const selected = pendingUploadFiles;
-    if (selected.length === 0) return;
     const selectedRetentionDays = retentionDays;
+    const folderFiles = pendingFolderFiles;
+    const selected = pendingUploadFiles;
+
+    if (folderFiles.length > 0) {
+      const summary = summarizeFolderSelection(folderFiles);
+      setUploadDialogOpen(false);
+      setPendingFolderFiles([]);
+      setPendingUploadFiles([]);
+      setPackingFolder(true);
+      setUploading(true);
+      setUploadProgress({ [summary.archiveName]: 0 });
+      void (async () => {
+        try {
+          const archive = await packFolderFilesToZip(folderFiles, {
+            archiveName: summary.archiveName,
+            onProgress: (ratio) => {
+              setUploadProgress({
+                [summary.archiveName]: Math.min(99, Math.round(Number(ratio || 0) * 100)),
+              });
+            },
+          });
+          if (Number(archive.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
+            notifyWarning(
+              `Архив «${archive.name}» получился больше 1 ГБ и не может быть загружен.`,
+              { source: 'my-files-upload', dedupeMode: 'none' },
+            );
+            setPackingFolder(false);
+            setUploading(false);
+            setUploadProgress({});
+            resetFileInputs();
+            return;
+          }
+          setPackingFolder(false);
+          await queueUploads([archive], selectedRetentionDays);
+        } catch (error) {
+          setPackingFolder(false);
+          setUploading(false);
+          setUploadProgress({});
+          resetFileInputs();
+          notifyApiError(error, 'Не удалось собрать ZIP из папки.', { dedupeMode: 'none' });
+        }
+      })();
+      return;
+    }
+
+    if (selected.length === 0) return;
     setUploadDialogOpen(false);
     setPendingUploadFiles([]);
+    setPendingFolderFiles([]);
     void queueUploads(selected, selectedRetentionDays);
-  }, [pendingUploadFiles, queueUploads, retentionDays]);
+  }, [
+    notifyApiError,
+    notifyWarning,
+    pendingFolderFiles,
+    pendingUploadFiles,
+    queueUploads,
+    resetFileInputs,
+    retentionDays,
+  ]);
 
   const handleInputChange = useCallback((event) => {
-    openUploadDialog(event.target.files);
+    openUploadDialog(event.target.files, { asFolder: false });
     event.target.value = '';
   }, [openUploadDialog]);
 
-  const handleDrop = useCallback((event) => {
+  const handleFolderInputChange = useCallback((event) => {
+    openUploadDialog(event.target.files, { asFolder: true });
+    event.target.value = '';
+  }, [openUploadDialog]);
+
+  const handleDrop = useCallback(async (event) => {
     event.preventDefault();
     setDragActive(false);
-    openUploadDialog(event.dataTransfer.files);
-  }, [openUploadDialog]);
+    if (!canWrite || uploading || packingFolder || readingDrop) return;
+    setReadingDrop(true);
+    try {
+      const { files, asFolder } = await collectDataTransferFiles(event.dataTransfer);
+      if (!files.length) {
+        notifyWarning('Не удалось прочитать перетащенные файлы или папку.', {
+          source: 'my-files-upload',
+          dedupeMode: 'none',
+        });
+        return;
+      }
+      openUploadDialog(files, { asFolder });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось прочитать перетащенную папку.', { dedupeMode: 'none' });
+    } finally {
+      setReadingDrop(false);
+    }
+  }, [canWrite, notifyApiError, notifyWarning, openUploadDialog, packingFolder, readingDrop, uploading]);
+
+  const pendingFolderSummary = useMemo(
+    () => (pendingFolderFiles.length > 0 ? summarizeFolderSelection(pendingFolderFiles) : null),
+    [pendingFolderFiles],
+  );
 
   const handleDownload = useCallback(async (item) => {
     const fileId = String(item?.id || '').trim();
@@ -533,6 +663,7 @@ export default function MyFiles() {
   const quotaUsed = Number(quota?.used_bytes || 0);
   const quotaLimit = Number(quota?.limit_bytes || 0);
   const quotaPercent = quotaLimit > 0 ? Math.min(100, Math.round((quotaUsed / quotaLimit) * 100)) : 0;
+  const folderArchiveColors = getFileVisualColors(theme, FILE_TYPE_META.archive);
 
   return (
     <MainLayout showDatabaseSelector={false}>
@@ -540,17 +671,26 @@ export default function MyFiles() {
         <Stack spacing={2.5}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
             <Box>
-              <Typography variant="h4" sx={{ fontWeight: 700 }}>Мои файлы</Typography>
+              <Typography variant="h4" sx={{ fontWeight: 700 }}>Мой диск</Typography>
               <Typography variant="body2" color="text.secondary">Личное хранилище с публичной ссылкой на выбранный файл.</Typography>
             </Box>
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Button
                 variant="contained"
                 startIcon={<CloudUploadOutlinedIcon />}
                 onClick={() => fileInputRef.current?.click()}
-                disabled={uploading || !canWrite}
+                disabled={uploading || packingFolder || readingDrop || !canWrite}
               >
                 Загрузить
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<DriveFolderUploadOutlinedIcon />}
+                onClick={() => folderInputRef.current?.click()}
+                disabled={uploading || packingFolder || readingDrop || !canWrite}
+                data-testid="my-files-upload-folder-button"
+              >
+                Загрузить папку
               </Button>
               <Tooltip title="Обновить">
                 <IconButton onClick={() => loadData({ silent: true })} disabled={refreshing}>
@@ -566,13 +706,15 @@ export default function MyFiles() {
 
           <Paper
             variant="outlined"
+            data-testid="my-files-drop-zone"
             onDragOver={(event) => {
               event.preventDefault();
-              if (!canWrite) return;
+              if (!canWrite || uploading || packingFolder || readingDrop) return;
+              if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
               setDragActive(true);
             }}
             onDragLeave={() => setDragActive(false)}
-            onDrop={handleDrop}
+            onDrop={(event) => { void handleDrop(event); }}
             sx={{
               ...getOfficePanelSx(ui),
               p: 2,
@@ -582,12 +724,25 @@ export default function MyFiles() {
             }}
           >
             <input ref={fileInputRef} data-testid="my-files-input" type="file" multiple hidden disabled={!canWrite} onChange={handleInputChange} />
+            <input
+              ref={folderInputRef}
+              data-testid="my-files-folder-input"
+              type="file"
+              multiple
+              hidden
+              disabled={!canWrite}
+              onChange={handleFolderInputChange}
+            />
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
               <Stack direction="row" spacing={1.5} alignItems="center">
                 <InsertDriveFileOutlinedIcon color="primary" />
                 <Box>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Перетащите файлы сюда</Typography>
-                  <Typography variant="body2" color="text.secondary">Срок хранения выбирается перед загрузкой.</Typography>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Перетащите файлы или папку сюда</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {readingDrop
+                      ? 'Читаем содержимое папки…'
+                      : 'Папку можно просто бросить сюда — она упакуется в ZIP. Срок хранения выбирается перед загрузкой.'}
+                  </Typography>
                 </Box>
               </Stack>
               <Box sx={{ minWidth: { xs: '100%', md: 260 } }}>
@@ -598,8 +753,14 @@ export default function MyFiles() {
                 <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 8, borderRadius: 1 }} />
               </Box>
             </Stack>
-            {uploading ? (
+            {uploading || packingFolder || readingDrop ? (
               <Stack spacing={0.75} sx={{ mt: 2 }}>
+                {readingDrop ? (
+                  <Typography variant="body2" color="text.secondary">Читаем перетащенную папку…</Typography>
+                ) : null}
+                {packingFolder ? (
+                  <Typography variant="body2" color="text.secondary">Собираем ZIP из папки…</Typography>
+                ) : null}
                 {Object.entries(uploadProgress).map(([name, progress]) => (
                   <Box key={name}>
                     <Stack direction="row" justifyContent="space-between">
@@ -797,13 +958,19 @@ export default function MyFiles() {
         </Stack>
 
         <Dialog open={uploadDialogOpen} onClose={closeUploadDialog} maxWidth="sm" fullWidth>
-          <DialogTitle>Загрузка файлов</DialogTitle>
+          <DialogTitle>{pendingFolderSummary ? 'Загрузка папки' : 'Загрузка файлов'}</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
               <Alert severity="warning">
                 Файлы будут удалены по окончании выбранного срока хранения. Публичные ссылки также перестанут работать.
                 Лимит: {formatMyFilesUploadLimitLabel()}.
               </Alert>
+              {pendingFolderSummary ? (
+                <Alert severity="info" data-testid="my-files-folder-archive-notice">
+                  Папка «{pendingFolderSummary.folderName}» ({pendingFolderSummary.fileCount} файл., {formatFileSize(pendingFolderSummary.totalBytes)})
+                  будет упакована в архив <strong>{pendingFolderSummary.archiveName}</strong> и загружена одним файлом.
+                </Alert>
+              ) : null}
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 0.75, fontWeight: 700 }}>Срок хранения</Typography>
                 <Select
@@ -820,7 +987,33 @@ export default function MyFiles() {
               </Box>
               <Paper variant="outlined" sx={{ maxHeight: 260, overflow: 'auto', p: 1 }}>
                 <Stack spacing={0.75}>
-                  {pendingUploadFiles.map((file, index) => {
+                  {pendingFolderSummary ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                      <Box
+                        sx={{
+                          width: 34,
+                          height: 34,
+                          flex: '0 0 auto',
+                          borderRadius: 1.25,
+                          display: 'grid',
+                          placeItems: 'center',
+                          color: folderArchiveColors.color,
+                          bgcolor: folderArchiveColors.background,
+                          border: `1px solid ${folderArchiveColors.border}`,
+                        }}
+                      >
+                        <ArchiveOutlinedIcon sx={{ fontSize: 20 }} />
+                      </Box>
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {pendingFolderSummary.archiveName}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Архив · {pendingFolderSummary.fileCount} файл. · ~{formatFileSize(pendingFolderSummary.totalBytes)}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  ) : pendingUploadFiles.map((file, index) => {
                     const meta = getFileVisualMeta({ original_file_name: file.name, mime_type: file.type });
                     const Icon = meta.icon;
                     const colors = getFileVisualColors(theme, meta);
@@ -855,9 +1048,13 @@ export default function MyFiles() {
             </Stack>
           </DialogContent>
           <DialogActions>
-            <Button onClick={closeUploadDialog} disabled={uploading}>Отмена</Button>
-            <Button variant="contained" onClick={confirmUpload} disabled={uploading || pendingUploadFiles.length === 0}>
-              Загрузить
+            <Button onClick={closeUploadDialog} disabled={uploading || packingFolder}>Отмена</Button>
+            <Button
+              variant="contained"
+              onClick={confirmUpload}
+              disabled={uploading || packingFolder || (pendingUploadFiles.length === 0 && pendingFolderFiles.length === 0)}
+            >
+              {pendingFolderSummary ? 'Упаковать и загрузить' : 'Загрузить'}
             </Button>
           </DialogActions>
         </Dialog>

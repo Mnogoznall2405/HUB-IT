@@ -15,8 +15,8 @@ export {
 
 const PreferencesContext = createContext(null);
 const CACHE_KEY = 'web_preferences_cache';
-export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'communication', 'news'];
-export const DEFAULT_DASHBOARD_SECTIONS = ['attention', 'tasks', 'communication', 'news'];
+export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'absences', 'communication', 'news'];
+export const DEFAULT_DASHBOARD_SECTIONS = ['attention', 'tasks', 'absences', 'communication', 'news'];
 export const DASHBOARD_MOBILE_SECTION_KEYS = ['urgent', 'announcements', 'tasks'];
 export const DEFAULT_DASHBOARD_MOBILE_SECTIONS = ['urgent', 'announcements', 'tasks'];
 

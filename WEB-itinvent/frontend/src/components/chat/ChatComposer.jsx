@@ -305,9 +305,11 @@ const ChatComposer = memo(function ChatComposer({
   composerDockRef,
   keyboardInset = 0,
   mobileEmojiPickerOpen = false,
+  emojiPickerOpen = false,
   onInsertEmoji,
   onSendSticker,
   onSendGif,
+  currentUserId = null,
   voiceRecording = false,
   voiceRecordingDuration = 0,
   voiceRecordingLevelRef = null,
@@ -838,13 +840,14 @@ const ChatComposer = memo(function ChatComposer({
             onDragLeave={onComposerDragLeave}
             className={joinClasses(
               'flex flex-1 items-center gap-1 border px-2.5 py-0.5',
-              compactMobile ? 'rounded-[23px]' : 'rounded-[20px]',
+              compactMobile ? 'rounded-[23px]' : 'rounded-lg',
             )}
             sx={{
               minHeight: compactMobile ? 46 : (density.composerCapsuleMinHeight || 48),
               px: compactMobile ? undefined : `${density.composerCapsulePx || 10}px`,
               py: compactMobile ? undefined : `${density.composerCapsulePy ?? 2}px`,
               alignItems: 'center',
+              borderRadius: compactMobile ? '23px' : '8px',
               bgcolor: alpha(ui.composerInputBg, 0.94),
               borderColor: theme.palette.mode === 'dark' ? alpha('#ffffff', 0.08) : ui.borderSoft,
               boxShadow: 'none',
@@ -902,36 +905,38 @@ const ChatComposer = memo(function ChatComposer({
               </>
             ) : (
               <>
-                <Tooltip disableHoverListener={compactMobile} disableFocusListener={compactMobile} disableTouchListener={compactMobile} title="Emoji">
-                  <span>
-                    <button
-                      type="button"
-                      data-testid="chat-composer-emoji-button"
-                      aria-label={mobileEmojiPickerOpen ? 'Клавиатура' : 'Emoji'}
-                      onClick={mobileEmojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
-                      disabled={!activeConversationId}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
-                      style={{
-                        width: compactMobile ? undefined : density.composerIconButton,
-                        height: compactMobile ? undefined : density.composerIconButton,
-                        minWidth: compactMobile ? 44 : undefined,
-                        minHeight: compactMobile ? 44 : undefined,
-                        backgroundColor: 'transparent',
-                        color: composerIconColor,
-                      }}
-                      onMouseEnter={(event) => {
-                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
-                      }}
-                      onMouseLeave={(event) => {
-                        event.currentTarget.style.backgroundColor = 'transparent';
-                      }}
-                    >
-                      {mobileEmojiPickerOpen
-                        ? <KeyboardRoundedIcon sx={{ fontSize: 21 }} />
-                        : <InsertEmoticonRoundedIcon sx={{ fontSize: 21 }} />}
-                    </button>
-                  </span>
-                </Tooltip>
+                {!canSendComposerMessage ? (
+                  <Tooltip title="Меню вложений">
+                    <span>
+                      <button
+                        type="button"
+                        aria-label="Меню вложений"
+                        data-testid="chat-composer-menu-button"
+                        onClick={onOpenComposerMenu}
+                        onMouseDown={preserveComposerKeyboard}
+                        onPointerDown={preserveComposerKeyboard}
+                        disabled={!activeConversationId}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                        style={{
+                          width: compactMobile ? undefined : density.composerIconButton,
+                          height: compactMobile ? undefined : density.composerIconButton,
+                          minWidth: compactMobile ? 44 : undefined,
+                          minHeight: compactMobile ? 44 : undefined,
+                          backgroundColor: 'transparent',
+                          color: composerIconColor,
+                        }}
+                        onMouseEnter={(event) => {
+                          if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
+                        }}
+                        onMouseLeave={(event) => {
+                          event.currentTarget.style.backgroundColor = 'transparent';
+                        }}
+                      >
+                        <AttachFileRoundedIcon sx={{ fontSize: 21 }} />
+                      </button>
+                    </span>
+                  </Tooltip>
+                ) : null}
 
                 <Box
                   data-testid="chat-composer-textarea-slot"
@@ -980,38 +985,37 @@ const ChatComposer = memo(function ChatComposer({
                   />
                 </Box>
 
-                {!canSendComposerMessage ? (
-                  <Tooltip title="Меню вложений">
-                    <span>
-                      <button
-                        type="button"
-                        aria-label="Меню вложений"
-                        data-testid="chat-composer-menu-button"
-                        onClick={onOpenComposerMenu}
-                        onMouseDown={preserveComposerKeyboard}
-                        onPointerDown={preserveComposerKeyboard}
-                        disabled={!activeConversationId}
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
-                        style={{
-                          width: compactMobile ? undefined : density.composerIconButton,
-                          height: compactMobile ? undefined : density.composerIconButton,
-                          minWidth: compactMobile ? 44 : undefined,
-                          minHeight: compactMobile ? 44 : undefined,
-                          backgroundColor: 'transparent',
-                          color: composerIconColor,
-                        }}
-                        onMouseEnter={(event) => {
-                          if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
-                        }}
-                        onMouseLeave={(event) => {
-                          event.currentTarget.style.backgroundColor = 'transparent';
-                        }}
-                      >
-                        <AttachFileRoundedIcon sx={{ fontSize: 21 }} />
-                      </button>
-                    </span>
-                  </Tooltip>
-                ) : null}
+                <Tooltip disableHoverListener={compactMobile} disableFocusListener={compactMobile} disableTouchListener={compactMobile} title="Эмодзи">
+                  <span>
+                    <button
+                      type="button"
+                      data-testid="chat-composer-emoji-button"
+                      aria-label={mobileEmojiPickerOpen || emojiPickerOpen ? 'Закрыть панель эмодзи' : 'Открыть панель эмодзи'}
+                      onClick={mobileEmojiPickerOpen || emojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
+                      disabled={!activeConversationId}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                      style={{
+                        width: compactMobile ? undefined : density.composerIconButton,
+                        height: compactMobile ? undefined : density.composerIconButton,
+                        minWidth: compactMobile ? 44 : undefined,
+                        minHeight: compactMobile ? 44 : undefined,
+                        backgroundColor: 'transparent',
+                        color: composerIconColor,
+                      }}
+                      onMouseEnter={(event) => {
+                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      {mobileEmojiPickerOpen
+                        ? <KeyboardRoundedIcon sx={{ fontSize: 21 }} />
+                        : <InsertEmoticonRoundedIcon sx={{ fontSize: 21 }} />}
+                    </button>
+                  </span>
+                </Tooltip>
+
               </>
             )}
           </Box>
@@ -1074,6 +1078,7 @@ const ChatComposer = memo(function ChatComposer({
         onInsertEmoji={onInsertEmoji}
         onSendSticker={onSendSticker}
         onSendGif={onSendGif}
+        currentUserId={currentUserId}
         onClose={onCloseEmojiPicker}
       />
     </Box>

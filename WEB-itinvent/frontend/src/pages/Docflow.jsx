@@ -14,7 +14,9 @@ import {
   IconButton,
   InputAdornment,
   LinearProgress,
-  List,
+  ListItemIcon,
+  ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Skeleton,
@@ -31,6 +33,7 @@ import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurned
 import AddTaskOutlinedIcon from '@mui/icons-material/AddTaskOutlined';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import MoreVertOutlinedIcon from '@mui/icons-material/MoreVertOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
@@ -39,7 +42,10 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
+import { useAuth } from '../contexts/AuthContext';
 import { docflowAPI } from '../api/docflow';
+import { hideScrollbarSx } from '../lib/hideScrollbarSx';
+import { waitForAttachmentPreview } from '../components/documentPreview/asyncAttachmentPreview';
 import {
   buildAttachmentBlobPayload,
   buildAttachmentPreviewState,
@@ -49,20 +55,46 @@ import {
   MAX_PREVIEW_FILE_BYTES,
 } from '../components/mail/mailMessageFileActions';
 import {
-  DocflowTaskCard,
   DocflowTaskDetails,
+  DocflowTaskList,
+  formatDocflowDate,
   formatDocflowFileSize,
 } from './docflow/DocflowTaskSurface';
+import {
+  clearAllDocflowTasksCache,
+  clearDocflowTasksCacheByLogin,
+  isDocflowTasksCacheFresh,
+  isHeavyDocflowTasksScope,
+  patchDocflowTasksCacheAfterCompletion,
+  readDocflowTasksCache,
+  writeDocflowTasksCache,
+} from './docflow/docflowTasksCache';
 
 
 const MailAttachmentPreviewDialog = lazy(() => import('../components/mail/MailAttachmentPreviewDialog'));
 
 
 const SCOPE_OPTIONS = [
-  { value: 'inbox', label: 'На согласование', mobileLabel: 'В работе' },
-  { value: 'completed', label: 'Завершённые', mobileLabel: 'Готово' },
-  { value: 'all', label: 'Все мои', mobileLabel: 'Все' },
+  { value: 'inbox', label: 'Согласование' },
+  { value: 'completed', label: 'Завершённые' },
+  { value: 'all', label: 'Все' },
 ];
+
+function filterDocflowTasks(tasks, query) {
+  const tokens = String(query || '')
+    .trim()
+    .toLocaleLowerCase('ru-RU')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return Array.isArray(tasks) ? tasks : [];
+  return (Array.isArray(tasks) ? tasks : []).filter((task) => {
+    const haystack = [task?.title, task?.number, task?.author, task?.subject, task?.description]
+      .filter(Boolean)
+      .join(' ')
+      .toLocaleLowerCase('ru-RU');
+    return tokens.every((token) => haystack.includes(token));
+  });
+}
 
 const PROFILE_STATUS = {
   not_configured: { label: 'Не подключено', color: 'default' },
@@ -79,7 +111,23 @@ function createIdempotencyKey() {
   return `docflow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function buildCompletedTaskSnapshot(baseTask, taskRef) {
+  return {
+    ...(baseTask || {}),
+    ref: String(baseTask?.ref || taskRef || '').trim(),
+    completed: true,
+    available_actions: [],
+    state_token: null,
+  };
+}
+
+function keepCompletedIfStale(refreshed, fallback) {
+  if (refreshed?.completed) return refreshed;
+  return buildCompletedTaskSnapshot({ ...(refreshed || {}), ...(fallback || {}) }, fallback?.ref || refreshed?.ref);
+}
+
 export function resolveDocflowError(error, fallback = 'Не удалось выполнить запрос к 1С.') {
+  const status = Number(error?.response?.status || 0);
   const detail = error?.response?.data?.detail;
   if (detail && typeof detail === 'object') {
     return {
@@ -95,6 +143,14 @@ export function resolveDocflowError(error, fallback = 'Не удалось вы�
       correlationId: String(error?.response?.headers?.['x-correlation-id'] || ''),
     };
   }
+  if (status === 503 || status === 504) {
+    return {
+      code: 'docflow_timeout',
+      // Keep caller fallback: same 503 is used for search, files, and actions.
+      message: String(fallback || '1С не успела ответить. Повторите попытку позже.'),
+      correlationId: String(error?.response?.headers?.['x-correlation-id'] || ''),
+    };
+  }
   return {
     code: '',
     message: fallback,
@@ -102,7 +158,47 @@ export function resolveDocflowError(error, fallback = 'Не удалось вы�
   };
 }
 
+const ASSIGNMENT_DOC_SEARCH_MIN = 3;
+
+function buildDocflowLoginFromFullName(fullName) {
+  const parts = String(fullName || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '';
+  const surname = parts[0];
+  const initials = parts
+    .slice(1, 3)
+    .map((part) => String(part[0] || '').toLocaleUpperCase('ru-RU'))
+    .join('');
+  return `${surname}${initials}`;
+}
+
+export function resolveCredentialLogin(profile, user) {
+  const savedLogin = String(profile?.login || '').trim();
+  if (savedLogin) return savedLogin;
+  const fromFullName = buildDocflowLoginFromFullName(user?.full_name);
+  if (fromFullName) return fromFullName;
+  return String(user?.username || '').trim();
+}
+
+const credentialFieldSx = {
+  '& .MuiInputBase-input': { fontSize: { xs: 16, sm: 'inherit' } },
+  '& .MuiInputBase-input:-webkit-autofill': {
+    WebkitBoxShadow: (theme) => `0 0 0 100px ${theme.palette.background.paper} inset`,
+    WebkitTextFillColor: (theme) => theme.palette.text.primary,
+    caretColor: (theme) => theme.palette.text.primary,
+    borderRadius: 'inherit',
+    transition: 'background-color 99999s ease-out 0s',
+  },
+  '& .MuiInputBase-input:-webkit-autofill:hover, & .MuiInputBase-input:-webkit-autofill:focus, & .MuiInputBase-input:-webkit-autofill:active': {
+    WebkitBoxShadow: (theme) => `0 0 0 100px ${theme.palette.background.paper} inset`,
+    WebkitTextFillColor: (theme) => theme.palette.text.primary,
+  },
+};
+
 function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
+  const { user } = useAuth();
   const loginInputRef = useRef(null);
   const passwordInputRef = useRef(null);
   const [draft, setDraft] = useState(emptyCredentialDraft);
@@ -115,12 +211,12 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
 
   useEffect(() => {
     if (!open) return;
-    setDraft({ login: String(profile?.login || ''), password: '' });
+    setDraft({ login: resolveCredentialLogin(profile, user), password: '' });
     setTestResult(null);
     setError(null);
     setAttempted(false);
     setShowPassword(false);
-  }, [open, profile?.login]);
+  }, [open, profile?.login, user?.username]);
 
   const payload = useMemo(() => ({
     login: draft.login.trim(),
@@ -129,13 +225,24 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
   const loginMissing = attempted && !payload.login;
   const passwordMissing = attempted && !payload.password;
 
+  const readLiveCredentials = () => ({
+    login: String(loginInputRef.current?.value ?? draft.login).trim(),
+    password: String(passwordInputRef.current?.value ?? draft.password),
+  });
+
   const validate = () => {
+    const live = readLiveCredentials();
+    setDraft((current) => ({
+      ...current,
+      login: live.login,
+      password: live.password,
+    }));
     setAttempted(true);
-    if (!payload.login) {
+    if (!live.login) {
       loginInputRef.current?.focus();
       return false;
     }
-    if (!payload.password) {
+    if (!live.password) {
       passwordInputRef.current?.focus();
       return false;
     }
@@ -153,11 +260,12 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
 
   const testConnection = async () => {
     if (!validate() || working) return;
+    const live = readLiveCredentials();
     setWorkingAction('test');
     setError(null);
     setTestResult(null);
     try {
-      const result = await docflowAPI.testCredentials(payload);
+      const result = await docflowAPI.testCredentials(live);
       setTestResult(result);
     } catch (requestError) {
       setError(resolveDocflowError(requestError, 'Не удалось проверить учётную запись 1С.'));
@@ -168,10 +276,11 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
 
   const save = async () => {
     if (!validate() || working) return;
+    const live = readLiveCredentials();
     setWorkingAction('save');
     setError(null);
     try {
-      const nextProfile = await docflowAPI.saveCredentials(payload);
+      const nextProfile = await docflowAPI.saveCredentials(live);
       setDraft(emptyCredentialDraft);
       onSaved(nextProfile);
     } catch (requestError) {
@@ -202,7 +311,10 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
         onSubmit={(event) => { event.preventDefault(); void save(); }}
         sx={{ display: 'flex', flexDirection: 'column', minHeight: mobile ? '100dvh' : 0 }}
       >
-        <DialogTitle sx={{ px: { xs: 2, sm: 3 }, pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 28px)', sm: 3 }, pb: 1.5 }}>
+        <DialogTitle
+          component="div"
+          sx={{ px: { xs: 2, sm: 3 }, pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 28px)', sm: 3 }, pb: 1 }}
+        >
           <Stack spacing={1.25} alignItems={mobile ? 'center' : 'flex-start'} textAlign={mobile ? 'center' : 'start'}>
             <Box
               sx={{
@@ -218,55 +330,54 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
             >
               <LockOutlinedIcon />
             </Box>
-            <Box>
-              <Typography component="h2" variant="h6" fontWeight={800} sx={{ textWrap: 'balance' }}>
-                Подключение к 1С
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 440, textWrap: 'pretty' }}>
-                Введите личный логин и пароль от 1С Документооборота.
-              </Typography>
-            </Box>
+            <Typography component="h2" variant="h6" fontWeight={800} sx={{ textWrap: 'balance' }}>
+              Подключение к 1С
+            </Typography>
           </Stack>
         </DialogTitle>
-        <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: 1.5, flex: 1 }}>
-          <Stack spacing={2} sx={{ width: '100%', maxWidth: 480, mx: 'auto' }}>
-            <Box sx={{ display: 'flex', gap: 1, p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover', color: 'text.secondary' }}>
-              <LockOutlinedIcon sx={{ fontSize: 19, mt: 0.1, flexShrink: 0 }} />
-              <Typography variant="body2" sx={{ lineHeight: 1.5 }}>
-                Данные проверяются в 1С и хранятся в зашифрованном виде. Сохранённый пароль нельзя просмотреть.
-              </Typography>
-            </Box>
+        <DialogContent
+          sx={{
+            px: { xs: 2, sm: 3 },
+            pt: '20px !important',
+            pb: 1.5,
+            flex: 1,
+            overflow: 'visible',
+          }}
+        >
+          <Stack spacing={2.5} sx={{ width: '100%', maxWidth: 480, mx: 'auto' }}>
             <TextField
-              autoFocus={!mobile}
               inputRef={loginInputRef}
               required
               fullWidth
-              name="docflow-username"
+              name="docflow-1c-login"
               label="Логин 1С"
               value={draft.login}
               onChange={updateDraft('login')}
-              inputProps={{ maxLength: 128, spellCheck: false }}
-              autoComplete="username"
+              inputProps={{ maxLength: 128, spellCheck: false, autoComplete: 'off' }}
+              autoComplete="off"
               disabled={working}
               error={loginMissing}
-              helperText={loginMissing ? 'Введите логин от 1С.' : 'Обычно совпадает с именем пользователя в 1С.'}
-              sx={{ '& .MuiInputBase-input': { fontSize: { xs: 16, sm: 'inherit' } } }}
+              helperText={loginMissing ? 'Введите логин от 1С.' : undefined}
+              InputLabelProps={{ shrink: true }}
+              sx={credentialFieldSx}
             />
             <TextField
+              autoFocus={!mobile}
               required
               fullWidth
               inputRef={passwordInputRef}
-              name="docflow-password"
+              name="docflow-1c-password"
               label="Пароль 1С"
               type={showPassword ? 'text' : 'password'}
               value={draft.password}
               onChange={updateDraft('password')}
-              inputProps={{ maxLength: 256 }}
-              autoComplete="current-password"
+              inputProps={{ maxLength: 256, autoComplete: 'new-password' }}
+              autoComplete="new-password"
               disabled={working}
               error={passwordMissing}
-              helperText={passwordMissing ? 'Введите пароль от 1С.' : 'Можно вставить пароль из менеджера паролей.'}
-              sx={{ '& .MuiInputBase-input': { fontSize: { xs: 16, sm: 'inherit' } } }}
+              helperText={passwordMissing ? 'Введите пароль от 1С.' : undefined}
+              InputLabelProps={{ shrink: true }}
+              sx={credentialFieldSx}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
@@ -304,73 +415,151 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
             pt: 1.5,
             pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 20px)', sm: 2.5 },
             gap: 1,
-            flexDirection: { xs: 'column', sm: 'row' },
+            flexDirection: { xs: 'column-reverse', sm: 'row' },
             justifyContent: 'flex-end',
             '& > :not(style) ~ :not(style)': { ml: 0 },
             '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' }, minHeight: 46 },
           }}
         >
-          <Button variant="contained" type="submit" disabled={working} aria-busy={workingAction === 'save'}>
-            {workingAction === 'save' ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
-            Подключить и сохранить
-          </Button>
+          <Button onClick={close} disabled={working}>Отмена</Button>
           <Button variant="outlined" onClick={() => void testConnection()} disabled={working} aria-busy={workingAction === 'test'}>
             {workingAction === 'test' ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
             Проверить подключение
           </Button>
-          <Button onClick={close} disabled={working}>Отмена</Button>
+          <Button variant="contained" type="submit" disabled={working} aria-busy={workingAction === 'save'}>
+            {workingAction === 'save' ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
+            Подключить и сохранить
+          </Button>
         </DialogActions>
       </Box>
     </Dialog>
   );
 }
 
-function TaskActionDialog({ action, task, working, error, mobile, onClose, onConfirm }) {
+function TaskActionDialog({ action, task, working, error, progressLabel = '', mobile, onClose, onConfirm }) {
+  const commentInputRef = useRef(null);
   const [comment, setComment] = useState('');
+  const [attempted, setAttempted] = useState(false);
   useEffect(() => {
-    if (action) setComment('');
+    if (action) {
+      setComment('');
+      setAttempted(false);
+    }
   }, [action]);
   const commentRequired = action?.comment_mode === 'required';
-  const canConfirm = Boolean(action && !working && (!commentRequired || comment.trim()));
+  const commentMissing = attempted && commentRequired && !comment.trim();
+  const actionLabel = String(action?.label || progressLabel || 'Действие').trim() || 'Действие';
+
+  const confirm = () => {
+    if (working || !action) return;
+    setAttempted(true);
+    if (commentRequired && !comment.trim()) {
+      commentInputRef.current?.focus();
+      return;
+    }
+    onConfirm(comment.trim());
+  };
+
   return (
     <Dialog open={Boolean(action)} onClose={working ? undefined : onClose} fullWidth maxWidth="sm" fullScreen={mobile}>
-      <DialogTitle>{action?.label || 'Действие с заданием'}</DialogTitle>
+      <DialogTitle>{working ? 'Выполнение в 1С' : actionLabel}</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity={action?.code === 'reject' ? 'warning' : 'info'}>
-            Задание будет изменено непосредственно в 1С. Автоматической отмены этого действия нет.
-          </Alert>
-          <Typography variant="body2" fontWeight={700}>{task?.title}</Typography>
-          <TextField
-            autoFocus={commentRequired}
-            multiline
-            minRows={3}
-            label={commentRequired ? 'Комментарий или результат *' : 'Комментарий или результат'}
-            value={comment}
-            onChange={(event) => setComment(event.target.value)}
-            inputProps={{ maxLength: 2000 }}
-            disabled={working}
-            helperText={commentRequired ? 'Без комментария действие выполнить нельзя.' : 'Необязательно для этого действия.'}
-          />
-          {error ? (
-            <Alert severity="error">
-              {error.message}
-              {error.correlationId ? (
-                <Typography variant="caption" display="block">Код обращения: {error.correlationId}</Typography>
-              ) : null}
+        {working ? (
+          <Stack spacing={2} alignItems="center" sx={{ py: { xs: 3, sm: 4 }, px: 1 }} role="status" aria-live="polite">
+            <CircularProgress size={42} />
+            <Typography variant="subtitle1" fontWeight={800} textAlign="center">
+              {actionLabel}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ textWrap: 'pretty', maxWidth: 360 }}>
+              Отправляем действие в 1С и ждём ответ. Не закрывайте окно.
+            </Typography>
+            {task?.title ? (
+              <Typography variant="caption" color="text.secondary" textAlign="center" sx={{ overflowWrap: 'anywhere' }}>
+                {task.title}
+              </Typography>
+            ) : null}
+          </Stack>
+        ) : (
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Alert severity={action?.code === 'reject' ? 'warning' : 'info'}>
+              Задание будет изменено непосредственно в 1С. Автоматической отмены этого действия нет.
             </Alert>
-          ) : null}
-        </Stack>
+            <Typography variant="body2" fontWeight={700}>{task?.title}</Typography>
+            <TextField
+              autoFocus={commentRequired}
+              inputRef={commentInputRef}
+              multiline
+              minRows={3}
+              label={commentRequired ? 'Комментарий или результат *' : 'Комментарий или результат'}
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              inputProps={{ maxLength: 2000, 'aria-required': commentRequired || undefined }}
+              error={commentMissing}
+              helperText={
+                commentMissing
+                  ? 'Введите комментарий — без него действие выполнить нельзя.'
+                  : (commentRequired ? 'Без комментария действие выполнить нельзя.' : 'Необязательно для этого действия.')
+              }
+            />
+            {error ? (
+              <Alert severity="error">
+                {error.message}
+                {error.correlationId ? (
+                  <Typography variant="caption" display="block">Код обращения: {error.correlationId}</Typography>
+                ) : null}
+              </Alert>
+            ) : null}
+          </Stack>
+        )}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 } }}>
+      {working ? null : (
+        <DialogActions sx={{ px: 3, pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 } }}>
+          <Button onClick={onClose}>Отмена</Button>
+          <Button
+            variant="contained"
+            color={action?.tone || 'primary'}
+            onClick={confirm}
+          >
+            {actionLabel}
+          </Button>
+        </DialogActions>
+      )}
+    </Dialog>
+  );
+}
+
+function DisconnectDialog({ open, mobile, working, onClose, onConfirm }) {
+  return (
+    <Dialog
+      open={open}
+      onClose={working ? undefined : onClose}
+      fullWidth
+      maxWidth="xs"
+      fullScreen={mobile}
+      PaperProps={{ sx: { borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
+    >
+      <DialogTitle sx={{ px: { xs: 2, sm: 3 }, pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 28px)', sm: 3 } }}>
+        Отключить 1С?
+      </DialogTitle>
+      <DialogContent sx={{ px: { xs: 2, sm: 3 } }}>
+        <Typography variant="body2" color="text.secondary" sx={{ textWrap: 'pretty' }}>
+          Сохранённые данные подключения будут удалены. Задания перестанут загружаться, пока снова не подключитесь.
+        </Typography>
+      </DialogContent>
+      <DialogActions
+        sx={{
+          px: { xs: 2, sm: 3 },
+          pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 },
+          gap: 1,
+          flexDirection: { xs: 'column-reverse', sm: 'row' },
+          '& > :not(style) ~ :not(style)': { ml: 0 },
+          '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' }, minHeight: 44 },
+        }}
+      >
         <Button onClick={onClose} disabled={working}>Отмена</Button>
-        <Button
-          variant="contained"
-          color={action?.tone || 'primary'}
-          disabled={!canConfirm}
-          onClick={() => onConfirm(comment.trim())}
-        >
-          {working ? <CircularProgress size={20} color="inherit" /> : action?.label}
+        <Button color="error" variant="contained" onClick={onConfirm} disabled={working} aria-busy={working}>
+          {working ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
+          Отключить 1С
         </Button>
       </DialogActions>
     </Dialog>
@@ -389,6 +578,12 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
   const testOnly = capability?.test_only !== false;
   const requiredTitlePrefix = String(capability?.required_title_prefix || 'HUB-IT TEST').trim();
   const initialTitle = testOnly ? `${requiredTitlePrefix} · ` : '';
+  const documentInputRef = useRef(null);
+  const assigneeInputRef = useRef(null);
+  const controllerInputRef = useRef(null);
+  const titleInputRef = useRef(null);
+  const descriptionInputRef = useRef(null);
+  const dueAtInputRef = useRef(null);
   const [draft, setDraft] = useState({
     document: null,
     assignee: null,
@@ -400,28 +595,87 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
   });
   const [documentOptions, setDocumentOptions] = useState([]);
   const [assigneeOptions, setAssigneeOptions] = useState([]);
+  const [controllerOptions, setControllerOptions] = useState([]);
   const [documentSearch, setDocumentSearch] = useState('');
   const [assigneeSearch, setAssigneeSearch] = useState('');
-  const [loadingChoices, setLoadingChoices] = useState(false);
+  const [controllerSearch, setControllerSearch] = useState('');
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [loadingAssignees, setLoadingAssignees] = useState(false);
+  const [loadingControllers, setLoadingControllers] = useState(false);
   const [working, setWorking] = useState(false);
+  const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState(null);
+  const [documentHint, setDocumentHint] = useState(null);
+  const [assigneeHint, setAssigneeHint] = useState(null);
+  const [controllerHint, setControllerHint] = useState(null);
   const [command, setCommand] = useState(null);
   const idempotencyKey = useRef('');
 
-  const loadChoices = useCallback(async ({ documentQuery = '', assigneeQuery = '' } = {}) => {
-    setLoadingChoices(true);
+  const readDocumentQuery = () => (
+    String(documentInputRef.current?.value || documentSearch || '').trim()
+  );
+
+  const searchDocuments = useCallback(async (query = '') => {
+    const normalized = String(query || '').trim();
+    if (normalized.length < ASSIGNMENT_DOC_SEARCH_MIN) {
+      setDocumentOptions([]);
+      setDocumentHint(`Введите не менее ${ASSIGNMENT_DOC_SEARCH_MIN} символов для поиска документов.`);
+      return;
+    }
+    setDocumentSearch(normalized);
+    setLoadingDocuments(true);
     setError(null);
+    setDocumentHint(null);
     try {
-      const [documents, assignees] = await Promise.all([
-        docflowAPI.searchAssignmentDocuments({ q: documentQuery, limit: 20 }),
-        docflowAPI.searchAssignmentAssignees({ q: assigneeQuery, limit: 20 }),
-      ]);
+      const documents = await docflowAPI.searchAssignmentDocuments({ q: normalized, limit: 20 });
       setDocumentOptions(Array.isArray(documents?.items) ? documents.items : []);
-      setAssigneeOptions(Array.isArray(assignees?.items) ? assignees.items : []);
+      if (documents?.reason) {
+        setDocumentHint(String(documents.reason));
+      } else if (documents?.truncated) {
+        setDocumentHint('Показаны первые результаты — уточните название или номер.');
+      }
     } catch (requestError) {
-      setError(resolveDocflowError(requestError, 'Не удалось загрузить документы и исполнителей из 1С.'));
+      setDocumentOptions([]);
+      setError(resolveDocflowError(
+        requestError,
+        '1С не успела ответить — уточните название или номер и повторите поиск.',
+      ));
     } finally {
-      setLoadingChoices(false);
+      setLoadingDocuments(false);
+    }
+  }, []);
+
+  const searchAssignees = useCallback(async (query = '') => {
+    setLoadingAssignees(true);
+    setError(null);
+    setAssigneeHint(null);
+    try {
+      const assignees = await docflowAPI.searchAssignmentAssignees({ q: query, limit: 20 });
+      setAssigneeOptions(Array.isArray(assignees?.items) ? assignees.items : []);
+      if (assignees?.reason || assignees?.truncated) {
+        setAssigneeHint(String(assignees?.reason || 'Показаны первые результаты — уточните ФИО.'));
+      }
+    } catch (requestError) {
+      setError(resolveDocflowError(requestError, 'Не удалось загрузить исполнителей из 1С.'));
+    } finally {
+      setLoadingAssignees(false);
+    }
+  }, []);
+
+  const searchControllers = useCallback(async (query = '') => {
+    setLoadingControllers(true);
+    setError(null);
+    setControllerHint(null);
+    try {
+      const controllers = await docflowAPI.searchAssignmentAssignees({ q: query, limit: 20 });
+      setControllerOptions(Array.isArray(controllers?.items) ? controllers.items : []);
+      if (controllers?.reason || controllers?.truncated) {
+        setControllerHint(String(controllers?.reason || 'Показаны первые результаты — уточните ФИО.'));
+      }
+    } catch (requestError) {
+      setError(resolveDocflowError(requestError, 'Не удалось загрузить контролёров из 1С.'));
+    } finally {
+      setLoadingControllers(false);
     }
   }, []);
 
@@ -439,23 +693,69 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
     });
     setDocumentSearch('');
     setAssigneeSearch('');
+    setControllerSearch('');
+    setDocumentOptions([]);
+    setAssigneeOptions([]);
+    setControllerOptions([]);
+    setDocumentHint(null);
+    setAssigneeHint(null);
+    setControllerHint(null);
     setError(null);
     setCommand(null);
-    void loadChoices();
-  }, [initialTitle, loadChoices, open]);
+    setAttempted(false);
+    void (async () => {
+      setLoadingAssignees(true);
+      setLoadingControllers(true);
+      setError(null);
+      try {
+        const assignees = await docflowAPI.searchAssignmentAssignees({ q: '', limit: 20 });
+        const items = Array.isArray(assignees?.items) ? assignees.items : [];
+        setAssigneeOptions(items);
+        setControllerOptions(items);
+        if (assignees?.reason || assignees?.truncated) {
+          const hint = String(assignees?.reason || 'Показаны первые результаты — уточните ФИО.');
+          setAssigneeHint(hint);
+          setControllerHint(hint);
+        }
+      } catch (requestError) {
+        setError(resolveDocflowError(requestError, 'Не удалось загрузить исполнителей из 1С.'));
+      } finally {
+        setLoadingAssignees(false);
+        setLoadingControllers(false);
+      }
+    })();
+  }, [initialTitle, open]);
 
-  const canSubmit = Boolean(
-    draft.document
-    && draft.assignee
-    && draft.dueAt
-    && draft.title.trim().length > (testOnly ? requiredTitlePrefix.length : 0)
-    && draft.description.trim()
-    && !working
-    && !command,
-  );
+  const titleReady = draft.title.trim().length > (testOnly ? requiredTitlePrefix.length : 0);
+  const documentMissing = attempted && !draft.document;
+  const assigneeMissing = attempted && !draft.assignee;
+  const dueAtMissing = attempted && !draft.dueAt;
+  const titleMissing = attempted && !titleReady;
+  const descriptionMissing = attempted && !draft.description.trim();
 
   const submit = async () => {
-    if (!canSubmit) return;
+    if (working || command) return;
+    setAttempted(true);
+    if (!draft.document) {
+      documentInputRef.current?.focus();
+      return;
+    }
+    if (!draft.assignee) {
+      assigneeInputRef.current?.focus();
+      return;
+    }
+    if (!draft.dueAt) {
+      dueAtInputRef.current?.focus();
+      return;
+    }
+    if (!titleReady) {
+      titleInputRef.current?.focus();
+      return;
+    }
+    if (!draft.description.trim()) {
+      descriptionInputRef.current?.focus();
+      return;
+    }
     setWorking(true);
     setError(null);
     try {
@@ -499,111 +799,297 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
     }
   };
 
+  const searchFieldRowSx = {
+    direction: { xs: 'column', sm: 'row' },
+    spacing: 1,
+    alignItems: { sm: 'flex-start' },
+  };
+
+  const findButtonSx = {
+    minHeight: { xs: 40, sm: 40 },
+    minWidth: { sm: 96 },
+    alignSelf: { xs: 'stretch', sm: 'flex-start' },
+    mt: { sm: 0.25 },
+  };
+
   return (
-    <Dialog open={open} onClose={working ? undefined : onClose} fullWidth maxWidth="md" fullScreen={mobile}>
-      <DialogTitle>Создать поручение по документу 1С</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity="info">
+    <Dialog
+      open={open}
+      onClose={working ? undefined : onClose}
+      fullWidth
+      maxWidth="md"
+      fullScreen={mobile}
+      PaperProps={{
+        sx: {
+          borderRadius: mobile ? 0 : 3,
+          overscrollBehavior: 'contain',
+          minHeight: mobile ? '100dvh' : undefined,
+          display: 'flex',
+          flexDirection: 'column',
+        },
+      }}
+    >
+      <DialogTitle
+        sx={{
+          px: { xs: 2, sm: 3 },
+          pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 20px)', sm: 3 },
+          pb: 1,
+          flexShrink: 0,
+        }}
+      >
+        Создать поручение по документу 1С
+      </DialogTitle>
+      <DialogContent
+        sx={{
+          px: { xs: 2, sm: 3 },
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+        }}
+      >
+        <Stack spacing={2.25} sx={{ pt: 0.5, pb: 1 }}>
+          <Alert severity="info" sx={{ '& .MuiAlert-message': { textWrap: 'pretty' } }}>
+            Документ должен уже существовать в 1С — здесь его только выбирают.
             {testOnly
-              ? 'Пилот создаёт одно поручение одному исполнителю по уже существующему документу. После отправки действие нельзя повторять автоматически.'
-              : 'Поручение будет создано непосредственно в 1С по существующему документу. После отправки действие нельзя повторять автоматически.'}
+              ? ' Пилот: одно поручение одному исполнителю; после отправки повтор отключён.'
+              : ' После отправки повторное создание отключено.'}
           </Alert>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
-            <Autocomplete
-              fullWidth
-              options={documentOptions}
-              value={draft.document}
-              onChange={(_, value) => setDraft((current) => ({ ...current, document: value }))}
-              inputValue={documentSearch}
-              onInputChange={(_, value) => setDocumentSearch(value)}
-              getOptionLabel={(option) => `${option.title}${option.number ? ` · ${option.number}` : ''}`}
-              isOptionEqualToValue={(option, value) => option.ref === value.ref}
-              loading={loadingChoices}
-              renderInput={(params) => <TextField {...params} label="Документ 1С" required />}
-              renderOption={(props, option) => (
-                <li {...props} key={`${option.document_type}-${option.ref}`}>
-                  <Box sx={{ minWidth: 0 }}>
-                    <Typography variant="body2" fontWeight={700} noWrap>{option.title}</Typography>
-                    <Typography variant="caption" color="text.secondary">{option.document_type_label}{option.number ? ` · ${option.number}` : ''}</Typography>
-                  </Box>
-                </li>
-              )}
-            />
-            <Button
-              variant="outlined"
-              onClick={() => void loadChoices({ documentQuery: documentSearch, assigneeQuery: assigneeSearch })}
-              disabled={loadingChoices}
-              sx={{ minHeight: 56, minWidth: { sm: 108 } }}
-            >
-              Найти
-            </Button>
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" fontWeight={800}>Документ</Typography>
+            <Stack {...searchFieldRowSx}>
+              <Autocomplete
+                fullWidth
+                size="small"
+                options={documentOptions}
+                value={draft.document}
+                onChange={(_, value) => setDraft((current) => ({ ...current, document: value }))}
+                onInputChange={(_, value, reason) => {
+                  if (reason === 'input' || reason === 'clear') setDocumentSearch(value);
+                }}
+                getOptionLabel={(option) => `${option.title}${option.number ? ` · ${option.number}` : ''}`}
+                isOptionEqualToValue={(option, value) => option.ref === value.ref}
+                loading={loadingDocuments}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    const query = readDocumentQuery();
+                    if (query.length >= ASSIGNMENT_DOC_SEARCH_MIN) void searchDocuments(query);
+                    else {
+                      setDocumentHint(`Введите не менее ${ASSIGNMENT_DOC_SEARCH_MIN} символов для поиска документов.`);
+                    }
+                  }
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    inputRef={documentInputRef}
+                    label="Документ 1С"
+                    required
+                    error={documentMissing}
+                    helperText={
+                      documentMissing
+                        ? 'Выберите документ 1С.'
+                        : (documentHint || `Введите не менее ${ASSIGNMENT_DOC_SEARCH_MIN} символов и нажмите «Найти».`)
+                    }
+                  />
+                )}
+                renderOption={(props, option) => (
+                  <li {...props} key={`${option.document_type}-${option.ref}`}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" fontWeight={700} noWrap>{option.title}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {option.document_type_label}{option.number ? ` · ${option.number}` : ''}
+                      </Typography>
+                    </Box>
+                  </li>
+                )}
+              />
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  const query = readDocumentQuery();
+                  if (query.length < ASSIGNMENT_DOC_SEARCH_MIN) {
+                    setDocumentHint(`Введите не менее ${ASSIGNMENT_DOC_SEARCH_MIN} символов для поиска документов.`);
+                    return;
+                  }
+                  void searchDocuments(query);
+                }}
+                disabled={loadingDocuments}
+                startIcon={loadingDocuments ? <CircularProgress size={14} color="inherit" /> : <SearchOutlinedIcon />}
+                sx={findButtonSx}
+              >
+                Найти
+              </Button>
+            </Stack>
           </Stack>
-          <Autocomplete
-            options={assigneeOptions}
-            value={draft.assignee}
-            onChange={(_, value) => setDraft((current) => ({ ...current, assignee: value }))}
-            inputValue={assigneeSearch}
-            onInputChange={(_, value) => setAssigneeSearch(value)}
-            getOptionLabel={(option) => option.name || ''}
-            isOptionEqualToValue={(option, value) => option.ref === value.ref}
-            loading={loadingChoices}
-            renderInput={(params) => <TextField {...params} label="Исполнитель" required />}
-            renderOption={(props, option) => (
-              <li {...props} key={option.ref}>
-                <Box>
-                  <Typography variant="body2" fontWeight={700}>{option.name}</Typography>
-                  {option.department ? <Typography variant="caption" color="text.secondary">{option.department}</Typography> : null}
-                </Box>
-              </li>
-            )}
-          />
-          <Autocomplete
-            options={assigneeOptions}
-            value={draft.controller}
-            onChange={(_, value) => setDraft((current) => ({ ...current, controller: value }))}
-            getOptionLabel={(option) => option.name || ''}
-            isOptionEqualToValue={(option, value) => option.ref === value.ref}
-            renderInput={(params) => <TextField {...params} label="Контролёр (необязательно)" />}
-          />
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" fontWeight={800}>Исполнители</Typography>
+            <Stack {...searchFieldRowSx}>
+              <Autocomplete
+                fullWidth
+                size="small"
+                options={assigneeOptions}
+                value={draft.assignee}
+                onChange={(_, value) => setDraft((current) => ({ ...current, assignee: value }))}
+                inputValue={assigneeSearch}
+                onInputChange={(_, value) => setAssigneeSearch(value)}
+                getOptionLabel={(option) => option.name || ''}
+                isOptionEqualToValue={(option, value) => option.ref === value.ref}
+                loading={loadingAssignees}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void searchAssignees(assigneeSearch);
+                  }
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    inputRef={assigneeInputRef}
+                    label="Исполнитель"
+                    required
+                    error={assigneeMissing}
+                    helperText={
+                      assigneeMissing
+                        ? 'Выберите исполнителя.'
+                        : (assigneeHint || 'Введите ФИО и нажмите «Найти». Показаны первые совпадения.')
+                    }
+                  />
+                )}
+                renderOption={(props, option) => (
+                  <li {...props} key={option.ref}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>{option.name}</Typography>
+                      {option.department ? (
+                        <Typography variant="caption" color="text.secondary">{option.department}</Typography>
+                      ) : null}
+                    </Box>
+                  </li>
+                )}
+              />
+              <Button
+                variant="outlined"
+                onClick={() => void searchAssignees(assigneeSearch)}
+                disabled={loadingAssignees}
+                startIcon={loadingAssignees ? <CircularProgress size={14} color="inherit" /> : <SearchOutlinedIcon />}
+                sx={findButtonSx}
+              >
+                Найти
+              </Button>
+            </Stack>
+            <Stack {...searchFieldRowSx}>
+              <Autocomplete
+                fullWidth
+                size="small"
+                options={controllerOptions}
+                value={draft.controller}
+                onChange={(_, value) => setDraft((current) => ({ ...current, controller: value }))}
+                inputValue={controllerSearch}
+                onInputChange={(_, value) => setControllerSearch(value)}
+                getOptionLabel={(option) => option.name || ''}
+                isOptionEqualToValue={(option, value) => option.ref === value.ref}
+                loading={loadingControllers}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void searchControllers(controllerSearch);
+                  }
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    inputRef={controllerInputRef}
+                    label="Контролёр (необязательно)"
+                    helperText={controllerHint || 'При необходимости найдите контролёра отдельно.'}
+                  />
+                )}
+                renderOption={(props, option) => (
+                  <li {...props} key={`controller-${option.ref}`}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>{option.name}</Typography>
+                      {option.department ? (
+                        <Typography variant="caption" color="text.secondary">{option.department}</Typography>
+                      ) : null}
+                    </Box>
+                  </li>
+                )}
+              />
+              <Button
+                variant="outlined"
+                onClick={() => void searchControllers(controllerSearch)}
+                disabled={loadingControllers}
+                startIcon={loadingControllers ? <CircularProgress size={14} color="inherit" /> : <SearchOutlinedIcon />}
+                sx={findButtonSx}
+              >
+                Найти
+              </Button>
+            </Stack>
+          </Stack>
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" fontWeight={800}>Срок и важность</Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+              <TextField
+                fullWidth
+                size="small"
+                type="datetime-local"
+                label="Срок исполнения"
+                value={draft.dueAt}
+                onChange={(event) => setDraft((current) => ({ ...current, dueAt: event.target.value }))}
+                InputLabelProps={{ shrink: true }}
+                inputRef={dueAtInputRef}
+                required
+                error={dueAtMissing}
+                helperText={dueAtMissing ? 'Укажите срок исполнения.' : undefined}
+              />
+              <TextField
+                fullWidth
+                size="small"
+                select
+                label="Важность"
+                value={draft.importance}
+                onChange={(event) => setDraft((current) => ({ ...current, importance: event.target.value }))}
+              >
+                <MenuItem value="normal">Обычная</MenuItem>
+                <MenuItem value="high">Высокая</MenuItem>
+              </TextField>
+            </Stack>
+          </Stack>
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" fontWeight={800}>Текст поручения</Typography>
             <TextField
-              fullWidth
-              type="datetime-local"
-              label="Срок исполнения"
-              value={draft.dueAt}
-              onChange={(event) => setDraft((current) => ({ ...current, dueAt: event.target.value }))}
-              InputLabelProps={{ shrink: true }}
+              size="small"
+              label="Название поручения"
+              value={draft.title}
+              onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+              inputRef={titleInputRef}
+              inputProps={{ maxLength: 200 }}
+              error={titleMissing}
+              helperText={
+                titleMissing
+                  ? (testOnly ? `Название должно начинаться с ${requiredTitlePrefix} и содержать текст после префикса.` : 'Укажите название поручения.')
+                  : (testOnly ? `Название должно начинаться с ${requiredTitlePrefix}.` : 'Укажите понятное название поручения для исполнителя.')
+              }
               required
             />
             <TextField
-              fullWidth
-              select
-              label="Важность"
-              value={draft.importance}
-              onChange={(event) => setDraft((current) => ({ ...current, importance: event.target.value }))}
-            >
-              <MenuItem value="normal">Обычная</MenuItem>
-              <MenuItem value="high">Высокая</MenuItem>
-            </TextField>
+              size="small"
+              multiline
+              minRows={mobile ? 3 : 4}
+              label="Описание поручения"
+              value={draft.description}
+              onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+              inputRef={descriptionInputRef}
+              inputProps={{ maxLength: 2000 }}
+              error={descriptionMissing}
+              helperText={descriptionMissing ? 'Добавьте описание для исполнителя.' : undefined}
+              required
+            />
           </Stack>
-          <TextField
-            label="Название поручения"
-            value={draft.title}
-            onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-            inputProps={{ maxLength: 200 }}
-            helperText={testOnly ? `Название должно начинаться с ${requiredTitlePrefix}.` : 'Укажите понятное название поручения для исполнителя.'}
-            required
-          />
-          <TextField
-            multiline
-            minRows={4}
-            label="Описание поручения"
-            value={draft.description}
-            onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
-            inputProps={{ maxLength: 2000 }}
-            required
-          />
+
           {command ? (
             <Alert
               severity="warning"
@@ -621,11 +1107,25 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
           ) : null}
         </Stack>
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 }, gap: 1 }}>
+      <DialogActions
+        sx={{
+          px: { xs: 2, sm: 3 },
+          pt: 1.25,
+          pb: { xs: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', sm: 2.5 },
+          gap: 1,
+          flexShrink: 0,
+          borderTop: 1,
+          borderColor: 'divider',
+          flexDirection: { xs: 'column-reverse', sm: 'row' },
+          '& > :not(style) ~ :not(style)': { ml: 0 },
+          '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' }, minHeight: 44 },
+        }}
+      >
         <Button onClick={onClose} disabled={working}>Закрыть</Button>
         {!command ? (
-          <Button variant="contained" onClick={() => void submit()} disabled={!canSubmit}>
-            {working ? <CircularProgress size={20} color="inherit" /> : 'Создать в 1С'}
+          <Button variant="contained" onClick={() => void submit()} disabled={working} aria-busy={working}>
+            {working ? <CircularProgress size={18} color="inherit" sx={{ mr: 1 }} /> : null}
+            Создать в 1С
           </Button>
         ) : null}
       </DialogActions>
@@ -640,6 +1140,9 @@ export default function Docflow() {
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileError, setProfileError] = useState(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [disconnectWorking, setDisconnectWorking] = useState(false);
+  const [profileMenuAnchor, setProfileMenuAnchor] = useState(null);
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [assignmentCapability, setAssignmentCapability] = useState(null);
   const [assignmentNotice, setAssignmentNotice] = useState(null);
@@ -653,23 +1156,27 @@ export default function Docflow() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState('');
   const [selectedTask, setSelectedTask] = useState(null);
   const [taskDetailLoading, setTaskDetailLoading] = useState(false);
+  const [taskFilesLoading, setTaskFilesLoading] = useState(false);
   const [taskDetailError, setTaskDetailError] = useState(null);
   const [fileActionError, setFileActionError] = useState(null);
   const [taskAction, setTaskAction] = useState(null);
   const [taskActionWorking, setTaskActionWorking] = useState(false);
   const [taskActionError, setTaskActionError] = useState(null);
   const [taskActionNotice, setTaskActionNotice] = useState(null);
+  const [actionProgressLabel, setActionProgressLabel] = useState('');
   const [commandState, setCommandState] = useState(null);
   const [attachmentPreview, setAttachmentPreview] = useState(createEmptyAttachmentPreview);
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const requestSequence = useRef(0);
   const loadedRequestKey = useRef('');
   const inFlightRequest = useRef(null);
+  const tasksLengthRef = useRef(0);
   const selectedTaskRef = useRef('');
   const detailCache = useRef(new Map());
   const detailInFlight = useRef(new Map());
   const previewSequence = useRef(0);
   const previewObjectUrl = useRef('');
+  tasksLengthRef.current = tasks.length;
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true);
@@ -683,27 +1190,54 @@ export default function Docflow() {
     }
   }, []);
 
-  const loadTasks = useCallback(() => {
+  const loadTasks = useCallback((options = {}) => {
+    const force = Boolean(options?.force);
     if (!profile?.configured) {
       setTasks([]);
       setTasksError(null);
       return Promise.resolve();
     }
+    const login = String(profile?.login || '').trim();
     const requestKey = `${credentialsRevision}|${scope}|${search}`;
-    if (inFlightRequest.current?.key === requestKey) {
+    if (!force && inFlightRequest.current?.key === requestKey) {
       return inFlightRequest.current.promise;
     }
     const requestId = requestSequence.current + 1;
     requestSequence.current = requestId;
     const sameParameters = loadedRequestKey.current === requestKey;
-    if (!sameParameters) {
-      setTasks([]);
-      setTruncated(false);
+    let usedCache = false;
+
+    if (!force) {
+      const cached = readDocflowTasksCache({ login, scope, search });
+      if (cached) {
+        usedCache = true;
+        loadedRequestKey.current = requestKey;
+        setTasks(cached.items);
+        setTruncated(cached.truncated);
+        setLastUpdatedAt(cached.as_of);
+        setTasksError(null);
+        if (!sameParameters) {
+          setSelectedTask(null);
+          selectedTaskRef.current = '';
+          setTaskDetailLoading(false);
+          setTaskDetailError(null);
+          setFileActionError(null);
+        }
+        // Свежий кэш — сразу отдаём; иначе stale-while-revalidate (список уже на экране).
+        if (isDocflowTasksCacheFresh(cached)) {
+          setTasksLoading(false);
+          return Promise.resolve(cached);
+        }
+      }
+    }
+
+    if (!sameParameters && !usedCache) {
       setSelectedTask(null);
       selectedTaskRef.current = '';
       setTaskDetailLoading(false);
       setTaskDetailError(null);
       setFileActionError(null);
+      if (!tasksLengthRef.current) setTruncated(false);
     }
     setTasksLoading(true);
     setTasksError(null);
@@ -714,13 +1248,33 @@ export default function Docflow() {
         const result = await docflowAPI.listTasks({ scope, q: search, limit: 50 });
         if (requestSequence.current !== requestId) return;
         loadedRequestKey.current = requestKey;
-        setTasks(Array.isArray(result?.items) ? result.items : []);
-        setTruncated(Boolean(result?.truncated));
-        setLastUpdatedAt(String(result?.as_of || ''));
+        const items = Array.isArray(result?.items) ? result.items : [];
+        const nextTruncated = Boolean(result?.truncated);
+        const asOf = String(result?.as_of || '');
+        setTasks(items);
+        setTruncated(nextTruncated);
+        setLastUpdatedAt(asOf);
+        writeDocflowTasksCache({
+          login,
+          scope,
+          search,
+          items,
+          truncated: nextTruncated,
+          as_of: asOf,
+        });
       } catch (error) {
         if (requestSequence.current !== requestId) return;
-        if (!sameParameters) setTasks([]);
-        setTasksError(resolveDocflowError(error, 'Не удалось загрузить задания из 1С.'));
+        const resolved = resolveDocflowError(error, 'Не удалось загрузить задания из 1С.');
+        if (!usedCache && !sameParameters && !tasksLengthRef.current) setTasks([]);
+        if (
+          resolved.code === 'DOCFLOW_AUTH_FAILED'
+          || resolved.code === 'DOCFLOW_CREDENTIALS_INVALID'
+          || resolved.code === 'DOCFLOW_UNAUTHORIZED'
+        ) {
+          clearDocflowTasksCacheByLogin(login);
+        }
+        // При soft-revalidate сохраняем кэш на экране и не пугаем ошибкой сети.
+        if (force || !usedCache) setTasksError(resolved);
       } finally {
         if (inFlightRequest.current?.promise === promise) inFlightRequest.current = null;
         if (requestSequence.current === requestId) setTasksLoading(false);
@@ -728,7 +1282,7 @@ export default function Docflow() {
     })();
     inFlightRequest.current = { key: requestKey, promise };
     return promise;
-  }, [credentialsRevision, profile?.configured, scope, search]);
+  }, [credentialsRevision, profile?.configured, profile?.login, scope, search]);
 
   const loadTaskDetail = useCallback((task, { force = false } = {}) => {
     const taskRef = String(task?.ref || '').trim();
@@ -739,6 +1293,7 @@ export default function Docflow() {
       if (selectedTaskRef.current === taskRef) {
         setSelectedTask(cached);
         setTaskDetailLoading(false);
+        setTaskFilesLoading(false);
         setTaskDetailError(null);
       }
       return Promise.resolve(cached);
@@ -747,18 +1302,43 @@ export default function Docflow() {
     if (existing) return existing;
     if (selectedTaskRef.current === taskRef) {
       setTaskDetailLoading(true);
+      setTaskFilesLoading(true);
       setTaskDetailError(null);
     }
     let promise;
     promise = (async () => {
       try {
-        const detail = await docflowAPI.getTask(taskRef);
-        detailCache.current.set(taskRef, detail);
+        const core = await docflowAPI.getTask(taskRef, { includeRelated: false });
         if (selectedTaskRef.current === taskRef) {
-          setSelectedTask(detail);
+          setSelectedTask(core);
           setTaskDetailError(null);
+          setTaskDetailLoading(false);
         }
-        return detail;
+        try {
+          const detail = await docflowAPI.getTask(taskRef, { includeRelated: true });
+          detailCache.current.set(taskRef, detail);
+          if (selectedTaskRef.current === taskRef) {
+            setSelectedTask(detail);
+            setTaskDetailError(null);
+            if (detail?.files_incomplete) {
+              setFileActionError({
+                code: 'docflow_files_partial',
+                message: 'Список файлов из связанных документов 1С загрузился не полностью. Обновите карточку или откройте документ в 1С.',
+                correlationId: '',
+              });
+            }
+          }
+          return detail;
+        } catch (enrichError) {
+          detailCache.current.set(taskRef, core);
+          if (selectedTaskRef.current === taskRef) {
+            setFileActionError(resolveDocflowError(
+              enrichError,
+              'Не удалось загрузить файлы карточки из 1С. Описание доступно; повторите обновление карточки.',
+            ));
+          }
+          return core;
+        }
       } catch (error) {
         if (selectedTaskRef.current === taskRef) {
           setTaskDetailError(resolveDocflowError(error, 'Не удалось загрузить подробную карточку задания.'));
@@ -766,7 +1346,10 @@ export default function Docflow() {
         return null;
       } finally {
         if (detailInFlight.current.get(taskRef) === promise) detailInFlight.current.delete(taskRef);
-        if (selectedTaskRef.current === taskRef) setTaskDetailLoading(false);
+        if (selectedTaskRef.current === taskRef) {
+          setTaskDetailLoading(false);
+          setTaskFilesLoading(false);
+        }
       }
     })();
     detailInFlight.current.set(taskRef, promise);
@@ -787,11 +1370,13 @@ export default function Docflow() {
     selectedTaskRef.current = '';
     setSelectedTask(null);
     setTaskDetailLoading(false);
+    setTaskFilesLoading(false);
     setTaskDetailError(null);
     setFileActionError(null);
     setTaskAction(null);
     setTaskActionError(null);
     setTaskActionNotice(null);
+    setActionProgressLabel('');
     setCommandState(null);
   }, []);
 
@@ -799,6 +1384,8 @@ export default function Docflow() {
     const taskRef = String(selectedTask?.ref || '').trim();
     const stateToken = String(selectedTask?.state_token || '').trim();
     if (!taskRef || !stateToken || !taskAction) return;
+    const actionLabel = String(taskAction.label || 'Действие').trim() || 'Действие';
+    setActionProgressLabel(actionLabel);
     setTaskActionWorking(true);
     setTaskActionError(null);
     setTaskActionNotice(null);
@@ -809,16 +1396,53 @@ export default function Docflow() {
         taskAction.idempotencyKey,
       );
       if (result?.status === 'applied' || result?.status === 'already_applied') {
-        const nextTask = result.task || await docflowAPI.getTask(taskRef);
-        detailCache.current.set(taskRef, nextTask);
-        if (selectedTaskRef.current === taskRef) setSelectedTask(nextTask);
+        detailInFlight.current.delete(taskRef);
+        const optimisticTask = buildCompletedTaskSnapshot(result.task || selectedTask, taskRef);
+        detailCache.current.set(taskRef, optimisticTask);
+        if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
         setTaskAction(null);
         setCommandState(null);
         setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
-        await loadTasks();
+        try {
+          const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
+          if (selectedTaskRef.current === taskRef) {
+            const merged = keepCompletedIfStale(refreshed, optimisticTask);
+            detailCache.current.set(taskRef, merged);
+            setSelectedTask(merged);
+          }
+        } catch {
+          // Keep optimistic completed state if force refresh fails.
+        }
+        const login = String(profile?.login || '').trim();
+        patchDocflowTasksCacheAfterCompletion({ login, task: optimisticTask, search });
+        // #region agent log
+        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:applySelectedTaskAction',message:'after_action_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope),taskRef:taskRef.slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (isHeavyDocflowTasksScope(scope)) {
+          // Do not pull withExecuted=true history after every action.
+          setTasks((prev) => {
+            const list = Array.isArray(prev) ? prev : [];
+            if (scope === 'completed') {
+              const without = list.filter((item) => String(item?.ref || '').toLowerCase() !== taskRef.toLowerCase());
+              return [optimisticTask, ...without];
+            }
+            return list.map((item) => (
+              String(item?.ref || '').toLowerCase() === taskRef.toLowerCase() ? optimisticTask : item
+            ));
+          });
+        } else {
+          await loadTasks({ force: true });
+        }
+        setActionProgressLabel('');
       } else {
         setTaskAction(null);
         setCommandState(result);
+        // 202/state_unknown: immediately re-check once the spinner is free (finally clears working).
+        if (result?.status === 'state_unknown' || result?.status === 'pending') {
+          // #region agent log
+          fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'measure-202-check',hypothesisId:'H-TIME',location:'Docflow.jsx:applySelectedTaskAction',message:'schedule_immediate_202_check',data:{status:result?.status,commandId:String(result?.command_id||'').slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+        }
       }
     } catch (error) {
       const resolved = resolveDocflowError(error, 'Не удалось выполнить действие в 1С.');
@@ -832,6 +1456,7 @@ export default function Docflow() {
         detailCache.current.set(taskRef, nextTask);
         if (selectedTaskRef.current === taskRef) setSelectedTask(nextTask);
         setTaskAction(null);
+        setActionProgressLabel('');
         setTaskActionNotice({ severity: 'info', message: resolved.message });
       } else {
         setTaskActionError(resolved);
@@ -839,25 +1464,69 @@ export default function Docflow() {
     } finally {
       setTaskActionWorking(false);
     }
-  }, [loadTasks, selectedTask, taskAction]);
+  }, [loadTaskDetail, loadTasks, profile?.login, scope, search, selectedTask, taskAction]);
 
   const checkTaskCommand = useCallback(async () => {
     const commandId = String(commandState?.command_id || '').trim();
     if (!commandId || taskActionWorking) return;
     setTaskActionWorking(true);
     setTaskActionNotice(null);
+    if (!actionProgressLabel) setActionProgressLabel('Проверка в 1С');
     try {
       const result = await docflowAPI.getCommand(commandId);
       setCommandState(result);
       if (result?.status === 'applied' || result?.status === 'already_applied') {
-        const nextTask = result.task;
-        if (nextTask?.ref) {
-          detailCache.current.set(nextTask.ref, nextTask);
-          if (selectedTaskRef.current === nextTask.ref) setSelectedTask(nextTask);
+        const taskRef = String(result.task?.ref || selectedTaskRef.current || '').trim();
+        if (taskRef) {
+          detailInFlight.current.delete(taskRef);
+          const optimisticTask = buildCompletedTaskSnapshot(
+            result.task || detailCache.current.get(taskRef),
+            taskRef,
+          );
+          detailCache.current.set(taskRef, optimisticTask);
+          if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
+          setCommandState(null);
+          setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
+          try {
+            const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
+            if (selectedTaskRef.current === taskRef) {
+              const merged = keepCompletedIfStale(refreshed, optimisticTask);
+              detailCache.current.set(taskRef, merged);
+              setSelectedTask(merged);
+            }
+          } catch {
+            // Keep optimistic completed state if force refresh fails.
+          }
+        } else {
+          setCommandState(null);
+          setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
         }
-        setCommandState(null);
-        setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
-        await loadTasks();
+        const login = String(profile?.login || '').trim();
+        const completedTask = taskRef
+          ? (detailCache.current.get(taskRef) || result.task)
+          : result.task;
+        if (completedTask?.ref) {
+          patchDocflowTasksCacheAfterCompletion({ login, task: completedTask, search });
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:checkTaskCommand',message:'after_command_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (isHeavyDocflowTasksScope(scope) && completedTask?.ref) {
+          const doneRef = String(completedTask.ref).toLowerCase();
+          setTasks((prev) => {
+            const list = Array.isArray(prev) ? prev : [];
+            if (scope === 'completed') {
+              const without = list.filter((item) => String(item?.ref || '').toLowerCase() !== doneRef);
+              return [completedTask, ...without];
+            }
+            return list.map((item) => (
+              String(item?.ref || '').toLowerCase() === doneRef ? completedTask : item
+            ));
+          });
+        } else {
+          await loadTasks({ force: true });
+        }
+        setActionProgressLabel('');
       } else if (result?.status === 'rejected' && result?.error_code === 'DOCFLOW_ACTION_NOT_APPLIED') {
         const nextTask = result.task;
         if (nextTask?.ref) {
@@ -865,6 +1534,7 @@ export default function Docflow() {
           if (selectedTaskRef.current === nextTask.ref) setSelectedTask(nextTask);
         }
         setCommandState(null);
+        setActionProgressLabel('');
         setTaskActionNotice({
           severity: 'warning',
           message: '1С не применила действие. Карточка обновлена — действие можно выполнить заново.',
@@ -876,7 +1546,29 @@ export default function Docflow() {
     } finally {
       setTaskActionWorking(false);
     }
-  }, [commandState, loadTasks, taskActionWorking]);
+  }, [actionProgressLabel, commandState, loadTaskDetail, loadTasks, profile?.login, scope, search, taskActionWorking]);
+
+  useEffect(() => {
+    const status = String(commandState?.status || '');
+    const commandId = String(commandState?.command_id || '').trim();
+    if (!commandId || (status !== 'state_unknown' && status !== 'pending')) return undefined;
+    // #region agent log
+    fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'stuck-approve',hypothesisId:'H5',location:'Docflow.jsx:autoPollCommand',message:'start_auto_poll',data:{status,commandId:commandId.slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled || taskActionWorking) return;
+      void checkTaskCommand();
+    };
+    // First check ASAP after 202; then every 3s while still unknown.
+    const timer = window.setInterval(tick, 3000);
+    const first = window.setTimeout(tick, 50);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.clearTimeout(first);
+    };
+  }, [checkTaskCommand, commandState?.command_id, commandState?.status, taskActionWorking]);
 
   const revokePreviewObjectUrl = useCallback(() => {
     if (previewObjectUrl.current && typeof window.URL?.revokeObjectURL === 'function') {
@@ -913,6 +1605,15 @@ export default function Docflow() {
       const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
       let nextPreview;
       if (officeSourceKind) {
+        const metadata = await waitForAttachmentPreview({
+          previewAPI: {
+            getAttachmentPreview: (_taskRef, _fileRef, { signal } = {}) => (
+              docflowAPI.getFilePreview(taskRef, fileRef, { signal })
+            ),
+          },
+          parentId: taskRef,
+          attachmentId: fileRef,
+        });
         const response = await docflowAPI.downloadFilePreviewPdf(taskRef, fileRef);
         const { blob, filename: pdfFilename } = buildAttachmentBlobPayload({
           response,
@@ -936,11 +1637,12 @@ export default function Docflow() {
           contentType,
           kind: 'office_pdf',
           previewKind: 'office_pdf',
-          sourceKind: String(response?.headers?.['x-docflow-preview-source-kind'] || officeSourceKind),
+          sourceKind: String(metadata?.source_kind || response?.headers?.['x-docflow-preview-source-kind'] || officeSourceKind),
           objectUrl,
           previewBlob: blob,
-          pdfFilename,
-          pageCount: Number(response?.headers?.['x-docflow-preview-page-count'] || 0),
+          pdfFilename: String(metadata?.pdf_filename || pdfFilename),
+          pageCount: Number(metadata?.page_count || response?.headers?.['x-docflow-preview-page-count'] || 0),
+          sheets: Array.isArray(metadata?.sheets) ? metadata.sheets : [],
           downloadContext: { task, file },
         };
       } else {
@@ -1002,6 +1704,26 @@ export default function Docflow() {
   }, [loadTasks, profileLoading]);
 
   useEffect(() => {
+    if (!profile?.configured) return undefined;
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      // Inbox must stay fresh; completed/all are on-demand and expensive in 1С.
+      if (isHeavyDocflowTasksScope(scope)) {
+        // #region agent log
+        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:visibility',message:'skip_heavy_scope_refresh',data:{scope},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        return;
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:visibility',message:'refresh_inbox_on_visible',data:{scope},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      void loadTasks({ force: true });
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [loadTasks, profile?.configured, scope]);
+
+  useEffect(() => {
     let active = true;
     if (!profile?.configured) {
       setAssignmentCapability(null);
@@ -1028,9 +1750,10 @@ export default function Docflow() {
   };
 
   const removeCredentials = async () => {
-    if (!window.confirm('Удалить сохранённые данные подключения к 1С?')) return;
+    setDisconnectWorking(true);
     try {
       await docflowAPI.deleteCredentials();
+      clearAllDocflowTasksCache();
       setTasks([]);
       closeTask();
       closeAttachmentPreview();
@@ -1038,232 +1761,469 @@ export default function Docflow() {
       detailInFlight.current.clear();
       loadedRequestKey.current = '';
       setProfile({ configured: false, login: null, status: 'not_configured' });
+      setDisconnectOpen(false);
     } catch (error) {
       setProfileError(resolveDocflowError(error, 'Не удалось удалить данные подключения 1С.'));
+    } finally {
+      setDisconnectWorking(false);
     }
   };
 
   const profileStatus = PROFILE_STATUS[profile?.status] || PROFILE_STATUS.configured;
+  const visibleTasks = useMemo(
+    () => filterDocflowTasks(tasks, searchDraft || search),
+    [tasks, searchDraft, search],
+  );
+  const hasActiveSearch = Boolean(String(searchDraft || search || '').trim());
 
   return (
     <MainLayout>
-      <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 12px)' : 2 }}>
-        {isMobile ? <MobileShellPageHeader title="1С · Документооборот" sx={{ mb: 1 }} /> : null}
-        <Stack spacing={{ xs: 1.25, sm: 2.25 }}>
+      <PageShell fullHeight sx={{ gap: { xs: 1, sm: 1.5 }, pb: { xs: 1, sm: 1.5 } }}>
+        {isMobile ? (
+          <MobileShellPageHeader
+            title="1С · Документооборот"
+            sx={{ mb: 0, flexShrink: 0, minHeight: 40 }}
+          />
+        ) : null}
+        <Stack spacing={{ xs: 1, sm: 1.5 }} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Stack
             direction={{ sm: 'row' }}
             spacing={1.5}
             justifyContent="space-between"
             alignItems="center"
-            sx={{ display: { xs: 'none', sm: 'flex' } }}
+            sx={{ display: { xs: 'none', sm: 'flex' }, flexShrink: 0 }}
           >
             <Box>
               <Typography variant="h5" fontWeight={800}>Документооборот</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Ваши персональные задания и согласования из 1С. Права на документы определяет 1С.
-              </Typography>
             </Box>
           </Stack>
 
-          <Paper
-            variant="outlined"
-            sx={{
-              p: { xs: 1.5, sm: 2 },
-              borderRadius: { xs: 3.5, sm: 3 },
-              background: (themeValue) => themeValue.palette.mode === 'dark'
-                ? 'linear-gradient(145deg, rgba(25,118,210,.18), rgba(25,118,210,.03))'
-                : 'linear-gradient(145deg, rgba(25,118,210,.10), rgba(255,255,255,.72))',
-            }}
-          >
-            <Stack direction="row" spacing={1.25} alignItems="flex-start">
-              <Box sx={{ width: 42, height: 42, borderRadius: 2.5, bgcolor: profile?.configured ? 'primary.main' : 'action.disabledBackground', color: profile?.configured ? 'primary.contrastText' : 'text.disabled', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                <AssignmentTurnedInOutlinedIcon />
-              </Box>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-                  <Typography fontWeight={800}>Мои задания 1С</Typography>
-                  {!profileLoading ? <Chip size="small" color={profileStatus.color} label={profileStatus.label} /> : <Skeleton width={92} height={26} />}
-                </Stack>
-                {profileLoading ? <Skeleton width="72%" /> : (
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35, overflowWrap: 'anywhere' }}>
-                    {profile?.configured ? `Подключено как ${profile.login || 'пользователь 1С'}` : 'Подключите личную учётную запись, чтобы начать работу.'}
-                  </Typography>
-                )}
-              </Box>
-            </Stack>
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
-              <Button
-                startIcon={<KeyOutlinedIcon />}
-                variant={profile?.configured ? 'outlined' : 'contained'}
-                onClick={() => setDialogOpen(true)}
-                disabled={profileLoading}
-                sx={{ flex: { xs: 1, sm: '0 0 auto' }, minHeight: 42 }}
-              >
-                {profile?.configured ? 'Настроить' : 'Подключить 1С'}
-              </Button>
-              {assignmentCapability ? (
-                <Tooltip title={assignmentCapability.enabled ? 'Создать поручение по существующему документу 1С' : assignmentCapability.reason || ''}>
-                  <span>
-                    <Button
-                      startIcon={<AddTaskOutlinedIcon />}
-                      variant="outlined"
-                      onClick={() => setAssignmentDialogOpen(true)}
-                      disabled={!assignmentCapability.enabled}
-                      sx={{ minHeight: 42 }}
-                    >
-                      Создать поручение
-                    </Button>
-                  </span>
-                </Tooltip>
-              ) : null}
-              <Tooltip title="Обновить задания">
-                <span>
-                  <IconButton
-                    onClick={() => void loadTasks()}
-                    disabled={!profile?.configured || tasksLoading}
-                    aria-label="Обновить задания"
-                    sx={{ width: 42, height: 42, border: 1, borderColor: 'divider' }}
-                  >
-                    <RefreshOutlinedIcon />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              {profile?.configured ? (
-                <Button color="error" size="small" startIcon={isMobile ? undefined : <DeleteOutlineOutlinedIcon />} onClick={removeCredentials} sx={{ minHeight: 42 }}>
-                  Отключить
-                </Button>
-              ) : null}
-            </Stack>
-          </Paper>
-
           {profileError ? (
-            <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void loadProfile()}>Повторить</Button>}>
+            <Alert severity="error" sx={{ flexShrink: 0 }} action={<Button color="inherit" size="small" onClick={() => void loadProfile()}>Повторить</Button>}>
               {profileError.message}
             </Alert>
           ) : null}
 
           {assignmentNotice ? (
-            <Alert severity={assignmentNotice.severity || 'success'} onClose={() => setAssignmentNotice(null)}>
+            <Alert severity={assignmentNotice.severity || 'success'} sx={{ flexShrink: 0 }} onClose={() => setAssignmentNotice(null)}>
               {assignmentNotice.message}
             </Alert>
           ) : null}
 
           {!profileLoading && !profileError && !profile?.configured ? (
-            <Alert severity="info" action={<Button color="inherit" size="small" onClick={() => setDialogOpen(true)}>Подключить</Button>}>
+            <Alert severity="info" sx={{ flexShrink: 0 }}>
               Введите личные данные 1С, чтобы увидеть только назначенные вам задания.
             </Alert>
           ) : null}
 
-          {!profileLoading && profile?.configured ? (
-            <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden', minWidth: 0 }}>
-              <Stack spacing={1.5} sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={scope}
-                  onChange={(_, value) => value && setScope(value)}
-                  disabled={tasksLoading}
-                  aria-label="Состав заданий"
-                  fullWidth={isMobile}
-                  sx={{
-                    alignSelf: { xs: 'stretch', sm: 'flex-start' },
-                    maxWidth: '100%',
-                    '& .MuiToggleButton-root': {
-                      minHeight: 42,
-                      px: { xs: 1, sm: 1.5 },
+          <Paper
+            elevation={0}
+            sx={{
+              borderRadius: { xs: 2, sm: 3 },
+              overflow: 'hidden',
+              minWidth: 0,
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              bgcolor: 'background.paper',
+              border: 1,
+              borderColor: 'divider',
+            }}
+          >
+            <Stack
+              direction="row"
+              spacing={0.85}
+              alignItems="center"
+              sx={{
+                px: { xs: 1.1, sm: 1.75 },
+                py: { xs: 0.85, sm: 1.15 },
+                flexShrink: 0,
+                borderBottom: 1,
+                borderColor: 'divider',
+                bgcolor: (themeValue) => (
+                  themeValue.palette.mode === 'dark'
+                    ? 'rgba(255,255,255,0.03)'
+                    : 'rgba(15,23,42,0.02)'
+                ),
+              }}
+            >
+              <Box
+                sx={{
+                  width: { xs: 28, sm: 34 },
+                  height: { xs: 28, sm: 34 },
+                  borderRadius: 1.5,
+                  bgcolor: profile?.configured ? 'primary.main' : 'action.disabledBackground',
+                  color: profile?.configured ? 'primary.contrastText' : 'text.disabled',
+                  display: 'grid',
+                  placeItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <AssignmentTurnedInOutlinedIcon sx={{ fontSize: { xs: 16, sm: 18 } }} />
+              </Box>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Stack direction="row" spacing={0.65} alignItems="center" useFlexGap flexWrap="wrap">
+                  <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.15, fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}>
+                    Мои задания
+                  </Typography>
+                  {!profileLoading ? (
+                    <Chip
+                      size="small"
+                      color={profileStatus.color}
+                      label={profileStatus.label}
+                      sx={{ height: 20, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
+                    />
+                  ) : (
+                    <Skeleton width={64} height={20} />
+                  )}
+                </Stack>
+                {profileLoading ? (
+                  <Skeleton width="50%" height={14} />
+                ) : (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{
+                      display: { xs: 'none', sm: 'block' },
+                      mt: 0.1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
-                      fontSize: { xs: '0.75rem', sm: '0.8125rem' },
-                    },
+                    }}
+                  >
+                    {profile?.configured
+                      ? (profile.login || 'пользователь 1С')
+                      : 'Подключите учётную запись 1С'}
+                  </Typography>
+                )}
+              </Box>
+              <Stack direction="row" spacing={0.35} alignItems="center" sx={{ flexShrink: 0 }}>
+                {profile?.configured ? (
+                  <Tooltip title="Обновить задания">
+                    <span>
+                      <IconButton
+                        onClick={() => void loadTasks({ force: true })}
+                        disabled={tasksLoading}
+                        aria-label="Обновить задания"
+                        size="small"
+                        sx={{ width: 30, height: 30, border: 1, borderColor: 'divider' }}
+                      >
+                        <RefreshOutlinedIcon sx={{ fontSize: 17 }} />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                ) : null}
+                {profile?.configured ? (
+                  <>
+                    <IconButton
+                      size="small"
+                      aria-label="Ещё действия подключения"
+                      aria-haspopup="menu"
+                      aria-expanded={Boolean(profileMenuAnchor) ? 'true' : undefined}
+                      onClick={(event) => setProfileMenuAnchor(event.currentTarget)}
+                      sx={{ width: 30, height: 30, border: 1, borderColor: 'divider' }}
+                    >
+                      <MoreVertOutlinedIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                    <Menu
+                      anchorEl={profileMenuAnchor}
+                      open={Boolean(profileMenuAnchor)}
+                      onClose={() => setProfileMenuAnchor(null)}
+                      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                    >
+                      <MenuItem
+                        onClick={() => {
+                          setProfileMenuAnchor(null);
+                          setDialogOpen(true);
+                        }}
+                      >
+                        <ListItemIcon><KeyOutlinedIcon fontSize="small" /></ListItemIcon>
+                        <ListItemText>Настроить</ListItemText>
+                      </MenuItem>
+                      {assignmentCapability ? (
+                        <Tooltip
+                          title={!assignmentCapability.enabled ? (assignmentCapability.reason || 'Создание поручений недоступно.') : ''}
+                          disableHoverListener={Boolean(assignmentCapability.enabled)}
+                        >
+                          <span>
+                            <MenuItem
+                              disabled={!assignmentCapability.enabled}
+                              onClick={() => {
+                                setProfileMenuAnchor(null);
+                                setAssignmentDialogOpen(true);
+                              }}
+                            >
+                              <ListItemIcon><AddTaskOutlinedIcon fontSize="small" /></ListItemIcon>
+                              <ListItemText
+                                primary="Создать поручение"
+                                secondary={!assignmentCapability.enabled ? (assignmentCapability.reason || 'Недоступно') : undefined}
+                                secondaryTypographyProps={{ sx: { maxWidth: 260, whiteSpace: 'normal' } }}
+                              />
+                            </MenuItem>
+                          </span>
+                        </Tooltip>
+                      ) : null}
+                      <MenuItem
+                        onClick={() => {
+                          setProfileMenuAnchor(null);
+                          setDisconnectOpen(true);
+                        }}
+                      >
+                        <ListItemIcon><DeleteOutlineOutlinedIcon fontSize="small" color="error" /></ListItemIcon>
+                        <ListItemText>Отключить</ListItemText>
+                      </MenuItem>
+                    </Menu>
+                  </>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => setDialogOpen(true)}
+                    disabled={profileLoading}
+                    sx={{ minHeight: 30, whiteSpace: 'nowrap', px: 1.25 }}
+                  >
+                    Подключить
+                  </Button>
+                )}
+              </Stack>
+            </Stack>
+
+            {!profileLoading && profile?.configured ? (
+              <>
+                <Stack spacing={{ xs: 0.75, sm: 1 }} sx={{ px: { xs: 1.1, sm: 1.75 }, pt: { xs: 1, sm: 1.25 }, pb: { xs: 0.85, sm: 1 }, flexShrink: 0 }}>
+                  {assignmentCapability ? (
+                    assignmentCapability.enabled ? (
+                      <Button
+                        size="small"
+                        startIcon={<AddTaskOutlinedIcon />}
+                        variant="outlined"
+                        onClick={() => setAssignmentDialogOpen(true)}
+                        sx={{ alignSelf: 'flex-start', minHeight: 36 }}
+                      >
+                        Создать поручение
+                      </Button>
+                    ) : (
+                      <Tooltip title={assignmentCapability.reason || 'Создание поручений недоступно.'}>
+                        <span>
+                          <Button
+                            size="small"
+                            startIcon={<AddTaskOutlinedIcon />}
+                            variant="outlined"
+                            disabled
+                            sx={{ alignSelf: 'flex-start', minHeight: 36 }}
+                          >
+                            Создать поручение
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    )
+                  ) : null}
+                  <ToggleButtonGroup
+                    exclusive
+                    size="small"
+                    value={scope}
+                    onChange={(_, value) => value && setScope(value)}
+                    disabled={tasksLoading}
+                    aria-label="Состав заданий"
+                    fullWidth={isMobile}
+                    sx={(themeValue) => {
+                      const isDark = themeValue.palette.mode === 'dark';
+                      const idleText = isDark ? 'rgba(255,255,255,0.78)' : themeValue.palette.text.secondary;
+                      const hoverText = isDark ? '#fff' : themeValue.palette.text.primary;
+                      const selectedText = isDark ? '#fff' : themeValue.palette.primary.contrastText;
+                      const selectedBg = isDark ? 'rgba(255,255,255,0.16)' : themeValue.palette.primary.main;
+                      const selectedHoverBg = isDark ? 'rgba(255,255,255,0.22)' : themeValue.palette.primary.dark;
+                      const radius = 10;
+                      return {
+                        alignSelf: { xs: 'stretch', sm: 'flex-start' },
+                        maxWidth: '100%',
+                        p: 0,
+                        gap: 0,
+                        borderRadius: `${radius}px`,
+                        border: 1,
+                        borderColor: 'divider',
+                        bgcolor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(15,23,42,0.035)',
+                        overflow: 'hidden',
+                        '& .MuiToggleButtonGroup-grouped': {
+                          border: 0,
+                          borderRadius: '0 !important',
+                          mx: 0,
+                          margin: 0,
+                        },
+                        '& .MuiToggleButtonGroup-grouped:not(:first-of-type)': {
+                          borderLeft: 1,
+                          borderColor: 'divider',
+                          marginLeft: 0,
+                        },
+                        '& .MuiToggleButtonGroup-grouped:first-of-type': {
+                          borderTopLeftRadius: `${radius}px !important`,
+                          borderBottomLeftRadius: `${radius}px !important`,
+                        },
+                        '& .MuiToggleButtonGroup-grouped:last-of-type': {
+                          borderTopRightRadius: `${radius}px !important`,
+                          borderBottomRightRadius: `${radius}px !important`,
+                        },
+                        '& .MuiToggleButton-root': {
+                          minHeight: { xs: 30, sm: 32 },
+                          px: { xs: 0.5, sm: 1.15 },
+                          py: { xs: 0.25, sm: 0.35 },
+                          whiteSpace: 'nowrap',
+                          fontSize: { xs: '0.7rem', sm: '0.8125rem' },
+                          lineHeight: 1.15,
+                          fontWeight: 600,
+                          textTransform: 'none',
+                          color: idleText,
+                          bgcolor: 'transparent',
+                          opacity: 1,
+                          transition: 'background-color 120ms ease, color 120ms ease',
+                          '&:hover': {
+                            color: hoverText,
+                            bgcolor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.06)',
+                          },
+                          '&.Mui-selected': {
+                            color: selectedText,
+                            bgcolor: selectedBg,
+                            fontWeight: 700,
+                            '&:hover': {
+                              color: selectedText,
+                              bgcolor: selectedHoverBg,
+                            },
+                          },
+                          '&.Mui-disabled': {
+                            color: themeValue.palette.text.disabled,
+                            opacity: 0.7,
+                          },
+                        },
+                      };
+                    }}
+                  >
+                    {SCOPE_OPTIONS.map((option) => (
+                      <ToggleButton key={option.value} value={option.value}>
+                        {option.label}
+                      </ToggleButton>
+                    ))}
+                  </ToggleButtonGroup>
+                  <Box component="form" onSubmit={applySearch} sx={{ display: 'flex', gap: 0.65, minWidth: 0 }}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Поиск"
+                      value={searchDraft}
+                      onChange={(event) => setSearchDraft(event.target.value)}
+                      inputProps={{ maxLength: 200, 'aria-label': 'Поиск по моим заданиям' }}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start"><SearchOutlinedIcon sx={{ fontSize: 16 }} /></InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiInputBase-root': { minHeight: { xs: 32, sm: 34 } },
+                        '& .MuiInputBase-input': { py: 0.65, fontSize: '0.8125rem' },
+                        '& .MuiInputLabel-root': { fontSize: { xs: '0.8125rem', sm: undefined } },
+                      }}
+                    />
+                    <IconButton
+                      type="submit"
+                      color="primary"
+                      disabled={tasksLoading}
+                      aria-label="Найти"
+                      sx={{
+                        width: { xs: 32, sm: 34 },
+                        height: { xs: 32, sm: 34 },
+                        borderRadius: 1.5,
+                        bgcolor: 'primary.main',
+                        color: 'primary.contrastText',
+                        flexShrink: 0,
+                        '&:hover': { bgcolor: 'primary.dark' },
+                        '&.Mui-disabled': { bgcolor: 'action.disabledBackground' },
+                      }}
+                    >
+                      <SearchOutlinedIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </Box>
+                </Stack>
+                <Divider sx={{ flexShrink: 0 }} />
+
+                {visibleTasks.length > 0 || (!tasksLoading && !tasksError && tasks.length > 0 && hasActiveSearch) ? (
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: { xs: 1.1, sm: 1.75 }, py: 0.45, flexShrink: 0 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                      Найдено: {visibleTasks.length}{hasActiveSearch && tasks.length !== visibleTasks.length ? ` из ${tasks.length}` : ''}
+                    </Typography>
+                    {lastUpdatedAt ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.65rem' }}>
+                        Обновлено: {formatDocflowDate(lastUpdatedAt) || 'только что из 1С'}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                ) : null}
+                {tasksLoading && tasks.length > 0 ? <LinearProgress aria-label="Обновляем задания" sx={{ flexShrink: 0 }} /> : null}
+
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    overscrollBehavior: 'contain',
+                    WebkitOverflowScrolling: 'touch',
+                    ...hideScrollbarSx,
                   }}
                 >
-                  {SCOPE_OPTIONS.map((option) => (
-                    <ToggleButton key={option.value} value={option.value}>
-                      {isMobile ? option.mobileLabel : option.label}
-                    </ToggleButton>
-                  ))}
-                </ToggleButtonGroup>
-                <Box component="form" onSubmit={applySearch} sx={{ display: 'flex', gap: 1, minWidth: 0 }}>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    label="Поиск по моим заданиям"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                    inputProps={{ maxLength: 200 }}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start"><SearchOutlinedIcon fontSize="small" /></InputAdornment>
-                      ),
-                    }}
-                  />
-                  <Button type="submit" variant="contained" disabled={tasksLoading} aria-label="Найти" sx={{ minWidth: { xs: 46, sm: 88 }, minHeight: 42, px: { xs: 1.25, sm: 2 } }}>
-                    <SearchOutlinedIcon sx={{ display: { xs: 'block', sm: 'none' } }} />
-                    <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Найти</Box>
-                  </Button>
+                  {tasksError ? (
+                    <Alert
+                      severity={tasksError.code === 'DOCFLOW_MAPPING_REQUIRED' ? 'warning' : 'error'}
+                      action={<Button color="inherit" size="small" onClick={() => void loadTasks({ force: true })}>Повторить</Button>}
+                      sx={{ m: 1.5 }}
+                    >
+                      {tasksError.message}
+                      {tasksError.correlationId ? (
+                        <Typography display="block" variant="caption" sx={{ mt: 0.5 }}>
+                          Код обращения: {tasksError.correlationId}
+                        </Typography>
+                      ) : null}
+                    </Alert>
+                  ) : null}
+
+                  {tasksLoading && tasks.length === 0 ? (
+                    <Stack data-testid="docflow-task-skeleton" spacing={1} sx={{ p: { xs: 1.25, sm: 1.75 } }}>
+                      <Typography variant="body2" color="text.secondary">Первое подключение к 1С может занять до минуты…</Typography>
+                      {[0, 1, 2].map((item) => (
+                        <Box key={item} sx={{ p: 1.15, borderRadius: 2, border: 1, borderColor: 'divider' }}>
+                          <Skeleton width={`${82 - item * 9}%`} height={20} />
+                          <Skeleton width="44%" />
+                          <Skeleton width="66%" />
+                        </Box>
+                      ))}
+                    </Stack>
+                  ) : null}
+
+                  {!tasksLoading && !tasksError && visibleTasks.length === 0 ? (
+                    <Stack alignItems="center" spacing={1} sx={{ px: 2, py: 6, textAlign: 'center' }}>
+                      <AssignmentTurnedInOutlinedIcon color="disabled" sx={{ fontSize: 40 }} />
+                      <Typography fontWeight={700}>
+                        {hasActiveSearch ? 'Ничего не найдено' : 'Заданий нет'}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {hasActiveSearch
+                          ? 'Измените запрос или очистите поиск.'
+                          : 'В этом разделе сейчас пусто.'}
+                      </Typography>
+                    </Stack>
+                  ) : null}
+
+                  {visibleTasks.length > 0 ? (
+                    <>
+                      <DocflowTaskList tasks={visibleTasks} onOpen={openTask} />
+                      {truncated && !hasActiveSearch ? (
+                        <Alert severity="info" sx={{ m: 1.5 }}>Показаны первые 50 заданий. Уточните поиск.</Alert>
+                      ) : null}
+                    </>
+                  ) : null}
                 </Box>
-              </Stack>
-              <Divider />
-
-              {tasks.length > 0 ? (
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: { xs: 1.5, sm: 2.5 }, py: 1 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    Найдено: {tasks.length}
-                  </Typography>
-                  {lastUpdatedAt ? <Typography variant="caption" color="text.secondary">Данные из 1С</Typography> : null}
-                </Stack>
-              ) : null}
-              {tasksLoading && tasks.length > 0 ? <LinearProgress aria-label="Обновляем задания" /> : null}
-
-              {tasksError ? (
-                <Alert
-                  severity={tasksError.code === 'DOCFLOW_MAPPING_REQUIRED' ? 'warning' : 'error'}
-                  action={<Button color="inherit" size="small" onClick={() => void loadTasks()}>Повторить</Button>}
-                  sx={{ m: 2 }}
-                >
-                  {tasksError.message}
-                  {tasksError.correlationId ? (
-                    <Typography display="block" variant="caption" sx={{ mt: 0.5 }}>
-                      Код обращения: {tasksError.correlationId}
-                    </Typography>
-                  ) : null}
-                </Alert>
-              ) : null}
-
-              {tasksLoading && tasks.length === 0 ? (
-                <Stack data-testid="docflow-task-skeleton" spacing={1.25} sx={{ p: { xs: 1.5, sm: 2.5 } }}>
-                  <Typography variant="body2" color="text.secondary">Первое подключение к 1С может занять до минуты…</Typography>
-                  {[0, 1, 2].map((item) => (
-                    <Paper key={item} variant="outlined" sx={{ p: 1.5, borderRadius: 2.5 }}>
-                      <Skeleton width={`${82 - item * 9}%`} height={24} />
-                      <Skeleton width="44%" />
-                      <Skeleton width="66%" />
-                    </Paper>
-                  ))}
-                </Stack>
-              ) : null}
-
-              {!tasksLoading && !tasksError && tasks.length === 0 ? (
-                <Stack alignItems="center" spacing={1} sx={{ px: 2, py: 7, textAlign: 'center' }}>
-                  <AssignmentTurnedInOutlinedIcon color="disabled" sx={{ fontSize: 42 }} />
-                  <Typography fontWeight={700}>Заданий нет</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    1С не вернула заданий для выбранного режима и поиска.
-                  </Typography>
-                </Stack>
-              ) : null}
-
-              {tasks.length > 0 ? (
-                <>
-                  <List disablePadding>
-                    {tasks.map((task) => <DocflowTaskCard key={task.ref} task={task} onOpen={openTask} />)}
-                  </List>
-                  {truncated ? (
-                    <Alert severity="info" sx={{ m: 2 }}>Показаны первые 50 заданий. Уточните поиск.</Alert>
-                  ) : null}
-                </>
-              ) : null}
-            </Paper>
-          ) : null}
+              </>
+            ) : null}
+          </Paper>
 
         </Stack>
       </PageShell>
@@ -1274,12 +2234,21 @@ export default function Docflow() {
         mobile={isMobile}
         onClose={() => setDialogOpen(false)}
         onSaved={(nextProfile) => {
+          clearAllDocflowTasksCache();
           setProfile(nextProfile);
           detailCache.current.clear();
           detailInFlight.current.clear();
+          loadedRequestKey.current = '';
           setCredentialsRevision((value) => value + 1);
           setDialogOpen(false);
         }}
+      />
+      <DisconnectDialog
+        open={disconnectOpen}
+        mobile={isMobile}
+        working={disconnectWorking}
+        onClose={() => setDisconnectOpen(false)}
+        onConfirm={() => void removeCredentials()}
       />
       <AssignmentDialog
         open={assignmentDialogOpen}
@@ -1289,22 +2258,28 @@ export default function Docflow() {
         onCreated={(result) => {
           setAssignmentDialogOpen(false);
           const processRef = String(result?.assignment?.process_ref || '').trim();
+          const taskRef = String(result?.assignment?.task_ref || '').trim();
           setAssignmentNotice({
             severity: 'success',
             message: processRef
-              ? `1С подтвердила создание поручения. Процесс: ${processRef}`
+              ? `1С подтвердила создание поручения. Процесс: ${processRef}${taskRef ? ` · задание: ${taskRef}` : ''}`
               : '1С подтвердила создание поручения.',
+            processRef,
+            taskRef,
           });
+          void loadTasks({ force: true });
         }}
       />
       <DocflowTaskDetails
         task={selectedTask}
         mobile={isMobile}
         loading={taskDetailLoading}
+        filesLoading={taskFilesLoading}
         error={taskDetailError}
         fileError={fileActionError}
         actionNotice={taskActionNotice}
         actionWorking={taskActionWorking}
+        actionProgressLabel={actionProgressLabel}
         commandState={commandState}
         onRetry={() => void loadTaskDetail(selectedTask, { force: true })}
         onRefresh={() => void loadTaskDetail(selectedTask, { force: true })}
@@ -1312,6 +2287,7 @@ export default function Docflow() {
         onDownloadFile={(task, file) => void downloadTaskFile(task, file)}
         onAction={(action) => {
           setTaskActionError(null);
+          setActionProgressLabel(String(action?.label || '').trim());
           setTaskAction({ ...action, idempotencyKey: createIdempotencyKey() });
         }}
         onCheckCommand={() => void checkTaskCommand()}
@@ -1322,10 +2298,12 @@ export default function Docflow() {
         task={selectedTask}
         working={taskActionWorking}
         error={taskActionError}
+        progressLabel={actionProgressLabel}
         mobile={isMobile}
         onClose={() => {
           setTaskAction(null);
           setTaskActionError(null);
+          if (!commandState) setActionProgressLabel('');
         }}
         onConfirm={(comment) => void applySelectedTaskAction(comment)}
       />

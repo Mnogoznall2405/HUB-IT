@@ -95,4 +95,35 @@ describe('useChatConversationsController', () => {
     expect(setConversationsLoading).toHaveBeenCalledWith(true);
     expect(setConversationsLoading).toHaveBeenCalledWith(false);
   });
+
+  it('does not mark stale cached conversations as freshly loaded when revalidation fails', async () => {
+    getOrFetchSWR
+      .mockResolvedValueOnce({
+        data: { items: [{ id: 'stale', title: 'Old chat' }] },
+        fromCache: true,
+        isFresh: false,
+      })
+      .mockRejectedValueOnce(new Error('network unavailable'));
+
+    const lastConversationsLoadAtRef = { current: 123 };
+    const { result } = renderHook(() => useChatConversationsController({
+      userCacheId: 'u1',
+      notifyApiError: vi.fn(),
+      setConversations: vi.fn(),
+      setConversationsLoading: vi.fn(),
+      conversationsRequestSeqRef: { current: 0 },
+      conversationsLoadingRequestSeqRef: { current: 0 },
+      conversationsLoadingRef: { current: false },
+      conversationsRef: { current: [] },
+      conversationsCacheKeyParts: ['chat', 'conversations', 'u1'],
+      conversationsCacheHydratedRef: { current: false },
+      lastConversationsLoadAtRef,
+      sidebarScrollRef: { current: null },
+    }));
+
+    await result.current.loadConversations({ silent: true });
+
+    expect(getOrFetchSWR).toHaveBeenCalledTimes(2);
+    expect(lastConversationsLoadAtRef.current).toBe(123);
+  });
 });

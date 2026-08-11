@@ -12,6 +12,43 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 chat_api_module = importlib.import_module("backend.api.v1.chat")
+realtime_publisher_module = importlib.import_module("backend.chat.realtime_publisher")
+
+
+def test_mark_read_publish_fanout_is_bounded(monkeypatch):
+    active = 0
+    max_active = 0
+
+    async def fake_publish_message_read(**_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(realtime_publisher_module, "_MARK_READ_PUBLISH_CONCURRENCY", 2)
+    monkeypatch.setattr(realtime_publisher_module, "_mark_read_publish_sem", None)
+    monkeypatch.setattr(realtime_publisher_module, "_publish_message_read", fake_publish_message_read)
+    monkeypatch.setattr(realtime_publisher_module, "_log_request_timing", lambda *args, **kwargs: None)
+
+    async def run_burst():
+        await asyncio.gather(
+            *(
+                realtime_publisher_module._publish_message_read_after_mark_read(
+                    conversation_id="conversation-1",
+                    message_id=f"message-{index}",
+                    reader_user_id=index + 1,
+                    read_at="2026-08-06T09:00:00Z",
+                )
+                for index in range(8)
+            )
+        )
+
+    asyncio.run(run_burst())
+
+    assert max_active == 2
 
 
 def test_publish_deleted_conversation_notifies_every_former_member(monkeypatch):
@@ -140,6 +177,7 @@ def test_publish_message_created_notifies_inbox_only_for_message_created(monkeyp
 
 def test_publish_message_updated_notifies_without_conversation_updated_fanout(monkeypatch):
     inbox_events = []
+    user_events = []
     conversation_events = []
 
     async def fake_run_in_threadpool(func, *args, **kwargs):
@@ -150,6 +188,9 @@ def test_publish_message_updated_notifies_without_conversation_updated_fanout(mo
 
     async def fake_publish_conversation_event(**kwargs):
         conversation_events.append(kwargs)
+
+    async def fake_publish_user_event(**kwargs):
+        user_events.append(kwargs)
 
     def fake_get_messages_for_users(*, message_id, user_ids):
         return {
@@ -164,6 +205,7 @@ def test_publish_message_updated_notifies_without_conversation_updated_fanout(mo
     monkeypatch.setattr(chat_api_module, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(chat_api_module.chat_service, "get_messages_for_users", fake_get_messages_for_users)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_inbox_event", fake_publish_inbox_event)
+    monkeypatch.setattr(chat_api_module.chat_realtime, "publish_user_event", fake_publish_user_event)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_conversation_event", fake_publish_conversation_event)
 
     async def _run_publish() -> None:
@@ -176,8 +218,9 @@ def test_publish_message_updated_notifies_without_conversation_updated_fanout(mo
 
     asyncio.run(_run_publish())
 
-    updated_events = [item for item in inbox_events if item["event_type"] == "chat.message.updated"]
+    updated_events = [item for item in user_events if item["event_type"] == "chat.message.updated"]
     assert sorted(item["user_id"] for item in updated_events) == [2, 3]
+    assert conversation_events == []
     assert [item for item in inbox_events if item["event_type"] == "chat.conversation.updated"] == []
     unread_summary_events = [item for item in inbox_events if item["event_type"] == "chat.unread.summary"]
     assert sorted(item["user_id"] for item in unread_summary_events) == [2, 3]
@@ -229,9 +272,9 @@ def test_publish_message_deleted_notifies_without_conversation_updated_fanout(mo
     assert sorted(item["user_id"] for item in unread_summary_events) == [2, 3]
 
 
-def test_publish_message_read_uses_compact_delta_and_batched_sidebar_updates(monkeypatch):
+def test_publish_message_read_uses_room_delta_and_reader_sidebar_updates(monkeypatch):
     inbox_events = []
-    conversation_events = []
+    room_events = []
 
     async def fake_run_in_threadpool(func, *args, **kwargs):
         return func(*args, **kwargs)
@@ -239,8 +282,8 @@ def test_publish_message_read_uses_compact_delta_and_batched_sidebar_updates(mon
     async def fake_publish_inbox_event(**kwargs):
         inbox_events.append(kwargs)
 
-    async def fake_publish_conversation_event(**kwargs):
-        conversation_events.append(kwargs)
+    async def fake_publish_conversation_room_event(**kwargs):
+        room_events.append(kwargs)
 
     def fake_get_message_read_delta(*, conversation_id, message_id):
         return {
@@ -273,7 +316,11 @@ def test_publish_message_read_uses_compact_delta_and_batched_sidebar_updates(mon
     monkeypatch.setattr(chat_api_module.chat_service, "get_conversation_summaries_for_users", fake_get_conversation_summaries_for_users)
     monkeypatch.setattr(chat_api_module.chat_service, "get_unread_summaries", fake_get_unread_summaries)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_inbox_event", fake_publish_inbox_event)
-    monkeypatch.setattr(chat_api_module.chat_realtime, "publish_conversation_event", fake_publish_conversation_event)
+    monkeypatch.setattr(
+        chat_api_module.chat_realtime,
+        "publish_conversation_room_event",
+        fake_publish_conversation_room_event,
+    )
 
     asyncio.run(
         chat_api_module._publish_message_read(
@@ -285,12 +332,13 @@ def test_publish_message_read_uses_compact_delta_and_batched_sidebar_updates(mon
         )
     )
 
-    assert sorted(item["user_id"] for item in conversation_events) == [2, 3]
-    assert all(item["event_type"] == "chat.message.read" for item in conversation_events)
-    assert all("message" not in item["payload"] for item in conversation_events)
-    assert all(item["payload"]["message_id"] == "msg-1" for item in conversation_events)
-    assert all(item["payload"]["read_by_count"] == 2 for item in conversation_events)
-    assert all(item["payload"]["reader_user_id"] == 9 for item in conversation_events)
+    assert len(room_events) == 1
+    assert room_events[0]["conversation_id"] == "conv-1"
+    assert room_events[0]["event_type"] == "chat.message.read"
+    assert "message" not in room_events[0]["payload"]
+    assert room_events[0]["payload"]["message_id"] == "msg-1"
+    assert room_events[0]["payload"]["read_by_count"] == 2
+    assert room_events[0]["payload"]["reader_user_id"] == 9
 
     conversation_update_events = [
         item for item in inbox_events
@@ -300,5 +348,5 @@ def test_publish_message_read_uses_compact_delta_and_batched_sidebar_updates(mon
         item for item in inbox_events
         if item["event_type"] == "chat.unread.summary"
     ]
-    assert sorted(item["user_id"] for item in conversation_update_events) == [2, 3]
-    assert sorted(item["user_id"] for item in unread_summary_events) == [2, 3]
+    assert [item["user_id"] for item in conversation_update_events] == [9]
+    assert [item["user_id"] for item in unread_summary_events] == [9]

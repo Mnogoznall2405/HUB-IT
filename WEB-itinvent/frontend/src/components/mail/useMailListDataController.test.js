@@ -337,16 +337,82 @@ describe('useMailListDataController', () => {
           next_offset: 20,
         },
       })),
+      getMessages: vi.fn(async () => ({
+        items: [createMessage('fresh-after-stale'), createMessage('stale-bootstrap-msg')],
+        total: 324,
+        limit: 50,
+        has_more: true,
+        next_offset: 50,
+      })),
     });
-    const { result } = renderController({ mailAPI });
+    const { result } = renderController({
+      mailAPI,
+      initialState: { mailAccessReady: true },
+    });
 
     await act(async () => {
       await result.current.controller.refreshBootstrap({ force: true });
     });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
-    expect(result.current.state.listData.items).toEqual([createMessage('stale-bootstrap-msg')]);
-    expect(result.current.refs.skipNextListRefreshRef.current).toBe(false);
-    expect(result.current.props.persistRecentListSnapshot).not.toHaveBeenCalled();
+    // Stale snapshot paints first, then a live head refresh merges fresher mail.
+    expect(mailAPI.getMessages).toHaveBeenCalled();
+    expect(result.current.state.listData.items.map((item) => item.id)).toEqual([
+      'fresh-after-stale',
+      'stale-bootstrap-msg',
+    ]);
+    expect(result.current.refs.skipNextListRefreshRef.current).toBe(true);
+    // Live refresh may persist the fresh list; the stale bootstrap payload itself must not.
+    expect(result.current.props.persistRecentListSnapshot).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ items: [createMessage('stale-bootstrap-msg')] }),
+      expect.anything(),
+    );
+  });
+
+  it('paints app_snapshot bootstrap then silently refreshes the live head', async () => {
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(async () => ({
+        state: 'ok',
+        source: 'app_snapshot',
+        selected_mailbox: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+        mailboxes: [{ id: 'mailbox-1', label: 'Mailbox' }],
+        folder_summary: { inbox: { unread: 1 } },
+        folder_tree: { items: [{ id: 'inbox', label: 'Inbox' }] },
+        messages: {
+          items: [createMessage('snapshot-msg')],
+          total: 1,
+          limit: 20,
+        },
+      })),
+      getMessages: vi.fn(async () => ({
+        items: [createMessage('fresh-msg'), createMessage('snapshot-msg')],
+        total: 2,
+        limit: 50,
+      })),
+    });
+    const { result } = renderController({
+      mailAPI,
+      initialState: { mailAccessReady: true },
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.state.listData.items.map((item) => item.id)).toEqual([
+      'fresh-msg',
+      'snapshot-msg',
+    ]);
+    expect(mailAPI.getMessages).toHaveBeenCalled();
+    expect(result.current.refs.skipNextListRefreshRef.current).toBe(true);
   });
 
   it('preserves visible items during a silent transient list refresh failure', async () => {
@@ -600,5 +666,124 @@ describe('useMailListDataController', () => {
       ...initialList,
       items: [],
     });
+  });
+
+  it('does not paint a late inbox bootstrap list over Sent after a folder switch', async () => {
+    const sentContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'sent',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+    const sentList = {
+      items: [createMessage('sent-1')],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+      next_offset: null,
+      append_offset: null,
+      loaded_pages: 1,
+    };
+    const { result } = renderController({
+      folder: 'sent',
+      initialCurrentListKey: sentContext.contextKey,
+      initialState: { listData: sentList },
+      props: {
+        currentContextUsesBootstrapList: false,
+        currentListCacheKey: sentContext.cacheKey,
+        currentListContextKey: sentContext.contextKey,
+        currentListParams: sentContext.params,
+      },
+    });
+
+    await act(async () => {
+      // Stale bootstrap completion still requests applyList=true (captured before folder switch).
+      result.current.controller.applyBootstrapPayload({
+        selected_mailbox: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+        mailboxes: [{ id: 'mailbox-1', label: 'Mailbox' }],
+        folder_summary: { inbox: { unread: 3 }, sent: { unread: 0 } },
+        folder_tree: { items: [{ id: 'inbox', label: 'Inbox' }, { id: 'sent', label: 'Sent' }] },
+        messages: {
+          items: [createMessage('inbox-late')],
+          total: 1,
+          limit: 20,
+        },
+      }, { applyList: true });
+    });
+
+    expect(result.current.state.listData.items).toEqual([createMessage('sent-1')]);
+    expect(result.current.state.folderSummary).toEqual({ inbox: { unread: 3 }, sent: { unread: 0 } });
+    expect(result.current.refs.skipNextListRefreshRef.current).toBe(false);
+  });
+
+  it('ignores a late bootstrap await after the user left the inbox context', async () => {
+    let resolveBootstrap;
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(() => new Promise((resolve) => {
+        resolveBootstrap = resolve;
+      })),
+    });
+    const inboxContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'inbox',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+    const sentContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'sent',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+    const { result } = renderController({
+      mailAPI,
+      initialCurrentListKey: inboxContext.contextKey,
+      props: {
+        currentContextUsesBootstrapList: true,
+      },
+    });
+
+    let bootstrapPromise;
+    await act(async () => {
+      bootstrapPromise = result.current.controller.refreshBootstrap({ force: true });
+    });
+
+    // User switched to Sent while bootstrap is still awaiting Exchange.
+    result.current.refs.currentListKeyRef.current = sentContext.contextKey;
+    await act(async () => {
+      result.current.controller.applyResolvedListData({
+        items: [createMessage('sent-1')],
+        total: 1,
+        limit: 50,
+      }, {
+        reset: true,
+        listCacheKey: sentContext.cacheKey,
+        listContextKey: sentContext.contextKey,
+      });
+    });
+
+    await act(async () => {
+      resolveBootstrap({
+        selected_mailbox: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+        mailboxes: [{ id: 'mailbox-1', label: 'Mailbox' }],
+        folder_summary: { inbox: { unread: 1 } },
+        folder_tree: { items: [{ id: 'inbox', label: 'Inbox' }] },
+        messages: {
+          items: [createMessage('inbox-late')],
+          total: 1,
+          limit: 20,
+        },
+      });
+      await bootstrapPromise;
+    });
+
+    expect(result.current.state.listData.items.map((item) => item.id)).toEqual(['sent-1']);
   });
 });

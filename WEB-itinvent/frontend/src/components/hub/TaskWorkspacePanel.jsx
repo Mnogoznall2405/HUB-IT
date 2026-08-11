@@ -15,13 +15,15 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { hubAPI } from '../../api/client';
 import { departmentsAPI } from '../../api/departments';
 import {
@@ -34,6 +36,7 @@ import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import MarkdownRenderer from './MarkdownRenderer';
 import TaskChecklist from './TaskChecklist';
 import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog } from './TaskActionDialogs';
+import TaskAttachmentPreviewDialog, { useTaskAttachmentPreview } from './tasks/TaskAttachmentPreviewDialog';
 
 const EMPTY_REFERENCES = {
   assignees: [],
@@ -130,6 +133,7 @@ function TaskWorkspacePanel({
   onOpenInTasks,
   onNavigate,
   onTaskUpdated,
+  currentUser,
 }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -145,6 +149,7 @@ function TaskWorkspacePanel({
   const [reopenOpen, setReopenOpen] = useState(false);
   const [references, setReferences] = useState(EMPTY_REFERENCES);
   const [referencesLoading, setReferencesLoading] = useState(false);
+  const attachmentPreview = useTaskAttachmentPreview();
   const loadRequestIdRef = useRef(0);
   const onTaskUpdatedRef = useRef(onTaskUpdated);
 
@@ -285,6 +290,31 @@ function TaskWorkspacePanel({
   const attachments = Array.isArray(task?.attachments) ? task.attachments : [];
   const transferReminder = isTransferActUploadTask(task);
   const hasPrimaryAction = capabilities.can_start || capabilities.can_submit || capabilities.can_review || capabilities.can_reopen || canOpenTransferActUpload(task);
+  const canDeleteTask = Boolean(
+    task?.id
+    && !transferReminder
+    && (
+      String(currentUser?.role || '').trim().toLowerCase() === 'admin'
+      || Number(task?.created_by_user_id) === Number(currentUser?.id)
+    )
+  );
+
+  const handleDeleteTask = async () => {
+    if (!canDeleteTask || busyAction) return;
+    if (!window.confirm(`Удалить задачу «${task?.title || 'Без названия'}»?`)) return;
+    setBusyAction('delete');
+    setError('');
+    try {
+      await hubAPI.deleteTask(task.id);
+      window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+      window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
+      onOpenInTasks?.();
+    } catch (actionError) {
+      setError(actionError?.response?.data?.detail || actionError?.message || 'Не удалось удалить задачу.');
+    } finally {
+      setBusyAction('');
+    }
+  };
 
   const openTransferUpload = () => {
     const href = getTransferActUploadUrl(task);
@@ -313,46 +343,52 @@ function TaskWorkspacePanel({
           bgcolor: ui.panelSolid,
         }}
       >
-        <Stack direction="row" spacing={1} alignItems="flex-start">
-          <Avatar sx={{ width: 38, height: 38, bgcolor: alpha(theme.palette.primary.main, 0.12), color: theme.palette.primary.main }}>
-            <TaskAltRoundedIcon fontSize="small" />
-          </Avatar>
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography sx={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-              {task?.title || (loading ? 'Загрузка задачи...' : 'Карточка задачи')}
-            </Typography>
-            {task ? (
-              <Stack direction="row" spacing={0.55} sx={{ mt: 0.7, flexWrap: 'wrap', gap: 0.55 }}>
-                <Chip size="small" label={status.label} sx={{ fontWeight: 800, bgcolor: status.bg, color: status.color }} />
-                {String(task.priority || 'normal') !== 'normal' ? (
-                  <Chip size="small" label={priority.label} sx={{ fontWeight: 800, bgcolor: alpha(priority.color, 0.12), color: priority.color }} />
-                ) : null}
-                {transferReminder ? (
-                  <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ fontWeight: 800, bgcolor: alpha('#2563eb', 0.12), color: '#2563eb' }} />
-                ) : null}
-              </Stack>
-            ) : null}
-          </Box>
-          <Stack direction="row" spacing={0.1}>
-            <Tooltip title="Обновить">
-              <span>
-                <IconButton size="small" onClick={() => void loadTask()} disabled={loading} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
-                  <RefreshRoundedIcon fontSize="small" />
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
+            <Button
+              size="small"
+              color="inherit"
+              startIcon={<ArrowBackRoundedIcon fontSize="small" />}
+              onClick={onOpenInTasks}
+              sx={{ minHeight: 36, px: 1, fontWeight: 800, textTransform: 'none' }}
+            >
+              К задачам
+            </Button>
+            <Stack direction="row" spacing={0.1}>
+              <Tooltip title="Обновить">
+                <span>
+                  <IconButton size="small" onClick={() => void loadTask()} disabled={loading} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
+                    <RefreshRoundedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Закрыть карточку">
+                <IconButton size="small" onClick={onClose} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
+                  <CloseRoundedIcon fontSize="small" />
                 </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="Открыть в задачах">
-              <span>
-                <IconButton size="small" onClick={() => task?.id && onOpenInTasks?.(task.id)} disabled={!task?.id} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
-                  <OpenInNewIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="Закрыть карточку">
-              <IconButton size="small" onClick={onClose} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
-                <CloseRoundedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
+              </Tooltip>
+            </Stack>
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="flex-start">
+            <Avatar sx={{ width: 38, height: 38, bgcolor: alpha(theme.palette.primary.main, 0.12), color: theme.palette.primary.main }}>
+              <TaskAltRoundedIcon fontSize="small" />
+            </Avatar>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography sx={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.2, overflowWrap: 'anywhere' }}>
+                {task?.title || (loading ? 'Загрузка задачи...' : 'Карточка задачи')}
+              </Typography>
+              {task ? (
+                <Stack direction="row" spacing={0.55} sx={{ mt: 0.7, flexWrap: 'wrap', gap: 0.55 }}>
+                  <Chip size="small" label={status.label} sx={{ fontWeight: 800, bgcolor: status.bg, color: status.color }} />
+                  {String(task.priority || 'normal') !== 'normal' ? (
+                    <Chip size="small" label={priority.label} sx={{ fontWeight: 800, bgcolor: alpha(priority.color, 0.12), color: priority.color }} />
+                  ) : null}
+                  {transferReminder ? (
+                    <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ fontWeight: 800, bgcolor: alpha('#2563eb', 0.12), color: '#2563eb' }} />
+                  ) : null}
+                </Stack>
+              ) : null}
+            </Box>
           </Stack>
         </Stack>
       </Box>
@@ -441,6 +477,15 @@ function TaskWorkspacePanel({
                           {[formatFileSize(attachment.file_size), formatDateTime(attachment.uploaded_at)].filter(Boolean).join(' · ')}
                         </Typography>
                       </Box>
+                      <Tooltip title="Предпросмотр">
+                        <IconButton
+                          size="small"
+                          aria-label={`Предпросмотр ${attachment.file_name || 'файла'}`}
+                          onClick={() => void attachmentPreview.openPreview(task, attachment)}
+                        >
+                          <VisibilityOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
                       <IconButton
                         size="small"
                         aria-label={`Скачать ${attachment.file_name || 'файл'}`}
@@ -513,6 +558,18 @@ function TaskWorkspacePanel({
             <Tooltip title="Копировать ссылку">
               <IconButton onClick={() => void handleCopyLink()}><ContentCopyIcon fontSize="small" /></IconButton>
             </Tooltip>
+            {canDeleteTask ? (
+              <Button
+                color="error"
+                variant="outlined"
+                startIcon={<DeleteOutlineOutlinedIcon />}
+                disabled={Boolean(busyAction)}
+                onClick={() => void handleDeleteTask()}
+                sx={{ fontWeight: 800, textTransform: 'none' }}
+              >
+                {busyAction === 'delete' ? 'Удаление...' : 'Удалить'}
+              </Button>
+            ) : null}
           </Stack>
         </Box>
       ) : null}
@@ -563,6 +620,7 @@ function TaskWorkspacePanel({
         })}
         ui={ui}
       />
+      <TaskAttachmentPreviewDialog preview={attachmentPreview} formatFileSize={formatFileSize} />
     </Box>
   );
 }

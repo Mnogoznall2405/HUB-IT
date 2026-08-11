@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 
 import chatFoldersAPI from '../../api/chatFolders';
 import {
+  DEFAULT_CHAT_FOLDER_KEY,
   buildConversationIdsByFolder,
   readStoredActiveFolderKey,
   writeStoredActiveFolderKey,
@@ -38,8 +39,8 @@ export default function useChatFoldersController({
   }, [applyFoldersPayload, notifyApiError, setFoldersLoading]);
 
   const handleActiveFolderChange = useCallback((nextFolderKey) => {
-    const normalized = String(nextFolderKey || 'all').trim() || 'all';
-    setConversationFilter(normalized);
+    const normalized = String(nextFolderKey || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
+    setConversationFilter(normalized === 'all' ? DEFAULT_CHAT_FOLDER_KEY : normalized);
     writeStoredActiveFolderKey(normalized);
   }, [setConversationFilter]);
 

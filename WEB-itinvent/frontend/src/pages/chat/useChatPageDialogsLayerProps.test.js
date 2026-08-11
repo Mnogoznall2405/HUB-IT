@@ -53,6 +53,8 @@ function buildMinimalArgs(overrides = {}) {
     selectedFiles: [],
     fileCaption: '',
     setFileCaption: noop,
+    sendMediaAsFiles: false,
+    changeSendMediaAsFiles: noop,
     preparingFiles: false,
     sendingFiles: false,
     fileUploadProgress: 0,
@@ -130,11 +132,14 @@ function buildMinimalArgs(overrides = {}) {
 
 describe('useChatPageDialogsLayerProps', () => {
   it('returns memoized dialog layer props with conversation id', () => {
-    const { result } = renderHook(() => useChatPageDialogsLayerProps(buildMinimalArgs()));
+    const args = buildMinimalArgs();
+    const { result } = renderHook(() => useChatPageDialogsLayerProps(args));
 
     expect(result.current.activeConversationId).toBe('c1');
     expect(result.current.conversationHeaderSubtitle).toBe('subtitle');
     expect(result.current.forwardSelectionCount).toBe(0);
+    expect(result.current.sendMediaAsFiles).toBe(false);
+    expect(result.current.onSendMediaAsFilesChange).toBe(args.changeSendMediaAsFiles);
   });
 
   it('uses mobile info panel open state on phone', () => {

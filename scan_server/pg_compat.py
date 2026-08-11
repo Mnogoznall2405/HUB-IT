@@ -4,12 +4,47 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from contextvars import ContextVar
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 _QMARK_RE = re.compile(r"\?")
+
+# Per-request timing buckets (safe: no user params / payloads).
+_request_timings: ContextVar[Optional[dict[str, float]]] = ContextVar("scan_request_timings", default=None)
+
+
+def begin_request_timings() -> dict[str, float]:
+    bucket = {
+        "store_lock_wait_ms": 0.0,
+        "store_lock_hold_ms": 0.0,
+        "db_query_ms": 0.0,
+        "serialization_ms": 0.0,
+        "rows_returned": 0.0,
+    }
+    _request_timings.set(bucket)
+    return bucket
+
+
+def get_request_timings() -> Optional[dict[str, float]]:
+    return _request_timings.get()
+
+
+def add_timing(key: str, delta_ms: float) -> None:
+    bucket = _request_timings.get()
+    if bucket is None:
+        return
+    bucket[key] = float(bucket.get(key) or 0.0) + float(delta_ms)
+
+
+def set_timing(key: str, value: float) -> None:
+    bucket = _request_timings.get()
+    if bucket is None:
+        return
+    bucket[key] = float(value)
 
 
 def qmark_to_named(sql: str, params: Any = None) -> tuple[str, Mapping[str, Any]]:
@@ -81,19 +116,25 @@ class PgCursor:
             self.rowcount = 0
             return self
         converted, bind = qmark_to_named(sql_text, params)
-        result = self._conn.sa_conn.execute(text(converted), bind)
-        self.rowcount = int(result.rowcount or 0)
-        if result.returns_rows:
-            self._rows = [PgRow(row._mapping) for row in result]
-        else:
-            self._rows = []
-            # Best-effort lastrowid for IDENTITY inserts.
-            try:
-                inserted = result.inserted_primary_key
-                if inserted:
-                    self.lastrowid = int(inserted[0])
-            except Exception:
-                self.lastrowid = None
+        started = time.perf_counter()
+        try:
+            result = self._conn.sa_conn.execute(text(converted), bind)
+            self.rowcount = int(result.rowcount or 0)
+            if result.returns_rows:
+                mappings = list(result)
+                self._rows = [PgRow(row._mapping) for row in mappings]
+                add_timing("rows_returned", float(len(self._rows)))
+            else:
+                self._rows = []
+                # Best-effort lastrowid for IDENTITY inserts.
+                try:
+                    inserted = result.inserted_primary_key
+                    if inserted:
+                        self.lastrowid = int(inserted[0])
+                except Exception:
+                    self.lastrowid = None
+        finally:
+            add_timing("db_query_ms", (time.perf_counter() - started) * 1000.0)
         self._index = 0
         return self
 
@@ -195,4 +236,33 @@ class NullLock:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class TimedLock:
+    """Wraps RLock/NullLock and accumulates wait/hold into request timings."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._hold_started: Optional[float] = None
+
+    def acquire(self, *args, **kwargs) -> bool:
+        wait_started = time.perf_counter()
+        ok = self._inner.acquire(*args, **kwargs)
+        add_timing("store_lock_wait_ms", (time.perf_counter() - wait_started) * 1000.0)
+        self._hold_started = time.perf_counter()
+        return ok
+
+    def release(self) -> None:
+        if self._hold_started is not None:
+            add_timing("store_lock_hold_ms", (time.perf_counter() - self._hold_started) * 1000.0)
+            self._hold_started = None
+        self._inner.release()
+
+    def __enter__(self) -> "TimedLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.release()
         return False

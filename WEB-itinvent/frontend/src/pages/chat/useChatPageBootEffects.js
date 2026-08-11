@@ -5,8 +5,8 @@ import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 export const CHAT_PAGE_THREAD_POLL_MS = 6_000;
 
 export function bootLoadConversationsAndFolders({ loadConversations, loadChatFolders } = {}) {
-  void loadConversations?.();
-  void loadChatFolders?.();
+  void Promise.resolve(loadConversations?.()).catch(() => {});
+  void Promise.resolve(loadChatFolders?.()).catch(() => {});
 }
 
 export function bootLoadAiBots({ loadAiBots } = {}) {

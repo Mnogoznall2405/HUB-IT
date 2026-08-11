@@ -131,6 +131,7 @@ export default function buildChatPagePanesBags(input) {
       scrollToMessage: input.scrollToMessage,
       emojiPickerOpen: input.emojiPickerOpen,
       insertEmojiAtSelection: input.insertEmojiAtSelection,
+      handleSendSticker: input.handleSendSticker,
       handleSendGif: input.handleSendGif,
       voiceRecording: input.voiceRecording,
       voiceRecordingDuration: input.voiceRecordingDuration,

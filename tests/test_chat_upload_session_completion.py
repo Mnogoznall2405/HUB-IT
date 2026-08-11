@@ -133,6 +133,74 @@ def test_completion_materializer_preserves_voice_metadata():
             assert prepared_file["path"].read_bytes() == payload
 
 
+def test_completion_materializer_keeps_original_video_when_sent_as_file(monkeypatch):
+    from backend.chat import video_compress
+
+    compress_calls: list[tuple[Path, Path]] = []
+
+    def fake_compress(source_path: Path, output_path: Path):
+        compress_calls.append((source_path, output_path))
+        return None
+
+    monkeypatch.setattr(video_compress, "compress_video", fake_compress)
+
+    with _workspace_tempdir() as root:
+        payload = b"original video payload"
+        part_path = root / "sessions" / "session-1" / "file-1.part"
+        part_path.parent.mkdir(parents=True)
+        part_path.write_bytes(payload)
+
+        manifest = _manifest(payload_size=len(payload), original_size=len(payload))
+        manifest["files"][0].update({
+            "file_name": "clip.mp4",
+            "mime_type": "video/mp4",
+            "media_kind": "file",
+            "storage_name": "attachment-1_clip.mp4",
+        })
+
+        materializer = _materializer(root)
+        with materializer.materialize(manifest) as prepared:
+            prepared_file = prepared[0]
+            assert prepared_file["media_kind"] == "file"
+            assert prepared_file["mime_type"] == "video/mp4"
+            assert prepared_file["path"].read_bytes() == payload
+
+        assert compress_calls == []
+
+
+def test_completion_materializer_keeps_video_compression_for_media(monkeypatch):
+    from backend.chat import video_compress
+
+    compress_calls: list[tuple[Path, Path]] = []
+
+    def fake_compress(source_path: Path, output_path: Path):
+        compress_calls.append((source_path, output_path))
+        return None
+
+    monkeypatch.setattr(video_compress, "compress_video", fake_compress)
+    monkeypatch.setattr(video_compress, "probe_video_info", lambda _path: {})
+
+    with _workspace_tempdir() as root:
+        payload = b"video media payload"
+        part_path = root / "sessions" / "session-1" / "file-1.part"
+        part_path.parent.mkdir(parents=True)
+        part_path.write_bytes(payload)
+
+        manifest = _manifest(payload_size=len(payload), original_size=len(payload))
+        manifest["files"][0].update({
+            "file_name": "clip.mp4",
+            "mime_type": "video/mp4",
+            "media_kind": "video",
+            "storage_name": "attachment-1_clip.mp4",
+        })
+
+        materializer = _materializer(root)
+        with materializer.materialize(manifest):
+            pass
+
+        assert len(compress_calls) == 1
+
+
 def test_completion_materializer_removes_materialized_files_when_caller_fails():
     with _workspace_tempdir() as root:
         payload = b"plain payload"

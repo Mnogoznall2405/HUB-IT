@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from backend.api.v1.chat._shim import chat_api
+import asyncio
 import json
-import logging
 import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from starlette.websockets import WebSocketState
 
 from backend.api.deps import (
     assert_access_token_still_valid,
@@ -23,6 +22,39 @@ from backend.services.authorization_service import PERM_CHAT_READ
 
 router = APIRouter()
 
+
+async def _ws_post_connect_bootstrap(
+    *,
+    connection_id: str,
+    user_id: int,
+    first_connection: bool,
+) -> None:
+    """Snapshot + presence off the accept/first-ACK critical path."""
+    try:
+        if not chat_api().chat_realtime.is_connection_registered(connection_id):
+            return
+        snapshot = await chat_api()._run_chat_call(
+            chat_api().chat_service.get_unread_summary,
+            current_user_id=int(user_id),
+        )
+        if not chat_api().chat_realtime.is_connection_registered(connection_id):
+            return
+        await chat_api().chat_realtime.send_to_connection(
+            connection_id,
+            event_type="chat.snapshot",
+            payload={"unread_summary": snapshot},
+        )
+    except Exception:
+        pass
+    if first_connection:
+        try:
+            from backend.chat.realtime_publisher import schedule_presence_updated
+
+            schedule_presence_updated(int(user_id))
+        except Exception:
+            pass
+
+
 @router.websocket("/ws")
 async def chat_websocket(websocket: WebSocket):
     current_user: Optional[User] = None
@@ -32,30 +64,38 @@ async def chat_websocket(websocket: WebSocket):
             raise HTTPException(status_code=400, detail="Inactive user")
         ensure_user_permission(current_user, PERM_CHAT_READ)
     except Exception as exc:
-        await websocket.close(code=chat_api()._ws_error_code(exc))
+        await chat_api()._deny_ws_handshake(websocket, exc)
         return
 
     connection_id = ""
     try:
-        connection_id, first_connection = await chat_api().chat_realtime.connect(websocket, user_id=int(current_user.id))
+        connection_id, first_connection = await chat_api().chat_realtime.connect(
+            websocket, user_id=int(current_user.id)
+        )
     except Exception:
         await websocket.close(code=1011)
         return
 
     try:
-        snapshot = await chat_api()._run_chat_call(
-            chat_api().chat_service.get_unread_summary,
-            current_user_id=int(current_user.id),
-        )
+        # Minimal ready first — do not await DB/presence before the client can send.
         await chat_api().chat_realtime.send_to_connection(
             connection_id,
-            event_type="chat.snapshot",
-            payload={"unread_summary": snapshot},
+            event_type="chat.connected",
+            payload={
+                "connection_id": connection_id,
+                "user_id": int(current_user.id),
+            },
+        )
+        asyncio.create_task(
+            _ws_post_connect_bootstrap(
+                connection_id=connection_id,
+                user_id=int(current_user.id),
+                first_connection=bool(first_connection),
+            ),
+            name=f"chat-ws-bootstrap:{connection_id}",
         )
         if not chat_api()._ws_is_connected(websocket):
             return
-        if first_connection:
-            await chat_api()._publish_presence_updated(int(current_user.id))
 
         ws_access_token = extract_websocket_access_token(websocket)
         ws_token_check_counter = 0
@@ -83,12 +123,19 @@ async def chat_websocket(websocket: WebSocket):
                         "retry_after_ms": int(retry_after_ms),
                     },
                 )
-                chat_api().logger.warning(
-                    "Chat websocket rate limited: user_id=%s connection_id=%s violations=%s",
-                    int(current_user.id),
-                    connection_id,
-                    int(rate_limiter.violations),
-                )
+                # Rate-limit identical warnings (QueueHandler when installed).
+                try:
+                    from backend.chat.async_logging import allow_rate_limited
+
+                    if allow_rate_limited(f"ws_rate:{int(current_user.id)}", interval_sec=5.0):
+                        chat_api().logger.warning(
+                            "Chat websocket rate limited: user_id=%s connection_id=%s violations=%s",
+                            int(current_user.id),
+                            connection_id,
+                            int(rate_limiter.violations),
+                        )
+                except Exception:
+                    pass
                 if int(rate_limiter.violations) >= chat_api().CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS:
                     await websocket.close(code=1008, reason="chat websocket rate limit exceeded")
                     break
@@ -123,6 +170,11 @@ async def chat_websocket(websocket: WebSocket):
                 try:
                     await run_in_threadpool(assert_access_token_still_valid, ws_access_token)
                 except HTTPException:
+                    try:
+                        from backend.services.auth_session_metrics import note
+                        note("websocket_4401_session_expired")
+                    except Exception:
+                        pass
                     await websocket.close(code=4401, reason="session expired")
                     break
                 if not current_user.is_active:
@@ -151,8 +203,39 @@ async def chat_websocket(websocket: WebSocket):
             except Exception as exc:
                 if isinstance(exc, HTTPException):
                     detail = str(exc.detail or "Command failed")
+                elif isinstance(exc, (ValueError, PermissionError)):
+                    detail = str(exc) or "Command failed"
                 else:
                     detail = "Command failed"
+                # #region agent log
+                try:
+                    from backend.chat.send_audit import audit_send_trace
+
+                    audit_send_trace(
+                        trace_id="ws",
+                        stage="command_failed",
+                        elapsed_ms=0.0,
+                        message_type=message_type,
+                        exc_type=type(exc).__name__,
+                        exc=str(exc)[:240],
+                        user_id=int(getattr(current_user, "id", 0) or 0),
+                        conversation_id=(conversation_id or "")[:64],
+                    )
+                except Exception:
+                    pass
+                # #endregion
+                try:
+                    from backend.chat.async_logging import allow_rate_limited
+
+                    if allow_rate_limited(f"ws_cmd_fail:{message_type}", interval_sec=5.0):
+                        chat_api().logger.exception(
+                            "Chat websocket command failed: type=%s user_id=%s conversation_id=%s",
+                            message_type,
+                            int(getattr(current_user, "id", 0) or 0),
+                            conversation_id,
+                        )
+                except Exception:
+                    pass
                 await chat_api().chat_realtime.send_error(
                     connection_id,
                     detail=detail,
@@ -161,16 +244,24 @@ async def chat_websocket(websocket: WebSocket):
                     conversation_id=conversation_id,
                 )
     except WebSocketDisconnect as exc:
-        chat_api().logger.info(
-            "Chat websocket disconnected: user_id=%s connection_id=%s code=%s",
-            int(current_user.id) if current_user is not None else 0,
-            connection_id,
-            getattr(exc, "code", None),
-        )
+        try:
+            from backend.chat.async_logging import allow_rate_limited
+
+            if allow_rate_limited(f"ws_disc:{int(current_user.id) if current_user else 0}", interval_sec=10.0):
+                chat_api().logger.info(
+                    "Chat websocket disconnected: user_id=%s connection_id=%s code=%s",
+                    int(current_user.id) if current_user is not None else 0,
+                    connection_id,
+                    getattr(exc, "code", None),
+                )
+        except Exception:
+            pass
     finally:
         disconnect_state = chat_api().chat_realtime.disconnect(connection_id)
         if disconnect_state.get("last_connection"):
             try:
-                await chat_api()._publish_presence_updated(int(disconnect_state.get("user_id") or 0))
+                from backend.chat.realtime_publisher import schedule_presence_updated
+
+                schedule_presence_updated(int(disconnect_state.get("user_id") or 0))
             except Exception:
                 pass

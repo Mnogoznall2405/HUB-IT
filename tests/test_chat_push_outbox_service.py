@@ -89,6 +89,23 @@ def chat_outbox_env(temp_dir, monkeypatch):
     chat_db_module._session_factory = None
 
 
+def _flush_deferred_chat_notifications(service, message: dict) -> dict | None:
+    """Lean-ACK path only plans notifications; flush like after-send sidefx."""
+    deferred = dict(message.get("_deferred_chat_notifications") or {})
+    if not deferred:
+        return None
+    return service._create_chat_notifications(
+        sender_user_id=int(deferred.get("sender_user_id") or 0),
+        conversation_id=str(deferred.get("conversation_id") or ""),
+        message_id=str(deferred.get("message_id") or ""),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+
+
 def _get_outbox_job(message_id: str):
     with chat_db_module.chat_session() as session:
         job = session.execute(
@@ -121,6 +138,7 @@ def test_chat_push_outbox_worker_marks_job_sent_after_success(chat_outbox_env, m
         body="Queued push",
         defer_push_notifications=True,
     )
+    _flush_deferred_chat_notifications(service, created)
 
     result = asyncio.run(worker.poll_once())
     job = _get_outbox_job(created["id"])
@@ -161,6 +179,7 @@ def test_chat_push_outbox_worker_delivers_deferred_mention_when_thread_muted_and
         body="@assignee please check this",
         defer_push_notifications=True,
     )
+    _flush_deferred_chat_notifications(service, created)
 
     result = asyncio.run(worker.poll_once())
     job = _get_outbox_job(created["id"])
@@ -190,6 +209,7 @@ def test_chat_push_outbox_worker_marks_job_no_subscriptions_without_retry(chat_o
         body="Queued push",
         defer_push_notifications=True,
     )
+    _flush_deferred_chat_notifications(service, created)
 
     result = asyncio.run(worker.poll_once())
     job = _get_outbox_job(created["id"])
@@ -220,6 +240,7 @@ def test_chat_push_outbox_worker_retries_transient_failures_and_then_marks_termi
         body="Queued push",
         defer_push_notifications=True,
     )
+    _flush_deferred_chat_notifications(service, created)
 
     first_result = asyncio.run(worker.poll_once())
     first_job = _get_outbox_job(created["id"])

@@ -168,6 +168,59 @@ describe('chatNotifications', () => {
     expect(shouldDeliverExternalChatViaPushOnly({ pushSubscribed: false, backgroundCapable: true })).toBe(true);
   });
 
+  it('resolveChatNotificationSenderName rejects lean user-N stubs', async () => {
+    const { resolveChatNotificationSenderName } = await import('./chatNotifications');
+    expect(resolveChatNotificationSenderName({
+      sender: { full_name: null, username: 'user-38' },
+    })).toBe('Собеседник');
+    expect(resolveChatNotificationSenderName({
+      sender: { full_name: 'Иван Иванов', username: 'user-38' },
+    })).toBe('Иван Иванов');
+    expect(resolveChatNotificationSenderName({
+      sender: { full_name: null, username: 'ivan.petrov' },
+    })).toBe('ivan.petrov');
+  });
+
+  it('syncs the visible active conversation to the service worker for push suppression', async () => {
+    const postMessage = vi.fn();
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({ active: { postMessage } }),
+        controller: { postMessage },
+      },
+    });
+    const { syncActiveChatConversationToServiceWorker } = await import('./chatNotifications');
+
+    syncActiveChatConversationToServiceWorker('conv-7');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'itinvent:active-chat-conversation',
+      conversationId: 'conv-7',
+      visible: true,
+    });
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    syncActiveChatConversationToServiceWorker('conv-7');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'itinvent:active-chat-conversation',
+      conversationId: '',
+      visible: false,
+    });
+  });
+
   it('subscribes the current browser for background chat push when supported', async () => {
     const { syncChatPushSubscription } = await import('./chatNotifications');
 

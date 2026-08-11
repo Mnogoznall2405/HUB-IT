@@ -161,10 +161,39 @@ class ChatHealthResponse(BaseModel):
     available: bool = False
     database_url_masked: Optional[str] = None
     realtime_mode: str = "local"
+    realtime_transport: str = "local"
+    realtime_configured: bool = False
+    realtime_available: bool = False
+    realtime_subscriber_ready: bool = False
     redis_available: bool = False
     redis_configured: bool = False
     pubsub_subscribed: bool = False
     realtime_node_id: Optional[str] = None
+    publish_queue_depth: int = 0
+    publish_queue_capacity: int = 0
+    publish_volatile_dropped: int = 0
+    publish_critical_waiters: int = 0
+    publish_batches_total: int = 0
+    publish_events_total: int = 0
+    publish_critical_total: int = 0
+    publish_background_total: int = 0
+    publish_volatile_total: int = 0
+    publish_batch_size_latest: int = 0
+    publish_batch_size_p95: float = 0.0
+    publish_batch_size_max: int = 0
+    publish_queue_wait_ms_critical_latest: float = 0.0
+    publish_queue_wait_ms_critical_p95: float = 0.0
+    publish_queue_wait_ms_critical_max: float = 0.0
+    publish_queue_wait_ms_background_latest: float = 0.0
+    publish_queue_wait_ms_background_p95: float = 0.0
+    publish_queue_wait_ms_background_max: float = 0.0
+    relay_cursor: int = 0
+    relay_caught_up: bool = False
+    relay_current_batch_size: int = 0
+    relay_last_batch_size: int = 0
+    relay_db_dispatch_lag_ms_latest: float = 0.0
+    relay_db_dispatch_lag_ms_p95: float = 0.0
+    relay_db_dispatch_lag_ms_max: float = 0.0
     outbound_queue_depth: int = 0
     slow_consumer_disconnects: int = 0
     presence_watch_count: int = 0
@@ -187,6 +216,10 @@ class ChatHealthResponse(BaseModel):
     ai_last_run_duration_ms: float = 0.0
     route_metrics: dict[str, dict[str, float]] = Field(default_factory=dict)
     read_cache_metrics: dict[str, Any] = Field(default_factory=dict)
+    # Includes total/available PostgreSQL connections and the configured reserve.
+    # Detailed per-application rows are intentionally limited to local ops tooling.
+    postgres_connections: dict[str, Any] = Field(default_factory=dict)
+    write_path: dict[str, Any] = Field(default_factory=dict)
 
 
 class DirectConversationRequest(BaseModel):
@@ -325,10 +358,10 @@ class ChatShareableTasksResponse(BaseModel):
 
 class ChatAttachmentResponse(BaseModel):
     id: str
-    kind: Literal["image", "video", "file", "audio"] = "file"
+    kind: Literal["image", "video", "file", "audio", "sticker"] = "file"
     file_name: str
     mime_type: Optional[str] = None
-    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio", "sticker"]] = None
     file_size: int = 0
     width: Optional[int] = None
     height: Optional[int] = None
@@ -342,10 +375,10 @@ class ChatAttachmentResponse(BaseModel):
 class ChatConversationAttachmentItemResponse(BaseModel):
     id: str
     message_id: str
-    kind: Literal["image", "video", "file", "audio"] = "file"
+    kind: Literal["image", "video", "file", "audio", "sticker"] = "file"
     file_name: str
     mime_type: Optional[str] = None
-    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio", "sticker"]] = None
     file_size: int = 0
     width: Optional[int] = None
     height: Optional[int] = None
@@ -443,6 +476,51 @@ class ChatUploadSessionChunkResponse(BaseModel):
 
 class ChatUploadSessionCancelResponse(BaseModel):
     ok: bool = True
+
+
+class ChatStickerResponse(BaseModel):
+    id: str
+    emoji: str = ""
+    format: Literal["static", "video", "animated"]
+    mime_type: str
+    file_size: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_url: str
+    preview_url: Optional[str] = None
+
+
+class ChatStickerPackResponse(BaseModel):
+    id: str
+    short_name: str
+    title: str
+    sticker_type: str = "regular"
+    is_added: bool = False
+    stickers: list[ChatStickerResponse] = Field(default_factory=list)
+
+
+class ChatStickerPackListResponse(BaseModel):
+    items: list[ChatStickerPackResponse] = Field(default_factory=list)
+
+
+class ChatStickerPackImportRequest(BaseModel):
+    source: str = Field(..., min_length=1, max_length=512)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, value):
+        return str(value or "").strip()
+
+
+class ChatStickerSendRequest(BaseModel):
+    sticker_id: str = Field(..., min_length=1, max_length=64)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("sticker_id", "reply_to_message_id", mode="before")
+    @classmethod
+    def _normalize_sticker_ids(cls, value):
+        text = str(value or "").strip()
+        return text or None
 
 
 class ChatUnreadSummaryResponse(BaseModel):

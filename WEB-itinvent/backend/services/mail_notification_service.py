@@ -377,7 +377,7 @@ class MailNotificationService:
                     checkpoint_updates[user_id] = feed
                     continue
                 sender = str(top_item.get("sender") or "").strip()
-                subject = str(top_item.get("subject") or "").strip() or "РќРѕРІРѕРµ РїРёСЃСЊРјРѕ"
+                subject = str(top_item.get("subject") or "").strip() or "Новое письмо"
                 body_preview = str(top_item.get("body_preview") or "").strip()
                 mailbox_id = str(top_item.get("mailbox_id") or "").strip()
                 mailbox_label = str(top_item.get("mailbox_label") or "").strip()

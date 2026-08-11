@@ -5,6 +5,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import GifBoxRoundedIcon from '@mui/icons-material/GifBoxRounded';
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
+import TelegramStickersTab from './TelegramStickersTab';
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
 
@@ -89,104 +90,30 @@ const STICKER_PACKS = [
 const GIPHY_API_KEY = 'jmrWbIIOpKlLIAVDHVyVvjhEJSJ3nNZC'; // GIPHY API key
 
 /* ─── Tab panel wrapper ─── */
-function TabPanel({ value, index, children }) {
+function TabPanel({ value, index, children, fillAvailableHeight = false }) {
   if (value !== index) return null;
   return (
-    <Box sx={{ height: PANEL_HEIGHT - TAB_BAR_HEIGHT, overflow: 'hidden' }}>
+    <Box sx={{
+      height: fillAvailableHeight ? 'auto' : PANEL_HEIGHT - TAB_BAR_HEIGHT,
+      flex: fillAvailableHeight ? 1 : undefined,
+      minHeight: 0,
+      overflow: 'hidden',
+    }}>
       {children}
     </Box>
   );
 }
 
 /* ─── Stickers tab ─── */
-function StickersTab({ theme, ui, onSendSticker }) {
-  const [activePack, setActivePack] = useState(0);
-  const pack = STICKER_PACKS[activePack];
-
+function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = null }) {
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Pack selector */}
-      <Box
-        sx={{
-          display: 'flex',
-          gap: 0.5,
-          px: 1,
-          py: 0.5,
-          borderBottom: `1px solid ${ui.borderSoft || theme.palette.divider}`,
-          overflowX: 'auto',
-          '&::-webkit-scrollbar': { display: 'none' },
-        }}
-      >
-        {STICKER_PACKS.map((p, idx) => (
-          <Box
-            key={p.id}
-            component="button"
-            type="button"
-            onClick={() => setActivePack(idx)}
-            sx={{
-              fontSize: 22,
-              lineHeight: 1,
-              p: '4px 8px',
-              border: 'none',
-              borderRadius: 2,
-              cursor: 'pointer',
-              bgcolor: idx === activePack
-                ? alpha(ui.accentText || theme.palette.primary.main, 0.15)
-                : 'transparent',
-              transition: 'background-color 120ms ease',
-              '&:hover': { bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.1) },
-              flexShrink: 0,
-            }}
-          >
-            {p.icon}
-          </Box>
-        ))}
-      </Box>
-
-      {/* Sticker grid */}
-      <Box
-        sx={{
-          flex: 1,
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          px: 0.5,
-          py: 0.5,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(5, 1fr)',
-          gap: 0.25,
-          alignContent: 'start',
-          WebkitOverflowScrolling: 'touch',
-          '&::-webkit-scrollbar': { width: 0 },
-        }}
-      >
-        {pack.stickers.map((sticker, idx) => (
-          <Box
-            key={`${pack.id}-${idx}`}
-            component="button"
-            type="button"
-            onClick={() => onSendSticker?.(sticker)}
-            sx={{
-              fontSize: 36,
-              lineHeight: 1,
-              p: 0.5,
-              border: 'none',
-              bgcolor: 'transparent',
-              borderRadius: 2,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              aspectRatio: '1 / 1',
-              transition: 'transform 80ms ease, background-color 80ms ease',
-              '&:active': { transform: 'scale(0.85)' },
-              '&:hover': { bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.08) },
-            }}
-          >
-            {sticker}
-          </Box>
-        ))}
-      </Box>
-    </Box>
+    <TelegramStickersTab
+      theme={theme}
+      ui={ui}
+      onSendSticker={onSendSticker}
+      dense={dense}
+      currentUserId={currentUserId}
+    />
   );
 }
 
@@ -354,6 +281,8 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   onSendSticker,
   onSendGif,
   onClose,
+  desktopDocked = false,
+  currentUserId = null,
 }) {
   const [activeTab, setActiveTab] = useState(0);
 
@@ -363,11 +292,14 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
 
   return (
     <Box
+      data-testid="chat-emoji-panel"
+      data-layout={desktopDocked ? 'desktop-docked' : 'compact'}
       sx={{
         width: '100%',
-        height: PANEL_HEIGHT,
+        height: desktopDocked ? '100%' : PANEL_HEIGHT,
+        minHeight: 0,
         bgcolor: panelBg,
-        borderTop: `1px solid ${ui.borderSoft || theme.palette.divider}`,
+        borderTop: desktopDocked ? 'none' : `1px solid ${ui.borderSoft || theme.palette.divider}`,
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -434,13 +366,13 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
           },
         }}
       >
-        <Tab icon={<InsertEmoticonRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Emoji" />
-        <Tab icon={<StickyNote2RoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Стикеры" />
-        <Tab icon={<GifBoxRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="GIF" />
+        <Tab icon={desktopDocked ? undefined : <InsertEmoticonRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Эмодзи" />
+        <Tab icon={desktopDocked ? undefined : <StickyNote2RoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Стикеры" />
+        <Tab icon={desktopDocked ? undefined : <GifBoxRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="GIF" />
       </Tabs>
 
       {/* Emoji tab */}
-      <TabPanel value={activeTab} index={0}>
+      <TabPanel value={activeTab} index={0} fillAvailableHeight={desktopDocked}>
         <Suspense
           fallback={
             <Box sx={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
@@ -458,7 +390,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
             suggestedEmojisMode="recent"
             lazyLoadEmojis
             width="100%"
-            height={PANEL_HEIGHT - TAB_BAR_HEIGHT}
+            height={desktopDocked ? '100%' : PANEL_HEIGHT - TAB_BAR_HEIGHT}
             theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
             categories={[
               { category: 'suggested', name: 'Недавние' },
@@ -476,12 +408,18 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
       </TabPanel>
 
       {/* Stickers tab */}
-      <TabPanel value={activeTab} index={1}>
-        <StickersTab theme={theme} ui={ui} onSendSticker={onSendSticker} />
+      <TabPanel value={activeTab} index={1} fillAvailableHeight={desktopDocked}>
+        <StickersTab
+          theme={theme}
+          ui={ui}
+          onSendSticker={onSendSticker}
+          dense={desktopDocked}
+          currentUserId={currentUserId}
+        />
       </TabPanel>
 
       {/* GIF tab */}
-      <TabPanel value={activeTab} index={2}>
+      <TabPanel value={activeTab} index={2} fillAvailableHeight={desktopDocked}>
         <GifTab theme={theme} ui={ui} onSendGif={onSendGif} />
       </TabPanel>
     </Box>

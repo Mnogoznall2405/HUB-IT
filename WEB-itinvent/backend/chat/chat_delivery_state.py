@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import case, func, select, update
 
-from backend.chat.models import ChatConversationUserState, ChatMessage
+from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage
 from backend.chat.utils import normalize_text as _normalize_text
+
+CHAT_MESSAGE_DELIVERY_STATE_EVENT = "chat.message.delivery_state"
 
 
 def get_or_create_conversation_state(
@@ -117,6 +120,7 @@ def apply_new_message_delivery_state(
     member_user_ids: list[int],
     seen_at: datetime,
 ) -> None:
+    """Legacy full delivery-state apply (kept for file/forward/system paths)."""
     conversation.last_message_id = message.id
     conversation.last_message_seq = int(message.conversation_seq or 0)
     conversation.last_message_at = seen_at
@@ -136,6 +140,110 @@ def apply_new_message_delivery_state(
         member_user_ids=member_user_ids,
         seen_at=seen_at,
     )
+
+
+def build_delivery_state_outbox_job(
+    *,
+    conversation_id: str,
+    message_id: str,
+    sender_user_id: int,
+    member_user_ids: list[int],
+    conversation_seq: int,
+    seen_at: datetime,
+) -> dict[str, Any]:
+    normalized_message_id = _normalize_text(message_id)
+    return {
+        "event_type": CHAT_MESSAGE_DELIVERY_STATE_EVENT,
+        "target_scope": "system",
+        "target_user_id": int(sender_user_id),
+        "conversation_id": _normalize_text(conversation_id),
+        "message_id": normalized_message_id,
+        "payload": {
+            "sender_user_id": int(sender_user_id),
+            "member_user_ids": [int(item) for item in list(member_user_ids or []) if int(item) > 0],
+            "conversation_seq": int(conversation_seq),
+            "seen_at": seen_at.isoformat() if hasattr(seen_at, "isoformat") else str(seen_at),
+        },
+        "dedupe_key": f"delivery_state:{normalized_message_id}",
+    }
+
+
+def apply_message_delivery_state_after_commit(
+    *,
+    session,
+    conversation_id: str,
+    message_id: str,
+    sender_user_id: int,
+    member_user_ids: list[int],
+    conversation_seq: int,
+    seen_at: datetime,
+) -> dict[str, int]:
+    """Idempotent unread/sender-seen apply outside the conversation row lock.
+
+    Unread is recomputed from (last_message_seq - last_read_seq), so outbox
+    retries do not double-increment counters.
+    """
+    normalized_conversation_id = _normalize_text(conversation_id)
+    normalized_message_id = _normalize_text(message_id)
+    # Sender seen first (single row) — keep mark_read path free of long multi-row ORM loops.
+    mark_sender_message_seen(
+        session=session,
+        conversation_id=normalized_conversation_id,
+        current_user_id=int(sender_user_id),
+        message_id=normalized_message_id,
+        conversation_seq=int(conversation_seq),
+        seen_at=seen_at,
+    )
+    conversation = session.get(ChatConversation, normalized_conversation_id)
+    tip_seq = int(getattr(conversation, "last_message_seq", 0) or conversation_seq or 0) if conversation else int(conversation_seq)
+    recipient_user_ids = sorted({
+        int(member_user_id)
+        for member_user_id in list(member_user_ids or [])
+        if int(member_user_id) > 0 and int(member_user_id) != int(sender_user_id)
+    })
+    if not recipient_user_ids:
+        return {"recipients_updated": 0, "tip_seq": tip_seq}
+
+    existing_user_ids = set(
+        session.execute(
+            select(ChatConversationUserState.user_id).where(
+                ChatConversationUserState.conversation_id == normalized_conversation_id,
+                ChatConversationUserState.user_id.in_(recipient_user_ids),
+            )
+        ).scalars()
+    )
+    existing_user_ids = {int(item) for item in existing_user_ids if int(item) > 0}
+
+    # One statement for all existing rows — short lock window vs per-row ORM dirtying.
+    # Use CASE (not GREATEST) for SQLite test dialect compatibility.
+    updated = 0
+    if existing_user_ids:
+        unread_expr = int(tip_seq) - func.coalesce(ChatConversationUserState.last_read_seq, 0)
+        result = session.execute(
+            update(ChatConversationUserState)
+            .where(
+                ChatConversationUserState.conversation_id == normalized_conversation_id,
+                ChatConversationUserState.user_id.in_(sorted(existing_user_ids)),
+            )
+            .values(
+                unread_count=case((unread_expr > 0, unread_expr), else_=0),
+                updated_at=seen_at,
+            )
+        )
+        updated = int(getattr(result, "rowcount", 0) or 0)
+
+    missing = [user_id for user_id in recipient_user_ids if user_id not in existing_user_ids]
+    for member_user_id in missing:
+        session.add(
+            ChatConversationUserState(
+                conversation_id=normalized_conversation_id,
+                user_id=int(member_user_id),
+                unread_count=max(0, int(tip_seq)),
+                updated_at=seen_at,
+            )
+        )
+        updated += 1
+    return {"recipients_updated": updated, "tip_seq": tip_seq}
 
 
 def find_existing_client_message(

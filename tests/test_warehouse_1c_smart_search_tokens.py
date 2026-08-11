@@ -9,6 +9,10 @@ WEB_ROOT = ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
+from backend.services.one_c_catalog_search import (  # noqa: E402
+    catalog_index_tokens,
+    catalog_query_tokens,
+)
 from backend.services.warehouse_1c_service import (  # noqa: E402
     Warehouse1CService,
     haystack_matches_all_tokens,
@@ -21,11 +25,22 @@ def test_search_text_tokens_splits_words():
     assert search_text_tokens("  DELL   P2419H ") == ["dell", "p2419h"]
 
 
+def test_search_tokens_treat_yo_and_ye_as_equivalent():
+    assert catalog_query_tokens("Алёна") == catalog_query_tokens("Алена")
+    assert catalog_index_tokens("Алёна Юрьевна") == catalog_index_tokens("Алена Юрьевна")
+    assert search_text_tokens("алёна") == search_text_tokens("алена")
+
+
 def test_haystack_matches_all_tokens_and_logic():
     name = "ибп ippon back basic 800 euro"
     assert haystack_matches_all_tokens(name, ["ippon", "800"]) is True
     assert haystack_matches_all_tokens(name, ["ippon", "650"]) is False
     assert haystack_matches_all_tokens("ippon 650", ["ippon", "800"]) is False
+
+
+def test_haystack_matches_yo_and_ye():
+    assert haystack_matches_all_tokens("лераман алёна юрьевна", ["алена"]) is True
+    assert haystack_matches_all_tokens("лераман алена юрьевна", ["алёна"]) is True
 
 
 def test_filter_nomenclature_requires_all_tokens():

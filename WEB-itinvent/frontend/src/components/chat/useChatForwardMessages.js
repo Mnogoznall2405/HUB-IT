@@ -85,7 +85,7 @@ export default function useChatForwardMessages({
         }
         queueAutoScroll('bottom_instant', 'forwardMessages', { userInitiated: true });
       } else {
-        void loadConversations({ silent: true, force: true });
+        void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
       }
 
       if (activeConversationIdRef.current !== targetConversationId) {

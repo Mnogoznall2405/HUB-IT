@@ -102,11 +102,24 @@ class ScanHostReadStore:
             conditions.append("(LOWER(i.hostname) = ? OR LOWER(i.hostname) LIKE ?)")
             params.extend([q_needle, f"{q_needle}%"])
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # Post-agg filters (branch/user text) need context before paging. Default UI
+        # path has no such filters — page aggregates in SQL and load context only
+        # for the page (avoids DISTINCT ON over every host).
+        needs_context_before_page = bool(branch_needle) or (
+            bool(q_needle) and not looks_like_hostname_query(q_needle)
+        )
+        sort_sql_map = {
+            "hostname": "LOWER(hostname)",
+            "incidents_total": "incidents_total",
+            "incidents_new": "incidents_new",
+            "severity": "top_severity_rank",
+            "last_incident_at": "last_incident_at",
+        }
+        sql_sort_expr = sort_sql_map.get(normalized_sort_by)
+        can_page_in_sql = (not needs_context_before_page) and sql_sort_expr is not None
+
         with self._lock, self._connect() as conn:
-            # Fast host aggregates only — correlated subqueries + per-host detail
-            # scans previously made this endpoint ~30s and timed out in the UI.
-            rows = conn.execute(
-                f"""
+            agg_sql = f"""
                 SELECT
                     i.hostname AS hostname,
                     COUNT(*) AS incidents_total,
@@ -123,11 +136,58 @@ class ScanHostReadStore:
                 FROM scan_incidents i
                 {where_clause}
                 GROUP BY i.hostname
-                """,
-                params,
-            ).fetchall()
+            """
+            if can_page_in_sql:
+                total = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) AS cnt FROM ({agg_sql}) agg",
+                        params,
+                    ).fetchone()["cnt"]
+                    or 0
+                )
+                order_sql = (
+                    f"{sql_sort_expr} {normalized_sort_dir.upper()}, "
+                    f"incidents_new DESC, top_severity_rank DESC, "
+                    f"last_incident_at DESC, LOWER(hostname) ASC"
+                )
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM ({agg_sql}) agg
+                    ORDER BY {order_sql}
+                    LIMIT ? OFFSET ?
+                    """,
+                    [*params, safe_limit, safe_offset],
+                ).fetchall()
+                paged: List[Dict[str, Any]] = []
+                host_keys = [str(row["hostname"] or "").strip() for row in rows if str(row["hostname"] or "").strip()]
+                context = self._batch_host_list_context(conn, host_keys)
+                for row in rows:
+                    host = str(row["hostname"] or "").strip()
+                    if not host:
+                        continue
+                    ctx = context.get(host.casefold()) or {}
+                    item = {
+                        "hostname": host,
+                        "incidents_total": int(row["incidents_total"] or 0),
+                        "incidents_new": int(row["incidents_new"] or 0),
+                        "last_incident_at": int(row["last_incident_at"] or 0),
+                        "top_severity": _severity_rank_to_label(row["top_severity_rank"]),
+                        "branch": str(ctx.get("branch") or "").strip(),
+                        "user": str(ctx.get("user") or "").strip(),
+                        "ip_address": str(ctx.get("ip_address") or "").strip(),
+                        "top_exts": [],
+                        "top_source_kinds": [],
+                    }
+                    if q_needle and looks_like_hostname_query(q_needle):
+                        # Already constrained in SQL; keep case-insensitive contains check.
+                        if q_needle not in host.casefold():
+                            continue
+                    paged.append(item)
+                self._enrich_host_table_page(conn, paged)
+                return {"total": int(total), "items": paged}
 
-            host_keys: List[str] = []
+            rows = conn.execute(agg_sql, params).fetchall()
+            host_keys = []
             agg_by_host: Dict[str, Any] = {}
             for row in rows:
                 host = str(row["hostname"] or "").strip()
@@ -138,7 +198,6 @@ class ScanHostReadStore:
                 agg_by_host[key] = row
 
             context = self._batch_host_list_context(conn, host_keys)
-
             candidates: List[Dict[str, Any]] = []
             for host in host_keys:
                 key = host.casefold()
@@ -190,7 +249,6 @@ class ScanHostReadStore:
                     return (int(item.get("_severity_rank") or 0), hostname_key)
                 if normalized_sort_by == "last_incident_at":
                     return (int(item.get("last_incident_at") or 0), hostname_key)
-                # default / incidents_new
                 return (
                     int(item.get("incidents_new") or 0),
                     int(item.get("_severity_rank") or 0),
@@ -211,37 +269,49 @@ class ScanHostReadStore:
         if not hostnames:
             return out
         # Latest non-empty branch/user per host from incidents.
+        # Prefer scoped lookup for the page/candidate set — full-table DISTINCT ON
+        # previously dominated hosts_table latency under statement_timeout.
         if self._is_postgres():
+            placeholders = ", ".join("?" for _ in hostnames)
+            lowered = [host.casefold() for host in hostnames]
             branch_rows = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT ON (LOWER(hostname))
                     hostname,
                     COALESCE(branch, '') AS branch
                 FROM scan_incidents
-                WHERE TRIM(COALESCE(branch, '')) <> ''
+                WHERE LOWER(hostname) IN ({placeholders})
+                  AND TRIM(COALESCE(branch, '')) <> ''
                 ORDER BY LOWER(hostname), created_at DESC
-                """
+                """,
+                lowered,
             ).fetchall()
             user_rows = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT ON (LOWER(hostname))
                     hostname,
                     COALESCE(NULLIF(TRIM(user_full_name), ''), NULLIF(TRIM(user_login), ''), '') AS user_name
                 FROM scan_incidents
-                WHERE TRIM(COALESCE(user_full_name, '')) <> ''
-                   OR TRIM(COALESCE(user_login, '')) <> ''
+                WHERE LOWER(hostname) IN ({placeholders})
+                  AND (
+                    TRIM(COALESCE(user_full_name, '')) <> ''
+                    OR TRIM(COALESCE(user_login, '')) <> ''
+                  )
                 ORDER BY LOWER(hostname), created_at DESC
-                """
+                """,
+                lowered,
             ).fetchall()
             ip_rows = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT ON (LOWER(hostname))
                     hostname,
                     COALESCE(ip_address, '') AS ip_address
                 FROM scan_agents
-                WHERE TRIM(COALESCE(ip_address, '')) <> ''
+                WHERE LOWER(hostname) IN ({placeholders})
+                  AND TRIM(COALESCE(ip_address, '')) <> ''
                 ORDER BY LOWER(hostname), last_seen_at DESC
-                """
+                """,
+                lowered,
             ).fetchall()
             for row in branch_rows:
                 host = str(row["hostname"] or "").strip()
@@ -304,44 +374,74 @@ class ScanHostReadStore:
         return out
 
     def _enrich_host_table_page(self, conn: Any, page: List[Dict[str, Any]]) -> None:
-        for item in page:
-            host = str(item.get("hostname") or "").strip()
-            if not host:
-                continue
-            detail_rows = conn.execute(
-                """
+        hosts = [str(item.get("hostname") or "").strip() for item in page if str(item.get("hostname") or "").strip()]
+        if not hosts:
+            return
+        placeholders = ", ".join("?" for _ in hosts)
+        lowered = [host.casefold() for host in hosts]
+        detail_rows = conn.execute(
+            f"""
+            SELECT hostname, file_path, file_name, source_kind
+            FROM (
                 SELECT
+                    i.hostname,
                     i.file_path,
                     j.file_name,
-                    j.source_kind
+                    j.source_kind,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY LOWER(i.hostname)
+                        ORDER BY i.created_at DESC
+                    ) AS rn
                 FROM scan_incidents i
                 LEFT JOIN scan_jobs j ON j.id = i.job_id
-                WHERE LOWER(i.hostname) = LOWER(?)
-                ORDER BY i.created_at DESC
-                LIMIT 80
-                """,
-                (host,),
-            ).fetchall()
-            ext_counts: Dict[str, int] = {}
-            source_counts: Dict[str, int] = {}
-            for detail in detail_rows:
-                ext = _file_ext_from_values(detail["file_name"], detail["file_path"])
-                if ext:
-                    ext_counts[ext] = int(ext_counts.get(ext, 0) + 1)
-                source = str(detail["source_kind"] or "").strip().lower()
-                if source:
-                    source_counts[source] = int(source_counts.get(source, 0) + 1)
+                WHERE LOWER(i.hostname) IN ({placeholders})
+            ) ranked
+            WHERE rn <= 80
+            """,
+            lowered,
+        ).fetchall()
+
+        per_host_ext: Dict[str, Dict[str, int]] = {}
+        per_host_source: Dict[str, Dict[str, int]] = {}
+        for detail in detail_rows:
+            host_key = str(detail["hostname"] or "").strip().casefold()
+            if not host_key:
+                continue
+            ext_counts = per_host_ext.setdefault(host_key, {})
+            source_counts = per_host_source.setdefault(host_key, {})
+            ext = _file_ext_from_values(detail["file_name"], detail["file_path"])
+            if ext:
+                ext_counts[ext] = int(ext_counts.get(ext, 0) + 1)
+            source = str(detail["source_kind"] or "").strip().lower()
+            if source:
+                source_counts[source] = int(source_counts.get(source, 0) + 1)
+
+        for item in page:
+            host_key = str(item.get("hostname") or "").strip().casefold()
+            ext_counts = per_host_ext.get(host_key, {})
+            source_counts = per_host_source.get(host_key, {})
             item["top_exts"] = [name for name, _ in sorted(ext_counts.items(), key=lambda it: (-it[1], it[0]))[:5]]
             item["top_source_kinds"] = [
                 name for name, _ in sorted(source_counts.items(), key=lambda it: (-it[1], it[0]))[:5]
             ]
 
-    def list_host_scan_runs(self, *, hostname: str, limit: int = 30, offset: int = 0) -> Dict[str, Any]:
+    def list_host_scan_runs(
+        self,
+        *,
+        hostname: str,
+        limit: int = 30,
+        offset: int = 0,
+        view: str = "detail",
+    ) -> Dict[str, Any]:
         normalized_host = str(hostname or "").strip()
         if not normalized_host:
             return {"total": 0, "items": [], "limit": max(1, min(100, int(limit))), "offset": max(0, int(offset))}
         safe_limit = max(1, min(100, int(limit)))
         safe_offset = max(0, int(offset))
+        from .scan_view import normalize_scan_list_view
+
+        resolved_view = normalize_scan_list_view(view, default="detail")
+        slim = resolved_view == "summary"
         now_ts = self._now()
         with self._lock, self._connect() as conn:
             agent_rows = conn.execute(
@@ -388,11 +488,14 @@ class ScanHostReadStore:
                     "GROUP_CONCAT(error_text || ' (' || error_count || ')', '; ')"
                 )
             # PostgreSQL requires non-aggregated selected columns in GROUP BY.
-            # SQLite is looser when grouping by primary key; keep dialect-safe aggregates.
+            # Restrict failed-job aggregation to candidate tasks for this host.
             rows = conn.execute(
                 f"""
                 SELECT
-                    t.*,
+                    t.id, t.agent_id, t.command, t.status, t.error_text, t.attempt_count,
+                    t.created_at, t.updated_at, t.delivered_at, t.acked_at, t.completed_at,
+                    t.ttl_at, t.next_attempt_at, t.due_at, t.dedupe_key,
+                    t.payload_json, t.result_json,
                     MAX(COALESCE(NULLIF(a.hostname, ''), ?)) AS hostname,
                     COALESCE(MAX(jf.failed_jobs_count), 0) AS failed_jobs_count,
                     COALESCE(MAX(jf.failed_job_errors), '') AS failed_job_errors,
@@ -412,12 +515,18 @@ class ScanHostReadStore:
                         {failed_errors_expr} AS failed_job_errors
                     FROM (
                         SELECT
-                            scan_task_id,
-                            COALESCE(NULLIF(error_text, ''), 'Ошибка без текста') AS error_text,
+                            j.scan_task_id,
+                            COALESCE(NULLIF(j.error_text, ''), 'Ошибка без текста') AS error_text,
                             COUNT(*) AS error_count
-                        FROM scan_jobs
-                        WHERE status='failed'
-                        GROUP BY scan_task_id, COALESCE(NULLIF(error_text, ''), 'Ошибка без текста')
+                        FROM scan_jobs j
+                        WHERE j.status='failed'
+                          AND j.scan_task_id IN (
+                              SELECT t2.id
+                              FROM scan_tasks t2
+                              LEFT JOIN scan_agents a2 ON a2.agent_id = t2.agent_id
+                              {where_clause.replace("t.", "t2.").replace("a.", "a2.")}
+                          )
+                        GROUP BY j.scan_task_id, COALESCE(NULLIF(j.error_text, ''), 'Ошибка без текста')
                     ) failed_by_text
                     GROUP BY scan_task_id
                 ) jf ON jf.scan_task_id = t.id
@@ -426,11 +535,11 @@ class ScanHostReadStore:
                 ORDER BY COALESCE(MAX(t.completed_at), MAX(t.updated_at), MAX(t.created_at)) DESC
                 LIMIT ? OFFSET ?
                 """,
-                [normalized_host, *params, safe_limit, safe_offset],
+                [normalized_host, *params, *params, safe_limit, safe_offset],
             ).fetchall()
         items: List[Dict[str, Any]] = []
         for row in rows:
-            item = self._serialize_task_row(row, now_ts=now_ts)
+            item = self._serialize_task_row(row, now_ts=now_ts, slim=slim)
             item["hostname"] = str(row["hostname"] or normalized_host).strip()
             item["failed_jobs_count"] = int(row["failed_jobs_count"] or 0)
             item["failed_job_errors"] = str(row["failed_job_errors"] or "").strip()
@@ -443,7 +552,13 @@ class ScanHostReadStore:
                 "total": int(row["observations_total"] or 0),
             }
             items.append(item)
-        return {"total": int(total or 0), "items": items, "limit": safe_limit, "offset": safe_offset}
+        return {
+            "total": int(total or 0),
+            "items": items,
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "view": resolved_view,
+        }
 
     def list_task_observations(
         self,

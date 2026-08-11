@@ -80,12 +80,17 @@ import {
   buildChatNotificationRoute,
   claimChatMessageNotification,
   createChatSystemNotification,
+  resolveChatNotificationSenderName,
   getChatNotificationState,
+  filterHubBellNotifications,
+  isLegacyOrdinaryChatHubNotification,
+  resolveOrdinaryChatHubReadVisible,
   refreshChatNotificationState,
   setChatForegroundDiagnostic,
   setChatSocketStatus,
   shouldDeliverExternalChatViaPushOnly,
   shouldSkipChatPushForegroundNotification,
+  syncActiveChatConversationToServiceWorker,
   syncChatPushSubscription,
 } from '../../lib/chatNotifications';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
@@ -115,7 +120,8 @@ const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
 const normalizeDbId = (value) => String(value ?? '').trim();
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
-const MAIL_UNREAD_REFRESH_TTL_MS = 90_000;
+// Was 90s — new mail badge / mail-needs-refresh waited almost a minute+.
+const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
 
 const groupItemsByRelativeDate = (items, dateKey) => {
@@ -241,6 +247,8 @@ function MainLayout({
   });
   const mailUnreadFetchedAtRef = useRef(0);
   const mailUnreadBaselineReadyRef = useRef(false);
+  const chatUnreadBaselineReadyRef = useRef(false);
+  const ordinaryChatHubReadVisibleRef = useRef(true);
   const mailChannelEnabledRef = useRef(true);
   const hasDashboardPermission = hasPermission('dashboard.read');
   const hasTasksPermission = hasPermission('tasks.read');
@@ -264,9 +272,26 @@ function MainLayout({
     };
   }, []);
   const activeChatConversationId = activeChatConversationIdFromChat || activeChatConversationIdFromUrl;
+
+  useEffect(() => {
+    const syncActiveChatToServiceWorker = () => {
+      syncActiveChatConversationToServiceWorker(
+        document.visibilityState === 'visible' ? activeChatConversationId : '',
+      );
+    };
+    syncActiveChatToServiceWorker();
+    document.addEventListener('visibilitychange', syncActiveChatToServiceWorker);
+    return () => {
+      document.removeEventListener('visibilitychange', syncActiveChatToServiceWorker);
+      syncActiveChatConversationToServiceWorker('');
+    };
+  }, [activeChatConversationId]);
+
   const isChatRoute = location.pathname.startsWith('/chat');
   const isMailRoute = location.pathname.startsWith('/mail');
-  const isFixedHeightRoute = isChatRoute || isMailRoute;
+  const isDocflowRoute = location.pathname.startsWith('/docflow');
+  const isDlpRoute = location.pathname.startsWith('/dlp') || location.pathname.startsWith('/file-egress');
+  const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute;
   const isMobileChatRoute = isPhone && isChatRoute;
   const isDesktopChatRoute = !isPhone && isChatRoute;
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
@@ -597,7 +622,7 @@ function MainLayout({
     const actionLabel = channel === 'tasks'
       ? 'Открыть задачу'
       : channel === 'announcements'
-        ? 'Открыть заметку'
+        ? 'Открыть публикацию'
         : 'Открыть';
     notifyInfoRef.current?.(body || title || 'Новое уведомление', {
       title: title || 'Уведомление',
@@ -794,7 +819,7 @@ function MainLayout({
       }
 
       const previewText = getMessagePreview(message);
-      const senderName = String(message?.sender?.full_name || message?.sender?.username || '').trim() || 'Собеседник';
+      const senderName = resolveChatNotificationSenderName(message);
       const navigateTo = buildChatNotificationRoute({ conversationId, messageId });
       if (isVisible) {
         notifyInfoRef.current?.(previewText, {
@@ -825,10 +850,13 @@ function MainLayout({
       emitAgentDebugLog({
         location: 'MainLayout.jsx:handleChatMessageCreated',
         message: shouldShowLocalSystemNotification ? 'local system notification requested' : 'local system notification skipped',
-        hypothesisId: 'H-EXT-DUP',
+        hypothesisId: 'H5',
         data: {
           messageId,
           conversationId,
+          activeChatConversationId: String(activeChatConversationId || '').trim(),
+          isActiveVisibleConversation,
+          pathname: location.pathname,
           visibility: document.visibilityState,
           pushSubscribed: currentChatNotificationState.pushSubscribed,
           backgroundCapable: currentChatNotificationState.backgroundCapable,
@@ -991,6 +1019,11 @@ useEffect(() => {
 
         const applyHubCounts = (data) => {
           const counts = data || {};
+          if (counts.hub_chat_ordinary) {
+            ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
+              counts.hub_chat_ordinary,
+            );
+          }
           notifTotal = Number(counts.notifications_unread_total || 0);
           annUnread = Number(counts.announcements_unread || 0);
           annAckPending = Number(counts.announcements_ack_pending || 0);
@@ -1061,6 +1094,7 @@ useEffect(() => {
 
         await Promise.allSettled(promises);
 
+        const previousChatMessagesUnread = Number(previousCounts.chat_messages_unread_total || 0);
         const nextCounts = {
           notifications_unread_total: notifTotal + mailUnread,
           announcements_unread: annUnread,
@@ -1092,6 +1126,30 @@ useEffect(() => {
             previousUnread: previousMailUnread,
             nextUnread: mailUnread,
           });
+        }
+        // Non-WS fallback: toast from chat unread summary delta (not hub ordinary rows).
+        if (hasChatPermission && !CHAT_WS_ENABLED) {
+          const hadChatUnreadBaseline = chatUnreadBaselineReadyRef.current;
+          if (!hadChatUnreadBaseline) {
+            chatUnreadBaselineReadyRef.current = true;
+          } else if (chatMessagesUnreadTotal > previousChatMessagesUnread) {
+            const delta = chatMessagesUnreadTotal - previousChatMessagesUnread;
+            const toastMessage = delta === 1
+              ? 'Новое сообщение в чате'
+              : `Новые сообщения в чате: ${delta}`;
+            const isVisible = typeof document !== 'undefined' && document.visibilityState === 'visible';
+            if (isVisible && !location.pathname.startsWith('/chat')) {
+              notifyInfoRef.current?.(toastMessage, {
+                title: 'Чат',
+                source: 'chat',
+                channel: 'system',
+                dedupeMode: 'recent',
+                dedupeKey: `chat-unread-delta:${chatMessagesUnreadTotal}`,
+                action: createNavigateToastAction('/chat', 'Открыть чат'),
+                durationMs: 5200,
+              });
+            }
+          }
         }
         setUnreadCounts(nextCounts);
       } catch (error) {
@@ -1171,9 +1229,13 @@ useEffect(() => {
               unread_only: true,
             },
           }).then((response) => {
-            nextHubItems = (Array.isArray(response?.data?.items) ? response.data.items : [])
-              .filter((item) => Number(item?.unread || 0) === 1)
-              .sort((left, right) => String(right?.created_at || '').localeCompare(String(left?.created_at || '')));
+            const readVisible = resolveOrdinaryChatHubReadVisible(response?.data?.hub_chat_ordinary);
+            ordinaryChatHubReadVisibleRef.current = readVisible;
+            nextHubItems = filterHubBellNotifications(
+              (Array.isArray(response?.data?.items) ? response.data.items : [])
+                .filter((item) => Number(item?.unread || 0) === 1),
+              { ordinaryReadVisible: readVisible },
+            ).sort((left, right) => String(right?.created_at || '').localeCompare(String(left?.created_at || '')));
           }),
         );
       }
@@ -1264,6 +1326,11 @@ useEffect(() => {
         hubPollFailureCountRef.current = 0;
         hubPollBackoffUntilRef.current = 0;
         const payload = response?.data || {};
+        if (payload?.hub_chat_ordinary) {
+          ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
+            payload.hub_chat_ordinary,
+          );
+        }
         const items = Array.isArray(payload?.items) ? payload.items : [];
 
         if (items.length > 0) {
@@ -1295,7 +1362,15 @@ useEffect(() => {
                 const id = String(item?.id || '').trim();
                 if (!id || hasSeenHubNotificationRef.current?.(id)) return;
                 const entityType = String(item?.entity_type || '').trim().toLowerCase();
+                // WS clients get chat toasts from the socket.
                 if (entityType === 'chat' && hasChatPermission && CHAT_WS_ENABLED) {
+                  return;
+                }
+                // When READ_VISIBLE=false, suppress ordinary legacy hub toasts (badge already excludes them).
+                if (
+                  !ordinaryChatHubReadVisibleRef.current
+                  && isLegacyOrdinaryChatHubNotification(item)
+                ) {
                   return;
                 }
                 const rawTitle = String(item?.title || '').trim();
@@ -1628,7 +1703,7 @@ useEffect(() => {
   const activeNavigationPath = String(pendingNavigation?.path || '').trim() || location.pathname;
   const shouldHideHeaderContext = false;
   const getCurrentTitle = () => {
-    if (activeNavigationPath.startsWith('/dashboard/news')) return 'Новости';
+    if (activeNavigationPath.startsWith('/dashboard/news')) return 'Лента';
     const item = visibleNavigationItems.find((item) => isItemActive(item.path, activeNavigationPath));
     if (item) return item.label;
     if (activeNavigationPath.startsWith('/profile')) return 'Профиль';

@@ -121,7 +121,7 @@ async def test_list_tasks_always_uses_personal_filters_and_applies_limit(monkeyp
     )
     try:
         result = await client.list_tasks(
-            login="user", password="secret", scope="inbox", search="договор", limit=1
+            login="user", password="secret", scope="inbox", search="Согласование", limit=1
         )
     finally:
         await client.aclose()
@@ -130,10 +130,36 @@ async def test_list_tasks_always_uses_personal_filters_and_applies_limit(monkeyp
     assert "<tns:property>byUser</tns:property>" in xml
     assert "<tns:property>withExecuted</tns:property>" in xml
     assert "<tns:property>typed</tns:property>" in xml
-    assert "<tns:property>name</tns:property>" in xml
-    assert "<tns:comparisonOperator>LIKE</tns:comparisonOperator>" in xml
+    assert "<tns:property>name</tns:property>" not in xml
     assert result["returned"] == 1
     assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_filters_search_locally_without_dm_name_condition():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_soap_response(
+                "DMGetObjectListResponse",
+                f"<tns:items>{_task()}</tns:items><tns:items>{_acquaintance_task()}</tns:items>"
+                "<tns:tooManyObjects>false</tns:tooManyObjects>",
+            ),
+        )
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.list_tasks(
+            login="user", password="secret", scope="all", search="ознакомиться", limit=10
+        )
+    finally:
+        await client.aclose()
+
+    assert result["returned"] == 1
+    assert "Ознакомиться" in result["items"][0]["title"]
 
 
 @pytest.mark.asyncio
@@ -536,3 +562,158 @@ def test_file_summaries_do_not_expose_internal_file_versions_as_attachments():
     assert [(item["name"], item["xdto_type"]) for item in files] == [
         ("document.pdf", "DMFile"),
     ]
+
+
+def test_like_pattern_wraps_plain_query():
+    assert DocflowDMServiceClient._like_pattern("акт") == "%акт%"
+    assert DocflowDMServiceClient._like_pattern("%акт%") == "%акт%"
+    assert DocflowDMServiceClient._like_pattern("") == ""
+
+
+@pytest.mark.asyncio
+async def test_search_assignment_documents_empty_query_skips_soap():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("empty document search must not call DMService")
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.search_assignment_documents(login="user", password="secret", search="ab")
+        assert result["items"] == []
+        assert result["truncated"] is False
+        assert "3" in (result.get("reason") or "")
+        assert calls == 0
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_search_assignment_documents_sends_like_percent_and_parallel_types():
+    seen_types: list[str] = []
+    seen_values: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _request_type(request) == "DMGetObjectListRequest"
+        payload = request.content.decode("utf-8")
+        type_match = re.search(r"<tns:type>(DM\w+Document)</tns:type>", payload)
+        assert type_match
+        seen_types.append(type_match.group(1))
+        value_match = re.search(r"<tns:value[^>]*>([^<]+)</tns:value>", payload)
+        assert value_match
+        seen_values.append(value_match.group(1))
+        assert "comparisonOperator" in payload and "LIKE" in payload
+        doc_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        return httpx.Response(
+            200,
+            content=_soap_response(
+                "DMGetObjectListResponse",
+                f"""
+                <tns:items>
+                  <tns:object xsi:type="tns:{type_match.group(1)}">
+                    <tns:name>Акт {type_match.group(1)}</tns:name>
+                    <tns:ObjectID><tns:id>{doc_id}</tns:id><tns:type>{type_match.group(1)}</tns:type></tns:ObjectID>
+                    <tns:number>A-1</tns:number>
+                  </tns:object>
+                </tns:items>
+                <tns:tooManyObjects>false</tns:tooManyObjects>
+                """,
+            ),
+        )
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.search_assignment_documents(
+            login="user", password="secret", search="акт", limit=20
+        )
+        assert set(seen_types) == {
+            "DMInternalDocument",
+            "DMIncomingDocument",
+            "DMOutgoingDocument",
+        }
+        assert all(value == "%акт%" for value in seen_values)
+        assert result["returned"] == 3
+        assert result["truncated"] is False
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_search_assignment_documents_partial_type_failure_keeps_results():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.content.decode("utf-8")
+        if "DMIncomingDocument" in payload:
+            raise httpx.ReadTimeout("timeout", request=request)
+        return httpx.Response(
+            200,
+            content=_soap_response(
+                "DMGetObjectListResponse",
+                """
+                <tns:items>
+                  <tns:object xsi:type="tns:DMInternalDocument">
+                    <tns:name>Внутренний акт</tns:name>
+                    <tns:ObjectID><tns:id>bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb</tns:id><tns:type>DMInternalDocument</tns:type></tns:ObjectID>
+                  </tns:object>
+                </tns:items>
+                <tns:tooManyObjects>false</tns:tooManyObjects>
+                """,
+            ),
+        )
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.search_assignment_documents(
+            login="user", password="secret", search="акт"
+        )
+        assert result["returned"] >= 1
+        assert any(item["document_type"] == "internal" for item in result["items"])
+        assert result.get("reason")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_search_assignment_assignees_sends_like_percent():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.content.decode("utf-8")
+        assert "%Иванов%" in payload
+        assert "LIKE" in payload
+        return httpx.Response(
+            200,
+            content=_soap_response(
+                "DMGetObjectListResponse",
+                """
+                <tns:items>
+                  <tns:object xsi:type="tns:DMUser">
+                    <tns:name>Иванов И.И.</tns:name>
+                    <tns:ObjectID><tns:id>cccccccc-cccc-cccc-cccc-cccccccccccc</tns:id><tns:type>DMUser</tns:type></tns:ObjectID>
+                  </tns:object>
+                </tns:items>
+                <tns:tooManyObjects>false</tns:tooManyObjects>
+                """,
+            ),
+        )
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.search_assignment_assignees(
+            login="user", password="secret", search="Иванов"
+        )
+        assert result["returned"] == 1
+        assert result["items"][0]["name"] == "Иванов И.И."
+    finally:
+        await client.aclose()

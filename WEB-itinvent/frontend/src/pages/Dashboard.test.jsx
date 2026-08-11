@@ -145,7 +145,7 @@ function renderDashboard(initialEntry = '/dashboard', mobile = false) {
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/dashboard" element={<><Dashboard /><LocationProbe /></>} />
-        <Route path="/dashboard/news" element={<LocationProbe />} />
+        <Route path="/feed" element={<LocationProbe />} />
         <Route path="*" element={<LocationProbe />} />
       </Routes>
     </MemoryRouter>,
@@ -307,11 +307,11 @@ describe('Dashboard today page', () => {
     });
   });
 
-  it('redirects legacy announcement deep links to the news route', async () => {
+  it('redirects legacy announcement deep links to the feed route', async () => {
     renderDashboard('/dashboard?announcement=ann-1');
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/dashboard/news?announcement=ann-1');
+      expect(screen.getByTestId('location')).toHaveTextContent('/feed?post=ann-1');
     });
   });
 });

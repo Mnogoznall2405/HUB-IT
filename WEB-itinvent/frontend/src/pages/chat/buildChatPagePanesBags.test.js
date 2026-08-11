@@ -4,6 +4,7 @@ import buildChatPagePanesBags from './buildChatPagePanesBags';
 
 describe('buildChatPagePanesBags', () => {
   it('groups pane props into shell, sidebar, thread and rightPanel bags', () => {
+    const handleSendSticker = () => {};
     const input = {
       theme: { palette: {} },
       ui: { pageBg: '#fff' },
@@ -130,6 +131,7 @@ describe('buildChatPagePanesBags', () => {
       scrollToMessage: () => {},
       emojiPickerOpen: false,
       insertEmojiAtSelection: () => {},
+      handleSendSticker,
       handleSendGif: () => {},
       voiceRecording: false,
       voiceRecordingDuration: 0,
@@ -162,6 +164,7 @@ describe('buildChatPagePanesBags', () => {
     expect(bags.sidebar.activeConversationId).toBe('c1');
     expect(bags.thread.activeConversationId).toBe('c1');
     expect(bags.thread.messages).toEqual([]);
+    expect(bags.thread.handleSendSticker).toBe(handleSendSticker);
     expect(bags.rightPanel.socketStatus).toBe('connected');
   });
 });

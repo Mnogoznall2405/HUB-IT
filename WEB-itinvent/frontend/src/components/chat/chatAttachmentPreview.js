@@ -1,11 +1,41 @@
 import {
-  buildAttachmentBlobPayload,
   buildAttachmentPreviewState,
   createEmptyAttachmentPreview,
-  getOfficeAttachmentSourceKind,
   isOfficePreviewableAttachment,
 } from '../mail/mailMessageFileActions';
-import { buildOfficeAttachmentPreviewState } from '../mail/officeAttachmentPreview';
+import {
+  ATTACHMENT_PREVIEW_TIMEOUT_MS,
+  getAttachmentPreviewPollDelay,
+  waitForAttachmentPreview,
+} from '../documentPreview/asyncAttachmentPreview';
+
+export const CHAT_ATTACHMENT_PREVIEW_TIMEOUT_MS = ATTACHMENT_PREVIEW_TIMEOUT_MS;
+
+export const getChatAttachmentPreviewPollDelay = ({
+  attempt = 0,
+  retryAfterMs = 0,
+  random = Math.random,
+} = {}) => getAttachmentPreviewPollDelay({ attempt, retryAfterMs, random });
+
+export const waitForChatAttachmentPreview = async ({
+  chatAttachmentsAPI,
+  messageId,
+  attachmentId,
+  signal,
+  timeoutMs = CHAT_ATTACHMENT_PREVIEW_TIMEOUT_MS,
+  now = Date.now,
+  random = Math.random,
+  sleep,
+} = {}) => waitForAttachmentPreview({
+  previewAPI: chatAttachmentsAPI,
+  parentId: messageId,
+  attachmentId,
+  signal,
+  timeoutMs,
+  now,
+  random,
+  ...(sleep ? { sleep } : {}),
+});
 
 const getAttachmentPreviewExtension = (filename = '') => {
   const match = String(filename || '').trim().match(/\.([a-z0-9]+)$/i);
@@ -47,6 +77,7 @@ export const buildChatDocumentPreviewState = async ({
   messageId,
   attachmentId,
   attachment,
+  signal,
   createObjectUrl = (blob) => (
     typeof window !== 'undefined' && typeof window.URL?.createObjectURL === 'function'
       ? window.URL.createObjectURL(blob)
@@ -59,7 +90,13 @@ export const buildChatDocumentPreviewState = async ({
   const downloadContext = { messageId, attachmentId, attachment };
 
   if (isOfficePreviewableAttachment(mapped)) {
-    const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
+    const previewMetadata = await waitForChatAttachmentPreview({
+      chatAttachmentsAPI,
+      messageId,
+      attachmentId,
+      signal,
+    });
+    const { buildOfficeAttachmentPreviewState } = await import('../mail/officeAttachmentPreview');
     const previewState = await buildOfficeAttachmentPreviewState({
       mailAPI: chatAttachmentsAPI,
       messageId,
@@ -68,6 +105,8 @@ export const buildChatDocumentPreviewState = async ({
       attachment: mapped,
       filename,
       contentType,
+      previewMetadata,
+      signal,
       createObjectUrl,
     });
     return {
@@ -77,7 +116,7 @@ export const buildChatDocumentPreviewState = async ({
     };
   }
 
-  const response = await chatAttachmentsAPI.downloadAttachment(messageId, attachmentId);
+  const response = await chatAttachmentsAPI.downloadAttachment(messageId, attachmentId, { signal });
   const previewState = await buildAttachmentPreviewState({
     response,
     attachment: mapped,

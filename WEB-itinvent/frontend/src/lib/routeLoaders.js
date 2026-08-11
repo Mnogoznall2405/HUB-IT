@@ -49,7 +49,7 @@ const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 
 export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
 export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
-export const loadDashboardNewsRoute = defineRouteLoader(() => import('../pages/DashboardNews'));
+export const loadFeedRoute = defineRouteLoader(() => import('../pages/Feed'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
 export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
 export const loadChatRoute = defineRouteLoader(() => import('../pages/chat/Chat'));
@@ -60,6 +60,7 @@ export const loadProfileRoute = defineRouteLoader(() => import('../pages/Profile
 export const loadAdminRoute = defineRouteLoader(() => import('../pages/Admin'));
 export const loadStatisticsRoute = defineRouteLoader(() => import('../pages/Statistics'));
 export const loadComputersRoute = defineRouteLoader(() => import('../pages/Computers'));
+export const loadFileEgressRoute = defineRouteLoader(() => import('../pages/FileEgress'));
 export const loadScanCenterRoute = defineRouteLoader(() => import('../pages/ScanCenter'));
 export const loadMfuRoute = defineRouteLoader(() => import('../pages/Mfu'));
 export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
@@ -83,7 +84,8 @@ export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/Shar
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
   ['/dashboard', loadDashboardRoute],
-  ['/dashboard/news', loadDashboardNewsRoute],
+  ['/feed', loadFeedRoute],
+  ['/dashboard/news', loadFeedRoute],
   ['/tasks', loadTasksRoute],
   ['/tickets', loadTicketsRoute],
   ['/chat', loadChatRoute],
@@ -95,6 +97,8 @@ const ROUTE_LOADERS = new Map([
   ['/statistics', loadStatisticsRoute],
   ['/computers', loadComputersRoute],
   ['/scan-center', loadScanCenterRoute],
+  ['/dlp', loadFileEgressRoute],
+  ['/file-egress', loadFileEgressRoute],
   ['/mfu', loadMfuRoute],
   ['/mail', loadMailRoute],
   ['/menu', loadMobileMenuRoute],
@@ -123,7 +127,7 @@ export const normalizeRouteLoaderPath = (path) => {
     return '/networks';
   }
   if (normalized === '/dashboard/news' || normalized.startsWith('/dashboard/news/')) {
-    return '/dashboard/news';
+    return '/feed';
   }
   if (normalized === '/shared-files' || normalized.startsWith('/shared-files/')) {
     return '/shared-files';

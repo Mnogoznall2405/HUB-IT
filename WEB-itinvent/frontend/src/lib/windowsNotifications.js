@@ -172,10 +172,23 @@ export function getHubNotificationNavigateTo(item) {
     return getTaskNotificationPath(item);
   }
   if (entityType === 'announcement' && entityId) {
-    return `/dashboard?announcement=${encodeURIComponent(entityId)}`;
+    const [announcementId, commentId] = entityId.split('#', 2);
+    const path = `/feed?post=${encodeURIComponent(announcementId)}`;
+    return commentId ? `${path}#feed-comment-${encodeURIComponent(commentId)}` : path;
   }
   if (entityType === 'chat' && entityId) {
-    return `/chat?conversation=${encodeURIComponent(entityId)}`;
+    const messageId = String(
+      item?.message_id
+      || item?.entity_message_id
+      || item?.payload?.message_id
+      || '',
+    ).trim();
+    const query = new URLSearchParams();
+    query.set('conversation', entityId);
+    if (messageId) {
+      query.set('message', messageId);
+    }
+    return `/chat?${query.toString()}`;
   }
   return '/dashboard';
 }
@@ -183,7 +196,7 @@ export function getHubNotificationNavigateTo(item) {
 export function getHubNotificationActionLabel(item) {
   const entityType = String(item?.entity_type || '').trim().toLowerCase();
   if (entityType === 'task') return 'Открыть задачу';
-  if (entityType === 'announcement') return 'Открыть заметку';
+  if (entityType === 'announcement') return 'Открыть публикацию';
   if (entityType === 'chat') return 'Открыть чат';
   return 'Открыть центр';
 }

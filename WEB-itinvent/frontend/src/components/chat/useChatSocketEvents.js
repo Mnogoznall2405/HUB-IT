@@ -1,6 +1,7 @@
 import { startTransition, useEffect } from 'react';
 
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
+import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import {
   CHAT_SOCKET_ACTIVITY_EVENT,
   CHAT_SOCKET_AI_RUN_UPDATED_EVENT,
@@ -61,6 +62,8 @@ export default function useChatSocketEvents({
 }) {
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
+    // Room + inbox can both deliver the same message.created; apply sidebar preview once.
+    const previewAppliedByConversation = new Map();
     const handleSocketActivity = (event) => {
       const eventType = String(event?.detail?.type || '').trim() || 'socket:message';
       markSocketActivity(eventType);
@@ -84,13 +87,17 @@ export default function useChatSocketEvents({
         }
         if ((Date.now() - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
         if (conversationsLoadingRef.current) return;
-        void loadConversations({ silent: true, force: true });
+        void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
         if (
           activeConversationIdRef.current
           && !messagesLoadingRef.current
           && !hasPendingInitialAnchorForConversation(activeConversationIdRef.current)
         ) {
-          void loadMessages(activeConversationIdRef.current, { silent: true, reason: 'socket:connected', force: true });
+          void Promise.resolve(loadMessages(activeConversationIdRef.current, {
+            silent: true,
+            reason: 'socket:connected',
+            force: true,
+          })).catch(() => {});
         }
       }
     };
@@ -103,7 +110,7 @@ export default function useChatSocketEvents({
       }
       if ((Date.now() - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
       if (conversationsLoadingRef.current) return;
-      void loadConversations({ silent: true, force: true });
+      void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
     };
 
     const handleConversationUpdated = (event) => {
@@ -157,24 +164,128 @@ export default function useChatSocketEvents({
 
     const handleMessageCreated = (event) => {
       const envelope = event?.detail || {};
-      const message = envelope?.payload || {};
+      const rawMessage = envelope?.payload || {};
+      // Room broadcast may send a shared payload (is_own=false); resolve against current user.
+      const senderId = Number(
+        rawMessage?.sender?.id
+        || rawMessage?.sender_user_id
+        || rawMessage?.sender?.user_id
+        || 0,
+      );
+      const currentUserId = Number(userId || 0);
+      const resolvedIsOwn = currentUserId > 0 && senderId > 0
+        ? senderId === currentUserId
+        : Boolean(rawMessage?.is_own);
+      const message = rawMessage?.is_own === resolvedIsOwn
+        ? rawMessage
+        : {
+          ...rawMessage,
+          is_own: resolvedIsOwn,
+          delivery_status: resolvedIsOwn
+            ? (rawMessage?.delivery_status || 'sent')
+            : null,
+          read_by_count: resolvedIsOwn ? Number(rawMessage?.read_by_count || 0) : 0,
+        };
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
-      if (!message?.id || !conversationId) return;
+      const activeId = String(activeConversationIdRef.current || '').trim();
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'useChatSocketEvents.js:handleMessageCreated:is_own',
+        message: 'resolved message.created is_own',
+        hypothesisId: 'J',
+        data: {
+          conversationId,
+          activeId,
+          messageId: String(rawMessage?.id || '').trim(),
+          senderId,
+          currentUserId,
+          rawIsOwn: Boolean(rawMessage?.is_own),
+          resolvedIsOwn,
+          flipped: Boolean(rawMessage?.is_own) !== Boolean(resolvedIsOwn),
+        },
+      });
+      // #endregion
+      if (!message?.id || !conversationId) {
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'useChatSocketEvents.js:handleMessageCreated',
+          message: 'message.created dropped: missing id/conversation',
+          hypothesisId: 'H3',
+          data: {
+            hasMessageId: Boolean(message?.id),
+            conversationId,
+            activeId,
+            payloadConversationId: String(message?.conversation_id || '').trim(),
+          },
+        });
+        // #endregion
+        return;
+      }
 
       if (conversationId !== activeConversationIdRef.current) {
+        const previewMessageId = String(message.id || '').trim();
+        if (previewAppliedByConversation.get(conversationId) === previewMessageId) {
+          return;
+        }
+        previewAppliedByConversation.set(conversationId, previewMessageId);
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'useChatSocketEvents.js:handleMessageCreated',
+          message: 'message.created for non-active conversation (preview only)',
+          hypothesisId: 'I2',
+          data: {
+            conversationId,
+            activeId,
+            messageId: previewMessageId,
+            isOwn: Boolean(resolvedIsOwn),
+            senderId,
+            currentUserId,
+          },
+        });
+        // #endregion
         startTransition(() => {
-          syncConversationPreview(
+          // Targeted sidebar patch only — do not reload the whole conversations list.
+          const matched = syncConversationPreview(
             conversationId,
             message,
-            message?.is_own ? { unread_count: 0 } : {},
+            resolvedIsOwn ? { unread_count: 0 } : {},
           );
           promoteConversationToTop(conversationId);
+          // Conversation missing from sidebar (filtered/stale page) — force list refresh.
+          if (!matched) {
+            // #region agent log
+            emitAgentDebugLog({
+              location: 'useChatSocketEvents.js:handleMessageCreated',
+              message: 'preview patch missed conversation → force list reload',
+              hypothesisId: 'P1',
+              runId: 'chat-preview',
+              data: { conversationId, messageId: previewMessageId },
+            });
+            // #endregion
+            void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
+          }
         });
         return;
       }
 
       const isActive = conversationId === activeConversationIdRef.current;
       const alreadyRendered = hasPersistedThreadMessageEquivalent(messagesRef.current, message);
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'useChatSocketEvents.js:handleMessageCreated',
+        message: alreadyRendered ? 'active message already rendered' : 'merging active message into thread',
+        hypothesisId: 'H3',
+        data: {
+          conversationId,
+          activeId,
+          messageId: String(message.id || '').trim(),
+          alreadyRendered,
+          nearBottom: Boolean(threadNearBottomRef.current),
+          messageConversationId: String(message?.conversation_id || '').trim(),
+          threadLen: Array.isArray(messagesRef.current) ? messagesRef.current.length : -1,
+        },
+      });
+      // #endregion
       latestActiveThreadSocketMessageRef.current = {
         conversationId,
         messageId: String(message.id || '').trim(),
@@ -197,8 +308,15 @@ export default function useChatSocketEvents({
       if (!alreadyRendered) {
         mergeMessageIntoThread(message);
         startTransition(() => {
-          syncConversationPreview(conversationId, message, (message?.is_own || isActive) ? { unread_count: 0 } : {});
+          syncConversationPreview(conversationId, message, (resolvedIsOwn || isActive) ? { unread_count: 0 } : {});
           promoteConversationToTop(conversationId);
+          if (!resolvedIsOwn && senderId > 0 && typeof updatePresenceInCollections === 'function') {
+            updatePresenceInCollections(senderId, {
+              is_online: true,
+              last_seen_at: String(message?.created_at || '').trim() || null,
+              status_text: 'В сети',
+            });
+          }
         });
       }
       if (message?.is_own) {
@@ -370,7 +488,7 @@ export default function useChatSocketEvents({
       if (typeof onConversationRemoved === 'function') {
         onConversationRemoved(conversationId);
       }
-      void loadConversations({ silent: true, force: true });
+      void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
     };
 
     const handleMessageReaction = (event) => {

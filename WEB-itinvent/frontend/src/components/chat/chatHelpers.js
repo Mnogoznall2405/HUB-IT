@@ -271,7 +271,8 @@ export const formatFileSize = (value) => {
   if (!Number.isFinite(size) || size <= 0) return '0 Б';
   if (size < 1024) return `${size} Б`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
-  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} ГБ`;
 };
 
 export const canEditChatMessage = (message) => {
@@ -381,7 +382,7 @@ export const getAttachmentKind = (attachment) => {
     || attachment?.fileType
     || '',
   ).trim().toLowerCase();
-  if (['image', 'video', 'audio', 'file'].includes(explicitKind)) return explicitKind;
+  if (['image', 'video', 'audio', 'file', 'sticker'].includes(explicitKind)) return explicitKind;
 
   const mimeType = getAttachmentMimeType(attachment);
   if (mimeType.startsWith('image/')) return 'image';
@@ -404,7 +405,8 @@ export const isVideoAttachment = (attachment) => {
   return getAttachmentKind(attachment) === 'video';
 };
 export const isAudioAttachment = (attachment) => getAttachmentKind(attachment) === 'audio';
-export const isMediaAttachment = (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment);
+export const isStickerAttachment = (attachment) => getAttachmentKind(attachment) === 'sticker';
+export const isMediaAttachment = (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment);
 export const isPdfAttachment = (attachment) => getAttachmentMimeType(attachment) === 'application/pdf';
 
 export const buildAttachmentUrl = (messageId, attachmentId, options = {}) => {
@@ -489,15 +491,38 @@ export const getSearchResultPreview = (message) => {
   return body || 'Сообщение';
 };
 
+export const resolvePresenceWithActivity = (presence, { activityAt = '', treatAsOnlineWindowMs = 2 * 60_000 } = {}) => {
+  const base = (presence && typeof presence === 'object') ? { ...presence } : {};
+  const activityRaw = String(activityAt || '').trim();
+  if (!activityRaw) return base;
+  const activityDate = new Date(activityRaw);
+  if (Number.isNaN(activityDate.getTime())) return base;
+  const currentRaw = String(base.last_seen_at || '').trim();
+  const currentDate = currentRaw ? new Date(currentRaw) : null;
+  const currentValid = currentDate && !Number.isNaN(currentDate.getTime());
+  if (currentValid && currentDate.getTime() >= activityDate.getTime()) {
+    return base;
+  }
+  const ageMs = Date.now() - activityDate.getTime();
+  const recentlyActive = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= treatAsOnlineWindowMs;
+  return {
+    ...base,
+    is_online: Boolean(base.is_online) || recentlyActive,
+    last_seen_at: activityRaw,
+    // Force recomputation from last_seen_at / is_online — cached status_text may be stale.
+    status_text: recentlyActive || base.is_online ? 'В сети' : '',
+  };
+};
+
 export const formatPresenceText = (presence) => {
   if (!presence || typeof presence !== 'object') return 'Не в сети';
-  const statusText = normalizeTrimmedChatText(presence.status_text);
-  if (statusText) return statusText;
   if (presence.is_online) return 'В сети';
+  const statusText = normalizeTrimmedChatText(presence.status_text);
+  // Prefer fresh last_seen_at over a stale precomputed status_text from list cache.
   const raw = String(presence.last_seen_at || '').trim();
-  if (!raw) return 'Не в сети';
+  if (!raw) return statusText || 'Не в сети';
   const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return 'Не в сети';
+  if (Number.isNaN(date.getTime())) return statusText || 'Не в сети';
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   if (diffMs < 60_000) return 'Был(а) только что';
@@ -602,7 +627,10 @@ export const getConversationHeaderSubtitle = (conversation) => {
     return 'Личные заметки';
   }
   if (conversation.kind === 'direct') {
-    return formatPresenceText(conversation?.direct_peer?.presence);
+    const presence = resolvePresenceWithActivity(conversation?.direct_peer?.presence, {
+      activityAt: conversation?.last_message_is_own ? '' : conversation?.last_message_at,
+    });
+    return formatPresenceText(presence);
   }
   if (isTaskConversation(conversation)) {
     return `Статус: ${formatTaskStatusLabel(conversation?.task_status)} • ${Number(conversation?.member_count || 0)} участников`;
@@ -617,7 +645,10 @@ export const getConversationStatusLine = (conversation) => {
     return `Личные заметки • ${preview}`;
   }
   if (conversation.kind === 'direct') {
-    return `${formatPresenceText(conversation?.direct_peer?.presence)} • ${preview}`;
+    const presence = resolvePresenceWithActivity(conversation?.direct_peer?.presence, {
+      activityAt: conversation?.last_message_is_own ? '' : conversation?.last_message_at,
+    });
+    return `${formatPresenceText(presence)} • ${preview}`;
   }
   if (isTaskConversation(conversation)) {
     return `${formatTaskStatusLabel(conversation?.task_status)} • ${preview}`;

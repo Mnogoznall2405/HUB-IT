@@ -28,6 +28,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import { formatIncidentUncPath } from '../../lib/scanIncidentInbox';
+import { scanTasksAPI } from '../../api/scanTasks';
 
 const OBSERVATION_LABELS = {
   found_new: 'Найдено впервые',
@@ -262,6 +263,108 @@ function ObservationList({
   );
 }
 
+function MetricsSparkline({ points, color = '#1976d2' }) {
+  const width = 280;
+  const height = 56;
+  const pad = 4;
+  if (!points.length) return null;
+  const ys = points.map((p) => Number(p.y) || 0);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const span = Math.max(1e-6, maxY - minY);
+  const coords = points.map((p, idx) => {
+    const x = pad + (idx / Math.max(1, points.length - 1)) * (width - pad * 2);
+    const y = height - pad - ((Number(p.y) || 0) - minY) / span * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="sparkline">
+      <polyline fill="none" stroke={color} strokeWidth="2" points={coords.join(' ')} />
+    </svg>
+  );
+}
+
+export function SelectedRunSystemMetrics({ taskId }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [payload, setPayload] = useState(null);
+
+  useEffect(() => {
+    const id = String(taskId || '').trim();
+    if (!id) {
+      setPayload(null);
+      setError('');
+      return undefined;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    setPayload(null);
+    scanTasksAPI.getTaskSystemMetrics(id, {}, { signal: controller.signal })
+      .then((data) => {
+        if (!cancelled) setPayload(data || null);
+      })
+      .catch((err) => {
+        if (cancelled || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return;
+        setError(err?.response?.data?.detail || err?.message || 'Не удалось загрузить метрики');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [taskId]);
+
+  if (!taskId) return null;
+  if (loading) {
+    return (
+      <Paper variant="outlined" sx={{ p: 1.4, borderRadius: 1.5 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CircularProgress size={18} />
+          <Typography variant="body2" color="text.secondary">Загрузка системных метрик…</Typography>
+        </Stack>
+      </Paper>
+    );
+  }
+  if (error) {
+    return <Alert severity="warning">{error}</Alert>;
+  }
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (!items.length) {
+    return (
+      <Alert severity="info">Метрики для этого запуска недоступны (нет сэмплов за выбранное окно).</Alert>
+    );
+  }
+  const summary = payload?.summary || {};
+  const cpuPoints = items.map((row) => ({ y: row.cpu_percent }));
+  const memPoints = items.map((row) => ({ y: row.memory_percent }));
+  return (
+    <Paper variant="outlined" sx={{ p: 1.4, borderRadius: 1.5 }} data-testid="selected-run-system-metrics">
+      <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5 }}>Системные метрики запуска</Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+        CPU max {summary.cpu_percent_max != null ? `${Number(summary.cpu_percent_max).toFixed(1)}%` : '—'}
+        {' · '}
+        RAM max {summary.memory_percent_max != null ? `${Number(summary.memory_percent_max).toFixed(1)}%` : '—'}
+        {' · '}
+        точек {items.length}
+      </Typography>
+      <Stack spacing={1}>
+        <Box>
+          <Typography variant="caption" color="text.secondary">CPU %</Typography>
+          <MetricsSparkline points={cpuPoints} color="#1976d2" />
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.secondary">RAM %</Typography>
+          <MetricsSparkline points={memPoints} color="#2e7d32" />
+        </Box>
+      </Stack>
+    </Paper>
+  );
+}
+
 function ScanRunsTab({
   canScanRead,
   canScanAck,
@@ -424,6 +527,7 @@ function ScanRunsTab({
               </Paper>
             </Grid>
           </Grid>
+          <SelectedRunSystemMetrics taskId={selectedRunId} />
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} justifyContent="space-between">
             <Box>
               <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Находки выбранного запуска</Typography>

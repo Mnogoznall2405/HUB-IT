@@ -8,7 +8,7 @@ import { isValidEmailRecipient } from '../mail/mailComposeState';
 import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import { EmailActions, PhoneActions } from './AddressBookContactActions';
 import HighlightText from './HighlightText';
-import { pickPrimaryEmail, pickPrimaryPhone } from './addressBookUtils';
+import { absenceChipColor, formatAbsenceLabel, formatAge, pickPrimaryEmail, pickPrimaryPhone } from './addressBookUtils';
 
 export default function AddressBookEntryDetail({
   item,
@@ -48,6 +48,8 @@ export default function AddressBookEntryDetail({
 
   const primaryPhone = pickPrimaryPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
+  const absenceLabel = formatAbsenceLabel(item?.absence);
+  const ageLabel = formatAge(item?.age);
   const canCall = enableTelLinks && Boolean(primaryPhone?.telHref);
   const canTelegram = primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits);
   const canMail = primaryEmail?.value && isValidEmailRecipient(primaryEmail.value);
@@ -67,9 +69,19 @@ export default function AddressBookEntryDetail({
           <Typography variant={compact ? 'subtitle1' : 'h6'} fontWeight={800} sx={{ lineHeight: 1.25 }}>
             <HighlightText value={item.full_name} query={query} />
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="text.secondary" data-testid="address-book-person-meta">
             {item.position ? <HighlightText value={item.position} query={query} /> : 'Должность не указана'}
+            {ageLabel ? ` · ${ageLabel}` : null}
           </Typography>
+          {absenceLabel ? (
+            <Chip
+              size="small"
+              color={absenceChipColor(item.absence)}
+              label={absenceLabel}
+              sx={{ mt: 0.75, fontWeight: 700 }}
+              data-testid="address-book-absence-chip"
+            />
+          ) : null}
         </Box>
 
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">

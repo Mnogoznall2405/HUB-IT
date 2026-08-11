@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -81,6 +83,27 @@ def test_complete_json_uses_strict_json_schema_and_response_healing(monkeypatch)
     assert call["extra_body"] == {"plugins": [{"id": "response-healing"}]}
 
 
+def test_complete_json_can_disable_model_thinking(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([_completion('{"suggestions":["ok"]}')])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    payload, _usage = client.complete_json(
+        system_prompt="Return JSON.",
+        user_prompt="Hello",
+        model="deepseek/deepseek-v4-flash-0731",
+        response_healing=False,
+        thinking=False,
+    )
+
+    assert payload == {"suggestions": ["ok"]}
+    assert fake_client.chat.completions.calls[0]["extra_body"] == {
+        "thinking": {"type": "disabled"},
+    }
+
+
 def test_complete_json_falls_back_to_json_object_when_schema_mode_is_unsupported(monkeypatch):
     from backend.ai_chat.openrouter_client import OpenRouterClient
 
@@ -156,6 +179,13 @@ def test_resolve_model_purpose_chains(monkeypatch):
     from shared.llm.models import resolve_model, resolve_model_candidates
 
     monkeypatch.setattr(env_mod, "ROOT_ENV", {})
+    monkeypatch.delenv("ROUTERAI_MODEL", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_MAIL", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_CHAT", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_MARKDOWN", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_ACT", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_OCR", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_DOC_CONVERT", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL_MAIL", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL_CHAT", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL_MARKDOWN", raising=False)
@@ -167,6 +197,88 @@ def test_resolve_model_purpose_chains(monkeypatch):
     assert resolve_model("mail") == "chat-model"
     assert resolve_model("ocr") == "ocr-model"
     assert resolve_model_candidates("act") == ["ocr-model"]
+
+    monkeypatch.setenv("ROUTERAI_MODEL", "google/gemini-3.6-flash")
+    assert resolve_model("mail") == "google/gemini-3.6-flash"
+    assert resolve_model("ocr") == "google/gemini-3.6-flash"
+    assert resolve_model("doc_convert") == "google/gemini-3.6-flash"
+
+
+def test_routerai_configuration_takes_precedence_over_legacy_provider(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+    from shared.llm import env as env_mod
+
+    monkeypatch.setattr(env_mod, "ROOT_ENV", {})
+    monkeypatch.setenv("ROUTERAI_API_KEY", "routerai-key")
+    monkeypatch.setenv("ROUTERAI_BASE_URL", "https://routerai.ru/api/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "legacy-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+    client = OpenRouterClient()
+    assert client._resolve_api_key() == "routerai-key"
+    assert client._resolve_base_url() == "https://routerai.ru/api/v1"
+    assert client.get_status()["provider"] == "routerai"
+
+
+def test_routerai_dns_failure_retries_with_doh_address(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self.hosts = []
+
+        def connect_tcp(self, host, port, **kwargs):
+            self.hosts.append(host)
+            if host == "routerai.ru":
+                raise OSError("[Errno 11002] getaddrinfo failed")
+            return "stream"
+
+    delegate = _FakeBackend()
+    monkeypatch.setattr(client_module, "_resolve_routerai_ipv4_via_doh", lambda host: "95.129.236.184")
+    monkeypatch.setattr(client_module, "_routerai_dns_fallback_enabled", lambda: True)
+    monkeypatch.setattr(client_module, "_routerai_dns_prefer_doh", lambda: False, raising=False)
+
+    backend = client_module._RouterAIDnsFallbackBackend(delegate)
+    assert backend.connect_tcp("routerai.ru", 443) == "stream"
+    assert delegate.hosts == ["routerai.ru", "95.129.236.184"]
+
+
+def test_routerai_preferred_doh_skips_slow_system_dns(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self.hosts = []
+
+        def connect_tcp(self, host, port, **kwargs):
+            self.hosts.append(host)
+            return "stream"
+
+    delegate = _FakeBackend()
+    monkeypatch.setattr(client_module, "_resolve_routerai_ipv4_via_doh", lambda host: "95.129.236.184")
+    monkeypatch.setattr(client_module, "_routerai_dns_fallback_enabled", lambda: True)
+    monkeypatch.setattr(client_module, "_routerai_dns_prefer_doh", lambda: True, raising=False)
+
+    backend = client_module._RouterAIDnsFallbackBackend(delegate)
+    assert backend.connect_tcp("routerai.ru", 443) == "stream"
+    assert delegate.hosts == ["95.129.236.184"]
+
+
+def test_routerai_dns_fallback_does_not_mask_non_dns_errors(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def connect_tcp(self, host, port, **kwargs):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(
+        client_module,
+        "_resolve_routerai_ipv4_via_doh",
+        lambda host: (_ for _ in ()).throw(AssertionError("DoH must not be called")),
+    )
+    backend = client_module._RouterAIDnsFallbackBackend(_FakeBackend())
+    with pytest.raises(OSError, match="connection refused"):
+        backend.connect_tcp("routerai.ru", 443)
 
 
 def test_per_call_timeout_does_not_mutate_singleton(monkeypatch):

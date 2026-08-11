@@ -106,6 +106,28 @@ def test_session_service_throttles_app_db_touch_writes(temp_dir):
     assert service._load_sessions()[0]["last_seen_at"] == before
 
 
+def test_session_service_stale_app_db_snapshot_does_not_delete_concurrent_login(temp_dir):
+    service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
+    common = {
+        "user_id": 7,
+        "username": "demo",
+        "role": "viewer",
+        "ip_address": "127.0.0.1",
+        "user_agent": "Mozilla/5.0 Chrome/142.0.0.0",
+        "expires_at": "2030-03-21T10:00:00+00:00",
+    }
+    service.create_session(session_id="snapshot-existing", **common)
+    stale_snapshot = service._load_sessions()
+
+    # This login commits after maintenance loaded its snapshot but before that
+    # snapshot is written back.  Saving maintenance changes must not delete it.
+    service.create_session(session_id="concurrent-login", **common)
+    service._save_sessions(stale_snapshot)
+
+    assert service.get_session("concurrent-login") is not None
+    assert service.is_session_active("concurrent-login") is True
+
+
 def test_settings_and_db_selection_work_with_app_db_backend(temp_dir):
     database_url = _sqlite_url(temp_dir)
     settings_service = SettingsService(file_path=Path(temp_dir) / "web_user_settings.json", database_url=database_url)

@@ -363,7 +363,7 @@ class TokenBudget:
         return self.remaining <= 0
 
     def add_usage(self, usage: dict[str, Any]) -> None:
-        """Accumulate prompt and completion tokens from an OpenRouter usage response."""
+        """Accumulate prompt and completion tokens from an LLM provider response."""
         if not isinstance(usage, dict):
             return
         self.accumulated_prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -3634,20 +3634,38 @@ class AiChatService:
         }
 
     def _ensure_bot_user(self, *, session, bot: AppAiBot) -> int:
+        use_app_database = bool(getattr(user_service, "_use_app_database", False))
         existing_user_id = int(getattr(bot, "bot_user_id", 0) or 0)
         if existing_user_id > 0:
-            existing_user = user_service.get_by_id(existing_user_id)
+            existing_user = (
+                session.get(AppUser, existing_user_id)
+                if use_app_database
+                else user_service.get_by_id(existing_user_id)
+            )
             if existing_user:
                 return existing_user_id
         username = f"{SYSTEM_BOT_USERNAME_PREFIX}{_normalize_text(bot.slug) or 'bot'}"
         suffix = 1
-        while user_service.get_by_username(username):
-            raw_user = user_service.get_by_username(username)
-            if raw_user and int(raw_user.get("id", 0) or 0) == existing_user_id:
+        while True:
+            raw_user = (
+                session.execute(
+                    select(AppUser).where(AppUser.username == username).limit(1)
+                ).scalar_one_or_none()
+                if use_app_database
+                else user_service.get_by_username(username)
+            )
+            if not raw_user:
+                break
+            raw_user_id = int(
+                getattr(raw_user, "id", 0)
+                if use_app_database
+                else raw_user.get("id", 0)
+            )
+            if raw_user_id == existing_user_id:
                 break
             suffix += 1
             username = f"{SYSTEM_BOT_USERNAME_PREFIX}{_normalize_text(bot.slug) or 'bot'}-{suffix}"
-        if bool(getattr(user_service, "_use_app_database", False)):
+        if use_app_database:
             next_user_id = int(
                 session.execute(select(AppUser.id).order_by(AppUser.id.desc()).limit(1)).scalar_one_or_none() or 0
             ) + 1

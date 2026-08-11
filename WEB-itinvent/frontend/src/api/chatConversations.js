@@ -1,8 +1,12 @@
 import apiClient from './client';
 
 export const chatConversationsAPI = {
-  getConversations: async (params = {}) => {
-    const response = await apiClient.get('/chat/conversations', { params });
+  getConversations: async (params = {}, options = {}) => {
+    const { signal, ...query } = params || {};
+    const response = await apiClient.get('/chat/conversations', {
+      params: query,
+      signal: signal || options.signal,
+    });
     return response.data;
   },
 

@@ -1,6 +1,6 @@
 """
 Uploaded signed act service:
-- parse uploaded PDF via OpenRouter into a draft,
+- parse uploaded PDF via RouterAI into a draft,
 - validate/edit draft,
 - commit draft into DOCS + DOCS_LIST + FILES.
 """
@@ -592,7 +592,7 @@ def _call_openrouter_act_parser(
 
     model_candidates = resolve_model_candidates("act")
     if not openrouter_client.is_configured():
-        warnings.append("OPENROUTER_API_KEY (или OPENAI_API_KEY) не задан, распознавание через модель пропущено.")
+        warnings.append("ROUTERAI_API_KEY не задан, распознавание через модель пропущено.")
         return None, warnings
     if not model_candidates:
         warnings.append("ACT_PARSE_MODEL/OCR_MODEL не заданы, распознавание через модель пропущено.")
@@ -699,7 +699,7 @@ def _call_openrouter_act_parser(
                 continue
             try:
                 logger.info(
-                    "Uploaded act parse: sending request to OpenRouter (file=%s, model=%s, text_len=%s, images=%s, healing=1)",
+                    "Uploaded act parse: sending request to RouterAI (file=%s, model=%s, text_len=%s, images=%s, healing=1)",
                     file_name,
                     model,
                     len(text_for_model),
@@ -716,14 +716,14 @@ def _call_openrouter_act_parser(
                     response_healing=True,
                 )
                 logger.info(
-                    "Uploaded act parse: OpenRouter response received (file=%s, model=%s, use_images=%s)",
+                    "Uploaded act parse: RouterAI response received (file=%s, model=%s, use_images=%s)",
                     file_name,
                     model,
                     use_images,
                 )
                 if not isinstance(payload, dict):
-                    warnings.append("OpenRouter вернул невалидный JSON.")
-                    logger.warning("Uploaded act parse: OpenRouter returned invalid JSON (file=%s)", file_name)
+                    warnings.append("RouterAI вернул невалидный JSON.")
+                    logger.warning("Uploaded act parse: RouterAI returned invalid JSON (file=%s)", file_name)
                     continue
                 if not payload:
                     warnings.append(
@@ -745,7 +745,7 @@ def _call_openrouter_act_parser(
                         f"Модель {model} вернула JSON без полезных полей, пробую следующий режим/модель."
                     )
                     continue
-                logger.info("Uploaded act parse: OpenRouter JSON parsed successfully (file=%s)", file_name)
+                logger.info("Uploaded act parse: RouterAI JSON parsed successfully (file=%s)", file_name)
                 return payload, warnings
             except OpenRouterClientError as exc:
                 last_exc = exc
@@ -761,7 +761,7 @@ def _call_openrouter_act_parser(
                     )
                     break
                 logger.warning(
-                    "Uploaded act parse: OpenRouter call failed (file=%s, model=%s, use_images=%s): %s",
+                    "Uploaded act parse: RouterAI call failed (file=%s, model=%s, use_images=%s): %s",
                     file_name,
                     model,
                     use_images,
@@ -775,7 +775,7 @@ def _call_openrouter_act_parser(
                     )
                     break
                 logger.warning(
-                    "Uploaded act parse: OpenRouter call failed (file=%s, model=%s, use_images=%s): %s",
+                    "Uploaded act parse: RouterAI call failed (file=%s, model=%s, use_images=%s): %s",
                     file_name,
                     model,
                     use_images,
@@ -790,7 +790,7 @@ def _call_openrouter_act_parser(
                     warnings.append("Текстовый режим не сработал — пробую vision OCR.")
 
     detail = provider_error_text(last_exc) if last_exc else ""
-    warnings.append(f"Ошибка OpenRouter: {detail}" if detail else "Ошибка OpenRouter: пустой ответ.")
+    warnings.append(f"Ошибка RouterAI: {detail}" if detail else "Ошибка RouterAI: пустой ответ.")
     return None, warnings
 
 

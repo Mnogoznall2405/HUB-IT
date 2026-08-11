@@ -64,6 +64,8 @@ def task_discussion_env(temp_dir, monkeypatch):
 
     chat_db_module._engine = None
     chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
     monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
     monkeypatch.setattr(chat_db_module.config.chat, "task_discussion_enabled", True, raising=False)
     monkeypatch.setattr(
@@ -98,6 +100,8 @@ def task_discussion_env(temp_dir, monkeypatch):
     }
     chat_db_module._engine = None
     chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
 
 
 def test_get_task_discussion_returns_placeholder_before_open(task_discussion_env):
@@ -111,7 +115,7 @@ def test_get_task_discussion_returns_placeholder_before_open(task_discussion_env
     assert payload["task_title"] == "Проверить акт"
 
 
-def test_ensure_task_discussion_creates_members_and_message_channel(task_discussion_env):
+def test_ensure_task_discussion_creates_members_and_message_channel(task_discussion_env, monkeypatch):
     task = task_discussion_env["task"]
     chat_service = task_discussion_env["chat_service"]
 
@@ -120,9 +124,18 @@ def test_ensure_task_discussion_creates_members_and_message_channel(task_discuss
     assert created["kind"] == "task"
     assert created["conversation_id"]
 
+    sync_calls = []
+    original_sync = task_discussion_module.sync_task_discussion_members
+
+    def _track_sync(**kwargs):
+        sync_calls.append(kwargs)
+        return original_sync(**kwargs)
+
+    monkeypatch.setattr(task_discussion_module, "sync_task_discussion_members", _track_sync)
     reopened = task_discussion_module.ensure_task_discussion(task_id=task["id"], actor_user_id=2)
     assert reopened["created"] is False
     assert reopened["conversation_id"] == created["conversation_id"]
+    assert sync_calls == []
 
     with chat_db_module.chat_session() as session:
         members = session.execute(

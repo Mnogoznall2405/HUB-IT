@@ -1,6 +1,9 @@
 param(
     [string]$TaskName = "HUB-IT Agent",
     [string]$OutlookTaskName = "ITInventOutlookProbe",
+    [string]$TelegramProbeTaskName = "HUB-IT Telegram Probe",
+    [string]$MaxProbeTaskName = "HUB-IT MAX Probe",
+    [string]$BrowserProbeTaskName = "HUB-IT Browser Probe",
     [string]$ProcessName = "ITInventAgent",
     [string]$InstallPath = "C:\Program Files\HUB-IT\Agent",
     [string]$RuntimeRoot = "C:\ProgramData\HUB-IT\Agent",
@@ -51,6 +54,9 @@ function Remove-ProgramDataTree {
 
     Remove-PathIfExists -TargetPath (Join-Path $Root "Agent") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $Root "ScanAgent") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $Root "TelegramProbe") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $Root "MaxProbe") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $Root "BrowserProbe") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $Root "AgentUpgrade") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $Root ".env")
     Remove-PathIfExists -TargetPath (Join-Path $Root "Logs") -Recurse
@@ -78,11 +84,35 @@ if ($null -ne $outlookTask) {
     Write-Host "[INFO] Task '$OutlookTaskName' was not found."
 }
 
+$tgTask = Get-ScheduledTask -TaskName $TelegramProbeTaskName -ErrorAction SilentlyContinue
+if ($null -ne $tgTask) {
+    Unregister-ScheduledTask -TaskName $TelegramProbeTaskName -Confirm:$false
+    Write-Host "[OK] Task '$TelegramProbeTaskName' removed."
+} else {
+    Write-Host "[INFO] Task '$TelegramProbeTaskName' was not found."
+}
+
+$maxTask = Get-ScheduledTask -TaskName $MaxProbeTaskName -ErrorAction SilentlyContinue
+if ($null -ne $maxTask) {
+    Unregister-ScheduledTask -TaskName $MaxProbeTaskName -Confirm:$false
+    Write-Host "[OK] Task '$MaxProbeTaskName' removed."
+} else {
+    Write-Host "[INFO] Task '$MaxProbeTaskName' was not found."
+}
+
+$brTask = Get-ScheduledTask -TaskName $BrowserProbeTaskName -ErrorAction SilentlyContinue
+if ($null -ne $brTask) {
+    Unregister-ScheduledTask -TaskName $BrowserProbeTaskName -Confirm:$false
+    Write-Host "[OK] Task '$BrowserProbeTaskName' removed."
+} else {
+    Write-Host "[INFO] Task '$BrowserProbeTaskName' was not found."
+}
+
 ### 2. Stop running processes
 if ($SkipProcessStop) {
     Write-Host "[INFO] Process stop skipped because SkipProcessStop was set."
 } else {
-    $processNames = @($ProcessName, "ITInventScanAgent", "ITInventOutlookProbe")
+    $processNames = @($ProcessName, "ITInventScanAgent", "ITInventOutlookProbe", "ITInventTelegramProbe", "ITInventMaxProbe", "ITInventBrowserProbe")
     foreach ($name in $processNames) {
         $process = Get-Process -Name $name -ErrorAction SilentlyContinue
         if ($null -ne $process) {

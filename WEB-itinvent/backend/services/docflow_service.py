@@ -43,10 +43,6 @@ from backend.services.docflow_1c_client import (
     docflow_export_root,
 )
 from backend.services.docflow_dm_service_client import DocflowDMServiceClient
-from backend.services.mail_attachment_preview_service import (
-    MailAttachmentPreviewError,
-    build_office_preview_artifact,
-)
 from backend.services.secret_crypto_service import (
     SecretCryptoError,
     decrypt_docflow_secret,
@@ -464,7 +460,9 @@ class Docflow1CAdapter:
             )
         if operation == "task_detail":
             return await self._dm_client.get_task_detail(
-                **credentials, task_ref=str(payload.get("task_ref") or "")
+                **credentials,
+                task_ref=str(payload.get("task_ref") or ""),
+                include_related=bool(payload.get("include_related", True)),
             )
         if operation == "task_state":
             return await self._dm_client.get_task_state(
@@ -550,6 +548,7 @@ class Docflow1CAdapter:
                     login=str(payload.get("login") or ""),
                     password=str(payload.get("password") or ""),
                     task_ref=str(payload.get("task_ref") or ""),
+                    include_related=bool(payload.get("include_related", True)),
                 )
             if operation == "task_state":
                 return self._direct_client.get_task_state(
@@ -1739,11 +1738,15 @@ class DocflowService:
         task_ref: str,
         correlation_id: str,
         can_act: bool = False,
+        include_related: bool = True,
     ) -> dict[str, Any]:
         result = await self._saved_credentials_call(
             user_id=int(user_id),
             operation="task_detail",
-            payload={"task_ref": str(task_ref or "")},
+            payload={
+                "task_ref": str(task_ref or ""),
+                "include_related": bool(include_related),
+            },
         )
         await asyncio.to_thread(
             self._store.audit,
@@ -1757,12 +1760,13 @@ class DocflowService:
             if can_act
             else None
         )
-        return self._decorate_task_actions(
+        decorated = self._decorate_task_actions(
             user_id=int(user_id),
             detail=result,
             can_act=bool(can_act),
             credential_reason=credential_reason,
         )
+        return decorated
 
     async def _task_state(self, *, user_id: int, task_ref: str) -> dict[str, Any]:
         return await self._saved_credentials_call(
@@ -1825,6 +1829,7 @@ class DocflowService:
             task_ref=str(row.task_ref),
             correlation_id=str(row.correlation_id),
             can_act=can_act,
+            include_related=False,
         )
         return updated, detail
 
@@ -2121,6 +2126,7 @@ class DocflowService:
                 task_ref=str(row.task_ref),
                 correlation_id=correlation_id,
                 can_act=True,
+                include_related=False,
             )
         return {
             "command_id": str(row.id),
@@ -2179,53 +2185,51 @@ class DocflowService:
         )
         return result
 
-    async def build_file_preview(
+    def get_file_preview_state(
         self,
         *,
         user_id: int,
         task_ref: str,
         file_ref: str,
-        correlation_id: str,
     ) -> dict[str, Any]:
-        exported = await self.export_file(
-            user_id=int(user_id),
-            task_ref=task_ref,
-            file_ref=file_ref,
-            correlation_id=correlation_id,
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_DOCFLOW,
+            document_preview_job_service,
         )
-        path = self._validated_export_path(str(exported.get("temporary_path") or ""))
-        try:
-            content = await asyncio.to_thread(path.read_bytes)
-        finally:
-            self.remove_exported_file(path)
-        filename = str(exported.get("name") or "document.bin")
-        content_type = str(exported.get("content_type") or "application/octet-stream")
-        if content_type == "application/pdf" or filename.casefold().endswith(".pdf"):
-            return {
-                "content": content,
-                "filename": filename,
-                "source_kind": "pdf",
-                "page_count": 0,
-                "sheets": [],
-            }
-        try:
-            artifact = await asyncio.to_thread(
-                build_office_preview_artifact,
-                filename=filename,
-                content_type=content_type,
-                content=content,
-            )
-        except MailAttachmentPreviewError:
-            raise DocflowUnavailable(
-                "Предпросмотр этого файла временно недоступен. Скачайте оригинал"
-            ) from None
-        return {
-            "content": artifact.pdf_bytes,
-            "filename": artifact.pdf_filename,
-            "source_kind": artifact.source_kind,
-            "page_count": artifact.page_count,
-            "sheets": artifact.sheets,
-        }
+
+        preview_url = (
+            f"/api/v1/docflow/tasks/{str(task_ref).strip()}/files/"
+            f"{str(file_ref).strip()}/preview/pdf"
+        )
+        return document_preview_job_service.get_state(
+            scope=PREVIEW_SCOPE_DOCFLOW,
+            owner_user_id=int(user_id),
+            source_payload={"task_ref": task_ref, "file_ref": file_ref},
+            preview_url=preview_url,
+        )
+
+    def get_file_preview_artifact(
+        self,
+        *,
+        user_id: int,
+        task_ref: str,
+        file_ref: str,
+    ) -> dict[str, Any]:
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_DOCFLOW,
+            document_preview_job_service,
+        )
+
+        preview_url = (
+            f"/api/v1/docflow/tasks/{str(task_ref).strip()}/files/"
+            f"{str(file_ref).strip()}/preview/pdf"
+        )
+        return document_preview_job_service.get_ready_artifact(
+            scope=PREVIEW_SCOPE_DOCFLOW,
+            owner_user_id=int(user_id),
+            source_payload={"task_ref": task_ref, "file_ref": file_ref},
+            preview_url=preview_url,
+        )
 
     async def metadata(self, *, user_id: int) -> dict[str, Any]:
         return await self._saved_credentials_call(

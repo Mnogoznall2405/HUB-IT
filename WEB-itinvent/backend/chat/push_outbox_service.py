@@ -107,6 +107,9 @@ class ChatPushOutboxService:
         return _clamp_env_int("CHAT_PUSH_OUTBOX_HEARTBEAT_SEC", 60, 10, 3600)
 
     async def start(self) -> None:
+        if not self.enabled:
+            logger.info("chat.push_outbox.worker disabled (CHAT_PUSH_OUTBOX_ENABLED=0)")
+            return
         if self._task and not self._task.done():
             return
         self._stop_event = asyncio.Event()

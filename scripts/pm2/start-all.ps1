@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
-$processNames = @('itinvent-backend', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+$processNames = @('itinvent-backend', 'itinvent-chat', 'itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
 
 function Add-LocalNodeToPath {
     if (Get-Command 'node' -ErrorAction SilentlyContinue) {
@@ -107,6 +107,9 @@ try {
 }
 catch {
 }
+# `pm2 kill` on Windows often leaves python children alive (scan locks/ports especially).
+$clearOrphans = Join-Path $projectRoot 'scripts\pm2\clear-pm2-orphans.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $clearOrphans
 
 Write-Host 'PM2: starting all processes...' -ForegroundColor Cyan
 & $pm2Cmd start $ecosystemAll | Out-Null

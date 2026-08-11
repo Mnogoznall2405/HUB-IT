@@ -1,6 +1,8 @@
 """Chat API backed by PostgreSQL and current web-users."""
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 
@@ -16,10 +18,13 @@ from backend.api.v1.chat import (
     link_preview,
     messages,
     push,
+    stickers,
     uploads,
     users,
     ws,
 )
+
+_CHAT_SURFACE = str(os.getenv("CHAT_SURFACE", "full") or "full").strip().lower()
 from backend.api.v1.chat._common import (  # noqa: F401
     CHAT_WS_COMMAND_BURST,
     CHAT_WS_COMMANDS_PER_SEC,
@@ -42,6 +47,7 @@ from backend.api.v1.chat._common import (  # noqa: F401
     _publish_message_deleted_after_soft_delete,
     _publish_message_read,
     _publish_message_read_after_mark_read,
+    _clear_hub_notifications_after_mark_read,
     _publish_message_updated,
     _publish_message_updated_after_edit,
     _publish_presence_updated,
@@ -49,12 +55,24 @@ from backend.api.v1.chat._common import (  # noqa: F401
     _queue_ai_run_for_message,
     _raise_chat_http_error,
     _request_id_from_headers,
+    _enqueue_critical_message_created,
     _run_chat_call,
     _run_chat_call_with_meta,
+    _run_chat_read_call,
+    _run_chat_read_call_with_meta,
+    _run_chat_write_call,
+    _run_chat_mark_read_call,
+    _run_chat_write_call_with_meta,
+    _pop_deferred_chat_notifications,
+    _pop_deferred_delivery_outbox,  # noqa: F401 — used by ws_commands/messages via chat_api
+    _pop_deferred_realtime_publish,
     _schedule_ai_run_for_message,
     _schedule_chat_background_task,
     _schedule_chat_message_side_effects,
+    ChatReadConcurrencyTimeout,
     _ws_error_code,
+    _classify_ws_handshake_denial,
+    _deny_ws_handshake,
     _ws_is_connected,
     http_logger,
     logger,
@@ -141,10 +159,13 @@ router.include_router(folders.router)
 router.include_router(users.router)
 router.include_router(conversations.router)
 router.include_router(push.router)
+router.include_router(stickers.router)
 router.include_router(messages.router)
 router.include_router(ai.router)
 router.include_router(uploads.router)
 router.include_router(attachments.router)
-router.include_router(ws.router)
+# Diagnostic surfaces: read = HTTP-only (no WebSocket); realtime/full keep WS.
+if _CHAT_SURFACE != "read":
+    router.include_router(ws.router)
 
 __all__ = ["router", "chat_service", "chat_realtime", "run_in_threadpool"]

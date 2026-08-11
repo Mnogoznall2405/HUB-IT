@@ -985,12 +985,19 @@ class Docflow1CComClient:
                 files.append(item)
         return files
 
-    def get_task_detail(self, *, login: str, password: str, task_ref: str) -> dict[str, Any]:
+    def get_task_detail(
+        self,
+        *,
+        login: str,
+        password: str,
+        task_ref: str,
+        include_related: bool = True,
+    ) -> dict[str, Any]:
         connection = self._connect(login=login, password=password)
         detail, process_ref = self._task_context(connection, task_ref=task_ref)
         owners, related_objects = self._process_context(connection, process_ref)
         detail["related_objects"] = related_objects
-        detail["files"] = self._list_process_files(connection, owners)
+        detail["files"] = self._list_process_files(connection, owners) if include_related else []
         return detail
 
     def get_task_state(self, *, login: str, password: str, task_ref: str) -> dict[str, Any]:
@@ -1358,7 +1365,8 @@ class Docflow1CComClient:
                 haystack = " ".join(
                     str(row.get(key) or "") for key in ("title", "number", "author", "subject")
                 ).casefold()
-                if normalized_search and normalized_search not in haystack:
+                tokens = [token for token in normalized_search.split() if token]
+                if tokens and not all(token in haystack for token in tokens):
                     continue
                 rows.append(row)
                 if len(rows) > normalized_limit:

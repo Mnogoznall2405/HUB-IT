@@ -7,7 +7,16 @@ import os
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.chat.models import Base, CHAT_SCHEMA, ChatEventOutbox, ChatPushOutbox
+from backend.chat.models import (
+    Base,
+    CHAT_SCHEMA,
+    ChatAttachmentPreview,
+    ChatEventOutbox,
+    ChatPushOutbox,
+    ChatSticker,
+    ChatStickerPack,
+    ChatUserStickerPack,
+)
 from backend.config import config
 from backend.db_migrations import upgrade_internal_database
 from backend.services.sql_observability import attach_slow_sql_logging
@@ -23,14 +32,19 @@ class ChatSchemaConfigurationError(ChatConfigurationError):
 
 _engine = None
 _session_factory = None
+_read_engine = None
+_read_session_factory = None
 _engines: dict[str, object] = {}
 _session_factories: dict[str, object] = {}
+_read_engines: dict[str, object] = {}
+_read_session_factories: dict[str, object] = {}
 
 
 # Tables managed by _ensure_*() helpers are excluded from the automatic
 # production schema check (_verify_production_schema). Add new tables here
 # when they are introduced via _ensure_* instead of a pure Alembic migration.
 _CHAT_SCHEMA_CHECK_EXCLUDED_TABLES: frozenset[str] = frozenset({
+    "chat_attachment_previews",
     "chat_message_reactions",
 })
 
@@ -78,6 +92,64 @@ def is_chat_enabled() -> bool:
     return bool(config.chat.enabled)
 
 
+def _attach_chat_pool_audit_listeners(engine, *, pool_class: str = "write") -> None:
+    """Pool hold-time audit. Pool *wait* is measured via contextvars before connection()."""
+    if getattr(engine, "_chat_pool_audit_attached", False):
+        return
+    try:
+        from sqlalchemy import event
+        import time
+        from backend.chat.send_audit import audit_send_trace
+        from backend.chat.write_path_metrics import record_stage, take_db_checkout_wait_ms
+    except Exception:
+        return
+
+    @event.listens_for(engine, "checkout")
+    def _on_checkout(dbapi_conn, connection_record, connection_proxy):  # noqa: ARG001
+        connection_record.info["chat_checked_out_at"] = time.perf_counter()
+        wait_ms = take_db_checkout_wait_ms()
+        if wait_ms is not None:
+            record_stage(
+                "db_checkout_wait",
+                wait_ms,
+                pool_class=pool_class,
+            )
+        checked_out = int(getattr(engine.pool, "checkedout", lambda: 0)() or 0)
+        checked_in = int(getattr(engine.pool, "checkedin", lambda: 0)() or 0)
+        overflow = int(getattr(engine.pool, "overflow", lambda: 0)() or 0)
+        if checked_out >= max(1, int(getattr(engine.pool, "size", lambda: 1)() or 1)):
+            audit_send_trace(
+                trace_id="pool",
+                stage="db_pool_high_utilization",
+                elapsed_ms=0.0,
+                pool_class=pool_class,
+                checked_out=checked_out,
+                checked_in=checked_in,
+                overflow=overflow,
+                pool_size=int(getattr(engine.pool, "size", lambda: 0)() or 0),
+            )
+
+    @event.listens_for(engine, "checkin")
+    def _on_checkin(dbapi_conn, connection_record):  # noqa: ARG001
+        started = float(connection_record.info.pop("chat_checked_out_at", 0.0) or 0.0)
+        if started <= 0:
+            return
+        held_ms = (time.perf_counter() - started) * 1000.0
+        if held_ms >= 100.0:
+            audit_send_trace(
+                trace_id="pool",
+                stage="db_pool_connection_held",
+                elapsed_ms=held_ms,
+                pool_class=pool_class,
+                checked_out=int(getattr(engine.pool, "checkedout", lambda: 0)() or 0),
+                checked_in=int(getattr(engine.pool, "checkedin", lambda: 0)() or 0),
+                overflow=int(getattr(engine.pool, "overflow", lambda: 0)() or 0),
+            )
+
+    engine._chat_pool_audit_attached = True
+    engine._chat_pool_class = pool_class
+
+
 def get_chat_database_url(database_url: str | None = None) -> str:
     return str(database_url or config.chat.database_url or config.app_db.database_url or "").strip()
 
@@ -91,14 +163,55 @@ def ensure_chat_configured(database_url: str | None = None) -> str:
     return database_url
 
 
-def _build_engine(database_url: str):
+def estimated_chat_pg_connections(*, processes: int = 1) -> dict:
+    """Estimate worst-case PG connections for chat engines in N processes."""
+    write_cap = max(1, int(config.chat.write_pool_size)) + max(0, int(config.chat.write_max_overflow))
+    read_cap = max(1, int(config.chat.read_pool_size)) + max(0, int(config.chat.read_max_overflow))
+    proc = max(1, int(processes))
+    total = proc * (write_cap + read_cap)
+    return {
+        "chat_processes": proc,
+        "write_pool_capacity": write_cap,
+        "read_pool_capacity": read_cap,
+        "estimated_total_pg_connections": total,
+        "connection_budget": int(config.chat.connection_budget),
+    }
+
+
+def log_chat_pool_budget(*, processes: int | None = None) -> dict:
+    proc = int(processes or os.getenv("CHAT_PROCESS_COUNT", "1") or 1)
+    snap = estimated_chat_pg_connections(processes=proc)
+    import logging
+
+    logger = logging.getLogger("backend.chat.db")
+    logger.info(
+        "chat DB pool budget processes=%s write_cap=%s read_cap=%s estimated=%s budget=%s",
+        snap["chat_processes"],
+        snap["write_pool_capacity"],
+        snap["read_pool_capacity"],
+        snap["estimated_total_pg_connections"],
+        snap["connection_budget"],
+    )
+    if snap["estimated_total_pg_connections"] > snap["connection_budget"]:
+        msg = (
+            "Chat DB connection estimate exceeds CHAT_DB_CONNECTION_BUDGET: "
+            f"{snap['estimated_total_pg_connections']} > {snap['connection_budget']}"
+        )
+        if bool(config.chat.connection_budget_fail_start):
+            raise ChatConfigurationError(msg)
+        logger.warning(msg)
+    return snap
+
+
+def _build_engine(database_url: str, *, pool_class: str = "write"):
     engine_kwargs = {
         "pool_pre_ping": True,
         "future": True,
     }
     if database_url.startswith("sqlite"):
         engine = create_engine(database_url, **engine_kwargs)
-        attach_slow_sql_logging(engine, source="chat")
+        attach_slow_sql_logging(engine, source=f"chat-{pool_class}")
+        _attach_chat_pool_audit_listeners(engine, pool_class=pool_class)
         return engine.execution_options(
             schema_translate_map={
                 "app": None,
@@ -107,13 +220,30 @@ def _build_engine(database_url: str):
             }
         )
 
-    engine_kwargs["pool_size"] = max(1, int(config.chat.pool_size))
-    engine_kwargs["max_overflow"] = max(0, int(config.chat.max_overflow))
+    if pool_class == "read":
+        engine_kwargs["pool_size"] = max(1, int(config.chat.read_pool_size))
+        engine_kwargs["max_overflow"] = max(0, int(config.chat.read_max_overflow))
+        app_name_default = "itinvent-backend-chat-read"
+    else:
+        engine_kwargs["pool_size"] = max(1, int(config.chat.write_pool_size or config.chat.pool_size))
+        engine_kwargs["max_overflow"] = max(0, int(config.chat.write_max_overflow if config.chat.write_max_overflow is not None else config.chat.max_overflow))
+        app_name_default = "itinvent-backend-chat-write"
+    # Explicit timeout so pool wait is measurable (SQLAlchemy default is 30s).
+    engine_kwargs["pool_timeout"] = max(1, int(os.getenv("CHAT_DB_POOL_TIMEOUT", "30") or 30))
+    engine_kwargs["pool_recycle"] = max(0, int(os.getenv("CHAT_DB_POOL_RECYCLE", "1800") or 1800))
     engine_kwargs["connect_args"] = {
-        "application_name": str(os.getenv("CHAT_DB_APPLICATION_NAME", "itinvent-backend-chat")).strip() or "itinvent-backend-chat",
+        "application_name": str(
+            os.getenv(
+                "CHAT_DB_READ_APPLICATION_NAME" if pool_class == "read" else "CHAT_DB_APPLICATION_NAME",
+                app_name_default,
+            )
+            or ""
+        ).strip()
+        or app_name_default,
     }
     engine = create_engine(database_url, **engine_kwargs)
-    attach_slow_sql_logging(engine, source="chat")
+    attach_slow_sql_logging(engine, source=f"chat-{pool_class}")
+    _attach_chat_pool_audit_listeners(engine, pool_class=pool_class)
     if _should_use_legacy_public_chat_schema(engine):
         return engine.execution_options(
             schema_translate_map={
@@ -124,6 +254,11 @@ def _build_engine(database_url: str):
 
 
 def get_chat_engine(database_url: str | None = None):
+    """Write engine (legacy name kept for compatibility)."""
+    return get_chat_write_engine(database_url)
+
+
+def get_chat_write_engine(database_url: str | None = None):
     global _engine
 
     resolved_url = ensure_chat_configured(database_url)
@@ -132,7 +267,7 @@ def get_chat_engine(database_url: str | None = None):
 
     engine = _engines.get(resolved_url)
     if engine is None:
-        engine = _build_engine(resolved_url)
+        engine = _build_engine(resolved_url, pool_class="write")
         _engines[resolved_url] = engine
 
     if database_url is None:
@@ -140,7 +275,29 @@ def get_chat_engine(database_url: str | None = None):
     return engine
 
 
+def get_chat_read_engine(database_url: str | None = None):
+    global _read_engine
+
+    resolved_url = ensure_chat_configured(database_url)
+    if database_url is None and _read_engine is not None:
+        return _read_engine
+
+    engine = _read_engines.get(resolved_url)
+    if engine is None:
+        engine = _build_engine(resolved_url, pool_class="read")
+        _read_engines[resolved_url] = engine
+
+    if database_url is None:
+        _read_engine = engine
+    return engine
+
+
 def get_chat_session_factory(database_url: str | None = None):
+    """Write session factory (legacy name)."""
+    return get_chat_write_session_factory(database_url)
+
+
+def get_chat_write_session_factory(database_url: str | None = None):
     global _session_factory
 
     resolved_url = ensure_chat_configured(database_url)
@@ -150,7 +307,7 @@ def get_chat_session_factory(database_url: str | None = None):
     session_factory = _session_factories.get(resolved_url)
     if session_factory is None:
         session_factory = sessionmaker(
-            bind=get_chat_engine(database_url),
+            bind=get_chat_write_engine(database_url),
             autoflush=False,
             autocommit=False,
             expire_on_commit=False,
@@ -162,9 +319,87 @@ def get_chat_session_factory(database_url: str | None = None):
     return session_factory
 
 
+def get_chat_read_session_factory(database_url: str | None = None):
+    global _read_session_factory
+
+    resolved_url = ensure_chat_configured(database_url)
+    if database_url is None and _read_session_factory is not None:
+        return _read_session_factory
+
+    session_factory = _read_session_factories.get(resolved_url)
+    if session_factory is None:
+        session_factory = sessionmaker(
+            bind=get_chat_read_engine(database_url),
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+        _read_session_factories[resolved_url] = session_factory
+
+    if database_url is None:
+        _read_session_factory = session_factory
+    return session_factory
+
+
+@contextmanager
+def chat_write_session(database_url: str | None = None) -> Session:
+    from backend.chat.write_path_metrics import mark_db_checkout_wait_start, note_session_open, set_db_pool_class
+
+    set_db_pool_class("write")
+    note_session_open("write")
+    mark_db_checkout_wait_start()
+    session = get_chat_write_session_factory(database_url)()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@contextmanager
+def chat_read_session(database_url: str | None = None) -> Session:
+    from backend.chat.write_path_limits import CHAT_READ_STATEMENT_TIMEOUT_MS
+    from backend.chat.write_path_metrics import mark_db_checkout_wait_start, note_session_open, set_db_pool_class
+
+    set_db_pool_class("read")
+    note_session_open("read")
+    mark_db_checkout_wait_start()
+    session = get_chat_read_session_factory(database_url)()
+    try:
+        bind = session.get_bind()
+        if bind is not None and getattr(bind.dialect, "name", "") == "postgresql":
+            # SET does not accept bound params reliably; timeout is an int from env.
+            timeout_ms = max(100, int(CHAT_READ_STATEMENT_TIMEOUT_MS))
+            try:
+                session.execute(text("SET TRANSACTION READ ONLY"))
+                session.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
+            except Exception:
+                # Do not fail the read if session options cannot be applied.
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 @contextmanager
 def chat_session(database_url: str | None = None) -> Session:
-    session = get_chat_session_factory(database_url)()
+    """Legacy alias → write pool (safe default for mutations). Counted as legacy."""
+    from backend.chat.write_path_metrics import mark_db_checkout_wait_start, note_session_open, set_db_pool_class
+
+    set_db_pool_class("legacy")
+    note_session_open("legacy", caller="chat_session")
+    mark_db_checkout_wait_start()
+    session = get_chat_write_session_factory(database_url)()
     try:
         yield session
         session.commit()
@@ -179,11 +414,21 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     engine = get_chat_engine(database_url)
     if engine.dialect.name == "postgresql":
         if _uses_legacy_public_chat_schema(engine):
+            _ensure_chat_attachment_preview_table(engine)
             _ensure_chat_reactions_table(engine)
             if config.app.is_production:
                 _verify_production_schema(engine)
                 return
-            Base.metadata.create_all(bind=engine, tables=[ChatPushOutbox.__table__, ChatEventOutbox.__table__])
+            Base.metadata.create_all(
+                bind=engine,
+                tables=[
+                    ChatPushOutbox.__table__,
+                    ChatEventOutbox.__table__,
+                    ChatStickerPack.__table__,
+                    ChatSticker.__table__,
+                    ChatUserStickerPack.__table__,
+                ],
+            )
             _ensure_chat_message_columns(engine)
             _ensure_chat_conversation_columns(engine)
             _ensure_chat_user_state_columns(engine)
@@ -204,6 +449,15 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     _ensure_chat_attachment_columns(engine)
     _ensure_chat_push_outbox_columns(engine)
     _ensure_chat_reactions_table(engine)
+
+
+def _ensure_chat_attachment_preview_table(engine) -> None:
+    """Create the durable preview queue in the active legacy/runtime schema."""
+
+    table_schema = _runtime_schema(engine)
+    if inspect(engine).has_table("chat_attachment_previews", schema=table_schema):
+        return
+    Base.metadata.create_all(bind=engine, tables=[ChatAttachmentPreview.__table__])
 
 
 def _verify_production_schema(engine) -> None:

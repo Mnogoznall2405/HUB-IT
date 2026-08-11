@@ -255,6 +255,7 @@ class ChatUploadOrchestrator:
                     reply_to_message_id=_normalize_text(manifest.get("reply_to_message_id")) or None,
                 )
                 payload = persisted_file.payload
+                self._service._set_request_meta(conversation_kind=persisted_file.conversation_kind)
 
             manifest["status"] = "completed"
             manifest["message_id"] = _normalize_text(payload.get("id"))
@@ -331,6 +332,7 @@ class ChatUploadOrchestrator:
                 reply_to_message_id=reply_to_message_id,
             )
             payload = persisted_file.payload
+            self._service._set_request_meta(conversation_kind=persisted_file.conversation_kind)
         except Exception:
             for path in written_paths:
                 try:
@@ -426,7 +428,10 @@ class ChatUploadOrchestrator:
                     written_paths.append(final_path)
 
                     # Compress video if applicable
-                    if _normalize_text(mime_type).lower().startswith("video/"):
+                    if (
+                        _normalize_text(mime_type).lower().startswith("video/")
+                        and _normalize_text(media_kind).lower() != "file"
+                    ):
                         try:
                             from backend.chat.video_compress import compress_video, probe_video_info
                             compressed_path = final_path.with_suffix(".compressed.mp4")

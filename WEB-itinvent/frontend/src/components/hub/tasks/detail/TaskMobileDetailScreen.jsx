@@ -74,6 +74,7 @@ export function TaskMobileDetailScreen({
   uploadingAttachment = false,
   onUploadAttachment,
   onDownloadAttachment,
+  onPreviewAttachment,
   onDownloadReport,
   onOpenChecklist,
   taskDiscussionEnabled = false,
@@ -263,18 +264,19 @@ export function TaskMobileDetailScreen({
                 data-testid={`task-mobile-file-${file.id}`}
                 role="button"
                 tabIndex={0}
+                aria-label={`${file.type === 'report' ? 'Скачать' : 'Предпросмотр'} ${file.file_name}`}
                 onClick={() => {
                   if (file.type === 'report') {
                     onDownloadReport?.(file.payload);
                     return;
                   }
-                  onDownloadAttachment?.(file.payload);
+                  onPreviewAttachment?.(file.payload);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     if (file.type === 'report') onDownloadReport?.(file.payload);
-                    else onDownloadAttachment?.(file.payload);
+                    else onPreviewAttachment?.(file.payload);
                   }
                 }}
                 sx={{

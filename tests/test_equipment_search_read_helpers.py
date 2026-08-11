@@ -10,6 +10,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 from backend.database import queries as db_queries  # noqa: E402
+from backend.models.equipment import EmployeeSearchResponse, EquipmentListResponse  # noqa: E402
 
 
 class FakeDB:
@@ -47,13 +48,23 @@ def test_equipment_search_helpers_preserve_query_params_and_shapes(monkeypatch):
         "page": 1,
         "pages": 1,
     }
-    assert db_queries.search_employees("User", page=2, limit=10, db_id="main") == {
-        "employees": employee_rows,
+    employee_result = db_queries.search_employees("User", page=2, limit=10, db_id="main")
+    assert employee_result == {
+        "employees": [
+            {
+                "owner_no": 501,
+                "name": "User",
+                "department": None,
+                "email": None,
+                "equipment_count": 2,
+            }
+        ],
         "total": 3,
         "page": 2,
         "limit": 10,
         "pages": 1,
     }
+    assert EmployeeSearchResponse(**employee_result).employees[0].owner_no == 501
     assert db_queries.get_equipment_by_owner(501, db_id="main") == owner_rows
 
     assert db_ids == ["main", "main", "main", "main"]
@@ -63,6 +74,39 @@ def test_equipment_search_helpers_preserve_query_params_and_shapes(monkeypatch):
         (db_queries.QUERY_COUNT_EMPLOYEES, ("%User%", "%User%")),
         (db_queries.QUERY_SEARCH_BY_EMPLOYEE, ("%User%", "%User%", 10, 10)),
         (db_queries.QUERY_GET_EQUIPMENT_BY_OWNER, (501,)),
+    ]
+
+
+def test_equipment_list_normalizes_legacy_odbc_column_names(monkeypatch):
+    fake_db = FakeDB(
+        [
+            [{"total": 1}],
+            [
+                {
+                    "INV_NO": 100001.0,
+                    "SERIAL_NO": "SN-100001",
+                    "type_name": "Ноутбук",
+                    "model_name": "Test Model",
+                }
+            ],
+        ]
+    )
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: fake_db)
+
+    result = db_queries.get_all_equipment(page=1, limit=50, db_id="main")
+
+    assert result["equipment"] == [
+        {
+            "inv_no": "100001",
+            "serial_no": "SN-100001",
+            "type_name": "Ноутбук",
+            "model_name": "Test Model",
+        }
+    ]
+    assert EquipmentListResponse(**result).equipment[0].inv_no == "100001"
+    assert fake_db.calls == [
+        (db_queries.QUERY_COUNT_ALL_EQUIPMENT, None),
+        (db_queries.QUERY_GET_ALL_EQUIPMENT, (0, 50)),
     ]
 
 

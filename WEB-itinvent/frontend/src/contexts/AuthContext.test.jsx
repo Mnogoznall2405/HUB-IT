@@ -31,6 +31,7 @@ function AuthProbe() {
       <div data-testid="can-dashboard">{String(hasPermission('dashboard.read'))}</div>
       <div data-testid="can-task-create">{String(hasPermission('tasks.create'))}</div>
       <div data-testid="can-tickets">{String(hasPermission('tickets.read'))}</div>
+      <div data-testid="can-address-book">{String(hasPermission('address_book.read'))}</div>
       <button type="button" onClick={() => refreshSession({ suppressAuthRequired: true })}>
         refresh
       </button>
@@ -119,5 +120,17 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
     expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
     expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
+    expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
+  });
+
+  it('always grants basic address-book access when the server permission list is empty', async () => {
+    getCurrentUserMock.mockResolvedValue({ id: 10, username: 'custom', role: 'viewer', permissions: [] });
+
+    renderAuth('/dashboard');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('username')).toHaveTextContent('custom');
+    });
+    expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
   });
 });

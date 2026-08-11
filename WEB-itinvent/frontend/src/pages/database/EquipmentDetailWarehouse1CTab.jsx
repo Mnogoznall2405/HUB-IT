@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -165,8 +165,10 @@ export default function EquipmentDetailWarehouse1CTab({
   const [autoLoaded, setAutoLoaded] = useState(false);
   const [hubQuerySource, setHubQuerySource] = useState(searchPlan.preferredSource || 'model');
   const [warehouseFilterText, setWarehouseFilterText] = useState('');
+  const balancesRequestIdRef = useRef(0);
 
   useEffect(() => {
+    balancesRequestIdRef.current += 1;
     setSearchText(defaultSearchText);
     setSearchLoading(false);
     setSearchError('');
@@ -210,7 +212,7 @@ export default function EquipmentDetailWarehouse1CTab({
         setSearchError('Не удалось подтвердить остатки части номенклатуры 1С. Это не означает нулевой остаток — выберите позицию и повторите запрос.');
         return { found: false, tried, onlyWithStock: false };
       }
-      setSearchError('Найдены совпадения в справочнике 1С, но у всех нулевой остаток. Показаны только позиции с ненулевым остатком.');
+      setSearchError('В справочнике есть совпадения, но остаток у всех нулевой.');
       return { found: false, tried, onlyWithStock: true };
     }
     setSearchError(filteredResult.hasUnverified
@@ -258,13 +260,13 @@ export default function EquipmentDetailWarehouse1CTab({
       if (allowFallback && searchPlan.fallbackQuery) {
         const fallback = String(searchPlan.fallbackQuery).trim();
         if (fallback && fallback !== normalized) {
-          setSearchError(`По парт. номеру «${normalized}» ничего с остатком не найдено. Ищем по модели…`);
+          setSearchError(`По парт. номеру «${normalized}» ничего не найдено. Ищем по модели…`);
           const fallbackResult = await searchNomenclatureFull(fallback);
           setSearchText(fallback);
           const fallbackApplied = await applySuggestionResults(fallbackResult.rows, fallbackResult.tried);
           if (fallbackApplied.found) {
             setHubQuerySource('model');
-            setSearchError(`По парт. номеру совпадений с остатком нет — показаны результаты по модели «${fallbackResult.tried}».`);
+            setSearchError(`По парт. номеру ничего нет — показаны результаты по модели «${fallbackResult.tried}».`);
           }
           return fallbackApplied;
         }
@@ -279,7 +281,7 @@ export default function EquipmentDetailWarehouse1CTab({
             String(suggestResult?.tried_query || normalized),
           );
           if (suggestApplied.found) {
-            setSearchError('Точный поиск не дал результатов с остатком — показан умный подбор по похожим названиям.');
+            setSearchError('Точных совпадений нет — показаны похожие названия.');
             return suggestApplied;
           }
         }
@@ -320,6 +322,8 @@ export default function EquipmentDetailWarehouse1CTab({
 
   const loadBalances = useCallback(async (item) => {
     if (!item?.ref) return;
+    const requestId = balancesRequestIdRef.current + 1;
+    balancesRequestIdRef.current = requestId;
     setSelected(item);
     setSelectedWarehouse(null);
     setBalancesLoading(true);
@@ -345,15 +349,19 @@ export default function EquipmentDetailWarehouse1CTab({
         limit: 200,
       });
       const response = normalizeWarehouse1cListResponse(data);
+      if (requestId !== balancesRequestIdRef.current) return;
       setBalances(sortBalancesByWarehouse(response.items));
       setBalancesMeta(response.meta);
     } catch (err) {
+      if (requestId !== balancesRequestIdRef.current) return;
       console.error('Failed to load balances for nomenclature:', err);
       setBalancesError(resolveWarehouseErrorMessage(err, 'Не удалось загрузить остатки по номенклатуре.'));
       setBalances([]);
       setBalancesMeta({});
     } finally {
-      setBalancesLoading(false);
+      if (requestId === balancesRequestIdRef.current) {
+        setBalancesLoading(false);
+      }
     }
   }, [
     data,
@@ -430,20 +438,10 @@ export default function EquipmentDetailWarehouse1CTab({
     navigate(`/warehouse-1c?${params.toString()}`, { state });
   }, [buildReturnContext, data, navigate, selected, selectedWarehouse, invNo]);
 
-  const autoSearchHint = searchPlan.preferredSource === 'part_no'
-    ? 'При открытии вкладки сначала ищем по полному парт. номеру из Хаба; если совпадений с остатком нет — по модели. В списке только номенклатура с ненулевым остатком.'
-    : 'При открытии вкладки ищем по полной модели из Хаба. В списке только номенклатура с ненулевым остатком.';
-
   const resultsTruncated = rawResultCount >= NOMENCLATURE_SEARCH_LIMIT;
 
   return (
     <Stack spacing={2}>
-      <Alert severity="info">
-        {autoSearchHint}
-        {' '}
-        Кнопка «Найти» — поиск по введённому тексту.
-      </Alert>
-
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
         <TextField
           size="small"
@@ -452,6 +450,7 @@ export default function EquipmentDetailWarehouse1CTab({
           value={searchText}
           onChange={(event) => setSearchText(event.target.value)}
           placeholder="Парт. номер, модель или часть названия"
+          helperText={triedQuery ? `Найдено по запросу «${triedQuery}»` : undefined}
         />
         <Button
           variant="contained"
@@ -466,19 +465,13 @@ export default function EquipmentDetailWarehouse1CTab({
 
       {detailLoading ? (
         <Typography variant="body2" color="text.secondary">
-          Загрузка данных карточки…
-        </Typography>
-      ) : null}
-
-      {triedQuery ? (
-        <Typography variant="body2" color="text.secondary">
-          Показаны совпадения с остатком по запросу «{triedQuery}»
+          Загрузка…
         </Typography>
       ) : null}
 
       {resultsTruncated ? (
         <Typography variant="body2" color="warning.main">
-          Показаны первые {NOMENCLATURE_SEARCH_LIMIT} совпадений — уточните запрос, если нужной позиции нет в списке.
+          Показаны первые {NOMENCLATURE_SEARCH_LIMIT} совпадений. Уточните запрос, если позиции нет в списке.
         </Typography>
       ) : null}
 
@@ -504,20 +497,14 @@ export default function EquipmentDetailWarehouse1CTab({
 
       {selected ? (
         <Box>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }} useFlexGap flexWrap="wrap">
-            <Box>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }} useFlexGap flexWrap="wrap" spacing={1}>
+            <Box sx={{ minWidth: 0 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                Остатки по выбранной номенклатуре
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                В Хабе: совпадение парт. № (карточка / код номенклатуры 1С); если у единицы
-                парт. № нет — по модели. С другим парт. № не считаем. Сотрудники с этой
-                позицией только в Хабе показываются отдельно (В 1С = 0). Статус сотрудника —
-                по адресной книге. Клик по ФИО открывает карточку сотрудника.
+                Остатки
               </Typography>
               {balancesMeta?.asOf ? (
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-                  Данные 1С на: {formatWarehouseTimestamp(balancesMeta.asOf)}
+                  Данные 1С на {formatWarehouseTimestamp(balancesMeta.asOf)}
                 </Typography>
               ) : null}
             </Box>
@@ -545,7 +532,7 @@ export default function EquipmentDetailWarehouse1CTab({
 
           {!balancesLoading && !balancesError && !balancesIncomplete && balances.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
-              На складе нет позиций с ненулевым конечным остатком.
+              На складе ничего не найдено.
             </Typography>
           ) : null}
 
@@ -553,7 +540,7 @@ export default function EquipmentDetailWarehouse1CTab({
             <Stack spacing={1}>
               {balancesMatchSummary.allMatch ? (
                 <Alert severity="success" icon={<CheckCircleOutlineIcon fontSize="inherit" />}>
-                  Все сравнимые остатки сходятся: в 1С и в Хабе одинаковые количества.
+                  Остатки сходятся
                 </Alert>
               ) : null}
               <TextField

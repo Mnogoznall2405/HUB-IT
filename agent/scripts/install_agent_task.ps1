@@ -84,7 +84,7 @@ function Stop-ExistingAgentRuntime {
         }
     }
 
-    foreach ($name in @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe")) {
+    foreach ($name in @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe", "ITInventTelegramProbe", "ITInventMaxProbe", "ITInventBrowserProbe")) {
         $processes = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
         if ($processes.Count -eq 0) {
             continue

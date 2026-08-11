@@ -33,6 +33,7 @@ export default function useChatOptimisticThreadMessages({
   const createOptimisticFileMessage = useCallback(({
     conversationId,
     files,
+    mediaKinds,
     body,
     replyPreview,
   }) => {
@@ -40,6 +41,7 @@ export default function useChatOptimisticThreadMessages({
     return buildOptimisticFileMessage({
       conversationId,
       files,
+      mediaKinds,
       body,
       replyPreview,
       user,

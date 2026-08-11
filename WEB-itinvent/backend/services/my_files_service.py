@@ -2027,8 +2027,6 @@ class MyFilesWorker:
                 processed = await asyncio.to_thread(self.service.process_next_job)
                 if not processed:
                     processed = await asyncio.to_thread(self.service.process_next_security_backfill)
-                if not processed:
-                    processed = await asyncio.to_thread(self.service.process_next_preview_job)
                 await asyncio.sleep(1 if processed else 5)
             except asyncio.CancelledError:
                 raise

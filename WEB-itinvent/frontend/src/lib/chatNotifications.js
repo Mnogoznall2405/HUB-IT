@@ -307,6 +307,26 @@ export function requestChatPushSyncDrain() {
     });
 }
 
+export function syncActiveChatConversationToServiceWorker(conversationId = '') {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  const normalizedConversationId = String(conversationId || '').trim();
+  const visible = typeof document !== 'undefined'
+    && document.visibilityState === 'visible'
+    && Boolean(normalizedConversationId);
+  navigator.serviceWorker.ready
+    .then((registration) => {
+      const target = registration?.active || navigator.serviceWorker.controller;
+      target?.postMessage?.({
+        type: 'itinvent:active-chat-conversation',
+        conversationId: visible ? normalizedConversationId : '',
+        visible,
+      });
+    })
+    .catch(() => {
+      // Ignore active-conversation sync failures.
+    });
+}
+
 export function applyChatPushDiagnostic(message = {}) {
   const stage = String(message?.stage || '').trim() || String(message?.detail?.stage || '').trim();
   if (!stage) return getSnapshot();
@@ -458,6 +478,15 @@ export function claimChatMessageNotification(messageId) {
   return true;
 }
 
+/** Display name for chat toasts/OS notifications. Rejects lean stubs like user-38. */
+export function resolveChatNotificationSenderName(message, fallback = 'Собеседник') {
+  const fullName = String(message?.sender?.full_name || '').trim();
+  if (fullName) return fullName;
+  const username = String(message?.sender?.username || '').trim();
+  if (username && !/^user-\d+$/i.test(username)) return username;
+  return String(fallback || 'Собеседник').trim() || 'Собеседник';
+}
+
 export function buildChatNotificationTag(messageId) {
   const normalizedMessageId = String(messageId || '').trim();
   if (!normalizedMessageId) return 'chat:unknown';
@@ -488,6 +517,50 @@ export function buildChatNotificationRoute({ conversationId, messageId } = {}) {
     query.set('message', normalizedMessageId);
   }
   return `/chat?${query.toString()}`;
+}
+
+/** Ordinary per-message chat events — gated by CHAT_HUB_ORDINARY_READ_VISIBLE. */
+export const LEGACY_ORDINARY_CHAT_HUB_EVENT_TYPES = new Set([
+  'chat.message_received',
+  'chat.file_shared',
+  'chat.task_shared',
+  'chat.message_forwarded',
+]);
+
+/** Important chat events that remain in the hub bell. */
+export const HUB_BELL_CHAT_EVENT_TYPES = new Set([
+  'chat.mention',
+]);
+
+export function isLegacyOrdinaryChatHubNotification(item) {
+  const entityType = String(item?.entity_type || '').trim().toLowerCase();
+  if (entityType !== 'chat') return false;
+  const eventType = String(item?.event_type || '').trim().toLowerCase();
+  return LEGACY_ORDINARY_CHAT_HUB_EVENT_TYPES.has(eventType);
+}
+
+export function isHubBellChatNotification(item) {
+  const entityType = String(item?.entity_type || '').trim().toLowerCase();
+  if (entityType !== 'chat') return false;
+  const eventType = String(item?.event_type || '').trim().toLowerCase();
+  return HUB_BELL_CHAT_EVENT_TYPES.has(eventType);
+}
+
+export function resolveOrdinaryChatHubReadVisible(flags) {
+  if (flags && typeof flags === 'object' && Object.prototype.hasOwnProperty.call(flags, 'ordinary_read_visible')) {
+    return Boolean(flags.ordinary_read_visible);
+  }
+  // Default true matches deploy legacy (READ_VISIBLE=true).
+  return true;
+}
+
+export function filterHubBellNotifications(items, { ordinaryReadVisible = true } = {}) {
+  if (ordinaryReadVisible) {
+    return Array.isArray(items) ? items : [];
+  }
+  return (Array.isArray(items) ? items : []).filter(
+    (item) => !isLegacyOrdinaryChatHubNotification(item),
+  );
 }
 
 function drainLocalChatNotificationQueue() {

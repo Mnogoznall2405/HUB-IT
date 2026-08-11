@@ -131,10 +131,17 @@ class TrustedDeviceService:
                 items.append(item)
             return items
 
-    def get_device(self, device_id: str) -> dict[str, Any] | None:
+    def get_device(self, device_id: str, *, db_session=None) -> dict[str, Any] | None:
         normalized = _normalize_text(device_id)
         if not normalized:
             return None
+        # Session lifecycle checks are frequently performed while the caller
+        # already owns an APP DB transaction.  Reusing that transaction avoids
+        # a nested pool checkout (and a self-deadlock for one-slot workers).
+        if db_session is not None:
+            row = db_session.get(AppTrustedDevice, normalized)
+            self._expire_row_if_needed(row)
+            return self._row_to_dict(row) if row is not None else None
         with app_session(self._resolve_db_url()) as session:
             row = session.get(AppTrustedDevice, normalized)
             self._expire_row_if_needed(row)

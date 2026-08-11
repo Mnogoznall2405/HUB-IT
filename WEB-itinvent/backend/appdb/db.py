@@ -34,6 +34,58 @@ _TRANSIENT_LOCK_SQLSTATES = {"55P03"}
 _APP_SCHEMA_INIT_LOCK_KEY = 48151623
 _T = TypeVar("_T")
 
+# Compact search tables must be adopted via Alembic (0080/0081/0082), not
+# surprise create_all on shared/prod DBs. Dev/test may opt in explicitly.
+_COMPACT_SEARCH_TABLE_NAMES = frozenset(
+    {
+        "one_c_catalog_search_documents",
+        "one_c_catalog_search_token_stats",
+        "one_c_catalog_search_index_state",
+    }
+)
+
+
+def _postgres_dev_schema_auto_create_enabled() -> bool:
+    """Whether a non-production PostgreSQL runtime may run create_all/DDL.
+
+    Some Windows deployments intentionally keep ``APP_ENV=development`` for
+    legacy configuration compatibility.  They still need an explicit way to
+    prevent every utility/worker process from running development DDL against
+    the live database.
+    """
+    raw = str(os.getenv("APP_SCHEMA_DEV_AUTO_CREATE", "1") or "1")
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _compact_create_all_allowed() -> bool:
+    """Fail-closed for unexpected compact DDL via create_all.
+
+    Production never reaches create_all (Alembic path). Non-prod defaults to
+    allow for local/test fixtures unless explicitly disabled.
+    """
+    if config.app.is_production:
+        return False
+    raw = str(os.getenv("WAREHOUSE_1C_CATALOG_COMPACT_ALLOW_CREATE_ALL", "1") or "1")
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _create_all_app_metadata(connection_or_engine) -> None:
+    """create_all with optional exclusion of 1C compact search tables."""
+    if _compact_create_all_allowed():
+        AppBase.metadata.create_all(bind=connection_or_engine)
+        return
+    tables = [
+        table
+        for table in AppBase.metadata.sorted_tables
+        if str(table.name) not in _COMPACT_SEARCH_TABLE_NAMES
+    ]
+    if tables:
+        AppBase.metadata.create_all(bind=connection_or_engine, tables=tables)
+    logger.info(
+        "app schema init skipped compact search create_all "
+        "(use Alembic 0080/0081/0082 adoption)"
+    )
+
 
 def is_app_database_configured() -> bool:
     return bool(str(config.app_db.database_url or "").strip())
@@ -70,6 +122,8 @@ def _build_engine(database_url: str):
 
     engine_kwargs["pool_size"] = max(1, int(config.app_db.pool_size))
     engine_kwargs["max_overflow"] = max(0, int(config.app_db.max_overflow))
+    engine_kwargs["pool_timeout"] = max(1, int(os.getenv("APP_DB_POOL_TIMEOUT", "30") or 30))
+    engine_kwargs["pool_recycle"] = max(0, int(os.getenv("APP_DB_POOL_RECYCLE", "1800") or 1800))
     engine_kwargs["connect_args"] = {
         "application_name": str(os.getenv("APP_DB_APPLICATION_NAME", "itinvent-backend")).strip() or "itinvent-backend",
     }
@@ -190,6 +244,13 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
                 )
             upgrade_internal_database(ensure_app_database_configured(database_url), scope="app")
             return
+        if not _postgres_dev_schema_auto_create_enabled():
+            if not _postgres_has_alembic_version(engine):
+                raise AppDatabaseConfigurationError(
+                    "APP_SCHEMA_DEV_AUTO_CREATE=0 requires an Alembic-initialized PostgreSQL database"
+                )
+            upgrade_internal_database(ensure_app_database_configured(database_url), scope="app")
+            return
         with engine.begin() as connection:
             connection.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
@@ -199,12 +260,12 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
             connection.execute(text("SET LOCAL statement_timeout = '3000ms'"))
             connection.execute(text('CREATE SCHEMA IF NOT EXISTS "app"'))
             connection.execute(text('CREATE SCHEMA IF NOT EXISTS "system"'))
-            AppBase.metadata.create_all(bind=connection)
+            _create_all_app_metadata(connection)
             _run_postgres_app_schema_maintenance(connection)
         _refresh_pg_schema_docs_after_dev_init(ensure_app_database_configured(database_url))
         return
 
-    AppBase.metadata.create_all(bind=engine)
+    _create_all_app_metadata(engine)
 
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
@@ -225,6 +286,8 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
             if session_columns and "trusted_device_id" not in session_columns:
                 connection.execute(text("ALTER TABLE sessions ADD COLUMN trusted_device_id VARCHAR(64) NULL"))
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_sessions_trusted_device_id ON sessions(trusted_device_id)"))
+            if session_columns and "login_network_zone" not in session_columns:
+                connection.execute(text("ALTER TABLE sessions ADD COLUMN login_network_zone VARCHAR(16) NULL"))
             auth_runtime_columns = {
                 str(row[1] or "").strip().lower()
                 for row in connection.execute(text("PRAGMA table_info('auth_runtime_items')"))

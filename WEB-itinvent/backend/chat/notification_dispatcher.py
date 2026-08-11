@@ -34,7 +34,11 @@ class ChatNotificationDispatcher:
             hub_conn = None
             hub_lock = getattr(self._hub_service, "_lock", None)
             hub_connect = getattr(self._hub_service, "_connect", None)
-            if hub_lock is not None:
+            # APP DB already serializes writes via its own pool/transactions.
+            # Holding hub_service._lock across a 50-recipient fan-out stampedes chat sends
+            # and hub HTTP (tasks/dashboard) under load.
+            use_app_db = bool(getattr(self._hub_service, "_use_app_db", False))
+            if hub_lock is not None and not use_app_db:
                 exit_stack.enter_context(hub_lock)
             if callable(hub_connect):
                 try:
@@ -84,6 +88,67 @@ class ChatNotificationDispatcher:
             )
         )
         return True
+
+    def upsert_push_outbox_jobs_batch(
+        self,
+        *,
+        session,
+        conversation_id: str,
+        message_id: str,
+        channel: str,
+        jobs: list[dict[str, Any]],
+        now: datetime,
+    ) -> int:
+        """Insert many push-outbox rows for one message with a single existence check."""
+        normalized_channel = _normalize_text(channel) or "chat"
+        normalized_message_id = _normalize_text(message_id)
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_message_id or not jobs:
+            return 0
+        recipient_ids = sorted(
+            {
+                int(job.get("recipient_user_id") or 0)
+                for job in jobs
+                if int(job.get("recipient_user_id") or 0) > 0
+            }
+        )
+        if not recipient_ids:
+            return 0
+        existing_ids = set(
+            session.execute(
+                select(ChatPushOutbox.recipient_user_id).where(
+                    ChatPushOutbox.message_id == normalized_message_id,
+                    ChatPushOutbox.channel == normalized_channel,
+                    ChatPushOutbox.recipient_user_id.in_(recipient_ids),
+                )
+            ).scalars()
+        )
+        existing_ids = {int(item) for item in existing_ids if int(item) > 0}
+        created = 0
+        for job in jobs:
+            recipient_user_id = int(job.get("recipient_user_id") or 0)
+            if recipient_user_id <= 0 or recipient_user_id in existing_ids:
+                continue
+            session.add(
+                ChatPushOutbox(
+                    message_id=normalized_message_id,
+                    conversation_id=normalized_conversation_id,
+                    recipient_user_id=recipient_user_id,
+                    channel=normalized_channel,
+                    is_mention=bool(job.get("is_mention")),
+                    title=_normalize_text(job.get("title")) or "Новое сообщение в чате",
+                    body=_normalize_text(job.get("body")) or "Откройте чат, чтобы посмотреть сообщение.",
+                    status="queued",
+                    attempt_count=0,
+                    next_attempt_at=now,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            existing_ids.add(recipient_user_id)
+            created += 1
+        return created
 
     def dispatch(
         self,

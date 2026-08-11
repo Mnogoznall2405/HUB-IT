@@ -56,4 +56,26 @@ describe('TasksMobileNavigationDrawer', () => {
     expect(onStatusFilterChange).toHaveBeenCalledWith('done');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('applies a focus filter and closes drawer', () => {
+    const onFocusModeChange = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ThemeProvider theme={theme}>
+        <TasksMobileNavigationDrawer
+          open
+          onClose={onClose}
+          ui={ui}
+          isTaskDataMode
+          onFocusModeChange={onFocusModeChange}
+          focusCounts={{ review: 2 }}
+          boardSummaryItems={boardSummaryItems}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId('tasks-mobile-focus-review'));
+    expect(onFocusModeChange).toHaveBeenCalledWith('review');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

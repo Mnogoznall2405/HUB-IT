@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import { LayoutGroup, motion, useReducedMotion } from 'framer-motion';
 
-import { buildChatFolderTabList } from './chatFolderUtils';
+import { DEFAULT_CHAT_FOLDER_KEY, buildChatFolderTabList } from './chatFolderUtils';
 
 function FolderTab({
   label,
@@ -36,11 +36,15 @@ function FolderTab({
       <span className="relative z-[1]">{label}</span>
       {unreadCount > 0 ? (
         <span
-          className="relative z-[1] inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-semibold leading-none"
+          data-chat-folder-unread-badge="true"
+          aria-label={`Непрочитанных сообщений: ${unreadCount}`}
+          className="relative z-[1] inline-flex min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold leading-none"
           style={{
-            height: 18,
-            backgroundColor: active ? 'rgba(255,255,255,0.22)' : 'var(--chat-unread-bg)',
-            color: active ? '#ffffff' : 'var(--chat-unread-text)',
+            minWidth: 20,
+            height: 20,
+            backgroundColor: active ? 'var(--chat-folder-tab-active-badge-bg)' : 'var(--chat-unread-bg)',
+            color: active ? 'var(--chat-folder-tab-active-badge-text)' : 'var(--chat-unread-text)',
+            boxShadow: active ? '0 1px 4px rgba(8,19,32,0.24)' : '0 1px 5px rgba(25,118,210,0.34)',
           }}
         >
           {unreadCount > 99 ? '99+' : unreadCount}
@@ -56,13 +60,13 @@ function ChatFolderTabs({
   folderUnreadCounts = {},
   onFolderChange,
   disableMotion = false,
-  includeAllTab = true,
+  includeAllTab = false,
 }) {
   const scrollRef = useRef(null);
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
   const tabs = buildChatFolderTabList(customFolders, { includeAllTab });
-  const normalizedActiveKey = String(activeFolderKey || 'all').trim() || 'all';
+  const normalizedActiveKey = String(activeFolderKey || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
 
   useEffect(() => {
     const container = scrollRef.current;

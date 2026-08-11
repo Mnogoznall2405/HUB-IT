@@ -11,6 +11,21 @@ export const normalizePhoneDigits = (value) => {
 
 export const escapeRegExp = (value) => normalizeText(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+export const formatAge = (value) => {
+  if (value === null || value === undefined || value === '') return '';
+  const age = Number(value);
+  if (!Number.isInteger(age) || age < 0 || age > 120) return '';
+
+  const lastTwoDigits = age % 100;
+  const lastDigit = age % 10;
+  let unit = 'лет';
+  if (lastTwoDigits < 11 || lastTwoDigits > 14) {
+    if (lastDigit === 1) unit = 'год';
+    if (lastDigit >= 2 && lastDigit <= 4) unit = 'года';
+  }
+  return `${age} ${unit}`;
+};
+
 export const formatDateTime = (value) => {
   const text = normalizeText(value);
   if (!text) return 'нет данных';
@@ -95,4 +110,31 @@ export const buildEmployeeSubtitle = (item) => {
   const department = normalizeText(item?.department);
   if (position && department) return `${position} · ${department}`;
   return position || department || '';
+};
+
+const formatAbsenceDay = (value) => {
+  const text = normalizeText(value).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+  const parsed = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+};
+
+/** Chip / subtitle for ZUP absence attached to address-book item. */
+export const formatAbsenceLabel = (absence) => {
+  const label = normalizeText(absence?.label);
+  if (!label) return '';
+  const returns = formatAbsenceDay(absence?.returns_on);
+  if (returns) return `${label} · выйдет ${returns}`;
+  const starts = formatAbsenceDay(absence?.starts_on);
+  if (starts) return `${label} · с ${starts}`;
+  return label;
+};
+
+export const absenceChipColor = (absence) => {
+  const kind = normalizeText(absence?.kind).toLowerCase();
+  if (kind === 'sick') return 'error';
+  if (kind === 'trip') return 'info';
+  if (kind === 'vacation') return 'warning';
+  return 'default';
 };

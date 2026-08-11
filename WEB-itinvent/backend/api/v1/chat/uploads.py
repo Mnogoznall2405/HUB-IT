@@ -91,15 +91,20 @@ async def complete_chat_upload_session(
             defer_push_notifications=True,
         )
         if bool(meta.get("upload_session_completed_now")):
+            deferred_notifications = chat_api()._pop_deferred_chat_notifications(message)
+            deferred_realtime_publish = chat_api()._pop_deferred_realtime_publish(message)
             chat_api()._schedule_chat_message_side_effects(
                 conversation_id=message["conversation_id"],
                 message_id=message["id"],
+                deferred_notifications=deferred_notifications,
+                deferred_realtime_publish=deferred_realtime_publish,
             )
             chat_api()._schedule_ai_run_for_message(
                 current_user_id=int(current_user.id),
                 conversation_id=message["conversation_id"],
                 message_id=message["id"],
                 effective_database_id=db_id,
+                conversation_kind=str((meta or {}).get("conversation_kind") or ""),
             )
         return message
     except Exception as exc:

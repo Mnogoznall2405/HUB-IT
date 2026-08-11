@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -13,16 +14,17 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from agent_version import AGENT_VERSION
 
 from .pattern_filters import expand_incident_pattern_filter
 from .pdf_spool import PdfSpoolStore
-from .pg_compat import NullLock, PgConnection
+from .pg_compat import NullLock, PgConnection, TimedLock
 from .scan_agent_read_store import ScanAgentReadStore
 from .scan_host_read_store import ScanHostReadStore
 from .scan_task_report_store import ScanTaskIncidentReportStore
+from .scan_view import InvalidScanView, normalize_scan_list_view
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,184 @@ _SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HOSTNAME_LIKE_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,62}$")
 _LIST_PATTERN_PREVIEW_LIMIT = 8
 _LIST_PATTERN_VALUE_LIMIT = 120
+# Short process-local read cache for expensive list endpoints (shared inventory data;
+# not user-scoped). Invalidation is TTL-based; writes may lag up to TTL.
+_READ_CACHE_LOCK = threading.Lock()
+_READ_CACHE: Dict[str, Tuple[float, Any]] = {}
+_READ_CACHE_TTL_SEC = 10.0
+_READ_CACHE_MAX_ENTRIES = 64
+# Per-key single-flight: identical cold misses share one heavy compute.
+_READ_CACHE_INFLIGHT: Dict[str, threading.Event] = {}
+_READ_CACHE_INFLIGHT_ERRORS: Dict[str, BaseException] = {}
+# Test/gate counters (process-local).
+_READ_CACHE_COMPUTE_COUNTS: Dict[str, int] = {}
+
+
+def _load_dashboard_job_aggregates(
+    conn,
+    *,
+    is_postgres: bool,
+    performance_start: int,
+) -> Tuple[List[Any], int, int]:
+    """Load exact dashboard counters without forcing PostgreSQL into one heap scan."""
+
+    if is_postgres:
+        job_rows = conn.execute(
+            """
+            SELECT status, source_kind, COUNT(*) AS c
+            FROM scan_jobs
+            GROUP BY status, source_kind
+            """
+        ).fetchall()
+        completed_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM scan_jobs
+            WHERE status IN ({", ".join("?" for _ in FINAL_JOB_STATUSES)})
+              AND finished_at >= ?
+            """,
+            [*FINAL_JOB_STATUSES, int(performance_start)],
+        ).fetchone()
+        ocr_timeout_row = conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM scan_jobs
+            WHERE error_text='OCR timeout'
+            """
+        ).fetchone()
+        return (
+            list(job_rows),
+            int((completed_row["c"] if completed_row else 0) or 0),
+            int((ocr_timeout_row["c"] if ocr_timeout_row else 0) or 0),
+        )
+
+    # SQLite performs better with one pass and does not have PostgreSQL's
+    # visibility-map/index-only plan for the status/source aggregate.
+    job_rows = conn.execute(
+        f"""
+        SELECT
+            status,
+            source_kind,
+            COUNT(*) AS c,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN status IN ({", ".join("?" for _ in FINAL_JOB_STATUSES)})
+                         AND COALESCE(finished_at, 0) >= ?
+                        THEN 1 ELSE 0
+                    END
+                ),
+                0
+            ) AS completed_24h_part,
+            COALESCE(
+                SUM(CASE WHEN error_text='OCR timeout' THEN 1 ELSE 0 END),
+                0
+            ) AS ocr_timeout_part
+        FROM scan_jobs
+        GROUP BY status, source_kind
+        """,
+        [*FINAL_JOB_STATUSES, int(performance_start)],
+    ).fetchall()
+    return (
+        list(job_rows),
+        sum(int(row["completed_24h_part"] or 0) for row in job_rows),
+        sum(int(row["ocr_timeout_part"] or 0) for row in job_rows),
+    )
+
+
+def _read_cache_get(key: str) -> Optional[Any]:
+    now = time.monotonic()
+    with _READ_CACHE_LOCK:
+        hit = _READ_CACHE.get(key)
+        if not hit:
+            return None
+        ts, payload = hit
+        if (now - ts) > _READ_CACHE_TTL_SEC:
+            _READ_CACHE.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
+
+
+def _read_cache_set(key: str, payload: Any) -> None:
+    with _READ_CACHE_LOCK:
+        if len(_READ_CACHE) >= _READ_CACHE_MAX_ENTRIES:
+            # Drop oldest entries.
+            for old_key, _ in sorted(_READ_CACHE.items(), key=lambda item: item[1][0])[
+                : max(1, _READ_CACHE_MAX_ENTRIES // 4)
+            ]:
+                _READ_CACHE.pop(old_key, None)
+        _READ_CACHE[key] = (time.monotonic(), copy.deepcopy(payload))
+
+
+def _read_cache_clear() -> None:
+    """Process-local cache clear for gates/tests. Does not touch production processes."""
+    with _READ_CACHE_LOCK:
+        _READ_CACHE.clear()
+        _READ_CACHE_INFLIGHT.clear()
+        _READ_CACHE_INFLIGHT_ERRORS.clear()
+        _READ_CACHE_COMPUTE_COUNTS.clear()
+
+
+def _read_cache_compute_count(key: str) -> int:
+    with _READ_CACHE_LOCK:
+        return int(_READ_CACHE_COMPUTE_COUNTS.get(key, 0))
+
+
+def _read_cache_single_flight(key: str, compute: Callable[[], Any]) -> Any:
+    """Double-check locking + per-key in-flight wait. Errors are never cached."""
+    cached = _read_cache_get(key)
+    if cached is not None:
+        return cached
+
+    leader = False
+    wait_event: Optional[threading.Event] = None
+    with _READ_CACHE_LOCK:
+        hit = _READ_CACHE.get(key)
+        if hit is not None:
+            ts, payload = hit
+            if (time.monotonic() - ts) <= _READ_CACHE_TTL_SEC:
+                return copy.deepcopy(payload)
+            _READ_CACHE.pop(key, None)
+        existing = _READ_CACHE_INFLIGHT.get(key)
+        if existing is not None:
+            wait_event = existing
+        else:
+            wait_event = threading.Event()
+            _READ_CACHE_INFLIGHT[key] = wait_event
+            _READ_CACHE_INFLIGHT_ERRORS.pop(key, None)
+            leader = True
+
+    if not leader:
+        assert wait_event is not None
+        wait_event.wait(timeout=120.0)
+        cached = _read_cache_get(key)
+        if cached is not None:
+            return cached
+        with _READ_CACHE_LOCK:
+            err = _READ_CACHE_INFLIGHT_ERRORS.get(key)
+        if err is not None:
+            raise err
+        # Leader failed without publishing — recompute (errors must not poison waiters forever).
+        return _read_cache_single_flight(key, compute)
+
+    try:
+        payload = compute()
+        _read_cache_set(key, payload)
+        with _READ_CACHE_LOCK:
+            _READ_CACHE_COMPUTE_COUNTS[key] = int(_READ_CACHE_COMPUTE_COUNTS.get(key, 0)) + 1
+        return payload
+    except BaseException as exc:
+        with _READ_CACHE_LOCK:
+            _READ_CACHE_INFLIGHT_ERRORS[key] = exc
+        raise
+    finally:
+        with _READ_CACHE_LOCK:
+            event = _READ_CACHE_INFLIGHT.pop(key, None)
+            # Keep error briefly for waiters that just missed the event.set race, then drop.
+            # Waiters already snapshot error above; clear so subsequent misses can retry.
+            _READ_CACHE_INFLIGHT_ERRORS.pop(key, None)
+        if event is not None:
+            event.set()
 _LIST_PATTERN_SNIPPET_LIMIT = 240
 _SCAN_RUNTIME_COLUMNS = {
     "scan_jobs": {"event_id", "scan_task_id", "attempt_count", "metrics_json"},
@@ -91,11 +271,146 @@ def _percentile(values: List[float], fraction: float) -> Optional[float]:
     return round(ordered[index], 1)
 
 
+_DASHBOARD_PERFORMANCE_SAMPLE_LIMIT = 5000
+_DASHBOARD_PENDING_SAMPLE_LIMIT = 2000
+_SYSTEM_METRICS_DEFAULT_LIMIT = 1000
+_SYSTEM_METRICS_DEFAULT_MAX_POINTS = 1000
+_SCAN_RUN_RESULT_KEYS = (
+    "scanned",
+    "skipped",
+    "queued",
+    "deferred",
+    "deduped",
+    "deleted_from_state",
+    "files_seen",
+    "jobs_pending",
+    "jobs_done_clean",
+    "jobs_done_with_incident",
+    "jobs_failed",
+    "jobs_incomplete",
+    "jobs_total",
+    "outbox_pending",
+    "force_rescan",
+    "failed_job_errors",
+    "error_text",
+    "error",
+    "message",
+    "skipped_reasons",
+    "unsupported",
+    "excluded_by_extension",
+)
+_SCAN_RUN_PAYLOAD_KEYS = (
+    "force_rescan",
+    "server_pdf_pattern_ids",
+    "agent_pattern_ids",
+    "scan_extensions",
+)
+
+
+def _slim_mapping_keys(value: Any, keys: Iterable[str]) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in keys:
+        if key in value:
+            out[key] = value[key]
+    return out
+
+
+def downsample_metric_points(items: List[Dict[str, Any]], max_points: int) -> List[Dict[str, Any]]:
+    """Reduce dense time series while preserving first/last and local min/max peaks."""
+    safe_max = max(2, int(max_points or 0))
+    if len(items) <= safe_max:
+        return items
+    if safe_max == 2:
+        return [items[0], items[-1]]
+
+    bucket_count = max(1, safe_max // 2)
+    bucket_size = max(1, (len(items) + bucket_count - 1) // bucket_count)
+    selected: Dict[int, Dict[str, Any]] = {}
+
+    def _metric(row: Dict[str, Any], key: str) -> float:
+        try:
+            return float(row.get(key) or 0.0)
+        except Exception:
+            return 0.0
+
+    peak_keys = (
+        "cpu_percent",
+        "memory_percent",
+        "disk_read_bps",
+        "disk_write_bps",
+        "network_sent_bps",
+        "network_received_bps",
+    )
+
+    for bucket_idx in range(bucket_count):
+        start = bucket_idx * bucket_size
+        if start >= len(items):
+            break
+        chunk = items[start:start + bucket_size]
+        if not chunk:
+            continue
+        for key in peak_keys:
+            min_row = min(chunk, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0)))
+            max_row = max(chunk, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0)))
+            selected[int(min_row.get("captured_at") or 0)] = min_row
+            selected[int(max_row.get("captured_at") or 0)] = max_row
+
+    selected[int(items[0].get("captured_at") or 0)] = items[0]
+    selected[int(items[-1].get("captured_at") or 0)] = items[-1]
+    # Keep global extrema so later thinning cannot erase chart peaks.
+    for key in peak_keys:
+        min_row = min(items, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0)))
+        max_row = max(items, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0)))
+        selected[int(min_row.get("captured_at") or 0)] = min_row
+        selected[int(max_row.get("captured_at") or 0)] = max_row
+    ordered = [selected[key] for key in sorted(selected)]
+    if len(ordered) <= safe_max:
+        return ordered
+    must_keep_rows: List[Dict[str, Any]] = [items[0], items[-1]]
+    for key in peak_keys:
+        must_keep_rows.append(min(items, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0))))
+        must_keep_rows.append(max(items, key=lambda row, metric=key: (_metric(row, metric), int(row.get("captured_at") or 0))))
+    must_map: Dict[int, Dict[str, Any]] = {}
+    for row in must_keep_rows:
+        must_map[int(row.get("captured_at") or 0)] = row
+        if len(must_map) >= safe_max:
+            break
+    must_keep = set(must_map)
+    keep_rows = list(must_map.values())
+    remaining_slots = max(0, safe_max - len(keep_rows))
+    fillers = [row for row in ordered if int(row.get("captured_at") or 0) not in must_keep]
+    if remaining_slots and fillers:
+        step = max(1, len(fillers) / float(remaining_slots))
+        for idx in range(remaining_slots):
+            source_idx = min(len(fillers) - 1, int(round(idx * step)))
+            keep_rows.append(fillers[source_idx])
+    keep_rows.sort(key=lambda row: int(row.get("captured_at") or 0))
+    # Dedupe while preserving order.
+    out: List[Dict[str, Any]] = []
+    seen_ts: set[int] = set()
+    for row in keep_rows:
+        ts = int(row.get("captured_at") or 0)
+        if ts in seen_ts:
+            continue
+        seen_ts.add(ts)
+        out.append(row)
+    return out[:safe_max] if len(out) > safe_max else out
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(str(os.getenv(name, str(default)) or "").strip())
     except Exception:
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, str(default)) or "").strip())
+    except Exception:
+        return float(default)
 
 
 def _is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -119,6 +434,46 @@ def _is_transient_db_error(exc: BaseException) -> bool:
         or "55p03" in text
         or "40p01" in text
     )
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    """True for sqlite IntegrityError and PG unique violations (23505 / UniqueViolation).
+
+    Used by queue_job / create_task race fallbacks so PG backends behave like SQLite
+    when a covering unique index rejects a duplicate insert.
+    """
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    try:
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+        if isinstance(exc, SAIntegrityError):
+            return True
+    except Exception:
+        pass
+
+    chain: List[BaseException] = []
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, "orig", None) or getattr(cur, "__cause__", None)  # type: ignore[assignment]
+
+    for candidate in chain:
+        pgcode = getattr(candidate, "pgcode", None) or getattr(candidate, "sqlstate", None)
+        if str(pgcode or "") == "23505":
+            return True
+        name = type(candidate).__name__
+        if name in {"UniqueViolation", "IntegrityError"} and not isinstance(candidate, OSError):
+            module = str(getattr(type(candidate), "__module__", "") or "")
+            if "psycopg" in module or "sqlite3" in module or "sqlalchemy" in module:
+                return True
+            if name == "UniqueViolation":
+                return True
+
+    text = str(exc or "").lower()
+    return "unique" in text and ("violat" in text or "constraint" in text or "duplicate key" in text)
 
 
 def _strip_null_chars(value: Any) -> Any:
@@ -196,7 +551,8 @@ def looks_like_hostname_query(value: Any) -> bool:
         return False
     if any(ch.isdigit() for ch in text) or "." in text:
         return True
-    return bool(re.match(r"^[A-Za-z]{2,5}-[A-Za-z0-9]", text))
+    # Site-style labels without digits (TMN-PC, MSK-NB). Reject file stems like first-secret.
+    return bool(re.match(r"^[A-Za-z]{2,5}-(?:PC|NB|WS|LT|SRV|VM)(?:[-A-Za-z0-9]*)?$", text, re.IGNORECASE))
 
 
 def _slim_matched_patterns_for_list(patterns: Any) -> List[Dict[str, Any]]:
@@ -419,8 +775,35 @@ class ScanStore:
                 ),
             ),
         )
-        # PostgreSQL handles concurrency in the engine; avoid process-wide read serialization.
-        self._lock = NullLock() if self.backend == "postgres" else threading.RLock()
+        # Process-wide RLock for both backends this release: several write paths still use
+        # check-then-write still relies on unique indexes + race fallback via _is_unique_violation
+        # (sqlite IntegrityError and PG 23505 / UniqueViolation).
+        # TimedLock records wait/hold for optional timing headers.
+        # SCAN_STORE_LOCK_MODE=null is a fail-closed-off stub for measured experiments only
+        # (default/unknown → rlock). Do not enable in production without S1/S2 metrics + race fixes.
+        lock_mode = str(os.getenv("SCAN_STORE_LOCK_MODE", "rlock") or "rlock").strip().lower()
+        if lock_mode == "null":
+            raw_lock = NullLock()
+            self._lock_kind = "null"
+        else:
+            raw_lock = threading.RLock()
+            self._lock_kind = "rlock"
+        self._lock = TimedLock(raw_lock)
+        # Short TTL caches for ingest backpressure hot path (2–5s).
+        self._counts_cache_ttl_sec = max(2.0, min(5.0, _env_float("SCAN_JOB_COUNTS_CACHE_TTL_SEC", 3.0)))
+        self._counts_cache_lock = threading.Lock()
+        self._job_status_counts_cache: Optional[Tuple[float, Dict[str, int]]] = None
+        self._pdf_job_status_counts_cache: Optional[Tuple[float, Dict[str, int]]] = None
+        # Reconcile debounce: skip heavy job-count UPDATE unless force / TTL / every N jobs.
+        self._reconcile_debounce_sec = max(1.0, min(2.0, _env_float("SCAN_RECONCILE_DEBOUNCE_SEC", 1.5)))
+        self._reconcile_every_n_jobs = max(5, min(100, _env_int("SCAN_RECONCILE_EVERY_N_JOBS", 25)))
+        self._reconcile_meta_lock = threading.Lock()
+        self._reconcile_last_mono: Dict[str, float] = {}
+        self._reconcile_pending_jobs: Dict[str, int] = {}
+        # Light presence touch throttle (ingest/poll/result): ≤1 / 30s per agent.
+        self._touch_throttle_sec = max(5.0, min(60.0, _env_float("SCAN_TOUCH_THROTTLE_SEC", 30.0)))
+        self._touch_throttle_lock = threading.Lock()
+        self._touch_last_mono: Dict[str, float] = {}
         if self.backend == "postgres":
             from .db import get_scan_engine
 
@@ -433,6 +816,7 @@ class ScanStore:
             agent_online_timeout_sec=lambda: self.agent_online_timeout_sec,
             resolve_agent_sql_context_enabled=lambda: self.resolve_agent_sql_context,
             resolve_agent_sql_context=lambda mac_address, hostname: _resolve_agent_sql_context(mac_address, hostname),
+            is_postgres=lambda: self.is_postgres,
         )
         self._scan_host_read_store = ScanHostReadStore(
             lock=self._lock,
@@ -839,7 +1223,33 @@ class ScanStore:
     def transient_pdf_spool_stats(self, *, cache_ttl_sec: float = 10.0) -> Dict[str, Any]:
         return self._pdf_spool.stats(cache_ttl_sec=cache_ttl_sec)
 
+    def _get_counts_cache(self, slot: str) -> Optional[Dict[str, int]]:
+        now = time.monotonic()
+        with self._counts_cache_lock:
+            hit = self._pdf_job_status_counts_cache if slot == "pdf" else self._job_status_counts_cache
+            if not hit:
+                return None
+            ts, payload = hit
+            if (now - ts) > self._counts_cache_ttl_sec:
+                if slot == "pdf":
+                    self._pdf_job_status_counts_cache = None
+                else:
+                    self._job_status_counts_cache = None
+                return None
+            return dict(payload)
+
+    def _set_counts_cache(self, slot: str, payload: Dict[str, int]) -> None:
+        stamped = (time.monotonic(), dict(payload))
+        with self._counts_cache_lock:
+            if slot == "pdf":
+                self._pdf_job_status_counts_cache = stamped
+            else:
+                self._job_status_counts_cache = stamped
+
     def pdf_job_status_counts(self) -> Dict[str, int]:
+        cached = self._get_counts_cache("pdf")
+        if cached is not None:
+            return cached
         counts: Dict[str, int] = {
             "pdf_queued": 0,
             "pdf_processing": 0,
@@ -867,10 +1277,14 @@ class ScanStore:
             counts["pdf_total"] += count
         counts["pdf_pending"] = int(counts.get("pdf_queued", 0)) + int(counts.get("pdf_processing", 0))
         counts["pdf_completed"] = int(counts.get("pdf_done_clean", 0)) + int(counts.get("pdf_done_with_incident", 0))
+        self._set_counts_cache("pdf", counts)
         return counts
 
     def job_status_counts(self) -> Dict[str, int]:
         """Pending/total job counts across *all* source kinds (pdf and non-pdf)."""
+        cached = self._get_counts_cache("jobs")
+        if cached is not None:
+            return cached
         counts: Dict[str, int] = {
             "queued": 0,
             "processing": 0,
@@ -887,6 +1301,7 @@ class ScanStore:
             counts[job_status] = int(counts.get(job_status, 0)) + count
             counts["total"] += count
         counts["pending"] = int(counts.get("queued", 0)) + int(counts.get("processing", 0))
+        self._set_counts_cache("jobs", counts)
         return counts
 
     def ingest_backpressure_status(
@@ -897,29 +1312,45 @@ class ScanStore:
         max_pending_jobs: Optional[int] = None,
         retry_after_base_sec: int = 60,
         retry_after_max_sec: int = 600,
+        pdf_queued: Optional[int] = None,
+        pdf_processing: Optional[int] = None,
+        total_pending: Optional[int] = None,
+        spool: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        counts = self.pdf_job_status_counts()
-        spool = self.transient_pdf_spool_stats()
+        # Prefer caller-provided counters (e.g. dashboard job_queue) to avoid a second
+        # full scan_jobs GROUP BY on the cold dashboard path.
+        if pdf_queued is None or pdf_processing is None:
+            counts = self.pdf_job_status_counts()
+            pdf_queued_v = int(counts["pdf_queued"])
+            pdf_processing_v = int(counts["pdf_processing"])
+            pdf_pending = int(counts["pdf_pending"])
+        else:
+            pdf_queued_v = int(pdf_queued or 0)
+            pdf_processing_v = int(pdf_processing or 0)
+            pdf_pending = pdf_queued_v + pdf_processing_v
+        spool_v = spool if isinstance(spool, dict) else self.transient_pdf_spool_stats()
         pending_limit = max(1, int(max_pending_pdf_jobs or 1))
         transient_limit_gb = max(0.1, float(transient_max_gb or 0.1))
-        pdf_pending = int(counts["pdf_pending"])
         pending_ratio = pdf_pending / pending_limit
-        transient_ratio = float(spool["gb"]) / transient_limit_gb if transient_limit_gb else 0.0
+        transient_ratio = float(spool_v.get("gb") or 0.0) / transient_limit_gb if transient_limit_gb else 0.0
 
         reasons: List[str] = []
         if pdf_pending >= pending_limit:
             reasons.append("pdf_pending_limit")
-        if float(spool["gb"]) >= transient_limit_gb:
+        if float(spool_v.get("gb") or 0.0) >= transient_limit_gb:
             reasons.append("transient_size_limit")
 
         # General (all source kinds) queue-depth check, used to also throttle
         # non-PDF ingest instead of only guarding the PDF/OCR pipeline.
-        total_counts = self.job_status_counts()
-        total_pending = int(total_counts["pending"])
+        if total_pending is None:
+            total_counts = self.job_status_counts()
+            total_pending_v = int(total_counts["pending"])
+        else:
+            total_pending_v = int(total_pending or 0)
         total_limit = max(1, int(max_pending_jobs)) if max_pending_jobs else None
-        total_ratio = (total_pending / total_limit) if total_limit else 0.0
+        total_ratio = (total_pending_v / total_limit) if total_limit else 0.0
         total_reasons: List[str] = []
-        if total_limit is not None and total_pending >= total_limit:
+        if total_limit is not None and total_pending_v >= total_limit:
             total_reasons.append("total_pending_limit")
 
         overload_ratio = max([1.0] + [pending_ratio, transient_ratio, total_ratio])
@@ -931,14 +1362,14 @@ class ScanStore:
             "active": bool(reasons),
             "reasons": reasons,
             "pdf_pending": pdf_pending,
-            "pdf_queued": int(counts["pdf_queued"]),
-            "pdf_processing": int(counts["pdf_processing"]),
+            "pdf_queued": pdf_queued_v,
+            "pdf_processing": pdf_processing_v,
             "max_pending_pdf_jobs": pending_limit,
-            "transient": spool,
+            "transient": spool_v,
             "transient_max_gb": transient_limit_gb,
             "total_active": bool(total_reasons),
             "total_reasons": total_reasons,
-            "total_pending": total_pending,
+            "total_pending": total_pending_v,
             "max_pending_jobs": total_limit,
             "retry_after_sec": retry_after_sec,
         }
@@ -1070,12 +1501,30 @@ class ScanStore:
             "jobs_failed": int(row["jobs_failed"] or 0),
         }
 
+    def _should_skip_reconcile(self, task_id: str, *, force: bool) -> bool:
+        if force:
+            with self._reconcile_meta_lock:
+                self._reconcile_last_mono[task_id] = time.monotonic()
+                self._reconcile_pending_jobs[task_id] = 0
+            return False
+        now_m = time.monotonic()
+        with self._reconcile_meta_lock:
+            pending = int(self._reconcile_pending_jobs.get(task_id, 0)) + 1
+            self._reconcile_pending_jobs[task_id] = pending
+            last = float(self._reconcile_last_mono.get(task_id, 0.0) or 0.0)
+            if (now_m - last) < self._reconcile_debounce_sec and pending < self._reconcile_every_n_jobs:
+                return True
+            self._reconcile_last_mono[task_id] = now_m
+            self._reconcile_pending_jobs[task_id] = 0
+            return False
+
     def _reconcile_scan_task_progress_locked(
         self,
         conn: sqlite3.Connection,
         task_id: str,
         *,
         now_ts: Optional[int] = None,
+        force: bool = False,
     ) -> Optional[Dict[str, Any]]:
         tid = str(task_id or "").strip()
         if not tid:
@@ -1092,6 +1541,12 @@ class ScanStore:
             return None
 
         status_value = str(row["status"] or "").strip().lower()
+        # Final / force paths always run; hot ingest path may debounce.
+        if status_value not in FINAL_TASK_STATUSES and self._should_skip_reconcile(tid, force=force):
+            return None
+        if status_value in FINAL_TASK_STATUSES:
+            self._should_skip_reconcile(tid, force=True)
+
         current_result = _json_loads(row["result_json"], {})
         if not isinstance(current_result, dict):
             current_result = {}
@@ -1184,7 +1639,9 @@ class ScanStore:
         ).fetchall()
         now_ts = _now_ts()
         for row in rows:
-            self._reconcile_scan_task_progress_locked(conn, str(row["id"] or ""), now_ts=now_ts)
+            self._reconcile_scan_task_progress_locked(
+                conn, str(row["id"] or ""), now_ts=now_ts, force=True
+            )
 
     def upsert_agent_heartbeat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         agent_id = str(payload.get("agent_id") or "").strip()
@@ -1273,54 +1730,107 @@ class ScanStore:
         status: str = "online",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        """Light presence bump for ingest/poll/result.
+
+        Updates scalar last_seen_at (+ optional hostname/branch/ip/status) without
+        rewriting last_heartbeat_json. Full JSON updates stay on upsert_agent_heartbeat
+        (heartbeat endpoint). Throttled to ≤1 write / SCAN_TOUCH_THROTTLE_SEC per agent.
+        """
         normalized_agent_id = str(agent_id or "").strip()
         if not normalized_agent_id:
             return None
-        existing_payload: Dict[str, Any] = {}
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT hostname, branch, ip_address, version, status, last_heartbeat_json
-                FROM scan_agents
-                WHERE agent_id=?
-                LIMIT 1
-                """,
-                (normalized_agent_id,),
-            ).fetchone()
-        if row is not None:
-            existing_payload = _json_loads(row["last_heartbeat_json"], {})
-            if not isinstance(existing_payload, dict):
-                existing_payload = {}
-            existing_metadata = existing_payload.get("metadata")
-            if not isinstance(existing_metadata, dict):
-                existing_metadata = {}
-            if isinstance(metadata, dict):
-                existing_metadata.update(metadata)
-            existing_payload.update(
-                {
+        now_m = time.monotonic()
+        with self._touch_throttle_lock:
+            last = float(self._touch_last_mono.get(normalized_agent_id, 0.0) or 0.0)
+            if last and (now_m - last) < self._touch_throttle_sec:
+                return None
+            self._touch_last_mono[normalized_agent_id] = now_m
+
+        now_ts = _now_ts()
+        next_hostname = str(hostname or "").strip()
+        next_branch = str(branch or "").strip()
+        next_ip = str(ip_address or "").strip()
+        next_status = str(status or "online").strip() or "online"
+        # metadata is accepted for API compatibility but not persisted on the light path
+        # (avoids read-modify-write of last_heartbeat_json on hot ingest/poll).
+        _ = metadata
+
+        def _write() -> Dict[str, Any]:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT agent_id, hostname, branch, ip_address, status, last_seen_at
+                    FROM scan_agents
+                    WHERE agent_id=?
+                    LIMIT 1
+                    """,
+                    (normalized_agent_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO scan_agents(
+                            agent_id, hostname, branch, ip_address, version, status, last_seen_at,
+                            last_heartbeat_json, updated_at, outbox_depth, dead_letter_depth, last_ingest_ok_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                        """,
+                        (
+                            normalized_agent_id,
+                            next_hostname or normalized_agent_id,
+                            next_branch,
+                            next_ip,
+                            "",
+                            next_status,
+                            now_ts,
+                            "{}",
+                            now_ts,
+                        ),
+                    )
+                    conn.commit()
+                    return {
+                        "agent_id": normalized_agent_id,
+                        "hostname": next_hostname or normalized_agent_id,
+                        "branch": next_branch,
+                        "ip_address": next_ip,
+                        "status": next_status,
+                        "last_seen_at": now_ts,
+                    }
+                conn.execute(
+                    """
+                    UPDATE scan_agents
+                    SET last_seen_at=?,
+                        updated_at=?,
+                        hostname=CASE WHEN ? <> '' THEN ? ELSE hostname END,
+                        branch=CASE WHEN ? <> '' THEN ? ELSE branch END,
+                        ip_address=CASE WHEN ? <> '' THEN ? ELSE ip_address END,
+                        status=CASE WHEN ? <> '' THEN ? ELSE status END
+                    WHERE agent_id=?
+                    """,
+                    (
+                        now_ts,
+                        now_ts,
+                        next_hostname,
+                        next_hostname,
+                        next_branch,
+                        next_branch,
+                        next_ip,
+                        next_ip,
+                        next_status,
+                        next_status,
+                        normalized_agent_id,
+                    ),
+                )
+                conn.commit()
+                return {
                     "agent_id": normalized_agent_id,
-                    "hostname": str(hostname or existing_payload.get("hostname") or row["hostname"] or "").strip(),
-                    "branch": str(branch or existing_payload.get("branch") or row["branch"] or "").strip(),
-                    "ip_address": str(ip_address or existing_payload.get("ip_address") or row["ip_address"] or "").strip(),
-                    "version": str(existing_payload.get("version") or row["version"] or "").strip(),
-                    "status": str(status or existing_payload.get("status") or row["status"] or "online").strip() or "online",
-                    "last_seen_at": _now_ts(),
-                    "metadata": existing_metadata,
+                    "hostname": next_hostname or str(row["hostname"] or ""),
+                    "branch": next_branch or str(row["branch"] or ""),
+                    "ip_address": next_ip or str(row["ip_address"] or ""),
+                    "status": next_status or str(row["status"] or "online"),
+                    "last_seen_at": now_ts,
                 }
-            )
-        else:
-            payload_metadata = metadata if isinstance(metadata, dict) else {}
-            existing_payload = {
-                "agent_id": normalized_agent_id,
-                "hostname": str(hostname or normalized_agent_id).strip(),
-                "branch": str(branch or "").strip(),
-                "ip_address": str(ip_address or "").strip(),
-                "version": "",
-                "status": str(status or "online").strip() or "online",
-                "last_seen_at": _now_ts(),
-                "metadata": payload_metadata,
-            }
-        return self.upsert_agent_heartbeat(existing_payload)
+
+        return self._run_write_transaction("touch_agent_presence", _write)
 
     def create_task(
         self,
@@ -1402,26 +1912,45 @@ class ScanStore:
                         }
 
                 task_id = uuid.uuid4().hex
-                conn.execute(
-                    """
-                    INSERT INTO scan_tasks(
-                        id, agent_id, command, payload_json, status, created_at, updated_at, due_at, ttl_at, next_attempt_at, dedupe_key
-                    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        task_id,
-                        agent_id,
-                        command,
-                        payload_json,
-                        now_ts,
-                        now_ts,
-                        due_at,
-                        ttl_at,
-                        now_ts,
-                        key,
-                    ),
-                )
-                conn.commit()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO scan_tasks(
+                            id, agent_id, command, payload_json, status, created_at, updated_at, due_at, ttl_at, next_attempt_at, dedupe_key
+                        ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            agent_id,
+                            command,
+                            payload_json,
+                            now_ts,
+                            now_ts,
+                            due_at,
+                            ttl_at,
+                            now_ts,
+                            key,
+                        ),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    if not _is_unique_violation(exc):
+                        raise
+                    conn.rollback()
+                    if key:
+                        existing = conn.execute(
+                            """
+                            SELECT id, command, status, created_at, ttl_at
+                            FROM scan_tasks
+                            WHERE agent_id=? AND dedupe_key=?
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            """,
+                            (agent_id, key),
+                        ).fetchone()
+                        if existing:
+                            return dict(existing)
+                    raise
                 return {
                     "id": task_id,
                     "agent_id": agent_id,
@@ -1431,7 +1960,26 @@ class ScanStore:
                     "ttl_at": ttl_at,
                 }
 
-        return self._run_write_transaction("create_task", _write)
+        try:
+            return self._run_write_transaction("create_task", _write)
+        except Exception as exc:
+            if not _is_unique_violation(exc) or not key:
+                raise
+            # Race: covering unique (agent_id, dedupe_key) rejected insert — return survivor.
+            with self._lock, self._connect() as conn:
+                existing = conn.execute(
+                    """
+                    SELECT id, command, status, created_at, ttl_at
+                    FROM scan_tasks
+                    WHERE agent_id=? AND dedupe_key=? AND status IN ('queued', 'delivered', 'acknowledged')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (agent_id, key),
+                ).fetchone()
+                if existing:
+                    return dict(existing)
+            raise
 
     def _maintain_tasks(self, conn: sqlite3.Connection, now_ts: int) -> None:
         conn.execute(
@@ -1599,7 +2147,9 @@ class ScanStore:
                             (_json_dumps(result_payload), tid),
                         )
                 if stored_status == "acknowledged" and is_scan_now:
-                    reconciled = self._reconcile_scan_task_progress_locked(conn, tid, now_ts=now_ts)
+                    reconciled = self._reconcile_scan_task_progress_locked(
+                        conn, tid, now_ts=now_ts, force=True
+                    )
                     if isinstance(reconciled, dict):
                         returned_status = str(reconciled.get("status") or returned_status).strip().lower() or returned_status
                 conn.commit()
@@ -1607,11 +2157,33 @@ class ScanStore:
 
         return self._run_write_transaction("report_task_result", _write)
 
-    def _serialize_task_row(self, row: sqlite3.Row, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    def _serialize_task_row(
+        self,
+        row: sqlite3.Row,
+        now_ts: Optional[int] = None,
+        *,
+        slim: bool = False,
+    ) -> Dict[str, Any]:
         current_ts = int(now_ts or _now_ts())
         item = dict(row)
-        item["payload"] = _json_loads(item.pop("payload_json", "{}"), {})
-        item["result"] = _json_loads(item.pop("result_json", "{}"), {})
+        payload = _json_loads(item.pop("payload_json", "{}"), {})
+        result = _json_loads(item.pop("result_json", "{}"), {})
+        if slim:
+            item["payload"] = _slim_mapping_keys(payload, _SCAN_RUN_PAYLOAD_KEYS)
+            item["result"] = _slim_mapping_keys(result, _SCAN_RUN_RESULT_KEYS)
+        else:
+            item["payload"] = payload if isinstance(payload, dict) else {}
+            item["result"] = result if isinstance(result, dict) else {}
+        # Drop accidental join aggregates that are not task columns.
+        item.pop("hostname", None)
+        item.pop("failed_jobs_count", None)
+        item.pop("failed_job_errors", None)
+        item.pop("found_new", None)
+        item.pop("found_duplicate", None)
+        item.pop("deleted_count", None)
+        item.pop("cleaned_count", None)
+        item.pop("moved_count", None)
+        item.pop("observations_total", None)
         item["status"] = str(item.get("status") or "").strip().lower()
         item["command"] = str(item.get("command") or "").strip().lower()
         item["error_text"] = str(item.get("error_text") or "").strip()
@@ -1635,6 +2207,7 @@ class ScanStore:
         command: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        view: str = "detail",
     ) -> Dict[str, Any]:
         conditions: List[str] = []
         params: List[Any] = []
@@ -1657,6 +2230,8 @@ class ScanStore:
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         safe_limit = max(1, min(200, int(limit)))
         safe_offset = max(0, int(offset))
+        resolved_view = normalize_scan_list_view(view, default="detail")
+        slim = resolved_view == "summary"
         now_ts = _now_ts()
 
         with self._lock, self._connect() as conn:
@@ -1664,9 +2239,19 @@ class ScanStore:
                 f"SELECT COUNT(*) as cnt FROM scan_tasks {where_clause}",
                 params,
             ).fetchone()["cnt"]
+            if slim:
+                select_sql = """
+                SELECT
+                    id, agent_id, command, status, error_text, attempt_count,
+                    created_at, updated_at, delivered_at, acked_at, completed_at,
+                    ttl_at, next_attempt_at, due_at, dedupe_key,
+                    payload_json, result_json
+                """
+            else:
+                select_sql = "SELECT *"
             rows = conn.execute(
                 f"""
-                SELECT *
+                {select_sql}
                 FROM scan_tasks
                 {where_clause}
                 ORDER BY
@@ -1683,7 +2268,8 @@ class ScanStore:
 
         return {
             "total": int(total),
-            "items": [self._serialize_task_row(row, now_ts=now_ts) for row in rows],
+            "items": [self._serialize_task_row(row, now_ts=now_ts, slim=slim) for row in rows],
+            "view": resolved_view,
         }
 
     def active_scan_task_ids(self) -> List[str]:
@@ -1775,84 +2361,370 @@ class ScanStore:
         self,
         *,
         task_id: str,
-        limit: int = 5000,
+        limit: int = _SYSTEM_METRICS_DEFAULT_LIMIT,
         offset: int = 0,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+        max_points: Optional[int] = None,
     ) -> Dict[str, Any]:
         normalized_task_id = str(task_id or "").strip()
         if not normalized_task_id:
             return {"task_id": "", "total": 0, "items": [], "summary": {}}
-        safe_limit = max(1, min(20000, int(limit or 5000)))
+        safe_limit = max(1, min(20000, int(limit or _SYSTEM_METRICS_DEFAULT_LIMIT)))
         safe_offset = max(0, int(offset or 0))
+        range_from = int(from_ts) if from_ts is not None else None
+        range_to = int(to_ts) if to_ts is not None else None
+        if range_from is not None and range_from <= 0:
+            range_from = None
+        if range_to is not None and range_to <= 0:
+            range_to = None
+        if range_from is not None and range_to is not None and range_to < range_from:
+            range_from, range_to = range_to, range_from
+        # Legacy: absent max_points means no downsample. Explicit 0 also disables.
+        # Charts pass max_points (typically 1000) or view=chart at the API layer.
+        if max_points is None:
+            safe_max_points = 0
+        else:
+            safe_max_points = max(0, min(20000, int(max_points)))
+        cache_key = ""
+        if safe_max_points > 0 and self.is_postgres:
+            cache_key = (
+                f"metrics_chart|{self.db_path}|{self.database_url}|{normalized_task_id}|"
+                f"{safe_limit}|{safe_offset}|{range_from}|{range_to}|{safe_max_points}"
+            )
+            return _read_cache_single_flight(
+                cache_key,
+                lambda: self._list_task_system_metrics_uncached(
+                    normalized_task_id=normalized_task_id,
+                    safe_limit=safe_limit,
+                    safe_offset=safe_offset,
+                    range_from=range_from,
+                    range_to=range_to,
+                    safe_max_points=safe_max_points,
+                ),
+            )
+        return self._list_task_system_metrics_uncached(
+            normalized_task_id=normalized_task_id,
+            safe_limit=safe_limit,
+            safe_offset=safe_offset,
+            range_from=range_from,
+            range_to=range_to,
+            safe_max_points=safe_max_points,
+        )
+
+    def _list_task_system_metrics_uncached(
+        self,
+        *,
+        normalized_task_id: str,
+        safe_limit: int,
+        safe_offset: int,
+        range_from: Optional[int],
+        range_to: Optional[int],
+        safe_max_points: int,
+    ) -> Dict[str, Any]:
+        where_parts = ["scan_task_id=?"]
+        params: List[Any] = [normalized_task_id]
+        if range_from is not None:
+            where_parts.append("captured_at >= ?")
+            params.append(range_from)
+        if range_to is not None:
+            where_parts.append("captured_at <= ?")
+            params.append(range_to)
+        where_sql = " AND ".join(where_parts)
+        metric_cols = (
+            "captured_at, cpu_percent, memory_percent, memory_used_bytes, memory_available_bytes, "
+            "disk_read_bytes, disk_write_bytes, disk_read_bps, disk_write_bps, "
+            "network_sent_bytes, network_received_bytes, network_sent_bps, network_received_bps, "
+            "process_rss_bytes"
+        )
+
         with self._lock, self._connect() as conn:
+            # Chart path first (skip COUNT): full COUNT/window over large series hits 57014.
+            if safe_max_points > 0 and self.is_postgres:
+                first = conn.execute(
+                    f"""
+                    SELECT {metric_cols}
+                    FROM scan_task_system_metrics
+                    WHERE {where_sql}
+                    ORDER BY captured_at ASC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+                last = conn.execute(
+                    f"""
+                    SELECT {metric_cols}
+                    FROM scan_task_system_metrics
+                    WHERE {where_sql}
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+                if first is None or last is None:
+                    return {
+                        "task_id": normalized_task_id,
+                        "total": 0,
+                        "total_estimated": False,
+                        "items": [],
+                        "summary": {},
+                        "from_ts": range_from,
+                        "to_ts": range_to,
+                        "max_points": safe_max_points,
+                        "raw_item_count": 0,
+                        "downsampled": False,
+                    }
+                lo = int(first["captured_at"] or 0)
+                hi = int(last["captured_at"] or 0)
+                # Peak-safe path: when series is modest, fetch narrow columns once and
+                # downsample in Python (preserves min/max). On timeout / large series,
+                # fall back to nearest-grid (no multi-million Python load).
+                _METRICS_EXACT_FETCH_CAP = 20000
+                exact_total: Optional[int] = None
+                try:
+                    exact_total = int(
+                        conn.execute(
+                            f"SELECT COUNT(*) AS c FROM scan_task_system_metrics WHERE {where_sql}",
+                            params,
+                        ).fetchone()["c"]
+                        or 0
+                    )
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    exact_total = None
+                use_grid = True
+                items: List[Dict[str, Any]] = []
+                total_estimated = True
+                total = 0
+                raw_item_count = 0
+                if hi <= lo:
+                    items = [dict(first)]
+                    total_estimated = False
+                    total = 1 if exact_total is None else int(exact_total)
+                    raw_item_count = total
+                    use_grid = False
+                elif exact_total is not None and exact_total <= _METRICS_EXACT_FETCH_CAP:
+                    try:
+                        rows = conn.execute(
+                            f"""
+                            SELECT {metric_cols}
+                            FROM scan_task_system_metrics
+                            WHERE {where_sql}
+                            ORDER BY captured_at ASC
+                            """,
+                            params,
+                        ).fetchall()
+                        items = [dict(row) for row in rows]
+                        raw_item_count = len(items)
+                        total = int(exact_total)
+                        total_estimated = False
+                        if len(items) > safe_max_points:
+                            items = downsample_metric_points(items, safe_max_points)
+                        use_grid = False
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        use_grid = True
+                if use_grid:
+                    grid_n = max(2, min(safe_max_points, 100))
+                    rows = conn.execute(
+                        f"""
+                        WITH grid AS (
+                            SELECT
+                                CAST(? AS BIGINT)
+                                + (
+                                    (CAST(? AS BIGINT) - CAST(? AS BIGINT))
+                                    * g
+                                ) / CAST(? AS INTEGER) AS ts
+                            FROM generate_series(0, CAST(? AS INTEGER)) AS g
+                        )
+                        SELECT DISTINCT ON (g.ts)
+                            m.captured_at, m.cpu_percent, m.memory_percent, m.memory_used_bytes,
+                            m.memory_available_bytes, m.disk_read_bytes, m.disk_write_bytes,
+                            m.disk_read_bps, m.disk_write_bps, m.network_sent_bytes,
+                            m.network_received_bytes, m.network_sent_bps, m.network_received_bps,
+                            m.process_rss_bytes
+                        FROM grid g
+                        INNER JOIN LATERAL (
+                            SELECT {metric_cols}
+                            FROM scan_task_system_metrics
+                            WHERE scan_task_id = ?
+                              AND captured_at >= g.ts
+                              {"AND captured_at <= ?" if range_to is not None else ""}
+                            ORDER BY captured_at ASC
+                            LIMIT 1
+                        ) m ON TRUE
+                        ORDER BY g.ts ASC, m.captured_at ASC
+                        """,
+                        [
+                            lo,
+                            hi,
+                            lo,
+                            grid_n,
+                            grid_n,
+                            normalized_task_id,
+                            *([range_to] if range_to is not None else []),
+                        ],
+                    ).fetchall()
+                    items = [dict(row) for row in rows]
+                    if not items or int(items[0].get("captured_at") or 0) != lo:
+                        items.insert(0, dict(first))
+                    if not items or int(items[-1].get("captured_at") or 0) != hi:
+                        items.append(dict(last))
+                    seen: set[int] = set()
+                    deduped: List[Dict[str, Any]] = []
+                    for row in items:
+                        key = int(row.get("captured_at") or 0)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        deduped.append(row)
+                    items = deduped
+                    if len(items) > safe_max_points:
+                        items = downsample_metric_points(items, safe_max_points)
+                    if exact_total is not None:
+                        total = int(exact_total)
+                        total_estimated = False
+                        raw_item_count = int(exact_total)
+                    else:
+                        total = max(len(items), int((hi - lo) / 30) + 1)
+                        total_estimated = True
+                        raw_item_count = int(total)
+                cpu_vals = [float(x.get("cpu_percent") or 0.0) for x in items]
+                mem_vals = [float(x.get("memory_percent") or 0.0) for x in items]
+                summary = {
+                    "cpu_percent_avg": round(sum(cpu_vals) / max(1, len(cpu_vals)), 2),
+                    "cpu_percent_max": round(max(cpu_vals) if cpu_vals else 0.0, 2),
+                    "memory_percent_max": round(max(mem_vals) if mem_vals else 0.0, 2),
+                    "memory_used_bytes_max": max(int(x.get("memory_used_bytes") or 0) for x in items) if items else 0,
+                    "process_rss_bytes_max": max(int(x.get("process_rss_bytes") or 0) for x in items) if items else 0,
+                    "disk_read_bps_max": round(max((float(x.get("disk_read_bps") or 0.0) for x in items), default=0.0), 2),
+                    "disk_write_bps_max": round(max((float(x.get("disk_write_bps") or 0.0) for x in items), default=0.0), 2),
+                    "network_sent_bps_max": round(max((float(x.get("network_sent_bps") or 0.0) for x in items), default=0.0), 2),
+                    "network_received_bps_max": round(
+                        max((float(x.get("network_received_bps") or 0.0) for x in items), default=0.0), 2
+                    ),
+                    "started_at": lo,
+                    "finished_at": hi,
+                    "disk_read_bytes_delta": max(
+                        0, int(last["disk_read_bytes"] or 0) - int(first["disk_read_bytes"] or 0)
+                    ),
+                    "disk_write_bytes_delta": max(
+                        0, int(last["disk_write_bytes"] or 0) - int(first["disk_write_bytes"] or 0)
+                    ),
+                    "network_sent_bytes_delta": max(
+                        0, int(last["network_sent_bytes"] or 0) - int(first["network_sent_bytes"] or 0)
+                    ),
+                    "network_received_bytes_delta": max(
+                        0,
+                        int(last["network_received_bytes"] or 0) - int(first["network_received_bytes"] or 0),
+                    ),
+                }
+                return {
+                    "task_id": normalized_task_id,
+                    "total": int(total),
+                    "total_estimated": bool(total_estimated),
+                    "items": items,
+                    "summary": summary,
+                    "from_ts": range_from,
+                    "to_ts": range_to,
+                    "max_points": safe_max_points,
+                    "raw_item_count": int(raw_item_count),
+                    "downsampled": bool(int(total) > len(items) or len(items) < int(raw_item_count)),
+                }
+
             total = int(
                 conn.execute(
-                    "SELECT COUNT(*) AS c FROM scan_task_system_metrics WHERE scan_task_id=?",
-                    (normalized_task_id,),
+                    f"SELECT COUNT(*) AS c FROM scan_task_system_metrics WHERE {where_sql}",
+                    params,
                 ).fetchone()["c"]
                 or 0
             )
+
             rows = conn.execute(
-                """
-                SELECT *
+                f"""
+                SELECT {metric_cols}
                 FROM scan_task_system_metrics
-                WHERE scan_task_id=?
+                WHERE {where_sql}
                 ORDER BY captured_at ASC
                 LIMIT ? OFFSET ?
                 """,
-                (normalized_task_id, safe_limit, safe_offset),
+                [*params, safe_limit, safe_offset],
             ).fetchall()
-            aggregate = conn.execute(
-                """
-                SELECT
-                    AVG(cpu_percent) AS cpu_percent_avg,
-                    MAX(cpu_percent) AS cpu_percent_max,
-                    MAX(memory_percent) AS memory_percent_max,
-                    MAX(memory_used_bytes) AS memory_used_bytes_max,
-                    MAX(process_rss_bytes) AS process_rss_bytes_max,
-                    MAX(disk_read_bps) AS disk_read_bps_max,
-                    MAX(disk_write_bps) AS disk_write_bps_max,
-                    MAX(network_sent_bps) AS network_sent_bps_max,
-                    MAX(network_received_bps) AS network_received_bps_max,
-                    MIN(captured_at) AS started_at,
-                    MAX(captured_at) AS finished_at
-                FROM scan_task_system_metrics
-                WHERE scan_task_id=?
-                """,
-                (normalized_task_id,),
-            ).fetchone()
             first = conn.execute(
-                "SELECT * FROM scan_task_system_metrics WHERE scan_task_id=? ORDER BY captured_at ASC LIMIT 1",
-                (normalized_task_id,),
+                f"""
+                SELECT {metric_cols}
+                FROM scan_task_system_metrics
+                WHERE {where_sql}
+                ORDER BY captured_at ASC
+                LIMIT 1
+                """,
+                params,
             ).fetchone()
             last = conn.execute(
-                "SELECT * FROM scan_task_system_metrics WHERE scan_task_id=? ORDER BY captured_at DESC LIMIT 1",
-                (normalized_task_id,),
+                f"""
+                SELECT {metric_cols}
+                FROM scan_task_system_metrics
+                WHERE {where_sql}
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """,
+                params,
             ).fetchone()
-
-        summary: Dict[str, Any] = {}
-        if total and aggregate is not None and first is not None and last is not None:
-            summary = {
-                "cpu_percent_avg": round(float(aggregate["cpu_percent_avg"] or 0.0), 2),
-                "cpu_percent_max": round(float(aggregate["cpu_percent_max"] or 0.0), 2),
-                "memory_percent_max": round(float(aggregate["memory_percent_max"] or 0.0), 2),
-                "memory_used_bytes_max": int(aggregate["memory_used_bytes_max"] or 0),
-                "process_rss_bytes_max": int(aggregate["process_rss_bytes_max"] or 0),
-                "disk_read_bps_max": round(float(aggregate["disk_read_bps_max"] or 0.0), 2),
-                "disk_write_bps_max": round(float(aggregate["disk_write_bps_max"] or 0.0), 2),
-                "network_sent_bps_max": round(float(aggregate["network_sent_bps_max"] or 0.0), 2),
-                "network_received_bps_max": round(float(aggregate["network_received_bps_max"] or 0.0), 2),
-                "started_at": int(aggregate["started_at"] or 0),
-                "finished_at": int(aggregate["finished_at"] or 0),
-                "disk_read_bytes_delta": max(0, int(last["disk_read_bytes"] or 0) - int(first["disk_read_bytes"] or 0)),
-                "disk_write_bytes_delta": max(0, int(last["disk_write_bytes"] or 0) - int(first["disk_write_bytes"] or 0)),
-                "network_sent_bytes_delta": max(0, int(last["network_sent_bytes"] or 0) - int(first["network_sent_bytes"] or 0)),
-                "network_received_bytes_delta": max(0, int(last["network_received_bytes"] or 0) - int(first["network_received_bytes"] or 0)),
-            }
+            # Prefer summary from the page rows when a full aggregate would re-scan
+            # a large series under statement_timeout (seen as SQLSTATE 57014).
+            items = [dict(row) for row in rows]
+            raw_count = len(items)
+            if safe_max_points > 0:
+                items = downsample_metric_points(items, safe_max_points)
+            summary = {}
+            if total and items and first is not None and last is not None:
+                cpu_vals = [float(x.get("cpu_percent") or 0.0) for x in items]
+                mem_vals = [float(x.get("memory_percent") or 0.0) for x in items]
+                summary = {
+                    "cpu_percent_avg": round(sum(cpu_vals) / max(1, len(cpu_vals)), 2),
+                    "cpu_percent_max": round(max(cpu_vals) if cpu_vals else 0.0, 2),
+                    "memory_percent_max": round(max(mem_vals) if mem_vals else 0.0, 2),
+                    "memory_used_bytes_max": max(int(x.get("memory_used_bytes") or 0) for x in items),
+                    "process_rss_bytes_max": max(int(x.get("process_rss_bytes") or 0) for x in items),
+                    "disk_read_bps_max": round(max(float(x.get("disk_read_bps") or 0.0) for x in items), 2),
+                    "disk_write_bps_max": round(max(float(x.get("disk_write_bps") or 0.0) for x in items), 2),
+                    "network_sent_bps_max": round(max(float(x.get("network_sent_bps") or 0.0) for x in items), 2),
+                    "network_received_bps_max": round(
+                        max(float(x.get("network_received_bps") or 0.0) for x in items), 2
+                    ),
+                    "started_at": int(first["captured_at"] or 0),
+                    "finished_at": int(last["captured_at"] or 0),
+                    "disk_read_bytes_delta": max(
+                        0, int(last["disk_read_bytes"] or 0) - int(first["disk_read_bytes"] or 0)
+                    ),
+                    "disk_write_bytes_delta": max(
+                        0, int(last["disk_write_bytes"] or 0) - int(first["disk_write_bytes"] or 0)
+                    ),
+                    "network_sent_bytes_delta": max(
+                        0, int(last["network_sent_bytes"] or 0) - int(first["network_sent_bytes"] or 0)
+                    ),
+                    "network_received_bytes_delta": max(
+                        0,
+                        int(last["network_received_bytes"] or 0) - int(first["network_received_bytes"] or 0),
+                    ),
+                }
         return {
             "task_id": normalized_task_id,
             "total": total,
-            "items": [dict(row) for row in rows],
+            "total_estimated": False,
+            "items": items,
             "summary": summary,
+            "from_ts": range_from,
+            "to_ts": range_to,
+            "max_points": safe_max_points if safe_max_points > 0 else None,
+            "raw_item_count": raw_count,
+            "downsampled": bool(safe_max_points > 0 and (total > len(items) or raw_count > len(items))),
         }
 
     def _find_incident_for_job_locked(self, conn: sqlite3.Connection, job_id: str) -> Optional[sqlite3.Row]:
@@ -2293,36 +3165,36 @@ class ScanStore:
                     conn.commit()
 
             self._run_write_transaction("queue_job_insert", _write_new_job)
-        except sqlite3.IntegrityError:
-            if spool_written:
-                self.delete_job_pdf_spool(job_id=job_id)
-            if event_id:
-                with self._lock, self._connect() as conn:
-                    existing = conn.execute(
-                        "SELECT id, status, scan_task_id, error_text FROM scan_jobs WHERE event_id=? LIMIT 1",
-                        (event_id,),
-                    ).fetchone()
-                    if existing is not None:
-                        effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
-                            conn,
-                            sanitized_payload.get("scan_task_id"),
-                        )
-                        self._record_existing_job_observation_locked(
-                            conn,
-                            scan_task_id=effective_scan_task_id,
-                            row=row,
-                            existing=existing,
-                            event_id=event_id,
-                            created_at=now_ts,
-                        )
-                        conn.commit()
-                        return {
-                            "job_id": str(existing["id"]),
-                            "status": str(existing["status"] or "queued"),
-                            "deduped": True,
-                        }
-            raise
-        except Exception:
+        except Exception as exc:
+            if _is_unique_violation(exc):
+                if spool_written:
+                    self.delete_job_pdf_spool(job_id=job_id)
+                if event_id:
+                    with self._lock, self._connect() as conn:
+                        existing = conn.execute(
+                            "SELECT id, status, scan_task_id, error_text FROM scan_jobs WHERE event_id=? LIMIT 1",
+                            (event_id,),
+                        ).fetchone()
+                        if existing is not None:
+                            effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
+                                conn,
+                                sanitized_payload.get("scan_task_id"),
+                            )
+                            self._record_existing_job_observation_locked(
+                                conn,
+                                scan_task_id=effective_scan_task_id,
+                                row=row,
+                                existing=existing,
+                                event_id=event_id,
+                                created_at=now_ts,
+                            )
+                            conn.commit()
+                            return {
+                                "job_id": str(existing["id"]),
+                                "status": str(existing["status"] or "queued"),
+                                "deduped": True,
+                            }
+                raise
             if spool_written:
                 self.delete_job_pdf_spool(job_id=job_id)
             raise
@@ -2564,7 +3436,9 @@ class ScanStore:
                 )
                 scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
                 if scan_task_id:
-                    self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
+                    self._reconcile_scan_task_progress_locked(
+                        conn, scan_task_id, now_ts=now_ts, force=True
+                    )
                 conn.commit()
 
         self._run_write_transaction("finalize_job", _write)
@@ -2801,7 +3675,9 @@ class ScanStore:
                         ),
                     )
                     if scan_task_id:
-                        self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
+                        self._reconcile_scan_task_progress_locked(
+                            conn, scan_task_id, now_ts=now_ts, force=True
+                        )
                 conn.commit()
 
         self._run_write_transaction("create_finding_and_incident", _write)
@@ -2958,6 +3834,86 @@ class ScanStore:
         pattern_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        view: str = "detail",
+    ) -> Dict[str, Any]:
+        resolved_view = normalize_scan_list_view(view, default="detail")
+        safe_limit = max(1, min(5000, int(limit)))
+        safe_offset = max(0, int(offset))
+        # First-page PG read-cache (10s) for inbox/summary hot path.
+        use_cache = (
+            self.is_postgres
+            and safe_offset == 0
+            and resolved_view == "summary"
+            and safe_limit <= 100
+        )
+        cache_key = (
+            f"incidents|{self.db_path}|{self.database_url}|view={resolved_view}|"
+            f"st={str(status or '')}|sev={str(severity or '')}|br={str(branch or '')}|"
+            f"q={str(q or '')}|h={str(hostname or '')}|tid={str(task_id or '')}|"
+            f"sk={str(source_kind or '')}|fe={str(file_ext or '')}|"
+            f"df={str(date_from or '')}|dt={str(date_to or '')}|hf={has_fragment}|"
+            f"ab={str(ack_by or '')}|pid={str(pattern_id or '')}|lim={safe_limit}"
+        )
+        if use_cache:
+            return _read_cache_single_flight(
+                cache_key,
+                lambda: self._list_incidents_uncached(
+                    status=status,
+                    severity=severity,
+                    branch=branch,
+                    q=q,
+                    hostname=hostname,
+                    task_id=task_id,
+                    source_kind=source_kind,
+                    file_ext=file_ext,
+                    date_from=date_from,
+                    date_to=date_to,
+                    has_fragment=has_fragment,
+                    ack_by=ack_by,
+                    pattern_id=pattern_id,
+                    limit=safe_limit,
+                    offset=safe_offset,
+                    resolved_view=resolved_view,
+                ),
+            )
+        return self._list_incidents_uncached(
+            status=status,
+            severity=severity,
+            branch=branch,
+            q=q,
+            hostname=hostname,
+            task_id=task_id,
+            source_kind=source_kind,
+            file_ext=file_ext,
+            date_from=date_from,
+            date_to=date_to,
+            has_fragment=has_fragment,
+            ack_by=ack_by,
+            pattern_id=pattern_id,
+            limit=safe_limit,
+            offset=safe_offset,
+            resolved_view=resolved_view,
+        )
+
+    def _list_incidents_uncached(
+        self,
+        *,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        branch: Optional[str] = None,
+        q: Optional[str] = None,
+        hostname: Optional[str] = None,
+        task_id: Optional[str] = None,
+        source_kind: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        has_fragment: Optional[bool] = None,
+        ack_by: Optional[str] = None,
+        pattern_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        resolved_view: str = "detail",
     ) -> Dict[str, Any]:
         where_clause, params, needs_findings_join, needs_jobs_join = self._build_incident_where_clause(
             status=status,
@@ -2983,12 +3939,48 @@ class ScanStore:
             params.append(normalized_task_id)
         safe_limit = max(1, min(5000, int(limit)))
         safe_offset = max(0, int(offset))
+        summary = resolved_view == "summary"
         count_joins: List[str] = []
         if needs_findings_join:
             count_joins.append("LEFT JOIN scan_findings f ON f.id = i.finding_id")
         if needs_jobs_join:
             count_joins.append("LEFT JOIN scan_jobs j ON j.id = i.job_id")
         count_join_sql = ("\n                ".join(count_joins) + "\n                ") if count_joins else ""
+
+        # Summary: explicit columns. Detail keeps i.* for backward-compatible fields.
+        if summary:
+            select_cols = """
+                    i.id,
+                    i.finding_id,
+                    i.job_id,
+                    i.agent_id,
+                    i.hostname,
+                    i.branch,
+                    i.user_login,
+                    i.user_full_name,
+                    i.file_path,
+                    i.severity,
+                    i.status,
+                    i.created_at,
+                    i.ack_at,
+                    i.ack_by,
+                    f.category,
+                    f.short_reason,
+                    f.matched_patterns_json,
+                    j.source_kind,
+                    j.file_name,
+                    j.created_at as job_created_at
+            """
+        else:
+            select_cols = """
+                    i.*,
+                    f.category,
+                    f.short_reason,
+                    f.matched_patterns_json,
+                    j.source_kind,
+                    j.file_name,
+                    j.created_at as job_created_at
+            """
 
         with self._lock, self._connect() as conn:
             total = conn.execute(
@@ -3002,13 +3994,7 @@ class ScanStore:
             rows = conn.execute(
                 f"""
                 SELECT
-                    i.*, 
-                    f.category,
-                    f.short_reason,
-                    f.matched_patterns_json,
-                    j.source_kind,
-                    j.file_name,
-                    j.created_at as job_created_at
+                    {select_cols}
                 FROM scan_incidents i
                 LEFT JOIN scan_findings f ON f.id = i.finding_id
                 LEFT JOIN scan_jobs j ON j.id = i.job_id
@@ -3021,11 +4007,10 @@ class ScanStore:
 
         items: List[Dict[str, Any]] = []
         for row in rows:
-            item = dict(row)
-            item["matched_patterns"] = _slim_matched_patterns_for_list(
-                _json_loads(item.pop("matched_patterns_json", "[]"), [])
-            )
-            item["file_ext"] = _file_ext_from_values(item.get("file_name"), item.get("file_path"))
+            item = self._row_to_incident_item(row, slim_patterns=True)
+            if summary:
+                patterns = item.get("matched_patterns") if isinstance(item.get("matched_patterns"), list) else []
+                item["matched_patterns"] = patterns[:3]
             items.append(item)
         next_offset = safe_offset + len(items)
         has_more = next_offset < int(total)
@@ -3036,13 +4021,107 @@ class ScanStore:
             "offset": safe_offset,
             "has_more": bool(has_more),
             "next_offset": next_offset if has_more else None,
+            "view": resolved_view,
         }
 
-    def _row_to_incident_item(self, row: Any) -> Dict[str, Any]:
+    def _row_to_incident_item(self, row: Any, *, slim_patterns: bool = True) -> Dict[str, Any]:
         item = dict(row)
-        item["matched_patterns"] = _json_loads(item.pop("matched_patterns_json", "[]"), [])
+        item.pop("file_key", None)
+        item.pop("rn", None)
+        patterns = _json_loads(item.pop("matched_patterns_json", "[]"), [])
+        item["matched_patterns"] = (
+            _slim_matched_patterns_for_list(patterns) if slim_patterns else patterns
+        )
         item["file_ext"] = _file_ext_from_values(item.get("file_name"), item.get("file_path"))
         return item
+
+    def _fetch_inbox_file_previews(
+        self,
+        conn: Any,
+        *,
+        host_where: str,
+        host_params: List[Any],
+        file_keys: List[str],
+        summary: bool = False,
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized_keys = [str(key or "").strip() for key in file_keys if str(key or "").strip()]
+        if not normalized_keys:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_keys)
+        file_key_expr = (
+            "COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id)"
+        )
+        # Avoid i.* — OCR/pattern blobs on findings dominate inbox payload size.
+        select_cols = f"""
+            {file_key_expr} AS file_key,
+            i.id,
+            i.hostname,
+            i.branch,
+            i.status,
+            i.severity,
+            i.file_path,
+            i.created_at,
+            i.finding_id,
+            i.job_id,
+            f.category,
+            f.short_reason,
+            f.matched_patterns_json,
+            j.source_kind,
+            j.file_name,
+            j.created_at as job_created_at
+        """
+        if self.is_postgres:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON ({file_key_expr})
+                    {select_cols}
+                FROM scan_incidents i
+                LEFT JOIN scan_findings f ON f.id = i.finding_id
+                LEFT JOIN scan_jobs j ON j.id = i.job_id
+                {host_where}
+                  AND {file_key_expr} IN ({placeholders})
+                ORDER BY {file_key_expr}, i.created_at DESC
+                """,
+                [*host_params, *normalized_keys],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM (
+                    SELECT
+                        {select_cols},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {file_key_expr}
+                            ORDER BY i.created_at DESC
+                        ) AS rn
+                    FROM scan_incidents i
+                    LEFT JOIN scan_findings f ON f.id = i.finding_id
+                    LEFT JOIN scan_jobs j ON j.id = i.job_id
+                    {host_where}
+                      AND {file_key_expr} IN ({placeholders})
+                ) ranked
+                WHERE rn = 1
+                """,
+                [*host_params, *normalized_keys],
+            ).fetchall()
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = str(row["file_key"] or "").strip()
+            if not key:
+                continue
+            item = self._row_to_incident_item(row, slim_patterns=True)
+            if summary:
+                patterns = item.get("matched_patterns") if isinstance(item.get("matched_patterns"), list) else []
+                out[key] = {
+                    "id": str(item.get("id") or "").strip(),
+                    "severity": str(item.get("severity") or "").strip().lower(),
+                    "status": str(item.get("status") or "").strip().lower(),
+                    "matched_patterns": patterns[:3],
+                }
+            else:
+                out[key] = item
+        return out
 
     def list_incident_inbox_groups(
         self,
@@ -3061,8 +4140,94 @@ class ScanStore:
         pattern_id: Optional[str] = None,
         host_limit: int = 25,
         host_offset: int = 0,
-        files_per_host: int = 25,
+        files_per_host: Optional[int] = None,
+        view: str = "detail",
     ) -> Dict[str, Any]:
+        safe_host_limit = max(1, min(100, int(host_limit)))
+        safe_host_offset = max(0, int(host_offset))
+        resolved_view = normalize_scan_list_view(view, default="detail")
+        summary = resolved_view == "summary"
+        # None → summary hosts-only (0); detail keeps legacy preview of 25 files/host.
+        if files_per_host is None:
+            safe_files_per_host = 0 if summary else 25
+        else:
+            safe_files_per_host = max(0, min(100, int(files_per_host)))
+        cache_key = (
+            f"inbox_groups|{self.db_path}|{self.database_url}|"
+            f"view={resolved_view}|"
+            f"st={str(status or '')}|sev={str(severity or '')}|br={str(branch or '')}|"
+            f"q={str(q or '')}|h={str(hostname or '')}|sk={str(source_kind or '')}|"
+            f"fe={str(file_ext or '')}|df={str(date_from or '')}|dt={str(date_to or '')}|"
+            f"hf={has_fragment}|ab={str(ack_by or '')}|pid={str(pattern_id or '')}|"
+            f"hl={safe_host_limit}|ho={safe_host_offset}|fph={safe_files_per_host}"
+        )
+        if self.is_postgres:
+            return _read_cache_single_flight(
+                cache_key,
+                lambda: self._list_incident_inbox_groups_uncached(
+                    status=status,
+                    severity=severity,
+                    branch=branch,
+                    q=q,
+                    hostname=hostname,
+                    source_kind=source_kind,
+                    file_ext=file_ext,
+                    date_from=date_from,
+                    date_to=date_to,
+                    has_fragment=has_fragment,
+                    ack_by=ack_by,
+                    pattern_id=pattern_id,
+                    host_limit=safe_host_limit,
+                    host_offset=safe_host_offset,
+                    files_per_host=safe_files_per_host,
+                    summary=summary,
+                    resolved_view=resolved_view,
+                ),
+            )
+        return self._list_incident_inbox_groups_uncached(
+            status=status,
+            severity=severity,
+            branch=branch,
+            q=q,
+            hostname=hostname,
+            source_kind=source_kind,
+            file_ext=file_ext,
+            date_from=date_from,
+            date_to=date_to,
+            has_fragment=has_fragment,
+            ack_by=ack_by,
+            pattern_id=pattern_id,
+            host_limit=safe_host_limit,
+            host_offset=safe_host_offset,
+            files_per_host=safe_files_per_host,
+            summary=summary,
+            resolved_view=resolved_view,
+        )
+
+    def _list_incident_inbox_groups_uncached(
+        self,
+        *,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        branch: Optional[str] = None,
+        q: Optional[str] = None,
+        hostname: Optional[str] = None,
+        source_kind: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        has_fragment: Optional[bool] = None,
+        ack_by: Optional[str] = None,
+        pattern_id: Optional[str] = None,
+        host_limit: int = 25,
+        host_offset: int = 0,
+        files_per_host: int = 25,
+        summary: bool = False,
+        resolved_view: str = "detail",
+    ) -> Dict[str, Any]:
+        safe_host_limit = max(1, min(100, int(host_limit)))
+        safe_host_offset = max(0, int(host_offset))
+        safe_files_per_host = max(0, min(100, int(files_per_host)))
         where_clause, params, needs_findings_join, needs_jobs_join = self._build_incident_where_clause(
             status=status,
             severity=severity,
@@ -3077,17 +4242,33 @@ class ScanStore:
             ack_by=ack_by,
             pattern_id=pattern_id,
         )
-        safe_host_limit = max(1, min(100, int(host_limit)))
-        safe_host_offset = max(0, int(host_offset))
-        safe_files_per_host = max(1, min(100, int(files_per_host)))
         branch_needle = str(branch or "").strip().casefold()
         q_needle = str(q or "").strip().casefold()
+        # Branch/q host-context filters still need post-agg Python filtering.
+        needs_context_filter = bool(branch_needle) or (
+            bool(q_needle) and not looks_like_hostname_query(q_needle)
+        )
+        # Expand/prefetch: hostname + one host page + file previews — skip full host COUNT.
+        hostname_filter = str(hostname or "").strip()
+        single_host_expand = (
+            bool(hostname_filter)
+            and safe_files_per_host > 0
+            and safe_host_offset == 0
+            and safe_host_limit == 1
+            and not needs_context_filter
+        )
         count_joins: List[str] = []
         if needs_findings_join:
             count_joins.append("LEFT JOIN scan_findings f ON f.id = i.finding_id")
         if needs_jobs_join:
             count_joins.append("LEFT JOIN scan_jobs j ON j.id = i.job_id")
         count_join_sql = ("\n                ".join(count_joins) + "\n                ") if count_joins else ""
+        host_join_sql = ""
+        if needs_findings_join or needs_jobs_join:
+            host_join_sql = (
+                "LEFT JOIN scan_findings f ON f.id = i.finding_id\n"
+                "                LEFT JOIN scan_jobs j ON j.id = i.job_id\n                "
+            )
 
         with self._lock, self._connect() as conn:
             total_incidents = conn.execute(
@@ -3099,8 +4280,7 @@ class ScanStore:
                 params,
             ).fetchone()["cnt"]
 
-            host_rows = conn.execute(
-                f"""
+            host_agg_sql = f"""
                 SELECT
                     i.hostname as hostname,
                     COUNT(*) as incidents_total,
@@ -3113,94 +4293,148 @@ class ScanStore:
                             WHEN 'low' THEN 1
                             ELSE 0
                         END
-                    ) as top_severity_rank,
-                    COALESCE((
-                        SELECT ix.branch
-                        FROM scan_incidents ix
-                        WHERE LOWER(ix.hostname) = LOWER(i.hostname)
-                          AND TRIM(COALESCE(ix.branch, '')) <> ''
-                        ORDER BY ix.created_at DESC
-                        LIMIT 1
-                    ), '') as branch,
-                    COALESCE((
-                        SELECT COALESCE(NULLIF(TRIM(ix.user_full_name), ''), NULLIF(TRIM(ix.user_login), ''), '')
-                        FROM scan_incidents ix
-                        WHERE LOWER(ix.hostname) = LOWER(i.hostname)
-                          AND (
-                            TRIM(COALESCE(ix.user_full_name, '')) <> ''
-                            OR TRIM(COALESCE(ix.user_login, '')) <> ''
-                          )
-                        ORDER BY ix.created_at DESC
-                        LIMIT 1
-                    ), '') as user,
-                    COALESCE((
-                        SELECT a.ip_address
-                        FROM scan_agents a
-                        WHERE LOWER(a.hostname) = LOWER(i.hostname)
-                          AND TRIM(COALESCE(a.ip_address, '')) <> ''
-                        ORDER BY a.last_seen_at DESC
-                        LIMIT 1
-                    ), '') as ip_address
+                    ) as top_severity_rank
                 FROM scan_incidents i
-                LEFT JOIN scan_findings f ON f.id = i.finding_id
-                LEFT JOIN scan_jobs j ON j.id = i.job_id
-                {where_clause}
+                {host_join_sql}{where_clause}
                 GROUP BY i.hostname
-                ORDER BY incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, LOWER(i.hostname) ASC
-                """,
-                params,
-            ).fetchall()
-
-            hosts: List[Dict[str, Any]] = []
-            for row in host_rows:
-                host_name = str(row["hostname"] or "").strip()
-                if not host_name:
-                    continue
-                host_entry = {
-                    "id": f"host:{host_name}",
-                    "hostname": host_name,
-                    "branch": str(row["branch"] or "").strip(),
-                    "user": str(row["user"] or "").strip(),
-                    "ip_address": str(row["ip_address"] or "").strip(),
-                    "incidents_total": int(row["incidents_total"] or 0),
-                    "incidents_new": int(row["incidents_new"] or 0),
-                    "last_incident_at": int(row["last_incident_at"] or 0),
-                    "top_severity": _severity_label_from_rank(row["top_severity_rank"]),
-                    "files": [],
-                }
-                if branch_needle and branch_needle not in host_entry["branch"].casefold():
-                    continue
-                if q_needle:
-                    text = " ".join(
-                        [
-                            host_entry["hostname"],
-                            host_entry["branch"],
-                            host_entry["user"],
-                            host_entry["ip_address"],
-                        ]
-                    ).casefold()
-                    if q_needle not in text:
+            """
+            order_hosts = (
+                "incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, LOWER(hostname) ASC"
+            )
+            if not needs_context_filter:
+                if single_host_expand:
+                    host_row = conn.execute(
+                        f"""
+                        SELECT * FROM ({host_agg_sql}) host_agg
+                        ORDER BY {order_hosts}
+                        LIMIT 1
+                        """,
+                        params,
+                    ).fetchone()
+                    host_rows = [host_row] if host_row else []
+                    total_hosts = 1 if host_row else 0
+                    has_more = False
+                else:
+                    total_hosts = int(
+                        conn.execute(
+                            f"SELECT COUNT(*) AS cnt FROM ({host_agg_sql}) host_agg",
+                            params,
+                        ).fetchone()["cnt"]
+                        or 0
+                    )
+                    host_rows = conn.execute(
+                        f"""
+                        SELECT * FROM ({host_agg_sql}) host_agg
+                        ORDER BY {order_hosts}
+                        LIMIT ? OFFSET ?
+                        """,
+                        [*params, safe_host_limit, safe_host_offset],
+                    ).fetchall()
+                paged_hosts = []
+                host_names = [
+                    str(row["hostname"] or "").strip()
+                    for row in host_rows
+                    if str(row["hostname"] or "").strip()
+                ]
+                context = self._scan_host_read_store._batch_host_list_context(conn, host_names)
+                for row in host_rows:
+                    host_name = str(row["hostname"] or "").strip()
+                    if not host_name:
                         continue
-                hosts.append(host_entry)
-
-            total_hosts = len(hosts)
-            paged_hosts = hosts[safe_host_offset:safe_host_offset + safe_host_limit]
-            has_more = (safe_host_offset + len(paged_hosts)) < total_hosts
-
-            for host_entry in paged_hosts:
-                host_name = host_entry["hostname"]
-                host_where = f"{where_clause} AND LOWER(i.hostname) = LOWER(?)" if where_clause else "WHERE LOWER(i.hostname) = LOWER(?)"
-                host_params = [*params, host_name]
-                file_rows = conn.execute(
+                    ctx = context.get(host_name.casefold()) or {}
+                    paged_hosts.append(
+                        {
+                            "id": f"host:{host_name}",
+                            "hostname": host_name,
+                            "branch": str(ctx.get("branch") or "").strip(),
+                            "user": str(ctx.get("user") or "").strip(),
+                            "ip_address": str(ctx.get("ip_address") or "").strip(),
+                            "incidents_total": int(row["incidents_total"] or 0),
+                            "incidents_new": int(row["incidents_new"] or 0),
+                            "last_incident_at": int(row["last_incident_at"] or 0),
+                            "top_severity": _severity_label_from_rank(row["top_severity_rank"]),
+                            "files": [],
+                        }
+                    )
+                if single_host_expand:
+                    has_more = False
+                else:
+                    has_more = (safe_host_offset + len(paged_hosts)) < total_hosts
+            else:
+                host_rows = conn.execute(
                     f"""
+                    SELECT * FROM ({host_agg_sql}) host_agg
+                    ORDER BY {order_hosts}
+                    """,
+                    params,
+                ).fetchall()
+                host_names = [
+                    str(row["hostname"] or "").strip()
+                    for row in host_rows
+                    if str(row["hostname"] or "").strip()
+                ]
+                context = self._scan_host_read_store._batch_host_list_context(conn, host_names)
+                hosts: List[Dict[str, Any]] = []
+                for row in host_rows:
+                    host_name = str(row["hostname"] or "").strip()
+                    if not host_name:
+                        continue
+                    ctx = context.get(host_name.casefold()) or {}
+                    host_entry = {
+                        "id": f"host:{host_name}",
+                        "hostname": host_name,
+                        "branch": str(ctx.get("branch") or "").strip(),
+                        "user": str(ctx.get("user") or "").strip(),
+                        "ip_address": str(ctx.get("ip_address") or "").strip(),
+                        "incidents_total": int(row["incidents_total"] or 0),
+                        "incidents_new": int(row["incidents_new"] or 0),
+                        "last_incident_at": int(row["last_incident_at"] or 0),
+                        "top_severity": _severity_label_from_rank(row["top_severity_rank"]),
+                        "files": [],
+                    }
+                    if branch_needle and branch_needle not in host_entry["branch"].casefold():
+                        continue
+                    if q_needle:
+                        text = " ".join(
+                            [
+                                host_entry["hostname"],
+                                host_entry["branch"],
+                                host_entry["user"],
+                                host_entry["ip_address"],
+                            ]
+                        ).casefold()
+                        if q_needle not in text:
+                            continue
+                    hosts.append(host_entry)
+                total_hosts = len(hosts)
+                paged_hosts = hosts[safe_host_offset:safe_host_offset + safe_host_limit]
+                has_more = (safe_host_offset + len(paged_hosts)) < total_hosts
+
+            # Batch file groups for all paged hosts (eliminates per-host N+1).
+            # files_per_host=0 keeps hosts-only payload for overview open (lazy files on expand).
+            host_names_page = [str(h.get("hostname") or "").strip() for h in paged_hosts if str(h.get("hostname") or "").strip()]
+            files_by_host: Dict[str, List[Dict[str, Any]]] = {name.casefold(): [] for name in host_names_page}
+            if host_names_page and safe_files_per_host > 0:
+                host_placeholders = ", ".join("?" for _ in host_names_page)
+                hosts_lower = [name.casefold() for name in host_names_page]
+                host_filter = (
+                    f"{where_clause} AND LOWER(i.hostname) IN ({host_placeholders})"
+                    if where_clause
+                    else f"WHERE LOWER(i.hostname) IN ({host_placeholders})"
+                )
+                file_key_expr = (
+                    "COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id)"
+                )
+                file_agg_sql = f"""
                     SELECT
-                        COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id) as file_key,
-                        MAX(i.file_path) as file_path,
-                        MAX(j.file_name) as file_name,
-                        MAX(j.source_kind) as source_kind,
-                        COUNT(*) as incidents_total,
-                        SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) as incidents_new,
-                        MAX(i.created_at) as last_incident_at,
+                        i.hostname AS hostname,
+                        {file_key_expr} AS file_key,
+                        MAX(i.file_path) AS file_path,
+                        MAX(j.file_name) AS file_name,
+                        MAX(j.source_kind) AS source_kind,
+                        COUNT(*) AS incidents_total,
+                        SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) AS incidents_new,
+                        MAX(i.created_at) AS last_incident_at,
                         MAX(
                             CASE LOWER(i.severity)
                                 WHEN 'high' THEN 3
@@ -3208,64 +4442,128 @@ class ScanStore:
                                 WHEN 'low' THEN 1
                                 ELSE 0
                             END
-                        ) as top_severity_rank
+                        ) AS top_severity_rank
                     FROM scan_incidents i
                     LEFT JOIN scan_findings f ON f.id = i.finding_id
                     LEFT JOIN scan_jobs j ON j.id = i.job_id
-                    {host_where}
-                    GROUP BY file_key
-                    ORDER BY incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, LOWER(file_key) ASC
-                    LIMIT ?
-                    """,
-                    [*host_params, safe_files_per_host],
-                ).fetchall()
+                    {host_filter}
+                    GROUP BY i.hostname, {file_key_expr}
+                """
+                order_files = (
+                    "incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, file_key ASC"
+                )
+                if len(host_names_page) == 1:
+                    # Single-host expand: plain LIMIT, no PARTITION window.
+                    file_rows = conn.execute(
+                        f"""
+                        SELECT * FROM ({file_agg_sql}) agg
+                        ORDER BY {order_files}
+                        LIMIT ?
+                        """,
+                        [*params, *hosts_lower, safe_files_per_host],
+                    ).fetchall()
+                else:
+                    file_rows = conn.execute(
+                        f"""
+                        SELECT * FROM (
+                            SELECT
+                                agg.*,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY LOWER(agg.hostname)
+                                    ORDER BY
+                                        agg.incidents_new DESC,
+                                        agg.top_severity_rank DESC,
+                                        agg.last_incident_at DESC,
+                                        agg.file_key ASC
+                                ) AS rn
+                            FROM ({file_agg_sql}) agg
+                        ) ranked
+                        WHERE rn <= ?
+                        ORDER BY LOWER(hostname) ASC, rn ASC
+                        """,
+                        [*params, *hosts_lower, safe_files_per_host],
+                    ).fetchall()
 
-                files: List[Dict[str, Any]] = []
+                # Optional preview ids (summary) or full previews (detail) — one batch.
+                preview_map: Dict[str, Dict[str, Any]] = {}
+                if summary:
+                    if self.is_postgres and file_rows:
+                        id_rows = conn.execute(
+                            f"""
+                            SELECT DISTINCT ON (LOWER(i.hostname), {file_key_expr})
+                                LOWER(i.hostname) AS host_key,
+                                {file_key_expr} AS file_key,
+                                i.id
+                            FROM scan_incidents i
+                            LEFT JOIN scan_jobs j ON j.id = i.job_id
+                            {host_filter}
+                            ORDER BY LOWER(i.hostname), {file_key_expr}, i.created_at DESC
+                            """,
+                            [*params, *hosts_lower],
+                        ).fetchall()
+                        for row in id_rows:
+                            preview_map[
+                                f"{str(row['host_key'] or '').strip()}::{str(row['file_key'] or '').strip()}"
+                            ] = {"id": str(row["id"] or "").strip()}
+                else:
+                    # Detail: keep legacy per-host preview helper for correctness.
+                    for host_name in host_names_page:
+                        host_where = (
+                            f"{where_clause} AND LOWER(i.hostname) = LOWER(?)"
+                            if where_clause
+                            else "WHERE LOWER(i.hostname) = LOWER(?)"
+                        )
+                        host_params = [*params, host_name]
+                        keys = [
+                            str(r["file_key"] or "").strip()
+                            for r in file_rows
+                            if str(r["hostname"] or "").strip().casefold() == host_name.casefold()
+                        ]
+                        local = self._fetch_inbox_file_previews(
+                            conn,
+                            host_where=host_where,
+                            host_params=host_params,
+                            file_keys=keys,
+                            summary=False,
+                        )
+                        for key, value in local.items():
+                            preview_map[f"{host_name.casefold()}::{key}"] = value
+
                 for file_row in file_rows:
+                    host_name = str(file_row["hostname"] or "").strip()
+                    if not host_name:
+                        continue
                     file_key = str(file_row["file_key"] or "").strip()
                     file_path = str(file_row["file_path"] or "").strip()
                     file_name = str(file_row["file_name"] or "").strip()
-                    preview_row = conn.execute(
-                        f"""
-                        SELECT
-                            i.*,
-                            f.category,
-                            f.short_reason,
-                            f.matched_patterns_json,
-                            j.source_kind,
-                            j.file_name,
-                            j.created_at as job_created_at
-                        FROM scan_incidents i
-                        LEFT JOIN scan_findings f ON f.id = i.finding_id
-                        LEFT JOIN scan_jobs j ON j.id = i.job_id
-                        {host_where}
-                          AND COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id) = ?
-                        ORDER BY i.created_at DESC
-                        LIMIT 1
-                        """,
-                        [*host_params, file_key],
-                    ).fetchone()
-                    preview_incident = self._row_to_incident_item(preview_row) if preview_row is not None else None
-                    patterns = preview_incident.get("matched_patterns") if preview_incident else []
-                    files.append(
+                    preview_incident = preview_map.get(f"{host_name.casefold()}::{file_key}")
+                    if summary:
+                        fragments = []
+                        preview_out = None
+                    else:
+                        patterns = preview_incident.get("matched_patterns") if preview_incident else []
+                        fragments = _top_fragments_from_patterns(patterns)
+                        preview_out = preview_incident
+                    files_by_host.setdefault(host_name.casefold(), []).append(
                         {
                             "id": f"file:{host_name}:{file_key}",
                             "host": host_name,
                             "file_key": file_key,
-                            "file_path": file_path or file_name or file_key,
-                            "file_name": file_name,
+                            "file_path": (file_path or file_name or file_key)[:500],
+                            "file_name": file_name[:260],
                             "file_ext": _file_ext_from_values(file_name, file_path),
                             "source_kind": str(file_row["source_kind"] or "").strip().lower(),
                             "incidents_total": int(file_row["incidents_total"] or 0),
                             "incidents_new": int(file_row["incidents_new"] or 0),
                             "last_incident_at": int(file_row["last_incident_at"] or 0),
                             "top_severity": _severity_label_from_rank(file_row["top_severity_rank"]),
-                            "preview_incident": preview_incident,
+                            "preview_incident": preview_out,
                             "preview_incident_id": str((preview_incident or {}).get("id") or "").strip(),
-                            "fragments": _top_fragments_from_patterns(patterns),
+                            "fragments": fragments,
                         }
                     )
-                host_entry["files"] = files
+            for host_entry in paged_hosts:
+                host_entry["files"] = files_by_host.get(str(host_entry.get("hostname") or "").casefold(), [])
 
         return {
             "total_incidents": int(total_incidents),
@@ -3275,6 +4573,7 @@ class ScanStore:
             "host_limit": safe_host_limit,
             "host_offset": safe_host_offset,
             "files_per_host": safe_files_per_host,
+            "view": resolved_view,
         }
 
     def bulk_ack_incidents(
@@ -3336,30 +4635,22 @@ class ScanStore:
                         params,
                     ).fetchone()[0]
                     ack_where = f"{where_clause} AND i.status='new'" if where_clause else "WHERE i.status='new'"
-                    rows = conn.execute(
+                    # Single UPDATE … WHERE id IN (SELECT …) — no SELECT-all into Python.
+                    cursor = conn.execute(
                         f"""
-                        SELECT i.id
-                        FROM scan_incidents i
-                        LEFT JOIN scan_findings f ON f.id = i.finding_id
-                        LEFT JOIN scan_jobs j ON j.id = i.job_id
-                        {ack_where}
-                        """,
-                        params,
-                    ).fetchall()
-                    ack_ids = [str(row["id"]) for row in rows]
-                    if ack_ids:
-                        placeholders = ",".join(["?"] * len(ack_ids))
-                        cursor = conn.execute(
-                            f"""
-                            UPDATE scan_incidents
-                            SET status='ack', ack_at=?, ack_by=?
-                            WHERE id IN ({placeholders})
-                            """,
-                            [now_ts, actor, *ack_ids],
+                        UPDATE scan_incidents
+                        SET status='ack', ack_at=?, ack_by=?
+                        WHERE id IN (
+                            SELECT i.id
+                            FROM scan_incidents i
+                            LEFT JOIN scan_findings f ON f.id = i.finding_id
+                            LEFT JOIN scan_jobs j ON j.id = i.job_id
+                            {ack_where}
                         )
-                        acked_count = cursor.rowcount if cursor.rowcount is not None else len(ack_ids)
-                    else:
-                        acked_count = 0
+                        """,
+                        [now_ts, actor, *params],
+                    )
+                    acked_count = cursor.rowcount if cursor.rowcount is not None else 0
                 conn.commit()
             return {"success": True, "acked_count": int(acked_count or 0), "total_matched": int(total_matched or 0)}
 
@@ -3394,16 +4685,28 @@ class ScanStore:
         sort_by: Optional[str] = None,
         sort_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._scan_host_read_store.list_hosts_table(
-            q=q,
-            branch=branch,
-            status=status,
-            severity=severity,
-            limit=limit,
-            offset=offset,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
+        cache_key = (
+            f"hosts_table|{self.db_path}|{self.database_url}|"
+            f"q={str(q or '').strip().lower()}|b={str(branch or '').strip().lower()}|"
+            f"s={str(status or '').strip().lower()}|sev={str(severity or '').strip().lower()}|"
+            f"l={int(limit)}|o={int(offset)}|sb={str(sort_by or '')}|sd={str(sort_dir or '')}"
         )
+
+        def _compute() -> Dict[str, Any]:
+            return self._scan_host_read_store.list_hosts_table(
+                q=q,
+                branch=branch,
+                status=status,
+                severity=severity,
+                limit=limit,
+                offset=offset,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+
+        if self.is_postgres:
+            return _read_cache_single_flight(cache_key, _compute)
+        return _compute()
 
     def ack_incident(self, *, incident_id: str, ack_by: str) -> Optional[Dict[str, Any]]:
         iid = str(incident_id or "").strip()
@@ -3435,8 +4738,20 @@ class ScanStore:
 
         return self._run_write_transaction("ack_incident", _write)
 
-    def list_host_scan_runs(self, *, hostname: str, limit: int = 30, offset: int = 0) -> Dict[str, Any]:
-        return self._scan_host_read_store.list_host_scan_runs(hostname=hostname, limit=limit, offset=offset)
+    def list_host_scan_runs(
+        self,
+        *,
+        hostname: str,
+        limit: int = 30,
+        offset: int = 0,
+        view: str = "detail",
+    ) -> Dict[str, Any]:
+        return self._scan_host_read_store.list_host_scan_runs(
+            hostname=hostname,
+            limit=limit,
+            offset=offset,
+            view=view,
+        )
 
     def list_task_observations(
         self,
@@ -3468,23 +4783,43 @@ class ScanStore:
         sort_by: Optional[str] = None,
         sort_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._scan_agent_read_store.list_agents_table(
-            q=q,
-            branch=branch,
-            online=online,
-            task_status=task_status,
-            limit=limit,
-            offset=offset,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
+        cache_key = (
+            f"agents_table|{self.db_path}|{self.database_url}|"
+            f"q={str(q or '').strip().lower()}|b={str(branch or '').strip().lower()}|"
+            f"on={str(online or '').strip().lower()}|ts={str(task_status or '').strip().lower()}|"
+            f"l={int(limit)}|o={int(offset)}|sb={str(sort_by or '')}|sd={str(sort_dir or '')}"
         )
+
+        def _compute() -> Dict[str, Any]:
+            return self._scan_agent_read_store.list_agents_table(
+                q=q,
+                branch=branch,
+                online=online,
+                task_status=task_status,
+                limit=limit,
+                offset=offset,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+
+        if self.is_postgres:
+            return _read_cache_single_flight(cache_key, _compute)
+        return _compute()
 
     def list_branches(self) -> List[str]:
         return self._scan_agent_read_store.list_branches()
 
-    def list_incomplete_jobs(self, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+    def list_incomplete_jobs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        view: str = "summary",
+    ) -> Dict[str, Any]:
         safe_limit = max(1, min(500, int(limit)))
         safe_offset = max(0, int(offset))
+        resolved_view = normalize_scan_list_view(view, default="summary")
+        summary = resolved_view == "summary"
         with self._lock, self._connect() as conn:
             total = int(
                 conn.execute(
@@ -3492,6 +4827,39 @@ class ScanStore:
                 ).fetchone()["c"]
                 or 0
             )
+            if summary:
+                # Never touch payload_json here: jobs often store huge pdf_slice_b64 and
+                # even jsonb path extraction timed out (SQLSTATE 57014) under 5s.
+                # Do NOT fake empty analysis_version / outcomes / count=0 — omit details.
+                rows = conn.execute(
+                    """
+                    SELECT
+                        id, agent_id, hostname, branch, file_path, file_name, source_kind,
+                        status, summary, error_text, created_at, finished_at
+                    FROM scan_jobs
+                    WHERE status IN ('analysis_incomplete', 'failed')
+                    ORDER BY COALESCE(finished_at, created_at) DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (safe_limit, safe_offset),
+                ).fetchall()
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    item["analysis_version"] = None
+                    item["extraction_outcomes"] = None
+                    item["extraction_outcomes_count"] = None
+                    item["details_omitted"] = True
+                    item["reason"] = str(item.get("error_text") or item.get("summary") or "analysis_incomplete")
+                    items.append(item)
+                return {
+                    "items": items,
+                    "total": total,
+                    "limit": safe_limit,
+                    "offset": safe_offset,
+                    "view": resolved_view,
+                    "details_omitted": True,
+                }
             rows = conn.execute(
                 """
                 SELECT id, agent_id, hostname, branch, file_path, file_name, source_kind,
@@ -3509,32 +4877,50 @@ class ScanStore:
             payload = _json_loads(item.pop("payload_json", "{}"), {})
             metadata = payload.get("metadata") if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict) else {}
             item["analysis_version"] = str(metadata.get("analysis_version") or "")
-            item["extraction_outcomes"] = metadata.get("extraction_outcomes") if isinstance(metadata.get("extraction_outcomes"), list) else []
+            outcomes = metadata.get("extraction_outcomes") if isinstance(metadata.get("extraction_outcomes"), list) else []
+            item["extraction_outcomes"] = outcomes[:20]
+            item["extraction_outcomes_count"] = len(outcomes)
             item["reason"] = str(item.get("error_text") or item.get("summary") or "analysis_incomplete")
             items.append(item)
-        return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
+        return {
+            "items": items,
+            "total": total,
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "view": resolved_view,
+        }
 
     def dashboard(self) -> Dict[str, Any]:
+        t_lock0 = time.perf_counter()
         now_ts = _now_ts()
         day_seconds = 24 * 60 * 60
         window_start = now_ts - 29 * day_seconds
         performance_start = now_ts - day_seconds
+        timing: Dict[str, float] = {}
+        # Filesystem spool stats outside DB lock (TTL-cached inside spool helper).
+        t_fs0 = time.perf_counter()
+        transient_stats = self.transient_pdf_spool_stats()
+        timing["spool_stats_ms"] = round((time.perf_counter() - t_fs0) * 1000.0, 2)
         with self._lock, self._connect() as conn:
-            agents_total = conn.execute("SELECT COUNT(*) as c FROM scan_agents").fetchone()["c"]
-            agents_online = conn.execute(
-                "SELECT COUNT(*) as c FROM scan_agents WHERE last_seen_at >= ?",
-                (now_ts - self.agent_online_timeout_sec,),
-            ).fetchone()["c"]
-            outbox_totals_row = conn.execute(
+            t_conn = time.perf_counter()
+            timing["lock_wait_ms"] = round((t_conn - t_lock0) * 1000.0, 2)
+            # One scan over agents for totals / online / outbox / versions.
+            agent_agg = conn.execute(
                 """
                 SELECT
+                    COUNT(*) AS agents_total,
+                    COALESCE(SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END), 0) AS agents_online,
                     COALESCE(SUM(COALESCE(outbox_depth, 0)), 0) AS outbox_total,
                     COALESCE(SUM(COALESCE(dead_letter_depth, 0)), 0) AS dead_letter_total,
                     COALESCE(SUM(CASE WHEN COALESCE(outbox_depth, 0) > 0 THEN 1 ELSE 0 END), 0) AS agents_with_outbox,
                     COALESCE(SUM(CASE WHEN COALESCE(dead_letter_depth, 0) > 0 THEN 1 ELSE 0 END), 0) AS agents_with_dead_letter
                 FROM scan_agents
-                """
+                """,
+                (now_ts - self.agent_online_timeout_sec,),
             ).fetchone()
+            agents_total = int(agent_agg["agents_total"] or 0)
+            agents_online = int(agent_agg["agents_online"] or 0)
+            outbox_totals_row = agent_agg
             agent_version_rows = conn.execute(
                 """
                 SELECT COALESCE(NULLIF(TRIM(version), ''), 'unknown') AS version, COUNT(*) AS c
@@ -3547,16 +4933,26 @@ class ScanStore:
             # Do NOT SELECT last_heartbeat_json for all agents — that payload is huge and
             # holds the SQLite lock long enough to starve /agents/table and UI loads.
             update_stuck_after_sec = 30 * 60
-            update_pending_row = conn.execute(
+            task_queue_row = conn.execute(
                 """
-                SELECT COUNT(*) AS c
+                SELECT
+                    COALESCE(SUM(CASE
+                        WHEN command='self_update'
+                         AND status IN ('queued', 'delivered', 'acknowledged')
+                         AND ttl_at > ?
+                        THEN 1 ELSE 0 END), 0) AS update_pending,
+                    COALESCE(SUM(CASE
+                        WHEN status IN ('queued', 'delivered', 'acknowledged') AND ttl_at > ?
+                        THEN 1 ELSE 0 END), 0) AS queue_active,
+                    COALESCE(SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END), 0) AS queue_expired
                 FROM scan_tasks
-                WHERE command='self_update'
-                  AND status IN ('queued', 'delivered', 'acknowledged')
-                  AND ttl_at > ?
                 """,
-                (now_ts,),
+                (now_ts, now_ts),
             ).fetchone()
+            update_pending_row = {"c": int(task_queue_row["update_pending"] or 0)}
+            queue_active = int(task_queue_row["queue_active"] or 0)
+            queue_expired = int(task_queue_row["queue_expired"] or 0)
+            # Bound stuck-update scan: only self_update rows, narrow columns.
             update_stuck_row = conn.execute(
                 """
                 SELECT COUNT(*) AS c
@@ -3575,30 +4971,23 @@ class ScanStore:
                 """,
                 (now_ts - update_stuck_after_sec, str(AGENT_VERSION)),
             ).fetchone()
-            incidents_total = conn.execute(
-                "SELECT COUNT(*) as c FROM scan_incidents",
-            ).fetchone()["c"]
-            incidents_new = conn.execute(
-                "SELECT COUNT(*) as c FROM scan_incidents WHERE status='new'",
-            ).fetchone()["c"]
-            queue_active = conn.execute(
+            incident_agg = conn.execute(
                 """
-                SELECT COUNT(*) as c
-                FROM scan_tasks
-                WHERE status IN ('queued', 'delivered', 'acknowledged') AND ttl_at > ?
-                """,
-                (now_ts,),
-            ).fetchone()["c"]
-            queue_expired = conn.execute(
-                "SELECT COUNT(*) as c FROM scan_tasks WHERE status='expired'",
-            ).fetchone()["c"]
-            job_rows = conn.execute(
+                SELECT
+                    COUNT(*) AS incidents_total,
+                    COALESCE(SUM(CASE WHEN status='new' THEN 1 ELSE 0 END), 0) AS incidents_new
+                FROM scan_incidents
                 """
-                SELECT status, source_kind, COUNT(*) as c
-                FROM scan_jobs
-                GROUP BY status, source_kind
-                """,
-            ).fetchall()
+            ).fetchone()
+            incidents_total = int(incident_agg["incidents_total"] or 0)
+            incidents_new = int(incident_agg["incidents_new"] or 0)
+            t_jobs0 = time.perf_counter()
+            job_rows, completed_24h_from_jobs, ocr_timeout_jobs = _load_dashboard_job_aggregates(
+                conn,
+                is_postgres=self.is_postgres,
+                performance_start=performance_start,
+            )
+            timing["sql_jobs_groupby_ms"] = round((time.perf_counter() - t_jobs0) * 1000.0, 2)
             sev_rows = conn.execute(
                 """
                 SELECT severity, COUNT(*) as c
@@ -3653,41 +5042,70 @@ class ScanStore:
                 LIMIT 12
                 """
             ).fetchall()
-            ocr_timeout_jobs = conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM scan_jobs
-                WHERE error_text='OCR timeout'
-                """
-            ).fetchone()["c"]
-            incomplete_rows = conn.execute(
-                """
-                SELECT file_name, COUNT(*) AS c
-                FROM scan_jobs
-                WHERE status IN ('analysis_incomplete', 'failed')
-                GROUP BY file_name
-                """
-            ).fetchall()
-            recent_task_results = conn.execute(
-                """
-                SELECT result_json
-                FROM scan_tasks
-                WHERE created_at >= ? AND command='scan_now'
-                """,
-                (window_start,),
-            ).fetchall()
-            performance_rows = conn.execute(
+            # FE does not render incomplete_by_extension; avoid cold GROUP BY file_name.
+            incomplete_rows = []
+            # Skip result_json scan on cold dashboard — unsupported/deferred are helper-only
+            # and blob deserialization dominated first-hit map/ser time.
+            recent_task_results = []
+            completed_24h_row = {"c": int(completed_24h_from_jobs)}
+            # Bound metrics_json deserialization: finished sample only (OCR DPI / ocr_ms).
+            # Cold-path caps (samples_capped already advertised in payload).
+            perf_sample_limit = min(_DASHBOARD_PERFORMANCE_SAMPLE_LIMIT, 150)
+            pending_sample_limit = min(_DASHBOARD_PENDING_SAMPLE_LIMIT, 100)
+            finished_performance_rows = conn.execute(
                 """
                 SELECT status, source_kind, created_at, started_at, finished_at, metrics_json
                 FROM scan_jobs
-                WHERE created_at >= ?
-                   OR COALESCE(finished_at, 0) >= ?
-                   OR status IN ('queued', 'processing')
+                WHERE COALESCE(finished_at, created_at) >= ?
+                  AND status NOT IN ('queued', 'processing')
+                ORDER BY COALESCE(finished_at, created_at) DESC
+                LIMIT ?
                 """,
-                (performance_start, performance_start),
+                (performance_start, perf_sample_limit),
             ).fetchall()
+            # Oldest pending: per-status LIMIT 1 (avoid IN(...)+ASC over large table).
+            # Two scalar probes — SQLite rejects parenthesized UNION ALL subselects.
+            queued_oldest = conn.execute(
+                """
+                SELECT created_at
+                FROM scan_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            processing_oldest = conn.execute(
+                """
+                SELECT created_at
+                FROM scan_jobs
+                WHERE status = 'processing'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            oldest_candidates = [
+                int(row["created_at"] or 0)
+                for row in (queued_oldest, processing_oldest)
+                if row and row["created_at"]
+            ]
+            pending_oldest_row = {
+                "oldest_created_at": min(oldest_candidates) if oldest_candidates else 0
+            }
+            # Pending sample via DESC — cheap with few thousand pending rows.
+            pending_performance_rows = conn.execute(
+                """
+                SELECT status, source_kind, created_at, started_at, finished_at
+                FROM scan_jobs
+                WHERE status IN ('queued', 'processing')
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (pending_sample_limit,),
+            ).fetchall()
+            performance_rows = list(finished_performance_rows) + list(pending_performance_rows)
+            timing["sql_total_ms"] = round((time.perf_counter() - t_conn) * 1000.0, 2)
 
-        transient_stats = self.transient_pdf_spool_stats()
+        t_map0 = time.perf_counter()
         agent_versions = [
             {"version": str(row["version"] or "unknown"), "count": int(row["c"] or 0)}
             for row in agent_version_rows
@@ -3771,47 +5189,66 @@ class ScanStore:
         conversion_values: List[float] = []
         full_dpi_values: List[float] = []
         focused_dpi_values: List[float] = []
-        completed_24h = 0
+        completed_24h = int((completed_24h_row["c"] if completed_24h_row else 0) or 0)
         downscaled_large_pages = 0
-        pending_oldest_age_sec = 0
+        oldest_pending = int((pending_oldest_row["oldest_created_at"] if pending_oldest_row else 0) or 0)
+        pending_oldest_age_sec = max(0, now_ts - oldest_pending) if oldest_pending else 0
         for row in performance_rows:
-            status = str(row["status"] or "").strip().lower()
             created_at = int(row["created_at"] or 0)
             started_at = int(row["started_at"] or 0)
             finished_at = int(row["finished_at"] or 0)
-            metrics = _json_loads(row["metrics_json"], {})
-            if not isinstance(metrics, dict):
-                metrics = {}
-            queue_wait_ms = metrics.get("queue_wait_ms")
-            if queue_wait_ms is None and created_at and started_at:
-                queue_wait_ms = max(0, started_at - created_at) * 1000
-            if queue_wait_ms is not None:
-                queue_wait_values.append(float(queue_wait_ms))
-            processing_ms = metrics.get("processing_ms")
-            if processing_ms is None and started_at and finished_at:
-                processing_ms = max(0, finished_at - started_at) * 1000
-            if processing_ms is not None:
-                processing_values.append(float(processing_ms))
-            if metrics.get("ocr_ms") is not None:
-                ocr_values.append(float(metrics["ocr_ms"]))
-            if metrics.get("conversion_ms") is not None:
-                conversion_values.append(float(metrics["conversion_ms"]))
-            ocr_metrics = metrics.get("ocr") if isinstance(metrics.get("ocr"), dict) else {}
-            full_dpi = ocr_metrics.get("full_effective_dpi_min")
-            focused_dpi = ocr_metrics.get("focused_effective_dpi_min")
+            metrics: Dict[str, Any] = {}
+            try:
+                raw_metrics = row["metrics_json"]
+            except (KeyError, IndexError):
+                raw_metrics = None
+            if raw_metrics:
+                parsed = _json_loads(raw_metrics, {})
+                if isinstance(parsed, dict):
+                    metrics = parsed
+            qw = metrics.get("queue_wait_ms")
+            pm = metrics.get("processing_ms")
+            om = metrics.get("ocr_ms")
+            cm = metrics.get("conversion_ms")
+            if qw is not None:
+                queue_wait_values.append(float(qw or 0))
+            elif created_at and started_at and started_at >= created_at:
+                queue_wait_values.append(float(max(0, started_at - created_at) * 1000))
+            if pm is not None:
+                processing_values.append(float(pm or 0))
+            elif started_at and finished_at and finished_at >= started_at:
+                processing_values.append(float(max(0, finished_at - started_at) * 1000))
+            if om is not None:
+                ocr_values.append(float(om or 0))
+            if cm is not None:
+                conversion_values.append(float(cm or 0))
+            ocr_meta = metrics.get("ocr") if isinstance(metrics.get("ocr"), dict) else {}
+            full_dpi = ocr_meta.get("full_effective_dpi_min", metrics.get("full_effective_dpi_min"))
+            focused_dpi = ocr_meta.get("focused_effective_dpi_min", metrics.get("focused_effective_dpi_min"))
             if full_dpi is not None:
-                full_dpi_values.append(float(full_dpi))
-                downscaled_large_pages += int(float(full_dpi) < 299.0)
+                try:
+                    full_dpi_values.append(float(full_dpi))
+                except (TypeError, ValueError):
+                    pass
             if focused_dpi is not None:
-                focused_dpi_values.append(float(focused_dpi))
-            if status in FINAL_JOB_STATUSES and finished_at >= performance_start:
-                completed_24h += 1
-            if status in PENDING_JOB_STATUSES and created_at:
-                pending_oldest_age_sec = max(pending_oldest_age_sec, now_ts - created_at)
+                try:
+                    focused_dpi_values.append(float(focused_dpi))
+                except (TypeError, ValueError):
+                    pass
+            lp = metrics.get("large_pages_downscaled", ocr_meta.get("large_pages_downscaled"))
+            if lp is not None:
+                try:
+                    downscaled_large_pages += int(lp or 0)
+                except (TypeError, ValueError):
+                    pass
+            elif full_dpi is not None:
+                # Legacy samples expose downscale via DPI fields without an explicit counter.
+                downscaled_large_pages += 1
 
         performance = {
             "window_hours": 24,
             "samples": len(performance_rows),
+            "samples_capped": True,
             "completed": completed_24h,
             "throughput_per_hour": round(completed_24h / 24.0, 1),
             "pending_oldest_age_sec": max(0, pending_oldest_age_sec),
@@ -3835,6 +5272,9 @@ class ScanStore:
             "full_effective_dpi_min": min(full_dpi_values) if full_dpi_values else None,
             "focused_effective_dpi_min": min(focused_dpi_values) if focused_dpi_values else None,
         }
+
+        timing["map_ser_ms"] = round((time.perf_counter() - t_map0) * 1000.0, 2)
+        timing["total_ms"] = round((time.perf_counter() - t_lock0) * 1000.0, 2)
 
         return {
             "totals": {
@@ -3879,7 +5319,7 @@ class ScanStore:
             "performance": performance,
             "transient_pdf_spool": transient_stats,
             "by_severity": [{"severity": str(row["severity"] or "unknown"), "count": int(row["c"] or 0)} for row in sev_rows],
-            "by_branch": [{"branch": str(row["branch"] or "Без филиала"), "count": int(row["c"] or 0)} for row in branch_rows],
+            "by_branch": [{"branch": str(row["branch"] or "Не определён"), "count": int(row["c"] or 0)} for row in branch_rows],
             "daily": daily,
             "new_hosts": [str(row["hostname"] or "unknown") for row in new_rows],
             "incomplete_by_extension": [
@@ -3890,6 +5330,7 @@ class ScanStore:
                 {"extension": extension, "count": count}
                 for extension, count in sorted(skipped_by_extension.items(), key=lambda item: (-item[1], item[0]))
             ],
+            "timing_breakdown_ms": timing,
         }
 
     def _count_retention_candidates_locked(

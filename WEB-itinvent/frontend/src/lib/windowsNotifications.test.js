@@ -56,11 +56,16 @@ describe('windowsNotifications helper', () => {
 
   it('maps hub notifications to deep links', () => {
     expect(getHubNotificationNavigateTo({ entity_type: 'task', entity_id: 'task-1' })).toBe('/tasks?task=task-1&task_tab=comments');
-    expect(getHubNotificationNavigateTo({ entity_type: 'announcement', entity_id: 'ann-9' })).toBe('/dashboard?announcement=ann-9');
+    expect(getHubNotificationNavigateTo({ entity_type: 'announcement', entity_id: 'ann-9' })).toBe('/feed?post=ann-9');
     expect(getHubNotificationNavigateTo({ entity_type: 'chat', entity_id: 'conv-3' })).toBe('/chat?conversation=conv-3');
+    expect(getHubNotificationNavigateTo({
+      entity_type: 'chat',
+      entity_id: 'conv-3',
+      message_id: 'msg-9',
+    })).toBe('/chat?conversation=conv-3&message=msg-9');
     expect(getHubNotificationNavigateTo({ entity_type: 'other', entity_id: 'x' })).toBe('/dashboard');
     expect(getHubNotificationActionLabel({ entity_type: 'task' })).toBe('Открыть задачу');
-    expect(getHubNotificationActionLabel({ entity_type: 'announcement' })).toBe('Открыть заметку');
+    expect(getHubNotificationActionLabel({ entity_type: 'announcement' })).toBe('Открыть публикацию');
     expect(getHubNotificationActionLabel({ entity_type: 'chat' })).toBe('Открыть чат');
     expect(getHubNotificationActionLabel({ entity_type: 'other' })).toBe('Открыть центр');
   });

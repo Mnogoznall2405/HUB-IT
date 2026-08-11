@@ -121,15 +121,10 @@ def ensure_task_discussion(*, task_id: str, actor_user_id: int) -> dict[str, Any
             select(ChatConversation).where(ChatConversation.task_id == normalized_task_id).limit(1)
         ).scalar_one_or_none()
         if existing is not None:
-            sync_task_discussion_members(task_id=normalized_task_id, task=task, session=session)
-            session.commit()
-            try:
-                from backend.chat.service import chat_service
-
-                for user_id in participant_ids:
-                    chat_service._invalidate_user_cache(user_id=int(user_id), bucket="conversations")
-            except Exception:
-                pass
+            # Opening an existing task discussion is read-only.  Participant
+            # changes are synchronised by the task-update flow; doing it here
+            # rewrote the same chat_conversations row on every open and caused
+            # lock queues under concurrent task browsing.
             return _serialize_discussion(conversation=existing, task=task, created=False)
 
         now = _utc_now()

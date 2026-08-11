@@ -36,6 +36,7 @@ import useChatConversationDraftRestore from './useChatConversationDraftRestore';
 import useChatActiveConversationLifecycleEffects from './useChatActiveConversationLifecycleEffects';
 import useChatSessionPersistenceEffects from './useChatSessionPersistenceEffects';
 import useChatMobileViewGuardEffects from './useChatMobileViewGuardEffects';
+import useChatEscapeClose from './useChatEscapeClose';
 import useChatComposePrefillBootstrap from './useChatComposePrefillBootstrap';
 import useChatContextPanelDetailPrefetch from './useChatContextPanelDetailPrefetch';
 import useChatPageBootEffects from './useChatPageBootEffects';
@@ -164,6 +165,9 @@ export function ChatPageContent() {
     showJumpToLatest,
     setShowJumpToLatest,
   } = pageState;
+
+  const taskSplitLayout = !isMobile
+    && new URLSearchParams(location.search || '').get('task_layout') === 'split';
 
   const {
     activeConversationIdRef,
@@ -1113,6 +1117,7 @@ export function ChatPageContent() {
   const {
     handleComposerSend,
     cancelVoiceRecording,
+    changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
     fileCaption,
@@ -1130,6 +1135,7 @@ export function ChatPageContent() {
     removeSelectedFile,
     selectedFiles,
     selectedFilesSummary,
+    sendMediaAsFiles,
     sendFiles,
     sendingFiles,
     setFileCaption,
@@ -1144,6 +1150,7 @@ export function ChatPageContent() {
     handleOpenComposerMenu,
     handleOpenEmojiPicker,
     handleOpenMenu,
+    handleSendSticker,
     handleSendGif,
     clearEditingMessage,
     clearReplyMessage,
@@ -1333,6 +1340,35 @@ export function ChatPageContent() {
     setMobileView,
   });
 
+  const handleCloseDesktopThreadOnEscape = useCallback(() => {
+    closeAllPanels();
+    setActiveConversationId('');
+  }, [closeAllPanels, setActiveConversationId]);
+
+  const handleClosePanelsOnEscape = useCallback(() => {
+    if (infoOpen) {
+      closeMobileInfoView();
+      return;
+    }
+    closeAllPanels();
+  }, [closeAllPanels, closeMobileInfoView, infoOpen]);
+
+  useChatEscapeClose({
+    isMobile,
+    mobileThreadOpen: resolvedMobileView === 'thread',
+    hasActiveConversation: Boolean(String(activeConversationId || '').trim()),
+    emojiPickerOpen,
+    hasSelectedMessages: selectedMessageCount > 0,
+    contextPanelOpen: showContextPanel,
+    taskPanelOpen: showTaskPanel,
+    infoOpen,
+    onCloseEmoji: handleCloseEmojiPicker,
+    onClearSelection: clearSelectedMessages,
+    onClosePanels: handleClosePanelsOnEscape,
+    onCloseMobileThread: openMobileInboxView,
+    onCloseDesktopThread: handleCloseDesktopThreadOnEscape,
+  });
+
   const showOlderHistoryControl = useMemo(
     () => shouldShowOlderHistoryControl({
       messagesHasMore,
@@ -1375,7 +1411,7 @@ export function ChatPageContent() {
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
-        emojiPickerOpen, insertEmojiAtSelection, handleSendGif, voiceRecording, voiceRecordingDuration,
+        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
         setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
@@ -1386,7 +1422,8 @@ export function ChatPageContent() {
         handleDeleteMessageFromMenu, handleEditFromMessageMenu, handleSelectMessageFromMenu,
         handleOpenReadsFromMessageMenu, handleOpenAttachmentFromMessageMenu, handleOpenTaskFromMessageMenu,
         composerMenuAnchor, setComposerMenuAnchor, openMediaPicker, emojiAnchorEl, mediaFileInputRef,
-        handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendFiles, removeSelectedFile,
+        handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendMediaAsFiles, changeSendMediaAsFiles,
+        sendFiles, removeSelectedFile,
         groupOpen, closeGroupDialog, groupTitle, setGroupTitle, groupSearch, setGroupSearch, groupUsers, groupUsersLoading,
         groupSelectedUsers, groupMemberIds, addGroupMember, removeGroupMember, creatingConversation, groupCreateDisabled,
         createGroup, shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
@@ -1422,7 +1459,7 @@ export function ChatPageContent() {
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
-        emojiPickerOpen, insertEmojiAtSelection, handleSendGif, voiceRecording, voiceRecordingDuration,
+        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
         setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
@@ -1433,7 +1470,8 @@ export function ChatPageContent() {
         handleDeleteMessageFromMenu, handleEditFromMessageMenu, handleSelectMessageFromMenu,
         handleOpenReadsFromMessageMenu, handleOpenAttachmentFromMessageMenu, handleOpenTaskFromMessageMenu,
         composerMenuAnchor, setComposerMenuAnchor, openMediaPicker, emojiAnchorEl, mediaFileInputRef,
-        handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendFiles, removeSelectedFile,
+        handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendMediaAsFiles, changeSendMediaAsFiles,
+        sendFiles, removeSelectedFile,
         groupOpen, closeGroupDialog, groupTitle, setGroupTitle, groupSearch, setGroupSearch, groupUsers, groupUsersLoading,
         groupSelectedUsers, groupMemberIds, addGroupMember, removeGroupMember, creatingConversation, groupCreateDisabled,
         createGroup, shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
@@ -1489,6 +1527,7 @@ export function ChatPageContent() {
           sidebarPane={sidebarPane}
           threadPane={threadPane}
           desktopRightPanelContent={desktopRightPanelContent}
+          taskSplitLayout={taskSplitLayout}
           renderDesktopRightPanel={renderDesktopRightPanel}
           renderPersistentRightPanel={renderPersistentRightPanel}
           showTaskPanel={showTaskPanel}

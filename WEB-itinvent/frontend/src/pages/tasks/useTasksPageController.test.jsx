@@ -129,4 +129,21 @@ describe('useTasksPageController', () => {
     expect(result.current.boardFiltersPanelProps).toBeDefined();
     expect(result.current.mobileNavigationDrawerProps).toBeNull();
   });
+
+  it('loads the list with the date sort direction from the URL', async () => {
+    const { result } = renderHook(() => useTasksPageController(), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task_date_sort=asc']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+        sort_by: 'updated_at',
+        sort_dir: 'asc',
+      }));
+    });
+
+    expect(result.current.dateSortDirection).toBe('asc');
+  });
 });

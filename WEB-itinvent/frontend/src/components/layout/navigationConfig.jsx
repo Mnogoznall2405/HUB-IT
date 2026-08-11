@@ -6,6 +6,7 @@ import PrintIcon from '@mui/icons-material/Print';
 import ShieldIcon from '@mui/icons-material/Policy';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import DashboardIcon from '@mui/icons-material/Dashboard';
+import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
@@ -18,6 +19,7 @@ import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import ExitToAppOutlinedIcon from '@mui/icons-material/ExitToAppOutlined';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
@@ -25,6 +27,7 @@ import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../../lib/mobileNavigationPrefe
 
 export const navigationItems = [
   { path: '/dashboard', label: 'Главная', shortLabel: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read', group: 'main' },
+  { path: '/feed', label: 'Лента', shortLabel: 'Лента', icon: <DynamicFeedRoundedIcon />, permission: 'dashboard.read', group: 'main' },
   { path: '/tasks', label: 'Задачи', shortLabel: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read', group: 'main' },
   { path: '/tickets', label: 'Билеты', shortLabel: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read', group: 'main' },
   ...(CHAT_FEATURE_ENABLED ? [{
@@ -41,13 +44,15 @@ export const navigationItems = [
   { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: <AccountTreeOutlinedIcon />, permission: 'company_structure.read', group: 'tools' },
   { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
   { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: <FolderSharedOutlinedIcon />, permission: 'groups_access.read', group: 'tools' },
-  { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
+  { path: '/my-files', label: 'Мой диск', shortLabel: 'Диск', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
   { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
   { path: '/networks', label: 'Сети', shortLabel: 'Сети', icon: <LanIcon />, permission: 'networks.read', group: 'tools' },
   { path: '/vcs', label: 'ВКС терминалы', shortLabel: 'ВКС', icon: <VideocamIcon />, permission: 'vcs.read', group: 'tools' },
   { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: <PrintIcon />, permission: 'mfu.read', group: 'tools' },
   { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: <ComputerIcon />, permission: 'computers.read', group: 'tools' },
   { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: <ShieldIcon />, permission: 'scan.read', group: 'tools' },
+  // Temporarily admin-only while DLP probe UX is unfinished.
+  { path: '/dlp', label: 'DLP', shortLabel: 'DLP', icon: <ExitToAppOutlinedIcon />, permission: 'scan.read', adminOnly: true, group: 'tools' },
   { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: <BarChartIcon />, permission: 'statistics.read', group: 'tools' },
   { path: '/kb', label: 'IT База знаний', shortLabel: 'База знаний', icon: <MenuBookIcon />, permission: 'kb.read', group: 'tools' },
   { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: <Inventory2OutlinedIcon />, permission: 'warehouse_1c.read', group: 'tools' },

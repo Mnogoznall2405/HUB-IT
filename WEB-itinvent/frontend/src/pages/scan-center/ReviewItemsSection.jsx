@@ -22,8 +22,14 @@ import { useTheme } from '@mui/material/styles';
 import { friendlyScanReason as friendlyReason } from './scanReasonLabels';
 
 function outcomeLabel(item) {
+  if (item?.details_omitted) return 'Подробности извлечения скрыты в кратком списке';
   const outcomes = Array.isArray(item?.extraction_outcomes) ? item.extraction_outcomes : [];
-  if (outcomes.length === 0) return 'Нет данных по страницам';
+  if (outcomes.length === 0) {
+    if (Number(item?.extraction_outcomes_count || 0) > 0) {
+      return `Страниц с исходом: ${Number(item.extraction_outcomes_count)}`;
+    }
+    return 'Нет данных по страницам';
+  }
   return outcomes
     .slice(0, 3)
     .map((outcome, index) => {
@@ -43,7 +49,7 @@ function ReviewItemCard({ item, canScanTasks, formatTs, onRetryAgent }) {
           <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
             {item.hostname || item.agent_id || 'Неизвестный компьютер'}
           </Typography>
-          <Typography variant="caption" color="text.secondary">{item.branch || item.agent_id || 'Без филиала'}</Typography>
+          <Typography variant="caption" color="text.secondary">{item.branch || 'Не определён'}</Typography>
         </Box>
         <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{item.file_path || item.file_name || 'Путь не указан'}</Typography>
         <Alert severity="warning" icon={false} sx={{ py: 0.45 }}>

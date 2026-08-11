@@ -18,6 +18,8 @@ import {
 } from './chatBubbleGesturePolicy';
 import { buildChatUiTokens } from './chatUiTokens';
 
+vi.mock('emoji-picker-react', () => ({ default: () => null }));
+
 const theme = createTheme();
 const ui = {
   textSecondary: '#64748b',
@@ -1953,6 +1955,50 @@ describe('ChatBubble', () => {
 });
 
 describe('ChatThread composer', () => {
+  it('opens the emoji and sticker picker as a full-height desktop side panel', () => {
+    const onCloseEmojiPicker = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          isMobile: false,
+          compactMobile: false,
+          desktopEmojiPickerOpen: true,
+          onCloseEmojiPicker,
+        })}
+      />,
+    );
+
+    const panel = screen.getByTestId('chat-desktop-emoji-panel');
+    expect(panel).toHaveAttribute('role', 'dialog');
+    expect(within(panel).getByTestId('chat-emoji-panel')).toHaveAttribute(
+      'data-layout',
+      'desktop-docked',
+    );
+    expect(within(panel).getByRole('tab', { name: 'Эмодзи' })).toBeInTheDocument();
+    expect(within(panel).getByRole('tab', { name: 'Стикеры' })).toBeInTheDocument();
+    expect(within(panel).getByRole('tab', { name: 'GIF' })).toBeInTheDocument();
+    expect(screen.getByTestId('chat-composer-emoji-button')).toHaveAccessibleName(
+      'Закрыть панель эмодзи',
+    );
+    expect(screen.getByTestId('chat-thread-root')).toHaveStyle({
+      paddingInlineEnd: 'clamp(300px, 36%, 384px)',
+    });
+
+    fireEvent.click(screen.getByTestId('chat-composer-emoji-button'));
+    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render the desktop picker panel in compact mobile layout', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({ desktopEmojiPickerOpen: true })}
+      />,
+    );
+
+    expect(screen.queryByTestId('chat-desktop-emoji-panel')).not.toBeInTheDocument();
+  });
+
   it('keeps mobile message long-press policy independent from compact phone layout', () => {
     expect(isMobileMessageLongPress({ mobileInteractionsEnabled: true, compactMobile: false })).toBe(true);
     expect(isMobileMessageLongPress({ mobileInteractionsEnabled: false, compactMobile: true })).toBe(true);
@@ -2158,19 +2204,61 @@ describe('ChatThread composer', () => {
     expect(onComposerKeyDown).not.toHaveBeenCalled();
   });
 
-  it('renders Telegram-style file drop panel during drag over', () => {
+  it('renders Telegram-style quick and original file drop zones during drag over', () => {
+    const onComposerDrop = vi.fn();
     renderWithTheme(
       <ChatThread
         {...buildThreadProps({
           isFileDragActive: true,
+          onComposerDrop,
         })}
       />,
     );
 
-    expect(screen.getByTestId('chat-file-drop-panel')).toBeInTheDocument();
-    expect(screen.getByText('Отправить как файл')).toBeInTheDocument();
-    expect(screen.getByText('Отпустите мышку, чтобы добавить файл')).toBeInTheDocument();
-    expect(screen.queryByText('Отпустите файлы, чтобы добавить их к отправке')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-file-drop-overlay')).toBeInTheDocument();
+    expect(screen.getAllByText('Перетащите сюда фотографии')).toHaveLength(2);
+    expect(screen.getByText('для отправки их без сжатия')).toBeInTheDocument();
+    expect(screen.getByText('для быстрой отправки')).toBeInTheDocument();
+
+    const file = new File(['photo'], 'photo.jpg', { type: 'image/jpeg' });
+    fireEvent.drop(screen.getByTestId('chat-file-drop-as-file'), {
+      dataTransfer: { files: [file] },
+    });
+    expect(onComposerDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'drop' }),
+      { sendMediaAsFiles: true },
+    );
+  });
+
+  it('switches the drop copy to files and keeps quick drop in media mode', () => {
+    const onComposerDrop = vi.fn();
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          isFileDragActive: true,
+          onComposerDrop,
+        })}
+      />,
+    );
+
+    const overlay = screen.getByTestId('chat-file-drop-overlay');
+    fireEvent.dragOver(overlay, {
+      dataTransfer: {
+        types: ['Files'],
+        items: [{ kind: 'file', type: 'application/pdf' }],
+        dropEffect: 'none',
+      },
+    });
+    expect(screen.getAllByText('Перетащите сюда файлы')).toHaveLength(2);
+
+    const file = new File(['document'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.drop(screen.getByTestId('chat-file-drop-quick'), {
+      dataTransfer: { files: [file] },
+    });
+    expect(onComposerDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'drop' }),
+      { sendMediaAsFiles: false },
+    );
   });
 
   it('reserves only a small bottom gap for compact mobile keyboard layout', () => {

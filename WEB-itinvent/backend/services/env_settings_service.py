@@ -59,17 +59,30 @@ _DIRECT_DESCRIPTIONS = {
     "TELEGRAM_BOT_TOKEN": ("Telegram bot", "Токен Telegram-бота для подключения к Bot API."),
     "ALLOWED_GROUP_ID": ("Telegram bot", "ID группы Telegram, из которой бот принимает команды."),
     "ALLOWED_USERS": ("Telegram bot", "Список user_id, которым разрешён доступ к Telegram-боту."),
-    "OPENROUTER_API_KEY": ("ИИ и интеграции", "Ключ OpenRouter. Нужен restart backend, ai-chat-worker и telegram bot."),
-    "OPENROUTER_BASE_URL": ("ИИ и интеграции", "Базовый URL OpenRouter API. Restart backend/worker/bot после изменения."),
-    "OPENROUTER_MODEL_MAIL": ("ИИ и интеграции", "Модель для mail AI (summarize / smart replies)."),
-    "OPENROUTER_MODEL_CHAT": ("ИИ и интеграции", "Модель по умолчанию для AI-чата."),
-    "OPENROUTER_MODEL_MARKDOWN": ("ИИ и интеграции", "Модель для преобразования текста в Markdown."),
+    "ROUTERAI_API_KEY": ("ИИ и интеграции", "Ключ RouterAI. Нужен restart backend, ai-chat-worker и telegram bot."),
+    "ROUTERAI_BASE_URL": ("ИИ и интеграции", "Базовый URL RouterAI API. Restart backend/worker/bot после изменения."),
+    "ROUTERAI_MODEL": ("ИИ и интеграции", "Единая модель RouterAI для чата, почты, OCR и документов."),
+    "ROUTERAI_DNS_FALLBACK": ("ИИ и интеграции", "DoH-fallback только для routerai.ru при ошибке системного DNS."),
+    "ROUTERAI_DNS_PREFER_DOH": ("ИИ и интеграции", "Сначала разрешать routerai.ru через DoH, не ожидая отказа системного DNS."),
+    "ROUTERAI_DOH_URL": ("ИИ и интеграции", "HTTPS endpoint для DNS-fallback RouterAI."),
+    "ROUTERAI_LOCAL_ADDRESS": ("ИИ и интеграции", "Необязательный локальный IP физического интерфейса для RouterAI."),
+    "ROUTERAI_MODEL_MAIL": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для mail AI."),
+    "ROUTERAI_MODEL_CHAT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для AI-чата."),
+    "ROUTERAI_MODEL_MARKDOWN": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для Markdown."),
+    "ROUTERAI_MODEL_ACT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для актов."),
+    "ROUTERAI_MODEL_OCR": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для OCR."),
+    "ROUTERAI_MODEL_DOC_CONVERT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для документов."),
+    "OPENROUTER_API_KEY": ("ИИ и интеграции", "Устаревший совместимый ключ LLM-провайдера."),
+    "OPENROUTER_BASE_URL": ("ИИ и интеграции", "Устаревший совместимый базовый URL LLM-провайдера."),
+    "OPENROUTER_MODEL_MAIL": ("ИИ и интеграции", "Устаревшая совместимая модель для mail AI."),
+    "OPENROUTER_MODEL_CHAT": ("ИИ и интеграции", "Устаревшая совместимая модель для AI-чата."),
+    "OPENROUTER_MODEL_MARKDOWN": ("ИИ и интеграции", "Устаревшая совместимая модель для Markdown."),
     "ACT_PARSE_MODEL": ("ИИ и интеграции", "Модель для парсинга загруженных PDF-актов."),
     "OCR_MODEL": ("ИИ и интеграции", "Модель OCR / vision (серийники, fallback act parse)."),
     "DOC_CONVERT_MODEL": ("ИИ и интеграции", "Vision-модель для конвертера документов в чате (фото/PDF → Word/Excel/MD)."),
-    "AI_OPENROUTER_MAX_RETRIES": ("ИИ и интеграции", "Число retry при transient-ошибках OpenRouter (default 3)."),
-    "AI_OPENROUTER_RETRY_BASE_DELAY": ("ИИ и интеграции", "Базовая задержка retry OpenRouter в секундах (default 0.8)."),
-    "AI_OPENROUTER_RETRY_MAX_DELAY": ("ИИ и интеграции", "Максимальная задержка retry OpenRouter в секундах (default 8)."),
+    "AI_OPENROUTER_MAX_RETRIES": ("ИИ и интеграции", "Совместимый параметр числа retry LLM-провайдера (default 3)."),
+    "AI_OPENROUTER_RETRY_BASE_DELAY": ("ИИ и интеграции", "Совместимый параметр базовой задержки retry в секундах (default 0.8)."),
+    "AI_OPENROUTER_RETRY_MAX_DELAY": ("ИИ и интеграции", "Совместимый параметр максимальной задержки retry в секундах (default 8)."),
     "CARTRIDGE_ANALYSIS_MODEL": ("ИИ и интеграции", "Не используется кодом (зарезервировано)."),
     "SQL_SERVER_HOST": ("База данных", "Основной SQL Server для backend."),
     "SQL_SERVER_DATABASE": ("База данных", "Основная база данных SQL Server."),
@@ -117,6 +130,18 @@ _DIRECT_DESCRIPTIONS = {
     "CHAT_DB_MAX_OVERFLOW": ("Chat", "Максимальный overflow пула соединений PostgreSQL для chat-домена."),
     "CHAT_CONVERSATION_PAGE_SIZE": ("Chat", "Базовый размер страницы списка чатов."),
     "CHAT_MESSAGE_PAGE_SIZE": ("Chat", "Базовый размер страницы сообщений чата."),
+    "CHAT_HUB_ORDINARY_WRITE_ENABLED": (
+        "Chat",
+        "Писать ordinary chat events в hub_notifications (message/file/task/forward). Независимо от READ_VISIBLE.",
+    ),
+    "CHAT_HUB_ORDINARY_READ_VISIBLE": (
+        "Chat",
+        "Показывать ordinary chat rows в bell poll/unread. false скрывает legacy unread без отключения writer.",
+    ),
+    "CHAT_HUB_ORDINARY_NOTIFICATIONS_ENABLED": (
+        "Chat",
+        "Legacy combined fallback (если split-флаги не заданы). Предпочтительны WRITE/READ_VISIBLE.",
+    ),
     "CHAT_PUSH_OUTBOX_ENABLED": ("Chat", "Включает отдельный worker для outbox-доставки chat push."),
     "CHAT_PUSH_OUTBOX_POLL_INTERVAL_SEC": ("Chat", "Интервал опроса chat push outbox worker в секундах."),
     "CHAT_PUSH_OUTBOX_BATCH_SIZE": ("Chat", "Сколько push jobs chat outbox worker забирает за итерацию."),
@@ -147,6 +172,8 @@ _DIRECT_DESCRIPTIONS = {
     "AUTH_COOKIE_DOMAIN": ("Безопасность", "Домен auth-cookie."),
     "SESSION_IDLE_TIMEOUT_MINUTES": ("Сессии", "Idle timeout веб-сессии в минутах."),
     "SESSION_IDLE_TIMEOUT_TRUSTED_DAYS": ("Сессии", "Idle timeout для сессий с доверенным устройством (passkey/WebAuthn), в днях."),
+    "SESSION_IDLE_TIMEOUT_INTERNAL_DAYS": ("Сессии", "Idle timeout для сессий, созданных из локальной сети (AUTH_2FA_INTERNAL_CIDRS), в днях (минимум 7)."),
+    "REFRESH_ROTATION_GRACE_SECONDS": ("Сессии", "Grace-окно повторного /auth/refresh при параллельных запросах (секунды)."),
     "SESSION_HISTORY_RETENTION_DAYS": ("Сессии", "Сколько дней хранить историю закрытых сессий."),
     "SESSION_CLEANUP_MIN_INTERVAL_SECONDS": ("Сессии", "Минимальный интервал между авто-cleanup сессий."),
     "LDAP_SERVER": ("Active Directory", "Адрес LDAP/AD сервера."),
@@ -337,7 +364,7 @@ def _build_targets(key: str) -> tuple[list[str], bool]:
         return [TARGET_SCAN_BACKEND], False
     if upper_key.startswith("TELEGRAM_") or upper_key.startswith("BOT_"):
         return [TARGET_TELEGRAM_BOT], False
-    if upper_key.startswith("OPENROUTER_") or upper_key.startswith("AI_OPENROUTER_"):
+    if upper_key.startswith("ROUTERAI_") or upper_key.startswith("OPENROUTER_") or upper_key.startswith("AI_OPENROUTER_"):
         # Used by backend (mail/markdown/act/ai_chat), ai-chat-worker, and telegram bot OCR.
         return [TARGET_BACKEND, TARGET_TELEGRAM_BOT], False
     if upper_key.startswith("ALLOWED_GROUP") or upper_key.startswith("ALLOWED_USERS"):

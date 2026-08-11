@@ -7,6 +7,7 @@ import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 
 const AuthContext = createContext(null);
+const alwaysGrantedPermissions = ['address_book.read', 'announcements.read'];
 const rolePermissionFallback = {
   viewer: [
     'dashboard.read',
@@ -48,6 +49,7 @@ const rolePermissionFallback = {
   admin: [
     'dashboard.read',
     'announcements.write',
+    'announcements.moderate',
     'tasks.read',
     'tasks.create',
     'tasks.write',
@@ -85,6 +87,9 @@ const rolePermissionFallback = {
     'tickets.write',
     'tickets.personal_data.read',
     'address_book.read',
+    'address_book.age.read',
+    'address_book.personal_phone.read',
+    'address_book.personal_email.read',
     'company_structure.read',
     'company_structure.write',
   ],
@@ -94,7 +99,10 @@ const normalizeUserWithPermissions = (value) => {
   if (!value || typeof value !== 'object') return null;
   const role = String(value.role || 'viewer').trim().toLowerCase() || 'viewer';
   const rawPermissions = Array.isArray(value.permissions) ? value.permissions : rolePermissionFallback[role] || rolePermissionFallback.viewer;
-  const permissions = [...new Set(rawPermissions.map((item) => String(item || '').trim()).filter(Boolean))];
+  const permissions = [...new Set([
+    ...rawPermissions.map((item) => String(item || '').trim()).filter(Boolean),
+    ...alwaysGrantedPermissions,
+  ])];
   return { ...value, role, permissions };
 };
 
@@ -189,6 +197,47 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener('auth-required', onAuthRequired);
     return () => window.removeEventListener('auth-required', onAuthRequired);
   }, []);
+
+  // Silent refresh before access JWT expires (default 15m). Keeps cookies warm
+  // even when the tab has no API traffic (chat WS alone used to miss idle touch).
+  useEffect(() => {
+    if (!user) return undefined;
+
+    const ACCESS_TTL_MS = 15 * 60 * 1000;
+    const REFRESH_EVERY_MS = Math.max(60_000, ACCESS_TTL_MS - 3 * 60 * 1000);
+    let inFlight = false;
+
+    const runSilentRefresh = async () => {
+      if (inFlight || isLoginRoute()) return;
+      inFlight = true;
+      try {
+        await authAPI.refresh();
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+          window.dispatchEvent(new CustomEvent('auth-token-refreshed'));
+        }
+      } catch {
+        // Interceptor / auth-required handles hard failures.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void runSilentRefresh();
+    }, REFRESH_EVERY_MS);
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void runSilentRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [user]);
 
   /**
    * Login with username and password

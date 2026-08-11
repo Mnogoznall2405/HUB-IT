@@ -165,6 +165,11 @@ class RequestMetricsService:
             self._started_at = time.time()
             self._total_requests = 0
             self._total_server_errors = 0
+        try:
+            from backend.services.auth_session_metrics import reset as reset_auth_session_metrics
+            reset_auth_session_metrics()
+        except Exception:
+            pass
 
     def route_path_for_request(self, request: Request) -> str:
         route = request.scope.get("route")
@@ -207,6 +212,12 @@ class RequestMetricsService:
 
         routes.sort(key=lambda item: (float(item.get(sort_key) or 0), int(item.get("count") or 0)), reverse=True)
         limited_routes = routes[: max(1, min(200, int(limit or 50)))]
+        auth_session: dict[str, Any] = {}
+        try:
+            from backend.services.auth_session_metrics import snapshot as auth_session_snapshot
+            auth_session = auth_session_snapshot()
+        except Exception as exc:
+            auth_session = {"error": type(exc).__name__}
         return {
             "enabled": self.enabled,
             "started_at": _utc_iso(started_at),
@@ -221,6 +232,7 @@ class RequestMetricsService:
             "hotspots": self._build_hotspots(routes),
             "pools": self._pool_status(),
             "background_jobs": self._background_job_status(),
+            "auth_session": auth_session,
         }
 
     @staticmethod
@@ -368,14 +380,46 @@ async def request_metrics_middleware(
             duration_ms=duration_ms,
         )
         if request_metrics_service.should_log_slow(duration_ms):
-            logger.warning(
-                "http.slow timestamp=%s correlation_id=%s method=%s path=%s status=%s took_ms=%.1f anyio_borrowed_tokens=%s pools=%s",
-                _utc_iso(time.time()),
-                correlation_id,
-                request.method,
-                path,
-                status_code,
-                duration_ms,
-                borrowed_tokens,
-                request_metrics_service._pool_status(),
-            )
+            # Chat process: rate-limit identical slow warnings; handlers are QueueHandler.
+            try:
+                from backend.runtime_role import is_chat_process
+                from backend.chat.async_logging import log_slow_warning
+
+                if is_chat_process():
+                    log_slow_warning(
+                        logger,
+                        f"http:{request.method}:{path}",
+                        "http.slow timestamp=%s correlation_id=%s method=%s path=%s status=%s took_ms=%.1f anyio_borrowed_tokens=%s pools=%s",
+                        _utc_iso(time.time()),
+                        correlation_id,
+                        request.method,
+                        path,
+                        status_code,
+                        duration_ms,
+                        borrowed_tokens,
+                        request_metrics_service._pool_status(),
+                    )
+                else:
+                    logger.warning(
+                        "http.slow timestamp=%s correlation_id=%s method=%s path=%s status=%s took_ms=%.1f anyio_borrowed_tokens=%s pools=%s",
+                        _utc_iso(time.time()),
+                        correlation_id,
+                        request.method,
+                        path,
+                        status_code,
+                        duration_ms,
+                        borrowed_tokens,
+                        request_metrics_service._pool_status(),
+                    )
+            except Exception:
+                logger.warning(
+                    "http.slow timestamp=%s correlation_id=%s method=%s path=%s status=%s took_ms=%.1f anyio_borrowed_tokens=%s pools=%s",
+                    _utc_iso(time.time()),
+                    correlation_id,
+                    request.method,
+                    path,
+                    status_code,
+                    duration_ms,
+                    borrowed_tokens,
+                    request_metrics_service._pool_status(),
+                )

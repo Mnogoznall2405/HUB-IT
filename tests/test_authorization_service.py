@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from backend.services.authorization_service import (
+    PERM_ADDRESS_BOOK_AGE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
+    PERM_ADDRESS_BOOK_READ,
+    PERM_ANNOUNCEMENTS_MODERATE,
+    PERM_ANNOUNCEMENTS_READ,
+    PERM_COMPANY_STRUCTURE_READ,
     PERM_DASHBOARD_READ,
     PERM_DOCFLOW_ACT,
     PERM_DOCFLOW_CREATE,
@@ -30,6 +37,10 @@ def test_operator_role_does_not_get_tickets_access_by_default():
     assert PERM_TICKETS_PERSONAL_DATA_READ not in permissions
     assert PERM_PASSWORDS_READ not in permissions
     assert PERM_PASSWORDS_WRITE not in permissions
+    assert PERM_ADDRESS_BOOK_READ in permissions
+    assert PERM_ADDRESS_BOOK_AGE_READ not in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ not in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ not in permissions
 
 
 def test_viewer_role_does_not_get_tickets_access_by_default():
@@ -50,6 +61,10 @@ def test_viewer_role_does_not_get_tickets_access_by_default():
     assert PERM_DOCFLOW_READ in permissions
     assert PERM_DOCFLOW_ACT not in permissions
     assert PERM_DOCFLOW_CREATE not in permissions
+    assert PERM_ADDRESS_BOOK_READ in permissions
+    assert PERM_ADDRESS_BOOK_AGE_READ not in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ not in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ not in permissions
 
     operator_permissions = set(authorization_service.get_permissions_for_role("operator"))
     assert PERM_DOCFLOW_ACT in operator_permissions
@@ -66,6 +81,9 @@ def test_tickets_permissions_remain_available_for_manual_assignment():
     assert PERM_PASSWORDS_WRITE in all_permissions
     assert PERM_TASKS_CREATE in all_permissions
     assert PERM_MY_FILES_AUDIT_READ in all_permissions
+    assert PERM_ADDRESS_BOOK_AGE_READ in all_permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ in all_permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ in all_permissions
     assert authorization_service.has_permission(
         "operator",
         PERM_TICKETS_READ,
@@ -89,3 +107,22 @@ def test_admin_role_keeps_tickets_access_by_default():
     assert PERM_PASSWORDS_READ in permissions
     assert PERM_PASSWORDS_WRITE in permissions
     assert PERM_MY_FILES_AUDIT_READ in permissions
+    assert PERM_ADDRESS_BOOK_READ in permissions
+    assert PERM_ADDRESS_BOOK_AGE_READ in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ in permissions
+    assert PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ in permissions
+    assert PERM_ANNOUNCEMENTS_MODERATE in permissions
+
+
+def test_global_read_permissions_are_always_granted_with_custom_permissions():
+    permissions = set(authorization_service.get_effective_permissions(
+        "viewer",
+        use_custom_permissions=True,
+        custom_permissions=[],
+    ))
+
+    assert permissions == {
+        PERM_ADDRESS_BOOK_READ,
+        PERM_ANNOUNCEMENTS_READ,
+        PERM_COMPANY_STRUCTURE_READ,
+    }

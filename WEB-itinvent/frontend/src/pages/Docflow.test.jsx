@@ -1,16 +1,32 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import Docflow from './Docflow';
+import Docflow, { resolveCredentialLogin } from './Docflow';
 import { docflowAPI } from '../api/docflow';
+import { writeDocflowTasksCache } from './docflow/docflowTasksCache';
 
 
-const { useMediaQueryMock } = vi.hoisted(() => ({
+const { useMediaQueryMock, authUser } = vi.hoisted(() => ({
   useMediaQueryMock: vi.fn(),
+  authUser: { username: 'kozlovskii_me', id: 1, full_name: 'Козловский Максим Евгеньевич' },
 }));
+
+function setMuiInputValue(element, value) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  if (setter) setter.call(element, value);
+  fireEvent.input(element, { target: { value } });
+  fireEvent.change(element, { target: { value } });
+}
 
 vi.mock('@mui/material/useMediaQuery', () => ({
   default: useMediaQueryMock,
+}));
+
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: authUser,
+    hasPermission: () => true,
+  }),
 }));
 
 vi.mock('../api/docflow', () => ({
@@ -29,6 +45,7 @@ vi.mock('../api/docflow', () => ({
     createAssignment: vi.fn(),
     getAssignmentCommand: vi.fn(),
     downloadFile: vi.fn(),
+    getFilePreview: vi.fn(),
     downloadFilePreviewPdf: vi.fn(),
   },
 }));
@@ -56,6 +73,7 @@ vi.mock('../components/layout/MobileShellPageHeader', () => ({
 
 describe('Docflow page', () => {
   beforeEach(() => {
+    sessionStorage.clear();
     useMediaQueryMock.mockReset();
     useMediaQueryMock.mockReturnValue(false);
     docflowAPI.getProfile.mockReset();
@@ -72,7 +90,16 @@ describe('Docflow page', () => {
     docflowAPI.createAssignment.mockReset();
     docflowAPI.getAssignmentCommand.mockReset();
     docflowAPI.downloadFile.mockReset();
+    docflowAPI.getFilePreview.mockReset();
     docflowAPI.downloadFilePreviewPdf.mockReset();
+    docflowAPI.getFilePreview.mockResolvedValue({
+      status: 'ready',
+      preview_kind: 'office_pdf',
+      source_kind: 'word',
+      pdf_filename: 'preview.pdf',
+      page_count: 1,
+      sheets: [],
+    });
     docflowAPI.listTasks.mockResolvedValue({
       items: [],
       returned: 0,
@@ -91,6 +118,21 @@ describe('Docflow page', () => {
       completed: false,
       files: [],
     });
+  });
+
+  it('builds 1C login from full name as Surname + initials', () => {
+    expect(resolveCredentialLogin(
+      { login: null },
+      { username: 'kozlovskii_me', full_name: 'Козловский Максим Евгеньевич' },
+    )).toBe('КозловскийМЕ');
+    expect(resolveCredentialLogin(
+      { login: 'saved.1c.login' },
+      { username: 'kozlovskii_me', full_name: 'Козловский Максим Евгеньевич' },
+    )).toBe('saved.1c.login');
+    expect(resolveCredentialLogin(
+      { login: null },
+      { username: 'kozlovskii_me', full_name: '' },
+    )).toBe('kozlovskii_me');
   });
 
   it('does not request tasks before personal credentials are configured', async () => {
@@ -143,7 +185,8 @@ describe('Docflow page', () => {
     render(<Docflow />);
 
     expect(await screen.findByText('Согласовать служебную записку')).toBeInTheDocument();
-    expect(screen.getByText('Подключено как personal.login')).toBeInTheDocument();
+    expect(screen.getByText('personal.login')).toBeInTheDocument();
+    expect(screen.getByText('Подключено')).toBeInTheDocument();
     expect(docflowAPI.listTasks).toHaveBeenCalledTimes(1);
     expect(docflowAPI.listTasks).toHaveBeenCalledWith({ scope: 'inbox', q: '', limit: 50 });
 
@@ -191,13 +234,20 @@ describe('Docflow page', () => {
     render(<Docflow />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Создать поручение' }));
-    await waitFor(() => expect(docflowAPI.searchAssignmentDocuments).toHaveBeenCalledTimes(1));
-    const documentInput = screen.getByLabelText('Документ 1С *');
-    fireEvent.mouseDown(documentInput);
-    fireEvent.click(await screen.findByText('HUB-IT TEST документ'));
-    const assigneeInput = screen.getByLabelText('Исполнитель *');
-    fireEvent.mouseDown(assigneeInput);
-    fireEvent.click(await screen.findByText('Тестовый исполнитель'));
+    expect(docflowAPI.searchAssignmentDocuments).not.toHaveBeenCalled();
+    await waitFor(() => expect(docflowAPI.searchAssignmentAssignees).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/Документ должен уже существовать в 1С/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Найти' })[0]);
+    expect(docflowAPI.searchAssignmentDocuments).not.toHaveBeenCalled();
+    expect(screen.getByText(/не менее 3 символов/i)).toBeInTheDocument();
+    setMuiInputValue(screen.getByLabelText('Документ 1С *'), 'HUB');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Найти' })[0]);
+    await waitFor(() => expect(docflowAPI.searchAssignmentDocuments).toHaveBeenCalledWith({ q: 'HUB', limit: 20 }));
+
+    fireEvent.click(await screen.findByRole('option', { name: /HUB-IT TEST документ/i }));
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: /Исполнитель/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /Тестовый исполнитель/i }));
     fireEvent.change(screen.getByLabelText('Название поручения *'), {
       target: { value: 'HUB-IT TEST · Поручение' },
     });
@@ -217,6 +267,62 @@ describe('Docflow page', () => {
       }),
       expect.any(String),
     );
+    await waitFor(() => expect(docflowAPI.listTasks).toHaveBeenCalled());
+  });
+
+  it('shows assignment CTA on mobile and keeps document search independent from assignees', async () => {
+    useMediaQueryMock.mockReturnValue(true);
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.getAssignmentCapability.mockResolvedValue({ enabled: true, reason: null });
+    docflowAPI.searchAssignmentDocuments.mockResolvedValue({
+      items: [{
+        ref: '33333333-3333-3333-3333-333333333333',
+        document_type: 'internal',
+        document_type_label: 'Внутренний документ',
+        title: 'Документ для поиска',
+        number: '7',
+      }],
+      returned: 1,
+      truncated: false,
+    });
+    docflowAPI.searchAssignmentAssignees.mockResolvedValue({ items: [], returned: 0, truncated: false });
+
+    render(<Docflow />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Создать поручение' }));
+    expect(docflowAPI.searchAssignmentDocuments).not.toHaveBeenCalled();
+    await waitFor(() => expect(docflowAPI.searchAssignmentAssignees).toHaveBeenCalledTimes(1));
+    const assigneeCalls = docflowAPI.searchAssignmentAssignees.mock.calls.length;
+
+    setMuiInputValue(screen.getByLabelText('Документ 1С *'), 'док');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Найти' })[0]);
+    await waitFor(() => expect(docflowAPI.searchAssignmentDocuments).toHaveBeenCalledTimes(1));
+    expect(docflowAPI.searchAssignmentAssignees).toHaveBeenCalledTimes(assigneeCalls);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Найти' })[1]);
+    await waitFor(() => expect(docflowAPI.searchAssignmentAssignees).toHaveBeenCalledTimes(assigneeCalls + 1));
+    expect(docflowAPI.searchAssignmentDocuments).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows capability reason when assignment create is disabled', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.getAssignmentCapability.mockResolvedValue({
+      enabled: false,
+      reason: 'Создание поручений выключено на сервере.',
+    });
+
+    render(<Docflow />);
+    const createButton = await screen.findByRole('button', { name: 'Создать поручение' });
+    expect(createButton).toBeDisabled();
+    fireEvent.click(screen.getByLabelText('Ещё действия подключения'));
+    expect(await screen.findByText('Создание поручений выключено на сервере.')).toBeInTheDocument();
   });
 
   it('removes the HUB-IT TEST prefix when real assignment rollout is enabled', async () => {
@@ -318,6 +424,11 @@ describe('Docflow page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Договор\.docx/ }));
     expect(await screen.findByTestId('docflow-file-preview')).toHaveTextContent('Договор.docx');
+    expect(docflowAPI.getFilePreview).toHaveBeenCalledWith(
+      taskRef,
+      fileRef,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(docflowAPI.downloadFilePreviewPdf).toHaveBeenCalledWith(taskRef, fileRef);
 
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть карточку задания' }));
@@ -345,14 +456,56 @@ describe('Docflow page', () => {
       scope: 'inbox',
       source: 'live_1c',
       truncated: false,
+      as_of: '2026-07-30T10:00:00Z',
     });
 
     render(<Docflow />);
 
-    expect(await screen.findByRole('button', { name: 'В работе', pressed: true })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Готово' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Согласование', pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Завершённые' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Все' })).toBeInTheDocument();
     fireEvent.click(screen.getByText('Согласовать договор').closest('[role="button"]'));
     expect(await screen.findByRole('button', { name: 'Закрыть карточку задания' })).toBeInTheDocument();
+  });
+
+  it('filters the loaded task list as the user types a search query', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [
+        {
+          ref: 'mobile-task-1',
+          title: 'Согласовать договор',
+          task_type: 'ЗадачаИсполнителя',
+          task_type_label: 'Задача исполнителя',
+          completed: false,
+        },
+        {
+          ref: 'mobile-task-2',
+          title: 'О проведении совещания',
+          task_type: 'ЗадачаИсполнителя',
+          task_type_label: 'Задача исполнителя',
+          completed: true,
+        },
+      ],
+      returned: 2,
+      scope: 'all',
+      source: 'live_1c',
+      truncated: false,
+      as_of: '2026-07-30T10:00:00Z',
+    });
+
+    render(<Docflow />);
+    expect(await screen.findByText('Согласовать договор')).toBeInTheDocument();
+    expect(screen.getByText('О проведении совещания')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Поиск по моим заданиям'), { target: { value: 'совещания' } });
+    expect(screen.queryByText('Согласовать договор')).not.toBeInTheDocument();
+    expect(screen.getByText('О проведении совещания')).toBeInTheDocument();
+    expect(screen.getByText(/Найдено: 1/)).toBeInTheDocument();
   });
 
   it('sends a password only from the dialog and clears it after save', async () => {
@@ -363,23 +516,42 @@ describe('Docflow page', () => {
     });
     docflowAPI.saveCredentials.mockResolvedValue({
       configured: true,
-      login: 'personal.login',
+      login: 'КозловскийМЕ',
       status: 'valid',
     });
 
     render(<Docflow />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Подключить' }));
 
-    fireEvent.change(await screen.findByLabelText(/Логин 1С/), { target: { value: 'personal.login' } });
-    fireEvent.change(await screen.findByLabelText(/Пароль 1С/), { target: { value: 'temporary-password' } });
+    expect(await screen.findByLabelText(/Логин 1С/)).toHaveValue('КозловскийМЕ');
+    expect(screen.queryByText(/Введите личный логин и пароль/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/хранятся в зашифрованном виде/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Пароль 1С/), { target: { value: 'temporary-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Подключить и сохранить' }));
 
     await waitFor(() => expect(docflowAPI.saveCredentials).toHaveBeenCalledWith({
-      login: 'personal.login',
+      login: 'КозловскийМЕ',
       password: 'temporary-password',
     }));
     await waitFor(() => expect(screen.queryByLabelText(/Пароль 1С/)).not.toBeInTheDocument());
     expect(screen.queryByDisplayValue('temporary-password')).not.toBeInTheDocument();
+  });
+
+  it('prefills saved profile login over hub username and allows editing it', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'saved.1c.login',
+      status: 'valid',
+    });
+
+    render(<Docflow />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ещё действия подключения' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Настроить' }));
+
+    const loginField = await screen.findByLabelText(/Логин 1С/);
+    expect(loginField).toHaveValue('saved.1c.login');
+    fireEvent.change(loginField, { target: { value: 'other.1c.login' } });
+    expect(loginField).toHaveValue('other.1c.login');
   });
 
   it('clears an unsaved password when the credentials dialog closes', async () => {
@@ -390,11 +562,11 @@ describe('Docflow page', () => {
     });
 
     render(<Docflow />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Подключить' }));
     fireEvent.change(await screen.findByLabelText(/Пароль 1С/), { target: { value: 'temporary-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Подключить' }));
 
     expect(screen.getByLabelText(/Пароль 1С/)).toHaveValue('');
   });
@@ -408,7 +580,7 @@ describe('Docflow page', () => {
     });
 
     render(<Docflow />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Подключить 1С' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Подключить' }));
 
     expect(screen.getByRole('heading', { name: 'Подключение к 1С' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Показать пароль' })).toBeInTheDocument();
@@ -497,6 +669,63 @@ describe('Docflow page', () => {
       expect.any(String),
     );
     expect(await screen.findByText('1С подтвердила выполнение задания.')).toBeInTheDocument();
+    expect(screen.getByText('Завершено')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Согласовать' })).not.toBeInTheDocument();
+  });
+
+  it('marks the card completed even when apply returns a stale incomplete task', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111112';
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: taskRef,
+        title: 'HUB-IT TEST · Устаревший ответ',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const actionTask = {
+      ref: taskRef,
+      title: 'HUB-IT TEST · Устаревший ответ',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задача исполнителя',
+      completed: false,
+      state_token: 'signed-state-token-stale',
+      available_actions: [{
+        code: 'approve',
+        label: 'Согласовать',
+        tone: 'success',
+        comment_mode: 'optional',
+      }],
+      files: [],
+    };
+    docflowAPI.getTask
+      .mockResolvedValueOnce(actionTask)
+      .mockResolvedValueOnce({ ...actionTask, completed: false, available_actions: actionTask.available_actions });
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: 'cccccccccccccccccccccccccccccccc',
+      status: 'applied',
+      correlation_id: 'corr-stale',
+      task: { ...actionTask, completed: false, available_actions: actionTask.available_actions },
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('HUB-IT TEST · Устаревший ответ')).closest('[role="button"]'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Согласовать' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
+
+    expect(await screen.findByText('1С подтвердила выполнение задания.')).toBeInTheDocument();
+    expect(screen.getByText('Завершено')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Согласовать' })).not.toBeInTheDocument();
   });
 
   it('allows a manual retry only after 1C confirms the previous action was not applied', async () => {
@@ -560,14 +789,73 @@ describe('Docflow page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Согласовать' }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
 
-    expect(await screen.findByText(/Проверяем результат в 1С/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Действие с заданием' })).not.toBeInTheDocument());
+    expect(await screen.findByRole('button', { name: 'Проверить' })).toBeInTheDocument();
+    expect(screen.getByText(/Не нажимайте действие повторно/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Проверить' }));
 
     expect(await screen.findByText(/1С не применила действие/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
     expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
     expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows action progress spinner until 1C confirms completion', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111199';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: taskRef,
+        title: 'Согласовать договор',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const actionTask = {
+      ref: taskRef,
+      title: 'Согласовать договор',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задача исполнителя',
+      completed: false,
+      state_token: 'signed-state-token-progress',
+      available_actions: [{
+        code: 'approve',
+        label: 'Согласовать',
+        tone: 'success',
+        comment_mode: 'optional',
+      }],
+      files: [],
+    };
+    docflowAPI.getTask.mockResolvedValue(actionTask);
+    let resolveApply;
+    docflowAPI.applyTaskAction.mockReturnValue(new Promise((resolve) => {
+      resolveApply = resolve;
+    }));
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Согласовать' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
+
+    expect(await screen.findByRole('heading', { name: 'Выполнение в 1С' })).toBeInTheDocument();
+    expect(screen.getByText(/Отправляем действие в 1С и ждём ответ/)).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+
+    resolveApply({
+      command_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      status: 'applied',
+      correlation_id: 'corr-progress',
+      task: { ...actionTask, completed: true, available_actions: [], state_token: null },
+    });
+
+    expect(await screen.findByText('1С подтвердила выполнение задания.')).toBeInTheDocument();
+    expect(screen.getByText('Завершено')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Выполнение в 1С' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Согласовать' })).not.toBeInTheDocument();
   });
 
   it('requires a comment for approval with comments and sends the new action code once', async () => {
@@ -607,7 +895,10 @@ describe('Docflow page', () => {
     fireEvent.click((await screen.findByText('Согласовать с замечаниями')).closest('[role="button"]'));
     fireEvent.click(await screen.findByRole('button', { name: 'Согласовать с замечаниями' }));
     const confirmButton = screen.getAllByRole('button', { name: 'Согласовать с замечаниями' }).at(-1);
-    expect(confirmButton).toBeDisabled();
+    expect(confirmButton).toBeEnabled();
+    fireEvent.click(confirmButton);
+    expect(screen.getByText('Введите комментарий — без него действие выполнить нельзя.')).toBeInTheDocument();
+    expect(docflowAPI.applyTaskAction).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Комментарий или результат *'), { target: { value: 'Есть замечание' } });
     fireEvent.click(confirmButton);
 
@@ -648,5 +939,169 @@ describe('Docflow page', () => {
     const link = await screen.findByRole('link', { name: 'Выполнить в 1С' });
     expect(link).toHaveAttribute('href', 'https://docflow.example/1c');
     expect(screen.queryByRole('button', { name: 'Согласовать' })).not.toBeInTheDocument();
+  });
+
+  it('clamps a long detail title behind expand and keeps approve action in the footer', async () => {
+    const taskRef = '33333333-3333-3333-3333-333333333333';
+    const longTitle = 'Об утверждении Инструкции по организации работы с документами, содержащими служебную информацию ограниченного распространения (№ ГФ/УД-16/пп от 22.01.2025)';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: taskRef,
+        title: longTitle,
+        completed: false,
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Ознакомление',
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    docflowAPI.getTask.mockResolvedValue({
+      ref: taskRef,
+      title: longTitle,
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Ознакомление',
+      process_type_label: 'Ознакомление',
+      completed: false,
+      state_token: 'signed-state-token-long-title',
+      available_actions: [{
+        code: 'approve',
+        label: 'Ознакомился',
+        tone: 'success',
+        comment_mode: 'optional',
+      }],
+      files: [],
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText(longTitle)).closest('[role="button"]'));
+
+    expect(await screen.findByRole('heading', { name: longTitle })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Показать полностью' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ознакомился' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Показать полностью' }));
+    expect(screen.getByRole('button', { name: 'Свернуть' })).toBeInTheDocument();
+  });
+
+  it('serves a fresh sessionStorage cache without calling 1C again', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: 'cached-task-1',
+        title: 'Кэшированное задание',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+      as_of: '2026-07-30T10:00:00Z',
+    });
+
+    const { unmount } = render(<Docflow />);
+    expect(await screen.findByText('Кэшированное задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalledTimes(1);
+    unmount();
+
+    render(<Docflow />);
+    expect(await screen.findByText('Кэшированное задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates a stale cache in the background while keeping the list visible', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    writeDocflowTasksCache({
+      login: 'personal.login',
+      scope: 'inbox',
+      search: '',
+      items: [{
+        ref: 'cached-task-1',
+        title: 'Старое задание',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      truncated: false,
+      as_of: '2026-07-30T10:00:00Z',
+      now: Date.now() - (46 * 1000),
+    });
+
+    let releaseRefresh;
+    const refreshGate = new Promise((resolve) => {
+      releaseRefresh = resolve;
+    });
+    docflowAPI.listTasks.mockImplementation(() => refreshGate.then(() => ({
+      items: [{
+        ref: 'cached-task-2',
+        title: 'Актуальное задание',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+      as_of: '2026-07-30T10:05:00Z',
+    })));
+
+    render(<Docflow />);
+    expect(await screen.findByText('Старое задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalled();
+
+    releaseRefresh();
+    expect(await screen.findByText('Актуальное задание')).toBeInTheDocument();
+    expect(screen.queryByText('Старое задание')).not.toBeInTheDocument();
+  });
+
+  it('forces a live reload when refresh is clicked and uses fresh cache when switching scopes', async () => {
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockImplementation(async ({ scope }) => ({
+      items: [{
+        ref: `task-${scope}`,
+        title: scope === 'completed' ? 'Завершённое задание' : 'Входящее задание',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: scope === 'completed',
+      }],
+      returned: 1,
+      scope,
+      source: 'live_1c',
+      truncated: false,
+      as_of: '2026-07-30T10:00:00Z',
+    }));
+
+    render(<Docflow />);
+    expect(await screen.findByText('Входящее задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Завершённые' }));
+    expect(await screen.findByText('Завершённое задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Согласование' }));
+    expect(await screen.findByText('Входящее задание')).toBeInTheDocument();
+    expect(docflowAPI.listTasks).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить задания' }));
+    await waitFor(() => expect(docflowAPI.listTasks).toHaveBeenCalledTimes(3));
+    expect(docflowAPI.listTasks).toHaveBeenLastCalledWith({ scope: 'inbox', q: '', limit: 50 });
   });
 });

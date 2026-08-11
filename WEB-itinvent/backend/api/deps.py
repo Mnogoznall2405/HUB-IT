@@ -90,6 +90,11 @@ def _load_user_from_token(token: Optional[str]) -> User:
         raise credentials_exception
 
     if token_data.session_id and not session_service.is_session_active(token_data.session_id):
+        try:
+            from backend.services.auth_session_metrics import note
+            note("session_inactive_on_api", detail="access_deps")
+        except Exception:
+            pass
         session_auth_context_service.delete_session_context(token_data.session_id)
         raise credentials_exception
 
@@ -269,8 +274,16 @@ def assert_access_token_still_valid(token: Optional[str]) -> None:
     if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
         raise credentials_exception
     if token_data.session_id and not session_service.is_session_active(token_data.session_id):
+        try:
+            from backend.services.auth_session_metrics import note
+            note("session_inactive_on_ws", detail="ws_revalidate")
+        except Exception:
+            pass
         session_auth_context_service.delete_session_context(token_data.session_id)
         raise credentials_exception
+    # Chat WS revalidate path: keep idle alive while the socket is active.
+    if token_data.session_id:
+        session_service.touch_session(token_data.session_id)
 
 
 async def get_current_active_user(

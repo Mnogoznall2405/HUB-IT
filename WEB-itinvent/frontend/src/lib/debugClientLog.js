@@ -19,31 +19,58 @@ function isAgentDebugLoggingEnabled() {
   }
 }
 
-export function emitAgentDebugLog(entry = {}) {
-  if (!isAgentDebugLoggingEnabled()) return;
+function isLocalIngestEnabled() {
+  if (typeof window === 'undefined') return false;
+  try {
+    // Opt-in only: browsers still log net::ERR_CONNECTION_REFUSED even when fetch().catch() is used.
+    return window.localStorage?.getItem('agentDebugIngest') === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function emitAgentDebugLog(entry = {}, options = {}) {
+  // Do NOT force-emit in production: under multi-user load this stampedes /debug/client-log
+  // and starves mail/chat. Opt-in via localStorage.agentDebugLog=1 or Vite DEV.
+  // `force: true` is for short-lived debug sessions only.
+  if (!options?.force && !isAgentDebugLoggingEnabled()) return;
 
   const payload = {
     timestamp: Date.now(),
+    sessionId: '20cb37',
     ...entry,
   };
   const headers = {
     'Content-Type': 'application/json',
+    'X-Debug-Session-Id': '20cb37',
   };
   const body = JSON.stringify(payload);
 
-  if (import.meta.env.DEV) {
-    void import('./debugClientLog.dev.js')
-      .then(({ DEBUG_SESSION_ID, LOCAL_INGEST_URL }) => {
-        const devPayload = { ...payload, sessionId: DEBUG_SESSION_ID };
-        const devHeaders = { ...headers, 'X-Debug-Session-Id': DEBUG_SESSION_ID };
-        fetch(LOCAL_INGEST_URL, {
-          method: 'POST',
-          headers: devHeaders,
-          body: JSON.stringify(devPayload),
-          keepalive: true,
-        }).catch(() => {});
-      })
-      .catch(() => {});
+  // Local Cursor ingest is opt-in (`agentDebugIngest=1`) to avoid console spam when :7785 is down.
+  if (isLocalIngestEnabled()) {
+    // #region agent log
+    fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59', {
+      method: 'POST',
+      headers,
+      body,
+      keepalive: true,
+    }).catch(() => {});
+    // #endregion
+
+    if (import.meta.env.DEV) {
+      void import('./debugClientLog.dev.js')
+        .then(({ DEBUG_SESSION_ID, LOCAL_INGEST_URL }) => {
+          const devPayload = { ...payload, sessionId: DEBUG_SESSION_ID };
+          const devHeaders = { ...headers, 'X-Debug-Session-Id': DEBUG_SESSION_ID };
+          fetch(LOCAL_INGEST_URL, {
+            method: 'POST',
+            headers: devHeaders,
+            body: JSON.stringify(devPayload),
+            keepalive: true,
+          }).catch(() => {});
+        })
+        .catch(() => {});
+    }
   }
 
   fetch(buildRelayUrl(), {
@@ -53,4 +80,13 @@ export function emitAgentDebugLog(entry = {}) {
     body,
     keepalive: true,
   }).catch(() => {});
+
+  try {
+    const key = '__agentDebugLogRing';
+    const ring = Array.isArray(window[key]) ? window[key] : [];
+    ring.push(payload);
+    window[key] = ring.slice(-200);
+  } catch {
+    // ignore
+  }
 }

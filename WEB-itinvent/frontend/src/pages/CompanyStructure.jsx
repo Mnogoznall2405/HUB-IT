@@ -3,14 +3,9 @@ import {
   Alert,
   Autocomplete,
   Box,
-  Breadcrumbs,
   Button,
-  Chip,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  Divider,
+  Drawer,
   IconButton,
   InputAdornment,
   ListItemText,
@@ -26,11 +21,9 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
 import CorporateFareOutlinedIcon from '@mui/icons-material/CorporateFareOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import GroupsOutlinedIcon from '@mui/icons-material/GroupsOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
@@ -41,18 +34,15 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 import CompanyStructureAdmin from './company-structure/CompanyStructureAdmin';
-import CompanyStructureChart from './company-structure/CompanyStructureChart';
+import CompanyStructureFocus from './company-structure/CompanyStructureFocus';
+import CompanyStructureOverview from './company-structure/CompanyStructureOverview';
 import EmployeeDirectoryPanel from './company-structure/EmployeeDirectoryPanel';
 import {
-  NODE_TYPE_OPTIONS,
   findNodeById,
   findNodePath,
+  getCompanyRootAndBlocks,
   nodeCardTitle,
 } from './company-structure/companyStructureModel';
-
-function nodeTypeLabel(node) {
-  return NODE_TYPE_OPTIONS.find((option) => option.value === node?.node_type)?.label || 'Подразделение';
-}
 
 const viewToggleSx = {
   color: 'text.secondary',
@@ -71,59 +61,15 @@ function searchPersonToDirectoryPerson(item) {
   };
 }
 
-function ChildUnitCard({ node, onSelect, onPrefetch }) {
-  const childCount = Array.isArray(node.children) ? node.children.length : 0;
-  return (
-    <Paper
-      component="button"
-      type="button"
-      variant="outlined"
-      onClick={() => onSelect(String(node.id))}
-      onMouseEnter={() => onPrefetch?.(String(node.id))}
-      onFocus={() => onPrefetch?.(String(node.id))}
-      sx={{
-        width: '100%',
-        p: 1.75,
-        borderRadius: 2,
-        textAlign: 'left',
-        color: 'text.primary',
-        bgcolor: 'background.paper',
-        cursor: 'pointer',
-        transition: 'border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease',
-        '&:hover': {
-          borderColor: 'primary.main',
-          boxShadow: 2,
-          transform: 'translateY(-1px)',
-        },
-        '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
-      }}
-    >
-      <Stack direction="row" spacing={1.25} alignItems="flex-start">
-        <Box
-          sx={{
-            width: 36,
-            height: 36,
-            borderRadius: 1.5,
-            display: 'grid',
-            placeItems: 'center',
-            bgcolor: 'action.hover',
-            flexShrink: 0,
-          }}
-        >
-          <CorporateFareOutlinedIcon fontSize="small" color="primary" />
-        </Box>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="subtitle2" fontWeight={700}>{nodeCardTitle(node)}</Typography>
-          {node.person_name ? (
-            <Typography variant="body2" color="text.secondary">{node.person_name}</Typography>
-          ) : null}
-          <Typography variant="caption" color="text.secondary">
-            {nodeTypeLabel(node)}{childCount ? ` · внутри ${childCount}` : ''}
-          </Typography>
-        </Box>
-      </Stack>
-    </Paper>
-  );
+function readStructureUrlState() {
+  if (typeof window === 'undefined') return { nodeId: '', blockId: '', view: 'focus' };
+  const params = new URLSearchParams(window.location.search);
+  const rawView = params.get('view');
+  return {
+    nodeId: params.get('node') || '',
+    blockId: params.get('block') || '',
+    view: rawView === 'overview' || rawView === 'chart' ? 'overview' : 'focus',
+  };
 }
 
 const CompanyStructure = () => {
@@ -133,17 +79,15 @@ const CompanyStructure = () => {
   const { hasPermission } = useAuth();
   const { notifySuccess, notifyApiError } = useNotification();
   const canWrite = hasPermission('company_structure.write');
-  const selectedIdRef = useRef(
-    typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('node') || ''
-      : '',
-  );
+  const initialUrlState = useMemo(readStructureUrlState, []);
+  const selectedIdRef = useRef(initialUrlState.nodeId);
   const peopleCacheRef = useRef(new Map());
   const peopleRequestsRef = useRef(new Map());
 
   const [mode, setMode] = useState('explore');
   const [tree, setTree] = useState([]);
   const [selectedId, setSelectedId] = useState(selectedIdRef.current);
+  const [blockId, setBlockId] = useState(initialUrlState.blockId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [people, setPeople] = useState([]);
@@ -152,53 +96,61 @@ const CompanyStructure = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOptions, setSearchOptions] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [mobileTab, setMobileTab] = useState('units');
-  const [explorerView, setExplorerView] = useState('guide');
-  const [directoryDialogOpen, setDirectoryDialogOpen] = useState(false);
+  const [explorerView, setExplorerView] = useState(initialUrlState.view);
+  const [directoryDrawerOpen, setDirectoryDrawerOpen] = useState(false);
 
-  const updateNodeParam = useCallback((nodeId) => {
+  const updateUrlState = useCallback(({ nodeId, nextBlockId, view }, { replace = false } = {}) => {
     if (typeof window === 'undefined') return;
     const nextUrl = new URL(window.location.href);
     if (nodeId) nextUrl.searchParams.set('node', nodeId); else nextUrl.searchParams.delete('node');
-    window.history.replaceState(window.history.state, '', nextUrl);
+    if (nextBlockId) nextUrl.searchParams.set('block', nextBlockId); else nextUrl.searchParams.delete('block');
+    nextUrl.searchParams.set('view', view === 'overview' ? 'overview' : 'focus');
+    const method = replace ? 'replaceState' : 'pushState';
+    window.history[method](window.history.state, '', nextUrl);
   }, []);
 
-  const prefetchPeople = useCallback((nodeId) => {
+  const selectNode = useCallback((nodeId, person = null, options = {}) => {
     const normalized = String(nodeId || '');
-    if (!normalized || peopleCacheRef.current.has(normalized) || peopleRequestsRef.current.has(normalized)) return;
-    const request = companyStructureAPI.getNodePeople(normalized)
-      .then((payload) => {
-        const items = Array.isArray(payload?.items) ? payload.items : [];
-        peopleCacheRef.current.set(normalized, items);
-        return items;
-      })
-      .catch(() => [])
-      .finally(() => peopleRequestsRef.current.delete(normalized));
-    peopleRequestsRef.current.set(normalized, request);
-  }, []);
-
-  const selectNode = useCallback((nodeId, person = null) => {
-    const normalized = String(nodeId || '');
+    const path = findNodePath(tree, normalized);
+    const pathBlock = path.find((node) => node?.node_type === 'block');
+    const nextBlockId = String(pathBlock?.id || options.blockId || blockId || '');
+    const nextView = options.view || explorerView;
     selectedIdRef.current = normalized;
     setSelectedId(normalized);
+    if (nextBlockId) setBlockId(nextBlockId);
+    if (options.view) setExplorerView(options.view);
     setFocusedPerson(person);
-    updateNodeParam(normalized);
-    if (person && isMobile) setMobileTab('people');
-  }, [isMobile, updateNodeParam]);
+    updateUrlState(
+      { nodeId: normalized, nextBlockId, view: nextView },
+      { replace: Boolean(options.replace) },
+    );
+  }, [blockId, explorerView, tree, updateUrlState]);
 
-  const loadTree = useCallback(async (preferredId = '') => {
-    setLoading(true);
+  const loadTree = useCallback(async (preferredId = '', { background = false } = {}) => {
+    if (!background) setLoading(true);
     setError('');
     try {
       const payload = await companyStructureAPI.getTree();
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setTree(items);
+      const urlState = readStructureUrlState();
+      const { blocks } = getCompanyRootAndBlocks(items);
       const requested = String(preferredId || selectedIdRef.current || '');
-      const fallback = items[0]?.id ? String(items[0].id) : '';
+      const requestedPath = requested ? findNodePath(items, requested) : [];
+      const pathBlock = requestedPath.find((node) => node?.node_type === 'block');
+      const requestedBlock = blocks.find((node) => String(node.id) === String(urlState.blockId || ''));
+      const nextBlock = pathBlock || requestedBlock || blocks[0] || null;
+      const fallback = nextBlock?.id ? String(nextBlock.id) : (items[0]?.id ? String(items[0].id) : '');
       const nextId = requested && findNodeById(items, requested) ? requested : fallback;
+      const nextView = isMobile ? 'focus' : urlState.view;
       selectedIdRef.current = nextId;
       setSelectedId(nextId);
-      updateNodeParam(nextId);
+      setBlockId(String(nextBlock?.id || ''));
+      setExplorerView(nextView);
+      updateUrlState(
+        { nodeId: nextId, nextBlockId: String(nextBlock?.id || ''), view: nextView },
+        { replace: true },
+      );
       return items;
     } catch (requestError) {
       console.error(requestError);
@@ -206,13 +158,31 @@ const CompanyStructure = () => {
       notifyApiError?.(requestError, 'Не удалось загрузить структуру компании.');
       return [];
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
-  }, [notifyApiError, updateNodeParam]);
+  }, [isMobile, notifyApiError, updateUrlState]);
 
   useEffect(() => {
     void loadTree();
   }, [loadTree]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handlePopState = () => {
+      const urlState = readStructureUrlState();
+      if (urlState.nodeId && findNodeById(tree, urlState.nodeId)) {
+        selectedIdRef.current = urlState.nodeId;
+        setSelectedId(urlState.nodeId);
+        const pathBlock = findNodePath(tree, urlState.nodeId).find((node) => node?.node_type === 'block');
+        setBlockId(String(pathBlock?.id || urlState.blockId || ''));
+      } else if (urlState.blockId) {
+        setBlockId(urlState.blockId);
+      }
+      setExplorerView(isMobile ? 'focus' : urlState.view);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isMobile, tree]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -283,38 +253,55 @@ const CompanyStructure = () => {
 
   const selectedNode = useMemo(() => findNodeById(tree, selectedId), [selectedId, tree]);
   const selectedPath = useMemo(() => findNodePath(tree, selectedId), [selectedId, tree]);
-  const parentNode = selectedPath.length > 1 ? selectedPath[selectedPath.length - 2] : null;
-  const childNodes = Array.isArray(selectedNode?.children) ? selectedNode.children : [];
+  const { blocks } = useMemo(() => getCompanyRootAndBlocks(tree), [tree]);
+  const activeBlockId = String(
+    blocks.find((node) => String(node.id) === String(blockId))?.id || blocks[0]?.id || '',
+  );
+
+  const changeExplorerView = (view) => {
+    if (!view || (isMobile && view === 'overview')) return;
+    setExplorerView(view);
+    updateUrlState({ nodeId: selectedId, nextBlockId: activeBlockId, view });
+  };
+
+  const changeBlock = (_, nextBlockId) => {
+    if (!nextBlockId) return;
+    setBlockId(String(nextBlockId));
+    selectNode(String(nextBlockId), null, { blockId: String(nextBlockId), view: explorerView });
+  };
+
+  const openPeople = useCallback((nodeId, person = null) => {
+    if (nodeId) selectNode(nodeId, person);
+    if (person && !nodeId) {
+      setFocusedPerson(person);
+      setPeople([person]);
+    }
+    setDirectoryDrawerOpen(true);
+  }, [selectNode]);
 
   const handleSearchChoice = (_, item) => {
     if (!item) return;
     const person = item.kind === 'person' ? searchPersonToDirectoryPerson(item) : null;
     if (item.node_id) {
-      selectNode(item.node_id, person);
-      if (person) setDirectoryDialogOpen(true);
+      selectNode(item.node_id, person, { view: 'focus' });
+      if (person) setDirectoryDrawerOpen(true);
     }
     else if (person) {
-      setFocusedPerson(person);
-      if (isMobile) setMobileTab('people');
+      openPeople('', person);
     }
   };
 
   return (
     <MainLayout>
       <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 12px)' : 2 }}>
-        <Stack spacing={2.25}>
+        <Stack spacing={1.25}>
           <Stack
             direction={{ xs: 'column', sm: 'row' }}
-            spacing={1.5}
+            spacing={1}
             alignItems={{ xs: 'stretch', sm: 'center' }}
             justifyContent="space-between"
           >
-            <Box>
-              <Typography variant="h5" fontWeight={750}>Структура компании</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Найдите коллегу, поймите подчинённость и перейдите к нужному подразделению.
-              </Typography>
-            </Box>
+            <Typography variant="h6" fontWeight={750}>Структура компании</Typography>
             <Stack direction="row" spacing={1} alignItems="center">
               {canWrite ? (
                 <ToggleButtonGroup
@@ -357,16 +344,21 @@ const CompanyStructure = () => {
           {!loading && mode === 'explore' ? (
             <>
               <Paper
+                data-testid="company-structure-toolbar"
                 sx={{
                   ...getOfficePanelSx(ui),
-                  p: { xs: 2, md: 2.5 },
+                  p: 1,
                   borderRadius: 2.5,
-                  background: `linear-gradient(135deg, ${theme.palette.background.paper} 0%, ${theme.palette.action.hover} 100%)`,
+                  background: theme.palette.background.paper,
                 }}
               >
-                <Stack spacing={1.25}>
-                  <Typography variant="subtitle1" fontWeight={700}>Найти сотрудника или подразделение</Typography>
+                <Stack
+                  direction={{ xs: 'column', lg: 'row' }}
+                  spacing={1}
+                  alignItems={{ xs: 'stretch', lg: 'center' }}
+                >
                   <Autocomplete
+                    size="small"
                     options={searchOptions}
                     inputValue={searchQuery}
                     loading={searchLoading}
@@ -376,10 +368,11 @@ const CompanyStructure = () => {
                     onInputChange={(_, value) => setSearchQuery(value)}
                     onChange={handleSearchChoice}
                     noOptionsText={searchQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Ничего не найдено'}
+                    sx={{ minWidth: 0, width: '100%', flex: { lg: '1 1 420px' } }}
                     renderInput={(params) => (
                       <TextField
                         {...params}
-                        placeholder="ФИО, подразделение, рабочая почта или телефон"
+                        placeholder="Найти сотрудника или подразделение"
                         inputProps={{ ...params.inputProps, 'aria-label': 'Поиск по структуре компании' }}
                         InputProps={{
                           ...params.InputProps,
@@ -405,174 +398,74 @@ const CompanyStructure = () => {
                       </li>
                     )}
                   />
+                  {blocks.length ? (
+                    <Box sx={{ width: { xs: '100%', lg: 'auto' }, minWidth: 0, maxWidth: { lg: '42vw' }, overflow: 'hidden' }}>
+                      <Tabs
+                        value={activeBlockId}
+                        onChange={changeBlock}
+                        variant="scrollable"
+                        scrollButtons="auto"
+                        aria-label="Блок компании"
+                        sx={{
+                          minHeight: 40,
+                          '& .MuiTab-root': { minHeight: 40, px: 1.5, py: 0.5 },
+                        }}
+                      >
+                        {blocks.map((block) => (
+                          <Tab key={block.id} value={String(block.id)} label={nodeCardTitle(block)} />
+                        ))}
+                      </Tabs>
+                    </Box>
+                  ) : null}
+                  <ToggleButtonGroup
+                    exclusive
+                    size="small"
+                    value={isMobile ? 'focus' : explorerView}
+                    onChange={(_, value) => changeExplorerView(value)}
+                    aria-label="Вид структуры"
+                    sx={{ flexShrink: 0, alignSelf: { xs: 'stretch', lg: 'center' } }}
+                  >
+                    <ToggleButton value="focus" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
+                      <CorporateFareOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                      Фокус
+                    </ToggleButton>
+                    {!isMobile ? (
+                      <ToggleButton value="overview" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
+                        <AccountTreeOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                        Обзор
+                      </ToggleButton>
+                    ) : null}
+                  </ToggleButtonGroup>
                 </Stack>
               </Paper>
 
-              <ToggleButtonGroup
-                exclusive
-                size="small"
-                value={explorerView}
-                onChange={(_, value) => value && setExplorerView(value)}
-                aria-label="Вид структуры"
-                sx={{ alignSelf: { xs: 'stretch', sm: 'flex-start' } }}
-              >
-                <ToggleButton value="guide" sx={{ ...viewToggleSx, flex: { xs: 1, sm: 'initial' } }}>
-                  <CorporateFareOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                  Навигатор
-                </ToggleButton>
-                <ToggleButton value="chart" sx={{ ...viewToggleSx, flex: { xs: 1, sm: 'initial' } }}>
-                  <AccountTreeOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                  Схема
-                </ToggleButton>
-              </ToggleButtonGroup>
-
-              {selectedNode && explorerView === 'chart' ? (
-                <Stack spacing={2}>
-                  <CompanyStructureChart
-                    tree={tree}
-                    selectedId={selectedId}
-                    onSelect={(nodeId) => {
-                      selectNode(nodeId);
-                      setDirectoryDialogOpen(true);
-                    }}
-                    isMobile={isMobile}
-                    toolbarAction={(
-                      <Button
-                        size="small"
-                        startIcon={<GroupsOutlinedIcon />}
-                        onClick={() => setDirectoryDialogOpen(true)}
-                      >
-                        Сотрудники
-                      </Button>
-                    )}
-                  />
-                </Stack>
-              ) : selectedNode ? (
-                <>
-                  <Breadcrumbs separator="›" aria-label="Путь в структуре" sx={{ px: 0.5 }}>
-                    {selectedPath.map((node, index) => (
-                      index === selectedPath.length - 1 ? (
-                        <Typography key={node.id} variant="body2" color="text.primary" fontWeight={600}>
-                          {nodeCardTitle(node)}
-                        </Typography>
-                      ) : (
-                        <Button
-                          key={node.id}
-                          size="small"
-                          color="inherit"
-                          onClick={() => selectNode(node.id)}
-                          sx={{ minWidth: 0, px: 0.5, textTransform: 'none' }}
-                        >
-                          {nodeCardTitle(node)}
-                        </Button>
-                      )
-                    ))}
-                  </Breadcrumbs>
-
-                  <Paper sx={{ ...getOfficePanelSx(ui), p: { xs: 2, md: 2.5 }, borderRadius: 2.5 }}>
-                    <Stack spacing={1.25}>
-                      {parentNode ? (
-                        <Button
-                          size="small"
-                          color="inherit"
-                          startIcon={<ArrowBackIcon />}
-                          onClick={() => selectNode(parentNode.id)}
-                          sx={{ alignSelf: 'flex-start' }}
-                        >
-                          Назад: {nodeCardTitle(parentNode)}
-                        </Button>
-                      ) : null}
-                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between">
-                        <Box>
-                          <Chip size="small" icon={<AccountTreeOutlinedIcon />} label={nodeTypeLabel(selectedNode)} sx={{ mb: 1 }} />
-                          <Typography variant="h5" fontWeight={750}>{nodeCardTitle(selectedNode)}</Typography>
-                          {selectedNode.person_name ? (
-                            <Typography variant="body1" sx={{ mt: 0.5 }}>{selectedNode.person_name}</Typography>
-                          ) : null}
-                          {selectedNode.person_position && selectedNode.person_position !== selectedNode.title ? (
-                            <Typography variant="body2" color="text.secondary">{selectedNode.person_position}</Typography>
-                          ) : null}
-                        </Box>
-                        <Stack direction="row" spacing={1} alignItems="flex-start">
-                          {childNodes.length ? (
-                            <Chip icon={<CorporateFareOutlinedIcon />} label={`Внутри: ${childNodes.length}`} variant="outlined" />
-                          ) : null}
-                          <Chip icon={<GroupsOutlinedIcon />} label={`Сотрудники: ${people.length}`} variant="outlined" />
-                        </Stack>
-                      </Stack>
-                    </Stack>
-                  </Paper>
-
-                  {isMobile && childNodes.length ? (
-                    <Tabs
-                      value={mobileTab}
-                      onChange={(_, value) => setMobileTab(value)}
-                      variant="fullWidth"
-                      aria-label="Содержимое подразделения"
-                    >
-                      <Tab value="units" label={`Подразделения (${childNodes.length})`} />
-                      <Tab value="people" label={`Сотрудники (${people.length})`} />
-                    </Tabs>
-                  ) : null}
-
-                  <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems="flex-start">
-                    {childNodes.length ? (
-                      <Paper
-                        sx={{
-                          ...getOfficePanelSx(ui),
-                          display: isMobile && mobileTab !== 'units' ? 'none' : 'block',
-                          flex: 1,
-                          width: { xs: '100%', lg: 'auto' },
-                          p: { xs: 2, md: 2.5 },
-                          borderRadius: 2.5,
-                        }}
-                      >
-                        <Stack spacing={1.5}>
-                          <Box>
-                            <Typography variant="subtitle1" fontWeight={700}>Подразделения</Typography>
-                          </Box>
-                          <Divider />
-                          <Box
-                            sx={{
-                              display: 'grid',
-                              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
-                              gap: 1.25,
-                            }}
-                          >
-                            {childNodes.map((node) => (
-                              <ChildUnitCard
-                                key={node.id}
-                                node={node}
-                                onSelect={selectNode}
-                                onPrefetch={prefetchPeople}
-                              />
-                            ))}
-                          </Box>
-                        </Stack>
-                      </Paper>
-                    ) : null}
-
-                    <Paper
-                      sx={{
-                        ...getOfficePanelSx(ui),
-                        display: isMobile && childNodes.length && mobileTab !== 'people' ? 'none' : 'block',
-                        width: { xs: '100%', lg: 'auto' },
-                        flex: 1,
-                        p: { xs: 2, md: 2.5 },
-                        borderRadius: 2.5,
-                      }}
-                    >
-                      <EmployeeDirectoryPanel
-                        people={people}
-                        loading={peopleLoading}
-                        focusedPerson={focusedPerson}
-                      />
-                    </Paper>
-                  </Stack>
-                </>
-              ) : (
-                <Alert severity="info">Структура пока пуста. Администратор может добавить корневой узел.</Alert>
-              )}
+              <Box component="section" data-testid="company-structure-stage" sx={{ minHeight: 0, pt: 0.5 }}>
+                {selectedNode ? (
+                  explorerView === 'overview' && !isMobile ? (
+                    <CompanyStructureOverview
+                      tree={tree}
+                      blockId={activeBlockId}
+                      selectedId={selectedId}
+                      onFocus={(nodeId) => selectNode(nodeId, null, { view: 'focus' })}
+                      onRoot={(nodeId) => selectNode(nodeId, null, { view: 'overview' })}
+                      onPeople={(nodeId) => openPeople(nodeId)}
+                    />
+                  ) : (
+                    <CompanyStructureFocus
+                      tree={tree}
+                      selectedNode={selectedNode}
+                      selectedPath={selectedPath}
+                      people={people}
+                      peopleLoading={peopleLoading}
+                      focusedPerson={focusedPerson}
+                      onSelect={(nodeId) => selectNode(nodeId, null, { view: 'focus' })}
+                      onPeople={(nodeId) => openPeople(nodeId)}
+                    />
+                  )
+                ) : (
+                  <Alert severity="info">Структура пока пуста. Администратор может добавить корневой узел.</Alert>
+                )}
+              </Box>
             </>
           ) : null}
 
@@ -584,7 +477,7 @@ const CompanyStructure = () => {
               peopleCount={people.length}
               onSelect={(nodeId) => selectNode(nodeId)}
               onChanged={async (preferredId) => {
-                await loadTree(preferredId);
+                await loadTree(preferredId, { background: true });
               }}
               notifySuccess={notifySuccess}
               notifyApiError={notifyApiError}
@@ -593,31 +486,47 @@ const CompanyStructure = () => {
         </Stack>
       </PageShell>
 
-      <Dialog
-        open={directoryDialogOpen && mode === 'explore' && explorerView === 'chart'}
-        onClose={() => setDirectoryDialogOpen(false)}
-        fullWidth
-        maxWidth="sm"
-        fullScreen={isMobile}
+      <Drawer
+        anchor="right"
+        open={directoryDrawerOpen && mode === 'explore'}
+        onClose={() => setDirectoryDrawerOpen(false)}
+        PaperProps={{
+          sx: {
+            width: { xs: '100%', sm: 480 },
+            maxWidth: '100vw',
+            overscrollBehavior: 'contain',
+          },
+        }}
       >
-        <DialogTitle>
-          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-            <Typography variant="h6" fontWeight={700} noWrap>
-              {selectedNode ? nodeCardTitle(selectedNode) : 'Сотрудники'}
-            </Typography>
-            <IconButton onClick={() => setDirectoryDialogOpen(false)} aria-label="Закрыть список сотрудников">
+        <Stack sx={{ height: '100%' }}>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            spacing={1}
+            sx={{ px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" fontWeight={700} noWrap>
+                {selectedNode ? nodeCardTitle(selectedNode) : 'Сотрудники'}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Сотрудники выбранного подразделения
+              </Typography>
+            </Box>
+            <IconButton onClick={() => setDirectoryDrawerOpen(false)} aria-label="Закрыть список сотрудников">
               <CloseIcon />
             </IconButton>
           </Stack>
-        </DialogTitle>
-        <DialogContent dividers>
+          <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 2 }}>
           <EmployeeDirectoryPanel
             people={people}
             loading={peopleLoading}
             focusedPerson={focusedPerson}
           />
-        </DialogContent>
-      </Dialog>
+          </Box>
+        </Stack>
+      </Drawer>
     </MainLayout>
   );
 };

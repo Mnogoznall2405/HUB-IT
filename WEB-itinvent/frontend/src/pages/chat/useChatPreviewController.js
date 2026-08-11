@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import chatAttachmentsAPI from '../../api/chatAttachments';
 import {
@@ -38,12 +38,20 @@ export default function useChatPreviewController({
 }) {
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
+  const documentPreviewRequestRef = useRef(null);
+
+  useEffect(() => () => {
+    documentPreviewRequestRef.current?.abort();
+    documentPreviewRequestRef.current = null;
+  }, []);
 
   const closeAttachmentPreview = useCallback(() => {
     setAttachmentPreview(null);
   }, []);
 
   const closeDocumentPreview = useCallback(() => {
+    documentPreviewRequestRef.current?.abort();
+    documentPreviewRequestRef.current = null;
     setDocumentPreview((current) => {
       revokeDocumentPreviewObjectUrl(current);
       return null;
@@ -55,14 +63,20 @@ export default function useChatPreviewController({
     const normalizedMessageId = String(messageId || '').trim();
     const attachmentId = String(attachment?.id || '').trim();
     if (!normalizedMessageId || !attachmentId) return;
+    documentPreviewRequestRef.current?.abort();
+    const requestController = new AbortController();
+    documentPreviewRequestRef.current = requestController;
 
     const mapped = mapChatAttachmentForPreview(attachment);
-    setDocumentPreview({
-      ...createEmptyAttachmentPreview(),
-      open: true,
-      loading: true,
-      filename: mapped.name,
-      contentType: mapped.content_type,
+    setDocumentPreview((current) => {
+      revokeDocumentPreviewObjectUrl(current);
+      return {
+        ...createEmptyAttachmentPreview(),
+        open: true,
+        loading: true,
+        filename: mapped.name,
+        contentType: mapped.content_type,
+      };
     });
 
     try {
@@ -71,9 +85,21 @@ export default function useChatPreviewController({
         messageId: normalizedMessageId,
         attachmentId,
         attachment,
+        signal: requestController.signal,
       });
+      if (documentPreviewRequestRef.current !== requestController || requestController.signal.aborted) {
+        revokeDocumentPreviewObjectUrl(previewState);
+        return;
+      }
       setDocumentPreview(previewState);
     } catch (error) {
+      if (
+        requestController.signal.aborted
+        || String(error?.name || '') === 'AbortError'
+        || documentPreviewRequestRef.current !== requestController
+      ) {
+        return;
+      }
       setDocumentPreview({
         ...createEmptyAttachmentPreview(),
         open: true,
@@ -82,6 +108,10 @@ export default function useChatPreviewController({
         filename: mapped.name,
         contentType: mapped.content_type,
       });
+    } finally {
+      if (documentPreviewRequestRef.current === requestController) {
+        documentPreviewRequestRef.current = null;
+      }
     }
   }, [loadChatDialogsModule]);
 

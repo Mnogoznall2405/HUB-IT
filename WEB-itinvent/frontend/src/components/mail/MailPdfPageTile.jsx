@@ -8,6 +8,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
   pageNumber,
   pdf = null,
   fitScale = 1,
+  displayScale = fitScale,
   rotation = 0,
   scrollRootRef = null,
   onVisibilityChange,
@@ -67,6 +68,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
       canvas: canvasRef.current,
       layerContainer: layerContainerRef.current,
       scale: fitScale,
+      cssScale: displayScale,
       rotation,
       signal: abortController.signal,
     })
@@ -86,7 +88,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
       cancelled = true;
       abortController.abort();
     };
-  }, [fitScale, isNearViewport, pageNumber, pdf, rotation]);
+  }, [displayScale, fitScale, isNearViewport, pageNumber, pdf, rotation]);
 
   return (
     <Box

@@ -26,8 +26,13 @@ _NON_ALNUM_RE = re.compile(rf"[^{_ALNUM_CLASS}]+", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def fold_search_text(value: Any) -> str:
+    """Casefold and treat Cyrillic ё/Ё as е for search matching."""
+    return str(value or "").casefold().replace("ё", "е")
+
+
 def normalize_catalog_text(value: Any) -> str:
-    return _WHITESPACE_RE.sub(" ", str(value or "").casefold()).strip()
+    return _WHITESPACE_RE.sub(" ", fold_search_text(value)).strip()
 
 
 def catalog_rows_fingerprint(rows: Any) -> str:
@@ -44,7 +49,7 @@ def catalog_rows_fingerprint(rows: Any) -> str:
 
 
 def _compact(value: str) -> str:
-    return _NON_ALNUM_RE.sub("", value.casefold())
+    return _NON_ALNUM_RE.sub("", fold_search_text(value))
 
 
 def _model_fragments(value: str) -> list[tuple[int, int, str]]:
@@ -77,11 +82,11 @@ def catalog_index_tokens(value: Any) -> list[str]:
     for start, _end, token in _model_fragments(text):
         candidates.append((start, token))
     for match in _SEPARATED_MODEL_RE.finditer(text):
-        token = match.group(0).casefold()[:200]
+        token = fold_search_text(match.group(0))[:200]
         if len(token) >= 2:
             candidates.append((match.start(), token))
     for match in _WORD_RE.finditer(text):
-        token = match.group(0).casefold()[:200]
+        token = fold_search_text(match.group(0))[:200]
         if len(token) >= 2:
             candidates.append((match.start(), token))
 
@@ -107,7 +112,7 @@ def catalog_query_tokens(value: Any) -> list[str]:
     for match in _WORD_RE.finditer(text):
         if overlaps_model(match.start(), match.end()):
             continue
-        token = match.group(0).casefold()[:200]
+        token = fold_search_text(match.group(0))[:200]
         if len(token) >= 2:
             candidates.append((match.start(), token))
 
@@ -162,7 +167,7 @@ def catalog_entry_match_rank(code: Any, name: Any, query_tokens: list[str]) -> i
         return None
     # The legacy JSON fallback can contain ~710k rows.  Reject ordinary misses
     # with cheap substring checks before tokenizing the handful of matches.
-    haystack = f"{str(code or '').casefold()} {str(name or '').casefold()}"
+    haystack = f"{fold_search_text(code)} {fold_search_text(name)}"
     if not _entry_contains_query(haystack, query_tokens):
         return None
     entry_tokens = catalog_index_tokens(f"{code or ''} {name or ''}")

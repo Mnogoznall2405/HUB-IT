@@ -138,7 +138,10 @@ async def get_chat_messages(
     request_id = chat_api()._request_id_from_headers(request)
     meta: dict[str, Any] = {}
     try:
-        response, meta = await chat_api()._run_chat_call_with_meta(
+        from backend.chat.latency_profile import set_active_endpoint
+
+        set_active_endpoint("GET /chat/messages")
+        response, meta = await chat_api()._run_chat_read_call_with_meta(
             chat_api().chat_service.get_messages,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -146,6 +149,19 @@ async def get_chat_messages(
             after_message_id=after_message_id,
             limit=int(limit),
         )
+        try:
+            from backend.chat.response_profile import maybe_profile_read_response
+
+            maybe_profile_read_response(
+                route="messages",
+                request_id=request_id,
+                db_ms=float(meta.get("db_ms") or 0.0),
+                handler_ms=(time.perf_counter() - started_at) * 1000.0,
+                payload=response,
+                items_hint=meta.get("items_count"),
+            )
+        except Exception:
+            pass
         return response
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
@@ -163,6 +179,8 @@ async def get_chat_messages(
             items_count=meta.get("items_count"),
             direction=meta.get("direction"),
             cursor_invalid=int(bool(meta.get("cursor_invalid"))),
+            db_ms=meta.get("db_ms"),
+            executor_wait_ms=meta.get("executor_wait_ms"),
         )
 
 
@@ -179,7 +197,10 @@ async def get_chat_thread_bootstrap(
     request_id = chat_api()._request_id_from_headers(request)
     meta: dict[str, Any] = {}
     try:
-        response, meta = await chat_api()._run_chat_call_with_meta(
+        from backend.chat.latency_profile import set_active_endpoint
+
+        set_active_endpoint("GET /chat/thread-bootstrap")
+        response, meta = await chat_api()._run_chat_read_call_with_meta(
             chat_api().chat_service.get_thread_bootstrap,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -187,6 +208,19 @@ async def get_chat_thread_bootstrap(
             limit=int(limit),
             lightweight=bool(lightweight),
         )
+        try:
+            from backend.chat.response_profile import maybe_profile_read_response
+
+            maybe_profile_read_response(
+                route="thread_bootstrap",
+                request_id=request_id,
+                db_ms=float(meta.get("db_ms") or 0.0),
+                handler_ms=(time.perf_counter() - started_at) * 1000.0,
+                payload=response,
+                items_hint=meta.get("items_count"),
+            )
+        except Exception:
+            pass
         return response
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
@@ -203,6 +237,8 @@ async def get_chat_thread_bootstrap(
             cache_hit=int(bool(meta.get("cache_hit"))),
             items_count=meta.get("items_count"),
             initial_anchor_mode=meta.get("initial_anchor_mode"),
+            db_ms=meta.get("db_ms"),
+            executor_wait_ms=meta.get("executor_wait_ms"),
         )
 
 
@@ -222,7 +258,7 @@ async def hydrate_chat_thread_messages(
     ]
     meta: dict[str, Any] = {}
     try:
-        response, meta = await chat_api()._run_chat_call_with_meta(
+        response, meta = await chat_api()._run_chat_read_call_with_meta(
             chat_api().chat_service.hydrate_thread_messages,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -256,7 +292,7 @@ async def search_chat_messages(
     request_id = chat_api()._request_id_from_headers(request)
     meta: dict[str, Any] = {}
     try:
-        response, meta = await chat_api()._run_chat_call_with_meta(
+        response, meta = await chat_api()._run_chat_read_call_with_meta(
             chat_api().chat_service.search_messages,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -350,7 +386,7 @@ async def send_chat_message(
     request_id = chat_api()._request_id_from_headers(request)
     message_id = ""
     try:
-        message, _ = await chat_api()._run_chat_call_with_meta(
+        message, write_meta = await chat_api()._run_chat_write_call_with_meta(
             chat_api().chat_service.send_message,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -360,17 +396,46 @@ async def send_chat_message(
             reply_to_message_id=payload.reply_to_message_id,
             defer_push_notifications=True,
         )
+        deferred_notifications = chat_api()._pop_deferred_chat_notifications(message)
+        deferred_realtime_publish = chat_api()._pop_deferred_realtime_publish(message)
+        deferred_delivery_outbox = chat_api()._pop_deferred_delivery_outbox(message)
         message_id = chat_api()._normalize_text(message.get("id"))
+        from backend.chat.lean_ack import apply_sender_summary_to_message
+
+        if isinstance(message, dict):
+            message = apply_sender_summary_to_message(
+                message,
+                user_id=int(current_user.id),
+                username=getattr(current_user, "username", None),
+                full_name=getattr(current_user, "full_name", None),
+                role=getattr(current_user, "role", None),
+                avatar_url=getattr(current_user, "avatar_url", None),
+            )
+        if isinstance(deferred_realtime_publish, dict):
+            realtime_message = deferred_realtime_publish.get("message")
+            if isinstance(realtime_message, dict):
+                deferred_realtime_publish["message"] = apply_sender_summary_to_message(
+                    realtime_message,
+                    user_id=int(current_user.id),
+                    username=getattr(current_user, "username", None),
+                    full_name=getattr(current_user, "full_name", None),
+                    role=getattr(current_user, "role", None),
+                    avatar_url=getattr(current_user, "avatar_url", None),
+                )
         # Return the saved message immediately; heavy side effects run in the background.
         chat_api()._schedule_chat_message_side_effects(
             conversation_id=conversation_id,
             message_id=message["id"],
+            deferred_notifications=deferred_notifications,
+            deferred_realtime_publish=deferred_realtime_publish,
+            deferred_delivery_outbox=deferred_delivery_outbox,
         )
         chat_api()._schedule_ai_run_for_message(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             message_id=message["id"],
             effective_database_id=db_id,
+            conversation_kind=str((write_meta or {}).get("conversation_kind") or ""),
         )
         return message
     except Exception as exc:
@@ -406,9 +471,13 @@ async def forward_chat_message(
             reply_to_message_id=payload.reply_to_message_id,
             defer_push_notifications=True,
         )
+        deferred_notifications = chat_api()._pop_deferred_chat_notifications(message)
+        deferred_realtime_publish = chat_api()._pop_deferred_realtime_publish(message)
         chat_api()._schedule_chat_message_side_effects(
             conversation_id=conversation_id,
             message_id=message["id"],
+            deferred_notifications=deferred_notifications,
+            deferred_realtime_publish=deferred_realtime_publish,
         )
         return message
     except Exception as exc:
@@ -431,9 +500,13 @@ async def send_chat_task_share(
             reply_to_message_id=payload.reply_to_message_id,
             defer_push_notifications=True,
         )
+        deferred_notifications = chat_api()._pop_deferred_chat_notifications(message)
+        deferred_realtime_publish = chat_api()._pop_deferred_realtime_publish(message)
         chat_api()._schedule_chat_message_side_effects(
             conversation_id=conversation_id,
             message_id=message["id"],
+            deferred_notifications=deferred_notifications,
+            deferred_realtime_publish=deferred_realtime_publish,
         )
         return message
     except Exception as exc:
@@ -472,7 +545,7 @@ async def send_chat_files(
             conversation_id,
             len(files),
         )
-        message, _ = await chat_api()._run_chat_call_with_meta(
+        message, write_meta = await chat_api()._run_chat_call_with_meta(
             chat_api().chat_service.send_files,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -482,16 +555,21 @@ async def send_chat_files(
             reply_to_message_id=reply_to_message_id,
             defer_push_notifications=True,
         )
+        deferred_notifications = chat_api()._pop_deferred_chat_notifications(message)
+        deferred_realtime_publish = chat_api()._pop_deferred_realtime_publish(message)
         message_id = chat_api()._normalize_text(message.get("id"))
         chat_api()._schedule_chat_message_side_effects(
             conversation_id=conversation_id,
             message_id=message["id"],
+            deferred_notifications=deferred_notifications,
+            deferred_realtime_publish=deferred_realtime_publish,
         )
         chat_api()._schedule_ai_run_for_message(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             message_id=message["id"],
             effective_database_id=db_id,
+            conversation_kind=str((write_meta or {}).get("conversation_kind") or ""),
         )
         chat_api().http_logger.info(
             "chat.files_upload_success request_id=%s message_id=%s attachment_count=%d",
@@ -526,26 +604,69 @@ async def send_chat_files(
 async def mark_chat_conversation_read(
     conversation_id: str,
     payload: MarkReadRequest,
+    request: Request,
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
+    from backend.chat.latency_profile import StageClock, profile_trace
+
+    handler_enter = time.perf_counter()
+    asgi_received = float(getattr(request.state, "chat_asgi_received_at", 0.0) or 0.0)
+    middleware_enter = float(getattr(request.state, "chat_middleware_enter_at", 0.0) or 0.0)
+    clock = StageClock(trace_id="mark_read", kind="http_mark_read")
+    if asgi_received > 0:
+        clock.stages_ms["handler_queue_wait_ms"] = max(0.0, (handler_enter - asgi_received) * 1000.0)
+    if middleware_enter > 0 and asgi_received > 0:
+        clock.stages_ms["middleware_ms"] = max(0.0, (middleware_enter - asgi_received) * 1000.0)
+    clock.mark("handler_enter")
     try:
-        read_payload = await chat_api()._run_chat_call(
+        executor_submit_at = time.perf_counter()
+        clock.stages_ms["pre_executor_ms"] = (executor_submit_at - handler_enter) * 1000.0
+        read_payload = await chat_api()._run_chat_mark_read_call(
             chat_api().chat_service.mark_read,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             message_id=payload.message_id,
         )
-        chat_api()._schedule_chat_background_task(
-            chat_api()._publish_message_read_after_mark_read(
-                conversation_id=conversation_id,
-                message_id=payload.message_id,
-                reader_user_id=int(current_user.id),
-                read_at=read_payload.get("read_at"),
-            ),
-            label="publish_message_read",
-        )
+        clock.stages_ms["executor_and_service_ms"] = (time.perf_counter() - executor_submit_at) * 1000.0
+        changed = bool((read_payload or {}).get("changed"))
+        if changed:
+            chat_api()._schedule_chat_background_task(
+                chat_api()._publish_message_read_after_mark_read(
+                    conversation_id=conversation_id,
+                    message_id=payload.message_id,
+                    reader_user_id=int(current_user.id),
+                    read_at=read_payload.get("read_at"),
+                ),
+                label="publish_message_read",
+            )
+        if bool((read_payload or {}).get("clear_hub_notifications")):
+            chat_api()._schedule_chat_background_task(
+                chat_api()._clear_hub_notifications_after_mark_read(
+                    conversation_id=conversation_id,
+                    reader_user_id=int(current_user.id),
+                ),
+                label="clear_hub_notifications_after_mark_read",
+            )
+        # Internal flags must not leak to HTTP clients.
+        if isinstance(read_payload, dict):
+            read_payload.pop("changed", None)
+            read_payload.pop("clear_hub_notifications", None)
+        clock.mark("response_created")
+        clock.span("response_create_ms", "handler_enter", "response_created")
         return read_payload
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
-
-
+    finally:
+        try:
+            clock.emit(stage="mark_read_http_breakdown")
+            profile_trace(
+                "mark_read",
+                "mark_read",
+                clock.total_ms(),
+                conversation_id=str(conversation_id or "")[:64],
+                user_id=int(getattr(current_user, "id", 0) or 0),
+                handler_queue_wait_ms=clock.stages_ms.get("handler_queue_wait_ms"),
+                executor_and_service_ms=clock.stages_ms.get("executor_and_service_ms"),
+            )
+        except Exception:
+            pass

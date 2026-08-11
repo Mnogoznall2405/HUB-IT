@@ -77,7 +77,8 @@ const permissionGroups = [
     group: 'Общие',
     permissions: [
       { value: 'dashboard.read', label: 'Dashboard: просмотр' },
-      { value: 'announcements.write', label: 'Объявления: публикация' },
+      { value: 'announcements.write', label: 'Лента: создание своих публикаций' },
+      { value: 'announcements.moderate', label: 'Лента: модерация и аналитика' },
       { value: 'statistics.read', label: 'Статистика: просмотр' },
     ],
   },
@@ -107,9 +108,9 @@ const permissionGroups = [
     permissions: [
       { value: 'networks.read', label: 'Сети: просмотр' },
       { value: 'networks.write', label: 'Сети: изменения' },
-      { value: 'scan.read', label: 'Scan Center: просмотр' },
-      { value: 'scan.ack', label: 'Scan Center: ACK инцидентов' },
-      { value: 'scan.tasks', label: 'Scan Center: задачи агентам' },
+      { value: 'scan.read', label: 'Scan Center и DLP: просмотр' },
+      { value: 'scan.ack', label: 'Scan Center и DLP: ACK инцидентов' },
+      { value: 'scan.tasks', label: 'Scan Center и DLP: задачи агентам' },
       { value: 'vcs.read', label: 'Терминалы ВКС: просмотр' },
       { value: 'vcs.manage', label: 'Терминалы ВКС: управление' },
     ],
@@ -124,13 +125,16 @@ const permissionGroups = [
   {
     group: 'Адресная книга',
     permissions: [
-      { value: 'address_book.read', label: 'Адресная книга: просмотр' },
+      { value: 'address_book.read', label: 'Адресная книга: просмотр — доступно всем', alwaysGranted: true },
+      { value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' },
+      { value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' },
+      { value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' },
     ],
   },
   {
     group: 'Структура компании',
     permissions: [
-      { value: 'company_structure.read', label: 'Структура компании: просмотр' },
+      { value: 'company_structure.read', label: 'Структура компании: просмотр — доступно всем', alwaysGranted: true },
       { value: 'company_structure.write', label: 'Структура компании: редактирование' },
     ],
   },
@@ -179,12 +183,12 @@ const permissionGroups = [
 ];
 
 const MY_FILES_PERMISSION_GROUP = {
-  group: 'Мои файлы',
+  group: 'Мой диск',
   permissions: [
-    { value: 'my_files.read', label: 'Мои файлы: просмотр' },
-    { value: 'my_files.write', label: 'Мои файлы: загрузка и удаление' },
-    { value: 'my_files.share', label: 'Мои файлы: публичные ссылки' },
-    { value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' },
+    { value: 'my_files.read', label: 'Мой диск: просмотр' },
+    { value: 'my_files.write', label: 'Мой диск: загрузка и удаление' },
+    { value: 'my_files.share', label: 'Мой диск: публичные ссылки' },
+    { value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' },
   ],
 };
 

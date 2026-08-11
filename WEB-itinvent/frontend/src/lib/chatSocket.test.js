@@ -193,6 +193,34 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('invalidates cached conversation lists when a new message arrives', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const { peekSWRCache, setSWRCache } = await import('./swrCache');
+    const cacheKey = ['chat', 'conversations', 'u1'];
+    setSWRCache(cacheKey, { items: [{ id: 'conv-1', unread_count: 0 }] });
+
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.message.created',
+        conversation_id: 'conv-1',
+        payload: {
+          id: 'msg-new',
+          conversation_id: 'conv-1',
+          body: 'new message',
+          is_own: false,
+        },
+      }),
+    });
+
+    expect(peekSWRCache(cacheKey)).toBeNull();
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('emits socket activity for inbound websocket messages including heartbeat pongs', async () => {
     const { chatSocket, CHAT_SOCKET_ACTIVITY_EVENT } = await loadChatSocket();
     const release = chatSocket.retain();

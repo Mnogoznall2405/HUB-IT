@@ -42,13 +42,29 @@ async def get_chat_conversations(
     request_id = chat_api()._request_id_from_headers(request)
     meta: dict[str, Any] = {}
     try:
-        payload, meta = await chat_api()._run_chat_call_with_meta(
+        from backend.chat.latency_profile import set_active_endpoint
+
+        set_active_endpoint("GET /chat/conversations")
+        payload, meta = await chat_api()._run_chat_read_call_with_meta(
             chat_api().chat_service.list_conversations,
             current_user_id=int(current_user.id),
             q=q,
             limit=int(limit),
             cursor=cursor,
         )
+        try:
+            from backend.chat.response_profile import maybe_profile_read_response
+
+            maybe_profile_read_response(
+                route="conversations",
+                request_id=request_id,
+                db_ms=float(meta.get("db_ms") or 0.0),
+                handler_ms=(time.perf_counter() - started_at) * 1000.0,
+                payload=payload,
+                items_hint=meta.get("items_count"),
+            )
+        except Exception:
+            pass
         return payload
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
@@ -63,6 +79,8 @@ async def get_chat_conversations(
             cursor_len=len(str(cursor or "")),
             cache_hit=int(bool(meta.get("cache_hit"))),
             items_count=meta.get("items_count"),
+            db_ms=meta.get("db_ms"),
+            executor_wait_ms=meta.get("executor_wait_ms"),
         )
 
 

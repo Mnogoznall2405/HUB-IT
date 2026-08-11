@@ -12,6 +12,30 @@ import {
 } from '../taskUserUtils';
 import { toDateTimeInput, toDateInput } from '../taskFormatters';
 
+function mapTaskToEditData(task) {
+  const emailRemind = fromApiEmailDeadlineRemindHours(task?.email_deadline_remind_hours);
+  const assigneeId = String(task?.assignee_user_id || '').trim();
+  return {
+    id: String(task?.id || ''),
+    title: task?.title || '',
+    description: task?.description || '',
+    due_at: toDateTimeInput(task?.due_at),
+    protocol_date: toDateInput(task?.protocol_date),
+    priority: task?.priority || 'normal',
+    project_id: String(task?.project_id || ''),
+    object_id: String(task?.object_id || ''),
+    assignee_user_id: assigneeId,
+    controller_user_id: String(task?.controller_user_id || ''),
+    observer_user_ids: (Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [])
+      .map((value) => String(value || ''))
+      .filter(Boolean),
+    department_id: String(task?.department_id || ''),
+    visibility_scope: String(task?.visibility_scope || 'private'),
+    email_deadline_remind_mode: emailRemind.mode,
+    email_deadline_remind_hours: emailRemind.hours,
+  };
+}
+
 export default function useTaskEditForm({
   setError,
   refreshTasksAndDetails,
@@ -31,6 +55,7 @@ export default function useTaskEditForm({
   const editOpen = controlledEditOpen ?? internalEditOpen;
   const setEditOpen = controlledSetEditOpen ?? setInternalEditOpen;
   const [editSaving, setEditSaving] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
   const [editDueCustomOpen, setEditDueCustomOpen] = useState(false);
   const [editData, setEditData] = useState({
     id: '',
@@ -51,6 +76,7 @@ export default function useTaskEditForm({
   });
 
   const editDescriptionRef = useRef('');
+  const editLoadSeqRef = useRef(0);
 
   const editProjectObjects = useMemo(() => (
     activeTaskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))
@@ -96,42 +122,20 @@ export default function useTaskEditForm({
     setEditDueCustomOpen(false);
   }, []);
 
-  const openEditTask = useCallback((task) => {
+  const applyTaskToEditForm = useCallback((task) => {
     editDescriptionRef.current = String(task?.description || '');
-    const emailRemind = fromApiEmailDeadlineRemindHours(task?.email_deadline_remind_hours);
-    const assigneeId = String(task?.assignee_user_id || '').trim();
+    const next = mapTaskToEditData(task);
     setEditDueCustomOpen(false);
-    setEditData({
-      id: String(task?.id || ''),
-      title: task?.title || '',
-      description: task?.description || '',
-      due_at: toDateTimeInput(task?.due_at),
-      protocol_date: toDateInput(task?.protocol_date),
-      priority: task?.priority || 'normal',
-      project_id: String(task?.project_id || ''),
-      object_id: String(task?.object_id || ''),
-      assignee_user_id: assigneeId,
-      controller_user_id: String(task?.controller_user_id || ''),
-      observer_user_ids: (Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [])
-        .map((value) => String(value || ''))
-        .filter(Boolean),
-      department_id: String(task?.department_id || ''),
-      visibility_scope: String(task?.visibility_scope || 'private'),
-      email_deadline_remind_mode: emailRemind.mode,
-      email_deadline_remind_hours: emailRemind.hours,
-    });
-    if (assigneeId) {
-      const assigneeSnapshot = {
-        id: assigneeId,
+    setEditData(next);
+    if (next.assignee_user_id) {
+      mergeAssigneesIntoCache([{
+        id: next.assignee_user_id,
         full_name: String(task?.assignee_full_name || '').trim(),
         username: String(task?.assignee_username || '').trim(),
-      };
-      mergeAssigneesIntoCache([assigneeSnapshot]);
+      }]);
     }
     resetTaskUserSearchInputs();
-    const observerIds = (Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [])
-      .map((value) => String(value || ''))
-      .filter(Boolean);
+    const observerIds = next.observer_user_ids;
     let observerSnapshots = (Array.isArray(task?.observers) ? task.observers : [])
       .map((item) => ({
         id: String(item?.user_id || ''),
@@ -148,8 +152,54 @@ export default function useTaskEditForm({
         void resolveAssigneesByIds(observerIds);
       }
     }
+  }, [mergeAssigneesIntoCache, resetTaskUserSearchInputs, resolveAssigneesByIds]);
+
+  const openEditTask = useCallback((task) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId) return;
+    const loadSeq = editLoadSeqRef.current + 1;
+    editLoadSeqRef.current = loadSeq;
+    // Do not hydrate the form from lean list DTO — wait for detail.
+    setEditData({
+      id: taskId,
+      title: String(task?.title || ''),
+      description: '',
+      due_at: '',
+      protocol_date: '',
+      priority: 'normal',
+      project_id: '',
+      object_id: '',
+      assignee_user_id: '',
+      controller_user_id: '',
+      observer_user_ids: [],
+      department_id: '',
+      visibility_scope: 'private',
+      email_deadline_remind_mode: 'default',
+      email_deadline_remind_hours: 24,
+    });
+    editDescriptionRef.current = '';
+    setEditDueCustomOpen(false);
     setEditOpen(true);
-  }, [mergeAssigneesIntoCache, resetTaskUserSearchInputs, resolveAssigneesByIds, setEditOpen]);
+    setEditLoading(true);
+    void hubTasksAPI.getTask(taskId)
+      .then((detail) => {
+        if (editLoadSeqRef.current !== loadSeq) return;
+        if (!detail || !detail.id) {
+          throw new Error('Задача не найдена');
+        }
+        applyTaskToEditForm(detail);
+      })
+      .catch((err) => {
+        if (editLoadSeqRef.current !== loadSeq) return;
+        setError(err?.response?.data?.detail || err?.message || 'Не удалось загрузить задачу для редактирования');
+        setEditOpen(false);
+      })
+      .finally(() => {
+        if (editLoadSeqRef.current === loadSeq) {
+          setEditLoading(false);
+        }
+      });
+  }, [applyTaskToEditForm, setEditOpen, setError]);
 
   const handleEditObserversChange = useCallback((_, value) => {
     setEditData((prev) => ({
@@ -164,7 +214,7 @@ export default function useTaskEditForm({
 
   const handleSaveEdit = async () => {
     const taskId = String(editData.id || '').trim();
-    if (!taskId) return;
+    if (!taskId || editLoading) return;
     setEditSaving(true);
     try {
       const dueAtValue = String(editData.due_at || '').trim() || null;
@@ -205,6 +255,7 @@ export default function useTaskEditForm({
     editOpen,
     setEditOpen,
     editSaving,
+    editLoading,
     editData,
     setEditData,
     editDueCustomOpen,
@@ -220,7 +271,7 @@ export default function useTaskEditForm({
     handleEditDueAtChange,
     handleSelectEditDuePreset,
     openEditTask,
-    handleSaveEdit,
     handleEditObserversChange,
+    handleSaveEdit,
   };
 }

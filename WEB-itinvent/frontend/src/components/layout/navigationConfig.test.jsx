@@ -4,7 +4,17 @@ vi.mock('../../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
 }));
 
-import { getMailNavigationBadgeMeta, resolveMobileNavigationItems } from './navigationConfig';
+import { getMailNavigationBadgeMeta, navigationItems, resolveMobileNavigationItems } from './navigationConfig';
+
+it('does not expose the removed absences page in navigation', () => {
+  expect(navigationItems.some((item) => item.path === '/absences')).toBe(false);
+});
+
+it('exposes the company feed as a primary navigation destination', () => {
+  expect(navigationItems).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: '/feed', label: 'Лента', permission: 'dashboard.read' }),
+  ]));
+});
 
 describe('getMailNavigationBadgeMeta', () => {
   it('does not treat stale as attention and hides zero-count badge', () => {
@@ -71,8 +81,8 @@ describe('resolveMobileNavigationItems', () => {
 
     expect(result.map((item) => item.path)).toEqual([
       '/dashboard',
+      '/feed',
       '/tasks',
-      '/tickets',
       '/chat',
       '/menu',
     ]);

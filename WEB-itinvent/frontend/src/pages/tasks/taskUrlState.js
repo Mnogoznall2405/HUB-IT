@@ -40,6 +40,7 @@ export const readTaskFilters = (search = '') => {
     hasAttachments: params.get('task_files') === '1',
     unreadCommentsOnly: params.get('task_unread_comments') === '1',
     focusMode: String(params.get('task_focus') || 'all') || 'all',
+    dateSortDirection: params.get('task_date_sort') === 'asc' ? 'asc' : 'desc',
   };
 };
 

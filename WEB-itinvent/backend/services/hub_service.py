@@ -3,12 +3,15 @@ Hub service for dashboard announcements, tasks, and notifications.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -37,7 +40,11 @@ from backend.services.access_policy_service import (
     user_is_department_manager,
     user_is_department_member,
 )
-from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
+from backend.services.authorization_service import (
+    PERM_ANNOUNCEMENTS_MODERATE,
+    PERM_TASKS_REVIEW,
+    authorization_service,
+)
 from backend.services.department_service import (
     DEPARTMENT_MANAGER_ROLE,
     DEPARTMENT_MEMBER_ROLE,
@@ -56,6 +63,45 @@ from backend.services.task_participant_service import TaskParticipantMixin
 from backend.services.user_service import user_service
 
 logger = logging.getLogger(__name__)
+
+_HUB_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hub-push")
+
+
+class _CountingSqliteConnection:
+    """Thin sqlite3 proxy that records executes into request-scoped sql_query_counter."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: Any = ()) -> Any:
+        try:
+            from backend.services.sql_query_counter import note_sql_execute
+
+            note_sql_execute(str(sql or ""))
+        except Exception:
+            pass
+        if params == () or params is None:
+            return self._conn.execute(sql)
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql: str, seq_of_params: Any) -> Any:
+        try:
+            from backend.services.sql_query_counter import note_sql_execute
+
+            note_sql_execute(str(sql or ""))
+        except Exception:
+            pass
+        return self._conn.executemany(sql, seq_of_params)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> Any:
+        return self._conn.__exit__(exc_type, exc, tb)
 
 
 def _utc_now_iso() -> str:
@@ -95,6 +141,11 @@ _HUB_REQUIRED_COLUMNS = {
         "pinned_until",
         "published_from",
         "expires_at",
+        "status",
+        "comments_enabled",
+        "reactions_enabled",
+        "publication_notified_at",
+        "category_id",
     },
     "hub_announcement_reads": {
         "announcement_id",
@@ -116,6 +167,8 @@ _HUB_REQUIRED_COLUMNS = {
         "uploaded_by_user_id",
         "uploaded_by_username",
         "uploaded_at",
+        "sort_order",
+        "is_cover",
     },
     "hub_tasks": {
         "id",
@@ -178,6 +231,59 @@ _HUB_REQUIRED_COLUMNS = {
         "uploaded_by_username",
         "uploaded_at",
     },
+    "hub_announcement_likes": {
+        "announcement_id",
+        "user_id",
+        "username",
+        "full_name",
+        "created_at",
+    },
+    "hub_announcement_comments": {
+        "id",
+        "announcement_id",
+        "user_id",
+        "username",
+        "full_name",
+        "body",
+        "created_at",
+        "updated_at",
+        "parent_comment_id",
+        "root_comment_id",
+        "reply_to_user_id",
+        "reply_to_username",
+        "deleted_at",
+        "deleted_by_user_id",
+        "change_version",
+    },
+    "hub_announcement_reactions": {"announcement_id", "user_id", "reaction_type", "username", "full_name", "created_at", "updated_at"},
+    "hub_announcement_comment_reactions": {"comment_id", "user_id", "reaction_type", "username", "full_name", "created_at", "updated_at"},
+    "hub_announcement_comment_attachments": {"id", "comment_id", "announcement_id", "file_name", "file_path", "file_mime", "file_size", "uploaded_by_user_id", "uploaded_at"},
+    "hub_announcement_comment_mentions": {"comment_id", "user_id", "username", "full_name"},
+    "hub_announcement_categories": {"id", "name", "slug", "is_active", "created_by_user_id", "created_at", "updated_at"},
+    "hub_announcement_tags": {"id", "name", "slug", "created_at"},
+    "hub_announcement_tag_links": {"announcement_id", "tag_id"},
+    "hub_announcement_bookmarks": {"announcement_id", "user_id", "created_at"},
+    "hub_announcement_polls": {"id", "announcement_id", "question", "allows_multiple", "is_anonymous", "closes_at", "created_at", "updated_at"},
+    "hub_announcement_poll_options": {"id", "poll_id", "text", "sort_order"},
+    "hub_announcement_poll_votes": {"poll_id", "option_id", "user_id", "created_at"},
+    "hub_task_attachment_previews": {
+        "attachment_id",
+        "task_id",
+        "status",
+        "attempt_count",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_expires_at",
+        "artifact_rel_path",
+        "pdf_filename",
+        "source_kind",
+        "page_count",
+        "sheets_json",
+        "last_error",
+        "created_at",
+        "updated_at",
+        "ready_at",
+    },
     "hub_task_comment_reads": {"task_id", "user_id", "last_seen_comment_id", "last_seen_at"},
     "hub_task_comments": {"id", "task_id", "user_id", "username", "full_name", "body", "created_at"},
     "hub_task_status_log": {
@@ -219,10 +325,11 @@ _HUB_REQUIRED_COLUMNS = {
         "last_error",
     },
 }
+# Columns fetched for list assembly. Thick columns used only to derive counts
+# (e.g. checklist_items) are stripped from the public list DTO.
 _TASK_LIST_SELECT_COLUMNS = (
     "id",
     "title",
-    "description",
     "status",
     "due_at",
     "email_deadline_remind_hours",
@@ -241,10 +348,6 @@ _TASK_LIST_SELECT_COLUMNS = (
     "updated_at",
     "submitted_at",
     "reviewed_at",
-    "reviewer_user_id",
-    "reviewer_username",
-    "reviewer_full_name",
-    "review_comment",
     "project_id",
     "object_id",
     "protocol_date",
@@ -254,6 +357,66 @@ _TASK_LIST_SELECT_COLUMNS = (
     "visibility_scope",
     "observer_user_ids",
 )
+# Stable public list contract — every item always has exactly these keys
+# (plus optional integration_* from API enrich). No conditional key omission.
+_TASK_LIST_PUBLIC_KEYS = frozenset({
+    "id",
+    "title",
+    "status",
+    "priority",
+    "due_at",
+    "email_deadline_remind_hours",
+    "assignee_user_id",
+    "assignee_username",
+    "assignee_full_name",
+    "controller_user_id",
+    "controller_username",
+    "controller_full_name",
+    "created_by_user_id",
+    "created_by_username",
+    "created_by_full_name",
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "reviewed_at",
+    "project_id",
+    "project_name",
+    "object_id",
+    "object_name",
+    "protocol_date",
+    "completed_at",
+    "completed_at_source",
+    "completed_on_time",
+    "done_without_due",
+    "department_id",
+    "department_name",
+    "visibility_scope",
+    "observer_user_ids",
+    "is_overdue",
+    "attachments_count",
+    "reports_count",
+    "comments_count",
+    "checklist_total",
+    "checklist_done",
+    "latest_comment_preview",
+    "latest_comment_at",
+    "latest_comment_user_id",
+    "latest_comment_username",
+    "latest_comment_full_name",
+    "has_unread_comments",
+})
+_TASK_LIST_FORBIDDEN_KEYS = frozenset({
+    "description",
+    "checklist_items",
+    "attachments",
+    "latest_report",
+    "review_comment",
+    "reviewer_user_id",
+    "reviewer_username",
+    "reviewer_full_name",
+    "observers",
+    "status_history",
+})
 _TASK_VISIBILITY_SELECT_COLUMNS = (
     "id",
     "assignee_user_id",
@@ -288,8 +451,15 @@ _TASK_ANALYTICS_SELECT_COLUMNS = (
 _DEPARTMENT_SCOPE_SQL_SCAN_CAP = 2000
 _DEPARTMENT_SCOPE_FETCH_BATCH = 100
 _HUB_REQUIRED_INDEXES = {
-    "hub_announcements": {"idx_hub_announcements_published"},
+    "hub_announcements": {"idx_hub_announcements_published", "idx_hub_announcements_status_due"},
     "hub_announcement_attachments": {"idx_hub_announcement_attachments_announcement"},
+    "hub_announcement_likes": {"idx_hub_announcement_likes_announcement"},
+    "hub_announcement_comments": {"idx_hub_announcement_comments_announcement"},
+    "hub_announcement_reactions": {"idx_hub_announcement_reactions_announcement"},
+    "hub_announcement_comment_reactions": {"idx_hub_comment_reactions_comment"},
+    "hub_announcement_comment_attachments": {"idx_hub_comment_attachments_comment"},
+    "hub_announcement_bookmarks": {"idx_hub_bookmarks_user"},
+    "hub_announcement_tag_links": {"idx_hub_tag_links_tag"},
     "hub_tasks": {
         "idx_hub_tasks_assignee",
         "idx_hub_tasks_controller",
@@ -304,10 +474,19 @@ _HUB_REQUIRED_INDEXES = {
     "hub_task_projects": {"idx_hub_task_projects_active"},
     "hub_task_objects": {"idx_hub_task_objects_project"},
     "hub_task_attachments": {"idx_hub_task_attachments_task"},
+    "hub_task_attachment_previews": {
+        "idx_hub_task_attachment_previews_status_next_attempt",
+        "idx_hub_task_attachment_previews_lease_expires",
+        "idx_hub_task_attachment_previews_task",
+    },
     "hub_task_comment_reads": {"idx_hub_task_comment_reads_task"},
     "hub_task_comments": {"idx_hub_task_comments_task"},
     "hub_task_status_log": {"idx_hub_task_status_log_task"},
-    "hub_notifications": {"idx_hub_notifications_recipient"},
+    "hub_notifications": {
+        "idx_hub_notifications_recipient",
+        "idx_hub_notifications_entity",
+        "idx_hub_notifications_retention",
+    },
     "hub_task_email_outbox": {"idx_hub_task_email_outbox_status", "uq_hub_task_email_outbox_dedupe"},
 }
 
@@ -326,13 +505,32 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     _TRANSFER_ACT_REMINDER_PROJECT_CODE = "TRANSFER_ACTS"
     _TRANSFER_ACT_REMINDER_PROJECT_DESCRIPTION = "Системный проект для reminder-задач о загрузке подписанных актов перемещения техники."
     _ANN_TABLE = "hub_announcements"
+    # Keep the result shape stable across online schema migrations. Psycopg may
+    # cache prepared statements, and SELECT * breaks those plans after ALTER TABLE.
+    _ANN_SELECT_COLUMNS = ", ".join(sorted(_HUB_REQUIRED_COLUMNS["hub_announcements"]))
     _ANN_READS_TABLE = "hub_announcement_reads"
     _ANN_ATTACH_TABLE = "hub_announcement_attachments"
+    _ANN_LIKES_TABLE = "hub_announcement_likes"
+    _ANN_COMMENTS_TABLE = "hub_announcement_comments"
+    _ANN_REACTIONS_TABLE = "hub_announcement_reactions"
+    _ANN_COMMENT_REACTIONS_TABLE = "hub_announcement_comment_reactions"
+    _ANN_COMMENT_ATTACH_TABLE = "hub_announcement_comment_attachments"
+    _ANN_COMMENT_MENTIONS_TABLE = "hub_announcement_comment_mentions"
+    _ANN_CATEGORIES_TABLE = "hub_announcement_categories"
+    _ANN_TAGS_TABLE = "hub_announcement_tags"
+    _ANN_TAG_LINKS_TABLE = "hub_announcement_tag_links"
+    _ANN_BOOKMARKS_TABLE = "hub_announcement_bookmarks"
+    _ANN_POLLS_TABLE = "hub_announcement_polls"
+    _ANN_POLL_OPTIONS_TABLE = "hub_announcement_poll_options"
+    _ANN_POLL_VOTES_TABLE = "hub_announcement_poll_votes"
+    _REACTION_TYPES = {"like", "love", "laugh", "wow", "sad", "angry"}
+    _ANNOUNCEMENT_STATUSES = {"draft", "scheduled", "published", "archived"}
     _TASKS_TABLE = "hub_tasks"
     _TASK_PROJECTS_TABLE = "hub_task_projects"
     _TASK_OBJECTS_TABLE = "hub_task_objects"
     _TASK_REPORTS_TABLE = "hub_task_reports"
     _TASK_ATTACH_TABLE = "hub_task_attachments"
+    _TASK_ATTACHMENT_PREVIEWS_TABLE = "hub_task_attachment_previews"
     _TASK_COMMENT_READS_TABLE = "hub_task_comment_reads"
     _TASK_COMMENTS_TABLE = "hub_task_comments"
     _TASK_STATUS_LOG_TABLE = "hub_task_status_log"
@@ -366,26 +564,127 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         )
         self._app_schema = schema_name("app", self._database_url)
         self.announcement_attachments_root = self.data_dir / "hub_announcement_attachments"
+        self.announcement_comment_attachments_root = self.data_dir / "hub_announcement_comment_attachments"
         self.task_attachments_root = self.data_dir / "hub_task_attachments"
+        self.task_attachment_previews_root = self.data_dir / "hub_task_attachment_previews"
         self.announcement_attachments_root.mkdir(parents=True, exist_ok=True)
+        self.announcement_comment_attachments_root.mkdir(parents=True, exist_ok=True)
         self.task_attachments_root.mkdir(parents=True, exist_ok=True)
+        self.task_attachment_previews_root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._unread_counts_cache: dict[int, tuple[float, dict[str, int]]] = {}
         self._unread_counts_cache_lock = Lock()
-        self._unread_counts_cache_ttl_sec = 60.0
+        # Soft-cache with invalidation on writes; shorter TTL keeps badges fresher under load.
+        self._unread_counts_cache_ttl_sec = 15.0
+        # Short soft-cache for poll-heavy dashboard; invalidated with unread counts.
+        self._dashboard_cache: dict[tuple[int, int, int], tuple[float, dict[str, Any]]] = {}
+        self._dashboard_cache_lock = Lock()
+        self._dashboard_cache_ttl_sec = 8.0
+        # The absence widget has one shared 30-second cache key. Serialize its
+        # cold refresh so a dashboard burst does not repeat the same APP DB +
+        # address-book load in every request.
+        self._dashboard_absences_refresh_lock = Lock()
+        # Short soft-cache for default /hub/tasks polls (protects APP DB pool under many VU).
+        self._tasks_list_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+        self._tasks_list_cache_lock = Lock()
+        self._tasks_list_cache_ttl_sec = 3.0
+        # Short soft-cache for notifications/poll (items + unread_counts); invalidated with unread.
+        self._notifications_poll_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+        self._notifications_poll_cache_lock = Lock()
+        self._notifications_poll_cache_ttl_sec = 2.5
         self._task_due_ensure_last: dict[int, float] = {}
         self._task_due_ensure_lock = Lock()
         self._task_due_ensure_ttl_sec = 600.0
         self._user_directory_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._user_directory_cache_lock = Lock()
         self._user_directory_cache_ttl_sec = 300.0
+        # Hub write-path can defer web-push until after DB commit.
+        self._defer_hub_push = False
+        self._pending_hub_push_jobs: list[dict[str, Any]] = []
+        # SQLite/dev: status-log DDL once per process; PostgreSQL never DDLs here.
+        self._task_status_log_ready = False
+        self._task_status_log_ready_lock = Lock()
+        # TEST/DIAGNOSTIC ONLY (PR1b A/B). Never expose via HTTP/API/env user input.
+        # Forced hot-path DDL is refused when config.app.is_production.
+        self._status_log_force_ddl_every_call = False
         if self._use_app_db and self._database_url:
             initialize_app_schema(self._database_url)
         self._ensure_schema()
 
+    def _flush_pending_hub_push(self) -> int:
+        jobs = list(self._pending_hub_push_jobs)
+        self._pending_hub_push_jobs = []
+        return self._schedule_hub_push_jobs(jobs)
+
+    @staticmethod
+    def _deliver_hub_push_job(job: dict[str, Any]) -> None:
+        try:
+            app_push_service.send_notification(**job)
+        except Exception:
+            logger.warning(
+                "Failed to send deferred hub push recipient_user_id=%s channel=%s tag=%s",
+                job.get("recipient_user_id"),
+                job.get("channel"),
+                job.get("tag"),
+                exc_info=True,
+            )
+
+    def _schedule_hub_push_jobs(self, jobs: list[dict[str, Any]]) -> int:
+        scheduled = 0
+        for job in jobs:
+            try:
+                _HUB_PUSH_EXECUTOR.submit(self._deliver_hub_push_job, dict(job))
+                scheduled += 1
+            except RuntimeError:
+                logger.warning(
+                    "Failed to schedule hub push recipient_user_id=%s channel=%s tag=%s",
+                    job.get("recipient_user_id"),
+                    job.get("channel"),
+                    job.get("tag"),
+                    exc_info=True,
+                )
+        return scheduled
+
+    @contextmanager
+    def _hub_push_deferred(self):
+        previous = bool(self._defer_hub_push)
+        self._defer_hub_push = True
+        flush_stats = {"push_jobs": 0, "push_flush_ms": 0.0}
+        try:
+            yield flush_stats
+        finally:
+            self._defer_hub_push = previous
+            if not self._defer_hub_push:
+                flush_started = time.perf_counter()
+                flush_stats["push_jobs"] = self._flush_pending_hub_push()
+                flush_stats["push_flush_ms"] = self._elapsed_ms(flush_started)
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        return round((time.perf_counter() - started_at) * 1000.0, 1)
+
+    def _log_task_write_timing(self, op: str, *, started_at: float, stages: dict[str, float], **extra: Any) -> None:
+        payload = " ".join(f"{key}={value}" for key, value in extra.items() if value is not None)
+        stage_payload = " ".join(f"{key}={value:.1f}" for key, value in stages.items())
+        logger.info(
+            "hub.task.%s took_ms=%.1f %s %s",
+            op,
+            self._elapsed_ms(started_at),
+            stage_payload,
+            payload,
+        )
+        try:
+            from backend.services.sql_query_counter import note_hub_stage_timing
+
+            note_hub_stage_timing(op, stages=stages, **extra)
+        except Exception:
+            pass
+
     @contextmanager
     def _db_conn(self, *, write: bool = False):
-        if self._use_app_db and not write:
+        # APP/PostgreSQL already serializes via transactions; global RLock stampedes
+        # chat fan-out and hub HTTP under concurrent writes.
+        if self._use_app_db:
             with self._connect() as conn:
                 yield conn
         else:
@@ -519,18 +818,32 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             )
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return conn
+        return _CountingSqliteConnection(conn)
 
     def _hub_table_names(self) -> set[str]:
         return {
             self._ANN_TABLE,
             self._ANN_READS_TABLE,
             self._ANN_ATTACH_TABLE,
+            self._ANN_LIKES_TABLE,
+            self._ANN_COMMENTS_TABLE,
+            self._ANN_REACTIONS_TABLE,
+            self._ANN_COMMENT_REACTIONS_TABLE,
+            self._ANN_COMMENT_ATTACH_TABLE,
+            self._ANN_COMMENT_MENTIONS_TABLE,
+            self._ANN_CATEGORIES_TABLE,
+            self._ANN_TAGS_TABLE,
+            self._ANN_TAG_LINKS_TABLE,
+            self._ANN_BOOKMARKS_TABLE,
+            self._ANN_POLLS_TABLE,
+            self._ANN_POLL_OPTIONS_TABLE,
+            self._ANN_POLL_VOTES_TABLE,
             self._TASKS_TABLE,
             self._TASK_PROJECTS_TABLE,
             self._TASK_OBJECTS_TABLE,
             self._TASK_REPORTS_TABLE,
             self._TASK_ATTACH_TABLE,
+            self._TASK_ATTACHMENT_PREVIEWS_TABLE,
             self._TASK_COMMENT_READS_TABLE,
             self._TASK_COMMENTS_TABLE,
             self._TASK_STATUS_LOG_TABLE,
@@ -550,6 +863,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         return str(resolved_engine.dialect.name).lower() == "postgresql"
 
     def _verify_production_schema(self, engine) -> None:
+        # Back-compat alias: same read-only fail-fast validation for any PG app DB.
+        self._verify_hub_schema(engine)
+
+    def _verify_hub_schema(self, engine) -> None:
         try:
             inspector = inspect(engine)
             schema = self._app_schema
@@ -584,7 +901,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             raise
         except Exception as exc:
             raise HubSchemaConfigurationError(
-                "Production hub schema could not be inspected; "
+                "Hub schema could not be inspected; "
                 "verify APP_DATABASE_URL and backend Alembic migrations."
             ) from exc
 
@@ -597,8 +914,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if missing_indexes:
                 details.append("missing indexes: " + ", ".join(missing_indexes))
             raise HubSchemaConfigurationError(
-                "Production hub schema is incomplete; "
-                "run backend Alembic migrations before startup. "
+                "Hub PostgreSQL schema is incomplete; "
+                "run backend Alembic migrations before startup "
+                "(request path will not create hub_task_status_log). "
                 + "; ".join(details)
             )
 
@@ -925,6 +1243,125 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if "expires_at" not in columns:
             conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN expires_at TEXT NULL")
 
+        additions = {
+            "status": "TEXT NOT NULL DEFAULT 'published'",
+            "comments_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "reactions_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "publication_notified_at": "TEXT NULL",
+            "category_id": "TEXT NULL",
+        }
+        columns = self._table_columns(conn, self._ANN_TABLE)
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN {name} {ddl}")
+
+    def _ensure_feed_social_schema(self, conn: sqlite3.Connection) -> None:
+        attachment_columns = self._table_columns(conn, self._ANN_ATTACH_TABLE)
+        if "sort_order" not in attachment_columns:
+            conn.execute(f"ALTER TABLE {self._ANN_ATTACH_TABLE} ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        if "is_cover" not in attachment_columns:
+            conn.execute(f"ALTER TABLE {self._ANN_ATTACH_TABLE} ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0")
+
+        comment_columns = self._table_columns(conn, self._ANN_COMMENTS_TABLE)
+        comment_additions = {
+            "parent_comment_id": "TEXT NULL",
+            "root_comment_id": "TEXT NULL",
+            "reply_to_user_id": "INTEGER NULL",
+            "reply_to_username": "TEXT NOT NULL DEFAULT ''",
+            "deleted_at": "TEXT NULL",
+            "deleted_by_user_id": "INTEGER NULL",
+            "change_version": "INTEGER NOT NULL DEFAULT 1",
+        }
+        for name, ddl in comment_additions.items():
+            if name not in comment_columns:
+                conn.execute(f"ALTER TABLE {self._ANN_COMMENTS_TABLE} ADD COLUMN {name} {ddl}")
+
+        conn.executescript(f"""
+            CREATE TABLE IF NOT EXISTS {self._ANN_REACTIONS_TABLE} (
+                announcement_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+                reaction_type TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
+                full_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, PRIMARY KEY (announcement_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_COMMENT_REACTIONS_TABLE} (
+                comment_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+                reaction_type TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
+                full_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, PRIMARY KEY (comment_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_COMMENT_ATTACH_TABLE} (
+                id TEXT PRIMARY KEY, comment_id TEXT NOT NULL, announcement_id TEXT NOT NULL,
+                file_name TEXT NOT NULL, file_path TEXT NOT NULL, file_mime TEXT NULL,
+                file_size INTEGER NOT NULL, uploaded_by_user_id INTEGER NOT NULL, uploaded_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_COMMENT_MENTIONS_TABLE} (
+                comment_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '', full_name TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (comment_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_CATEGORIES_TABLE} (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1, created_by_user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_TAGS_TABLE} (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_TAG_LINKS_TABLE} (
+                announcement_id TEXT NOT NULL, tag_id TEXT NOT NULL,
+                PRIMARY KEY (announcement_id, tag_id)
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_BOOKMARKS_TABLE} (
+                announcement_id TEXT NOT NULL, user_id INTEGER NOT NULL, created_at TEXT NOT NULL,
+                PRIMARY KEY (announcement_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_POLLS_TABLE} (
+                id TEXT PRIMARY KEY, announcement_id TEXT NOT NULL UNIQUE,
+                question TEXT NOT NULL DEFAULT '', allows_multiple INTEGER NOT NULL DEFAULT 0,
+                is_anonymous INTEGER NOT NULL DEFAULT 0, closes_at TEXT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_POLL_OPTIONS_TABLE} (
+                id TEXT PRIMARY KEY, poll_id TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS {self._ANN_POLL_VOTES_TABLE} (
+                poll_id TEXT NOT NULL, option_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL, PRIMARY KEY (poll_id, option_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hub_announcements_status_due
+                ON {self._ANN_TABLE}(status, published_from);
+            CREATE INDEX IF NOT EXISTS idx_hub_announcement_reactions_announcement
+                ON {self._ANN_REACTIONS_TABLE}(announcement_id, reaction_type);
+            CREATE INDEX IF NOT EXISTS idx_hub_comment_reactions_comment
+                ON {self._ANN_COMMENT_REACTIONS_TABLE}(comment_id, reaction_type);
+            CREATE INDEX IF NOT EXISTS idx_hub_comments_root
+                ON {self._ANN_COMMENTS_TABLE}(announcement_id, root_comment_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_hub_comment_attachments_comment
+                ON {self._ANN_COMMENT_ATTACH_TABLE}(comment_id, uploaded_at);
+            CREATE INDEX IF NOT EXISTS idx_hub_bookmarks_user
+                ON {self._ANN_BOOKMARKS_TABLE}(user_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_hub_tag_links_tag
+                ON {self._ANN_TAG_LINKS_TABLE}(tag_id, announcement_id);
+            CREATE INDEX IF NOT EXISTS idx_hub_poll_options_poll
+                ON {self._ANN_POLL_OPTIONS_TABLE}(poll_id, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_hub_poll_votes_poll_user
+                ON {self._ANN_POLL_VOTES_TABLE}(poll_id, user_id);
+            CREATE INDEX IF NOT EXISTS idx_hub_poll_votes_option
+                ON {self._ANN_POLL_VOTES_TABLE}(option_id);
+        """)
+        conn.execute(
+            f"""INSERT INTO {self._ANN_REACTIONS_TABLE}
+                (announcement_id, user_id, reaction_type, username, full_name, created_at, updated_at)
+                SELECT announcement_id, user_id, 'like', username, full_name, created_at, created_at
+                FROM {self._ANN_LIKES_TABLE}
+                WHERE 1 = 1
+                ON CONFLICT(announcement_id, user_id) DO NOTHING"""
+        )
+        conn.execute(f"UPDATE {self._ANN_TABLE} SET status = 'archived' WHERE is_active = 0 AND status = 'published'")
+        conn.execute(f"UPDATE {self._ANN_TABLE} SET status = 'scheduled' WHERE is_active = 1 AND published_from IS NOT NULL AND published_from > ? AND status = 'published'", (_utc_now_iso(),))
+        conn.execute(f"UPDATE {self._ANN_TABLE} SET publication_notified_at = COALESCE(publication_notified_at, published_at, updated_at) WHERE status IN ('published', 'scheduled')")
+
     def _ensure_announcement_read_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._ANN_READS_TABLE)
         if "seen_version" not in columns:
@@ -973,9 +1410,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 ON {self._TASK_COMMENT_READS_TABLE}(task_id, user_id)
         """)
 
-    def _ensure_task_status_log_table(self, conn: sqlite3.Connection) -> None:
-        if self._is_production_postgres_app_db():
-            return
+    def _uses_postgres_app_db(self) -> bool:
+        if not (self._use_app_db and self._database_url):
+            return False
+        try:
+            return str(get_app_engine(self._database_url).dialect.name).lower() == "postgresql"
+        except Exception:
+            return False
+
+    def _run_task_status_log_ddl(self, conn: sqlite3.Connection) -> None:
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {self._TASK_STATUS_LOG_TABLE} (
                 id TEXT PRIMARY KEY,
@@ -992,13 +1435,97 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 ON {self._TASK_STATUS_LOG_TABLE}(task_id, changed_at ASC)
         """)
 
+    def _ensure_task_status_log_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure status-log table exists.
+
+        PostgreSQL app DB: never DDL in request path — table/index come from Alembic
+        (`20260327_0002_hub_init`). Missing schema fails at startup validation.
+        SQLite/dev: CREATE TABLE/INDEX at most once per process (thread-safe memoize).
+        """
+        ensure_started = time.perf_counter()
+        try:
+            # TEST/DIAGNOSTIC ONLY — reproduce pre-fix DDL-every-transition behaviour.
+            if bool(getattr(self, "_status_log_force_ddl_every_call", False)):
+                if config.app.is_production:
+                    raise RuntimeError(
+                        "_status_log_force_ddl_every_call is test/diagnostic only and "
+                        "is forbidden when APP_ENV is production"
+                    )
+                logger.warning(
+                    "hub.status_log diagnostic force DDL enabled "
+                    "(test/bench only; never expose via HTTP)"
+                )
+                self._run_task_status_log_ddl(conn)
+                return
+            # Any PostgreSQL — production or development — skips hot-path DDL.
+            if self._uses_postgres_app_db() or self._is_production_postgres_app_db():
+                return
+            if self._task_status_log_ready:
+                return
+            with self._task_status_log_ready_lock:
+                if self._task_status_log_ready:
+                    return
+                self._run_task_status_log_ddl(conn)
+                self._task_status_log_ready = True
+        finally:
+            try:
+                from backend.services.sql_query_counter import note_diag_timing
+
+                note_diag_timing("status_log_ensure_ms", self._elapsed_ms(ensure_started))
+            except Exception:
+                pass
+
+    def prepare_task_status_log_schema(self) -> dict[str, Any]:
+        """Bench/diagnostic one-shot prepare — NOT for HTTP request handlers.
+
+        Call only from offline scripts (e.g. bench_hub_task_workflow). Concurrent
+        HTTP traffic must never invoke this; PostgreSQL relies on Alembic + startup
+        read-only schema validation.
+        """
+        started = time.perf_counter()
+        if config.app.is_production and bool(getattr(self, "_status_log_force_ddl_every_call", False)):
+            raise RuntimeError(
+                "prepare_task_status_log_schema refused: force DDL is forbidden in production"
+            )
+        ran_ddl = False
+        if self._uses_postgres_app_db():
+            engine = get_app_engine(self._database_url)
+            self._verify_hub_schema(engine)
+            self._task_status_log_ready = True
+            return {
+                "backend": "postgresql",
+                "ran_ddl": False,
+                "ready": True,
+                "validated": True,
+                "took_ms": self._elapsed_ms(started),
+            }
+        with self._db_conn(write=True) as conn:
+            before = bool(self._task_status_log_ready)
+            self._ensure_task_status_log_table(conn)
+            conn.commit()
+            ran_ddl = (not before) and bool(self._task_status_log_ready)
+        return {
+            "backend": "sqlite",
+            "ran_ddl": ran_ddl,
+            "ready": bool(self._task_status_log_ready),
+            "validated": False,
+            "took_ms": self._elapsed_ms(started),
+        }
+
     def _log_status_change(self, conn: sqlite3.Connection, *, task_id: str, old_status: str, new_status: str, user_id: int, username: str) -> None:
         import uuid as _uuid
         now_iso = _utc_now_iso()
+        insert_started = time.perf_counter()
         conn.execute(
             f"INSERT INTO {self._TASK_STATUS_LOG_TABLE} (id, task_id, old_status, new_status, changed_by_user_id, changed_by_username, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(_uuid.uuid4()), task_id, old_status, new_status, user_id, username, now_iso),
         )
+        try:
+            from backend.services.sql_query_counter import note_diag_timing
+
+            note_diag_timing("status_log_insert_ms", self._elapsed_ms(insert_started))
+        except Exception:
+            pass
 
     def list_task_comments(
         self,
@@ -1114,8 +1641,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _ensure_schema(self) -> None:
         if self._use_app_db and self._database_url:
             engine = get_app_engine(self._database_url)
-            if self._is_production_postgres_app_db(engine):
-                self._verify_production_schema(engine)
+            # Any PostgreSQL: read-only validation + fail-fast. No runtime DDL.
+            if str(engine.dialect.name).lower() == "postgresql":
+                self._verify_hub_schema(engine)
+                self._task_status_log_ready = True
                 return
 
         with self._lock, self._connect() as conn:
@@ -1206,6 +1735,42 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     uploaded_by_username TEXT NOT NULL DEFAULT '',
                     uploaded_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS {self._ANN_LIKES_TABLE} (
+                    announcement_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    full_name TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (announcement_id, user_id)
+                );
+                CREATE TABLE IF NOT EXISTS {self._ANN_COMMENTS_TABLE} (
+                    id TEXT PRIMARY KEY,
+                    announcement_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    full_name TEXT NOT NULL DEFAULT '',
+                    body TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS {self._TASK_ATTACHMENT_PREVIEWS_TABLE} (
+                    attachment_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL,
+                    lease_owner TEXT NULL,
+                    lease_expires_at TEXT NULL,
+                    artifact_rel_path TEXT NOT NULL DEFAULT '',
+                    pdf_filename TEXT NOT NULL DEFAULT '',
+                    source_kind TEXT NOT NULL DEFAULT '',
+                    page_count INTEGER NOT NULL DEFAULT 0,
+                    sheets_json TEXT NOT NULL DEFAULT '[]',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    ready_at TEXT NULL
+                );
                 CREATE TABLE IF NOT EXISTS {self._TASK_COMMENT_READS_TABLE} (
                     task_id TEXT NOT NULL,
                     user_id INTEGER NOT NULL,
@@ -1251,14 +1816,29 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     ON {self._ANN_TABLE}(is_active, published_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_{self._ANN_ATTACH_TABLE}_announcement
                     ON {self._ANN_ATTACH_TABLE}(announcement_id, uploaded_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_{self._ANN_LIKES_TABLE}_announcement
+                    ON {self._ANN_LIKES_TABLE}(announcement_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_{self._ANN_COMMENTS_TABLE}_announcement
+                    ON {self._ANN_COMMENTS_TABLE}(announcement_id, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_assignee
                     ON {self._TASKS_TABLE}(assignee_user_id, status, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_{self._TASK_ATTACH_TABLE}_task
                     ON {self._TASK_ATTACH_TABLE}(task_id, uploaded_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_{self._TASK_ATTACHMENT_PREVIEWS_TABLE}_status_next_attempt
+                    ON {self._TASK_ATTACHMENT_PREVIEWS_TABLE}(status, next_attempt_at);
+                CREATE INDEX IF NOT EXISTS idx_{self._TASK_ATTACHMENT_PREVIEWS_TABLE}_lease_expires
+                    ON {self._TASK_ATTACHMENT_PREVIEWS_TABLE}(lease_expires_at);
+                CREATE INDEX IF NOT EXISTS idx_{self._TASK_ATTACHMENT_PREVIEWS_TABLE}_task
+                    ON {self._TASK_ATTACHMENT_PREVIEWS_TABLE}(task_id);
                 CREATE INDEX IF NOT EXISTS idx_{self._TASK_COMMENT_READS_TABLE}_task
                     ON {self._TASK_COMMENT_READS_TABLE}(task_id, user_id);
                 CREATE INDEX IF NOT EXISTS idx_{self._NOTIF_TABLE}_recipient
                     ON {self._NOTIF_TABLE}(recipient_user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_{self._NOTIF_TABLE}_entity
+                    ON {self._NOTIF_TABLE}(entity_type, entity_id);
+                CREATE INDEX IF NOT EXISTS idx_{self._NOTIF_TABLE}_retention
+                    ON {self._NOTIF_TABLE}(entity_type, created_at, id)
+                    WHERE recipient_user_id IS NOT NULL;
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_{self._TASK_EMAIL_OUTBOX_TABLE}_dedupe
                     ON {self._TASK_EMAIL_OUTBOX_TABLE}(dedupe_key);
                 CREATE INDEX IF NOT EXISTS idx_{self._TASK_EMAIL_OUTBOX_TABLE}_status
@@ -1266,6 +1846,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 """
             )
             self._ensure_announcement_columns(conn)
+            self._ensure_feed_social_schema(conn)
             self._ensure_announcement_read_columns(conn)
             self._ensure_task_controller_columns(conn)
             self._ensure_task_priority_column(conn)
@@ -1489,6 +2070,19 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _is_admin_role(value: Any) -> bool:
         return _normalize_text(value).lower() == "admin"
 
+    @staticmethod
+    def _user_can_moderate_announcements(user: dict[str, Any]) -> bool:
+        if _normalize_text(user.get("role")).lower() == "admin":
+            return True
+        if PERM_ANNOUNCEMENTS_MODERATE in set(user.get("permissions") or []):
+            return True
+        return authorization_service.has_permission(
+            user.get("role"),
+            PERM_ANNOUNCEMENTS_MODERATE,
+            use_custom_permissions=bool(user.get("use_custom_permissions", False)),
+            custom_permissions=user.get("custom_permissions", []),
+        )
+
     def _active_users(self) -> list[dict[str, Any]]:
         from backend.services.ad_users_service import is_hub_service_account_login
 
@@ -1646,6 +2240,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if not normalized_ids:
             return {
                 "attachment_counts": {},
+                "report_counts": {},
                 "comment_counts": {},
                 "latest_comments": {},
                 "last_seen_at": {},
@@ -1656,6 +2251,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             f"""
             SELECT task_id, COUNT(*) AS c
             FROM {self._TASK_ATTACH_TABLE}
+            WHERE task_id IN ({placeholders})
+            GROUP BY task_id
+            """,
+            tuple(normalized_ids),
+        ).fetchall()
+        report_rows = conn.execute(
+            f"""
+            SELECT task_id, COUNT(*) AS c
+            FROM {self._TASK_REPORTS_TABLE}
             WHERE task_id IN ({placeholders})
             GROUP BY task_id
             """,
@@ -1703,6 +2307,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             "attachment_counts": {
                 _normalize_text(row["task_id"]): self._as_int(row["c"])
                 for row in attach_rows
+            },
+            "report_counts": {
+                _normalize_text(row["task_id"]): self._as_int(row["c"])
+                for row in report_rows
             },
             "comment_counts": {
                 _normalize_text(row["task_id"]): self._as_int(row["c"])
@@ -1834,22 +2442,73 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         objects_by_id: dict[str, dict[str, Any]],
         departments_by_id: dict[str, Optional[dict[str, Any]]],
     ) -> dict[str, Any]:
-        item = dict(task_row)
-        task_id = _normalize_text(item["id"])
-        item["latest_report"] = None
-        item["attachments"] = []
-        item["attachments_count"] = self._as_int(batch_ctx["attachment_counts"].get(task_id, 0))
-        item["is_overdue"] = self._is_task_overdue(item.get("due_at"), item.get("status"))
-        item.update(self._comment_summary_from_batch(task_id=task_id, batch_ctx=batch_ctx))
-        project_id = _normalize_text(item.get("project_id"))
-        object_id = _normalize_text(item.get("object_id"))
-        department_id = _normalize_text(item.get("department_id"))
-        return self._apply_task_derived_fields(
-            item,
-            project=projects_by_id.get(project_id) if project_id else None,
-            task_object=objects_by_id.get(object_id) if object_id else None,
-            department=departments_by_id.get(department_id) if department_id else None,
-        )
+        raw = dict(task_row)
+        task_id = _normalize_text(raw.get("id"))
+        project_id = _normalize_text(raw.get("project_id"))
+        object_id = _normalize_text(raw.get("object_id"))
+        department_id = _normalize_text(raw.get("department_id"))
+        project = projects_by_id.get(project_id) if project_id else None
+        task_object = objects_by_id.get(object_id) if object_id else None
+        department = departments_by_id.get(department_id) if department_id else None
+        checklist_items = self._normalize_checklist_items(raw.get("checklist_items"))
+        completed_at, completed_at_source = self._derive_completed_tracking(raw)
+        comment_summary = self._comment_summary_from_batch(task_id=task_id, batch_ctx=batch_ctx)
+        item = {
+            "id": task_id,
+            "title": _normalize_text(raw.get("title")),
+            "status": _normalize_text(raw.get("status")),
+            "priority": _normalize_text(raw.get("priority"), "normal"),
+            "due_at": _normalize_text(raw.get("due_at")) or None,
+            "email_deadline_remind_hours": raw.get("email_deadline_remind_hours"),
+            "assignee_user_id": self._as_int(raw.get("assignee_user_id")),
+            "assignee_username": _normalize_text(raw.get("assignee_username")),
+            "assignee_full_name": _normalize_text(raw.get("assignee_full_name")),
+            "controller_user_id": self._as_int(raw.get("controller_user_id")),
+            "controller_username": _normalize_text(raw.get("controller_username")),
+            "controller_full_name": _normalize_text(raw.get("controller_full_name")),
+            "created_by_user_id": self._as_int(raw.get("created_by_user_id")),
+            "created_by_username": _normalize_text(raw.get("created_by_username")),
+            "created_by_full_name": _normalize_text(raw.get("created_by_full_name")),
+            "created_at": _normalize_text(raw.get("created_at")),
+            "updated_at": _normalize_text(raw.get("updated_at")),
+            "submitted_at": _normalize_text(raw.get("submitted_at")) or None,
+            "reviewed_at": _normalize_text(raw.get("reviewed_at")) or None,
+            "project_id": project_id or None,
+            "project_name": _normalize_text(project.get("name")) if project else "",
+            "object_id": object_id or None,
+            "object_name": _normalize_text(task_object.get("name")) if task_object else "",
+            "protocol_date": self._normalize_protocol_date(raw.get("protocol_date"))
+            or self._normalize_protocol_date(raw.get("created_at")),
+            "completed_at": completed_at,
+            "completed_at_source": completed_at_source,
+            "completed_on_time": self._completed_on_time(
+                completed_at=completed_at,
+                due_at=raw.get("due_at"),
+                status=raw.get("status"),
+            ),
+            "done_without_due": (
+                _normalize_text(raw.get("status")).lower() == "done"
+                and bool(completed_at)
+                and self._parse_iso_datetime(raw.get("due_at")) is None
+            ),
+            "department_id": department_id or None,
+            "department_name": _normalize_text((department or {}).get("name")),
+            "visibility_scope": normalize_visibility_scope(
+                raw.get("visibility_scope"),
+                default=VISIBILITY_PRIVATE,
+            ),
+            "observer_user_ids": self._normalize_observer_user_ids(raw.get("observer_user_ids")),
+            "is_overdue": self._is_task_overdue(raw.get("due_at"), raw.get("status")),
+            "attachments_count": self._as_int(batch_ctx.get("attachment_counts", {}).get(task_id, 0)),
+            "reports_count": self._as_int(batch_ctx.get("report_counts", {}).get(task_id, 0)),
+            "checklist_total": len(checklist_items),
+            "checklist_done": sum(1 for checklist_item in checklist_items if bool(checklist_item.get("done"))),
+            **comment_summary,
+        }
+        # Stable schema: never emit thick/detail-only keys from list DTO.
+        for forbidden in _TASK_LIST_FORBIDDEN_KEYS:
+            item.pop(forbidden, None)
+        return item
 
     def _get_task_comment_summary(
         self,
@@ -1987,6 +2646,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return False
         if is_admin or normalized_user_id == self._as_int(announcement.get("author_user_id")):
             return True
+        if _normalize_text(announcement.get("status"), "published").lower() != "published":
+            return False
         published_from = self._parse_iso_datetime(announcement.get("published_from"))
         expires_at = self._parse_iso_datetime(announcement.get("expires_at"))
         now_utc = datetime.now(timezone.utc)
@@ -1996,6 +2657,22 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return False
         if expires_at and expires_at <= now_utc:
             return False
+        audience_scope = _normalize_text(announcement.get("audience_scope"), "all").lower()
+        # Fast paths: avoid building the full recipient list (O(users)) on every row.
+        if audience_scope == "all":
+            return True
+        if audience_scope == "users":
+            audience_user_ids = set(self._unique_ints(self._json_load_list(announcement.get("audience_user_ids"))))
+            return normalized_user_id in audience_user_ids
+        if audience_scope == "roles":
+            audience_roles = {
+                _normalize_text(role).lower()
+                for role in self._unique_texts(self._json_load_list(announcement.get("audience_roles")))
+            }
+            if not audience_roles:
+                return False
+            viewer = self._users_by_id().get(normalized_user_id) or {}
+            return _normalize_text(viewer.get("role")).lower() in audience_roles
         return normalized_user_id in {
             self._as_int(item.get("id"))
             for item in self._announcement_recipient_users(announcement)
@@ -2023,6 +2700,232 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return ", ".join(labels)
         return "Для всех"
 
+    def _load_announcement_reads_for_user(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+    ) -> dict[str, Any]:
+        rows = conn.execute(
+            f"""
+            SELECT announcement_id, seen_version, acknowledged_version, acknowledged_at, read_at
+            FROM {self._ANN_READS_TABLE}
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ).fetchall()
+        result: dict[str, Any] = {}
+        for row in rows:
+            announcement_id = _normalize_text(row["announcement_id"] if not isinstance(row, dict) else row.get("announcement_id"))
+            if announcement_id:
+                result[announcement_id] = row
+        return result
+
+    def _load_announcement_attachment_counts(self, conn: sqlite3.Connection) -> dict[str, int]:
+        rows = conn.execute(
+            f"""
+            SELECT announcement_id, COUNT(*) AS c
+            FROM {self._ANN_ATTACH_TABLE}
+            GROUP BY announcement_id
+            """
+        ).fetchall()
+        result: dict[str, int] = {}
+        for row in rows:
+            announcement_id = _normalize_text(row["announcement_id"] if not isinstance(row, dict) else row.get("announcement_id"))
+            if announcement_id:
+                result[announcement_id] = self._as_int(row["c"] if not isinstance(row, dict) else row.get("c"))
+        return result
+
+    def _load_announcement_attachments_by_announcement(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, list[dict[str, Any]]]:
+        rows = conn.execute(
+            f"""
+            SELECT id, announcement_id, file_name, file_mime, file_size,
+                   uploaded_by_user_id, uploaded_by_username, uploaded_at, sort_order, is_cover
+            FROM {self._ANN_ATTACH_TABLE}
+            ORDER BY sort_order ASC, uploaded_at ASC
+            """
+        ).fetchall()
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = self._attachment_row_to_dict(row)
+            announcement_id = _normalize_text(item.get("announcement_id"))
+            if announcement_id:
+                result.setdefault(announcement_id, []).append(item)
+        return result
+
+    @staticmethod
+    def _announcement_attachment_is_image(item: dict[str, Any]) -> bool:
+        mime = _normalize_text(item.get("file_mime")).lower()
+        if mime.startswith("image/"):
+            return True
+        return Path(_normalize_text(item.get("file_name"))).suffix.lower() in {
+            ".avif",
+            ".gif",
+            ".jpeg",
+            ".jpg",
+            ".png",
+            ".webp",
+        }
+
+    def _load_announcement_cover_attachments(self, conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+        rows = conn.execute(
+            f"""
+            SELECT id, announcement_id, file_name, file_mime, file_size,
+                   uploaded_by_user_id, uploaded_by_username, uploaded_at, sort_order, is_cover
+            FROM {self._ANN_ATTACH_TABLE}
+            ORDER BY is_cover DESC, sort_order ASC, uploaded_at ASC
+            """
+        ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = self._attachment_row_to_dict(row)
+            announcement_id = _normalize_text(item.get("announcement_id"))
+            if announcement_id and announcement_id not in result and self._announcement_attachment_is_image(item):
+                result[announcement_id] = item
+        return result
+
+    def _load_announcement_social_state(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        viewer_user_id: int,
+    ) -> tuple[dict[str, dict[str, int]], dict[str, int], dict[str, str], set[str]]:
+        reaction_rows = conn.execute(
+            f"SELECT announcement_id, reaction_type, COUNT(*) AS c FROM {self._ANN_REACTIONS_TABLE} GROUP BY announcement_id, reaction_type"
+        ).fetchall()
+        comment_rows = conn.execute(
+            f"SELECT announcement_id, COUNT(*) AS c FROM {self._ANN_COMMENTS_TABLE} WHERE deleted_at IS NULL GROUP BY announcement_id"
+        ).fetchall()
+        viewer_rows = conn.execute(
+            f"SELECT announcement_id, reaction_type FROM {self._ANN_REACTIONS_TABLE} WHERE user_id = ?",
+            (self._as_int(viewer_user_id),),
+        ).fetchall()
+        bookmark_rows = conn.execute(
+            f"SELECT announcement_id FROM {self._ANN_BOOKMARKS_TABLE} WHERE user_id = ?",
+            (self._as_int(viewer_user_id),),
+        ).fetchall()
+        reactions: dict[str, dict[str, int]] = {}
+        for row in reaction_rows:
+            announcement_id = _normalize_text(row["announcement_id"])
+            reaction_type = _normalize_text(row["reaction_type"]).lower()
+            if announcement_id and reaction_type in self._REACTION_TYPES:
+                reactions.setdefault(announcement_id, {})[reaction_type] = self._as_int(row["c"])
+        comments = {
+            _normalize_text(row["announcement_id"]): self._as_int(row["c"])
+            for row in comment_rows
+            if _normalize_text(row["announcement_id"])
+        }
+        viewer_reactions = {
+            _normalize_text(row["announcement_id"]): _normalize_text(row["reaction_type"]).lower()
+            for row in viewer_rows
+            if _normalize_text(row["announcement_id"])
+        }
+        bookmarks = {
+            _normalize_text(row["announcement_id"])
+            for row in bookmark_rows
+            if _normalize_text(row["announcement_id"])
+        }
+        return reactions, comments, viewer_reactions, bookmarks
+
+    def _load_announcement_taxonomy_state(
+        self,
+        conn: sqlite3.Connection,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+        category_rows = conn.execute(
+            f"""SELECT a.id AS announcement_id, c.id, c.name, c.slug
+                FROM {self._ANN_TABLE} a
+                JOIN {self._ANN_CATEGORIES_TABLE} c ON c.id = a.category_id"""
+        ).fetchall()
+        tag_rows = conn.execute(
+            f"""SELECT l.announcement_id, t.id, t.name, t.slug
+                FROM {self._ANN_TAG_LINKS_TABLE} l
+                JOIN {self._ANN_TAGS_TABLE} t ON t.id = l.tag_id
+                ORDER BY t.name ASC"""
+        ).fetchall()
+        categories = {
+            _normalize_text(row["announcement_id"]): {
+                "id": _normalize_text(row["id"]),
+                "name": _normalize_text(row["name"]),
+                "slug": _normalize_text(row["slug"]),
+            }
+            for row in category_rows
+        }
+        tags: dict[str, list[dict[str, Any]]] = {}
+        for row in tag_rows:
+            announcement_id = _normalize_text(row["announcement_id"])
+            tags.setdefault(announcement_id, []).append({
+                "id": _normalize_text(row["id"]),
+                "name": _normalize_text(row["name"]),
+                "slug": _normalize_text(row["slug"]),
+            })
+        return categories, tags
+
+    def _load_announcement_polls(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        viewer_user_id: int,
+    ) -> dict[str, dict[str, Any]]:
+        poll_rows = conn.execute(
+            f"SELECT * FROM {self._ANN_POLLS_TABLE}"
+        ).fetchall()
+        if not poll_rows:
+            return {}
+        option_rows = conn.execute(
+            f"""SELECT o.id, o.poll_id, o.text, o.sort_order, COUNT(v.user_id) AS votes_count
+                FROM {self._ANN_POLL_OPTIONS_TABLE} o
+                LEFT JOIN {self._ANN_POLL_VOTES_TABLE} v ON v.option_id = o.id
+                GROUP BY o.id, o.poll_id, o.text, o.sort_order
+                ORDER BY o.poll_id, o.sort_order, o.id"""
+        ).fetchall()
+        viewer_rows = conn.execute(
+            f"SELECT poll_id, option_id FROM {self._ANN_POLL_VOTES_TABLE} WHERE user_id = ?",
+            (self._as_int(viewer_user_id),),
+        ).fetchall()
+        voter_rows = conn.execute(
+            f"SELECT poll_id, COUNT(DISTINCT user_id) AS c FROM {self._ANN_POLL_VOTES_TABLE} GROUP BY poll_id"
+        ).fetchall()
+        viewer_votes: dict[str, set[str]] = {}
+        for row in viewer_rows:
+            viewer_votes.setdefault(_normalize_text(row["poll_id"]), set()).add(_normalize_text(row["option_id"]))
+        voter_counts = {_normalize_text(row["poll_id"]): self._as_int(row["c"]) for row in voter_rows}
+        options: dict[str, list[dict[str, Any]]] = {}
+        for row in option_rows:
+            poll_id = _normalize_text(row["poll_id"])
+            option_id = _normalize_text(row["id"])
+            options.setdefault(poll_id, []).append({
+                "id": option_id,
+                "text": _normalize_text(row["text"]),
+                "sort_order": self._as_int(row["sort_order"]),
+                "votes_count": self._as_int(row["votes_count"]),
+                "viewer_voted": option_id in viewer_votes.get(poll_id, set()),
+            })
+        now = datetime.now(timezone.utc)
+        result: dict[str, dict[str, Any]] = {}
+        for row in poll_rows:
+            item = dict(row)
+            poll_id = _normalize_text(item.get("id"))
+            poll_options = options.get(poll_id, [])
+            closes_at = self._parse_iso_datetime(item.get("closes_at"))
+            viewer_option_ids = sorted(viewer_votes.get(poll_id, set()))
+            result[_normalize_text(item.get("announcement_id"))] = {
+                "id": poll_id,
+                "question": _normalize_text(item.get("question")),
+                "allows_multiple": bool(self._as_int(item.get("allows_multiple"))),
+                "is_anonymous": bool(self._as_int(item.get("is_anonymous"))),
+                "closes_at": _normalize_text(item.get("closes_at")) or None,
+                "is_closed": bool(closes_at and closes_at <= now),
+                "options": poll_options,
+                "viewer_option_ids": viewer_option_ids,
+                "has_voted": bool(viewer_option_ids),
+                "total_votes": sum(self._as_int(option.get("votes_count")) for option in poll_options),
+                "total_voters": voter_counts.get(poll_id, 0),
+            }
+        return result
+
     def _build_announcement_item(
         self,
         conn: sqlite3.Connection,
@@ -2032,6 +2935,20 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         is_admin: bool = False,
         include_body: bool = True,
         include_hidden_for_manager: bool = False,
+        read_row: sqlite3.Row | dict[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        attachments_count: int | None = None,
+        include_attachments: bool = True,
+        likes_count: int = 0,
+        comments_count: int = 0,
+        viewer_has_liked: bool = False,
+        reaction_counts: dict[str, int] | None = None,
+        viewer_reaction: str = "",
+        viewer_bookmarked: bool = False,
+        category: dict[str, Any] | None = None,
+        tags: list[dict[str, Any]] | None = None,
+        cover_attachment: dict[str, Any] | None = None,
+        poll: dict[str, Any] | None = None,
     ) -> Optional[dict[str, Any]]:
         item = dict(announcement_row)
         normalized_viewer_id = self._as_int(viewer_user_id)
@@ -2040,21 +2957,36 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if not (include_hidden_for_manager and can_manage):
                 return None
         current_version = max(1, self._as_int(item.get("version"), 1))
-        read_row = conn.execute(
-            f"""
-            SELECT seen_version, acknowledged_version, acknowledged_at, read_at
-            FROM {self._ANN_READS_TABLE}
-            WHERE announcement_id = ? AND user_id = ?
-            """,
-            (_normalize_text(item.get("id")), normalized_viewer_id),
-        ).fetchone()
-        seen_version = current_version if normalized_viewer_id == self._as_int(item.get("author_user_id")) else self._as_int(read_row["seen_version"] if read_row else 0)
-        acknowledged_version = current_version if normalized_viewer_id == self._as_int(item.get("author_user_id")) else self._as_int(read_row["acknowledged_version"] if read_row else 0)
+        announcement_id = _normalize_text(item.get("id"))
+        resolved_read_row = read_row
+        if resolved_read_row is None:
+            resolved_read_row = conn.execute(
+                f"""
+                SELECT seen_version, acknowledged_version, acknowledged_at, read_at
+                FROM {self._ANN_READS_TABLE}
+                WHERE announcement_id = ? AND user_id = ?
+                """,
+                (announcement_id, normalized_viewer_id),
+            ).fetchone()
+        seen_version = current_version if normalized_viewer_id == self._as_int(item.get("author_user_id")) else self._as_int(resolved_read_row["seen_version"] if resolved_read_row else 0)
+        acknowledged_version = current_version if normalized_viewer_id == self._as_int(item.get("author_user_id")) else self._as_int(resolved_read_row["acknowledged_version"] if resolved_read_row else 0)
         requires_ack = bool(self._as_int(item.get("requires_ack")))
         is_unread = seen_version < current_version
         is_updated = seen_version > 0 and seen_version < current_version
         is_ack_pending = requires_ack and acknowledged_version < current_version and normalized_viewer_id != self._as_int(item.get("author_user_id"))
-        attachments = self._list_announcement_attachments(conn, _normalize_text(item.get("id")))
+        if include_attachments:
+            resolved_attachments = (
+                attachments
+                if attachments is not None
+                else self._list_announcement_attachments(conn, announcement_id)
+            )
+        else:
+            resolved_attachments = []
+        resolved_attachments_count = (
+            self._as_int(attachments_count)
+            if attachments_count is not None
+            else len(resolved_attachments)
+        )
         pinned_until = self._parse_iso_datetime(item.get("pinned_until"))
         now_utc = datetime.now(timezone.utc)
         item["audience_scope"] = _normalize_text(item.get("audience_scope"), "all").lower()
@@ -2063,20 +2995,44 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         item["requires_ack"] = requires_ack
         item["is_pinned"] = bool(self._as_int(item.get("is_pinned")))
         item["is_active"] = bool(self._as_int(item.get("is_active"), 1))
+        item["status"] = _normalize_text(item.get("status"), "published").lower()
+        item["comments_enabled"] = bool(self._as_int(item.get("comments_enabled"), 1))
+        item["reactions_enabled"] = bool(self._as_int(item.get("reactions_enabled"), 1))
         item["is_pinned_active"] = bool(item["is_pinned"] and (pinned_until is None or pinned_until > now_utc))
         item["version"] = current_version
         item["seen_version"] = seen_version
         item["acknowledged_version"] = acknowledged_version
-        item["acknowledged_at"] = _normalize_text(read_row["acknowledged_at"] if read_row else "")
+        item["acknowledged_at"] = _normalize_text(
+            resolved_read_row["acknowledged_at"] if resolved_read_row else ""
+        )
         item["is_unread"] = is_unread
         item["is_updated"] = is_updated
         item["is_ack_pending"] = is_ack_pending
-        item["attachments_count"] = len(attachments)
+        item["attachments_count"] = resolved_attachments_count
+        normalized_reactions = {
+            key: max(0, self._as_int((reaction_counts or {}).get(key)))
+            for key in sorted(self._REACTION_TYPES)
+            if self._as_int((reaction_counts or {}).get(key)) > 0
+        }
+        item["reaction_counts"] = normalized_reactions
+        item["reactions_count"] = sum(normalized_reactions.values())
+        item["viewer_reaction"] = _normalize_text(viewer_reaction).lower() or None
+        item["likes_count"] = normalized_reactions.get("like", max(0, self._as_int(likes_count)))
+        item["comments_count"] = max(0, self._as_int(comments_count))
+        item["viewer_has_liked"] = item["viewer_reaction"] == "like" or bool(viewer_has_liked)
+        item["viewer_bookmarked"] = bool(viewer_bookmarked)
+        item["category"] = dict(category) if isinstance(category, dict) else None
+        item["tags"] = list(tags or [])
+        item["cover_attachment"] = dict(cover_attachment) if isinstance(cover_attachment, dict) else None
+        resolved_poll = poll
+        if resolved_poll is None:
+            resolved_poll = self._load_announcement_polls(conn, viewer_user_id=normalized_viewer_id).get(announcement_id, {})
+        item["poll"] = dict(resolved_poll) if resolved_poll else None
         item["recipients_summary"] = self._announcement_recipients_summary(item)
         item["is_targeted_to_viewer"] = item["audience_scope"] != "all" and not can_manage
         item["can_manage"] = can_manage
         if include_body:
-            item["attachments"] = attachments
+            item["attachments"] = resolved_attachments
         else:
             item.pop("body", None)
         return item
@@ -2125,10 +3081,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _list_announcement_attachments(self, conn: sqlite3.Connection, announcement_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             f"""
-            SELECT id, announcement_id, file_name, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at
+            SELECT id, announcement_id, file_name, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at, sort_order, is_cover
             FROM {self._ANN_ATTACH_TABLE}
             WHERE announcement_id = ?
-            ORDER BY uploaded_at DESC
+            ORDER BY sort_order ASC, uploaded_at ASC
             """,
             (announcement_id,),
         ).fetchall()
@@ -2232,6 +3188,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         notification_title: str = "",
         notification_body: str = "",
         dedupe_hint: str = "",
+        task: Optional[dict[str, Any]] = None,
     ) -> bool:
         normalized_event = _normalize_text(event_type).lower()
         normalized_task_id = _normalize_text(task_id)
@@ -2251,13 +3208,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if not task_email_service.is_valid_recipient(recipient_email):
             return False
 
-        row = conn.execute(
-            f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
-            (normalized_task_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        task = self._task_with_latest_report(conn, row, viewer_user_id=normalized_recipient_id)
+        if task is None:
+            row = conn.execute(
+                f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
+                (normalized_task_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            task = self._task_with_latest_report(conn, row, viewer_user_id=normalized_recipient_id)
         subject, body_text, body_html = self._build_task_email_content(
             event_type=normalized_event,
             task=task,
@@ -2293,18 +3251,33 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         dedupe_hint: str = "",
     ) -> None:
         skipped = {self._as_int(item) for item in (skip_user_ids or set()) if self._as_int(item) > 0}
+        recipients = [
+            recipient_user_id
+            for recipient_user_id in {self._as_int(item) for item in recipient_user_ids if self._as_int(item) > 0}
+            if recipient_user_id not in skipped
+        ]
+        if not recipients:
+            return
+        normalized_task_id = _normalize_text(task_id)
+        row = conn.execute(
+            f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
+            (normalized_task_id,),
+        ).fetchone()
+        if row is None:
+            return
+        # One enrich per event (not per recipient) — email body does not need viewer-specific fields.
+        task_payload = self._task_with_latest_report(conn, row, viewer_user_id=None)
         queued = False
-        for recipient_user_id in {self._as_int(item) for item in recipient_user_ids if self._as_int(item) > 0}:
-            if recipient_user_id in skipped:
-                continue
+        for recipient_user_id in recipients:
             queued = self._queue_task_email_event(
                 conn,
                 recipient_user_id=recipient_user_id,
                 event_type=event_type,
-                task_id=task_id,
+                task_id=normalized_task_id,
                 notification_title=title,
                 notification_body=body,
                 dedupe_hint=dedupe_hint,
+                task=task_payload,
             ) or queued
         if queued:
             self._schedule_task_email_outbox_dispatch()
@@ -2396,6 +3369,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 """,
                 row,
             )
+        self._invalidate_unread_counts_cache(int(recipient_user_id))
         normalized_entity_type = _normalize_text(entity_type).lower()
         if int(recipient_user_id or 0) > 0 and normalized_entity_type != "chat":
             channel = "tasks" if normalized_entity_type == "task" else ("announcements" if normalized_entity_type == "announcement" else "system")
@@ -2404,31 +3378,101 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 if channel == "tasks":
                     route = "/tasks"
                 elif channel == "announcements":
-                    route = "/dashboard"
-                try:
-                    app_push_service.send_notification(
-                        recipient_user_id=int(recipient_user_id),
-                        title=_normalize_text(title) or "Новое уведомление",
-                        body=_normalize_text(body) or _normalize_text(title) or "Откройте приложение, чтобы посмотреть подробности.",
-                        channel=channel,
-                        route=route,
-                        tag=f"hub:{notification_id}",
-                        data={
-                            "notification_id": notification_id,
-                            "entity_type": normalized_entity_type,
-                            "entity_id": _normalize_text(entity_id),
-                        },
-                        ttl=12 * 60 * 60,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to send hub push recipient_user_id=%s channel=%s notification_id=%s",
-                        int(recipient_user_id),
-                        channel,
-                        notification_id,
-                        exc_info=True,
-                    )
+                    announcement_entity, _, comment_entity = _normalize_text(entity_id).partition("#")
+                    route = f"/feed?post={announcement_entity}" if announcement_entity else "/feed"
+                    if comment_entity:
+                        route += f"#feed-comment-{comment_entity}"
+                push_job = {
+                    "recipient_user_id": int(recipient_user_id),
+                    "title": _normalize_text(title) or "Новое уведомление",
+                    "body": _normalize_text(body) or _normalize_text(title) or "Откройте приложение, чтобы посмотреть подробности.",
+                    "channel": channel,
+                    "route": route,
+                    "tag": f"hub:{notification_id}",
+                    "data": {
+                        "notification_id": notification_id,
+                        "entity_type": normalized_entity_type,
+                        "entity_id": _normalize_text(entity_id),
+                    },
+                    "ttl": 12 * 60 * 60,
+                }
+                if self._defer_hub_push:
+                    self._pending_hub_push_jobs.append(push_job)
+                else:
+                    try:
+                        app_push_service.send_notification(**push_job)
+                    except Exception:
+                        logger.warning(
+                            "Failed to send hub push recipient_user_id=%s channel=%s notification_id=%s",
+                            int(recipient_user_id),
+                            channel,
+                            notification_id,
+                            exc_info=True,
+                        )
         return notification_id
+
+    def create_notifications_batch(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        conn: Optional[sqlite3.Connection] = None,
+        commit_external: bool = True,
+    ) -> int:
+        """Insert many hub notifications in one round-trip. Used by chat fan-out."""
+        rows: list[tuple[Any, ...]] = []
+        recipient_ids: list[int] = []
+        now_iso = _utc_now_iso()
+        for item in items:
+            recipient_user_id = item.get("recipient_user_id")
+            try:
+                normalized_recipient = int(recipient_user_id) if recipient_user_id is not None else 0
+            except Exception:
+                normalized_recipient = 0
+            if normalized_recipient <= 0:
+                continue
+            rows.append(
+                (
+                    _normalize_text(item.get("id")) or str(uuid.uuid4()),
+                    normalized_recipient,
+                    _normalize_text(item.get("event_type")),
+                    _normalize_text(item.get("title")),
+                    _normalize_text(item.get("body")),
+                    _normalize_text(item.get("entity_type")),
+                    _normalize_text(item.get("entity_id")),
+                    now_iso,
+                )
+            )
+            recipient_ids.append(normalized_recipient)
+        if not rows:
+            return 0
+
+        # One multi-VALUES INSERT (not executemany): SqlAlchemyCompatConnection.executemany
+        # loops per row and under chat storms that becomes N round-trips (~hundreds of ms each).
+        values_sql = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        flat_params: list[Any] = [value for row in rows for value in row]
+        sql = f"""
+            INSERT INTO {self._NOTIF_TABLE}
+            (id, recipient_user_id, event_type, title, body, entity_type, entity_id, created_at)
+            VALUES {values_sql}
+            """
+        if conn is None:
+            with self._db_conn(write=True) as local_conn:
+                local_conn.execute(sql, flat_params)
+                local_conn.commit()
+        else:
+            conn.execute(sql, flat_params)
+            if commit_external:
+                commit = getattr(conn, "commit", None)
+                if callable(commit):
+                    commit()
+
+        unique_recipient_ids = set(recipient_ids)
+        if len(unique_recipient_ids) > 100:
+            self._invalidate_unread_counts_cache(None)
+        else:
+            for recipient_id in unique_recipient_ids:
+                self._invalidate_unread_counts_cache(recipient_id)
+        return len(rows)
 
     def _notification_exists(
         self,
@@ -2914,9 +3958,17 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             "published_from": _normalize_text(source.get("published_from")) or None,
             "expires_at": _normalize_text(source.get("expires_at")) or None,
             "is_active": source.get("is_active") is not False,
+            "status": _normalize_text(source.get("status"), "published").lower(),
+            "comments_enabled": source.get("comments_enabled") is not False,
+            "reactions_enabled": source.get("reactions_enabled") is not False,
+            "category_id": _normalize_text(source.get("category_id")) or None,
+            "tags": self._unique_texts(source.get("tags")),
+            "poll": self._normalize_announcement_poll_payload(source.get("poll")) if "poll" in source else None,
         }
         if normalized["priority"] not in {"low", "normal", "high"}:
             normalized["priority"] = "normal"
+        if normalized["status"] not in self._ANNOUNCEMENT_STATUSES:
+            normalized["status"] = "published"
         if normalized["audience_scope"] == "roles":
             normalized["audience_roles"] = self._unique_texts(normalized["audience_roles"])
             normalized["audience_user_ids"] = []
@@ -2927,6 +3979,179 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             normalized["audience_roles"] = []
             normalized["audience_user_ids"] = []
         return normalized
+
+    def _normalize_announcement_poll_payload(self, value: Any) -> dict[str, Any] | None:
+        if value is None or value is False:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("Poll payload must be an object")
+        raw_options = value.get("options") if isinstance(value.get("options"), list) else []
+        options: list[str] = []
+        for raw_option in raw_options[:10]:
+            option_text = _normalize_text(raw_option.get("text") if isinstance(raw_option, dict) else raw_option)
+            options.append(option_text[:160])
+        return {
+            "question": _normalize_text(value.get("question"))[:300],
+            "options": options,
+            "allows_multiple": bool(value.get("allows_multiple")),
+            "is_anonymous": bool(value.get("is_anonymous")),
+            "closes_at": _normalize_text(value.get("closes_at")) or None,
+        }
+
+    def _sync_announcement_poll(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        announcement_id: str,
+        poll: dict[str, Any] | None,
+    ) -> None:
+        current = conn.execute(
+            f"SELECT * FROM {self._ANN_POLLS_TABLE} WHERE announcement_id = ?",
+            (announcement_id,),
+        ).fetchone()
+        if current is None and poll is None:
+            return
+        poll_id = _normalize_text(current["id"] if current else "") or str(uuid.uuid4())
+        current_options = [
+            _normalize_text(row["text"])
+            for row in conn.execute(
+                f"SELECT text FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ? ORDER BY sort_order, id",
+                (poll_id,),
+            ).fetchall()
+        ] if current else []
+        votes_count = self._as_int(conn.execute(
+            f"SELECT COUNT(*) AS c FROM {self._ANN_POLL_VOTES_TABLE} WHERE poll_id = ?",
+            (poll_id,),
+        ).fetchone()["c"]) if current else 0
+        if poll is None:
+            if votes_count:
+                raise ValueError("Poll with votes cannot be removed")
+            conn.execute(f"DELETE FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ?", (poll_id,))
+            conn.execute(f"DELETE FROM {self._ANN_POLLS_TABLE} WHERE id = ?", (poll_id,))
+            return
+
+        next_options = list(poll.get("options") or [])[:10]
+        current_signature = None if current is None else (
+            _normalize_text(current["question"]),
+            bool(self._as_int(current["allows_multiple"])),
+            bool(self._as_int(current["is_anonymous"])),
+            _normalize_text(current["closes_at"]),
+            current_options,
+        )
+        next_signature = (
+            _normalize_text(poll.get("question")),
+            bool(poll.get("allows_multiple")),
+            bool(poll.get("is_anonymous")),
+            _normalize_text(poll.get("closes_at")),
+            next_options,
+        )
+        if current_signature == next_signature:
+            return
+        if votes_count:
+            raise ValueError("Poll cannot be changed after voting has started")
+        now_iso = _utc_now_iso()
+        if current is None:
+            conn.execute(
+                f"""INSERT INTO {self._ANN_POLLS_TABLE}
+                    (id, announcement_id, question, allows_multiple, is_anonymous, closes_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (poll_id, announcement_id, poll["question"], 1 if poll["allows_multiple"] else 0, 1 if poll["is_anonymous"] else 0, poll["closes_at"], now_iso, now_iso),
+            )
+        else:
+            conn.execute(
+                f"""UPDATE {self._ANN_POLLS_TABLE}
+                    SET question = ?, allows_multiple = ?, is_anonymous = ?, closes_at = ?, updated_at = ?
+                    WHERE id = ?""",
+                (poll["question"], 1 if poll["allows_multiple"] else 0, 1 if poll["is_anonymous"] else 0, poll["closes_at"], now_iso, poll_id),
+            )
+            conn.execute(f"DELETE FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ?", (poll_id,))
+        for index, option_text in enumerate(next_options):
+            conn.execute(
+                f"INSERT INTO {self._ANN_POLL_OPTIONS_TABLE} (id, poll_id, text, sort_order) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), poll_id, option_text, index),
+            )
+
+    def _validate_announcement_poll_for_publish(self, conn: sqlite3.Connection, announcement_id: str) -> None:
+        poll = conn.execute(
+            f"SELECT * FROM {self._ANN_POLLS_TABLE} WHERE announcement_id = ?",
+            (announcement_id,),
+        ).fetchone()
+        if poll is None:
+            return
+        if len(_normalize_text(poll["question"])) < 3:
+            raise ValueError("Poll question must contain at least 3 characters")
+        raw_options = [
+            _normalize_text(row["text"])
+            for row in conn.execute(
+                f"SELECT text FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ? ORDER BY sort_order",
+                (_normalize_text(poll["id"]),),
+            ).fetchall()
+        ]
+        if any(not option for option in raw_options):
+            raise ValueError("Poll options must not be empty")
+        options = [option for option in raw_options if option]
+        if len(options) < 2:
+            raise ValueError("Poll must contain at least two options")
+        if len({option.casefold() for option in options}) != len(options):
+            raise ValueError("Poll options must be unique")
+        closes_at = self._parse_iso_datetime(poll["closes_at"])
+        if closes_at and closes_at <= datetime.now(timezone.utc):
+            raise ValueError("Poll closing date must be in the future")
+        publication = conn.execute(
+            f"SELECT published_from FROM {self._ANN_TABLE} WHERE id = ?",
+            (announcement_id,),
+        ).fetchone()
+        published_from = self._parse_iso_datetime(publication["published_from"] if publication else None)
+        if closes_at and published_from and closes_at <= published_from:
+            raise ValueError("Poll closing date must be later than publication date")
+
+    def _validate_announcement_publication(self, announcement: dict[str, Any]) -> None:
+        if len(_normalize_text(announcement.get("title"))) < 3:
+            raise ValueError("Announcement title must contain at least 3 characters")
+        audience_scope = _normalize_text(announcement.get("audience_scope"), "all")
+        audience_roles = announcement.get("audience_roles")
+        audience_user_ids = announcement.get("audience_user_ids")
+        roles = self._unique_texts(audience_roles) if isinstance(audience_roles, list) else self._unique_texts(self._json_load_list(audience_roles))
+        user_ids = self._unique_ints(audience_user_ids) if isinstance(audience_user_ids, list) else self._unique_ints(self._json_load_list(audience_user_ids))
+        if audience_scope == "roles" and not roles:
+            raise ValueError("Announcement audience must not be empty")
+        if audience_scope == "users" and not user_ids:
+            raise ValueError("Announcement audience must not be empty")
+
+        now = datetime.now(timezone.utc)
+        published_from = self._parse_iso_datetime(announcement.get("published_from"))
+        expires_at = self._parse_iso_datetime(announcement.get("expires_at"))
+        status = _normalize_text(announcement.get("status"), "published")
+        if status == "scheduled" and (published_from is None or published_from <= now):
+            raise ValueError("Scheduled publication date must be in the future")
+        if expires_at and published_from and expires_at <= published_from:
+            raise ValueError("Publication expiry date must be later than publication date")
+        if expires_at and expires_at <= now:
+            raise ValueError("Publication expiry date must be in the future")
+
+    @staticmethod
+    def _feed_slug(value: Any) -> str:
+        source = _normalize_text(value).lower()
+        slug = re.sub(r"[^a-z0-9\u0400-\u04ff]+", "-", source).strip("-")
+        return slug[:80] or str(uuid.uuid4())
+
+    def _sync_announcement_tags(self, conn: sqlite3.Connection, *, announcement_id: str, tags: list[str]) -> None:
+        conn.execute(f"DELETE FROM {self._ANN_TAG_LINKS_TABLE} WHERE announcement_id = ?", (announcement_id,))
+        now_iso = _utc_now_iso()
+        for name in self._unique_texts(tags)[:10]:
+            clean_name = name[:60]
+            slug = self._feed_slug(clean_name)
+            existing = conn.execute(f"SELECT id FROM {self._ANN_TAGS_TABLE} WHERE slug = ?", (slug,)).fetchone()
+            tag_id = _normalize_text(existing["id"] if existing else "") or str(uuid.uuid4())
+            if existing is None:
+                conn.execute(
+                    f"INSERT INTO {self._ANN_TAGS_TABLE} (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+                    (tag_id, clean_name, slug, now_iso),
+                )
+            conn.execute(
+                f"INSERT INTO {self._ANN_TAG_LINKS_TABLE} (announcement_id, tag_id) VALUES (?, ?) ON CONFLICT(announcement_id, tag_id) DO NOTHING",
+                (announcement_id, tag_id),
+            )
 
     def _upsert_announcement_read_state(
         self,
@@ -2986,20 +4211,63 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         title: str,
         body: str,
         actor_user_id: int,
-    ) -> None:
-        for recipient in self._announcement_recipient_users(announcement):
-            recipient_user_id = self._as_int(recipient.get("id"))
-            if recipient_user_id <= 0 or recipient_user_id == self._as_int(actor_user_id):
-                continue
-            self._create_notification(
-                recipient_user_id=recipient_user_id,
-                event_type=event_type,
-                title=title,
-                body=body,
-                entity_type="announcement",
-                entity_id=_normalize_text(announcement.get("id")),
-                conn=conn,
+    ) -> list[dict[str, Any]]:
+        normalized_actor_user_id = self._as_int(actor_user_id)
+        recipient_user_ids = sorted({
+            self._as_int(recipient.get("id"))
+            for recipient in self._announcement_recipient_users(announcement)
+            if self._as_int(recipient.get("id")) > 0
+            and self._as_int(recipient.get("id")) != normalized_actor_user_id
+        })
+        if not recipient_user_ids:
+            return []
+
+        try:
+            push_enabled_user_ids = notification_preferences_service.enabled_user_ids(
+                user_ids=recipient_user_ids,
+                channel="announcements",
             )
+        except Exception:
+            logger.warning("Failed to resolve announcement notification preferences in batch", exc_info=True)
+            push_enabled_user_ids = set(recipient_user_ids)
+
+        normalized_event_type = _normalize_text(event_type)
+        normalized_title = _normalize_text(title)
+        normalized_body = _normalize_text(body)
+        entity_id = _normalize_text(announcement.get("id"))
+        items = [
+            {
+                "id": str(uuid.uuid4()),
+                "recipient_user_id": recipient_user_id,
+                "event_type": normalized_event_type,
+                "title": normalized_title,
+                "body": normalized_body,
+                "entity_type": "announcement",
+                "entity_id": entity_id,
+            }
+            for recipient_user_id in recipient_user_ids
+        ]
+        self.create_notifications_batch(items, conn=conn, commit_external=False)
+
+        route = f"/feed?post={entity_id}" if entity_id else "/feed"
+        return [
+            {
+                "recipient_user_id": int(item["recipient_user_id"]),
+                "title": normalized_title or "Новое уведомление",
+                "body": normalized_body or normalized_title or "Откройте приложение, чтобы посмотреть подробности.",
+                "channel": "announcements",
+                "route": route,
+                "tag": f"hub:{item['id']}",
+                "data": {
+                    "notification_id": item["id"],
+                    "entity_type": "announcement",
+                    "entity_id": entity_id,
+                },
+                "ttl": 12 * 60 * 60,
+            }
+            for item in items
+            if int(item["recipient_user_id"]) in push_enabled_user_ids
+        ]
 
     def create_announcement(
         self,
@@ -3012,9 +4280,17 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         now_iso = _utc_now_iso()
         ann_id = str(uuid.uuid4())
         title_text = normalized["title"]
-        if len(title_text) < 3:
-            raise ValueError("Announcement title must contain at least 3 characters")
+        status = normalized["status"]
+        published_from = self._parse_iso_datetime(normalized.get("published_from"))
+        if status == "published" and published_from and published_from > datetime.now(timezone.utc):
+            status = "scheduled"
+        if not normalized["is_active"]:
+            status = "archived"
+        if status in {"published", "scheduled"}:
+            self._validate_announcement_publication({**normalized, "status": status})
         attachment_payloads = attachments if isinstance(attachments, list) else []
+        push_jobs: list[dict[str, Any]] = []
+        result: dict[str, Any] = {}
 
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -3022,8 +4298,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 INSERT INTO {self._ANN_TABLE}
                 (id, title, preview, body, priority, is_active, author_user_id, author_username, author_full_name,
                  published_at, updated_at, version, audience_scope, audience_roles, audience_user_ids,
-                 requires_ack, is_pinned, pinned_until, published_from, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                 requires_ack, is_pinned, pinned_until, published_from, expires_at,
+                 status, comments_enabled, reactions_enabled, publication_notified_at, category_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ann_id,
@@ -3045,9 +4322,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     normalized["pinned_until"],
                     normalized["published_from"],
                     normalized["expires_at"],
+                    status,
+                    1 if normalized["comments_enabled"] else 0,
+                    1 if normalized["reactions_enabled"] else 0,
+                    now_iso if status == "published" else None,
+                    normalized["category_id"],
                 ),
             )
-            for payload in attachment_payloads:
+            for attachment_index, payload in enumerate(attachment_payloads):
                 file_bytes = payload.get("file_bytes")
                 if not isinstance(file_bytes, (bytes, bytearray)) or len(file_bytes) == 0:
                     continue
@@ -3062,8 +4344,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 conn.execute(
                     f"""
                     INSERT INTO {self._ANN_ATTACH_TABLE}
-                    (id, announcement_id, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, announcement_id, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at, sort_order, is_cover)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         attachment_id,
@@ -3075,8 +4357,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                         self._as_int(actor.get("id")),
                         _normalize_text(actor.get("username")),
                         now_iso,
+                        attachment_index,
+                        1 if attachment_index == 0 and _normalize_text(payload.get("file_mime")).lower().startswith("image/") else 0,
                     ),
                 )
+            self._sync_announcement_tags(conn, announcement_id=ann_id, tags=normalized["tags"])
+            if "poll" in payload:
+                self._sync_announcement_poll(conn, announcement_id=ann_id, poll=normalized["poll"])
+            if status in {"published", "scheduled"}:
+                self._validate_announcement_poll_for_publish(conn, ann_id)
             self._upsert_announcement_read_state(
                 conn,
                 announcement_id=ann_id,
@@ -3085,26 +4374,28 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 acknowledged_version=1 if normalized["requires_ack"] else 0,
                 acknowledged_at=now_iso if normalized["requires_ack"] else None,
             )
-            created_row = conn.execute(f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            created_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             created_item = dict(created_row) if created_row else {"id": ann_id}
-            self._create_announcement_notifications(
-                conn,
-                announcement=created_item,
-                event_type="announcement.new",
-                title="Новая заметка",
-                body=self._preview_text(title_text),
-                actor_user_id=self._as_int(actor.get("id")),
-            )
+            if status == "published":
+                push_jobs = self._create_announcement_notifications(
+                    conn,
+                    announcement=created_item,
+                    event_type="announcement.new",
+                    title="Новая публикация в ленте",
+                    body=self._preview_text(title_text),
+                    actor_user_id=self._as_int(actor.get("id")),
+                )
             conn.commit()
-            if created_row is None:
-                return {}
-            item = self._build_announcement_item(
-                conn,
-                created_row,
-                viewer_user_id=self._as_int(actor.get("id")),
-                include_hidden_for_manager=True,
-            )
-            return item or {}
+            if created_row is not None:
+                item = self._build_announcement_item(
+                    conn,
+                    created_row,
+                    viewer_user_id=self._as_int(actor.get("id")),
+                    include_hidden_for_manager=True,
+                )
+                result = item or {}
+        self._schedule_hub_push_jobs(push_jobs)
+        return result
 
     def update_announcement(
         self,
@@ -3120,9 +4411,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized = self._normalize_announcement_payload(payload)
         actor_id = self._as_int(actor_user_id)
         now_iso = _utc_now_iso()
+        notify_on_update = bool(payload.get("notify_on_update"))
         with self._lock, self._connect() as conn:
             current_row = conn.execute(
-                f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?",
+                f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?",
                 (ann_id,),
             ).fetchone()
             if current_row is None:
@@ -3147,6 +4439,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "published_from",
                 "expires_at",
                 "is_active",
+                "status",
+                "comments_enabled",
+                "reactions_enabled",
+                "category_id",
             ):
                 if key not in payload:
                     continue
@@ -3156,13 +4452,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 elif key == "audience_user_ids":
                     updates.append("audience_user_ids = ?")
                     params.append(self._serialize_json_list(normalized["audience_user_ids"]))
-                elif key in {"requires_ack", "is_pinned", "is_active"}:
+                elif key in {"requires_ack", "is_pinned", "is_active", "comments_enabled", "reactions_enabled"}:
                     updates.append(f"{key} = ?")
                     params.append(1 if normalized[key] else 0)
                 else:
                     updates.append(f"{key} = ?")
                     params.append(normalized[key])
-            if not updates:
+            if not updates and "tags" not in payload and "poll" not in payload:
                 return self._build_announcement_item(
                     conn,
                     current_row,
@@ -3170,12 +4466,30 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     is_admin=is_admin,
                     include_hidden_for_manager=True,
                 )
+            target_status = normalized["status"] if "status" in payload else _normalize_text(current_item.get("status"), "published")
+            target_title = normalized["title"] if "title" in payload else _normalize_text(current_item.get("title"))
+            if target_status != "draft" and len(target_title) < 3:
+                raise ValueError("Announcement title must contain at least 3 characters")
+            if target_status in {"published", "scheduled"} and "status" in payload:
+                validation_item = {
+                    **current_item,
+                    **{key: normalized[key] for key in normalized if key in payload},
+                    "status": target_status,
+                    "title": target_title,
+                }
+                self._validate_announcement_publication(validation_item)
             updates.extend(["updated_at = ?", "version = version + 1"])
             params.append(now_iso)
             params.append(ann_id)
             conn.execute(f"UPDATE {self._ANN_TABLE} SET {', '.join(updates)} WHERE id = ?", tuple(params))
-            updated_row = conn.execute(f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            updated_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             updated_item = dict(updated_row) if updated_row else current_item
+            if "tags" in payload:
+                self._sync_announcement_tags(conn, announcement_id=ann_id, tags=normalized["tags"])
+            if "poll" in payload:
+                self._sync_announcement_poll(conn, announcement_id=ann_id, poll=normalized["poll"])
+                if target_status in {"published", "scheduled"}:
+                    self._validate_announcement_poll_for_publish(conn, ann_id)
             author_user = {
                 "id": self._as_int(updated_item.get("author_user_id")),
                 "username": _normalize_text(updated_item.get("author_username")),
@@ -3190,12 +4504,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 acknowledged_version=current_version if bool(self._as_int(updated_item.get("requires_ack"))) else 0,
                 acknowledged_at=now_iso if bool(self._as_int(updated_item.get("requires_ack"))) else None,
             )
-            if bool(self._as_int(updated_item.get("is_active"), 1)):
+            if notify_on_update and _normalize_text(updated_item.get("status"), "published") == "published":
                 self._create_announcement_notifications(
                     conn,
                     announcement=updated_item,
                     event_type="announcement.updated",
-                    title="Заметка обновлена",
+                    title="Публикация в ленте обновлена",
                     body=self._preview_text(_normalize_text(updated_item.get("title"))),
                     actor_user_id=actor_id,
                 )
@@ -3221,15 +4535,30 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if not ann_id:
             return None
         with self._lock, self._connect() as conn:
-            row = conn.execute(f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             if row is None:
                 return None
+            reaction_counts, comment_counts, viewer_reactions, bookmarks = self._load_announcement_social_state(
+                conn,
+                viewer_user_id=self._as_int(user_id),
+            )
+            categories, tags = self._load_announcement_taxonomy_state(conn)
+            polls = self._load_announcement_polls(conn, viewer_user_id=self._as_int(user_id))
+            cover_attachment = self._load_announcement_cover_attachments(conn).get(ann_id)
             item = self._build_announcement_item(
                 conn,
                 row,
                 viewer_user_id=self._as_int(user_id),
                 is_admin=is_admin,
                 include_hidden_for_manager=True,
+                comments_count=comment_counts.get(ann_id, 0),
+                reaction_counts=reaction_counts.get(ann_id, {}),
+                viewer_reaction=viewer_reactions.get(ann_id, ""),
+                viewer_bookmarked=ann_id in bookmarks,
+                category=categories.get(ann_id),
+                tags=tags.get(ann_id, []),
+                cover_attachment=cover_attachment,
+                poll=polls.get(ann_id, {}),
             )
             if item is None:
                 raise PermissionError("Announcement is not available for current user")
@@ -3257,8 +4586,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             attachment_paths = [_normalize_text(item["file_path"]) for item in file_rows]
 
             notif_ids = conn.execute(
-                f"SELECT id FROM {self._NOTIF_TABLE} WHERE entity_type = 'announcement' AND entity_id = ?",
-                (ann_id,),
+                f"SELECT id FROM {self._NOTIF_TABLE} WHERE entity_type = 'announcement' AND (entity_id = ? OR entity_id LIKE ?)",
+                (ann_id, f"{ann_id}#%"),
             ).fetchall()
             notif_id_values = [_normalize_text(item["id"]) for item in notif_ids if _normalize_text(item["id"])]
             if notif_id_values:
@@ -3268,11 +4597,30 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     tuple(notif_id_values),
                 )
             conn.execute(
-                f"DELETE FROM {self._NOTIF_TABLE} WHERE entity_type = 'announcement' AND entity_id = ?",
-                (ann_id,),
+                f"DELETE FROM {self._NOTIF_TABLE} WHERE entity_type = 'announcement' AND (entity_id = ? OR entity_id LIKE ?)",
+                (ann_id, f"{ann_id}#%"),
             )
+            comment_attachment_rows = conn.execute(f"SELECT file_path FROM {self._ANN_COMMENT_ATTACH_TABLE} WHERE announcement_id = ?", (ann_id,)).fetchall()
+            attachment_paths.extend(_normalize_text(item["file_path"]) for item in comment_attachment_rows)
             conn.execute(f"DELETE FROM {self._ANN_READS_TABLE} WHERE announcement_id = ?", (ann_id,))
             conn.execute(f"DELETE FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ?", (ann_id,))
+            conn.execute(f"DELETE FROM {self._ANN_LIKES_TABLE} WHERE announcement_id = ?", (ann_id,))
+            conn.execute(f"DELETE FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ?", (ann_id,))
+            conn.execute(f"DELETE FROM {self._ANN_BOOKMARKS_TABLE} WHERE announcement_id = ?", (ann_id,))
+            conn.execute(f"DELETE FROM {self._ANN_TAG_LINKS_TABLE} WHERE announcement_id = ?", (ann_id,))
+            poll_row = conn.execute(f"SELECT id FROM {self._ANN_POLLS_TABLE} WHERE announcement_id = ?", (ann_id,)).fetchone()
+            if poll_row is not None:
+                poll_id = _normalize_text(poll_row["id"])
+                conn.execute(f"DELETE FROM {self._ANN_POLL_VOTES_TABLE} WHERE poll_id = ?", (poll_id,))
+                conn.execute(f"DELETE FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ?", (poll_id,))
+                conn.execute(f"DELETE FROM {self._ANN_POLLS_TABLE} WHERE id = ?", (poll_id,))
+            comment_ids = [_normalize_text(item["id"]) for item in conn.execute(f"SELECT id FROM {self._ANN_COMMENTS_TABLE} WHERE announcement_id = ?", (ann_id,)).fetchall()]
+            if comment_ids:
+                placeholders = ", ".join(["?"] * len(comment_ids))
+                conn.execute(f"DELETE FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE comment_id IN ({placeholders})", tuple(comment_ids))
+                conn.execute(f"DELETE FROM {self._ANN_COMMENT_MENTIONS_TABLE} WHERE comment_id IN ({placeholders})", tuple(comment_ids))
+            conn.execute(f"DELETE FROM {self._ANN_COMMENT_ATTACH_TABLE} WHERE announcement_id = ?", (ann_id,))
+            conn.execute(f"DELETE FROM {self._ANN_COMMENTS_TABLE} WHERE announcement_id = ?", (ann_id,))
             conn.execute(f"DELETE FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,))
             conn.commit()
 
@@ -3290,25 +4638,67 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         priority: str = "",
         unread_only: bool = False,
         has_attachments: bool = False,
+        include_body: bool = False,
         sort_by: str = "published_at",
         sort_dir: str = "desc",
+        category_id: str = "",
+        tag: str = "",
+        bookmarked_only: bool = False,
     ) -> dict[str, Any]:
         safe_limit = self._coerce_limit(limit, default=30, minimum=1, maximum=300)
         safe_offset = max(0, self._as_int(offset, 0))
         query_text = _normalize_text(q).lower()
         query_terms = [term for term in query_text.split() if term]
         priority_value = _normalize_text(priority).lower()
+        category_filter = _normalize_text(category_id)
+        tag_filter = _normalize_text(tag).lower()
         normalized_sort_by = _normalize_text(sort_by, "published_at").lower()
         normalized_sort_dir = "asc" if _normalize_text(sort_dir).lower() == "asc" else "desc"
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM {self._ANN_TABLE}").fetchall()
+        with self._db_conn(write=False) as conn:
+            rows = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE}").fetchall()
+            reads_by_announcement_id = self._load_announcement_reads_for_user(conn, user_id=int(user_id))
+            attachment_counts = self._load_announcement_attachment_counts(conn)
+            attachments_by_announcement_id = (
+                self._load_announcement_attachments_by_announcement(conn)
+                if include_body
+                else {}
+            )
+            cover_attachments = self._load_announcement_cover_attachments(conn)
+            reaction_counts, comment_counts, viewer_reactions, bookmarks = self._load_announcement_social_state(
+                conn,
+                viewer_user_id=int(user_id),
+            )
+            categories, tags = self._load_announcement_taxonomy_state(conn)
+            polls = self._load_announcement_polls(conn, viewer_user_id=int(user_id))
             now_utc = datetime.now(timezone.utc)
             items: list[dict[str, Any]] = []
             unread_total = 0
             ack_pending_total = 0
             for row in rows:
-                item = self._build_announcement_item(conn, row, viewer_user_id=int(user_id), include_body=False)
+                announcement_id = _normalize_text(
+                    row["id"] if not isinstance(row, dict) else row.get("id")
+                )
+                item = self._build_announcement_item(
+                    conn,
+                    row,
+                    viewer_user_id=int(user_id),
+                    include_body=bool(include_body),
+                    read_row=reads_by_announcement_id.get(announcement_id, {}),
+                    attachments=attachments_by_announcement_id.get(announcement_id, []),
+                    attachments_count=attachment_counts.get(announcement_id, 0),
+                    include_attachments=bool(include_body),
+                    comments_count=comment_counts.get(announcement_id, 0),
+                    reaction_counts=reaction_counts.get(announcement_id, {}),
+                    viewer_reaction=viewer_reactions.get(announcement_id, ""),
+                    viewer_bookmarked=announcement_id in bookmarks,
+                    category=categories.get(announcement_id),
+                    tags=tags.get(announcement_id, []),
+                    cover_attachment=cover_attachments.get(announcement_id),
+                    poll=polls.get(announcement_id, {}),
+                )
                 if item is None:
+                    continue
+                if _normalize_text(item.get("status"), "published") != "published":
                     continue
                 published_from = self._parse_iso_datetime(item.get("published_from"))
                 expires_at = self._parse_iso_datetime(item.get("expires_at"))
@@ -3333,6 +4723,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     continue
                 if bool(has_attachments) and self._as_int(item.get("attachments_count")) <= 0:
                     continue
+                if category_filter and _normalize_text((item.get("category") or {}).get("id")) != category_filter:
+                    continue
+                if tag_filter and tag_filter not in {
+                    _normalize_text(value.get("slug")).lower() for value in item.get("tags", [])
+                } | {
+                    _normalize_text(value.get("name")).lower() for value in item.get("tags", [])
+                }:
+                    continue
+                if bool(bookmarked_only) and not bool(item.get("viewer_bookmarked")):
+                    continue
                 unread_total += 1 if bool(item.get("is_unread")) else 0
                 ack_pending_total += 1 if bool(item.get("is_ack_pending")) else 0
                 items.append(item)
@@ -3346,6 +4746,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return (_normalize_text(item.get("published_at")), _normalize_text(item.get("id")))
 
         items.sort(key=_sort_key, reverse=normalized_sort_dir == "desc")
+        items.sort(
+            key=lambda item: (
+                1 if bool(item.get("is_pinned_active")) else 0,
+                1 if _normalize_text(item.get("priority")).lower() == "high" and bool(item.get("is_unread")) else 0,
+            ),
+            reverse=True,
+        )
         paged_items = items[safe_offset:safe_offset + safe_limit]
         return {
             "items": paged_items,
@@ -3360,8 +4767,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "priority": priority_value,
                 "unread_only": bool(unread_only),
                 "has_attachments": bool(has_attachments),
+                "include_body": bool(include_body),
                 "sort_by": normalized_sort_by,
                 "sort_dir": normalized_sort_dir,
+                "category_id": category_filter,
+                "tag": tag_filter,
+                "bookmarked_only": bool(bookmarked_only),
             },
         }
 
@@ -3371,7 +4782,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return False
         with self._lock, self._connect() as conn:
             ann = conn.execute(
-                f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?",
+                f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?",
                 (ann_id,),
             ).fetchone()
             if ann is None:
@@ -3399,7 +4810,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             raise LookupError("Announcement not found")
         now_iso = _utc_now_iso()
         with self._lock, self._connect() as conn:
-            ann = conn.execute(f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            ann = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             if ann is None:
                 raise LookupError("Announcement not found")
             announcement = dict(ann)
@@ -3431,7 +4842,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if not ann_id:
             return {"items": [], "summary": {}}
         with self._lock, self._connect() as conn:
-            announcement_row = conn.execute(f"SELECT * FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            announcement_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             if announcement_row is None:
                 return {"items": [], "summary": {}}
             announcement = dict(announcement_row)
@@ -3487,6 +4898,850 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "version": current_version,
             },
         }
+
+    def set_announcement_like(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        liked: bool,
+    ) -> dict[str, Any]:
+        return self.set_announcement_reaction(
+            announcement_id=announcement_id,
+            user=user,
+            reaction_type="like" if liked else None,
+        )
+
+    def set_announcement_reaction(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        reaction_type: str | None,
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        normalized_reaction = _normalize_text(reaction_type).lower()
+        if normalized_reaction and normalized_reaction not in self._REACTION_TYPES:
+            raise ValueError("Unsupported reaction")
+        if not ann_id or user_id <= 0:
+            raise LookupError("Announcement not found")
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if row is None:
+                raise LookupError("Announcement not found")
+            announcement = dict(row)
+            if not self._announcement_is_visible_to_user(
+                announcement,
+                user_id=user_id,
+                is_admin=self._user_can_moderate_announcements(user),
+            ):
+                raise PermissionError("Announcement is not available for current user")
+            if not bool(self._as_int(announcement.get("reactions_enabled"), 1)):
+                raise ValueError("Reactions are disabled for this publication")
+            if normalized_reaction:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._ANN_REACTIONS_TABLE}
+                    (announcement_id, user_id, reaction_type, username, full_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(announcement_id, user_id) DO UPDATE SET
+                      reaction_type = excluded.reaction_type,
+                      username = excluded.username,
+                      full_name = excluded.full_name,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        ann_id,
+                        user_id,
+                        normalized_reaction,
+                        _normalize_text(user.get("username")),
+                        _normalize_text(user.get("full_name")),
+                        _utc_now_iso(),
+                        _utc_now_iso(),
+                    ),
+                )
+                if normalized_reaction == "like":
+                    conn.execute(
+                        f"""INSERT INTO {self._ANN_LIKES_TABLE}
+                            (announcement_id, user_id, username, full_name, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(announcement_id, user_id) DO UPDATE SET
+                              username = excluded.username, full_name = excluded.full_name""",
+                        (ann_id, user_id, _normalize_text(user.get("username")), _normalize_text(user.get("full_name")), _utc_now_iso()),
+                    )
+                else:
+                    conn.execute(f"DELETE FROM {self._ANN_LIKES_TABLE} WHERE announcement_id = ? AND user_id = ?", (ann_id, user_id))
+            else:
+                conn.execute(
+                    f"DELETE FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ? AND user_id = ?",
+                    (ann_id, user_id),
+                )
+                conn.execute(f"DELETE FROM {self._ANN_LIKES_TABLE} WHERE announcement_id = ? AND user_id = ?", (ann_id, user_id))
+            count_rows = conn.execute(
+                f"SELECT reaction_type, COUNT(*) AS c FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ? GROUP BY reaction_type",
+                (ann_id,),
+            ).fetchall()
+            conn.commit()
+        reaction_counts = {_normalize_text(row["reaction_type"]): self._as_int(row["c"]) for row in count_rows}
+        return {
+            "announcement_id": ann_id,
+            "viewer_reaction": normalized_reaction or None,
+            "reaction_counts": reaction_counts,
+            "reactions_count": sum(reaction_counts.values()),
+            "viewer_has_liked": normalized_reaction == "like",
+            "likes_count": reaction_counts.get("like", 0),
+        }
+
+    def list_announcement_comments(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        limit: int = 20,
+        offset: int = 0,
+        sort: str = "interesting",
+        root_comment_id: str = "",
+        changed_since: str = "",
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        is_moderator = self._user_can_moderate_announcements(user)
+        if not ann_id or user_id <= 0:
+            raise LookupError("Announcement not found")
+        safe_limit = self._coerce_limit(limit, default=20, minimum=1, maximum=100)
+        safe_offset = max(0, self._as_int(offset))
+        normalized_sort = _normalize_text(sort, "interesting").lower()
+        if normalized_sort not in {"interesting", "newest", "oldest"}:
+            normalized_sort = "interesting"
+        root_id = _normalize_text(root_comment_id)
+        with self._lock, self._connect() as conn:
+            ann_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if ann_row is None:
+                raise LookupError("Announcement not found")
+            announcement = dict(ann_row)
+            if not self._announcement_is_visible_to_user(announcement, user_id=user_id, is_admin=is_moderator):
+                raise PermissionError("Announcement is not available for current user")
+            where = "announcement_id = ? AND parent_comment_id IS NULL"
+            params: list[Any] = [ann_id]
+            if root_id:
+                where = "announcement_id = ? AND root_comment_id = ? AND id <> ?"
+                params.extend([root_id, root_id])
+            if _normalize_text(changed_since):
+                where += " AND updated_at > ?"
+                params.append(_normalize_text(changed_since))
+            count_row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {self._ANN_COMMENTS_TABLE} WHERE {where}",
+                tuple(params),
+            ).fetchone()
+            all_count_row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {self._ANN_COMMENTS_TABLE} WHERE announcement_id = ?",
+                (ann_id,),
+            ).fetchone()
+            order_sql = "created_at ASC"
+            if normalized_sort == "newest":
+                order_sql = "created_at DESC"
+            elif normalized_sort == "interesting" and not root_id:
+                order_sql = f"(SELECT COUNT(*) FROM {self._ANN_COMMENT_REACTIONS_TABLE} cr WHERE cr.comment_id = {self._ANN_COMMENTS_TABLE}.id) * 2 + (SELECT COUNT(*) FROM {self._ANN_COMMENTS_TABLE} child WHERE child.root_comment_id = {self._ANN_COMMENTS_TABLE}.id AND child.id <> child.root_comment_id) DESC, created_at DESC"
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._ANN_COMMENTS_TABLE}
+                WHERE {where}
+                ORDER BY {order_sql}
+                LIMIT ? OFFSET ?
+                """,
+                tuple([*params, safe_limit, safe_offset]),
+            ).fetchall()
+            announcement_author_id = self._as_int(announcement.get("author_user_id"))
+            comment_ids = [_normalize_text(row["id"]) for row in rows]
+            reaction_counts: dict[str, dict[str, int]] = {}
+            viewer_reactions: dict[str, str] = {}
+            attachments: dict[str, list[dict[str, Any]]] = {}
+            reply_counts: dict[str, int] = {}
+            if comment_ids:
+                placeholders = ", ".join(["?"] * len(comment_ids))
+                for reaction in conn.execute(
+                    f"SELECT comment_id, reaction_type, COUNT(*) AS c FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE comment_id IN ({placeholders}) GROUP BY comment_id, reaction_type",
+                    tuple(comment_ids),
+                ).fetchall():
+                    reaction_counts.setdefault(_normalize_text(reaction["comment_id"]), {})[_normalize_text(reaction["reaction_type"])] = self._as_int(reaction["c"])
+                for reaction in conn.execute(
+                    f"SELECT comment_id, reaction_type FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE user_id = ? AND comment_id IN ({placeholders})",
+                    tuple([user_id, *comment_ids]),
+                ).fetchall():
+                    viewer_reactions[_normalize_text(reaction["comment_id"])] = _normalize_text(reaction["reaction_type"])
+                for attachment in conn.execute(
+                    f"SELECT id, comment_id, announcement_id, file_name, file_mime, file_size, uploaded_at FROM {self._ANN_COMMENT_ATTACH_TABLE} WHERE comment_id IN ({placeholders}) ORDER BY uploaded_at ASC",
+                    tuple(comment_ids),
+                ).fetchall():
+                    item = dict(attachment)
+                    attachments.setdefault(_normalize_text(item.get("comment_id")), []).append(item)
+                if not root_id:
+                    for reply in conn.execute(
+                        f"SELECT root_comment_id, COUNT(*) AS c FROM {self._ANN_COMMENTS_TABLE} WHERE root_comment_id IN ({placeholders}) AND id <> root_comment_id GROUP BY root_comment_id",
+                        tuple(comment_ids),
+                    ).fetchall():
+                        reply_counts[_normalize_text(reply["root_comment_id"])] = self._as_int(reply["c"])
+            items = []
+            for row in rows:
+                item = dict(row)
+                comment_id = _normalize_text(item.get("id"))
+                deleted = bool(_normalize_text(item.get("deleted_at")))
+                item["is_deleted"] = deleted
+                if deleted:
+                    item["body"] = "Комментарий удалён"
+                item["can_edit"] = bool(not deleted and self._as_int(item.get("user_id")) == user_id)
+                item["can_delete"] = bool(
+                    not deleted and (is_moderator
+                    or self._as_int(item.get("user_id")) == user_id
+                    or announcement_author_id == user_id)
+                )
+                item["reaction_counts"] = reaction_counts.get(comment_id, {})
+                item["viewer_reaction"] = viewer_reactions.get(comment_id) or None
+                item["attachments"] = [] if deleted else attachments.get(comment_id, [])
+                item["reply_count"] = reply_counts.get(comment_id, 0)
+                items.append(item)
+        return {
+            "items": items,
+            "total": self._as_int(count_row["c"] if count_row else 0),
+            "comments_total": self._as_int(all_count_row["c"] if all_count_row else 0),
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "sort": normalized_sort,
+            "next_offset": safe_offset + len(items) if safe_offset + len(items) < self._as_int(count_row["c"] if count_row else 0) else None,
+            "cursor": max((_normalize_text(item.get("updated_at")) for item in items), default=_normalize_text(changed_since)),
+        }
+
+    def add_announcement_comment(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        body: str,
+        parent_comment_id: str = "",
+        mentioned_user_ids: list[int] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        body_text = _normalize_text(body)
+        user_id = self._as_int(user.get("id"))
+        if not ann_id or user_id <= 0:
+            raise LookupError("Announcement not found")
+        attachment_payloads = attachments if isinstance(attachments, list) else []
+        if not body_text and not attachment_payloads:
+            raise ValueError("Comment must not be empty")
+        if len(body_text) > 4000:
+            raise ValueError("Comment must contain no more than 4000 characters")
+        comment_id = str(uuid.uuid4())
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            ann_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if ann_row is None:
+                raise LookupError("Announcement not found")
+            announcement = dict(ann_row)
+            if not self._announcement_is_visible_to_user(
+                announcement,
+                user_id=user_id,
+                is_admin=self._is_admin_role(user.get("role")),
+            ):
+                raise PermissionError("Announcement is not available for current user")
+            if not bool(self._as_int(announcement.get("comments_enabled"), 1)):
+                raise ValueError("Comments are disabled for this publication")
+            parent_id = _normalize_text(parent_comment_id)
+            parent = None
+            root_id = comment_id
+            reply_to_user_id = None
+            reply_to_username = ""
+            if parent_id:
+                parent = conn.execute(
+                    f"SELECT * FROM {self._ANN_COMMENTS_TABLE} WHERE id = ? AND announcement_id = ?",
+                    (parent_id, ann_id),
+                ).fetchone()
+                if parent is None:
+                    raise ValueError("Reply target must belong to the same publication")
+                root_id = _normalize_text(parent["root_comment_id"]) or _normalize_text(parent["id"])
+                reply_to_user_id = self._as_int(parent["user_id"])
+                reply_to_username = _normalize_text(parent["username"])
+            conn.execute(
+                f"""
+                INSERT INTO {self._ANN_COMMENTS_TABLE}
+                (id, announcement_id, user_id, username, full_name, body, created_at, updated_at,
+                 parent_comment_id, root_comment_id, reply_to_user_id, reply_to_username, change_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    comment_id,
+                    ann_id,
+                    user_id,
+                    _normalize_text(user.get("username")),
+                    _normalize_text(user.get("full_name")),
+                    body_text,
+                    now_iso,
+                    now_iso,
+                    parent_id or None,
+                    root_id,
+                    reply_to_user_id,
+                    reply_to_username,
+                ),
+            )
+            for attachment in attachment_payloads:
+                payload = attachment.get("file_bytes")
+                if not isinstance(payload, (bytes, bytearray)) or not payload:
+                    continue
+                attachment_id = str(uuid.uuid4())
+                safe_name, rel_path, file_size = self._store_attachment_file(
+                    root=self.announcement_comment_attachments_root,
+                    parent_id=comment_id,
+                    attachment_id=attachment_id,
+                    file_name=_normalize_text(attachment.get("file_name"), "file.bin"),
+                    file_bytes=bytes(payload),
+                )
+                conn.execute(
+                    f"""INSERT INTO {self._ANN_COMMENT_ATTACH_TABLE}
+                        (id, comment_id, announcement_id, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (attachment_id, comment_id, ann_id, safe_name, rel_path, _normalize_text(attachment.get("file_mime")), file_size, user_id, now_iso),
+                )
+            mentioned_ids = set(self._unique_ints(mentioned_user_ids or []))
+            mentioned_users: list[dict[str, Any]] = []
+            for mentioned_id in mentioned_ids:
+                mentioned_user = user_service.get_by_id(mentioned_id)
+                if not mentioned_user or not bool(mentioned_user.get("is_active", True)):
+                    continue
+                mentioned_users.append(mentioned_user)
+                conn.execute(
+                    f"""INSERT INTO {self._ANN_COMMENT_MENTIONS_TABLE}
+                        (comment_id, user_id, username, full_name) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(comment_id, user_id) DO NOTHING""",
+                    (comment_id, mentioned_id, _normalize_text(mentioned_user.get("username")), _normalize_text(mentioned_user.get("full_name"))),
+                )
+            announcement_author_id = self._as_int(announcement.get("author_user_id"))
+            recipients: dict[int, tuple[str, str]] = {}
+            if parent is None and announcement_author_id > 0:
+                recipients[announcement_author_id] = ("announcement.comment_added", "Новый комментарий к публикации")
+            if parent is not None and reply_to_user_id:
+                recipients[reply_to_user_id] = ("announcement.comment_reply", "Новый ответ на комментарий")
+            for mentioned_user in mentioned_users:
+                recipients[self._as_int(mentioned_user.get("id"))] = ("announcement.comment_mention", "Вас упомянули в комментарии")
+            recipients.pop(user_id, None)
+            for recipient_id, (event_type, notification_title) in recipients.items():
+                self._create_notification(
+                    recipient_user_id=recipient_id,
+                    event_type=event_type,
+                    title=notification_title,
+                    body=self._preview_text(body_text),
+                    entity_type="announcement",
+                    entity_id=f"{ann_id}#{comment_id}",
+                    conn=conn,
+                )
+            conn.commit()
+            created = conn.execute(
+                f"SELECT * FROM {self._ANN_COMMENTS_TABLE} WHERE id = ?",
+                (comment_id,),
+            ).fetchone()
+            created_attachments = [
+                dict(row)
+                for row in conn.execute(
+                    f"""SELECT id, comment_id, announcement_id, file_name, file_mime, file_size, uploaded_at
+                        FROM {self._ANN_COMMENT_ATTACH_TABLE}
+                        WHERE comment_id = ? ORDER BY uploaded_at ASC""",
+                    (comment_id,),
+                ).fetchall()
+            ]
+        item = dict(created) if created else {
+            "id": comment_id,
+            "announcement_id": ann_id,
+            "user_id": user_id,
+            "body": body_text,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        item["can_edit"] = True
+        item["can_delete"] = True
+        item["attachments"] = created_attachments
+        item["reaction_counts"] = {}
+        item["viewer_reaction"] = None
+        item["reply_count"] = 0
+        item["is_deleted"] = False
+        return item
+
+    def update_announcement_comment(
+        self,
+        *,
+        announcement_id: str,
+        comment_id: str,
+        user: dict[str, Any],
+        body: str,
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        normalized_comment_id = _normalize_text(comment_id)
+        body_text = _normalize_text(body)
+        user_id = self._as_int(user.get("id"))
+        is_moderator = self._user_can_moderate_announcements(user)
+        if not body_text:
+            raise ValueError("Comment must not be empty")
+        if len(body_text) > 4000:
+            raise ValueError("Comment must contain no more than 4000 characters")
+        with self._lock, self._connect() as conn:
+            ann_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if ann_row is None:
+                raise LookupError("Announcement not found")
+            if not self._announcement_is_visible_to_user(dict(ann_row), user_id=user_id, is_admin=is_moderator):
+                raise PermissionError("Announcement is not available for current user")
+            comment = conn.execute(
+                f"SELECT * FROM {self._ANN_COMMENTS_TABLE} WHERE id = ? AND announcement_id = ?",
+                (normalized_comment_id, ann_id),
+            ).fetchone()
+            if comment is None:
+                raise LookupError("Comment not found")
+            if self._as_int(comment["user_id"]) != user_id or _normalize_text(comment["deleted_at"]):
+                raise PermissionError("Only comment author can edit it")
+            now_iso = _utc_now_iso()
+            conn.execute(
+                f"UPDATE {self._ANN_COMMENTS_TABLE} SET body = ?, updated_at = ?, change_version = change_version + 1 WHERE id = ?",
+                (body_text, now_iso, normalized_comment_id),
+            )
+            conn.commit()
+            updated = conn.execute(
+                f"SELECT * FROM {self._ANN_COMMENTS_TABLE} WHERE id = ?",
+                (normalized_comment_id,),
+            ).fetchone()
+        item = dict(updated) if updated else dict(comment)
+        item["can_edit"] = True
+        item["can_delete"] = True
+        return item
+
+    def delete_announcement_comment(
+        self,
+        *,
+        announcement_id: str,
+        comment_id: str,
+        user: dict[str, Any],
+    ) -> bool:
+        ann_id = _normalize_text(announcement_id)
+        normalized_comment_id = _normalize_text(comment_id)
+        user_id = self._as_int(user.get("id"))
+        is_moderator = self._user_can_moderate_announcements(user)
+        with self._lock, self._connect() as conn:
+            ann_row = conn.execute(f"SELECT author_user_id FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            comment = conn.execute(
+                f"SELECT user_id FROM {self._ANN_COMMENTS_TABLE} WHERE id = ? AND announcement_id = ?",
+                (normalized_comment_id, ann_id),
+            ).fetchone()
+            if ann_row is None or comment is None:
+                return False
+            can_delete = bool(
+                is_moderator
+                or self._as_int(comment["user_id"]) == user_id
+                or self._as_int(ann_row["author_user_id"]) == user_id
+            )
+            if not can_delete:
+                raise PermissionError("Only comment author, publication author or admin can delete it")
+            conn.execute(
+                f"""UPDATE {self._ANN_COMMENTS_TABLE}
+                    SET body = '', deleted_at = ?, deleted_by_user_id = ?, updated_at = ?, change_version = change_version + 1
+                    WHERE id = ? AND announcement_id = ?""",
+                (_utc_now_iso(), user_id, _utc_now_iso(), normalized_comment_id, ann_id),
+            )
+            conn.commit()
+        return True
+
+    def set_announcement_comment_reaction(
+        self,
+        *,
+        announcement_id: str,
+        comment_id: str,
+        user: dict[str, Any],
+        reaction_type: str | None,
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        normalized_comment_id = _normalize_text(comment_id)
+        user_id = self._as_int(user.get("id"))
+        normalized_reaction = _normalize_text(reaction_type).lower()
+        if normalized_reaction and normalized_reaction not in self._REACTION_TYPES:
+            raise ValueError("Unsupported reaction")
+        with self._lock, self._connect() as conn:
+            announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            comment = conn.execute(
+                f"SELECT id FROM {self._ANN_COMMENTS_TABLE} WHERE id = ? AND announcement_id = ?",
+                (normalized_comment_id, ann_id),
+            ).fetchone()
+            if announcement is None or comment is None:
+                raise LookupError("Comment not found")
+            if not self._announcement_is_visible_to_user(dict(announcement), user_id=user_id, is_admin=self._user_can_moderate_announcements(user)):
+                raise PermissionError("Announcement is not available for current user")
+            if not bool(self._as_int(announcement["reactions_enabled"], 1)):
+                raise ValueError("Reactions are disabled for this publication")
+            if normalized_reaction:
+                now_iso = _utc_now_iso()
+                conn.execute(
+                    f"""INSERT INTO {self._ANN_COMMENT_REACTIONS_TABLE}
+                        (comment_id, user_id, reaction_type, username, full_name, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(comment_id, user_id) DO UPDATE SET
+                          reaction_type = excluded.reaction_type, username = excluded.username,
+                          full_name = excluded.full_name, updated_at = excluded.updated_at""",
+                    (normalized_comment_id, user_id, normalized_reaction, _normalize_text(user.get("username")), _normalize_text(user.get("full_name")), now_iso, now_iso),
+                )
+            else:
+                conn.execute(
+                    f"DELETE FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE comment_id = ? AND user_id = ?",
+                    (normalized_comment_id, user_id),
+                )
+            rows = conn.execute(
+                f"SELECT reaction_type, COUNT(*) AS c FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE comment_id = ? GROUP BY reaction_type",
+                (normalized_comment_id,),
+            ).fetchall()
+            conn.commit()
+        counts = {_normalize_text(row["reaction_type"]): self._as_int(row["c"]) for row in rows}
+        return {"comment_id": normalized_comment_id, "viewer_reaction": normalized_reaction or None, "reaction_counts": counts}
+
+    def list_announcement_reaction_users(self, *, announcement_id: str, reaction_type: str = "") -> list[dict[str, Any]]:
+        ann_id = _normalize_text(announcement_id)
+        normalized_reaction = _normalize_text(reaction_type).lower()
+        with self._lock, self._connect() as conn:
+            if normalized_reaction:
+                rows = conn.execute(
+                    f"SELECT user_id, username, full_name, reaction_type, updated_at FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ? AND reaction_type = ? ORDER BY updated_at DESC",
+                    (ann_id, normalized_reaction),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT user_id, username, full_name, reaction_type, updated_at FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ? ORDER BY updated_at DESC",
+                    (ann_id,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_announcement_bookmark(self, *, announcement_id: str, user: dict[str, Any], bookmarked: bool) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if row is None:
+                raise LookupError("Announcement not found")
+            if not self._announcement_is_visible_to_user(dict(row), user_id=user_id, is_admin=self._user_can_moderate_announcements(user)):
+                raise PermissionError("Announcement is not available for current user")
+            if bookmarked:
+                conn.execute(
+                    f"INSERT INTO {self._ANN_BOOKMARKS_TABLE} (announcement_id, user_id, created_at) VALUES (?, ?, ?) ON CONFLICT(announcement_id, user_id) DO NOTHING",
+                    (ann_id, user_id, _utc_now_iso()),
+                )
+            else:
+                conn.execute(f"DELETE FROM {self._ANN_BOOKMARKS_TABLE} WHERE announcement_id = ? AND user_id = ?", (ann_id, user_id))
+            conn.commit()
+        return {"announcement_id": ann_id, "viewer_bookmarked": bool(bookmarked)}
+
+    def vote_announcement_poll(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        option_ids: list[str],
+    ) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        selected_ids = self._unique_texts(option_ids)
+        with self._lock, self._connect() as conn:
+            announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if announcement is None:
+                raise LookupError("Announcement not found")
+            if not self._announcement_is_visible_to_user(
+                dict(announcement),
+                user_id=user_id,
+                is_admin=self._user_can_moderate_announcements(user),
+            ):
+                raise PermissionError("Announcement is not available for current user")
+            poll = conn.execute(
+                f"SELECT * FROM {self._ANN_POLLS_TABLE} WHERE announcement_id = ?",
+                (ann_id,),
+            ).fetchone()
+            if poll is None:
+                raise LookupError("Poll not found")
+            closes_at = self._parse_iso_datetime(poll["closes_at"])
+            if closes_at and closes_at <= datetime.now(timezone.utc):
+                raise ValueError("Poll is closed")
+            poll_id = _normalize_text(poll["id"])
+            available_ids = {
+                _normalize_text(row["id"])
+                for row in conn.execute(
+                    f"SELECT id FROM {self._ANN_POLL_OPTIONS_TABLE} WHERE poll_id = ?",
+                    (poll_id,),
+                ).fetchall()
+            }
+            if any(option_id not in available_ids for option_id in selected_ids):
+                raise ValueError("Poll option is not available")
+            if not bool(self._as_int(poll["allows_multiple"])) and len(selected_ids) > 1:
+                raise ValueError("Only one poll option can be selected")
+            conn.execute(
+                f"DELETE FROM {self._ANN_POLL_VOTES_TABLE} WHERE poll_id = ? AND user_id = ?",
+                (poll_id, user_id),
+            )
+            now_iso = _utc_now_iso()
+            for option_id in selected_ids:
+                conn.execute(
+                    f"INSERT INTO {self._ANN_POLL_VOTES_TABLE} (poll_id, option_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                    (poll_id, option_id, user_id, now_iso),
+                )
+            conn.commit()
+            poll_payload = self._load_announcement_polls(conn, viewer_user_id=user_id).get(ann_id)
+        return {"announcement_id": ann_id, "poll": poll_payload}
+
+    def list_announcement_categories(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            where = "" if include_inactive else "WHERE is_active = 1"
+            rows = conn.execute(f"SELECT * FROM {self._ANN_CATEGORIES_TABLE} {where} ORDER BY name ASC").fetchall()
+        return [dict(row) | {"is_active": bool(self._as_int(row["is_active"]))} for row in rows]
+
+    def save_announcement_category(self, *, payload: dict[str, Any], actor_user_id: int, category_id: str = "") -> dict[str, Any]:
+        name = _normalize_text(payload.get("name"))[:80]
+        if len(name) < 2:
+            raise ValueError("Category name must contain at least 2 characters")
+        normalized_id = _normalize_text(category_id) or str(uuid.uuid4())
+        slug = self._feed_slug(payload.get("slug") or name)
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            duplicate = conn.execute(f"SELECT id FROM {self._ANN_CATEGORIES_TABLE} WHERE slug = ? AND id <> ?", (slug, normalized_id)).fetchone()
+            if duplicate is not None:
+                raise ValueError("Category with this name already exists")
+            conn.execute(
+                f"""INSERT INTO {self._ANN_CATEGORIES_TABLE}
+                    (id, name, slug, is_active, created_by_user_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, slug = excluded.slug,
+                      is_active = excluded.is_active, updated_at = excluded.updated_at""",
+                (normalized_id, name, slug, 1 if payload.get("is_active") is not False else 0, self._as_int(actor_user_id), now_iso, now_iso),
+            )
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._ANN_CATEGORIES_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+        return dict(row) if row else {"id": normalized_id, "name": name, "slug": slug}
+
+    def delete_announcement_category(self, category_id: str) -> bool:
+        normalized_id = _normalize_text(category_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE {self._ANN_CATEGORIES_TABLE} SET is_active = 0, updated_at = ? WHERE id = ?", (_utc_now_iso(), normalized_id))
+            changed = conn.execute(f"SELECT id FROM {self._ANN_CATEGORIES_TABLE} WHERE id = ?", (normalized_id,)).fetchone() is not None
+            conn.commit()
+        return changed
+
+    def list_announcement_tags(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT t.id, t.name, t.slug, COUNT(l.announcement_id) AS usage_count
+                    FROM {self._ANN_TAGS_TABLE} t LEFT JOIN {self._ANN_TAG_LINKS_TABLE} l ON l.tag_id = t.id
+                    GROUP BY t.id, t.name, t.slug ORDER BY usage_count DESC, t.name ASC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_managed_announcements(self, *, user: dict[str, Any], status: str = "draft", limit: int = 100) -> dict[str, Any]:
+        normalized_status = _normalize_text(status, "draft").lower()
+        if normalized_status not in self._ANNOUNCEMENT_STATUSES:
+            raise ValueError("Unsupported publication status")
+        user_id = self._as_int(user.get("id"))
+        moderator = self._user_can_moderate_announcements(user)
+        with self._lock, self._connect() as conn:
+            params: list[Any] = [normalized_status]
+            where = "status = ?"
+            if not moderator:
+                where += " AND author_user_id = ?"
+                params.append(user_id)
+            params.append(self._coerce_limit(limit, default=100, minimum=1, maximum=300))
+            rows = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE {where} ORDER BY updated_at DESC LIMIT ?", tuple(params)).fetchall()
+            reads = self._load_announcement_reads_for_user(conn, user_id=user_id)
+            attachment_counts = self._load_announcement_attachment_counts(conn)
+            attachments = self._load_announcement_attachments_by_announcement(conn)
+            covers = self._load_announcement_cover_attachments(conn)
+            reactions, comment_counts, viewer_reactions, bookmarks = self._load_announcement_social_state(
+                conn,
+                viewer_user_id=user_id,
+            )
+            categories, tags = self._load_announcement_taxonomy_state(conn)
+            polls = self._load_announcement_polls(conn, viewer_user_id=user_id)
+            items = []
+            for row in rows:
+                announcement_id = _normalize_text(row["id"])
+                items.append(self._build_announcement_item(
+                    conn,
+                    row,
+                    viewer_user_id=user_id,
+                    is_admin=moderator,
+                    include_hidden_for_manager=True,
+                    read_row=reads.get(announcement_id, {}),
+                    attachments=attachments.get(announcement_id, []),
+                    attachments_count=attachment_counts.get(announcement_id, 0),
+                    reaction_counts=reactions.get(announcement_id, {}),
+                    comments_count=comment_counts.get(announcement_id, 0),
+                    viewer_reaction=viewer_reactions.get(announcement_id, ""),
+                    viewer_bookmarked=announcement_id in bookmarks,
+                    category=categories.get(announcement_id),
+                    tags=tags.get(announcement_id, []),
+                    cover_attachment=covers.get(announcement_id),
+                    poll=polls.get(announcement_id, {}),
+                ))
+        return {"items": [item for item in items if item], "status": normalized_status}
+
+    def publish_announcement(self, *, announcement_id: str, user: dict[str, Any]) -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        moderator = self._user_can_moderate_announcements(user)
+        push_jobs: list[dict[str, Any]] = []
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if row is None:
+                raise LookupError("Announcement not found")
+            item = dict(row)
+            if not moderator and self._as_int(item.get("author_user_id")) != user_id:
+                raise PermissionError("Only publication author or moderator can publish it")
+            now = datetime.now(timezone.utc)
+            scheduled_at = self._parse_iso_datetime(item.get("published_from"))
+            status = "scheduled" if scheduled_at and scheduled_at > now else "published"
+            self._validate_announcement_publication({**item, "status": status})
+            self._validate_announcement_poll_for_publish(conn, ann_id)
+            notified_at = _normalize_text(item.get("publication_notified_at")) or None
+            if status == "published" and not notified_at:
+                push_jobs = self._create_announcement_notifications(
+                    conn, announcement=item, event_type="announcement.new",
+                    title="Новая публикация в ленте", body=self._preview_text(item.get("title")), actor_user_id=user_id,
+                )
+                notified_at = _utc_now_iso()
+            conn.execute(
+                f"UPDATE {self._ANN_TABLE} SET status = ?, is_active = 1, publication_notified_at = ?, published_at = ?, updated_at = ? WHERE id = ?",
+                (status, notified_at, _utc_now_iso(), _utc_now_iso(), ann_id),
+            )
+            conn.commit()
+        self._schedule_hub_push_jobs(push_jobs)
+        return self.get_announcement(ann_id, user_id=user_id, is_admin=moderator) or {}
+
+    def archive_announcement(self, *, announcement_id: str, user: dict[str, Any]) -> dict[str, Any]:
+        return self.update_announcement(
+            announcement_id,
+            {"status": "archived", "is_active": False},
+            actor_user_id=self._as_int(user.get("id")),
+            is_admin=self._user_can_moderate_announcements(user),
+        ) or {}
+
+    def publish_due_announcements(self, *, limit: int = 100) -> int:
+        now_iso = _utc_now_iso()
+        published = 0
+        all_jobs: list[dict[str, Any]] = []
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE status = 'scheduled' AND published_from IS NOT NULL AND published_from <= ? ORDER BY published_from ASC LIMIT ?",
+                (now_iso, self._coerce_limit(limit, default=100, minimum=1, maximum=500)),
+            ).fetchall()
+            for row in rows:
+                item = dict(row)
+                ann_id = _normalize_text(item.get("id"))
+                cursor = conn.execute(
+                    f"UPDATE {self._ANN_TABLE} SET status = 'published', is_active = 1, published_at = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'",
+                    (now_iso, now_iso, ann_id),
+                )
+                if getattr(cursor, "rowcount", 1) == 0:
+                    continue
+                if not _normalize_text(item.get("publication_notified_at")):
+                    all_jobs.extend(self._create_announcement_notifications(
+                        conn, announcement=item, event_type="announcement.new",
+                        title="Новая публикация в ленте", body=self._preview_text(item.get("title")), actor_user_id=self._as_int(item.get("author_user_id")),
+                    ))
+                    conn.execute(f"UPDATE {self._ANN_TABLE} SET publication_notified_at = ? WHERE id = ?", (now_iso, ann_id))
+                published += 1
+            conn.commit()
+        self._schedule_hub_push_jobs(all_jobs)
+        return published
+
+    def get_announcement_analytics(self, *, announcement_id: str) -> dict[str, Any]:
+        reads = self.get_announcement_reads(announcement_id)
+        with self._lock, self._connect() as conn:
+            reaction_rows = conn.execute(
+                f"SELECT reaction_type, COUNT(*) AS c FROM {self._ANN_REACTIONS_TABLE} WHERE announcement_id = ? GROUP BY reaction_type",
+                (_normalize_text(announcement_id),),
+            ).fetchall()
+            comment_row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {self._ANN_COMMENTS_TABLE} WHERE announcement_id = ? AND deleted_at IS NULL",
+                (_normalize_text(announcement_id),),
+            ).fetchone()
+            poll_payload = self._load_announcement_polls(conn, viewer_user_id=0).get(_normalize_text(announcement_id))
+        reads["summary"]["reaction_counts"] = {_normalize_text(row["reaction_type"]): self._as_int(row["c"]) for row in reaction_rows}
+        reads["summary"]["comments_total"] = self._as_int(comment_row["c"] if comment_row else 0)
+        reads["summary"]["poll_total_voters"] = self._as_int((poll_payload or {}).get("total_voters"))
+        reads["summary"]["poll_total_votes"] = self._as_int((poll_payload or {}).get("total_votes"))
+        return reads
+
+    def add_announcement_attachment(self, *, announcement_id: str, user: dict[str, Any], file_name: str, file_bytes: bytes, file_mime: str = "") -> dict[str, Any]:
+        ann_id = _normalize_text(announcement_id)
+        user_id = self._as_int(user.get("id"))
+        with self._lock, self._connect() as conn:
+            announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if announcement is None:
+                raise LookupError("Announcement not found")
+            if not self._user_can_moderate_announcements(user) and self._as_int(announcement["author_user_id"]) != user_id:
+                raise PermissionError("Only publication author or moderator can change attachments")
+            order_row = conn.execute(f"SELECT COALESCE(MAX(sort_order), -1) AS n FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ?", (ann_id,)).fetchone()
+            attachment_id = str(uuid.uuid4())
+            safe_name, rel_path, file_size = self._store_attachment_file(root=self.announcement_attachments_root, parent_id=ann_id, attachment_id=attachment_id, file_name=file_name, file_bytes=file_bytes)
+            is_image = _normalize_text(file_mime).lower().startswith("image/") or self._announcement_attachment_is_image({"file_name": safe_name})
+            cover_row = conn.execute(f"SELECT id FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ? AND is_cover = 1", (ann_id,)).fetchone()
+            conn.execute(
+                f"""INSERT INTO {self._ANN_ATTACH_TABLE}
+                    (id, announcement_id, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at, sort_order, is_cover)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (attachment_id, ann_id, safe_name, rel_path, _normalize_text(file_mime), file_size, user_id, _normalize_text(user.get("username")), _utc_now_iso(), self._as_int(order_row["n"]) + 1, 1 if is_image and cover_row is None else 0),
+            )
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._ANN_ATTACH_TABLE} WHERE id = ?", (attachment_id,)).fetchone()
+        return self._attachment_row_to_dict(row) if row else {"id": attachment_id}
+
+    def update_announcement_attachment_order(self, *, announcement_id: str, user: dict[str, Any], attachment_ids: list[str], cover_attachment_id: str = "") -> list[dict[str, Any]]:
+        ann_id = _normalize_text(announcement_id)
+        with self._lock, self._connect() as conn:
+            announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            if announcement is None:
+                raise LookupError("Announcement not found")
+            if not self._user_can_moderate_announcements(user) and self._as_int(announcement["author_user_id"]) != self._as_int(user.get("id")):
+                raise PermissionError("Only publication author or moderator can change attachments")
+            existing_rows = conn.execute(
+                f"SELECT id, file_name, file_mime FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ?",
+                (ann_id,),
+            ).fetchall()
+            existing_by_id = {_normalize_text(row["id"]): dict(row) for row in existing_rows}
+            existing = set(existing_by_id)
+            ordered = [value for value in self._unique_texts(attachment_ids) if value in existing]
+            ordered.extend(sorted(existing - set(ordered)))
+            normalized_cover_id = _normalize_text(cover_attachment_id)
+            if normalized_cover_id:
+                cover = existing_by_id.get(normalized_cover_id)
+                if cover is None or not self._announcement_attachment_is_image(cover):
+                    raise ValueError("Publication cover must be an image")
+            for index, attachment_id in enumerate(ordered):
+                conn.execute(f"UPDATE {self._ANN_ATTACH_TABLE} SET sort_order = ?, is_cover = ? WHERE id = ? AND announcement_id = ?", (index, 1 if attachment_id == normalized_cover_id else 0, attachment_id, ann_id))
+            conn.commit()
+            return self._list_announcement_attachments(conn, ann_id)
+
+    def delete_announcement_attachment(self, *, announcement_id: str, attachment_id: str, user: dict[str, Any]) -> bool:
+        ann_id = _normalize_text(announcement_id)
+        with self._lock, self._connect() as conn:
+            announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
+            row = conn.execute(f"SELECT * FROM {self._ANN_ATTACH_TABLE} WHERE id = ? AND announcement_id = ?", (_normalize_text(attachment_id), ann_id)).fetchone()
+            if announcement is None or row is None:
+                return False
+            if not self._user_can_moderate_announcements(user) and self._as_int(announcement["author_user_id"]) != self._as_int(user.get("id")):
+                raise PermissionError("Only publication author or moderator can change attachments")
+            conn.execute(f"DELETE FROM {self._ANN_ATTACH_TABLE} WHERE id = ?", (_normalize_text(attachment_id),))
+            conn.commit()
+        self._remove_relative_files([_normalize_text(row["file_path"])])
+        return True
+
+    def get_announcement_comment_attachment(self, *, announcement_id: str, comment_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM {self._ANN_COMMENT_ATTACH_TABLE} WHERE id = ? AND comment_id = ? AND announcement_id = ?",
+                (_normalize_text(attachment_id), _normalize_text(comment_id), _normalize_text(announcement_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            item = dict(row)
+            item["file_abs_path"] = str((self.data_dir / _normalize_text(item.get("file_path"))).resolve())
+            return item
 
     def get_announcement_attachment(self, *, announcement_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
         ann_id = _normalize_text(announcement_id)
@@ -3687,6 +5942,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         actor: dict[str, Any],
         initial_status: str = "new",
     ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        stages: dict[str, float] = {}
+        validate_started = time.perf_counter()
         title_text = _normalize_text(title)
         if len(title_text) < 3:
             raise ValueError("Task title must contain at least 3 characters")
@@ -3722,7 +5980,19 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         visibility_scope_text = normalize_visibility_scope(visibility_scope, default=VISIBILITY_PRIVATE)
         if not normalized_department_id:
             visibility_scope_text = VISIBILITY_PRIVATE
-        with self._lock, self._connect() as conn:
+        stages["validate_ms"] = self._elapsed_ms(validate_started)
+
+        assignee_id = self._as_int(assignee.get("id"))
+        actor_id = self._as_int(actor.get("id"))
+        creator_id = actor_id
+        normalized_observer_ids = self._normalize_observer_user_ids(
+            observer_user_ids,
+            creator_user_id=creator_id,
+            assignee_user_id=assignee_id,
+            controller_user_id=controller_id,
+        )
+        db_started = time.perf_counter()
+        with self._db_conn(write=True) as conn:
             self._ensure_task_status_log_table(conn)
             validated_project_id, validated_object_id = self._validate_task_project_object(
                 conn,
@@ -3737,13 +6007,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             normalized_email_deadline_remind_hours = None
             if normalized_due_at and email_deadline_remind_hours is not None:
                 normalized_email_deadline_remind_hours = _normalize_email_deadline_remind_hours(email_deadline_remind_hours)
-            creator_id = self._as_int(actor.get("id"))
-            normalized_observer_ids = self._normalize_observer_user_ids(
-                observer_user_ids,
-                creator_user_id=creator_id,
-                assignee_user_id=self._as_int(assignee.get("id")),
-                controller_user_id=controller_id,
-            )
             serialized_observer_user_ids = self._serialize_json_list(normalized_observer_ids)
             conn.execute(
                 f"""
@@ -3772,7 +6035,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     normalized_department_id or None,
                     visibility_scope_text,
                     serialized_observer_user_ids,
-                    self._as_int(assignee.get("id")),
+                    assignee_id,
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
                     controller_id if controller else 0,
@@ -3790,44 +6053,63 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 task_id=task_id,
                 old_status="",
                 new_status=initial_status_text,
-                user_id=self._as_int(actor.get("id")),
+                user_id=actor_id,
                 username=_normalize_text(actor.get("username")),
             )
-            assignee_id = self._as_int(assignee.get("id"))
-            actor_id = self._as_int(actor.get("id"))
-            assignee_recipients = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
-            self._create_task_notifications(
-                conn,
-                recipient_user_ids=assignee_recipients,
-                skip_user_ids={actor_id},
-                event_type="task.assigned",
-                title="Новая задача",
-                body=title_text,
-                task_id=task_id,
-            )
-            if controller_id > 0:
-                self._create_task_notifications(
-                    conn,
-                    recipient_user_ids={controller_id},
-                    skip_user_ids={actor_id, assignee_id},
-                    event_type="task.controller_assigned",
-                    title="Вы назначены контролером задачи",
-                    body=title_text,
-                    task_id=task_id,
-                )
-            if normalized_observer_ids:
-                self._create_task_notifications(
-                    conn,
-                    recipient_user_ids=set(normalized_observer_ids),
-                    skip_user_ids={actor_id, assignee_id, controller_id},
-                    event_type="task.observer_added",
-                    title="Вас добавили наблюдателем задачи",
-                    body=title_text,
-                    task_id=task_id,
-                )
             conn.commit()
-            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (task_id,)).fetchone()
-            return self._task_with_latest_report(conn, row, viewer_user_id=self._as_int(actor.get("id"))) if row else {}
+        stages["db_write_ms"] = self._elapsed_ms(db_started)
+
+        assignee_recipients = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
+        recipient_count = len(assignee_recipients) + (1 if controller_id > 0 else 0) + len(normalized_observer_ids)
+        notify_started = time.perf_counter()
+        with self._hub_push_deferred() as push_stats:
+            with self._db_conn(write=True) as conn:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids=assignee_recipients,
+                    skip_user_ids={actor_id},
+                    event_type="task.assigned",
+                    title="Новая задача",
+                    body=title_text,
+                    task_id=task_id,
+                )
+                if controller_id > 0:
+                    self._create_task_notifications(
+                        conn,
+                        recipient_user_ids={controller_id},
+                        skip_user_ids={actor_id, assignee_id},
+                        event_type="task.controller_assigned",
+                        title="Вы назначены контролером задачи",
+                        body=title_text,
+                        task_id=task_id,
+                    )
+                if normalized_observer_ids:
+                    self._create_task_notifications(
+                        conn,
+                        recipient_user_ids=set(normalized_observer_ids),
+                        skip_user_ids={actor_id, assignee_id, controller_id},
+                        event_type="task.observer_added",
+                        title="Вас добавили наблюдателем задачи",
+                        body=title_text,
+                        task_id=task_id,
+                    )
+                conn.commit()
+            stages["notifications_ms"] = self._elapsed_ms(notify_started)
+            enrich_started = time.perf_counter()
+            with self._db_conn(write=False) as conn:
+                row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (task_id,)).fetchone()
+                result = self._task_with_latest_report(conn, row, viewer_user_id=actor_id) if row else {}
+            stages["enrich_ms"] = self._elapsed_ms(enrich_started)
+        stages["push_flush_ms"] = float(push_stats.get("push_flush_ms") or 0.0)
+        self._log_task_write_timing(
+            "create",
+            started_at=started_at,
+            stages=stages,
+            task_id=task_id,
+            recipients=recipient_count,
+            push_jobs=int(push_stats.get("push_jobs") or 0),
+        )
+        return result
 
     def update_task(
         self,
@@ -4175,6 +6457,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 f"DELETE FROM {self._NOTIF_TABLE} WHERE entity_type = 'task' AND entity_id = ?",
                 (normalized_id,),
             )
+            conn.execute(f"DELETE FROM {self._TASK_ATTACHMENT_PREVIEWS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_ATTACH_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_REPORTS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_COMMENTS_TABLE} WHERE task_id = ?", (normalized_id,))
@@ -4185,9 +6468,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
 
         self._remove_relative_files(file_paths)
         self._remove_dir_quiet(self.task_attachments_root / normalized_id)
+        self._remove_dir_quiet(self.task_attachment_previews_root / normalized_id)
         return True
 
     def delete_notifications_for_entity(self, *, entity_type: str, entity_id: str) -> int:
+        """Atomically delete notifications for one entity.
+
+        Kept as a single DELETE (not batched): after idx_hub_notifications_entity
+        a typical task removes few rows and must stay immediately consistent with
+        task/announcement deletion.
+        """
         normalized_type = _normalize_text(entity_type)
         normalized_id = _normalize_text(entity_id)
         if not normalized_type or not normalized_id:
@@ -4214,6 +6504,143 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             )
             conn.commit()
         return len(notification_ids)
+
+    def _notifications_use_postgres(self) -> bool:
+        if not self._use_app_db or not self._database_url:
+            return False
+        try:
+            engine = get_app_engine(self._database_url)
+            return str(engine.dialect.name).lower() == "postgresql"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _notification_cleanup_batch_size(value: Any = None) -> int:
+        if value is None:
+            raw = os.getenv("HUB_NOTIFICATIONS_CLEANUP_BATCH_SIZE", "500")
+            try:
+                value = int(raw)
+            except Exception:
+                value = 500
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = 500
+        return max(1, min(5000, parsed))
+
+    def cleanup_old_notifications(
+        self,
+        *,
+        older_than_iso: str,
+        batch_size: int | None = None,
+        max_batches: int = 1,
+        entity_type: str | None = None,
+        recipient_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Delete historical notifications in short committed batches.
+
+        Intended for old/recipient/admin cleanup — not for per-task entity delete.
+        One HTTP request should pass max_batches=1 (or enqueue a worker).
+        """
+        cutoff = _normalize_text(older_than_iso)
+        if not cutoff:
+            raise ValueError("older_than_iso is required")
+        safe_batch = self._notification_cleanup_batch_size(batch_size)
+        try:
+            safe_max_batches = max(1, min(10_000, int(max_batches)))
+        except Exception:
+            safe_max_batches = 1
+        normalized_entity_type = _normalize_text(entity_type) or None
+        normalized_recipient = self._as_int(recipient_user_id, 0)
+        use_skip_locked = self._notifications_use_postgres()
+
+        deleted_total = 0
+        batches_done = 0
+        errors: list[str] = []
+        has_more = False
+        started = time.perf_counter()
+
+        where = ["created_at < ?"]
+        base_params: list[Any] = [cutoff]
+        if normalized_entity_type:
+            where.append("entity_type = ?")
+            base_params.append(normalized_entity_type)
+        if normalized_recipient > 0:
+            where.append("recipient_user_id = ?")
+            base_params.append(normalized_recipient)
+        where_sql = " AND ".join(where)
+
+        for _ in range(safe_max_batches):
+            batch_started = time.perf_counter()
+            try:
+                with self._db_conn(write=True) as conn:
+                    select_sql = f"""
+                        SELECT id
+                        FROM {self._NOTIF_TABLE}
+                        WHERE {where_sql}
+                        ORDER BY id
+                        LIMIT ?
+                    """
+                    if use_skip_locked:
+                        select_sql = f"""
+                            SELECT id
+                            FROM {self._NOTIF_TABLE}
+                            WHERE {where_sql}
+                            ORDER BY id
+                            LIMIT ?
+                            FOR UPDATE SKIP LOCKED
+                        """
+                    rows = conn.execute(
+                        select_sql,
+                        tuple([*base_params, safe_batch]),
+                    ).fetchall()
+                    notification_ids = [
+                        _normalize_text(item["id"])
+                        for item in rows
+                        if _normalize_text(item["id"])
+                    ]
+                    if not notification_ids:
+                        has_more = False
+                        break
+                    placeholders = ", ".join(["?"] * len(notification_ids))
+                    conn.execute(
+                        f"DELETE FROM {self._NOTIF_READS_TABLE} WHERE notification_id IN ({placeholders})",
+                        tuple(notification_ids),
+                    )
+                    conn.execute(
+                        f"DELETE FROM {self._NOTIF_TABLE} WHERE id IN ({placeholders})",
+                        tuple(notification_ids),
+                    )
+                    conn.commit()
+                    deleted_total += len(notification_ids)
+                    batches_done += 1
+                    has_more = len(notification_ids) >= safe_batch
+                    logger.info(
+                        "hub.notifications.cleanup_batch deleted=%s deleted_ms=%.1f batch=%s",
+                        len(notification_ids),
+                        (time.perf_counter() - batch_started) * 1000.0,
+                        batches_done,
+                    )
+                    if not has_more:
+                        break
+            except Exception as exc:  # noqa: BLE001 — stop after a failed batch; prior commits remain
+                errors.append(str(exc) or exc.__class__.__name__)
+                break
+
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        return {
+            "deleted": deleted_total,
+            "batches": batches_done,
+            "batch_size": safe_batch,
+            "max_batches": safe_max_batches,
+            "has_more": bool(has_more),
+            "errors": errors,
+            "deleted_ms": elapsed_ms,
+            "older_than_iso": cutoff,
+            "entity_type": normalized_entity_type,
+            "recipient_user_id": normalized_recipient or None,
+            "skip_locked": bool(use_skip_locked),
+        }
 
     @staticmethod
     def _analytics_protocol_basis_expr() -> str:
@@ -4807,6 +7234,33 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_department_id = _normalize_text(department_id)
         normalized_sort_by = _normalize_text(sort_by, "status").lower()
         normalized_sort_dir = "desc" if _normalize_text(sort_dir).lower() == "desc" else "asc"
+        normalized_status = _normalize_text(status_filter).lower()
+        normalized_focus_mode = _normalize_text(focus_mode).lower()
+        cacheable_default = (
+            normalized_scope == "my"
+            and normalized_role_scope == "both"
+            and not normalized_status
+            and not normalized_query
+            and assignee_user_id is None
+            and controller_user_id is None
+            and not normalized_department_id
+            and not bool(has_attachments)
+            and not normalized_due_state
+            and not bool(unread_comments_only)
+            and not normalized_focus_mode
+            and safe_offset == 0
+        )
+        tasks_cache_key: tuple[Any, ...] | None = None
+        if cacheable_default:
+            tasks_cache_key = (
+                int(user_id),
+                safe_limit,
+                normalized_sort_by,
+                normalized_sort_dir,
+            )
+            cached_tasks = self._get_cached_tasks_list(tasks_cache_key)
+            if cached_tasks is not None:
+                return cached_tasks
         where_clauses: list[str] = []
         params: list[Any] = []
         delegate_owner_ids = user_service.get_delegate_owner_ids(int(user_id))
@@ -4847,7 +7301,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if normalized_department_id:
             where_clauses.append("department_id = ?")
             params.append(normalized_department_id)
-        normalized_status = _normalize_text(status_filter).lower()
         if normalized_status:
             where_clauses.append("status = ?")
             params.append(normalized_status)
@@ -4871,7 +7324,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             params.append(now_iso[:10])
         elif normalized_due_state == "none":
             where_clauses.append("(due_at IS NULL OR due_at = '')")
-        normalized_focus_mode = _normalize_text(focus_mode).lower()
         if unread_comments_only or normalized_focus_mode == "comments":
             unread_clause, unread_params = self._unread_comments_exists_sql(user_id=int(user_id))
             where_clauses.append(unread_clause)
@@ -4958,26 +7410,28 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             )
             projects_by_id = self._load_records_by_ids(conn, table=self._TASK_PROJECTS_TABLE, ids=project_ids)
             objects_by_id = self._load_records_by_ids(conn, table=self._TASK_OBJECTS_TABLE, ids=object_ids)
-            departments_by_id = {
-                department_id: department_service.get_department(department_id)
-                for department_id in department_ids
-            }
-            users_by_id = self._users_by_id()
+            if department_ids:
+                all_departments = department_service.list_departments(include_inactive=True)
+                departments_by_id = {
+                    _normalize_text(item.get("id")): item
+                    for item in all_departments
+                    if _normalize_text(item.get("id")) in set(department_ids)
+                }
+            else:
+                departments_by_id = {}
+            # Lean list: no full observers directory enrich (observer_user_ids only).
             items = [
-                self._enrich_task_observer_fields(
-                    self._task_to_list_item(
-                        row,
-                        batch_ctx,
-                        projects_by_id=projects_by_id,
-                        objects_by_id=objects_by_id,
-                        departments_by_id=departments_by_id,
-                    ),
-                    users_by_id=users_by_id,
+                self._task_to_list_item(
+                    row,
+                    batch_ctx,
+                    projects_by_id=projects_by_id,
+                    objects_by_id=objects_by_id,
+                    departments_by_id=departments_by_id,
                 )
                 for row in visible_rows
             ]
 
-        return {
+        payload = {
             "items": items,
             "total": total_count,
             "limit": safe_limit,
@@ -4999,6 +7453,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "sort_dir": normalized_sort_dir,
             },
         }
+        if tasks_cache_key is not None:
+            self._store_tasks_list_cache(tasks_cache_key, payload)
+        return payload
 
     def _can_act_as_assignee(self, task: dict[str, Any], user_id: int) -> bool:
         normalized_user_id = self._as_int(user_id)
@@ -5010,34 +7467,174 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         delegate_owner_ids = user_service.get_delegate_owner_ids(normalized_user_id)
         return assignee_id in {self._as_int(item) for item in (delegate_owner_ids or [])}
 
+    def _transition_spec(self, operation: str) -> dict[str, Any]:
+        from backend.services.hub_task_transitions import TRANSITION_MATRIX
+
+        spec = TRANSITION_MATRIX.get(str(operation or "").strip())
+        if not spec:
+            raise ValueError(f"Unknown task transition operation: {operation}")
+        return spec
+
+    def _rowcount(self, result: Any) -> int:
+        try:
+            return max(0, int(getattr(result, "rowcount", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _raise_task_transition_conflict(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        task_id: str,
+        operation: str,
+        expected_statuses: set[str] | frozenset[str],
+        requested_status: str,
+        user_id: int | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        from backend.services.hub_task_transitions import (
+            build_conflict_payload,
+            expected_status_label,
+            note_transition_conflict,
+        )
+
+        row = conn.execute(
+            f"SELECT id, status, updated_at FROM {self._TASKS_TABLE} WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        current = dict(row) if row is not None else {}
+        current_status = _normalize_text(current.get("status")).lower() or None
+        expected_label = expected_status_label(expected_statuses)
+        note_transition_conflict(
+            operation=operation,
+            expected_status=expected_label,
+            target_status=requested_status,
+        )
+        payload = build_conflict_payload(
+            task_id=task_id,
+            operation=operation,
+            expected_statuses=expected_statuses,
+            requested_status=requested_status,
+            current_status=current_status,
+            current_updated_at=_normalize_text(current.get("updated_at")) or None,
+            current_version=None,
+        )
+        logger.info(
+            "hub.task.transition_conflict task_id=%s user_id=%s operation=%s expected=%s "
+            "requested=%s current=%s correlation_id=%s",
+            task_id,
+            user_id,
+            operation,
+            expected_label,
+            requested_status,
+            current_status,
+            correlation_id or "",
+        )
+        from backend.services.hub_task_transitions import TaskTransitionConflict
+
+        raise TaskTransitionConflict(payload)
+
+    def _conditional_status_update(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        task_id: str,
+        operation: str,
+        expected_statuses: set[str] | frozenset[str],
+        target_status: str,
+        set_sql: str,
+        set_params: tuple[Any, ...] | list[Any],
+        user_id: int | None = None,
+        correlation_id: str | None = None,
+    ) -> str:
+        """Atomically update status when current status ∈ expected_statuses.
+
+        Returns previous status that was matched (from soft-read is NOT used as truth —
+        success is solely rowcount==1). On zero rows raises TaskTransitionConflict.
+        """
+        from backend.services.hub_task_transitions import expected_status_label, note_transition_attempt
+
+        expected = frozenset(str(item).strip().lower() for item in expected_statuses if str(item).strip())
+        if not expected:
+            raise ValueError("expected_statuses must not be empty")
+        target = _normalize_text(target_status).lower()
+        expected_label = expected_status_label(expected)
+        note_transition_attempt(operation=operation, expected_status=expected_label, target_status=target)
+        placeholders = ", ".join(["?"] * len(expected))
+        sql = f"""
+            UPDATE {self._TASKS_TABLE}
+            SET {set_sql}
+            WHERE id = ? AND status IN ({placeholders})
+            """
+        params = tuple(set_params) + (task_id, *sorted(expected))
+        tx_started = time.perf_counter()
+        result = conn.execute(sql, params)
+        if self._rowcount(result) <= 0:
+            self._raise_task_transition_conflict(
+                conn,
+                task_id=task_id,
+                operation=operation,
+                expected_statuses=expected,
+                requested_status=target,
+                user_id=user_id,
+                correlation_id=correlation_id,
+            )
+        # Recover matched old status for status_log: prefer single expected, else re-read is wrong
+        # after update. Store old_status as the only expected when singleton; otherwise use
+        # the pre-update soft status passed by caller via set_params side channel — callers
+        # pass old_status explicitly to _log_status_change.
+        logger.info(
+            "hub.task.transition_success task_id=%s user_id=%s operation=%s expected=%s "
+            "target=%s transaction_ms=%.2f correlation_id=%s",
+            task_id,
+            user_id,
+            operation,
+            expected_label,
+            target,
+            self._elapsed_ms(tx_started),
+            correlation_id or "",
+        )
+        from backend.services.hub_task_transitions import note_transition_success
+
+        note_transition_success(operation=operation, expected_status=expected_label, target_status=target)
+        return target
+
     def start_task(self, *, task_id: str, user: dict[str, Any]) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
             return None
         user_id = self._as_int(user.get("id"))
         now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
+        spec = self._transition_spec("start")
+        expected = set(spec["from"])
+        target = str(spec["to"])
+        with self._db_conn(write=True) as conn:
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
                 return None
             task = dict(row)
             if not self._can_act_as_assignee(task, user_id):
                 raise PermissionError("Only assignee can start the task")
-            if _normalize_text(task.get("status")).lower() == "done":
-                raise ValueError("Task is already completed")
-            if _normalize_text(task.get("status")).lower() == "review":
-                raise ValueError("Task is already waiting for review")
-            old_status = _normalize_text(task.get("status"))
-            conn.execute(
-                f"""
-                UPDATE {self._TASKS_TABLE}
-                SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (now_iso, normalized_id),
+            old_status = _normalize_text(task.get("status")).lower()
+            self._conditional_status_update(
+                conn,
+                task_id=normalized_id,
+                operation="start",
+                expected_statuses=expected,
+                target_status=target,
+                set_sql="status = ?, completed_at = NULL, completed_at_source = NULL, updated_at = ?",
+                set_params=(target, now_iso),
+                user_id=user_id,
             )
             self._ensure_task_status_log_table(conn)
-            self._log_status_change(conn, task_id=normalized_id, old_status=old_status, new_status="in_progress", user_id=user_id, username=_normalize_text(user.get("username")))
+            self._log_status_change(
+                conn,
+                task_id=normalized_id,
+                old_status=old_status if old_status in expected else sorted(expected)[0],
+                new_status=target,
+                user_id=user_id,
+                username=_normalize_text(user.get("username")),
+            )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
@@ -5070,44 +7667,60 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return None
         user_id = self._as_int(user.get("id"))
         now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
+        spec = self._transition_spec("reopen")
+        expected = set(spec["from"])
+        target = str(spec["to"])
+        with self._db_conn(write=True) as conn:
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
                 return None
             task = dict(row)
-            if _normalize_text(task.get("status")).lower() != "done":
-                raise ValueError("Task is not completed")
             if not self._can_reopen_task(task, user, is_admin=is_admin):
+                if _normalize_text(task.get("integration_kind")).lower() == "transfer_act_upload":
+                    raise PermissionError("Transfer-act tasks cannot be reopened")
+                if _normalize_text(task.get("status")).lower() not in expected:
+                    self._raise_task_transition_conflict(
+                        conn,
+                        task_id=normalized_id,
+                        operation="reopen",
+                        expected_statuses=expected,
+                        requested_status=target,
+                        user_id=user_id,
+                    )
                 raise PermissionError("Only task participants can reopen the task")
-            old_status = _normalize_text(task.get("status"))
+            old_status = _normalize_text(task.get("status")).lower()
             if due_at_provided:
                 next_due_at = _normalize_text(due_at) or None
             else:
                 next_due_at = _normalize_text(task.get("due_at")) or None
             if due_at_provided:
-                conn.execute(
-                    f"""
-                    UPDATE {self._TASKS_TABLE}
-                    SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, due_at = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (next_due_at, now_iso, normalized_id),
+                self._conditional_status_update(
+                    conn,
+                    task_id=normalized_id,
+                    operation="reopen",
+                    expected_statuses=expected,
+                    target_status=target,
+                    set_sql="status = ?, completed_at = NULL, completed_at_source = NULL, due_at = ?, updated_at = ?",
+                    set_params=(target, next_due_at, now_iso),
+                    user_id=user_id,
                 )
             else:
-                conn.execute(
-                    f"""
-                    UPDATE {self._TASKS_TABLE}
-                    SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now_iso, normalized_id),
+                self._conditional_status_update(
+                    conn,
+                    task_id=normalized_id,
+                    operation="reopen",
+                    expected_statuses=expected,
+                    target_status=target,
+                    set_sql="status = ?, completed_at = NULL, completed_at_source = NULL, updated_at = ?",
+                    set_params=(target, now_iso),
+                    user_id=user_id,
                 )
             self._ensure_task_status_log_table(conn)
             self._log_status_change(
                 conn,
                 task_id=normalized_id,
-                old_status=old_status,
-                new_status="in_progress",
+                old_status=old_status if old_status in expected else "done",
+                new_status=target,
                 user_id=user_id,
                 username=_normalize_text(user.get("username")),
             )
@@ -5143,130 +7756,175 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         file_bytes: Optional[bytes],
         file_mime: Optional[str],
     ) -> Optional[dict[str, Any]]:
+        started_at = time.perf_counter()
+        stages: dict[str, float] = {}
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
             return None
         user_id = self._as_int(user.get("id"))
         now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            if row is None:
-                return None
-            task = dict(row)
-            if not self._can_act_as_assignee(task, user_id):
-                raise PermissionError("Only assignee can submit the task")
-            if _normalize_text(task.get("status")).lower() == "done":
-                raise ValueError("Task is already completed")
-            if _normalize_text(task.get("status")).lower() == "review":
-                raise ValueError("Task is already waiting for review")
-
-            report_id = str(uuid.uuid4())
-            rel_path: Optional[str] = None
-            safe_name: Optional[str] = None
-            file_size: Optional[int] = None
-            if file_bytes:
-                safe_name, rel_path, file_size = self._store_attachment_file(
-                    root=self.task_attachments_root,
-                    parent_id=normalized_id,
-                    attachment_id=report_id,
-                    file_name=file_name or "report.bin",
-                    file_bytes=bytes(file_bytes),
-                )
-
-            conn.execute(
-                f"""
-                INSERT INTO {self._TASK_REPORTS_TABLE}
-                (id, task_id, comment, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    report_id,
-                    normalized_id,
-                    _normalize_text(comment),
-                    safe_name,
-                    rel_path,
-                    _normalize_text(file_mime),
-                    file_size,
-                    user_id,
-                    _normalize_text(user.get("username")),
-                    now_iso,
-                ),
+        title_text = ""
+        creator_user_id = 0
+        controller_user_id = 0
+        db_started = time.perf_counter()
+        spec = self._transition_spec("submit")
+        expected = set(spec["from"])
+        target = str(spec["to"])
+        report_id = str(uuid.uuid4())
+        rel_path: Optional[str] = None
+        safe_name: Optional[str] = None
+        file_size: Optional[int] = None
+        if file_bytes:
+            safe_name, rel_path, file_size = self._store_attachment_file(
+                root=self.task_attachments_root,
+                parent_id=normalized_id,
+                attachment_id=report_id,
+                file_name=file_name or "report.bin",
+                file_bytes=bytes(file_bytes),
             )
-            if rel_path and safe_name:
-                self._insert_task_attachment(
-                    conn=conn,
+        try:
+            with self._db_conn(write=True) as conn:
+                row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                if row is None:
+                    raise LookupError("Task not found")
+                task = dict(row)
+                if not self._can_act_as_assignee(task, user_id):
+                    raise PermissionError("Only assignee can submit the task")
+                old_status = _normalize_text(task.get("status")).lower()
+                self._conditional_status_update(
+                    conn,
                     task_id=normalized_id,
-                    scope="report",
-                    file_name=safe_name,
-                    file_path=rel_path,
-                    file_mime=file_mime,
-                    file_size=self._as_int(file_size),
+                    operation="submit",
+                    expected_statuses=expected,
+                    target_status=target,
+                    set_sql="status = ?, submitted_at = ?, completed_at = NULL, completed_at_source = NULL, updated_at = ?",
+                    set_params=(target, now_iso, now_iso),
+                    user_id=user_id,
+                )
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._TASK_REPORTS_TABLE}
+                    (id, task_id, comment, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report_id,
+                        normalized_id,
+                        _normalize_text(comment),
+                        safe_name,
+                        rel_path,
+                        _normalize_text(file_mime),
+                        file_size,
+                        user_id,
+                        _normalize_text(user.get("username")),
+                        now_iso,
+                    ),
+                )
+                if rel_path and safe_name:
+                    self._insert_task_attachment(
+                        conn=conn,
+                        task_id=normalized_id,
+                        scope="report",
+                        file_name=safe_name,
+                        file_path=rel_path,
+                        file_mime=file_mime,
+                        file_size=self._as_int(file_size),
+                        user_id=user_id,
+                        username=_normalize_text(user.get("username")),
+                        uploaded_at=now_iso,
+                    )
+                self._ensure_task_status_log_table(conn)
+                self._log_status_change(
+                    conn,
+                    task_id=normalized_id,
+                    old_status=old_status if old_status in expected else sorted(expected)[0],
+                    new_status=target,
                     user_id=user_id,
                     username=_normalize_text(user.get("username")),
-                    uploaded_at=now_iso,
                 )
-            conn.execute(
-                f"""
-                UPDATE {self._TASKS_TABLE}
-                SET status = 'review', submitted_at = ?, completed_at = NULL, completed_at_source = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (now_iso, now_iso, normalized_id),
-            )
-            self._ensure_task_status_log_table(conn)
-            self._log_status_change(
-                conn,
-                task_id=normalized_id,
-                old_status=_normalize_text(task.get("status")),
-                new_status="review",
-                user_id=user_id,
-                username=_normalize_text(user.get("username")),
-            )
-            title_text = _normalize_text(task.get("title"))
-            creator_user_id = self._as_int(task.get("created_by_user_id"))
-            controller_user_id = self._as_int(task.get("controller_user_id"))
-            if creator_user_id > 0 and creator_user_id != user_id:
-                self._create_notification(
-                    recipient_user_id=creator_user_id,
-                    event_type="task.submitted",
-                    title="Задача отправлена на проверку",
-                    body=title_text,
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
-                )
-                self._queue_task_email_event(
-                    conn,
-                    recipient_user_id=creator_user_id,
-                    event_type="task.submitted",
-                    task_id=normalized_id,
-                    notification_title="Задача отправлена на проверку",
-                    notification_body=title_text,
-                    dedupe_hint=now_iso,
-                )
-            if controller_user_id > 0 and controller_user_id not in {user_id, creator_user_id}:
-                self._create_notification(
-                    recipient_user_id=controller_user_id,
-                    event_type="task.review_required",
-                    title="Требуется проверка задачи",
-                    body=title_text,
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
-                )
-                self._queue_task_email_event(
-                    conn,
-                    recipient_user_id=controller_user_id,
-                    event_type="task.review_required",
-                    task_id=normalized_id,
-                    notification_title="Требуется проверка задачи",
-                    notification_body=title_text,
-                    dedupe_hint=now_iso,
-                )
-            self._schedule_task_email_outbox_dispatch()
-            conn.commit()
-            updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+                title_text = _normalize_text(task.get("title"))
+                creator_user_id = self._as_int(task.get("created_by_user_id"))
+                controller_user_id = self._as_int(task.get("controller_user_id"))
+                conn.commit()
+        except Exception:
+            if rel_path:
+                try:
+                    abs_path = (self.data_dir / rel_path).resolve()
+                    if abs_path.is_file():
+                        abs_path.unlink()
+                except Exception:
+                    pass
+            raise
+        stages["db_write_ms"] = self._elapsed_ms(db_started)
+
+        notify_started = time.perf_counter()
+        recipients = 0
+        with self._hub_push_deferred() as push_stats:
+            with self._db_conn(write=True) as conn:
+                email_task = None
+                row_after = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                if row_after is not None:
+                    email_task = self._task_with_latest_report(conn, row_after, viewer_user_id=None)
+                if creator_user_id > 0 and creator_user_id != user_id:
+                    recipients += 1
+                    self._create_notification(
+                        recipient_user_id=creator_user_id,
+                        event_type="task.submitted",
+                        title="Задача отправлена на проверку",
+                        body=title_text,
+                        entity_type="task",
+                        entity_id=normalized_id,
+                        conn=conn,
+                    )
+                    self._queue_task_email_event(
+                        conn,
+                        recipient_user_id=creator_user_id,
+                        event_type="task.submitted",
+                        task_id=normalized_id,
+                        notification_title="Задача отправлена на проверку",
+                        notification_body=title_text,
+                        dedupe_hint=now_iso,
+                        task=email_task,
+                    )
+                if controller_user_id > 0 and controller_user_id not in {user_id, creator_user_id}:
+                    recipients += 1
+                    self._create_notification(
+                        recipient_user_id=controller_user_id,
+                        event_type="task.review_required",
+                        title="Требуется проверка задачи",
+                        body=title_text,
+                        entity_type="task",
+                        entity_id=normalized_id,
+                        conn=conn,
+                    )
+                    self._queue_task_email_event(
+                        conn,
+                        recipient_user_id=controller_user_id,
+                        event_type="task.review_required",
+                        task_id=normalized_id,
+                        notification_title="Требуется проверка задачи",
+                        notification_body=title_text,
+                        dedupe_hint=now_iso,
+                        task=email_task,
+                    )
+                self._schedule_task_email_outbox_dispatch()
+                conn.commit()
+            stages["notifications_ms"] = self._elapsed_ms(notify_started)
+            enrich_started = time.perf_counter()
+            with self._db_conn(write=False) as conn:
+                updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                result = self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+            stages["enrich_ms"] = self._elapsed_ms(enrich_started)
+        stages["push_flush_ms"] = float(push_stats.get("push_flush_ms") or 0.0)
+        self._log_task_write_timing(
+            "submit",
+            started_at=started_at,
+            stages=stages,
+            task_id=normalized_id,
+            recipients=recipients,
+            push_jobs=int(push_stats.get("push_jobs") or 0),
+        )
+        return result
 
     def review_task(
         self,
@@ -5277,35 +7935,52 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         comment: str,
         is_admin: bool = False,
     ) -> Optional[dict[str, Any]]:
+        started_at = time.perf_counter()
+        stages: dict[str, float] = {}
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
             return None
         decision_text = _normalize_text(decision).lower()
         if decision_text not in {"approve", "reject"}:
+            from backend.services.hub_task_transitions import note_transition_invalid
+
+            note_transition_invalid(operation="review", expected_status="review", target_status="")
             raise ValueError("Review decision must be approve or reject")
         now_iso = _utc_now_iso()
-        next_status = "done" if decision_text == "approve" else "in_progress"
-        with self._lock, self._connect() as conn:
+        operation = "approve" if decision_text == "approve" else "reject"
+        spec = self._transition_spec(operation)
+        expected = set(spec["from"])
+        next_status = str(spec["to"])
+        reviewer_id = self._as_int(reviewer.get("id"))
+        creator_id = 0
+        controller_id = 0
+        assignee_id = 0
+        title_text = ""
+        review_result = "Принято" if next_status == "done" else "Возвращено"
+        db_started = time.perf_counter()
+        with self._db_conn(write=True) as conn:
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
                 return None
             task = dict(row)
-            reviewer_id = self._as_int(reviewer.get("id"))
             creator_id = self._as_int(task.get("created_by_user_id"))
             controller_id = self._as_int(task.get("controller_user_id"))
             if _assignee_cannot_review_as_non_creator(reviewer, task):
                 raise PermissionError("Assignee cannot review a task they did not assign to themselves")
             if not can_review_task(reviewer, task):
                 raise PermissionError("Only task creator, controller, or admin can review this task")
-            if _normalize_text(task.get("status")).lower() != "review":
-                raise ValueError("Task is not waiting for review")
-            conn.execute(
-                f"""
-                UPDATE {self._TASKS_TABLE}
-                SET status = ?, reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
+            old_status = _normalize_text(task.get("status")).lower()
+            self._conditional_status_update(
+                conn,
+                task_id=normalized_id,
+                operation=operation,
+                expected_statuses=expected,
+                target_status=next_status,
+                set_sql=(
+                    "status = ?, reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, "
+                    "reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?"
+                ),
+                set_params=(
                     next_status,
                     now_iso,
                     reviewer_id,
@@ -5315,45 +7990,69 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     now_iso if next_status == "done" else None,
                     "explicit" if next_status == "done" else None,
                     now_iso,
-                    normalized_id,
                 ),
+                user_id=reviewer_id,
             )
             self._ensure_task_status_log_table(conn)
             self._log_status_change(
                 conn,
                 task_id=normalized_id,
-                old_status=_normalize_text(task.get("status")),
+                old_status=old_status if old_status in expected else "review",
                 new_status=next_status,
                 user_id=reviewer_id,
                 username=_normalize_text(reviewer.get("username")),
             )
-            review_result = "Принято" if next_status == "done" else "Возвращено"
             title_text = _normalize_text(task.get("title"))
             assignee_id = self._as_int(task.get("assignee_user_id"))
-            self._create_task_notifications(
-                conn,
-                recipient_user_ids={assignee_id, *self._task_delegate_user_ids(assignee_id)},
-                skip_user_ids={reviewer_id},
-                event_type="task.reviewed",
-                title="Результат проверки задачи",
-                body=f"{title_text}: {review_result}",
-                task_id=normalized_id,
-            )
-            for recipient_user_id in {creator_id, controller_id}:
-                if recipient_user_id <= 0 or recipient_user_id == reviewer_id or recipient_user_id == assignee_id:
-                    continue
+            conn.commit()
+        stages["db_write_ms"] = self._elapsed_ms(db_started)
+
+        notify_started = time.perf_counter()
+        recipient_ids = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
+        for recipient_user_id in {creator_id, controller_id}:
+            if recipient_user_id > 0 and recipient_user_id not in {reviewer_id, assignee_id}:
+                recipient_ids.add(recipient_user_id)
+        with self._hub_push_deferred() as push_stats:
+            with self._db_conn(write=True) as conn:
                 self._create_task_notifications(
                     conn,
-                    recipient_user_ids={recipient_user_id},
-                    skip_user_ids={reviewer_id, assignee_id},
+                    recipient_user_ids={assignee_id, *self._task_delegate_user_ids(assignee_id)},
+                    skip_user_ids={reviewer_id},
                     event_type="task.reviewed",
-                    title="Задача проверена",
+                    title="Результат проверки задачи",
                     body=f"{title_text}: {review_result}",
                     task_id=normalized_id,
                 )
-            conn.commit()
-            updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, updated, viewer_user_id=reviewer_id) if updated else None
+                for recipient_user_id in {creator_id, controller_id}:
+                    if recipient_user_id <= 0 or recipient_user_id == reviewer_id or recipient_user_id == assignee_id:
+                        continue
+                    self._create_task_notifications(
+                        conn,
+                        recipient_user_ids={recipient_user_id},
+                        skip_user_ids={reviewer_id, assignee_id},
+                        event_type="task.reviewed",
+                        title="Задача проверена",
+                        body=f"{title_text}: {review_result}",
+                        task_id=normalized_id,
+                    )
+                conn.commit()
+            stages["notifications_ms"] = self._elapsed_ms(notify_started)
+            enrich_started = time.perf_counter()
+            with self._db_conn(write=False) as conn:
+                updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                result = self._task_with_latest_report(conn, updated, viewer_user_id=reviewer_id) if updated else None
+            stages["enrich_ms"] = self._elapsed_ms(enrich_started)
+        stages["push_flush_ms"] = float(push_stats.get("push_flush_ms") or 0.0)
+        self._log_task_write_timing(
+            "review",
+            started_at=started_at,
+            stages=stages,
+            task_id=normalized_id,
+            decision=decision_text,
+            recipients=len({item for item in recipient_ids if item > 0 and item != reviewer_id}),
+            push_jobs=int(push_stats.get("push_jobs") or 0),
+        )
+        return result
 
     def complete_task_direct(
         self,
@@ -5368,7 +8067,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         actor_id = self._as_int(actor.get("id"))
         now_iso = _utc_now_iso()
         comment_text = _normalize_text(comment)
-        with self._lock, self._connect() as conn:
+        spec = self._transition_spec("complete_direct")
+        expected = set(spec["from"])
+        target = str(spec["to"])
+        with self._db_conn(write=True) as conn:
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
                 return None
@@ -5377,13 +8079,18 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if old_status == "done":
                 return self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
 
-            conn.execute(
-                f"""
-                UPDATE {self._TASKS_TABLE}
-                SET status = 'done', reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
+            self._conditional_status_update(
+                conn,
+                task_id=normalized_id,
+                operation="complete_direct",
+                expected_statuses=expected,
+                target_status=target,
+                set_sql=(
+                    "status = ?, reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, "
+                    "reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?"
+                ),
+                set_params=(
+                    target,
                     now_iso,
                     actor_id if actor_id > 0 else None,
                     _normalize_text(actor.get("username")) or None,
@@ -5392,15 +8099,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     now_iso,
                     "explicit",
                     now_iso,
-                    normalized_id,
                 ),
+                user_id=actor_id,
             )
             self._ensure_task_status_log_table(conn)
             self._log_status_change(
                 conn,
                 task_id=normalized_id,
-                old_status=old_status,
-                new_status="done",
+                old_status=old_status if old_status in expected else sorted(expected)[0],
+                new_status=target,
                 user_id=actor_id,
                 username=_normalize_text(actor.get("username")),
             )
@@ -5549,12 +8256,23 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_conversation_id = _normalize_text(conversation_id)
         if not normalized_conversation_id:
             return 0
+        if event_types is None:
+            try:
+                from backend.chat.hub_bell_events import default_mark_chat_notification_event_types
+
+                default_event_types = default_mark_chat_notification_event_types()
+            except Exception:
+                default_event_types = [
+                    "chat.message_received",
+                    "chat.task_shared",
+                    "chat.file_shared",
+                    "chat.mention",
+                ]
+        else:
+            default_event_types = list(event_types)
         normalized_events = [
             _normalize_text(item).lower()
-            for item in (
-                event_types
-                or ["chat.message_received", "chat.task_shared", "chat.file_shared"]
-            )
+            for item in default_event_types
             if _normalize_text(item)
         ]
         if not normalized_events:
@@ -5715,21 +8433,123 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         with self._unread_counts_cache_lock:
             if user_id is None:
                 self._unread_counts_cache.clear()
+            else:
+                normalized = int(user_id)
+                stale_keys = [
+                    key for key in self._unread_counts_cache
+                    if (
+                        (isinstance(key, tuple) and key and int(key[0]) == normalized)
+                        or key == normalized
+                    )
+                ]
+                for key in stale_keys:
+                    self._unread_counts_cache.pop(key, None)
+        self._invalidate_notifications_poll_cache(user_id)
+        self._invalidate_dashboard_cache(user_id)
+
+    def _invalidate_notifications_poll_cache(self, user_id: int | None = None) -> None:
+        with self._notifications_poll_cache_lock:
+            if user_id is None:
+                self._notifications_poll_cache.clear()
                 return
-            self._unread_counts_cache.pop(int(user_id), None)
+            normalized = int(user_id)
+            stale_keys = [key for key in self._notifications_poll_cache if key[0] == normalized]
+            for key in stale_keys:
+                self._notifications_poll_cache.pop(key, None)
+
+    def _get_cached_notifications_poll(self, cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
+        now_mono = time.monotonic()
+        with self._notifications_poll_cache_lock:
+            cached = self._notifications_poll_cache.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) < self._notifications_poll_cache_ttl_sec:
+                return copy.deepcopy(cached[1])
+        return None
+
+    def _store_notifications_poll_cache(self, cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+        with self._notifications_poll_cache_lock:
+            self._notifications_poll_cache[cache_key] = (time.monotonic(), copy.deepcopy(payload))
+
+    def _invalidate_dashboard_cache(self, user_id: int | None = None) -> None:
+        with self._dashboard_cache_lock:
+            if user_id is None:
+                self._dashboard_cache.clear()
+            else:
+                normalized = int(user_id)
+                stale_keys = [key for key in self._dashboard_cache if key[0] == normalized]
+                for key in stale_keys:
+                    self._dashboard_cache.pop(key, None)
+        self._invalidate_tasks_list_cache(user_id)
+
+    def _invalidate_tasks_list_cache(self, user_id: int | None = None) -> None:
+        with self._tasks_list_cache_lock:
+            if user_id is None:
+                self._tasks_list_cache.clear()
+                return
+            normalized = int(user_id)
+            stale_keys = [key for key in self._tasks_list_cache if key[0] == normalized]
+            for key in stale_keys:
+                self._tasks_list_cache.pop(key, None)
+
+    def _get_cached_tasks_list(self, cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
+        now_mono = time.monotonic()
+        with self._tasks_list_cache_lock:
+            cached = self._tasks_list_cache.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) < self._tasks_list_cache_ttl_sec:
+                return copy.deepcopy(cached[1])
+        return None
+
+    def _store_tasks_list_cache(self, cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+        with self._tasks_list_cache_lock:
+            self._tasks_list_cache[cache_key] = (time.monotonic(), copy.deepcopy(payload))
+
+    def _get_cached_dashboard(
+        self, *, user_id: int, announcements_limit: int, tasks_limit: int
+    ) -> dict[str, Any] | None:
+        cache_key = (int(user_id), int(announcements_limit), int(tasks_limit))
+        now_mono = time.monotonic()
+        with self._dashboard_cache_lock:
+            cached = self._dashboard_cache.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) < self._dashboard_cache_ttl_sec:
+                return copy.deepcopy(cached[1])
+        return None
+
+    def _store_dashboard_cache(
+        self,
+        *,
+        user_id: int,
+        announcements_limit: int,
+        tasks_limit: int,
+        payload: dict[str, Any],
+    ) -> None:
+        cache_key = (int(user_id), int(announcements_limit), int(tasks_limit))
+        with self._dashboard_cache_lock:
+            self._dashboard_cache[cache_key] = (time.monotonic(), copy.deepcopy(payload))
+
+    def _unread_counts_cache_bucket(self) -> tuple[int, int]:
+        try:
+            from backend.chat.hub_bell_events import hub_ordinary_read_visible, hub_ordinary_write_enabled
+
+            return (
+                int(bool(hub_ordinary_read_visible())),
+                int(bool(hub_ordinary_write_enabled())),
+            )
+        except Exception:
+            return (1, 1)
 
     def _get_cached_unread_counts(self, user_id: int) -> dict[str, int] | None:
         normalized_user_id = int(user_id)
+        cache_key = (normalized_user_id, *self._unread_counts_cache_bucket())
         now_mono = time.monotonic()
         with self._unread_counts_cache_lock:
-            cached = self._unread_counts_cache.get(normalized_user_id)
+            cached = self._unread_counts_cache.get(cache_key)
             if cached is not None and (now_mono - cached[0]) < self._unread_counts_cache_ttl_sec:
                 return dict(cached[1])
         return None
 
     def _store_unread_counts_cache(self, user_id: int, counts: dict[str, int]) -> None:
+        cache_key = (int(user_id), *self._unread_counts_cache_bucket())
         with self._unread_counts_cache_lock:
-            self._unread_counts_cache[int(user_id)] = (time.monotonic(), dict(counts))
+            self._unread_counts_cache[cache_key] = (time.monotonic(), dict(counts))
 
     def _maybe_ensure_task_due_notifications_for_user(
         self,
@@ -5852,7 +8672,54 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         ).fetchone()
         return self._as_int(row["c"] if row else 0)
 
+    def _legacy_ordinary_chat_hub_exclusion_sql(self) -> tuple[str, list[Any]]:
+        """Exclude ordinary chat hub rows from bell unread/poll.
+
+        Controlled only by CHAT_HUB_ORDINARY_READ_VISIBLE (not WRITE_ENABLED),
+        so rollback of the writer cannot resurrect ~695k legacy unread in badges.
+        Important events (e.g. chat.mention) remain visible.
+        """
+        try:
+            from backend.chat.hub_bell_events import (
+                hub_ordinary_read_visible,
+                ordinary_chat_hub_event_types_sql_list,
+            )
+
+            if hub_ordinary_read_visible():
+                return "", []
+            ordinary_types = ordinary_chat_hub_event_types_sql_list()
+        except Exception:
+            return "", []
+        if not ordinary_types:
+            return "", []
+        placeholders = ", ".join(["?"] * len(ordinary_types))
+        clause = (
+            " AND NOT ("
+            " LOWER(COALESCE(n.entity_type, '')) = 'chat'"
+            f" AND LOWER(COALESCE(n.event_type, '')) IN ({placeholders})"
+            " )"
+        )
+        return clause, [str(item).lower() for item in ordinary_types]
+
+    def _hub_chat_ordinary_flags_payload(self) -> dict[str, Any]:
+        try:
+            from backend.chat.hub_bell_events import hub_ordinary_flags_snapshot
+
+            snapshot = hub_ordinary_flags_snapshot()
+            return {
+                "ordinary_write_enabled": bool(snapshot.get("ordinary_write_enabled")),
+                "ordinary_read_visible": bool(snapshot.get("ordinary_read_visible")),
+                "source": str(snapshot.get("source") or "env"),
+            }
+        except Exception:
+            return {
+                "ordinary_write_enabled": True,
+                "ordinary_read_visible": True,
+                "source": "fallback",
+            }
+
     def _compute_unread_counts(self, conn: sqlite3.Connection, *, user_id: int) -> dict[str, int]:
+        exclude_sql, exclude_params = self._legacy_ordinary_chat_hub_exclusion_sql()
         unread_notifications = conn.execute(
             f"""
             SELECT COUNT(*) AS c
@@ -5860,19 +8727,34 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             LEFT JOIN {self._NOTIF_READS_TABLE} r
               ON r.notification_id = n.id AND r.user_id = ?
             WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?) AND r.user_id IS NULL
+            {exclude_sql}
             """,
-            (int(user_id), int(user_id)),
+            (int(user_id), int(user_id), *exclude_params),
         ).fetchone()
-        announcement_rows = conn.execute(f"SELECT * FROM {self._ANN_TABLE}").fetchall()
+        announcement_rows = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE}").fetchall()
+        reads_by_announcement_id = self._load_announcement_reads_for_user(conn, user_id=int(user_id))
         announcements_unread = 0
         announcements_ack_pending = 0
+        now_utc = datetime.now(timezone.utc)
         for row in announcement_rows:
-            item = self._build_announcement_item(conn, row, viewer_user_id=int(user_id), include_body=False)
+            announcement_id = _normalize_text(
+                row["id"] if not isinstance(row, dict) else row.get("id")
+            )
+            # Counts path: skip attachment payload; only unread/ack flags are needed.
+            item = self._build_announcement_item(
+                conn,
+                row,
+                viewer_user_id=int(user_id),
+                include_body=False,
+                read_row=reads_by_announcement_id.get(announcement_id, {}),
+                attachments_count=0,
+                include_attachments=False,
+                poll={},
+            )
             if item is None or not item.get("is_active"):
                 continue
             published_from = self._parse_iso_datetime(item.get("published_from"))
             expires_at = self._parse_iso_datetime(item.get("expires_at"))
-            now_utc = datetime.now(timezone.utc)
             if published_from and published_from > now_utc:
                 continue
             if expires_at and expires_at <= now_utc:
@@ -5888,17 +8770,18 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             **task_metrics,
         }
 
-    def get_unread_counts(self, *, user_id: int) -> dict[str, int]:
+    def get_unread_counts(self, *, user_id: int) -> dict[str, Any]:
         normalized_user_id = int(user_id)
         cached_counts = self._get_cached_unread_counts(normalized_user_id)
         if cached_counts is not None:
-            return cached_counts
-
-        with self._db_conn(write=False) as conn:
-            counts = self._compute_unread_counts(conn, user_id=normalized_user_id)
-
-        self._store_unread_counts_cache(normalized_user_id, counts)
-        return counts
+            payload = dict(cached_counts)
+        else:
+            with self._db_conn(write=False) as conn:
+                counts = self._compute_unread_counts(conn, user_id=normalized_user_id)
+            self._store_unread_counts_cache(normalized_user_id, counts)
+            payload = dict(counts)
+        payload["hub_chat_ordinary"] = self._hub_chat_ordinary_flags_payload()
+        return payload
 
     def poll_notifications(
         self,
@@ -5910,15 +8793,35 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     ) -> dict[str, Any]:
         safe_limit = self._coerce_limit(limit, default=50, minimum=1, maximum=200)
         since_text = _normalize_text(since)
-        params: list[Any] = [int(user_id), int(user_id)]
+        normalized_user_id = int(user_id)
+        try:
+            from backend.chat.hub_bell_events import hub_ordinary_read_visible, hub_ordinary_write_enabled
+
+            ordinary_read_flag = int(bool(hub_ordinary_read_visible()))
+            ordinary_write_flag = int(bool(hub_ordinary_write_enabled()))
+        except Exception:
+            ordinary_read_flag = 1
+            ordinary_write_flag = 1
+        poll_cache_key = (
+            normalized_user_id,
+            since_text,
+            safe_limit,
+            int(bool(unread_only)),
+            ordinary_read_flag,
+            ordinary_write_flag,
+        )
+        cached_poll = self._get_cached_notifications_poll(poll_cache_key)
+        if cached_poll is not None:
+            return cached_poll
+        params: list[Any] = [normalized_user_id, normalized_user_id]
         extra_where = ""
         if since_text:
             extra_where = " AND n.created_at > ?"
             params.append(since_text)
         if unread_only:
             extra_where += " AND r.user_id IS NULL"
-        normalized_user_id = int(user_id)
         cached_counts = self._get_cached_unread_counts(normalized_user_id)
+        exclude_sql, exclude_params = self._legacy_ordinary_chat_hub_exclusion_sql()
         with self._db_conn(write=False) as conn:
             rows = conn.execute(
                 f"""
@@ -5927,11 +8830,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 FROM {self._NOTIF_TABLE} n
                 LEFT JOIN {self._NOTIF_READS_TABLE} r
                   ON r.notification_id = n.id AND r.user_id = ?
-                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?){extra_where}
+                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?){extra_where}{exclude_sql}
                 ORDER BY n.created_at DESC
                 LIMIT ?
                 """,
-                tuple([*params, safe_limit]),
+                tuple([*params, *exclude_params, safe_limit]),
             ).fetchall()
             counts = (
                 cached_counts
@@ -5942,32 +8845,87 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if cached_counts is None:
             self._store_unread_counts_cache(normalized_user_id, counts)
 
-        return {
+        payload = {
             "items": [dict(row) for row in rows],
             "since": since_text or None,
             "limit": safe_limit,
             "unread_only": bool(unread_only),
             "unread_counts": counts,
+            "hub_chat_ordinary": self._hub_chat_ordinary_flags_payload(),
             "generated_at": _utc_now_iso(),
         }
+        self._store_notifications_poll_cache(poll_cache_key, payload)
+        return payload
 
     def get_dashboard(self, *, user_id: int, announcements_limit: int = 20, tasks_limit: int = 10) -> dict[str, Any]:
-        announcements = self.list_announcements(user_id=user_id, limit=announcements_limit, offset=0)
+        safe_announcements_limit = max(1, min(100, int(announcements_limit or 20)))
+        safe_tasks_limit = max(1, min(100, int(tasks_limit or 10)))
+        cached_dashboard = self._get_cached_dashboard(
+            user_id=int(user_id),
+            announcements_limit=safe_announcements_limit,
+            tasks_limit=safe_tasks_limit,
+        )
+        if cached_dashboard is not None:
+            return cached_dashboard
+
+        # Sequential loads keep APP DB pool pressure linear under multi-VU polls.
+        # Parallel ThreadPoolExecutor here previously amplified pool wait under 50+ sessions.
+        announcements = self.list_announcements(
+            user_id=user_id, limit=safe_announcements_limit, offset=0
+        )
         tasks = self.list_tasks(
             user_id=user_id,
             scope="my",
             role_scope="both",
             status_filter="",
-            limit=tasks_limit,
+            limit=safe_tasks_limit,
             offset=0,
             allow_all_scope=False,
         )
-        unread_counts = self.get_unread_counts(user_id=user_id)
-        return {
+        try:
+            from backend.services.employee_absence_service import employee_absence_service
+
+            with self._dashboard_absences_refresh_lock:
+                absences_today = employee_absence_service.dashboard_embed(limit=8)
+        except Exception:  # noqa: BLE001 — dashboard must stay available if absences store is down
+            logger.exception("Failed to embed absences_today into hub dashboard")
+            absences_today = {"on": date.today().isoformat(), "count": 0, "items": []}
+
+        # Reuse announcement totals already computed by list_announcements to avoid a second
+        # full announcement scan inside get_unread_counts on cache miss.
+        cached_counts = self._get_cached_unread_counts(int(user_id))
+        if cached_counts is not None:
+            unread_counts = dict(cached_counts)
+        else:
+            with self._db_conn(write=False) as conn:
+                exclude_sql, exclude_params = self._legacy_ordinary_chat_hub_exclusion_sql()
+                unread_notifications = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS c
+                    FROM {self._NOTIF_TABLE} n
+                    LEFT JOIN {self._NOTIF_READS_TABLE} r
+                      ON r.notification_id = n.id AND r.user_id = ?
+                    WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?) AND r.user_id IS NULL
+                    {exclude_sql}
+                    """,
+                    (int(user_id), int(user_id), *exclude_params),
+                ).fetchone()
+                task_metrics = self._compute_task_hub_unread_metrics(conn, user_id=int(user_id))
+            unread_counts = {
+                "notifications_unread_total": self._as_int(
+                    unread_notifications["c"] if unread_notifications else 0
+                ),
+                "announcements_unread": self._as_int(announcements.get("unread_total")),
+                "announcements_ack_pending": self._as_int(announcements.get("ack_pending_total")),
+                **task_metrics,
+            }
+            self._store_unread_counts_cache(int(user_id), unread_counts)
+        payload = {
             "generated_at": _utc_now_iso(),
             "announcements": announcements,
             "my_tasks": tasks,
             "unread_counts": unread_counts,
+            "absences_today": absences_today,
             "summary": {
                 "announcements_ack_pending": unread_counts.get("announcements_ack_pending", 0),
                 "announcements_attention": unread_counts.get("announcements_unread", 0),
@@ -5978,8 +8936,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "tasks_review_required": unread_counts.get("tasks_review_required", 0),
                 "tasks_overdue": unread_counts.get("tasks_overdue", 0),
                 "tasks_with_unread_comments": unread_counts.get("tasks_with_unread_comments", 0),
+                "absences_today": int(absences_today.get("count") or 0),
             },
         }
+        self._store_dashboard_cache(
+            user_id=int(user_id),
+            announcements_limit=safe_announcements_limit,
+            tasks_limit=safe_tasks_limit,
+            payload=payload,
+        )
+        return payload
 
 
 hub_service = HubService()

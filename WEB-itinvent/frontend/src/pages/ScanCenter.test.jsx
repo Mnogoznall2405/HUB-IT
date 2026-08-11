@@ -404,9 +404,13 @@ describe('ScanCenter page', () => {
     await waitFor(() => {
       expect(scanAPI.getDashboard).toHaveBeenCalled();
       expect(scanAPI.getBranches).toHaveBeenCalled();
-      expect(scanAPI.getAgentsTable).toHaveBeenCalled();
-      expect(scanAPI.getHostsTable).toHaveBeenCalled();
+      expect(scanAPI.getReviewItems).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 3, offset: 0 }),
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
     });
+    expect(scanAPI.getAgentsTable).not.toHaveBeenCalled();
+    expect(scanAPI.getHostsTable).not.toHaveBeenCalled();
 
     scanAPI.getDashboard.mockClear();
     scanAPI.getAgentsTable.mockClear();
@@ -414,6 +418,10 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockClear();
 
     await openAgentsSection();
+    await waitFor(() => {
+      expect(scanAPI.getAgentsTable).toHaveBeenCalled();
+    });
+    scanAPI.getAgentsTable.mockClear();
     await clickAgentScan();
     fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
 
@@ -442,11 +450,11 @@ describe('ScanCenter page', () => {
   it('creates force rescan task with selected PDF patterns', async () => {
     render(<ScanCenter />);
 
+    await openAgentsSection();
     await waitFor(() => {
       expect(scanAPI.getAgentsTable).toHaveBeenCalled();
     });
 
-    await openAgentsSection();
     await clickAgentMenuItem(/Скан с 0/i);
     fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
 
@@ -634,11 +642,10 @@ describe('ScanCenter page', () => {
   it('loads host incidents drawer directly by hostname', async () => {
     render(<ScanCenter />);
 
+    await openHostsSection();
     await waitFor(() => {
       expect(scanAPI.getHostsTable).toHaveBeenCalled();
     });
-
-    await openHostsSection();
 
     const hostCell = [...await screen.findAllByText('HOST-01')].reverse().find((node) => node.closest('tr'));
     const hostRowElement = hostCell.closest('tr');
@@ -672,11 +679,10 @@ describe('ScanCenter page', () => {
   it('exports incidents report for a selected scan run', async () => {
     render(<ScanCenter />);
 
+    await openHostsSection();
     await waitFor(() => {
       expect(scanAPI.getHostsTable).toHaveBeenCalled();
     });
-
-    await openHostsSection();
 
     const hostCell = [...await screen.findAllByText('HOST-01')].reverse().find((node) => node.closest('tr'));
     const hostRowElement = hostCell.closest('tr');
@@ -697,7 +703,7 @@ describe('ScanCenter page', () => {
   });
 
   it('loads incident inbox first page and loads more explicitly', async () => {
-    const firstPage = Array.from({ length: 500 }, (_, idx) => ({
+    const firstPage = Array.from({ length: 80 }, (_, idx) => ({
       ...incidentRow,
       id: `incident-${idx}`,
       hostname: 'HOST-BATCH',
@@ -707,17 +713,17 @@ describe('ScanCenter page', () => {
     }));
     const secondPage = [{
       ...incidentRow,
-      id: 'incident-500',
+      id: 'incident-80',
       hostname: 'HOST-BATCH',
-      file_path: 'C:\\Docs\\secret-500.pdf',
-      file_name: 'secret-500.pdf',
+      file_path: 'C:\\Docs\\secret-80.pdf',
+      file_name: 'secret-80.pdf',
       created_at: 1709999600,
     }];
     scanAPI.getIncidents.mockImplementation((params = {}) => {
-      if (Number(params.offset || 0) === 500) {
-        return Promise.resolve({ total: 501, items: secondPage, limit: 500, offset: 500, has_more: false, next_offset: null });
+      if (Number(params.offset || 0) === 80) {
+        return Promise.resolve({ total: 81, items: secondPage, limit: 80, offset: 80, has_more: false, next_offset: null });
       }
-      return Promise.resolve({ total: 501, items: firstPage, limit: 500, offset: 0, has_more: true, next_offset: 500 });
+      return Promise.resolve({ total: 81, items: firstPage, limit: 80, offset: 0, has_more: true, next_offset: 80 });
     });
 
     render(<ScanCenter />);
@@ -726,24 +732,24 @@ describe('ScanCenter page', () => {
 
     await waitFor(() => {
       expect(scanAPI.getIncidents).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 500, offset: 0 }),
+        expect.objectContaining({ limit: 80, offset: 0 }),
         expect.objectContaining({ signal: expect.any(Object) }),
       );
     });
     expect(scanAPI.getIncidents).not.toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 500, offset: 500 }),
+      expect.objectContaining({ limit: 80, offset: 80 }),
       expect.objectContaining({ signal: expect.any(Object) }),
     );
     expect(await screen.findByText('Находки')).toBeTruthy();
     expect((await screen.findAllByText(/secret-0\.pdf/)).length).toBeGreaterThan(0);
     expect((await screen.findAllByText(/HOST-BATCH/)).length).toBeGreaterThan(0);
-    expect(screen.getByText((_, node) => node?.textContent === '\\\\HOST-BATCH\\C$\\Docs\\secret-0.pdf')).toBeTruthy();
+    expect(screen.getAllByText((_, node) => node?.textContent === '\\\\HOST-BATCH\\C$\\Docs\\secret-0.pdf').length).toBeGreaterThan(0);
 
     fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
 
     await waitFor(() => {
       expect(scanAPI.getIncidents).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 500, offset: 500 }),
+        expect.objectContaining({ limit: 80, offset: 80 }),
         expect.objectContaining({ signal: expect.any(Object) }),
       );
     });
@@ -757,18 +763,18 @@ describe('ScanCenter page', () => {
     // the inbox first page, even long after items had been loaded via
     // "loadMore". The fix routes the interval callback through a ref that
     // always points at the latest `refreshAll` closure.
-    const firstPage = Array.from({ length: 500 }, (_, idx) => ({
+    const firstPage = Array.from({ length: 80 }, (_, idx) => ({
       ...incidentRow,
       id: `incident-${idx}`,
       hostname: 'HOST-BATCH',
       created_at: 1710000100 - idx,
     }));
-    const secondPage = [{ ...incidentRow, id: 'incident-500', hostname: 'HOST-BATCH', created_at: 1709999600 }];
+    const secondPage = [{ ...incidentRow, id: 'incident-80', hostname: 'HOST-BATCH', created_at: 1709999600 }];
     scanAPI.getIncidents.mockImplementation((params = {}) => {
-      if (Number(params.offset || 0) === 500) {
-        return Promise.resolve({ total: 501, items: secondPage, limit: 500, offset: 500, has_more: false, next_offset: null });
+      if (Number(params.offset || 0) === 80) {
+        return Promise.resolve({ total: 81, items: secondPage, limit: 80, offset: 80, has_more: false, next_offset: null });
       }
-      return Promise.resolve({ total: 501, items: firstPage, limit: 500, offset: 0, has_more: true, next_offset: 500 });
+      return Promise.resolve({ total: 81, items: firstPage, limit: 80, offset: 0, has_more: true, next_offset: 80 });
     });
 
     // Only fake setInterval/clearInterval, and do it *before* mount so the
@@ -786,7 +792,7 @@ describe('ScanCenter page', () => {
 
       await waitFor(() => {
         expect(scanAPI.getIncidents).toHaveBeenCalledWith(
-          expect.objectContaining({ limit: 500, offset: 0 }),
+          expect.objectContaining({ limit: 80, offset: 0 }),
           expect.objectContaining({ signal: expect.any(Object) }),
         );
       });
@@ -796,18 +802,18 @@ describe('ScanCenter page', () => {
       fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
       await waitFor(() => {
         expect(scanAPI.getIncidents).toHaveBeenCalledWith(
-          expect.objectContaining({ limit: 500, offset: 500 }),
+          expect.objectContaining({ limit: 80, offset: 80 }),
           expect.objectContaining({ signal: expect.any(Object) }),
         );
       });
 
-      // `incidentInbox.loaded` is now 501 (> 0), so the *next* auto-refresh
+      // `incidentInbox.loaded` is now > 0, so the *next* auto-refresh
       // tick must call getIncidents again with offset 0 and the full inbox
-      // page size to refresh the first page. Match on `limit: 500` too so
+      // page size to refresh the first page. Match on `limit: 80` too so
       // this doesn't accidentally count the separate, always-refreshed
       // "new incidents count" query (batchSize 1, status 'new').
       const isMainInboxFirstPageCall = ([params]) => (
-        Number(params?.offset || 0) === 0 && Number(params?.limit || 0) === 500
+        Number(params?.offset || 0) === 0 && Number(params?.limit || 0) === 80
       );
       const offsetZeroCallsBefore = scanAPI.getIncidents.mock.calls.filter(isMainInboxFirstPageCall).length;
 
@@ -885,6 +891,78 @@ describe('ScanCenter page', () => {
     });
   });
 
+  it('auto-refreshes dashboard and review preview only while overview tab is active', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<ScanCenter />);
+
+      await waitFor(() => {
+        expect(scanAPI.getDashboard).toHaveBeenCalled();
+        expect(scanAPI.getReviewItems).toHaveBeenCalledWith(
+          expect.objectContaining({ limit: 3, offset: 0 }),
+          expect.objectContaining({ signal: expect.any(Object) }),
+        );
+      });
+
+      scanAPI.getDashboard.mockClear();
+      scanAPI.getReviewItems.mockClear();
+      scanAPI.getAgentsTable.mockClear();
+      scanAPI.getHostsTable.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AUTO_REFRESH_MS);
+      });
+
+      expect(scanAPI.getDashboard).toHaveBeenCalled();
+      expect(scanAPI.getReviewItems).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 3, offset: 0 }),
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+      expect(scanAPI.getAgentsTable).not.toHaveBeenCalled();
+      expect(scanAPI.getHostsTable).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auto-refreshes agents table only while agents tab is active', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<ScanCenter />);
+      await openAgentsSection();
+      await waitFor(() => {
+        expect(scanAPI.getAgentsTable).toHaveBeenCalled();
+      });
+
+      scanAPI.getDashboard.mockClear();
+      scanAPI.getAgentsTable.mockClear();
+      scanAPI.getReviewItems.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AUTO_REFRESH_MS);
+      });
+
+      expect(scanAPI.getDashboard).toHaveBeenCalled();
+      expect(scanAPI.getAgentsTable).toHaveBeenCalled();
+      expect(scanAPI.getReviewItems).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('loads full review list with abort signal on the review tab', async () => {
+    render(<ScanCenter />);
+
+    await openReviewSection();
+
+    await waitFor(() => {
+      expect(scanAPI.getReviewItems).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 25, offset: 0 }),
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+    });
+  });
+
   it('filters agents and hosts by selected branch from the options list', async () => {
     render(<ScanCenter />);
 
@@ -894,12 +972,19 @@ describe('ScanCenter page', () => {
     const option = (await screen.findAllByRole('option', { name: 'Тюмень' }))[0];
     fireEvent.click(option);
 
+    await openAgentsSection();
     await waitFor(() => {
       expect(scanAPI.getAgentsTable).toHaveBeenLastCalledWith(
-        expect.objectContaining({ branch: 'Тюмень' })
+        expect.objectContaining({ branch: 'Тюмень' }),
+        expect.objectContaining({ signal: expect.any(Object) }),
       );
+    });
+
+    await openHostsSection();
+    await waitFor(() => {
       expect(scanAPI.getHostsTable).toHaveBeenLastCalledWith(
-        expect.objectContaining({ branch: 'Тюмень' })
+        expect.objectContaining({ branch: 'Тюмень' }),
+        expect.objectContaining({ signal: expect.any(Object) }),
       );
     });
   });

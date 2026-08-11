@@ -69,6 +69,12 @@ const COMPONENT_MATCH_TOKENS = {
 };
 
 const normalizeText = (value) => String(value || '').trim().toLowerCase();
+const getDeviceHostname = (device) => String(
+  device?.hostname
+  || device?.network_name
+  || device?.runtime?.snmp?.device_info?.sys_name
+  || ''
+).trim();
 const toNumberOrNull = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -631,6 +637,7 @@ function Mfu() {
             item?.model_name,
             item?.manufacturer,
             item?.ip_address,
+            getDeviceHostname(item),
             item?.employee_name,
             item?.employee_dept,
             branchName,
@@ -1157,6 +1164,7 @@ function Mfu() {
                                 : (Number.isFinite(device?.runtime?.snmp?.best_percent) ? Number(device.runtime.snmp.best_percent) : null);
                               const suppliesCount = supplies.length;
                               const pagesTotal = Number(device?.runtime?.snmp?.page_total);
+                              const hostname = getDeviceHostname(device);
                               const isDetailed = cardView === 'detailed';
                               return (
                                 <Card
@@ -1224,6 +1232,9 @@ function Mfu() {
                                     )}
                                   </Box>
                                   <Typography variant="caption" sx={{ display: 'block' }}>
+                                    Hostname: <b>{hostname || '-'}</b>
+                                  </Typography>
+                                  <Typography variant="caption" sx={{ display: 'block' }}>
                                     Страниц: <b>{Number.isFinite(pagesTotal) ? pagesTotal : '-'}</b>
                                   </Typography>
                                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -1277,6 +1288,9 @@ function Mfu() {
                       </Tooltip>
                     )}
                   </Box>
+                  <Typography variant="body2">
+                    <b>Hostname:</b> {getDeviceHostname(selectedDevice) || '-'}
+                  </Typography>
                   <Typography variant="body2"><b>MAC:</b> {selectedDevice?.mac_address || '-'}</Typography>
                   <Typography variant="body2"><b>Филиал:</b> {selectedDevice?.branch_name || '-'}</Typography>
                   <Typography variant="body2"><b>Локация:</b> {selectedDevice?.location_name || '-'}</Typography>

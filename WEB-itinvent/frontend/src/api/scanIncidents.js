@@ -2,17 +2,25 @@ import apiClient from './client';
 
 export const scanIncidentsAPI = {
   getIncidents: async (params = {}, options = {}) => {
-    const response = await apiClient.get('/scan/incidents', { params, signal: options?.signal });
+    const response = await apiClient.get('/scan/incidents', {
+      params: { view: 'summary', ...params },
+      signal: options?.signal,
+    });
     return response.data;
   },
 
   getIncidentInboxGroups: async (params = {}, options = {}) => {
-    const response = await apiClient.get('/scan/incidents/inbox-groups', { params, signal: options?.signal });
+    const response = await apiClient.get('/scan/incidents/inbox-groups', {
+      params: { view: 'summary', ...params },
+      signal: options?.signal,
+    });
     return response.data;
   },
 
   getHostScanRuns: async (hostname, params = {}) => {
-    const response = await apiClient.get(`/scan/hosts/${encodeURIComponent(hostname)}/scan-runs`, { params });
+    const response = await apiClient.get(`/scan/hosts/${encodeURIComponent(hostname)}/scan-runs`, {
+      params: { view: 'summary', ...params },
+    });
     return response.data;
   },
 

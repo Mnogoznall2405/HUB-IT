@@ -110,7 +110,7 @@ describe('mailRecentCache', () => {
     expect(getMailRecentHydration({ scope: 'user-2', contextKey: 'ctx:inbox' })).toBeNull();
   });
 
-  it('expires recent mail after the 90 second snapshot freshness budget', () => {
+  it('expires recent mail after the snapshot freshness budget', () => {
     const baseNow = 1_700_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(baseNow);
     writeMailRecentList({
@@ -119,7 +119,9 @@ describe('mailRecentCache', () => {
       listData: { items: [{ id: 'msg-1' }], total: 1 },
     });
 
-    vi.spyOn(Date, 'now').mockReturnValue(baseNow + 90_001);
+    vi.spyOn(Date, 'now').mockReturnValue(
+      baseNow + __MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_CACHE_TTL_MS + 1,
+    );
 
     expect(getMailRecentHydration({ scope: 'user-1', contextKey: 'ctx:inbox' })).toBeNull();
   });

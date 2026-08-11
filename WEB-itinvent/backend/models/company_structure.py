@@ -13,7 +13,14 @@ class CompanyStructureNodeResponse(BaseModel):
     title: str
     person_name: str = ""
     person_position: str = ""
+    person_employee_code: str | None = None
+    person_photo_url: str | None = None
+    direct_people_count: int = 0
+    subtree_people_count: int = 0
+    child_node_count: int = 0
     sort_order: int = 0
+    layout_x: float | None = None
+    layout_y: float | None = None
     is_active: bool = True
     department_codes: list[str] = Field(default_factory=list)
     children: list["CompanyStructureNodeResponse"] = Field(default_factory=list)
@@ -34,7 +41,10 @@ class CompanyStructureNodeCreate(BaseModel):
     title: str = "Новый узел"
     person_name: str = ""
     person_position: str = ""
+    person_employee_code: str | None = None
     sort_order: int = 0
+    layout_x: float | None = Field(default=None, ge=0, le=100_000)
+    layout_y: float | None = Field(default=None, ge=0, le=100_000)
     department_codes: list[str] = Field(default_factory=list)
 
 
@@ -46,7 +56,10 @@ class CompanyStructureNodeUpdate(BaseModel):
     title: str | None = None
     person_name: str | None = None
     person_position: str | None = None
+    person_employee_code: str | None = None
     sort_order: int | None = None
+    layout_x: float | None = Field(default=None, ge=0, le=100_000)
+    layout_y: float | None = Field(default=None, ge=0, le=100_000)
     is_active: bool | None = None
     department_codes: list[str] | None = None
 
@@ -116,3 +129,16 @@ class CompanyStructureSearchResponse(BaseModel):
     total: int = 0
     limit: int
 
+
+class CompanyStructureLeaderCandidate(BaseModel):
+    employee_code: str
+    full_name: str
+    position: str = ""
+    department: str = ""
+    department_location: str = ""
+
+
+class CompanyStructureLeaderCandidatesResponse(BaseModel):
+    items: list[CompanyStructureLeaderCandidate] = Field(default_factory=list)
+    total: int = 0
+    limit: int

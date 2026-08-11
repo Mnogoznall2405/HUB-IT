@@ -21,6 +21,34 @@ const task = {
 };
 
 describe('TasksDesktopListView', () => {
+  it('sorts rows by activity date and lets the user reverse the order', () => {
+    const onDateSortDirectionChange = vi.fn();
+    const olderTask = { ...task, id: 'task-old', title: 'Старая задача', updated_at: '2026-06-08T10:00:00' };
+    const newerTask = { ...task, id: 'task-new', title: 'Новая задача', updated_at: '2026-06-12T10:00:00' };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TasksDesktopListView
+          ui={ui}
+          alpha={alpha}
+          visibleTaskItems={[olderTask, newerTask]}
+          taskListSections={{ active: { items: [olderTask, newerTask] }, completed: { items: [] } }}
+          dateSortDirection="desc"
+          onDateSortDirectionChange={onDateSortDirectionChange}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Дата изменения, сначала новые' })).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^tasks-list-row-/).map((row) => row.dataset.testid)).toEqual([
+      'tasks-list-row-task-new',
+      'tasks-list-row-task-old',
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Дата изменения, сначала новые' }));
+    expect(onDateSortDirectionChange).toHaveBeenCalledWith('asc');
+  });
+
   it('renders desktop table rows and handles row click', () => {
     const onOpenTask = vi.fn();
 
@@ -42,5 +70,29 @@ describe('TasksDesktopListView', () => {
     const row = within(listView).getByTestId('tasks-list-row-task-1');
     fireEvent.click(row);
     expect(onOpenTask).toHaveBeenCalledWith(task);
+  });
+
+  it('shows delete only for an allowed task and keeps the row closed', () => {
+    const onOpenTask = vi.fn();
+    const onDeleteTask = vi.fn();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TasksDesktopListView
+          ui={ui}
+          alpha={alpha}
+          visibleTaskItems={[task]}
+          taskListSections={{ active: { items: [task] }, completed: { items: [] } }}
+          canDeleteTask={(item) => item.id === task.id}
+          onOpenTask={onOpenTask}
+          onDeleteTask={onDeleteTask}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: `Удалить задачу «${task.title}»` }));
+
+    expect(onDeleteTask).toHaveBeenCalledWith(task);
+    expect(onOpenTask).not.toHaveBeenCalled();
   });
 });

@@ -60,9 +60,16 @@ window.addEventListener('appinstalled', () => {
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
-      .then((registration) => {
+      .then(async (registration) => {
         bindPwaRuntime(registration);
-        return registration.update().catch(() => registration);
+        try {
+          await registration.update();
+        } catch {
+          // Ignore update probe failures; registration is still usable.
+        }
+        // Do not auto skipWaiting here: silent claim without reload breaks
+        // lazy route opens (especially /chat from push) on mobile PWA.
+        return registration;
       })
       .catch((error) => {
         console.error('Service worker registration failed', error);

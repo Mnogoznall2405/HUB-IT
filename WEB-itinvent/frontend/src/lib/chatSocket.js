@@ -1,9 +1,12 @@
 import { API_V1_BASE } from '../api/client';
 import { CHAT_WS_ENABLED } from './chatFeature';
+import { emitAgentDebugLog } from './debugClientLog';
+import { invalidateSWRCacheByPrefix } from './swrCache';
 
 export const CHAT_SOCKET_STATUS_EVENT = 'chat-ws-status';
 export const CHAT_SOCKET_ACTIVITY_EVENT = 'chat-ws-activity';
 export const CHAT_SOCKET_SNAPSHOT_EVENT = 'chat-ws-snapshot';
+export const CHAT_SOCKET_SESSION_EXPIRED_EVENT = 'chat-ws-session-expired';
 export const CHAT_SOCKET_MESSAGE_CREATED_EVENT = 'chat-ws-message-created';
 export const CHAT_SOCKET_MESSAGE_DELETED_EVENT = 'chat-ws-message-deleted';
 export const CHAT_SOCKET_MESSAGE_UPDATED_EVENT = 'chat-ws-message-updated';
@@ -37,6 +40,99 @@ const dispatchWindowEvent = (eventName, detail) => {
 };
 
 const normalizeConversationId = (value) => String(value || '').trim();
+
+// Survives Chat page unmount so sidebar can paint who just wrote after navigation.
+const inboxMessagePreviewByConversation = new Map();
+const INBOX_PREVIEW_TTL_MS = 10 * 60 * 1000;
+
+export const noteInboxMessagePreview = (envelope = {}) => {
+  const payload = envelope?.payload || envelope || {};
+  const conversationId = normalizeConversationId(
+    envelope?.conversation_id || payload?.conversation_id,
+  );
+  const messageId = String(payload?.id || '').trim();
+  if (!conversationId || !messageId) return;
+  inboxMessagePreviewByConversation.set(conversationId, {
+    message: payload,
+    at: Date.now(),
+  });
+};
+
+export const peekInboxMessagePreview = (conversationId) => {
+  const id = normalizeConversationId(conversationId);
+  if (!id) return null;
+  const entry = inboxMessagePreviewByConversation.get(id);
+  if (!entry) return null;
+  if ((Date.now() - Number(entry.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+    inboxMessagePreviewByConversation.delete(id);
+    return null;
+  }
+  return entry.message || null;
+};
+
+const buildPreviewText = (message) => {
+  if (!message) return 'Сообщение';
+  if (message?.is_deleted) return 'Сообщение удалено';
+  if (message.kind === 'system') return String(message.body || 'Системное событие').trim() || 'Системное событие';
+  if (message.kind === 'task_share') return 'Поделились задачей';
+  const body = String(message.body || '').trim();
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  if (message.kind === 'file' && body) return body;
+  if (attachments.length === 1) {
+    if (String(attachments[0]?.kind || attachments[0]?.media_kind || '').trim().toLowerCase() === 'sticker') {
+      return 'Стикер';
+    }
+    return `Файл: ${String(attachments[0]?.file_name || 'вложение').trim() || 'вложение'}`;
+  }
+  if (attachments.length > 1) return `Файлы: ${attachments.length}`;
+  return body || 'Сообщение';
+};
+
+export const mergeInboxPreviewsIntoConversations = (items = []) => {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0 || inboxMessagePreviewByConversation.size === 0) return list;
+  const now = Date.now();
+  let changed = false;
+  const next = list.map((item) => {
+    const id = normalizeConversationId(item?.id);
+    if (!id) return item;
+    const entry = inboxMessagePreviewByConversation.get(id);
+    if (!entry?.message) return item;
+    if ((now - Number(entry.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+      inboxMessagePreviewByConversation.delete(id);
+      return item;
+    }
+    const message = entry.message;
+    const messageAt = String(message?.created_at || '').trim();
+    const currentAt = String(item?.last_message_at || item?.updated_at || '').trim();
+    // Keep server row if it is already newer than the buffered socket message.
+    if (messageAt && currentAt && currentAt.localeCompare(messageAt) > 0) {
+      return item;
+    }
+    const nextPreview = buildPreviewText(message);
+    const sameStamp = Boolean(messageAt) && currentAt === messageAt;
+    const samePreview = sameStamp && String(item?.last_message_preview || '') === nextPreview;
+    if (samePreview) return item;
+    changed = true;
+    const isOwn = Boolean(message?.is_own);
+    return {
+      ...item,
+      last_message_at: messageAt || item.last_message_at,
+      updated_at: messageAt || item.updated_at,
+      last_message_preview: nextPreview,
+      last_message_is_own: isOwn,
+      last_message_delivery_status: isOwn
+        ? (String(message?.delivery_status || '').trim() || 'sent')
+        : null,
+      // Don't invent +1 on every merge (server unread may already be correct).
+      // Only lift a stale 0 when the buffered message is clearly newer.
+      unread_count: isOwn
+        ? Number(item.unread_count || 0)
+        : Math.max(Number(item.unread_count || 0), sameStamp ? Number(item.unread_count || 0) : 1),
+    };
+  });
+  return changed ? next : list;
+};
 
 const normalizePresenceUserIds = (userIds = []) => Array.from(new Set(
   (Array.isArray(userIds) ? userIds : [])
@@ -218,7 +314,22 @@ class ChatSocketClient {
 
   connect() {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
-    if (this.authBlocked) return;
+    if (this.authBlocked) {
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:connect',
+        message: 'connect skipped: authBlocked',
+        hypothesisId: 'H1',
+        data: {
+          connectionState: this.connectionState,
+          retainCount: this.retainCount,
+          wantInbox: this.wantInbox,
+          activeConversationIds: Array.from(this.activeConversationIds),
+        },
+      });
+      // #endregion
+      return;
+    }
     if (this.hasActiveOrPendingSocket()) return;
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
@@ -272,8 +383,32 @@ class ChatSocketClient {
       if (authBlocked) {
         this.authBlocked = true;
       }
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:onclose',
+        message: 'websocket closed',
+        hypothesisId: 'H1',
+        data: {
+          closeCode,
+          reason: String(event?.reason || '').slice(0, 200),
+          authBlocked,
+          willReconnect: !this.manualClose && !authBlocked && this.retainCount > 0,
+          nextStatus,
+          retainCount: this.retainCount,
+          missedPongs: this.missedPongs,
+          wantInbox: this.wantInbox,
+          activeConversationIds: Array.from(this.activeConversationIds),
+        },
+      });
+      // #endregion
       this.rejectPendingRequests(new Error(authBlocked ? 'Chat websocket access denied' : 'Chat websocket disconnected'));
       this.setStatus(nextStatus);
+      if (closeCode === 4401 && !this.manualClose && this.retainCount > 0) {
+        dispatchWindowEvent(CHAT_SOCKET_SESSION_EXPIRED_EVENT, {
+          closeCode,
+          reason: String(event?.reason || '').slice(0, 200),
+        });
+      }
       if (!this.manualClose && !authBlocked && this.retainCount > 0) {
         this.scheduleReconnect();
       }
@@ -394,6 +529,27 @@ class ChatSocketClient {
       return;
     }
     if (eventType === 'chat.message.created') {
+      const conversationId = String(envelope?.conversation_id || payload?.conversation_id || '').trim();
+      const messageId = String(payload?.id || '').trim();
+      // Keep previews even when Chat page is unmounted — otherwise the sidebar
+      // reloads stale SWR/server cache and hides who just wrote.
+      noteInboxMessagePreview(envelope);
+      invalidateSWRCacheByPrefix('chat', 'conversations');
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:handleMessage',
+        message: 'chat.message.created received on socket',
+        hypothesisId: 'H2',
+        data: {
+          conversationId,
+          messageId,
+          isOwn: Boolean(payload?.is_own),
+          connectionState: this.connectionState,
+          activeConversationIds: Array.from(this.activeConversationIds),
+          previewBuffered: Boolean(conversationId && messageId),
+        },
+      });
+      // #endregion
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, envelope);
       return;
     }
@@ -463,6 +619,18 @@ class ChatSocketClient {
         return;
       }
       if (this.missedPongs >= this.maxMissedPongs) {
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'chatSocket.js:heartbeat',
+          message: 'missed pongs threshold, force reconnect',
+          hypothesisId: 'H1',
+          data: {
+            missedPongs: this.missedPongs,
+            connectionState: this.connectionState,
+            retainCount: this.retainCount,
+          },
+        });
+        // #endregion
         // Connection is dead, force reconnect
         this.stopHeartbeat();
         if (this.socket) {
@@ -496,8 +664,24 @@ class ChatSocketClient {
   }
 
   resetAuthBlock() {
+    const wasBlocked = Boolean(this.authBlocked);
     this.authBlocked = false;
     this.reconnectAttempt = 0;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'chatSocket.js:resetAuthBlock',
+      message: 'auth block cleared, reconnecting socket',
+      hypothesisId: 'H1',
+      runId: 'post-fix',
+      data: {
+        wasBlocked,
+        retainCount: this.retainCount,
+        connectionState: this.connectionState,
+        wantInbox: this.wantInbox,
+        activeConversationIds: Array.from(this.activeConversationIds),
+      },
+    });
+    // #endregion
     if (this.retainCount > 0) {
       this.connect();
     }

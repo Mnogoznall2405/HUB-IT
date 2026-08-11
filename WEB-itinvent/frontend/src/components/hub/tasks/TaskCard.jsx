@@ -13,6 +13,7 @@ import {
 import { alpha, useTheme } from '@mui/material/styles';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import EditIcon from '@mui/icons-material/Edit';
 import FlagIcon from '@mui/icons-material/Flag';
 import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
@@ -51,7 +52,6 @@ const TaskCard = memo(function TaskCard({
   const attachCount = Number(task?.attachments_count || 0);
   const isTransferReminder = isTransferActUploadTask(task);
   const priority = priorityMeta(task?.priority);
-  const descriptionPreview = String(task?.description || '').trim();
   const mobileCardMenuItems = buildMobileTaskCardMenuItems({ canEdit, canDelete });
   const columnColor = column?.color || theme.palette.primary.main;
   const canOpenTransferAct = canOpenTransferActUpload(task);
@@ -114,23 +114,6 @@ const TaskCard = memo(function TaskCard({
               />
             ) : null}
           </Stack>
-
-          {descriptionPreview ? (
-            <Typography
-              data-testid={`mobile-task-card-description-${task.id}`}
-              sx={{
-                color: ui.mutedText,
-                fontSize: '0.76rem',
-                lineHeight: 1.32,
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
-              {descriptionPreview}
-            </Typography>
-          ) : null}
 
           <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
             <Typography variant="caption" sx={{ color: statusMeta(task?.status).color, fontWeight: 900, flexShrink: 0 }}>
@@ -256,6 +239,21 @@ const TaskCard = memo(function TaskCard({
                 sx={{ color: ui.mutedText }}
               >
                 <EditIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+          {canDelete && (
+            <Tooltip title="Удалить задачу">
+              <IconButton
+                size="small"
+                color="error"
+                aria-label={`Удалить задачу «${task?.title || 'Без названия'}»`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete?.(task);
+                }}
+              >
+                <DeleteOutlineOutlinedIcon sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
           )}

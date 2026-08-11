@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -14,6 +15,32 @@ except Exception:  # pragma: no cover - production dependency guard
 
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_SAMPLE_INTERVAL_SEC = 30.0
+_SAMPLE_INTERVAL_MIN = 10
+_SAMPLE_INTERVAL_MAX = 300
+
+
+def resolve_system_metrics_sample_interval_sec(
+    raw: str | None = None,
+    *,
+    default: float = _DEFAULT_SAMPLE_INTERVAL_SEC,
+) -> float:
+    """Parse SCAN_SYSTEM_METRICS_SAMPLE_INTERVAL_SECONDS.
+
+    Accept only integers in [10, 300]; otherwise return safe default 30.
+    """
+    if raw is None:
+        raw = os.getenv("SCAN_SYSTEM_METRICS_SAMPLE_INTERVAL_SECONDS")
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        return float(default)
+    if value < _SAMPLE_INTERVAL_MIN or value > _SAMPLE_INTERVAL_MAX:
+        return float(default)
+    return float(value)
 
 
 class SystemMetricsCollector:
@@ -82,26 +109,72 @@ class SystemMetricsCollector:
 
 
 class SystemMetricsSampler(threading.Thread):
-    def __init__(self, *, store: Any, stop_event: threading.Event, interval_sec: float = 5.0) -> None:
+    """Background sampler decoupled from agent heartbeat / online-offline.
+
+    Uses a monotonic schedule so reconnects/retries do not emit duplicate samples.
+    Persist errors are isolated and never block the heartbeat path.
+    """
+
+    def __init__(
+        self,
+        *,
+        store: Any,
+        stop_event: threading.Event,
+        interval_sec: float | None = None,
+    ) -> None:
         super().__init__(daemon=True, name="scan-system-metrics")
         self.store = store
         self.stop_event = stop_event
-        self.interval_sec = max(1.0, float(interval_sec or 5.0))
+        if interval_sec is None:
+            self.interval_sec = resolve_system_metrics_sample_interval_sec()
+        else:
+            try:
+                candidate = float(interval_sec)
+            except Exception:
+                candidate = _DEFAULT_SAMPLE_INTERVAL_SEC
+            if candidate < _SAMPLE_INTERVAL_MIN or candidate > _SAMPLE_INTERVAL_MAX:
+                candidate = _DEFAULT_SAMPLE_INTERVAL_SEC
+            self.interval_sec = candidate
         self.collector = SystemMetricsCollector()
+        self._sample_lock = threading.Lock()
+        self._last_sample_mono: float | None = None
 
     def run(self) -> None:
         if not self.collector.available:
             logger.error("Scan system metrics are disabled: psutil is unavailable")
             return
         logger.info("Scan system metrics sampler started: interval=%.1fs", self.interval_sec)
+        next_due = time.monotonic()
         while not self.stop_event.is_set():
+            now_mono = time.monotonic()
+            wait_sec = max(0.0, next_due - now_mono)
+            if wait_sec > 0 and self.stop_event.wait(wait_sec):
+                break
+            if self.stop_event.is_set():
+                break
+            # Skip if a previous sample is still in progress (no parallel writes).
+            if not self._sample_lock.acquire(blocking=False):
+                next_due = time.monotonic() + self.interval_sec
+                continue
             try:
-                sample = self.collector.collect()
+                # Deduplicate: ignore if we already sampled within half-interval.
+                sample_mono = time.monotonic()
+                if (
+                    self._last_sample_mono is not None
+                    and (sample_mono - self._last_sample_mono) < (self.interval_sec * 0.5)
+                ):
+                    next_due = self._last_sample_mono + self.interval_sec
+                    continue
+                sample = self.collector.collect(monotonic_at=sample_mono)
                 task_ids = self.store.active_scan_task_ids()
                 if task_ids:
                     self.store.record_system_metric_samples(task_ids=task_ids, sample=sample)
+                self._last_sample_mono = sample_mono
+                next_due = sample_mono + self.interval_sec
             except Exception as exc:
                 logger.warning("Scan system metrics sample failed: %s", exc)
-            if self.stop_event.wait(self.interval_sec):
-                break
+                # Keep cadence even on persist errors; do not stall heartbeat/tasks.
+                next_due = time.monotonic() + self.interval_sec
+            finally:
+                self._sample_lock.release()
         logger.info("Scan system metrics sampler stopped")

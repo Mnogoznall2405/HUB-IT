@@ -220,7 +220,7 @@ class ScanServerConfig:
             ),
             dashboard_cache_ttl_sec=max(
                 0,
-                min(300, _to_int(os.getenv("SCAN_DASHBOARD_CACHE_TTL_SEC", "15"), 15)),
+                min(300, _to_int(os.getenv("SCAN_DASHBOARD_CACHE_TTL_SEC", "60"), 60)),
             ),
             server_lock_wait_sec=max(
                 0.0,

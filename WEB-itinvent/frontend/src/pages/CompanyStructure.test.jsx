@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CompanyStructure from './CompanyStructure';
 import { companyStructureAPI } from '../api/companyStructure';
@@ -15,9 +15,12 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../api/companyStructure', () => ({
   companyStructureAPI: {
     getTree: vi.fn(),
+    createNode: vi.fn(),
     getNodePeople: vi.fn(),
     search: vi.fn(),
+    searchDepartmentCodes: vi.fn(),
     searchDepartmentNames: vi.fn(),
+    searchLeaderCandidates: vi.fn(),
   },
 }));
 
@@ -86,9 +89,13 @@ describe('CompanyStructure employee explorer', () => {
     notifyApiErrorMock.mockReset();
     hasPermissionMock.mockReturnValue(false);
     companyStructureAPI.getTree.mockReset();
+    companyStructureAPI.createNode.mockReset();
     companyStructureAPI.getNodePeople.mockReset();
     companyStructureAPI.search.mockReset();
+    companyStructureAPI.searchDepartmentCodes.mockReset();
+    companyStructureAPI.searchLeaderCandidates.mockReset();
     companyStructureAPI.getTree.mockResolvedValue(treePayload);
+    companyStructureAPI.searchDepartmentCodes.mockResolvedValue({ items: [] });
     companyStructureAPI.getNodePeople.mockResolvedValue({
       items: [
         {
@@ -103,50 +110,113 @@ describe('CompanyStructure employee explorer', () => {
         },
       ],
     });
+    companyStructureAPI.searchLeaderCandidates.mockResolvedValue({ items: [] });
   });
 
-  it('shows a drill-down hierarchy and only work contacts', async () => {
+  it('keeps search and structure views in one compact toolbar', async () => {
     render(<CompanyStructure />);
 
     expect(await screen.findByText('Структура компании')).toBeInTheDocument();
-    expect(await screen.findByText('Управление логистики')).toBeInTheDocument();
-    await waitFor(() => expect(companyStructureAPI.getNodePeople).toHaveBeenCalledWith('root'));
-    expect(await screen.findByText('+7 3452 11-22-33')).toBeInTheDocument();
-    expect(screen.getByText('ivanov@company.test')).toBeInTheDocument();
-    expect(screen.queryByText('+7 999 00-00-00')).not.toBeInTheDocument();
-    expect(screen.queryByText('private@example.test')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Личные данные не публикуются/)).not.toBeInTheDocument();
+    const toolbar = screen.getByTestId('company-structure-toolbar');
+    expect(within(toolbar).getByRole('combobox', { name: 'Поиск по структуре компании' })).toBeInTheDocument();
+    expect(within(toolbar).getByRole('button', { name: 'Фокус' })).toBeInTheDocument();
+    expect(screen.queryByText('Найдите коллегу, поймите подчинённость и перейдите к нужному подразделению.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('company-structure-stage')).toBeInTheDocument();
   });
 
-  it('shows only employees for a terminal department', async () => {
+  it('shows focus hierarchy and only work contacts in the side drawer', async () => {
+    render(<CompanyStructure />);
+
+    expect(await screen.findByText('Структура компании')).toBeInTheDocument();
+    expect((await screen.findAllByText('Управление логистики')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(companyStructureAPI.getNodePeople).toHaveBeenCalledWith('logistics'));
+    fireEvent.click(screen.getAllByRole('button', { name: /Сотрудники/ })[0]);
+
+    expect((await screen.findAllByText('+7 3452 11-22-33')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ivanov@company.test').length).toBeGreaterThan(0);
+    expect(screen.queryByText('+7 999 00-00-00')).not.toBeInTheDocument();
+    expect(screen.queryByText('private@example.test')).not.toBeInTheDocument();
+  });
+
+  it('focuses a terminal department and stores it in the URL', async () => {
     render(<CompanyStructure />);
     fireEvent.click(await screen.findByRole('button', { name: /Управление логистики/ }));
 
-    expect(await screen.findByRole('heading', { name: 'Сотрудники' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Подразделения' })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Это конечное подразделение/)).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Управление логистики' })).toBeInTheDocument();
+    expect(screen.queryByText('Отделы')).not.toBeInTheDocument();
+    expect(window.location.search).toContain('node=logistics');
+    expect(window.location.search).toContain('view=focus');
   });
 
-  it('opens the visual hierarchy map as the default admin editor', async () => {
+  it('opens the semantic map as the default admin layout', async () => {
     hasPermissionMock.mockImplementation((permission) => permission === 'company_structure.write');
     render(<CompanyStructure />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Администратор' }));
 
     expect(screen.getByRole('button', { name: 'Карта' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Схема подчинённости')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Автоматически' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Вертикальный обзор')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Добавить из ЗУП' })).toBeInTheDocument();
   });
 
-  it('opens employees in a popup when a chart card is selected', async () => {
+  it('keeps the admin map mounted while refreshing after a card is created', async () => {
+    hasPermissionMock.mockImplementation((permission) => permission === 'company_structure.write');
+    let resolveRefresh;
+    const refreshPromise = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const newNode = {
+      id: 'new-department',
+      parent_id: 'logistics',
+      node_type: 'department',
+      title: 'Новый отдел',
+      department_codes: [],
+      children: [],
+    };
+    const refreshedTree = {
+      items: [{
+        ...treePayload.items[0],
+        children: [{
+          ...treePayload.items[0].children[0],
+          children: [newNode],
+        }],
+      }],
+    };
+    companyStructureAPI.getTree.mockReset();
+    companyStructureAPI.getTree
+      .mockResolvedValueOnce(treePayload)
+      .mockReturnValueOnce(refreshPromise);
+    companyStructureAPI.createNode.mockResolvedValue(newNode);
+
     render(<CompanyStructure />);
-    await screen.findByRole('button', { name: /Управление логистики/ });
+    fireEvent.click(await screen.findByRole('button', { name: 'Администратор' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить вручную' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /Название карточки/ }), {
+      target: { value: 'Новый отдел' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Схема' }));
-    fireEvent.click(screen.getByRole('button', { name: /Генеральный директор.*Корень/ }));
+    await waitFor(() => expect(companyStructureAPI.createNode).toHaveBeenCalled());
+    await waitFor(() => expect(companyStructureAPI.getTree).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Автоматически' })).toBeInTheDocument();
+    expect(screen.queryByText('Загружаем структуру…')).not.toBeInTheDocument();
 
-    expect(await screen.findByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('+7 3452 11-22-33')).toBeInTheDocument();
-    expect(screen.getByText('ivanov@company.test')).toBeInTheDocument();
+    resolveRefresh(refreshedTree);
+    expect(await screen.findByText('Новый отдел')).toBeInTheDocument();
+  });
+
+  it('opens employees in a drawer without leaving the selected focus', async () => {
+    render(<CompanyStructure />);
+    fireEvent.click(await screen.findByRole('button', { name: /Управление логистики/ }));
+    await waitFor(() => expect(companyStructureAPI.getNodePeople).toHaveBeenCalledWith('logistics'));
+
+    const peopleButtons = screen.getAllByRole('button', { name: /Сотрудники/ });
+    fireEvent.click(peopleButtons[peopleButtons.length - 1]);
+
+    expect((await screen.findAllByText('+7 3452 11-22-33')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('heading', { name: 'Управление логистики' })).toBeInTheDocument();
+    expect(screen.getAllByText('ivanov@company.test').length).toBeGreaterThan(0);
   });
 });

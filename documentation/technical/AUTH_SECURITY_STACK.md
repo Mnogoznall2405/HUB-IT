@@ -6,10 +6,17 @@
 - Access token lifetime: `JWT_ACCESS_EXPIRE_MINUTES=15`.
 - Refresh token lifetime: `JWT_REFRESH_EXPIRE_DAYS=7`.
 - 2FA challenge lifetime: `AUTH_2FA_CHALLENGE_TTL_SEC=300`.
-- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30` (password/TOTP sessions).
+- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30` (external password/TOTP sessions without passkey).
 - Trusted-device session idle timeout: `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7` (passkey / WebAuthn login).
+- Internal-network session idle timeout: `SESSION_IDLE_TIMEOUT_INTERNAL_DAYS=7` (login from `AUTH_2FA_INTERNAL_CIDRS`, stored as `login_network_zone=internal`).
 - Session history retention: `SESSION_HISTORY_RETENTION_DAYS=14`.
 - Trusted device/passkey lifetime: `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`.
+- Auth/session drop counters: in-process metrics under `auth_session` in `GET /api/v1/system/request-metrics` (admin). Client beacons: `POST /api/v1/auth/session-telemetry` (`client_auth_required`, `client_refresh_failed`).
+- Internal idle is clamped to **≥7 days** (`SESSION_IDLE_TIMEOUT_INTERNAL_DAYS`); refresh/absolute TTL clamped to **≥7 days** (`JWT_REFRESH_EXPIRE_DAYS`).
+- Parallel refresh race: `REFRESH_ROTATION_GRACE_SECONDS` reuses the newly issued token pair for a short window (`refresh_grace_hit`).
+- Diagnostics: `GET /api/v1/auth/session-status` (session_id, last_seen_at, idle_expires_at, absolute_expires_at, refresh_expires_at, closed_reason) and `GET /api/v1/auth/session-policy`.
+- On api/chat startup: recompute `idle_expires_at` for active sessions (`reapply_idle_policy_for_active_sessions`).
+- Web UI: proactive silent `/auth/refresh` ~every 12 minutes while logged in (and on tab focus).
 
 ## Required Env
 - `APP_DATABASE_URL` is required for production auth runtime state.
@@ -33,6 +40,7 @@
 - `AUTH_PASSKEY_ALLOW_INTERNAL=0` (keep `0` so passkey stays external-only; corp `10.x` stays password-only)
 - `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`
 - `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7`
+- `SESSION_IDLE_TIMEOUT_INTERNAL_DAYS=7`
 
 ## Runtime Storage
 Auth does not require Redis.

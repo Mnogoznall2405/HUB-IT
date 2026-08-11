@@ -29,6 +29,7 @@ export const applyTaskListFiltersToSearchParams = (params, filters, { canManageA
     hasAttachments = false,
     unreadCommentsOnly = false,
     focusMode = 'all',
+    dateSortDirection = 'desc',
   } = filters || {};
 
   if (pageMode && pageMode !== 'list') nextParams.set('task_mode', pageMode);
@@ -63,6 +64,9 @@ export const applyTaskListFiltersToSearchParams = (params, filters, { canManageA
 
   if (focusMode && focusMode !== 'all') nextParams.set('task_focus', focusMode);
   else nextParams.delete('task_focus');
+
+  if (dateSortDirection === 'asc') nextParams.set('task_date_sort', 'asc');
+  else nextParams.delete('task_date_sort');
 
   return nextParams;
 };

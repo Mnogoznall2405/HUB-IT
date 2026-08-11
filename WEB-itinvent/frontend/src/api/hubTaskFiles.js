@@ -14,10 +14,26 @@ export const hubTaskFilesAPI = {
     return response.data;
   },
 
-  downloadTaskAttachment: async ({ taskId, attachmentId }) => {
+  downloadTaskAttachment: async ({ taskId, attachmentId, signal }) => {
     const response = await apiClient.get(
       `/hub/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
-      { responseType: 'blob' },
+      { responseType: 'blob', ...(signal ? { signal } : {}) },
+    );
+    return response;
+  },
+
+  getTaskAttachmentPreview: async ({ taskId, attachmentId, signal }) => {
+    const response = await apiClient.get(
+      `/hub/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/preview`,
+      signal ? { signal } : undefined,
+    );
+    return response.data;
+  },
+
+  downloadTaskAttachmentPreviewPdf: async ({ taskId, attachmentId, signal }) => {
+    const response = await apiClient.get(
+      `/hub/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/preview/pdf`,
+      { responseType: 'blob', ...(signal ? { signal } : {}) },
     );
     return response;
   },

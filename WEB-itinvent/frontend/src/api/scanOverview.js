@@ -11,8 +11,8 @@ export const scanOverviewAPI = {
     return response.data;
   },
 
-  getHostsTable: async (params = {}) => {
-    const response = await apiClient.get('/scan/hosts/table', { params });
+  getHostsTable: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/scan/hosts/table', { params, signal: options?.signal });
     return response.data;
   },
 };

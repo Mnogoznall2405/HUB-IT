@@ -69,22 +69,33 @@ export default function useChatConversationSyncCallbacks({
 }) {
   const syncConversationPreview = useCallback((conversationId, lastMessage, overrides = {}) => {
     const id = String(conversationId || '').trim();
-    if (!id || !lastMessage) return;
-    setConversations((current) => current.map((item) => (
-      item.id === id
-        ? {
-            ...item,
-            last_message_at: lastMessage?.created_at || item.last_message_at,
-            updated_at: lastMessage?.created_at || item.updated_at,
-            last_message_preview: getMessagePreview(lastMessage),
-            last_message_is_own: Boolean(lastMessage?.is_own),
-            last_message_delivery_status: lastMessage?.is_own
-              ? (String(lastMessage?.delivery_status || '').trim() || 'sent')
-              : null,
-            ...overrides,
-          }
-        : item
-    )));
+    if (!id || !lastMessage) return false;
+    const hasExplicitUnread = Object.prototype.hasOwnProperty.call(overrides || {}, 'unread_count');
+    let matched = false;
+    setConversations((current) => current.map((item) => {
+      if (String(item?.id || '').trim() !== id) return item;
+      matched = true;
+      const nextUnread = hasExplicitUnread
+        ? Math.max(0, Number(overrides.unread_count) || 0)
+        : (
+          lastMessage?.is_own
+            ? Number(item.unread_count || 0)
+            : Number(item.unread_count || 0) + 1
+        );
+      return {
+        ...item,
+        last_message_at: lastMessage?.created_at || item.last_message_at,
+        updated_at: lastMessage?.created_at || item.updated_at,
+        last_message_preview: getMessagePreview(lastMessage),
+        last_message_is_own: Boolean(lastMessage?.is_own),
+        last_message_delivery_status: lastMessage?.is_own
+          ? (String(lastMessage?.delivery_status || '').trim() || 'sent')
+          : null,
+        ...overrides,
+        unread_count: nextUnread,
+      };
+    }));
+    return matched;
   }, [setConversations]);
 
   const syncConversationUnreadState = useCallback((conversationId, readMessageId) => {

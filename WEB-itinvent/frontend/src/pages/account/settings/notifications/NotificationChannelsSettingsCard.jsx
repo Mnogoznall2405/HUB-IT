@@ -88,7 +88,7 @@ export function NotificationChannelsSettingsCard() {
               ['mail', 'Почта'],
               ['tasks', 'Задачи'],
               ['task_email', 'Email по задачам'],
-              ['announcements', 'Объявления'],
+              ['announcements', 'Лента компании'],
               ['chat', 'Chat'],
             ].map(([key, label]) => (
               <FormControlLabel

@@ -162,7 +162,7 @@ describe('SharedFile page', () => {
     renderPublicPage();
 
     expect(await screen.findByText('report.docx')).toBeInTheDocument();
-    expect(screen.getByText(/наведите курсор и нажмите «просмотреть»/i)).toBeInTheDocument();
+    expect(screen.getByText(/нажмите «просмотреть», чтобы открыть файл/i)).toBeInTheDocument();
     expect(mockGetPublicPreviewMeta).not.toHaveBeenCalled();
     expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument();
 

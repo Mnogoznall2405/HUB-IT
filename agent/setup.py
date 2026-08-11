@@ -13,11 +13,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = REPO_ROOT / "agent" / "src"
 AGENT_ENTRY = REPO_ROOT / "agent.py"
 SCAN_AGENT_ENTRY = REPO_ROOT / "scan_agent" / "agent.py"
+TELEGRAM_PROBE_ENTRY = REPO_ROOT / "telegram_probe_agent.py"
+MAX_PROBE_ENTRY = REPO_ROOT / "max_probe_agent.py"
+BROWSER_PROBE_ENTRY = REPO_ROOT / "browser_probe_agent.py"
 MSI_HELPER_ENTRY = REPO_ROOT / "agent_msi_helper.py"
+TELEGRAM_PROBE_SRC = REPO_ROOT / "telegram_uia_probe"
+BROWSER_PROBE_SRC = REPO_ROOT / "browser_probe"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(AGENT_SRC) not in sys.path:
     sys.path.insert(0, str(AGENT_SRC))
+if str(TELEGRAM_PROBE_SRC) not in sys.path:
+    sys.path.insert(0, str(TELEGRAM_PROBE_SRC))
+if str(BROWSER_PROBE_SRC.parent) not in sys.path:
+    sys.path.insert(0, str(BROWSER_PROBE_SRC.parent))
 
 from agent_installer import (
     DEFAULT_REPEAT_MINUTES,
@@ -26,6 +35,9 @@ from agent_installer import (
     MSI_VALUE_SENTINEL,
     MSI_HELPER_EXECUTABLE_NAME,
     SCAN_AGENT_EXECUTABLE_NAME,
+    TELEGRAM_PROBE_EXECUTABLE_NAME,
+    MAX_PROBE_EXECUTABLE_NAME,
+    BROWSER_PROBE_EXECUTABLE_NAME,
 )
 from agent_version import AGENT_VERSION
 
@@ -117,6 +129,21 @@ executables = [
         target_name=SCAN_AGENT_EXECUTABLE_NAME,
     ),
     Executable(
+        str(TELEGRAM_PROBE_ENTRY),
+        base=base,
+        target_name=TELEGRAM_PROBE_EXECUTABLE_NAME,
+    ),
+    Executable(
+        str(MAX_PROBE_ENTRY),
+        base=base,
+        target_name=MAX_PROBE_EXECUTABLE_NAME,
+    ),
+    Executable(
+        str(BROWSER_PROBE_ENTRY),
+        base=base,
+        target_name=BROWSER_PROBE_EXECUTABLE_NAME,
+    ),
+    Executable(
         str(MSI_HELPER_ENTRY),
         base=base,
         target_name=MSI_HELPER_EXECUTABLE_NAME,
@@ -135,23 +162,106 @@ build_exe_options = {
         "numpy",
         # Optional integrations pulled in by requests/PyMuPDF are not used by
         # the agent. OCR and image preprocessing run only on scan_server.
-        "PIL",
         "fontTools",
         "bcrypt",
-        "cryptography",
         "OpenSSL",
         "chardet",
         "lxml",
         "defusedxml",
     ],
-    "packages": ["wmi", "psutil", "requests", "scan_agent", "yaml", "itinvent_agent", "watchdog", "certifi"],
-    "includes": ["scan_agent.agent", "fitz", "watchdog.events", "watchdog.observers", "agent_installer"],
+    "packages": [
+        "wmi",
+        "psutil",
+        "requests",
+        "scan_agent",
+        "yaml",
+        "itinvent_agent",
+        "watchdog",
+        "certifi",
+        "fs_egress",
+        "telegram_probe",
+        "browser_probe",
+        "uiautomation",
+        "pywinauto",
+        "comtypes",
+        "cryptography",
+        "PIL",
+    ],
+    "includes": [
+        "scan_agent.agent",
+        "fitz",
+        "watchdog.events",
+        "watchdog.observers",
+        "agent_installer",
+        "fs_egress.service",
+        "telegram_probe.watcher",
+        "telegram_probe.sync",
+        "telegram_probe.history_reader",
+        "telegram_probe.agent_main",
+        "telegram_probe.profile",
+        "telegram_probe.disk_access",
+        "telegram_probe.compose_reader",
+        "telegram_probe.screen_media",
+        "telegram_probe.chat_state",
+        "telegram_probe.chat_detector",
+        "telegram_probe.message_parser",
+        "telegram_probe.media_cache",
+        "telegram_probe.process_watch",
+        "telegram_probe.screenshot",
+        "telegram_probe.image_match",
+        "telegram_probe.message_filter",
+        "telegram_probe.chat_kind",
+        "telegram_probe.report",
+        "telegram_probe.storage",
+        "telegram_probe.uia_tree",
+        "telegram_probe.models",
+
+        "browser_probe.watcher",
+        "browser_probe.sync",
+        "browser_probe.history",
+        "browser_probe.foreground",
+        "browser_probe.screenshot",
+        "browser_probe.classify",
+        # pywinauto/UIA needs these; cx_Freeze misses dynamically imported comtypes bits
+        "comtypes.stream",
+        "comtypes.client",
+        "comtypes.client._generate",
+        "comtypes.client._code_cache",
+        "comtypes.client._constants",
+        "comtypes.client._events",
+        "comtypes.client.dynamic",
+        "comtypes.client.lazybind",
+        "comtypes._post_coinit",
+        "comtypes._post_coinit.unknwn",
+        "comtypes.safearray",
+        "comtypes.gen",
+        "comtypes.gen.UIAutomationClient",
+        "comtypes.gen.stdole",
+        "pywinauto.uia_defines",
+        "pywinauto.controls.uiawrapper",
+    ],
     "include_files": [
         (str(REPO_ROOT / "patterns_strict.yaml"), "patterns_strict.yaml"),
         (str(Path(certifi.where()).resolve()), "lib/certifi/cacert.pem"),
         (
+            str(Path(__import__("comtypes").__file__).resolve().parent / "stream.py"),
+            "lib/comtypes/stream.py",
+        ),
+        (
             str(REPO_ROOT / "agent" / "scripts" / "install_agent_task.ps1"),
             "scripts/install_agent_task.ps1",
+        ),
+        (
+            str(REPO_ROOT / "agent" / "scripts" / "install_telegram_probe_task.ps1"),
+            "scripts/install_telegram_probe_task.ps1",
+        ),
+        (
+            str(REPO_ROOT / "agent" / "scripts" / "install_max_probe_task.ps1"),
+            "scripts/install_max_probe_task.ps1",
+        ),
+        (
+            str(REPO_ROOT / "agent" / "scripts" / "install_browser_probe_task.ps1"),
+            "scripts/install_browser_probe_task.ps1",
         ),
         (
             str(REPO_ROOT / "agent" / "scripts" / "uninstall_agent_task.ps1"),
@@ -159,6 +269,7 @@ build_exe_options = {
         ),
     ],
     "include_msvcr": True,
+    "path": [str(REPO_ROOT), str(AGENT_SRC), str(TELEGRAM_PROBE_SRC), str(BROWSER_PROBE_SRC.parent)] + sys.path,
 }
 
 
@@ -179,6 +290,13 @@ def _build_install_custom_action_target() -> str:
         _format_property_arg("--itinv-agent-heartbeat-sec", "ITINV_AGENT_HEARTBEAT_SEC"),
         _format_property_arg("--itinv-agent-heartbeat-jitter-sec", "ITINV_AGENT_HEARTBEAT_JITTER_SEC"),
         _format_property_arg("--itinv-scan-enabled", "ITINV_SCAN_ENABLED"),
+        _format_property_arg("--itinv-fs-egress-enabled", "ITINV_FS_EGRESS_ENABLED"),
+        _format_property_arg("--itinv-telegram-probe-enabled", "ITINV_TELEGRAM_PROBE_ENABLED"),
+        _format_property_arg("--itinv-telegram-probe-sync-sec", "ITINV_TELEGRAM_PROBE_SYNC_SEC"),
+        _format_property_arg("--itinv-browser-probe-enabled", "ITINV_BROWSER_PROBE_ENABLED"),
+        _format_property_arg("--itinv-browser-probe-sync-sec", "ITINV_BROWSER_PROBE_SYNC_SEC"),
+        _format_property_arg("--itinv-max-probe-enabled", "ITINV_MAX_PROBE_ENABLED"),
+        _format_property_arg("--itinv-max-probe-sync-sec", "ITINV_MAX_PROBE_SYNC_SEC"),
         _format_property_arg("--scan-agent-server-base", "SCAN_AGENT_SERVER_BASE"),
         _format_property_arg("--scan-agent-api-key", "SCAN_AGENT_API_KEY"),
         _format_property_arg("--scan-agent-poll-interval-sec", "SCAN_AGENT_POLL_INTERVAL_SEC"),
@@ -218,7 +336,7 @@ def _build_upgrade_backup_custom_action_target() -> str:
         "Start-Process -FilePath 'schtasks.exe' "
         "-ArgumentList @('/End','/TN',$taskName) "
         "-WindowStyle Hidden -Wait|Out-Null};"
-        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe')){"
+        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe','ITInventTelegramProbe','ITInventMaxProbe','ITInventBrowserProbe')){"
         "Get-Process -Name $processName -ErrorAction SilentlyContinue|"
         "Stop-Process -Force -ErrorAction SilentlyContinue};"
         "New-Item -ItemType Directory -Force -Path $backup|Out-Null;"
@@ -321,7 +439,7 @@ setup(
     name="HUB-IT Agent",
     version=AGENT_VERSION,
     author="HUB-IT",
-    description="HUB-IT Agent (Inventory + Scan)",
+    description="HUB-IT Agent (Inventory + Scan + File Egress + Telegram/Browser Probe)",
     options={
         "build_exe": build_exe_options,
         "bdist_msi": bdist_msi_options,

@@ -23,6 +23,8 @@ import {
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
 import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+import ChatStickerMedia from './ChatStickerMedia';
+import ChatStickerPackDialog from './ChatStickerPackDialog';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
 
 const FILE_EXTENSION_COLORS = {
@@ -41,6 +43,18 @@ const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 const AUDIO_EXTENSIONS = new Set(['ogg', 'webm', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
 const EMPTY_URL_LIST = [];
+const STICKER_PACK_FILE_NAME_RE = /^sticker-([A-Za-z0-9_]{1,128})\.(?:webp|webm|tgs)$/i;
+
+export const getStickerPackShortName = (attachment) => {
+  const directValue = String(
+    attachment?.sticker_pack_short_name
+    || attachment?.pack_short_name
+    || '',
+  ).trim();
+  if (directValue) return directValue;
+  const match = STICKER_PACK_FILE_NAME_RE.exec(String(attachment?.file_name || '').trim());
+  return match?.[1] || '';
+};
 
 const clampFileName = (value, maxLength = 28) => {
   const normalized = String(value || '').trim();
@@ -58,7 +72,7 @@ const resolveAttachmentKind = ({ fileName, fileType, mimeType }) => {
   const normalizedExtension = getExtensionFromFileName(fileName);
   const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
   const normalizedFileType = String(fileType || '').trim().toLowerCase();
-  if (['image', 'video', 'audio', 'file'].includes(normalizedFileType)) return normalizedFileType;
+  if (['image', 'video', 'audio', 'file', 'sticker'].includes(normalizedFileType)) return normalizedFileType;
   if (normalizedMimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(normalizedExtension)) return 'image';
   if (normalizedMimeType.startsWith('audio/') || AUDIO_EXTENSIONS.has(normalizedExtension)) return 'audio';
   if (normalizedMimeType.startsWith('video/') || VIDEO_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'video') return 'video';
@@ -666,6 +680,7 @@ export function FileAttachment({
   isOwn = false,
   isSending = false,
   onOpenPreview,
+  onOpenStickerPack,
   previewWidth,
   previewHeight,
   durationSeconds,
@@ -726,6 +741,49 @@ export function FileAttachment({
     setActiveImageUrl(imageSourceCandidates[0] || String(fileUrl || '').trim());
     setFailedUrls(new Set());
   }, [fileUrl, imageSourceCandidates]);
+
+  if (attachmentKind === 'sticker') {
+    const stickerMedia = (
+      <ChatStickerMedia
+        src={fileUrl || resolvedOpenUrl}
+        mimeType={mimeType}
+        posterSrc={posterUrl}
+        alt="Стикер"
+        autoPlay
+        forceAutoPlay
+        size={hasNumericMediaMaxWidth ? Math.min(mediaMaxWidth, 224) : 184}
+      />
+    );
+    if (typeof onOpenStickerPack !== 'function') return stickerMedia;
+    return (
+      <Box
+        component="button"
+        type="button"
+        aria-label="Открыть набор стикеров"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenStickerPack();
+        }}
+        sx={{
+          display: 'block',
+          p: 0,
+          border: 'none',
+          borderRadius: 3,
+          bgcolor: 'transparent',
+          color: 'inherit',
+          cursor: 'pointer',
+          lineHeight: 0,
+          '&:focus-visible': {
+            outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
+            outlineOffset: 3,
+          },
+        }}
+      >
+        {stickerMedia}
+      </Box>
+    );
+  }
 
   if (attachmentKind === 'image') {
     const handleOpenImage = (event) => {
@@ -1184,6 +1242,7 @@ export function FileAttachment({
 }
 
 export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview, isOwn = false, isSending = false }) {
+  const [stickerPackDialogOpen, setStickerPackDialogOpen] = useState(false);
   const normalizedMessageId = String(messageId || '').trim();
   const attachmentId = String(attachment?.id || '').trim();
   const canBuildAttachmentUrl = Boolean(normalizedMessageId && attachmentId);
@@ -1199,10 +1258,13 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
   const thumbUrl = normalizeChatAttachmentUrl(variantUrls.thumb);
   const previewUrl = normalizeChatAttachmentUrl(variantUrls.preview);
   const attachmentKind = getAttachmentKind(attachment);
+  const stickerPackShortName = attachmentKind === 'sticker' ? getStickerPackShortName(attachment) : '';
   const fileUrl = isImageAttachment(attachment)
     ? (directPreviewUrl || thumbUrl || previewUrl || openUrl || originalUrl)
     : (attachmentKind === 'video' ? (directPreviewUrl || previewUrl || openUrl || originalUrl) : openUrl);
-  const posterUrl = attachmentKind === 'video' ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster)) : '';
+  const posterUrl = attachmentKind === 'video' || attachmentKind === 'sticker'
+    ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster))
+    : '';
   const fallbackFileUrls = useMemo(
     () => compactUrlList(previewUrl, thumbUrl, openUrl, inlineOriginalUrl, originalUrl, downloadOriginalUrl),
     [downloadOriginalUrl, inlineOriginalUrl, openUrl, originalUrl, previewUrl, thumbUrl],
@@ -1215,29 +1277,41 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
     }) === 'video'
     || isChatDocumentPreviewableAttachment(attachment);
   return (
-    <FileAttachment
-      fileName={attachment?.file_name}
-      fileSize={attachment?.file_size}
-      fileUrl={fileUrl}
-      openUrl={openUrl}
-      posterUrl={posterUrl}
-      mimeType={attachment?.mime_type}
-      fileType={attachment?.kind || attachment?.media_kind || attachment?.file_type}
-      theme={theme}
-      ui={ui}
-      isOwn={isOwn}
-      isSending={isSending}
-      onOpenPreview={previewable && typeof onOpenPreview === 'function'
-        ? () => onOpenPreview(messageId, attachment)
-        : undefined}
-      previewWidth={attachment?.width}
-      previewHeight={attachment?.height}
-      durationSeconds={attachment?.duration_seconds}
-      mediaMaxWidth={attachment?.mediaMaxWidth}
-      mediaMaxHeight={attachment?.mediaMaxHeight}
-      mediaMinWidth={attachment?.mediaMinWidth}
-      forcedAspectRatio={attachment?.forcedAspectRatio}
-      fallbackFileUrls={fallbackFileUrls}
-    />
+    <>
+      <FileAttachment
+        fileName={attachment?.file_name}
+        fileSize={attachment?.file_size}
+        fileUrl={fileUrl}
+        openUrl={openUrl}
+        posterUrl={posterUrl}
+        mimeType={attachment?.mime_type}
+        fileType={attachment?.kind || attachment?.media_kind || attachment?.file_type}
+        theme={theme}
+        ui={ui}
+        isOwn={isOwn}
+        isSending={isSending}
+        onOpenPreview={previewable && typeof onOpenPreview === 'function'
+          ? () => onOpenPreview(messageId, attachment)
+          : undefined}
+        onOpenStickerPack={stickerPackShortName ? () => setStickerPackDialogOpen(true) : undefined}
+        previewWidth={attachment?.width}
+        previewHeight={attachment?.height}
+        durationSeconds={attachment?.duration_seconds}
+        mediaMaxWidth={attachment?.mediaMaxWidth}
+        mediaMaxHeight={attachment?.mediaMaxHeight}
+        mediaMinWidth={attachment?.mediaMinWidth}
+        forcedAspectRatio={attachment?.forcedAspectRatio}
+        fallbackFileUrls={fallbackFileUrls}
+      />
+      {stickerPackDialogOpen ? (
+        <ChatStickerPackDialog
+          open
+          shortName={stickerPackShortName}
+          theme={theme}
+          ui={ui}
+          onClose={() => setStickerPackDialogOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }

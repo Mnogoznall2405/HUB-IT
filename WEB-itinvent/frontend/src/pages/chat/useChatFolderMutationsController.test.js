@@ -85,7 +85,7 @@ describe('useChatFolderMutationsController', () => {
       await result.current.handleDeleteChatFolder('f1');
     });
 
-    expect(handleActiveFolderChange).toHaveBeenCalledWith('all');
+    expect(handleActiveFolderChange).toHaveBeenCalledWith('personal');
     expect(chatFoldersAPI.deleteFolder).toHaveBeenCalledWith('f1');
   });
 });

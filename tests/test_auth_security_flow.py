@@ -782,6 +782,7 @@ def test_complete_login_passes_trusted_device_id_for_webauthn(monkeypatch):
 
     assert captured
     assert captured[0]["trusted_device_id"] == "device-uuid-1"
+    assert captured[0]["login_network_zone"] == "external"
 
 
 def test_complete_login_without_trusted_device_id_for_password(monkeypatch):
@@ -827,6 +828,53 @@ def test_complete_login_without_trusted_device_id_for_password(monkeypatch):
 
     assert captured
     assert captured[0].get("trusted_device_id") is None
+    assert captured[0]["login_network_zone"] == "external"
+
+
+def test_complete_login_passes_internal_network_zone(monkeypatch):
+    service = auth_security_module.AuthSecurityService()
+    user_payload = _sample_public_user(id=7, username="ivanov")
+    challenge = {
+        "challenge_id": "challenge-internal",
+        "user_id": 7,
+        "username": "ivanov",
+        "request_username": "ivanov",
+        "role": "viewer",
+        "auth_source": "local",
+        "ip_address": "10.10.1.25",
+        "user_agent": "pytest",
+        "network_zone": "internal",
+        "twofa_policy": "external_only",
+        "twofa_required_for_current_request": False,
+    }
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        auth_security_module.session_service,
+        "create_session",
+        lambda **kwargs: captured.append(kwargs) or {"status": "active"},
+    )
+    monkeypatch.setattr(auth_security_module.session_service, "close_session", lambda session_id: None)
+    monkeypatch.setattr(auth_security_module.security_email_service, "send_new_login_alert", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.auth_runtime_store_service, "delete_login_challenge", lambda challenge_id: None)
+    monkeypatch.setattr(service, "issue_tokens", lambda **kwargs: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "access_ttl_seconds": 900,
+        "refresh_ttl_seconds": 86400,
+    })
+    monkeypatch.setattr(service, "_build_public_user", lambda user, **kwargs: dict(user))
+
+    service._complete_login(
+        challenge=challenge,
+        user=user_payload,
+        auth_method="password",
+        device_id=None,
+    )
+
+    assert captured
+    assert captured[0].get("trusted_device_id") is None
+    assert captured[0]["login_network_zone"] == "internal"
 
 
 def test_verify_twofa_login_consumes_challenge_on_invalid_totp(monkeypatch):
@@ -951,6 +999,7 @@ def test_refresh_rejects_replayed_refresh_token(monkeypatch):
     )
     monkeypatch.setattr(auth.auth_runtime_store_service, "is_jti_revoked", lambda jti: False)
     monkeypatch.setattr(auth.auth_runtime_store_service, "consume_refresh_token", lambda jti: None)
+    monkeypatch.setattr(auth.auth_runtime_store_service, "wait_refresh_rotation_grace", lambda jti: None)
 
     app = FastAPI()
     app.include_router(auth.router, prefix="/auth")
@@ -962,6 +1011,51 @@ def test_refresh_rejects_replayed_refresh_token(monkeypatch):
 
     assert response.status_code == 401
     assert "already used" in response.json()["detail"]
+
+
+def test_refresh_grace_reuses_rotated_tokens(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "decode_access_token",
+        lambda token, **kwargs: SimpleNamespace(
+            jti="refresh-jti",
+            session_id="session-1",
+            user_id=7,
+            device_id="session:session-1",
+        ),
+    )
+    monkeypatch.setattr(auth.auth_runtime_store_service, "consume_refresh_token", lambda jti: None)
+    monkeypatch.setattr(
+        auth.auth_runtime_store_service,
+        "wait_refresh_rotation_grace",
+        lambda jti: {
+            "access_token": "grace-access",
+            "refresh_token": "grace-refresh",
+            "access_ttl_seconds": 900,
+            "refresh_ttl_seconds": 604800,
+            "user": _sample_public_user(id=7, username="ivanov"),
+            "session_id": "session-1",
+        },
+    )
+    monkeypatch.setattr(
+        auth,
+        "_apply_auth_delivery",
+        lambda request, response, **kwargs: (None, None),
+    )
+    monkeypatch.setattr(auth, "note_auth_session_metric", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        auth,
+        "build_request_network_context",
+        lambda request: SimpleNamespace(client_ip="10.1.1.1", network_zone="internal"),
+    )
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(auth, "_resolve_refresh_token", lambda **kwargs: "refresh-token-1")
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    response = TestClient(app).post("/auth/refresh")
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "session-1"
 
 
 def test_auth_me_returns_security_fields(monkeypatch):

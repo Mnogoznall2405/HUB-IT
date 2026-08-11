@@ -63,10 +63,12 @@ describe('docflow API timeouts', () => {
   it('uses encoded task and file references for detail, download, and preview reads', async () => {
     await docflowAPI.getTask('task ref');
     await docflowAPI.downloadFile('task ref', 'file/ref', { disposition: 'inline' });
+    await docflowAPI.getFilePreview('task ref', 'file/ref');
     await docflowAPI.downloadFilePreviewPdf('task ref', 'file/ref');
 
     expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/docflow/tasks/task%20ref', {
       headers: { 'Cache-Control': 'no-store' },
+      params: { include_related: 1 },
       timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS,
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(
@@ -80,6 +82,11 @@ describe('docflow API timeouts', () => {
     );
     expect(apiClientMock.get).toHaveBeenNthCalledWith(
       3,
+      '/docflow/tasks/task%20ref/files/file%2Fref/preview',
+      { signal: undefined, timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS },
+    );
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(
+      4,
       '/docflow/tasks/task%20ref/files/file%2Fref/preview/pdf',
       { responseType: 'blob', timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS },
     );

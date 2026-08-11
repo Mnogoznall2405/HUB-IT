@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-07-30 10:41 UTC_  
+_Сгенерировано: 2026-08-10 11:27 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (100 tables)
+## Schema `app` (127 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -198,6 +198,51 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.browser_probe_media`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(512) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `file_name` | varchar(512) | no | `` |
+| `content` | bytea | yes | `` |
+| `content_type` | varchar(128) | no | `'application/octet-stream'::character varying` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_browser_probe_media_computer`: (computer_name)
+  - `uq_app_browser_probe_media_host_file` UNIQUE: (computer_name, file_name)
+
+---
+
+### `app.browser_probe_visits`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(512) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `windows_user` | varchar(255) | no | `''::character varying` |
+| `browser` | varchar(32) | no | `''::character varying` |
+| `profile` | varchar(128) | no | `''::character varying` |
+| `visit_id` | varchar(64) | no | `''::character varying` |
+| `url` | text | no | `''::text` |
+| `title` | varchar(512) | no | `''::character varying` |
+| `domain` | varchar(255) | no | `''::character varying` |
+| `category` | varchar(32) | no | `'other'::character varying` |
+| `visited_at` | timestamptz | yes | `` |
+| `dwell_sec` | double precision | yes | `` |
+| `screenshot_file` | varchar(512) | no | `''::character varying` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_browser_probe_visits_category`: (category)
+  - `ix_app_browser_probe_visits_computer_visited`: (computer_name, visited_at)
+  - `uq_app_browser_probe_visits_host_visit` UNIQUE: (computer_name, browser, profile, visit_id)
+
+---
+
 ### `app.department_memberships`
 
 | Column | Type | Nullable | Default |
@@ -313,6 +358,66 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.document_preview_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `scope` | varchar(32) | no | `` |
+| `owner_user_id` | integer | no | `` |
+| `resource_key` | varchar(64) | no | `` |
+| `source_payload_json` | text | no | `` |
+| `status` | varchar(20) | no | `` |
+| `attempt_count` | integer | no | `` |
+| `next_attempt_at` | timestamptz | no | `` |
+| `lease_owner` | varchar(96) | yes | `` |
+| `lease_expires_at` | timestamptz | yes | `` |
+| `artifact_rel_path` | text | no | `` |
+| `source_filename` | varchar(512) | no | `` |
+| `content_type` | varchar(255) | no | `` |
+| `pdf_filename` | varchar(512) | no | `` |
+| `source_kind` | varchar(32) | no | `` |
+| `page_count` | integer | no | `` |
+| `sheets_json` | text | no | `` |
+| `last_error` | text | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `ready_at` | timestamptz | yes | `` |
+| `expires_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_document_preview_jobs_expires`: (expires_at)
+  - `ix_app_document_preview_jobs_lease`: (lease_expires_at)
+  - `ix_app_document_preview_jobs_status_next`: (status, next_attempt_at)
+  - `uq_app_document_preview_jobs_resource` UNIQUE: (scope, owner_user_id, resource_key)
+
+---
+
+### `app.employee_absences`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.employee_absences_id_seq'::regclass)` |
+| `user_id` | integer | yes | `` |
+| `display_name` | varchar(255) | no | `` |
+| `department` | varchar(255) | yes | `` |
+| `kind` | varchar(32) | no | `` |
+| `starts_on` | date | no | `` |
+| `ends_on` | date | no | `` |
+| `comment` | varchar(500) | yes | `` |
+| `source` | varchar(32) | no | `` |
+| `created_by` | integer | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_employee_absences_range`: (starts_on, ends_on)
+  - `ix_app_employee_absences_user_id`: (user_id)
+
+---
+
 ### `app.equipment_recent_acts`
 
 | Column | Type | Nullable | Default |
@@ -408,6 +513,31 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.file_left_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `ts` | integer | no | `` |
+| `channel` | varchar(32) | no | `` |
+| `file_name` | varchar(512) | no | `` |
+| `dest_path` | text | no | `` |
+| `src_path` | text | no | `''::text` |
+| `size` | bigint | yes | `` |
+| `sha256` | varchar(64) | no | `''::character varying` |
+| `windows_user` | varchar(255) | no | `''::character varying` |
+| `computer_name` | varchar(255) | no | `''::character varying` |
+| `details_json` | text | no | `'{}'::text` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_file_left_events_channel_ts`: (channel, ts)
+  - `ix_app_file_left_events_computer_ts`: (computer_name, ts)
+  - `ix_app_file_left_events_ts`: (ts)
+
+---
+
 ### `app.hub_announcement_attachments`
 
 | Column | Type | Nullable | Default |
@@ -421,10 +551,206 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `uploaded_by_user_id` | integer | no | `` |
 | `uploaded_by_username` | text | no | `''::text` |
 | `uploaded_at` | text | no | `` |
+| `sort_order` | integer | no | `0` |
+| `is_cover` | integer | no | `0` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `idx_hub_announcement_attachments_announcement`: (announcement_id, uploaded_at)
+
+---
+
+### `app.hub_announcement_bookmarks`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `announcement_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `created_at` | text | no | `` |
+
+- **Primary key:** `announcement_id, user_id`
+- **Indexes:**
+  - `idx_hub_bookmarks_user`: (user_id, created_at)
+
+---
+
+### `app.hub_announcement_categories`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `name` | text | no | `` |
+| `slug` | text | no | `` |
+| `is_active` | integer | no | `1` |
+| `created_by_user_id` | integer | no | `` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `hub_announcement_categories_slug_key` UNIQUE: (slug)
+
+---
+
+### `app.hub_announcement_comment_attachments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `comment_id` | text | no | `` |
+| `announcement_id` | text | no | `` |
+| `file_name` | text | no | `` |
+| `file_path` | text | no | `` |
+| `file_mime` | text | yes | `` |
+| `file_size` | integer | no | `` |
+| `uploaded_by_user_id` | integer | no | `` |
+| `uploaded_at` | text | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_hub_comment_attachments_comment`: (comment_id, uploaded_at)
+
+---
+
+### `app.hub_announcement_comment_mentions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `comment_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `username` | text | no | `''::text` |
+| `full_name` | text | no | `''::text` |
+
+- **Primary key:** `comment_id, user_id`
+
+---
+
+### `app.hub_announcement_comment_reactions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `comment_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `reaction_type` | text | no | `` |
+| `username` | text | no | `''::text` |
+| `full_name` | text | no | `''::text` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+
+- **Primary key:** `comment_id, user_id`
+- **Indexes:**
+  - `idx_hub_comment_reactions_comment`: (comment_id, reaction_type)
+
+---
+
+### `app.hub_announcement_comments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `announcement_id` | text | no | `` |
+| `user_id` | integer | no | `` |
+| `username` | text | no | `''::text` |
+| `full_name` | text | no | `''::text` |
+| `body` | text | no | `` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+| `parent_comment_id` | text | yes | `` |
+| `root_comment_id` | text | yes | `` |
+| `reply_to_user_id` | integer | yes | `` |
+| `reply_to_username` | text | no | `''::text` |
+| `deleted_at` | text | yes | `` |
+| `deleted_by_user_id` | integer | yes | `` |
+| `change_version` | integer | no | `1` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_hub_announcement_comments_announcement`: (announcement_id, created_at)
+  - `idx_hub_comments_root`: (announcement_id, root_comment_id, created_at)
+
+---
+
+### `app.hub_announcement_likes`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `announcement_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `username` | text | no | `''::text` |
+| `full_name` | text | no | `''::text` |
+| `created_at` | text | no | `` |
+
+- **Primary key:** `announcement_id, user_id`
+- **Indexes:**
+  - `idx_hub_announcement_likes_announcement`: (announcement_id, created_at)
+
+---
+
+### `app.hub_announcement_poll_options`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `poll_id` | text | no | `` |
+| `text` | text | no | `''::text` |
+| `sort_order` | integer | no | `0` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_hub_poll_options_poll`: (poll_id, sort_order)
+
+---
+
+### `app.hub_announcement_poll_votes`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `poll_id` **PK** | text | no | `` |
+| `option_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `created_at` | text | no | `` |
+
+- **Primary key:** `poll_id, option_id, user_id`
+- **Indexes:**
+  - `idx_hub_poll_votes_option`: (option_id)
+  - `idx_hub_poll_votes_poll_user`: (poll_id, user_id)
+
+---
+
+### `app.hub_announcement_polls`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `announcement_id` | text | no | `` |
+| `question` | text | no | `''::text` |
+| `allows_multiple` | integer | no | `0` |
+| `is_anonymous` | integer | no | `0` |
+| `closes_at` | text | yes | `` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `hub_announcement_polls_announcement_id_key` UNIQUE: (announcement_id)
+
+---
+
+### `app.hub_announcement_reactions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `announcement_id` **PK** | text | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `reaction_type` | text | no | `` |
+| `username` | text | no | `''::text` |
+| `full_name` | text | no | `''::text` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+
+- **Primary key:** `announcement_id, user_id`
+- **Indexes:**
+  - `idx_hub_announcement_reactions_announcement`: (announcement_id, reaction_type)
 
 ---
 
@@ -442,6 +768,34 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `acknowledged_at` | text | yes | `` |
 
 - **Primary key:** `announcement_id, user_id`
+
+---
+
+### `app.hub_announcement_tag_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `announcement_id` **PK** | text | no | `` |
+| `tag_id` **PK** | text | no | `` |
+
+- **Primary key:** `announcement_id, tag_id`
+- **Indexes:**
+  - `idx_hub_tag_links_tag`: (tag_id, announcement_id)
+
+---
+
+### `app.hub_announcement_tags`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `name` | text | no | `` |
+| `slug` | text | no | `` |
+| `created_at` | text | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `hub_announcement_tags_slug_key` UNIQUE: (slug)
 
 ---
 
@@ -469,10 +823,16 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `pinned_until` | text | yes | `` |
 | `published_from` | text | yes | `` |
 | `expires_at` | text | yes | `` |
+| `status` | text | no | `'published'::text` |
+| `comments_enabled` | integer | no | `1` |
+| `reactions_enabled` | integer | no | `1` |
+| `publication_notified_at` | text | yes | `` |
+| `category_id` | text | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `idx_hub_announcements_published`: (is_active, published_at)
+  - `idx_hub_announcements_status_due`: (status, published_from)
 
 ---
 
@@ -503,7 +863,40 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 - **Primary key:** `id`
 - **Indexes:**
+  - `idx_hub_notifications_entity`: (entity_type, entity_id)
   - `idx_hub_notifications_recipient`: (recipient_user_id, created_at)
+  - `idx_hub_notifications_retention`: (entity_type, created_at, id)
+
+---
+
+### `app.hub_task_attachment_previews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `attachment_id` **PK** | text | no | `` |
+| `task_id` | text | no | `` |
+| `status` | varchar(20) | no | `'queued'::character varying` |
+| `attempt_count` | integer | no | `0` |
+| `next_attempt_at` | timestamptz | no | `` |
+| `lease_owner` | varchar(64) | yes | `` |
+| `lease_expires_at` | timestamptz | yes | `` |
+| `artifact_rel_path` | text | no | `''::text` |
+| `pdf_filename` | varchar(255) | no | `''::character varying` |
+| `source_kind` | varchar(32) | no | `''::character varying` |
+| `page_count` | integer | no | `0` |
+| `sheets_json` | text | no | `'[]'::text` |
+| `last_error` | text | no | `''::text` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `ready_at` | timestamptz | yes | `` |
+
+- **Primary key:** `attachment_id`
+- **Foreign keys:**
+  - `attachment_id` → `app.hub_task_attachments` (`id`)
+- **Indexes:**
+  - `idx_hub_task_attachment_previews_lease_expires`: (lease_expires_at)
+  - `idx_hub_task_attachment_previews_status_next_attempt`: (status, next_attempt_at)
+  - `idx_hub_task_attachment_previews_task`: (task_id)
 
 ---
 
@@ -1062,6 +1455,44 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.max_probe_chats`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(255) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `windows_user` | varchar(255) | no | `''::character varying` |
+| `chat_id` | varchar(128) | no | `` |
+| `chat_name` | varchar(512) | no | `` |
+| `messages_json` | text | no | `'[]'::text` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_max_probe_chats_computer`: (computer_name)
+  - `ix_app_max_probe_chats_updated_at`: (updated_at)
+  - `uq_app_max_probe_chats_host_chat` UNIQUE: (computer_name, chat_id)
+
+---
+
+### `app.max_probe_media`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(512) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `file_name` | varchar(512) | no | `` |
+| `content` | bytea | yes | `` |
+| `content_type` | varchar(128) | no | `'application/octet-stream'::character varying` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_max_probe_media_computer`: (computer_name)
+  - `uq_app_max_probe_media_host_file` UNIQUE: (computer_name, file_name)
+
+---
+
 ### `app.my_file_audit`
 
 | Column | Type | Nullable | Default |
@@ -1547,6 +1978,82 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.one_c_catalog_search_documents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_catalog_search_documents_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `generation` | integer | no | `` |
+| `catalog_type` | varchar(16) | no | `` |
+| `index_version` | integer | no | `` |
+| `entry_ref` | varchar(64) | no | `` |
+| `code_normalized` | varchar(200) | no | `` |
+| `name_normalized` | text | no | `` |
+| `search_text` | text | no | `` |
+| `search_tsv` | tsvector | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_catalog_search_documents_code`: (source_base, catalog_type, index_version, code_normalized)
+  - `ix_app_one_c_catalog_search_documents_name_prefix`: (source_base, catalog_type, index_version)
+  - `ix_app_one_c_catalog_search_documents_trgm`: (search_text)
+  - `ix_app_one_c_catalog_search_documents_tsv`: (search_tsv)
+  - `uq_app_one_c_catalog_search_documents_ref` UNIQUE: (source_base, catalog_type, index_version, entry_ref)
+
+---
+
+### `app.one_c_catalog_search_index_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_base` **PK** | varchar(64) | no | `` |
+| `catalog_type` **PK** | varchar(16) | no | `` |
+| `generation` | integer | no | `` |
+| `status` | varchar(16) | no | `` |
+| `expected_count` | integer | no | `` |
+| `indexed_count` | integer | no | `` |
+| `build_version` | integer | no | `` |
+| `checksum` | varchar(64) | no | `` |
+| `last_error` | text | no | `` |
+| `started_at` | timestamptz | yes | `` |
+| `finished_at` | timestamptz | yes | `` |
+| `updated_at` | timestamptz | no | `` |
+| `checkpoint_ref` | varchar(64) | no | `` |
+| `checkpoint_offset` | integer | no | `` |
+| `active_index_version` | integer | no | `0` |
+| `building_index_version` | integer | no | `0` |
+| `previous_index_version` | integer | no | `0` |
+| `source_fingerprint` | varchar(64) | no | `''::character varying` |
+| `previous_cleanup_after` | timestamptz | yes | `` |
+
+- **Primary key:** `source_base, catalog_type`
+
+---
+
+### `app.one_c_catalog_search_token_stats`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_catalog_search_token_stats_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `generation` | integer | no | `` |
+| `catalog_type` | varchar(16) | no | `` |
+| `index_version` | integer | no | `` |
+| `token` | varchar(200) | no | `` |
+| `frequency` | integer | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_catalog_search_token_stats_prefix`: (source_base, catalog_type, index_version, token)
+  - `ix_app_one_c_catalog_search_token_stats_trgm`: (token)
+  - `uq_app_one_c_catalog_search_token_stats` UNIQUE: (source_base, catalog_type, index_version, token)
+
+---
+
 ### `app.one_c_catalog_snapshots`
 
 | Column | Type | Nullable | Default |
@@ -1705,6 +2212,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_org_structure_dept_links_code`: (department_code)
   - `ix_app_org_structure_dept_links_node`: (node_id)
+  - `uq_app_org_structure_department_code` UNIQUE: (department_code)
   - `uq_app_org_structure_department_link` UNIQUE: (node_id, department_code)
 
 ---
@@ -1723,6 +2231,10 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `is_active` | boolean | no | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `layout_x` | double precision | yes | `` |
+| `layout_y` | double precision | yes | `` |
+| `person_employee_code` | varchar(128) | yes | `` |
+| `person_photo_updated_at` | timestamptz | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**
@@ -1825,6 +2337,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `client_browser_family` | varchar(32) | no | `'unknown'::character varying` |
 | `client_os_family` | varchar(32) | no | `'unknown'::character varying` |
 | `client_fingerprint_hash` | varchar(64) | no | `''::character varying` |
+| `login_network_zone` | varchar(16) | yes | `` |
 
 - **Primary key:** `session_id`
 - **Indexes:**
@@ -1854,6 +2367,57 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_task_delegate_user_links_is_active`: (is_active)
   - `ix_app_task_delegate_user_links_owner_user_id`: (owner_user_id)
   - `uq_app_task_delegate_owner_delegate` UNIQUE: (owner_user_id, delegate_user_id)
+
+---
+
+### `app.telegram_probe_chats`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(255) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `windows_user` | varchar(255) | no | `''::character varying` |
+| `chat_id` | varchar(128) | no | `` |
+| `chat_name` | varchar(512) | no | `` |
+| `messages_json` | text | no | `'[]'::text` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_telegram_probe_chats_computer`: (computer_name)
+  - `ix_app_telegram_probe_chats_updated_at`: (updated_at)
+  - `uq_app_telegram_probe_chats_host_chat` UNIQUE: (computer_name, chat_id)
+
+---
+
+### `app.telegram_probe_media`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(512) | no | `` |
+| `computer_name` | varchar(255) | no | `` |
+| `file_name` | varchar(512) | no | `` |
+| `content` | bytea | yes | `` |
+| `content_type` | varchar(128) | no | `'application/octet-stream'::character varying` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_telegram_probe_media_computer`: (computer_name)
+  - `uq_app_telegram_probe_media_host_file` UNIQUE: (computer_name, file_name)
+
+---
+
+### `app.telegram_probe_reports`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `computer_name` **PK** | varchar(255) | no | `` |
+| `windows_user` | varchar(255) | no | `''::character varying` |
+| `html` | text | no | `''::text` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `computer_name`
 
 ---
 
@@ -2357,7 +2921,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
-## Schema `chat` (1 tables)
+## Schema `chat` (4 tables)
 
 ### `chat.chat_event_outbox`
 
@@ -2389,6 +2953,72 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_chat_event_outbox_target_user_id_status`: (target_user_id, status)
   - `ix_chat_event_outbox_updated_at`: (updated_at)
   - `uq_chat_event_outbox_dedupe_key` UNIQUE: (dedupe_key)
+
+---
+
+### `chat.chat_sticker_packs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `short_name` | varchar(128) | no | `` |
+| `title` | varchar(255) | no | `` |
+| `sticker_type` | varchar(32) | no | `'regular'::character varying` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `chat_sticker_packs_short_name_key` UNIQUE: (short_name)
+  - `ix_chat_sticker_packs_short_name` UNIQUE: (short_name)
+
+---
+
+### `chat.chat_stickers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `pack_id` | varchar(36) | no | `` |
+| `telegram_file_id` | text | no | `` |
+| `telegram_file_unique_id` | varchar(128) | no | `` |
+| `emoji` | varchar(64) | no | `''::character varying` |
+| `format` | varchar(20) | no | `` |
+| `mime_type` | varchar(64) | no | `` |
+| `storage_name` | varchar(255) | no | `` |
+| `file_size` | integer | no | `0` |
+| `width` | integer | yes | `` |
+| `height` | integer | yes | `` |
+| `sort_order` | integer | no | `0` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `pack_id` → `chat.chat_sticker_packs` (`id`)
+- **Indexes:**
+  - `ix_chat_stickers_pack_id`: (pack_id)
+  - `ix_chat_stickers_pack_sort`: (pack_id, sort_order)
+  - `uq_chat_stickers_pack_file_unique` UNIQUE: (pack_id, telegram_file_unique_id)
+
+---
+
+### `chat.chat_user_sticker_packs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('chat.chat_user_sticker_packs_id_seq'::regclass)` |
+| `user_id` | integer | no | `` |
+| `pack_id` | varchar(36) | no | `` |
+| `added_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `pack_id` → `chat.chat_sticker_packs` (`id`)
+- **Indexes:**
+  - `ix_chat_user_sticker_packs_pack_id`: (pack_id)
+  - `ix_chat_user_sticker_packs_user_added`: (user_id, added_at)
+  - `ix_chat_user_sticker_packs_user_id`: (user_id)
+  - `uq_chat_user_sticker_packs_user_pack` UNIQUE: (user_id, pack_id)
 
 ---
 

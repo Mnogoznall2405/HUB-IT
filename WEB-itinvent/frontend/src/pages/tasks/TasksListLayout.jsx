@@ -122,11 +122,15 @@ export default function TasksListLayout() {
           visibleTaskItems={list.visibleTaskItems}
           taskItems={list.taskItems}
           taskListSections={list.taskListSections}
+          dateSortDirection={filters.dateSortDirection}
+          onDateSortDirectionChange={filters.setDateSortDirection}
           completedTasksOpen={filters.completedTasksOpen}
           onToggleCompletedTasks={handleToggleCompletedTasks}
           taskDiscussionChatEnabled={filters.taskDiscussionChatEnabled}
           activeTaskProjects={list.activeTaskProjects}
+          canDeleteTask={detail.canDeleteTask}
           onOpenTask={detail.openTaskDetails}
+          onDeleteTask={detail.handleDeleteTask}
           deadlineBuckets={list.deadlineBuckets}
           canCreateTasks={filters.canCreateTasks}
           onCreateWithPreset={create.openCreateTaskWithPreset}

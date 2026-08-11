@@ -81,7 +81,7 @@ function Remove-PathIfExists {
 }
 
 function Stop-AgentProcesses {
-    $processNames = @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe")
+    $processNames = @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe", "ITInventTelegramProbe", "ITInventMaxProbe", "ITInventBrowserProbe")
     foreach ($name in $processNames) {
         $processes = Get-Process -Name $name -ErrorAction SilentlyContinue
         if ($null -eq $processes) {
@@ -96,7 +96,7 @@ function Stop-AgentProcesses {
 }
 
 function Remove-AgentScheduledTasks {
-    foreach ($name in @($TaskName, "IT-Invent Agent", $OutlookTaskName) | Select-Object -Unique) {
+    foreach ($name in @($TaskName, "IT-Invent Agent", $OutlookTaskName, "HUB-IT Telegram Probe", "HUB-IT MAX Probe", "HUB-IT Browser Probe") | Select-Object -Unique) {
         if (-not $name) {
             continue
         }
@@ -239,6 +239,9 @@ if ($RuntimeRoot -and ($RuntimeRoot -ne (Join-Path $ProgramDataRoot "Agent"))) {
 foreach ($root in @($ProgramDataRoot, $LegacyProgramDataRoot) | Select-Object -Unique) {
     Remove-PathIfExists -TargetPath (Join-Path $root "Agent") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $root "ScanAgent") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "TelegramProbe") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "MaxProbe") -Recurse
+    Remove-PathIfExists -TargetPath (Join-Path $root "BrowserProbe") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $root "AgentUpgrade") -Recurse
     Remove-PathIfExists -TargetPath (Join-Path $root ".env")
     Remove-PathIfExists -TargetPath (Join-Path $root "Logs") -Recurse

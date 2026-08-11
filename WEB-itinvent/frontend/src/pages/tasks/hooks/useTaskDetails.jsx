@@ -61,7 +61,7 @@ export default function useTaskDetails({
     return String(params.get('task_mobile_view') || '').trim() === 'checklist' ? 'checklist' : 'details';
   }, [location.search]);
 
-  const detailsOpen = Boolean(selectedTaskId);
+  const detailsOpen = Boolean(selectedTaskId) && (isMobile || !taskDiscussionChatEnabled);
 
   const updateSearch = useCallback((mutate, { replace = true } = {}) => {
     const params = new URLSearchParams(location.search || '');
@@ -182,8 +182,10 @@ export default function useTaskDetails({
       setDetailsCommentBody('');
       return;
     }
-    void loadTaskDetails(selectedTaskId);
-  }, [loadTaskDetails, selectedTaskId]);
+    if (isMobile || !taskDiscussionChatEnabled) {
+      void loadTaskDetails(selectedTaskId);
+    }
+  }, [isMobile, loadTaskDetails, selectedTaskId, taskDiscussionChatEnabled]);
 
   useLayoutEffect(() => {
     if (!isMobile || !selectedTaskId || taskDetailHistorySeededRef.current || typeof window === 'undefined') return;
@@ -318,19 +320,23 @@ export default function useTaskDetails({
     }
   }, [detailsCommentBody, detailsTask?.id, refreshTasksAndDetails, setError]);
 
-  const handleOpenTaskDiscussion = useCallback(async (task = detailsTask) => {
+  const handleOpenTaskDiscussion = useCallback(async (task = detailsTask, { replace = false, split = false } = {}) => {
     const taskId = String(task?.id || '').trim();
-    if (!taskId || !taskDiscussionChatEnabled) return;
+    if (!taskId || !taskDiscussionChatEnabled) return '';
     setDiscussionOpening(true);
     try {
       const response = await hubTaskDiscussionAPI.openTaskDiscussion(taskId);
       const conversationId = String(response?.conversation_id || '').trim();
       if (!conversationId) throw new Error('Не удалось открыть чат по задаче');
       invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
-      navigate(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+      const params = new URLSearchParams({ conversation: conversationId });
+      if (split) params.set('task_layout', 'split');
+      navigate(`/chat?${params.toString()}`, { replace });
       window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
+      return conversationId;
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка открытия чата по задаче');
+      return '';
     } finally {
       setDiscussionOpening(false);
     }

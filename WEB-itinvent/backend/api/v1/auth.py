@@ -18,7 +18,7 @@ from fastapi import APIRouter, Body, Depends, File, status, HTTPException, Reque
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, require_permission
 from backend.config import config
@@ -67,6 +67,7 @@ from backend.services.authorization_service import (
 )
 from backend.services.trusted_device_service import TrustedDeviceServiceError, trusted_device_service
 from backend.database.connection import set_user_database
+from backend.services.auth_session_metrics import note as note_auth_session_metric
 from backend.utils.client_geo import resolve_client_geo
 from backend.utils.request_network import build_request_network_context, resolve_twofa_policy
 
@@ -74,6 +75,18 @@ from backend.utils.request_network import build_request_network_context, resolve
 router = APIRouter()
 security_optional = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+
+class SessionTelemetryRequest(BaseModel):
+    event: str = Field(..., min_length=1, max_length=64)
+    detail: Optional[str] = Field(default=None, max_length=200)
+    path: Optional[str] = Field(default=None, max_length=200)
+
+
+_CLIENT_TELEMETRY_EVENTS = {
+    "client_auth_required": "client_auth_required",
+    "client_refresh_failed": "client_refresh_failed",
+}
 
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 600
@@ -1039,6 +1052,10 @@ async def refresh_auth_tokens(
             window_seconds=60,
             request=request,
         )
+        note_auth_session_metric(
+            "refresh_invalid_token",
+            network_zone=network_context.network_zone,
+        )
         raise HTTPException(status_code=401, detail="Refresh token is invalid")
     await run_in_threadpool(
         _enforce_rate_limit,
@@ -1048,14 +1065,51 @@ async def refresh_auth_tokens(
         window_seconds=60,
         request=request,
     )
-    if await run_in_threadpool(auth_runtime_store_service.is_jti_revoked, token_data.jti):
-        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+    async def _deliver_refresh_payload(payload: dict[str, Any], *, metric_name: str) -> RefreshResponse:
+        body_access, body_refresh = _apply_auth_delivery(
+            request,
+            response,
+            access_token=str(payload.get("access_token") or ""),
+            refresh_token=str(payload.get("refresh_token") or ""),
+            access_ttl_seconds=int(payload.get("access_ttl_seconds") or 0),
+            refresh_ttl_seconds=int(payload.get("refresh_ttl_seconds") or 0),
+        )
+        note_auth_session_metric(
+            metric_name,
+            network_zone=network_context.network_zone,
+        )
+        user_payload = payload.get("user")
+        return RefreshResponse(
+            access_token=body_access,
+            refresh_token=body_refresh,
+            token_type="bearer",
+            user=User(**user_payload) if isinstance(user_payload, dict) else None,
+            session_id=payload.get("session_id"),
+        )
+
     refresh_state = await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, token_data.jti)
     if not refresh_state:
+        grace_payload = await run_in_threadpool(
+            auth_runtime_store_service.wait_refresh_rotation_grace,
+            token_data.jti,
+        )
+        if grace_payload:
+            return await _deliver_refresh_payload(grace_payload, metric_name="refresh_grace_hit")
+        if await run_in_threadpool(auth_runtime_store_service.is_jti_revoked, token_data.jti):
+            note_auth_session_metric(
+                "refresh_revoked_jti",
+                network_zone=network_context.network_zone,
+            )
+            raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+        note_auth_session_metric(
+            "refresh_expired_or_already_used",
+            network_zone=network_context.network_zone,
+        )
         raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
-    await run_in_threadpool(auth_runtime_store_service.revoke_jti, token_data.jti, ttl_seconds=token_ttl_seconds(token_data))
+
     user = await run_in_threadpool(user_service.get_by_id, int(token_data.user_id))
     if not user:
+        note_auth_session_metric("refresh_other_error", detail="user_not_found")
         raise HTTPException(status_code=401, detail="User not found")
     try:
         refreshed = await run_in_threadpool(
@@ -1067,22 +1121,97 @@ async def refresh_auth_tokens(
             twofa_policy=resolve_twofa_policy(),
         )
     except AuthSecurityError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    body_access, body_refresh = _apply_auth_delivery(
-        request,
-        response,
-        access_token=str(refreshed.get("access_token") or ""),
-        refresh_token=str(refreshed.get("refresh_token") or ""),
-        access_ttl_seconds=int(refreshed.get("access_ttl_seconds") or 0),
-        refresh_ttl_seconds=int(refreshed.get("refresh_ttl_seconds") or 0),
+        detail = str(exc)
+        if "не активна" in detail.lower() or "not active" in detail.lower():
+            note_auth_session_metric(
+                "refresh_session_inactive",
+                network_zone=network_context.network_zone,
+            )
+        else:
+            note_auth_session_metric("refresh_other_error", detail=detail)
+        raise HTTPException(status_code=401, detail=detail) from exc
+
+    grace_ttl = max(1, int(config.session.refresh_rotation_grace_seconds or 15))
+    grace_payload = {
+        "access_token": str(refreshed.get("access_token") or ""),
+        "refresh_token": str(refreshed.get("refresh_token") or ""),
+        "access_ttl_seconds": int(refreshed.get("access_ttl_seconds") or 0),
+        "refresh_ttl_seconds": int(refreshed.get("refresh_ttl_seconds") or 0),
+        "user": refreshed.get("user"),
+        "session_id": refreshed.get("session_id"),
+    }
+    await run_in_threadpool(
+        auth_runtime_store_service.save_refresh_rotation_grace,
+        token_data.jti,
+        grace_payload,
+        grace_ttl,
     )
-    return RefreshResponse(
-        access_token=body_access,
-        refresh_token=body_refresh,
-        token_type="bearer",
-        user=User(**refreshed["user"]),
-        session_id=refreshed.get("session_id"),
+    await run_in_threadpool(auth_runtime_store_service.revoke_jti, token_data.jti, ttl_seconds=token_ttl_seconds(token_data))
+    return await _deliver_refresh_payload(refreshed, metric_name="refresh_success")
+
+
+@router.post("/session-telemetry")
+async def report_session_telemetry(
+    request: Request,
+    payload: SessionTelemetryRequest,
+):
+    """Unauthenticated client beacon for logout diagnosis (rate-limited)."""
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_session_telemetry",
+        key=str(network_context.client_ip or "unknown"),
+        limit=30,
+        window_seconds=60,
+        request=request,
     )
+    metric_name = _CLIENT_TELEMETRY_EVENTS.get(str(payload.event or "").strip())
+    if not metric_name:
+        raise HTTPException(status_code=400, detail="Unsupported telemetry event")
+    note_auth_session_metric(
+        metric_name,
+        detail=payload.detail,
+        path=payload.path,
+        network_zone=network_context.network_zone,
+    )
+    return {"ok": True}
+
+
+def _session_info_from_row(item: dict[str, Any]) -> SessionInfo:
+    absolute = item.get("expires_at")
+    payload = dict(item)
+    payload["absolute_expires_at"] = absolute
+    payload["refresh_expires_at"] = absolute
+    return SessionInfo(**payload)
+
+
+@router.get("/session-status")
+async def get_current_session_status(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    session_id: Optional[str] = Depends(get_current_session_id),
+):
+    """Diagnostics for the current cookie session (idle/absolute/refresh windows)."""
+    from backend.config import session_policy_snapshot
+
+    diagnostics = session_service.build_session_diagnostics(session_id) or {}
+    network_context = build_request_network_context(request)
+    return {
+        "user_id": int(current_user.id),
+        "username": current_user.username,
+        "request_network_zone": network_context.network_zone,
+        "session": diagnostics or None,
+        "policy": session_policy_snapshot(),
+    }
+
+
+@router.get("/session-policy")
+async def get_session_policy(
+    _: User = Depends(get_current_active_user),
+):
+    from backend.config import session_policy_snapshot
+
+    return session_policy_snapshot()
 
 
 @router.post("/backup-codes/regenerate", response_model=BackupCodesResponse)
@@ -1365,7 +1494,7 @@ async def get_sessions(
     _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
 ):
     """List web sessions available for admin session management."""
-    return [SessionInfo(**item) for item in session_service.list_sessions(active_only=True)]
+    return [_session_info_from_row(item) for item in session_service.list_sessions(active_only=True)]
 
 
 @router.delete("/sessions/{session_id}")

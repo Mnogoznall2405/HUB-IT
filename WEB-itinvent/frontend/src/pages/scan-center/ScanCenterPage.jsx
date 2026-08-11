@@ -28,7 +28,6 @@ import MainLayout from '../../components/layout/MainLayout';
 import MobileShellPageHeader from '../../components/layout/MobileShellPageHeader';
 import PageShell from '../../components/layout/PageShell';
 import { scanAPI } from '../../api/client';
-import { scanIncidentsAPI } from '../../api/scanIncidents';
 import { useAuth } from '../../contexts/AuthContext';
 import { useScanIncidentInbox, INCIDENT_BATCH_SIZE } from '../../hooks/useScanIncidentInbox';
 import { buildOfficeUiTokens, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
@@ -53,7 +52,11 @@ import ScanCenterNavigation from './ScanCenterNavigation';
 const AUTO_REFRESH_MS = 30_000;
 const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
+const REVIEW_PREVIEW_LIMIT = 3;
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
+const SEARCH_DEBOUNCE_MS = 400;
+const MIN_SEARCH_Q_LEN = 2;
+const BRANCHES_CACHE_TTL_MS = 60_000;
 const SCAN_RUN_OBSERVATION_LIMIT = 200;
 const HOST_SCAN_RUNS_PAGE_SIZE = 30;
 const HOST_INCIDENTS_PAGE_SIZE = 200;
@@ -162,7 +165,7 @@ function downloadBlobResponse(response, fallbackName) {
   window.URL.revokeObjectURL(url);
 }
 
-function useDebouncedValue(value, delayMs = 200) {
+function useDebouncedValue(value, delayMs = SEARCH_DEBOUNCE_MS) {
   const [debounced, setDebounced] = useState(value);
 
   useEffect(() => {
@@ -171,6 +174,13 @@ function useDebouncedValue(value, delayMs = 200) {
   }, [value, delayMs]);
 
   return debounced;
+}
+
+/** Empty or shorter than MIN_SEARCH_Q_LEN → no server-side q filter. */
+function effectiveSearchQuery(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length < MIN_SEARCH_Q_LEN) return '';
+  return text;
 }
 
 function normalizeSearchQuery(value) {
@@ -515,7 +525,7 @@ function ScanCenterPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [taskNotice, setTaskNotice] = useState(null);
   const [scanPatterns, setScanPatterns] = useState([]);
-  const [scanPatternsLoading, setScanPatternsLoading] = useState(true);
+  const [scanPatternsLoading, setScanPatternsLoading] = useState(false);
   const [scanLaunchDialog, setScanLaunchDialog] = useState({
     open: false,
     agentId: '',
@@ -527,7 +537,8 @@ function ScanCenterPage() {
 
   const [agentRows, setAgentRows] = useState([]);
   const [agentTotal, setAgentTotal] = useState(0);
-  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsVisited, setAgentsVisited] = useState(false);
   const [agentPage, setAgentPage] = useState(0);
   const [agentRowsPerPage, setAgentRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [agentQ, setAgentQ] = useState('');
@@ -540,7 +551,8 @@ function ScanCenterPage() {
 
   const [hostRows, setHostRows] = useState([]);
   const [hostTotal, setHostTotal] = useState(0);
-  const [hostsLoading, setHostsLoading] = useState(true);
+  const [hostsLoading, setHostsLoading] = useState(false);
+  const [hostsVisited, setHostsVisited] = useState(false);
   const [hostPage, setHostPage] = useState(0);
   const [hostRowsPerPage, setHostRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [hostQ, setHostQ] = useState('');
@@ -585,22 +597,30 @@ function ScanCenterPage() {
   const [hostOverviewLoading, setHostOverviewLoading] = useState(false);
   const [hostOverviewError, setHostOverviewError] = useState(false);
   const [hostOverviewExpandedHosts, setHostOverviewExpandedHosts] = useState({});
+  const [hostOverviewFilesLoading, setHostOverviewFilesLoading] = useState({});
 
   const agentsRequestIdRef = useRef(0);
+  const agentsAbortRef = useRef(null);
   const hostsRequestIdRef = useRef(0);
+  const hostsAbortRef = useRef(null);
   const reviewRequestIdRef = useRef(0);
+  const reviewAbortRef = useRef(null);
   const hostIncidentRequestIdRef = useRef(0);
   const hostNewCountRequestIdRef = useRef(0);
   const hostScanRunsRequestIdRef = useRef(0);
   const refreshAllInFlightRef = useRef(false);
-  const skipInitialAgentsEffectRef = useRef(true);
-  const skipInitialHostsEffectRef = useRef(true);
-  const skipInitialReviewEffectRef = useRef(true);
+  const hostOverviewFilesCacheRef = useRef(new Map());
+  const hostOverviewPrefetchHostRef = useRef('');
+  const hostOverviewFiltersKeyRef = useRef('');
 
   const debouncedBranch = useDebouncedValue(branchFilter);
-  const debouncedAgentQ = useDebouncedValue(agentQ);
-  const debouncedHostQ = useDebouncedValue(hostQ);
-  const debouncedIncidentQ = useDebouncedValue(incidentQ);
+  const debouncedAgentQRaw = useDebouncedValue(agentQ);
+  const debouncedHostQRaw = useDebouncedValue(hostQ);
+  const debouncedIncidentQRaw = useDebouncedValue(incidentQ);
+  const debouncedAgentQ = effectiveSearchQuery(debouncedAgentQRaw);
+  const debouncedHostQ = effectiveSearchQuery(debouncedHostQRaw);
+  const debouncedIncidentQ = effectiveSearchQuery(debouncedIncidentQRaw);
+  const branchesCacheRef = useRef({ at: 0, items: null });
 
   const totals = dashboard.totals || {};
   const selectedScanPatternSet = useMemo(() => new Set(selectedScanPatternIds), [selectedScanPatternIds]);
@@ -641,36 +661,77 @@ function ScanCenterPage() {
     incidentDateTo,
     incidentHasFragment,
   ]);
+  const incidentInboxFiltersKey = useMemo(
+    () => JSON.stringify(incidentInboxFilters),
+    [incidentInboxFilters],
+  );
 
+  // Lazy: inbox loads only on Incidents tab (or after it was opened once).
+  const [incidentInboxEnabled, setIncidentInboxEnabled] = useState(false);
+  useEffect(() => {
+    if (activeSection === 'incidents') setIncidentInboxEnabled(true);
+  }, [activeSection]);
   const incidentInbox = useScanIncidentInbox(incidentInboxFilters, {
     batchSize: INCIDENT_BATCH_SIZE,
-    getIncidents: scanIncidentsAPI.getIncidents,
+    enabled: incidentInboxEnabled,
+    // Use scanAPI façade so tests/mocks and production share one call path.
+    getIncidents: scanAPI.getIncidents,
   });
-  // Lightweight server-side count of "new" incidents matching the current filters
-  // (independent of the status tab and of how many rows are actually loaded on the page),
-  // used to correctly enable/disable bulk-ack actions and their pending counters.
-  // When the inbox itself is already filtered to status=new, reuse its total.
+  // Lightweight server-side count of "new" incidents matching the current filters.
+  // Unfiltered inbox: reuse dashboard.totals.incidents_new (already polled every 30s).
+  // status=new tab: reuse inbox total. Otherwise a tiny status=new probe.
   const incidentNewCountFilters = useMemo(() => ({
     ...incidentInboxFilters,
     status: 'new',
   }), [incidentInboxFilters]);
-  const needsSeparateNewCount = incidentStatus !== 'new';
+  const hasExtraIncidentFilters = Boolean(
+    debouncedBranch
+    || debouncedIncidentQ
+    || (incidentSeverity && incidentSeverity !== 'all')
+    || (incidentSourceKind && incidentSourceKind !== 'all')
+    || (incidentPatternId && incidentPatternId !== 'all')
+    || incidentFileExt
+    || incidentDateFrom
+    || incidentDateTo
+    || incidentHasFragment,
+  );
+  const useDashboardNewCount = !hasExtraIncidentFilters;
+  const needsSeparateNewCount = incidentStatus !== 'new' && !useDashboardNewCount;
   const incidentNewCountInbox = useScanIncidentInbox(incidentNewCountFilters, {
     batchSize: 1,
-    enabled: needsSeparateNewCount,
-    getIncidents: scanIncidentsAPI.getIncidents,
+    enabled: incidentInboxEnabled && needsSeparateNewCount,
+    getIncidents: scanAPI.getIncidents,
   });
-  const incidentNewCount = useMemo(() => (
-    needsSeparateNewCount
-      ? incidentNewCountInbox
-      : {
-          ...incidentNewCountInbox,
-          total: incidentInbox.total,
-          loadingInitial: incidentInbox.loadingInitial,
-          refreshFirstPage: incidentInbox.refreshFirstPage,
-          reload: incidentInbox.reload,
-        }
-  ), [needsSeparateNewCount, incidentNewCountInbox, incidentInbox.total, incidentInbox.loadingInitial, incidentInbox.refreshFirstPage, incidentInbox.reload]);
+  const incidentNewCount = useMemo(() => {
+    if (useDashboardNewCount) {
+      return {
+        ...incidentNewCountInbox,
+        total: Number(dashboard?.totals?.incidents_new || 0),
+        loadingInitial: false,
+        refreshFirstPage: async () => {},
+        reload: async () => {},
+      };
+    }
+    if (!needsSeparateNewCount) {
+      return {
+        ...incidentNewCountInbox,
+        total: incidentInbox.total,
+        loadingInitial: incidentInbox.loadingInitial,
+        refreshFirstPage: incidentInbox.refreshFirstPage,
+        reload: incidentInbox.reload,
+      };
+    }
+    return incidentNewCountInbox;
+  }, [
+    useDashboardNewCount,
+    needsSeparateNewCount,
+    incidentNewCountInbox,
+    dashboard?.totals?.incidents_new,
+    incidentInbox.total,
+    incidentInbox.loadingInitial,
+    incidentInbox.refreshFirstPage,
+    incidentInbox.reload,
+  ]);
   const incidentRows = useMemo(
     () => sortIncidentsForInbox(incidentInbox.items),
     [incidentInbox.items],
@@ -727,19 +788,23 @@ function ScanCenterPage() {
     }
   };
 
-  const loadReviewItems = async ({ silent = false } = {}) => {
+  const loadReviewItems = async ({ silent = false, preview = false } = {}) => {
     if (typeof scanAPI.getReviewItems !== 'function') return;
     const requestId = reviewRequestIdRef.current + 1;
     reviewRequestIdRef.current = requestId;
+    if (reviewAbortRef.current) reviewAbortRef.current.abort();
+    const controller = new AbortController();
+    reviewAbortRef.current = controller;
     if (!silent) setReviewLoading(true);
     try {
       const data = await scanAPI.getReviewItems({
-        limit: reviewRowsPerPage,
-        offset: reviewPage * reviewRowsPerPage,
-      });
+        limit: preview ? REVIEW_PREVIEW_LIMIT : reviewRowsPerPage,
+        offset: preview ? 0 : reviewPage * reviewRowsPerPage,
+      }, { signal: controller.signal });
       if (requestId !== reviewRequestIdRef.current) return;
       setReviewItems(data && typeof data === 'object' ? data : { items: [], total: 0 });
     } catch (error) {
+      if (error?.name === 'CanceledError' || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       console.error('Scan review items load failed', error);
       if (requestId === reviewRequestIdRef.current) setReviewItems({ items: [], total: 0 });
     } finally {
@@ -747,11 +812,24 @@ function ScanCenterPage() {
     }
   };
 
-  const loadBranchOptions = async () => {
+  const loadBranchOptions = async ({ force = false } = {}) => {
+    const now = Date.now();
+    const cached = branchesCacheRef.current;
+    if (
+      !force
+      && Array.isArray(cached.items)
+      && cached.items.length >= 0
+      && (now - Number(cached.at || 0)) < BRANCHES_CACHE_TTL_MS
+    ) {
+      setBranchOptions(cached.items);
+      return;
+    }
     setBranchOptionsLoading(true);
     try {
       const data = await scanAPI.getBranches();
-      setBranchOptions(Array.isArray(data) ? data.filter((item) => String(item || '').trim()) : []);
+      const items = Array.isArray(data) ? data.filter((item) => String(item || '').trim()) : [];
+      branchesCacheRef.current = { at: Date.now(), items };
+      setBranchOptions(items);
     } catch (error) {
       console.error('Scan branches load failed', error);
       setBranchOptions([]);
@@ -763,6 +841,9 @@ function ScanCenterPage() {
   const loadAgents = async ({ silent = false } = {}) => {
     const requestId = agentsRequestIdRef.current + 1;
     agentsRequestIdRef.current = requestId;
+    if (agentsAbortRef.current) agentsAbortRef.current.abort();
+    const controller = new AbortController();
+    agentsAbortRef.current = controller;
     if (!silent) setAgentsLoading(true);
     try {
       const response = await scanAPI.getAgentsTable({
@@ -774,11 +855,12 @@ function ScanCenterPage() {
         offset: agentPage * agentRowsPerPage,
         sort_by: agentSortBy,
         sort_dir: agentSortDir,
-      });
+      }, { signal: controller.signal });
       if (requestId !== agentsRequestIdRef.current) return;
       setAgentRows(Array.isArray(response?.items) ? response.items : []);
       setAgentTotal(Number(response?.total || 0));
     } catch (error) {
+      if (error?.name === 'CanceledError' || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       console.error('Scan agents load failed', error);
       if (requestId === agentsRequestIdRef.current) {
         if (!silent) {
@@ -796,6 +878,9 @@ function ScanCenterPage() {
   const loadHosts = async ({ silent = false } = {}) => {
     const requestId = hostsRequestIdRef.current + 1;
     hostsRequestIdRef.current = requestId;
+    if (hostsAbortRef.current) hostsAbortRef.current.abort();
+    const controller = new AbortController();
+    hostsAbortRef.current = controller;
     if (!silent) setHostsLoading(true);
     try {
       const response = await scanAPI.getHostsTable({
@@ -807,11 +892,12 @@ function ScanCenterPage() {
         offset: hostPage * hostRowsPerPage,
         sort_by: hostSortBy,
         sort_dir: hostSortDir,
-      });
+      }, { signal: controller.signal });
       if (requestId !== hostsRequestIdRef.current) return;
       setHostRows(Array.isArray(response?.items) ? response.items : []);
       setHostTotal(Number(response?.total || 0));
     } catch (error) {
+      if (error?.name === 'CanceledError' || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       console.error('Scan hosts load failed', error);
       if (requestId === hostsRequestIdRef.current) {
         if (!silent) {
@@ -837,9 +923,10 @@ function ScanCenterPage() {
     const requestId = hostIncidentRequestIdRef.current + 1;
     hostIncidentRequestIdRef.current = requestId;
     const offset = append ? hostIncidents.length : 0;
+    // Silent refresh always reloads the first page only; avoid growing to thousands of rows.
     const limit = append
       ? HOST_INCIDENTS_PAGE_SIZE
-      : Math.min(5000, silent ? Math.max(HOST_INCIDENTS_PAGE_SIZE, hostIncidents.length) : HOST_INCIDENTS_PAGE_SIZE);
+      : HOST_INCIDENTS_PAGE_SIZE;
     if (append) {
       setHostLoadingMore(true);
     } else if (!silent) {
@@ -867,7 +954,15 @@ function ScanCenterPage() {
       });
       if (requestId !== hostIncidentRequestIdRef.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
-      setHostIncidents((prev) => (append ? [...prev, ...items] : items));
+      setHostIncidents((prev) => {
+        if (append) return [...prev, ...items];
+        if (silent && prev.length > items.length) {
+          const freshIds = new Set(items.map((item) => String(item?.id ?? '')));
+          const tail = prev.slice(items.length).filter((item) => !freshIds.has(String(item?.id ?? '')));
+          return [...items, ...tail];
+        }
+        return items;
+      });
       setHostIncidentsTotal(Number(response?.total || 0));
     } catch (error) {
       console.error('Host incidents load failed', error);
@@ -942,7 +1037,7 @@ function ScanCenterPage() {
     hostScanRunsRequestIdRef.current = requestId;
     const limit = append
       ? HOST_SCAN_RUNS_PAGE_SIZE
-      : Math.min(100, silent ? Math.max(HOST_SCAN_RUNS_PAGE_SIZE, hostScanRuns.length) : HOST_SCAN_RUNS_PAGE_SIZE);
+      : HOST_SCAN_RUNS_PAGE_SIZE;
     if (append) {
       setHostScanRunsLoadingMore(true);
     } else if (!silent) {
@@ -955,12 +1050,20 @@ function ScanCenterPage() {
       });
       if (requestId !== hostScanRunsRequestIdRef.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
-      setHostScanRuns((prev) => (append ? [...prev, ...items] : items));
+      setHostScanRuns((prev) => {
+        if (append) return [...prev, ...items];
+        if (silent && prev.length > items.length) {
+          const freshIds = new Set(items.map((item) => String(item?.id ?? '')));
+          const tail = prev.slice(items.length).filter((item) => !freshIds.has(String(item?.id ?? '')));
+          return [...items, ...tail];
+        }
+        return items;
+      });
       setHostScanRunsTotal(Number(response?.total || 0));
       if (!append && !selectedScanRunId && items[0]?.id) {
-        const firstRunId = String(items[0].id);
-        setSelectedScanRunId(firstRunId);
-        setExpandedScanRunId(firstRunId);
+        // Select first run for findings list, but do not auto-expand observations
+        // (observations are a second network hop and delay host-drawer open).
+        setSelectedScanRunId(String(items[0].id));
       }
     } catch (error) {
       console.error('Host scan runs load failed', error);
@@ -1037,16 +1140,24 @@ function ScanCenterPage() {
     refreshAllInFlightRef.current = true;
     if (!silent) setRefreshing(true);
     try {
+      // Always refresh dashboard counters; heavy lists only for the active tab.
+      const refreshReviewFull = activeSection === 'review';
+      const refreshReviewPreview = activeSection === 'overview';
+      const refreshAgents = activeSection === 'agents';
+      const refreshHosts = activeSection === 'hosts';
+      const refreshInbox = incidentInboxEnabled && (activeSection === 'incidents' || incidentInbox.loaded > 0);
       await Promise.all([
         loadDashboard({ silent }),
-        loadReviewItems({ silent }),
-        loadAgents({ silent }),
-        loadHosts({ silent }),
-        incidentInbox.loaded > 0 ? incidentInbox.refreshFirstPage({ silent: true }) : Promise.resolve(),
-        incidentNewCount.refreshFirstPage({ silent: true }),
-        hostDrawerOpen && selectedHost ? loadHostIncidents({ silent }) : Promise.resolve(),
-        hostDrawerOpen && selectedHost && hostDrawerTab === 'findings' ? loadHostNewCount() : Promise.resolve(),
-        hostDrawerOpen && selectedHost ? loadHostScanRuns({ silent }) : Promise.resolve(),
+        refreshReviewFull ? loadReviewItems({ silent, preview: false }) : Promise.resolve(),
+        refreshReviewPreview ? loadReviewItems({ silent, preview: true }) : Promise.resolve(),
+        refreshAgents ? loadAgents({ silent }) : Promise.resolve(),
+        refreshHosts ? loadHosts({ silent }) : Promise.resolve(),
+        refreshInbox && incidentInbox.loaded > 0 ? incidentInbox.refreshFirstPage({ silent: true }) : Promise.resolve(),
+        refreshInbox && !useDashboardNewCount ? incidentNewCount.refreshFirstPage({ silent: true }) : Promise.resolve(),
+        // Manual refresh may reload drawer; silent 30s tick skips drawer traffic.
+        !silent && hostDrawerOpen && selectedHost ? loadHostIncidents({ silent }) : Promise.resolve(),
+        !silent && hostDrawerOpen && selectedHost && hostDrawerTab === 'findings' ? loadHostNewCount() : Promise.resolve(),
+        !silent && hostDrawerOpen && selectedHost ? loadHostScanRuns({ silent }) : Promise.resolve(),
       ]);
     } finally {
       refreshAllInFlightRef.current = false;
@@ -1063,40 +1174,80 @@ function ScanCenterPage() {
   });
 
   useEffect(() => {
+    // Cold open: dashboard + branches + optional review preview only.
     loadBranchOptions();
-    loadScanPatterns();
-    refreshAll({ silent: false });
+    loadDashboard({ silent: false });
+    loadReviewItems({ silent: false, preview: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (skipInitialAgentsEffectRef.current) {
-      skipInitialAgentsEffectRef.current = false;
-      return;
-    }
+    const needPatterns = scanLaunchDialog.open
+      || activeSection === 'agents'
+      || activeSection === 'incidents'
+      || hostDrawerOpen;
+    if (!needPatterns) return undefined;
+    if (scanPatterns.length > 0 || scanPatternsLoading) return undefined;
+    loadScanPatterns();
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanLaunchDialog.open, activeSection, hostDrawerOpen]);
+
+  useEffect(() => {
+    if (activeSection !== 'agents') return undefined;
+    if (!agentsVisited) setAgentsVisited(true);
     // Always show loading on filter/search changes so paste/type does not look "stuck"
     // on the previous result set (silent refresh hid the spinner when rows already existed).
     loadAgents({ silent: false });
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedAgentQ, debouncedBranch, agentOnline, agentTaskStatus, agentPage, agentRowsPerPage, agentSortBy, agentSortDir]);
+  }, [activeSection, debouncedAgentQ, debouncedBranch, agentOnline, agentTaskStatus, agentPage, agentRowsPerPage, agentSortBy, agentSortDir]);
 
   useEffect(() => {
-    if (skipInitialHostsEffectRef.current) {
-      skipInitialHostsEffectRef.current = false;
-      return;
-    }
+    if (activeSection !== 'hosts') return undefined;
+    if (!hostsVisited) setHostsVisited(true);
     loadHosts({ silent: false });
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedHostQ, debouncedBranch, hostStatus, hostSeverity, hostPage, hostRowsPerPage, hostSortBy, hostSortDir]);
+  }, [activeSection, debouncedHostQ, debouncedBranch, hostStatus, hostSeverity, hostPage, hostRowsPerPage, hostSortBy, hostSortDir]);
 
   useEffect(() => {
-    if (skipInitialReviewEffectRef.current) {
-      skipInitialReviewEffectRef.current = false;
-      return;
-    }
-    loadReviewItems({ silent: reviewItems.items.length > 0 });
+    if (activeSection !== 'review') return undefined;
+    loadReviewItems({ silent: reviewItems.items.length > REVIEW_PREVIEW_LIMIT, preview: false });
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewPage, reviewRowsPerPage]);
+  }, [activeSection, reviewPage, reviewRowsPerPage]);
+
+  useEffect(() => {
+    if (activeSection !== 'overview') return undefined;
+    if (reviewPage !== 0) return undefined;
+    if (reviewItems.items.length <= REVIEW_PREVIEW_LIMIT) return undefined;
+    loadReviewItems({ silent: true, preview: true });
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (!hostOverviewOpen) {
+      hostOverviewFiltersKeyRef.current = '';
+      return undefined;
+    }
+    const prevKey = hostOverviewFiltersKeyRef.current;
+    hostOverviewFiltersKeyRef.current = incidentInboxFiltersKey;
+    if (prevKey && prevKey !== incidentInboxFiltersKey) {
+      setHostOverviewExpandedHosts({});
+      setHostOverviewFilesLoading({});
+      loadHostOverview(0);
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostOverviewOpen, incidentInboxFiltersKey]);
+
+  useEffect(() => () => {
+    reviewAbortRef.current?.abort();
+    agentsAbortRef.current?.abort();
+    hostsAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!hostDrawerOpen || !selectedHost) return;
@@ -1339,11 +1490,12 @@ function ScanCenterPage() {
     setHostOverviewLoading(true);
     setHostOverviewError(false);
     try {
+      // Hosts-only first paint: file groups are lazy-loaded on expand (avoids ~2s SQL + 200KB JSON).
       const response = await scanAPI.getIncidentInboxGroups({
         ...buildIncidentFilters(),
         host_limit: 25,
         host_offset: hostOffset,
-        files_per_host: 10,
+        files_per_host: 0,
       });
       setHostOverviewData(response);
     } catch (error) {
@@ -1355,14 +1507,111 @@ function ScanCenterPage() {
     }
   };
 
+  const hostOverviewCacheKey = (hostname, filters) => (
+    `${String(hostname || '').trim().toLowerCase()}|${JSON.stringify(filters || {})}`
+  );
+
+  const applyHostOverviewFiles = (hostId, files) => {
+    setHostOverviewData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: (prev.items || []).map((item) => (
+          item.id === hostId ? { ...item, files } : item
+        )),
+      };
+    });
+  };
+
+  const prefetchHostOverviewFiles = (hostname, filters) => {
+    const host = String(hostname || '').trim();
+    if (!host) return;
+    const cacheKey = hostOverviewCacheKey(host, filters);
+    if (hostOverviewFilesCacheRef.current.has(cacheKey)) return;
+    if (hostOverviewPrefetchHostRef.current === cacheKey) return;
+    hostOverviewPrefetchHostRef.current = cacheKey;
+    scanAPI.getIncidentInboxGroups({
+      ...filters,
+      hostname: host,
+      host_limit: 1,
+      host_offset: 0,
+      files_per_host: 10,
+    }).then((response) => {
+      const files = Array.isArray(response?.items?.[0]?.files) ? response.items[0].files : [];
+      hostOverviewFilesCacheRef.current.set(cacheKey, files);
+    }).catch(() => {
+      // Idle prefetch is best-effort.
+    }).finally(() => {
+      if (hostOverviewPrefetchHostRef.current === cacheKey) {
+        hostOverviewPrefetchHostRef.current = '';
+      }
+    });
+  };
+
+  const schedulePrefetchNextHostOverview = (currentHostId, filters) => {
+    const items = Array.isArray(hostOverviewData?.items) ? hostOverviewData.items : [];
+    const idx = items.findIndex((item) => item.id === currentHostId);
+    const next = items.slice(Math.max(0, idx + 1)).find((item) => {
+      const host = String(item?.hostname || '').trim();
+      if (!host) return false;
+      if (Array.isArray(item.files) && item.files.length > 0) return false;
+      return !hostOverviewFilesCacheRef.current.has(hostOverviewCacheKey(host, filters));
+    });
+    if (!next?.hostname) return;
+    const run = () => prefetchHostOverviewFiles(next.hostname, filters);
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(run, { timeout: 1500 });
+    } else {
+      window.setTimeout(run, 200);
+    }
+  };
+
   const handleOpenHostOverview = () => {
     setHostOverviewOpen(true);
     setHostOverviewExpandedHosts({});
+    setHostOverviewFilesLoading({});
     loadHostOverview(0);
   };
 
   const toggleHostOverviewHost = (hostId) => {
-    setHostOverviewExpandedHosts((prev) => ({ ...prev, [hostId]: !prev[hostId] }));
+    const willExpand = !hostOverviewExpandedHosts[hostId];
+    setHostOverviewExpandedHosts((prev) => ({ ...prev, [hostId]: willExpand }));
+    if (!willExpand) return;
+    const host = (hostOverviewData?.items || []).find((item) => item.id === hostId);
+    if (!host?.hostname) return;
+    const filters = buildIncidentFilters();
+    const cacheKey = hostOverviewCacheKey(host.hostname, filters);
+    const cachedFiles = hostOverviewFilesCacheRef.current.get(cacheKey);
+    if (Array.isArray(cachedFiles)) {
+      if (!(Array.isArray(host.files) && host.files.length > 0)) {
+        applyHostOverviewFiles(hostId, cachedFiles);
+      }
+      schedulePrefetchNextHostOverview(hostId, filters);
+      return;
+    }
+    if (Array.isArray(host.files) && host.files.length > 0) {
+      hostOverviewFilesCacheRef.current.set(cacheKey, host.files);
+      schedulePrefetchNextHostOverview(hostId, filters);
+      return;
+    }
+    if (hostOverviewFilesLoading[hostId]) return;
+    setHostOverviewFilesLoading((prev) => ({ ...prev, [hostId]: true }));
+    scanAPI.getIncidentInboxGroups({
+      ...filters,
+      hostname: host.hostname,
+      host_limit: 1,
+      host_offset: 0,
+      files_per_host: 10,
+    }).then((response) => {
+      const files = Array.isArray(response?.items?.[0]?.files) ? response.items[0].files : [];
+      hostOverviewFilesCacheRef.current.set(cacheKey, files);
+      applyHostOverviewFiles(hostId, files);
+      schedulePrefetchNextHostOverview(hostId, filters);
+    }).catch((error) => {
+      console.error('Host overview files load failed', error);
+    }).finally(() => {
+      setHostOverviewFilesLoading((prev) => ({ ...prev, [hostId]: false }));
+    });
   };
 
   const handleHostOverviewDrillDown = (searchValue) => {
@@ -1673,10 +1922,12 @@ function ScanCenterPage() {
             compact={!isScanDesktop}
             counts={{
               overview: null,
-              incidents: Number(incidentInbox.total || 0),
+              incidents: incidentInboxEnabled
+                ? Number(incidentInbox.total || 0)
+                : Number(dashboard?.totals?.incidents_new || 0),
               review: Number(reviewItems.total || 0),
-              agents: Number(agentTotal || 0),
-              hosts: Number(hostTotal || 0),
+              agents: Number((agentsVisited ? agentTotal : totals.agents_total) || 0),
+              hosts: Number(hostsVisited ? hostTotal : 0),
             }}
             onChange={setActiveSection}
           />
@@ -2163,6 +2414,8 @@ function ScanCenterPage() {
               <Stack spacing={1}>
                 {hostOverviewData.items.map((host) => {
                   const hostExpanded = Boolean(hostOverviewExpandedHosts[host.id]);
+                  const filesLoading = Boolean(hostOverviewFilesLoading[host.id]);
+                  const files = Array.isArray(host.files) ? host.files : [];
                   return (
                     <Paper key={host.id} variant="outlined" sx={{ p: 1.2, borderRadius: 1.5 }}>
                       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
@@ -2184,15 +2437,22 @@ function ScanCenterPage() {
                             type="button"
                             size="small"
                             onClick={() => toggleHostOverviewHost(host.id)}
+                            disabled={filesLoading}
                             sx={{ minWidth: 0, px: 1 }}
                           >
-                            {hostExpanded ? 'Скрыть' : 'Файлы'}
+                            {hostExpanded ? 'Скрыть' : (filesLoading ? '…' : 'Файлы')}
                           </Button>
                         </Stack>
                       </Box>
                       {hostExpanded && (
                         <Stack spacing={0.8} sx={{ mt: 1, pl: 1, borderLeft: '2px solid', borderColor: 'divider' }}>
-                          {(host.files || []).map((file) => (
+                          {filesLoading && files.length === 0 ? (
+                            <Typography variant="caption" color="text.secondary">Загрузка файлов…</Typography>
+                          ) : null}
+                          {!filesLoading && files.length === 0 ? (
+                            <Typography variant="caption" color="text.secondary">Файлы не найдены</Typography>
+                          ) : null}
+                          {files.map((file) => (
                             <Box
                               key={file.id}
                               sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, cursor: 'pointer' }}

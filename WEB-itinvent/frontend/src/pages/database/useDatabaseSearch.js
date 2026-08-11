@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   buildDatabaseSearchIndex,
@@ -20,6 +20,7 @@ export function useDatabaseSearch({
 }) {
   const debounceTimerRef = useRef(null);
   const searchQueryRef = useRef(searchQuery);
+  const [appliedSearchQuery, setAppliedSearchQuery] = useState('');
 
   const cancelSearchDebounce = useCallback(() => {
     if (debounceTimerRef.current != null) {
@@ -38,6 +39,7 @@ export function useDatabaseSearch({
   const runSearchNow = useCallback((query) => {
     if (!equipmentSearchEnabled) {
       setFilteredData(null);
+      setAppliedSearchQuery('');
       return;
     }
     const {
@@ -46,6 +48,7 @@ export function useDatabaseSearch({
       expandedLocations: nextExpandedLocations,
     } = buildSearchResultState(searchIndex, query);
 
+    setAppliedSearchQuery(String(query || '').trim());
     setFilteredData(nextFilteredData);
     if (nextExpandedBranches != null) {
       setExpandedBranches(nextExpandedBranches);
@@ -130,11 +133,13 @@ export function useDatabaseSearch({
     cancelSearchDebounce();
     searchQueryRef.current = '';
     setSearchQuery('');
+    setAppliedSearchQuery('');
     setFilteredData(null);
   }, [cancelSearchDebounce, setFilteredData, setSearchQuery]);
 
   return {
     searchQuery,
+    appliedSearchQuery,
     filteredData,
     setSearchQuery,
     setFilteredData,

@@ -267,7 +267,7 @@ def test_reopen_completed_task_denied_for_outsider(task_env):
     assert denied.status_code == 403
 
 
-def test_reopen_non_completed_task_returns_400(task_env):
+def test_reopen_non_completed_task_returns_409_conflict(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]
 
@@ -277,7 +277,12 @@ def test_reopen_non_completed_task_returns_400(task_env):
 
     set_user(2)
     bad = client.post(f"/hub/tasks/{task_id}/reopen")
-    assert bad.status_code == 400
+    assert bad.status_code == 409
+    detail = bad.json()["detail"]
+    assert detail["code"] == "task_transition_conflict"
+    assert detail["operation"] == "reopen"
+    assert detail["current_status"] == "new"
+    assert detail["requested_status"] == "in_progress"
 
 
 def test_reopen_completed_task_queues_email_notification(task_env, monkeypatch):
@@ -772,8 +777,12 @@ def test_assignee_cannot_submit_task_twice_while_waiting_for_review(task_env):
         data={"comment": "Second report"},
         files={"file": ("report-2.txt", b"second-report", "text/plain")},
     )
-    assert second_submit.status_code == 400
-    assert second_submit.json()["detail"] == "Task is already waiting for review"
+    assert second_submit.status_code == 409
+    detail = second_submit.json()["detail"]
+    assert detail["code"] == "task_transition_conflict"
+    assert detail["operation"] == "submit"
+    assert detail["current_status"] == "review"
+    assert detail["requested_status"] == "review"
 
 
 def test_task_comment_summary_unread_seen_and_notifications(task_env):
@@ -1439,14 +1448,34 @@ def test_list_tasks_returns_explicit_list_columns(task_env):
     detail = service.get_task(created["id"], user_id=1, is_admin=False)
     listed = service.list_tasks(user_id=1, scope="my", role_scope="both", limit=20)["items"][0]
 
-    for column in hub_service_module._TASK_LIST_SELECT_COLUMNS:
-        assert column in listed
-    assert listed["latest_report"] is None
-    assert listed["attachments"] == []
+    assert set(listed.keys()) >= hub_service_module._TASK_LIST_PUBLIC_KEYS
+    for forbidden in hub_service_module._TASK_LIST_FORBIDDEN_KEYS:
+        assert forbidden not in listed
     assert listed["attachments_count"] == 0
+    assert listed["reports_count"] == 0
     assert listed["project_name"]
     assert listed["checklist_total"] == detail["checklist_total"]
     assert listed["has_unread_comments"] is detail["has_unread_comments"]
+    assert isinstance(listed["observer_user_ids"], list)
+
+
+def test_list_tasks_does_not_call_task_with_latest_report(task_env, monkeypatch):
+    client = task_env["client"]
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+    set_user(1)
+    _create_task(client, title="No Full Enrich List")
+    calls = {"count": 0}
+    original = service._task_with_latest_report
+
+    def _track(conn, row, *, viewer_user_id=None):
+        calls["count"] += 1
+        return original(conn, row, viewer_user_id=viewer_user_id)
+
+    monkeypatch.setattr(service, "_task_with_latest_report", _track)
+    service._invalidate_tasks_list_cache()
+    service.list_tasks(user_id=1, scope="my", limit=20)
+    assert calls["count"] == 0
 
 
 def test_department_scope_list_excludes_foreign_department_tasks(task_env, monkeypatch):
@@ -1914,3 +1943,207 @@ def test_naive_due_at_is_treated_as_local_wall_clock_not_utc(task_env):
     aware_due = service._parse_iso_datetime("2026-07-23T11:00:00+05:00")
     assert aware_due is not None
     assert service._format_task_email_due("2026-07-23T11:00:00+05:00") == aware_due.astimezone().strftime("%d.%m.%Y %H:%M")
+
+
+def test_queue_task_email_notifications_enriches_task_once(task_env, monkeypatch):
+    service = task_env["service"]
+    client = task_env["client"]
+    task_env["set_user"](1)
+    created = _create_task(client, title="Email Enrich Once", assignee_user_id=2, controller_user_id=3)
+
+    enrich_calls = {"count": 0}
+    original = service._task_with_latest_report
+
+    def _counting_enrich(conn, task_row, *, viewer_user_id=None):
+        enrich_calls["count"] += 1
+        return original(conn, task_row, viewer_user_id=viewer_user_id)
+
+    monkeypatch.setattr(service, "_task_with_latest_report", _counting_enrich)
+    monkeypatch.setattr(hub_service_module.task_email_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(hub_service_module.task_email_service, "is_valid_recipient", lambda email: bool(email))
+    monkeypatch.setattr(
+        hub_service_module.notification_preferences_service,
+        "is_enabled",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        hub_service_module.user_service,
+        "get_by_id",
+        lambda user_id: {
+            **task_env["raw_users"][int(user_id)],
+            "mailbox_email": f"user{user_id}@example.com",
+            "email": f"user{user_id}@example.com",
+        },
+    )
+
+    with service._db_conn(write=True) as conn:
+        service._queue_task_email_notifications(
+            conn,
+            recipient_user_ids={2, 3, 7},
+            skip_user_ids={1},
+            event_type="task.assigned",
+            title="Новая задача",
+            body=created["title"],
+            task_id=created["id"],
+            dedupe_hint="bench",
+        )
+        conn.commit()
+
+    assert enrich_calls["count"] == 1
+    rows = [row for row in _task_email_rows(service) if row.get("task_id") == created["id"]]
+    assert len(rows) == 3
+
+
+def test_list_tasks_query_count_stays_flat_for_n_1_20_100(task_env):
+    """Request-scoped SQL budget for list_tasks: exact-ish counts + no N+1 growth.
+
+    Counts only statements executed while track_sql_queries() is active on the
+    Hub connection (startup/workers/cleanup outside the session are ignored).
+    """
+    from backend.services.sql_query_counter import track_sql_queries
+
+    client = task_env["client"]
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+    set_user(1)
+
+    # Seed once; list with limit=N pages the first N rows.
+    for index in range(100):
+        _create_task(client, title=f"Query Budget Task {index + 1:03d}")
+
+    # Soft budgets: list SELECT + COUNT + batch attach/report/comment/
+    # latest-comment/last-seen + project load (~8). Allow slack; assert flat.
+    budgets = {
+        1: {"max": 12, "min": 5},
+        20: {"max": 12, "min": 5},
+        100: {"max": 12, "min": 5},
+    }
+    counts: dict[int, int] = {}
+
+    for limit in (1, 20, 100):
+        service._invalidate_tasks_list_cache()
+        with track_sql_queries(correlation_id=f"list-n-{limit}") as session:
+            payload = service.list_tasks(
+                user_id=1,
+                scope="my",
+                role_scope="both",
+                limit=limit,
+                offset=0,
+                sort_by="updated_at",
+                sort_dir="asc",
+            )
+        assert len(payload["items"]) == limit
+        counts[limit] = session.count
+        print(
+            f"list_tasks_query_count N={limit} count={session.count} "
+            f"correlation_id={session.correlation_id}"
+        )
+        assert budgets[limit]["min"] <= session.count <= budgets[limit]["max"], (
+            f"list_tasks N={limit} query_count={session.count} outside "
+            f"[{budgets[limit]['min']}, {budgets[limit]['max']}]; "
+            f"statements={session.statements}"
+        )
+
+    # No linear / N+1 growth: 100-row page must not cost ~100× the 1-row page.
+    assert counts[100] <= counts[1] + 4
+    assert counts[20] <= counts[1] + 4
+    assert counts[100] - counts[1] < 20
+
+
+def test_sql_query_counter_ignores_queries_outside_active_session(task_env):
+    from backend.services.sql_query_counter import track_sql_queries
+
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+    set_user(1)
+
+    # Outside session: must not be attributed to later measurement.
+    with service._db_conn(write=False) as conn:
+        conn.execute(f"SELECT COUNT(*) AS c FROM {service._TASKS_TABLE}").fetchone()
+
+    with track_sql_queries(correlation_id="isolated") as session:
+        service._invalidate_tasks_list_cache()
+        service.list_tasks(user_id=1, scope="my", limit=5)
+        isolated_count = session.count
+
+    with service._db_conn(write=False) as conn:
+        conn.execute(f"SELECT COUNT(*) AS c FROM {service._TASKS_TABLE}").fetchone()
+
+    assert isolated_count > 0
+    # Re-entering without a session must not mutate the previous snapshot.
+    assert session.count == isolated_count
+
+
+def test_ensure_task_status_log_memoized_once_on_sqlite(task_env, monkeypatch):
+    service = task_env["service"]
+    create_calls = {"count": 0}
+    original = service._run_task_status_log_ddl
+
+    def _counting_ddl(conn):
+        create_calls["count"] += 1
+        return original(conn)
+
+    monkeypatch.setattr(service, "_run_task_status_log_ddl", _counting_ddl)
+    service._task_status_log_ready = False
+    service._status_log_force_ddl_every_call = False
+
+    with service._db_conn(write=True) as conn:
+        service._ensure_task_status_log_table(conn)
+        service._ensure_task_status_log_table(conn)
+        conn.commit()
+
+    assert create_calls["count"] == 1
+    assert service._task_status_log_ready is True
+
+
+def test_ensure_task_status_log_skips_ddl_on_postgres(task_env, monkeypatch):
+    service = task_env["service"]
+    create_calls = {"count": 0}
+
+    monkeypatch.setattr(service, "_uses_postgres_app_db", lambda: True)
+    monkeypatch.setattr(service, "_is_production_postgres_app_db", lambda engine=None: False)
+    monkeypatch.setattr(
+        service,
+        "_run_task_status_log_ddl",
+        lambda conn: create_calls.__setitem__("count", create_calls["count"] + 1),
+    )
+    service._task_status_log_ready = False
+    service._status_log_force_ddl_every_call = False
+
+    with service._db_conn(write=True) as conn:
+        service._ensure_task_status_log_table(conn)
+        conn.commit()
+
+    assert create_calls["count"] == 0
+
+
+def test_legacy_force_ddl_every_ensure_still_runs(task_env, monkeypatch):
+    """PR1b A/B diagnostic flag must reproduce old hot-path DDL behaviour."""
+    service = task_env["service"]
+    create_calls = {"count": 0}
+    original = service._run_task_status_log_ddl
+
+    def _counting_ddl(conn):
+        create_calls["count"] += 1
+        return original(conn)
+
+    monkeypatch.setattr(service, "_run_task_status_log_ddl", _counting_ddl)
+    monkeypatch.setattr(service, "_uses_postgres_app_db", lambda: True)
+    monkeypatch.setattr(hub_service_module.config.app, "environment", "development")
+    service._status_log_force_ddl_every_call = True
+
+    with service._db_conn(write=True) as conn:
+        service._ensure_task_status_log_table(conn)
+        service._ensure_task_status_log_table(conn)
+        conn.commit()
+
+    assert create_calls["count"] == 2
+
+
+def test_force_status_log_ddl_forbidden_in_production(task_env, monkeypatch):
+    service = task_env["service"]
+    monkeypatch.setattr(hub_service_module.config.app, "environment", "production")
+    service._status_log_force_ddl_every_call = True
+    with pytest.raises(RuntimeError, match="forbidden"):
+        with service._db_conn(write=True) as conn:
+            service._ensure_task_status_log_table(conn)

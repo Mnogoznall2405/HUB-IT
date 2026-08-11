@@ -195,15 +195,14 @@ export default function MailPdfPreviewSurface({
   }, [objectUrl, resolvedRotation]);
 
   const pageRenderScale = clampPdfDisplayScale(fitScale * renderZoom);
-  const interimCssScale = liveZoom / Math.max(renderZoom, 0.001);
   const contentSx = useMemo(() => {
-    if (!isZoomed && renderZoom <= 1.001) return {};
+    if (!isZoomed) return {};
     return {
-      transform: `translate3d(${transform.x || 0}px, ${transform.y || 0}px, 0) scale(${interimCssScale})`,
+      transform: `translate3d(${transform.x || 0}px, ${transform.y || 0}px, 0) scale(${liveZoom})`,
       transformOrigin: '0 0',
       willChange: 'transform',
     };
-  }, [interimCssScale, isZoomed, renderZoom, transform.x, transform.y]);
+  }, [isZoomed, liveZoom, transform.x, transform.y]);
 
   const scrollRootRef = compact ? previewContainerRef : viewportRef;
   const pageNumbers = useMemo(
@@ -500,6 +499,7 @@ export default function MailPdfPreviewSurface({
                   pageNumber={pageNumber}
                   pdf={pdfDoc}
                   fitScale={pageRenderScale}
+                  displayScale={fitScale}
                   rotation={resolvedRotation}
                   scrollRootRef={scrollRootRef}
                   onVisibilityChange={handlePageVisibilityChange}

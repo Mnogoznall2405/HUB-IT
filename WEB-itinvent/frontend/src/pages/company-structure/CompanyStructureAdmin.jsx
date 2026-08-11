@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Autocomplete,
+  Avatar,
   Box,
   Button,
   Chip,
@@ -35,16 +36,19 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import PhotoCameraOutlinedIcon from '@mui/icons-material/PhotoCameraOutlined';
 import SyncAltOutlinedIcon from '@mui/icons-material/SyncAltOutlined';
 import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import { companyStructureAPI } from '../../api/companyStructure';
 import CompanyStructureChart from './CompanyStructureChart';
+import CompanyStructureOverview from './CompanyStructureOverview';
 import {
   NODE_TYPE_OPTIONS,
   collectDescendantIds,
   findNodeById,
   findNodePath,
   flattenTree,
+  getCompanyRootAndBlocks,
   nodeCardTitle,
   resolveNodeTitle,
   usesZupDepartmentBinding,
@@ -55,6 +59,8 @@ const emptyDraft = () => ({
   node_type: 'department',
   person_name: '',
   person_position: '',
+  person_employee_code: '',
+  person_photo_url: '',
   parent_id: '',
   department_codes: [],
 });
@@ -140,8 +146,12 @@ export default function CompanyStructureAdmin({
   const [editorMode, setEditorMode] = useState('create');
   const [editingId, setEditingId] = useState('');
   const [draft, setDraft] = useState(emptyDraft);
-  const [nameOptions, setNameOptions] = useState([]);
-  const [nameQuery, setNameQuery] = useState('');
+  const [codeOptions, setCodeOptions] = useState([]);
+  const [codeQuery, setCodeQuery] = useState('');
+  const [leaderOptions, setLeaderOptions] = useState([]);
+  const [leaderQuery, setLeaderQuery] = useState('');
+  const [photoFile, setPhotoFile] = useState(null);
+  const [removePhoto, setRemovePhoto] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importOptions, setImportOptions] = useState([]);
   const [importSelection, setImportSelection] = useState([]);
@@ -149,6 +159,7 @@ export default function CompanyStructureAdmin({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [navigationView, setNavigationView] = useState('map');
+  const [mapLayoutMode, setMapLayoutMode] = useState('automatic');
 
   useEffect(() => {
     const pathIds = findNodePath(tree, selectedId).map((node) => String(node.id));
@@ -166,19 +177,40 @@ export default function CompanyStructureAdmin({
     if (!editorOpen || !showZupBinding) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      companyStructureAPI.searchDepartmentNames({ q: nameQuery || draft.title, limit: 100 })
+      companyStructureAPI.searchDepartmentCodes({ q: codeQuery, limit: codeQuery ? 200 : 50 })
         .then((payload) => {
-          if (!cancelled) setNameOptions(Array.isArray(payload?.items) ? payload.items : []);
+          if (!cancelled) setCodeOptions(Array.isArray(payload?.items) ? payload.items : []);
         })
         .catch(() => {
-          if (!cancelled) setNameOptions([]);
+          if (!cancelled) setCodeOptions([]);
         });
     }, 250);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [draft.title, editorOpen, nameQuery, showZupBinding]);
+  }, [codeQuery, editorOpen, showZupBinding]);
+
+  useEffect(() => {
+    if (!editorOpen || !isPersonCard || leaderQuery.trim().length < 2) {
+      setLeaderOptions([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      companyStructureAPI.searchLeaderCandidates({ q: leaderQuery, limit: 30 })
+        .then((payload) => {
+          if (!cancelled) setLeaderOptions(Array.isArray(payload?.items) ? payload.items : []);
+        })
+        .catch(() => {
+          if (!cancelled) setLeaderOptions([]);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [editorOpen, isPersonCard, leaderQuery]);
 
   useEffect(() => {
     if (!importOpen) return undefined;
@@ -209,6 +241,12 @@ export default function CompanyStructureAdmin({
       parent_id: selectedNode?.id || '',
       node_type: defaultChildType(selectedNode),
     });
+    setCodeQuery('');
+    setCodeOptions([]);
+    setLeaderQuery('');
+    setLeaderOptions([]);
+    setPhotoFile(null);
+    setRemovePhoto(false);
     setEditorOpen(true);
   };
 
@@ -221,11 +259,19 @@ export default function CompanyStructureAdmin({
       node_type: selectedNode.node_type || 'other',
       person_name: selectedNode.person_name || '',
       person_position: selectedNode.person_position || '',
+      person_employee_code: selectedNode.person_employee_code || '',
+      person_photo_url: selectedNode.person_photo_url || '',
       parent_id: selectedNode.parent_id || '',
       department_codes: Array.isArray(selectedNode.department_codes)
         ? [...selectedNode.department_codes]
         : [],
     });
+    setCodeQuery(selectedNode.title || '');
+    setCodeOptions([]);
+    setLeaderQuery(selectedNode.person_name || '');
+    setLeaderOptions([]);
+    setPhotoFile(null);
+    setRemovePhoto(false);
     setEditorOpen(true);
   };
 
@@ -237,6 +283,7 @@ export default function CompanyStructureAdmin({
       node_type: draft.node_type,
       person_name: isPersonCard ? draft.person_name : '',
       person_position: isPersonCard ? draft.person_position : '',
+      person_employee_code: isPersonCard ? (draft.person_employee_code || null) : null,
       parent_id: draft.parent_id || null,
       department_codes: showZupBinding ? draft.department_codes : [],
     };
@@ -245,6 +292,12 @@ export default function CompanyStructureAdmin({
       const saved = editorMode === 'create'
         ? await companyStructureAPI.createNode(payload)
         : await companyStructureAPI.updateNode(editingId, payload);
+      if ((removePhoto || (!isPersonCard && draft.person_photo_url)) && (saved.person_photo_url || draft.person_photo_url)) {
+        await companyStructureAPI.deleteNodePhoto(saved.id);
+      }
+      if (isPersonCard && photoFile) {
+        await companyStructureAPI.uploadNodePhoto(saved.id, photoFile);
+      }
       setEditorOpen(false);
       notifySuccess?.(editorMode === 'create' ? 'Узел добавлен' : 'Изменения сохранены');
       await onChanged(String(saved.id));
@@ -329,6 +382,81 @@ export default function CompanyStructureAdmin({
     return ids;
   }, [editingId, tree]);
 
+  const selectedCodeOptions = useMemo(
+    () => draft.department_codes.map((code) => ({
+      department_code: String(code),
+    })),
+    [draft.department_codes],
+  );
+  const selectedLeader = draft.person_employee_code ? {
+    employee_code: draft.person_employee_code,
+    full_name: draft.person_name,
+    position: draft.person_position,
+  } : null;
+  const photoPreviewUrl = useMemo(
+    () => (photoFile && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+      ? URL.createObjectURL(photoFile)
+      : ''),
+    [photoFile],
+  );
+  useEffect(() => () => {
+    if (photoPreviewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(photoPreviewUrl);
+    }
+  }, [photoPreviewUrl]);
+  const { blocks } = useMemo(() => getCompanyRootAndBlocks(tree), [tree]);
+  const activeBlockId = String(
+    selectedPath.find((node) => node?.node_type === 'block')?.id || blocks[0]?.id || '',
+  );
+  const canUseCodeOption = (option) => (
+    !option?.linked_node_id || String(option.linked_node_id) === String(editingId)
+  );
+  const selectableCodesByGroup = (group) => codeOptions.filter(
+    (option) => option?.binding_group === group && canUseCodeOption(option),
+  );
+  const officeCodeCount = selectableCodesByGroup('office').length;
+  const objectCodeCount = selectableCodesByGroup('object').length;
+  const hasMixedCodes = codeOptions.some((option) => option?.binding_group === 'mixed');
+  const replaceCodesByGroup = (group) => {
+    const codes = selectableCodesByGroup(group).map((option) => String(option.department_code));
+    setDraft((current) => ({ ...current, department_codes: codes }));
+  };
+
+  const saveChartPosition = async (nodeId, position) => {
+    setSaving(true);
+    try {
+      await companyStructureAPI.updateNode(nodeId, {
+        layout_x: position.x,
+        layout_y: position.y,
+      });
+      await onChanged(nodeId);
+    } catch (error) {
+      notifyApiError?.(error, 'Не удалось сохранить позицию карточки.');
+      throw error;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetChartPositions = async () => {
+    if (!window.confirm('Сбросить все ручные позиции и вернуть автоматическую расстановку?')) return;
+    setSaving(true);
+    try {
+      await companyStructureAPI.resetLayout();
+      await onChanged(selectedId);
+      notifySuccess?.('Автоматическая расстановка восстановлена');
+    } catch (error) {
+      notifyApiError?.(error, 'Не удалось сбросить расположение карточек.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const formatDepartmentLocations = (locations) => {
+    const values = Array.isArray(locations) && locations.length ? locations : [''];
+    return values.map((location) => location || 'Без площадки').join(', ');
+  };
+
   return (
     <Stack spacing={2}>
       <ToggleButtonGroup
@@ -355,12 +483,38 @@ export default function CompanyStructureAdmin({
       >
         {navigationView === 'map' ? (
           <Box sx={{ flex: 1, minWidth: 0, width: { xs: '100%', lg: 'auto' } }}>
-            <CompanyStructureChart
-              tree={tree}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              isMobile={isMobile}
-            />
+            <Stack spacing={1.25}>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={mapLayoutMode}
+                onChange={(_, value) => value && setMapLayoutMode(value)}
+                aria-label="Режим расположения карточек"
+                sx={{ alignSelf: 'flex-start' }}
+              >
+                <ToggleButton value="automatic" sx={editorToggleSx}>Автоматически</ToggleButton>
+                <ToggleButton value="free" sx={editorToggleSx}>Свободная расстановка</ToggleButton>
+              </ToggleButtonGroup>
+              {mapLayoutMode === 'automatic' ? (
+                <CompanyStructureOverview
+                  tree={tree}
+                  blockId={activeBlockId}
+                  selectedId={selectedId}
+                  onFocus={onSelect}
+                  onPeople={onSelect}
+                />
+              ) : (
+                <CompanyStructureChart
+                  tree={tree}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                  isMobile={isMobile}
+                  positionEditing
+                  onPositionChange={saveChartPosition}
+                  onResetPositions={resetChartPositions}
+                />
+              )}
+            </Stack>
           </Box>
         ) : (
           <Paper variant="outlined" sx={{ width: { xs: '100%', lg: 380 }, flexShrink: 0, borderRadius: 2 }}>
@@ -448,7 +602,8 @@ export default function CompanyStructureAdmin({
                   <Typography variant="body2">{peopleCount}</Typography>
                 </Box>
               </Stack>
-              {selectedNode.person_name || selectedNode.person_position ? (
+              {(selectedNode.node_type === 'root' || selectedNode.node_type === 'deputy')
+                && (selectedNode.person_name || selectedNode.person_position) ? (
                 <Box>
                   <Typography variant="caption" color="text.secondary">Карточка руководителя</Typography>
                   <Typography variant="body2">{[selectedNode.person_name, selectedNode.person_position].filter(Boolean).join(' · ')}</Typography>
@@ -495,8 +650,8 @@ export default function CompanyStructureAdmin({
         <DialogTitle>Добавить подразделения из ЗУП</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Alert severity="success">
-              Новые узлы будут добавлены внутрь «{nodeCardTitle(selectedNode)}». Сотрудники и рабочие контакты подтянутся автоматически.
+            <Alert severity="info">
+              Подразделения уже разделены по площадкам: Москва, Санкт-Петербург и Тюмень — офис; остальные города и пустые площадки — объект.
             </Alert>
             <Autocomplete
               multiple
@@ -505,6 +660,7 @@ export default function CompanyStructureAdmin({
               value={importSelection}
               getOptionLabel={(option) => option?.department || ''}
               isOptionEqualToValue={(option, value) => option?.department === value?.department}
+              getOptionDisabled={(option) => option?.binding_group === 'mixed'}
               onInputChange={(_, value) => setImportQuery(value)}
               onChange={(_, value) => setImportSelection(value)}
               renderInput={(params) => (
@@ -513,18 +669,29 @@ export default function CompanyStructureAdmin({
                   autoFocus
                   label="Подразделения ЗУП"
                   placeholder="Начните вводить название"
-                  helperText="Можно выбрать несколько подразделений одного уровня. Уже импортированные будут пропущены."
+                  helperText="Выберите готовые карточки «офис» и «объект». Уже импортированные коды будут пропущены."
                 />
               )}
               renderOption={(props, option) => (
                 <li {...props} key={option.department}>
                   <ListItemText
                     primary={option.department}
-                    secondary={`${option.people_count || 0} сотрудников${option.department_location ? ` · ${option.department_location}` : ''}`}
+                    secondary={[
+                      option.binding_group === 'office'
+                        ? 'Офис'
+                        : option.binding_group === 'object' ? 'Объект' : 'Смешанный код — требуется проверка',
+                      `${option.people_count || 0} сотрудников`,
+                      option.department_location,
+                    ].filter(Boolean).join(' · ')}
                   />
                 </li>
               )}
             />
+            {importOptions.some((option) => option?.binding_group === 'mixed') ? (
+              <Alert severity="warning">
+                Смешанные коды отключены: сначала проверьте их площадки и привяжите вручную.
+              </Alert>
+            ) : null}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -539,7 +706,7 @@ export default function CompanyStructureAdmin({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={editorOpen} onClose={() => !saving && setEditorOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={editorOpen} onClose={() => !saving && setEditorOpen(false)} fullWidth maxWidth="md">
         <DialogTitle>{editorMode === 'create' ? 'Добавить узел вручную' : 'Изменить узел'}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -556,28 +723,100 @@ export default function CompanyStructureAdmin({
               </Select>
             </FormControl>
             {showZupBinding ? (
-              <Autocomplete
-                freeSolo
-                options={nameOptions}
-                value={draft.title}
-                getOptionLabel={(option) => (typeof option === 'string' ? option : option?.department || '')}
-                onInputChange={(_, value, reason) => {
-                  setNameQuery(value);
-                  if (reason !== 'reset') setDraft((current) => ({ ...current, title: value }));
-                }}
-                onChange={(_, value) => {
-                  const meta = typeof value === 'object' ? value : null;
-                  const title = meta?.department || String(value || '');
-                  setDraft((current) => ({
-                    ...current,
-                    title,
-                    department_codes: meta?.department_codes || current.department_codes,
-                  }));
-                }}
-                renderInput={(params) => (
-                  <TextField {...params} label="Название подразделения" helperText="Для подразделения выберите точное название из ЗУП." required />
-                )}
-              />
+              <>
+                <TextField
+                  label="Название карточки"
+                  value={draft.title}
+                  onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                  helperText="Произвольное название, например «УГЭ» или «УГЭ объект»."
+                  fullWidth
+                  required
+                />
+                <Stack spacing={1}>
+                  <Autocomplete
+                    multiple
+                    disableCloseOnSelect
+                    filterSelectedOptions
+                    filterOptions={(options) => options}
+                    options={codeOptions}
+                    value={selectedCodeOptions}
+                    inputValue={codeQuery}
+                    getOptionLabel={(option) => String(option?.department_code || '')}
+                    isOptionEqualToValue={(option, value) => (
+                      String(option?.department_code || '') === String(value?.department_code || '')
+                    )}
+                    getOptionDisabled={(option) => !canUseCodeOption(option)}
+                    onInputChange={(_, value, reason) => {
+                      if (reason === 'input' || reason === 'clear') setCodeQuery(value);
+                    }}
+                    onChange={(_, values) => setDraft((current) => ({
+                      ...current,
+                      department_codes: values.map((option) => String(option.department_code)),
+                    }))}
+                    noOptionsText="Коды не найдены"
+                    renderTags={(values, getTagProps) => values.map((option, index) => (
+                      <Chip
+                        {...getTagProps({ index })}
+                        key={option.department_code}
+                        size="small"
+                        label={option.department_code}
+                      />
+                    ))}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Коды подразделений ЗУП"
+                        placeholder="Название, код или площадка"
+                        helperText="Найдите подразделение, затем выберите коды или используйте быстрые кнопки."
+                      />
+                    )}
+                    renderOption={(props, option) => {
+                      const ownerTitle = option.linked_node_title;
+                      const isCurrentCard = String(option.linked_node_id || '') === String(editingId || '');
+                      const bindingLabel = option.binding_group === 'office'
+                        ? 'Офис'
+                        : option.binding_group === 'object' ? 'Объект' : 'Смешанный код';
+                      return (
+                        <li {...props} key={option.department_code}>
+                          <ListItemText
+                            primary={`${option.department_code} · ${option.department || 'Без названия подразделения'}`}
+                            secondary={[
+                              formatDepartmentLocations(option.department_locations),
+                              `${option.people_count || 0} сотрудников`,
+                              bindingLabel,
+                              ownerTitle ? (isCurrentCard ? 'Эта карточка' : `Уже привязан: ${ownerTitle}`) : '',
+                            ].filter(Boolean).join(' · ')}
+                          />
+                        </li>
+                      );
+                    }}
+                  />
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                    <Button
+                      variant="outlined"
+                      onClick={() => replaceCodesByGroup('office')}
+                      disabled={!codeQuery.trim() || officeCodeCount === 0}
+                    >
+                      Выбрать офис ({officeCodeCount})
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      onClick={() => replaceCodesByGroup('object')}
+                      disabled={!codeQuery.trim() || objectCodeCount === 0}
+                    >
+                      Выбрать объект ({objectCodeCount})
+                    </Button>
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary">
+                    Быстрая кнопка заменяет текущий выбор доступными кодами из результатов поиска. После этого список можно изменить вручную.
+                  </Typography>
+                  {hasMixedCodes ? (
+                    <Alert severity="warning">
+                      Смешанные коды не выбираются автоматически. Проверьте площадки и добавьте нужный код вручную.
+                    </Alert>
+                  ) : null}
+                </Stack>
+              </>
             ) : (
               <TextField
                 label="Название"
@@ -589,18 +828,103 @@ export default function CompanyStructureAdmin({
             )}
             {isPersonCard ? (
               <>
+                <Divider />
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>Руководитель карточки</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Доступно только для генерального директора и заместителей.
+                  </Typography>
+                </Box>
+                <Autocomplete
+              options={leaderOptions}
+              value={selectedLeader}
+              inputValue={leaderQuery}
+              filterOptions={(options) => options}
+              getOptionLabel={(option) => option?.full_name || ''}
+              isOptionEqualToValue={(option, value) => (
+                String(option?.employee_code || '') === String(value?.employee_code || '')
+              )}
+              onInputChange={(_, value, reason) => {
+                if (reason === 'input' || reason === 'clear') setLeaderQuery(value);
+              }}
+              onChange={(_, person) => {
+                setDraft((current) => ({
+                  ...current,
+                  person_employee_code: person?.employee_code || '',
+                  person_name: person?.full_name || '',
+                  person_position: person?.position || '',
+                }));
+                setLeaderQuery(person?.full_name || '');
+              }}
+              noOptionsText={leaderQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Сотрудник не найден'}
+              renderInput={(params) => (
                 <TextField
-                  label="ФИО руководителя"
-                  value={draft.person_name}
-                  onChange={(event) => setDraft((current) => ({ ...current, person_name: event.target.value }))}
-                  fullWidth
+                  {...params}
+                  label="Найти руководителя в ЗУП"
+                  placeholder="Введите ФИО"
+                  helperText="ФИО и должность будут сохранены в карточке как снимок данных."
                 />
-                <TextField
-                  label="Должность"
-                  value={draft.person_position}
-                  onChange={(event) => setDraft((current) => ({ ...current, person_position: event.target.value }))}
-                  fullWidth
+              )}
+              renderOption={(props, option) => (
+                <li {...props} key={option.employee_code}>
+                  <ListItemText
+                    primary={option.full_name}
+                    secondary={[option.position, option.department, option.department_location].filter(Boolean).join(' · ')}
+                  />
+                </li>
+              )}
                 />
+                {draft.person_employee_code ? (
+                  <TextField
+                    label="Должность на карточке"
+                    value={draft.person_position}
+                    onChange={(event) => setDraft((current) => ({ ...current, person_position: event.target.value }))}
+                    helperText="Можно уточнить отображаемую должность, не меняя привязку к сотруднику."
+                    fullWidth
+                  />
+                ) : null}
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ xs: 'flex-start', sm: 'center' }}>
+                  <Avatar
+                    src={photoPreviewUrl || (!removePhoto ? draft.person_photo_url : '') || undefined}
+                    alt=""
+                    sx={{ width: 64, height: 64 }}
+                  >
+                    {(draft.person_name || draft.title || '—').trim().slice(0, 1).toUpperCase()}
+                  </Avatar>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Button
+                      component="label"
+                      variant="outlined"
+                      startIcon={<PhotoCameraOutlinedIcon />}
+                      disabled={!draft.person_employee_code}
+                    >
+                      {draft.person_photo_url || photoFile ? 'Заменить фото' : 'Загрузить фото'}
+                      <Box
+                        component="input"
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] || null;
+                          setPhotoFile(file);
+                          if (file) setRemovePhoto(false);
+                          event.target.value = '';
+                        }}
+                      />
+                    </Button>
+                    <Button
+                      color="inherit"
+                      onClick={() => {
+                        setPhotoFile(null);
+                        setRemovePhoto(true);
+                      }}
+                      disabled={!draft.person_photo_url && !photoFile}
+                    >
+                      Удалить фото
+                    </Button>
+                  </Stack>
+                </Stack>
+                <Typography variant="caption" color="text.secondary">JPG, PNG или другое изображение до 2 МБ.</Typography>
               </>
             ) : null}
             <FormControl fullWidth>

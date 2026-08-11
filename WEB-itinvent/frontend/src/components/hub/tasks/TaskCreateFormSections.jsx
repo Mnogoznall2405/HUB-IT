@@ -197,6 +197,7 @@ export function TaskProjectFields({
   objects = [],
   onObjectChange,
   layout = 'stack',
+  selectMenuProps,
 }) {
   const projectSelect = (
     <FormControl fullWidth size="small">
@@ -206,6 +207,7 @@ export function TaskProjectFields({
         label="Проект"
         value={projectId}
         onChange={(event) => onProjectChange(String(event.target.value || ''))}
+        MenuProps={selectMenuProps}
       >
         {projects.map((item) => (
           <MenuItem key={item.id} value={String(item.id)}>
@@ -252,6 +254,7 @@ export function TaskProjectFields({
         value={objectId}
         onChange={(event) => onObjectChange?.(String(event.target.value || ''))}
         disabled={!projectId}
+        MenuProps={selectMenuProps}
       >
         <MenuItem value="">Без объекта</MenuItem>
         {objects.map((item) => (

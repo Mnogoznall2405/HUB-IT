@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMediaQuery } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import hubTaskAnalyticsAPI from '../../api/hubTaskAnalytics';
@@ -87,6 +87,7 @@ export default function useTasksPageController() {
   const [error, setError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const desktopDiscussionTaskIdRef = useRef('');
 
   const [assigneeSearchInput, setAssigneeSearchInput] = useState('');
   const [observerSearchInput, setObserverSearchInput] = useState('');
@@ -191,6 +192,7 @@ export default function useTasksPageController() {
     hasAttachments: filters.hasAttachments,
     unreadCommentsOnly: filters.unreadCommentsOnly,
     focusMode: filters.focusMode,
+    dateSortDirection: filters.dateSortDirection,
     pageMode: filters.pageMode,
     canManageAllTasks,
     createOpen,
@@ -267,6 +269,7 @@ export default function useTasksPageController() {
     setObserverSearchInput,
     resetTaskUserSearchInputs,
     refreshTasksAndDetails: details.refreshTasksAndDetails,
+    loadTaskDetails: details.loadTaskDetails,
     closeTaskDetails: details.closeTaskDetails,
     selectedTaskId: details.selectedTaskId,
     detailsTask: details.detailsTask,
@@ -371,8 +374,23 @@ export default function useTasksPageController() {
   }, [navigate]);
 
   const onOpenTaskDetails = useCallback((task) => {
+    if (!isMobile && taskDiscussionChatEnabled) {
+      void details.handleOpenTaskDiscussion(task, { split: true });
+      return;
+    }
     details.openTaskDetails(task);
-  }, [details.openTaskDetails]);
+  }, [details.handleOpenTaskDiscussion, details.openTaskDetails, isMobile, taskDiscussionChatEnabled]);
+
+  useEffect(() => {
+    const taskId = String(details.selectedTaskId || '').trim();
+    if (isMobile || !taskDiscussionChatEnabled || !taskId) {
+      desktopDiscussionTaskIdRef.current = '';
+      return;
+    }
+    if (desktopDiscussionTaskIdRef.current === taskId) return;
+    desktopDiscussionTaskIdRef.current = taskId;
+    void details.handleOpenTaskDiscussion({ id: taskId }, { replace: true, split: true });
+  }, [details.handleOpenTaskDiscussion, details.selectedTaskId, isMobile, taskDiscussionChatEnabled]);
 
   const onOpenEditTask = useCallback((task) => {
     create.openEditTask(task);
@@ -513,6 +531,7 @@ export default function useTasksPageController() {
     onStatusFilterChange: filters.setStatusFilter,
     focusMode: filters.focusMode,
     focusCounts: list.focusCounts,
+    onFocusModeChange: filters.setFocusMode,
     taskDiscussionChatEnabled,
     boardFiltersPanelProps,
     onRefreshTasks: handleRefreshTasks,
@@ -541,6 +560,7 @@ export default function useTasksPageController() {
     filters.pageMode,
     filters.resetFilters,
     filters.secondaryViewMode,
+    filters.setFocusMode,
     handleSetPageMode,
     filters.setStatusFilter,
     filters.setViewMode,
@@ -663,6 +683,8 @@ export default function useTasksPageController() {
     canManageAllTasks,
     canUseControllerTab,
     focusMode: filters.focusMode,
+    dateSortDirection: filters.dateSortDirection,
+    setDateSortDirection: filters.setDateSortDirection,
     focusCounts: list.focusCounts,
     setFocusMode: filters.setFocusMode,
     showFilters: filters.showFilters,
@@ -696,7 +718,7 @@ export default function useTasksPageController() {
     completedTasksOpen: filters.completedTasksOpen,
     setCompletedTasksOpen: filters.setCompletedTasksOpen,
     activeTaskProjects: list.activeTaskProjects,
-    openTaskDetails: details.openTaskDetails,
+    openTaskDetails: onOpenTaskDetails,
     deadlineBuckets: list.deadlineBuckets,
     openCreateTaskWithPreset: create.openCreateTaskWithPreset,
     renderTaskCard,

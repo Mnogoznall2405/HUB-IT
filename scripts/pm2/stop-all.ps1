@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
-$processNames = @('itinvent-backend', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+$processNames = @('itinvent-backend', 'itinvent-chat', 'itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
 
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'
@@ -89,6 +89,10 @@ foreach ($name in $processNames) {
         & $pm2Cmd stop $name | Out-Null
     }
 }
+
+# `pm2 stop` on Windows may leave python children holding ports/singleton locks.
+$clearOrphans = Join-Path $projectRoot 'scripts\pm2\clear-pm2-orphans.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $clearOrphans
 
 Write-Host 'PM2: current process list:' -ForegroundColor Cyan
 Show-Pm2Snapshot

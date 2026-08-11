@@ -22,6 +22,8 @@ const {
   mockNotifySuccess,
   mockNotifyWarning,
   mockNotifyApiError,
+  mockPackFolderFilesToZip,
+  mockCollectDataTransferFiles,
 } = vi.hoisted(() => ({
   mockListFiles: vi.fn(),
   mockGetQuota: vi.fn(),
@@ -40,7 +42,18 @@ const {
   mockNotifySuccess: vi.fn(),
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
+  mockPackFolderFilesToZip: vi.fn(),
+  mockCollectDataTransferFiles: vi.fn(),
 }));
+
+vi.mock('../lib/myFilesFolderZip', async () => {
+  const actual = await vi.importActual('../lib/myFilesFolderZip');
+  return {
+    ...actual,
+    packFolderFilesToZip: mockPackFolderFilesToZip,
+    collectDataTransferFiles: mockCollectDataTransferFiles,
+  };
+});
 
 vi.mock('../api/myFiles', () => ({
   myFilesRetentionOptions: [1, 3, 7, 10, 30],
@@ -144,9 +157,19 @@ describe('MyFiles page', () => {
     mockNotifySuccess.mockReset();
     mockNotifyWarning.mockReset();
     mockNotifyApiError.mockReset();
+    mockPackFolderFilesToZip.mockReset();
+    mockCollectDataTransferFiles.mockReset();
     mockListFiles.mockResolvedValue({ items: [] });
     mockGetQuota.mockResolvedValue({ used_bytes: 0, limit_bytes: 5 * 1024 * 1024 * 1024, remaining_bytes: 5 * 1024 * 1024 * 1024 });
     mockUploadFile.mockResolvedValue({ id: 'queued-file', status: 'queued' });
+    mockPackFolderFilesToZip.mockImplementation(async (files, options = {}) => {
+      options.onProgress?.(1);
+      return new File(['zip-bytes'], options.archiveName || 'Docs.zip', { type: 'application/zip' });
+    });
+    mockCollectDataTransferFiles.mockImplementation(async (dataTransfer) => ({
+      files: Array.from(dataTransfer?.files || []),
+      asFolder: false,
+    }));
     mockCreateDownloadGrant.mockResolvedValue({
       download_path: '/my-files/download-grant/test-token',
       expires_in_seconds: 120,
@@ -192,7 +215,7 @@ describe('MyFiles page', () => {
   it('shows retention notice and uploads with default one-day retention', async () => {
     renderPage();
 
-    await screen.findByText('Мои файлы');
+    await screen.findByText('Мой диск');
     expect(screen.getByText(/Файлы хранятся в системе до 30 дней/)).toBeInTheDocument();
 
     const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
@@ -226,7 +249,60 @@ describe('MyFiles page', () => {
     expect(mockBuildPublicUrl).toHaveBeenCalledWith('public-token');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('http://localhost/shared-files/public-token');
     expect(await screen.findByTestId('my-files-share-url')).toHaveTextContent('http://localhost/shared-files/public-token');
-    expect(screen.getByTestId('my-files-share-copied-alert')).toBeInTheDocument();
+    expect(screen.getByTestId('my-files-share-copied-alert')).toHaveTextContent('Скопировано');
+  });
+
+  it('treats a dropped folder as a zip archive upload', async () => {
+    const nested = new File(['hello'], 'readme.txt', { type: 'text/plain' });
+    Object.defineProperty(nested, 'webkitRelativePath', {
+      configurable: true,
+      value: 'Docs/readme.txt',
+    });
+    mockCollectDataTransferFiles.mockResolvedValue({
+      files: [nested],
+      asFolder: true,
+    });
+
+    renderPage();
+    await screen.findByText('Мой диск');
+
+    fireEvent.drop(screen.getByTestId('my-files-drop-zone'), {
+      dataTransfer: { files: [], items: [], dropEffect: 'copy' },
+      preventDefault: () => {},
+    });
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('my-files-folder-archive-notice')).toHaveTextContent('Docs.zip');
+    expect(mockCollectDataTransferFiles).toHaveBeenCalled();
+  });
+
+  it('packs a selected folder into a zip before upload', async () => {
+    renderPage();
+
+    await screen.findByText('Мой диск');
+    expect(screen.getByTestId('my-files-upload-folder-button')).toBeInTheDocument();
+
+    const nested = new File(['hello'], 'readme.txt', { type: 'text/plain' });
+    Object.defineProperty(nested, 'webkitRelativePath', {
+      configurable: true,
+      value: 'Docs/readme.txt',
+    });
+    fireEvent.change(screen.getByTestId('my-files-folder-input'), { target: { files: [nested] } });
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('my-files-folder-archive-notice')).toHaveTextContent('Docs.zip');
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Упаковать и загрузить' }));
+
+    await waitFor(() => {
+      expect(mockPackFolderFilesToZip).toHaveBeenCalled();
+      expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({
+        retentionDays: 1,
+        onUploadProgress: expect.any(Function),
+      }));
+    });
+    expect(mockUploadFile.mock.calls[0][0].file.name).toBe('Docs.zip');
+    expect(mockUploadFile.mock.calls[0][0].file.type).toBe('application/zip');
   });
 
   it('opens a private document preview for a ready supported file', async () => {

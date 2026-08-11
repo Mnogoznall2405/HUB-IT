@@ -123,4 +123,37 @@ describe('TasksCreateMobileSheet', () => {
     expect(within(sheet).getByText('Описание задачи')).toBeInTheDocument();
     expect(within(sheet).getByTestId('create-description-mobile-input')).toBeInTheDocument();
   });
+
+  it('renders the project menu above the mobile drawer and updates the project', async () => {
+    let updatedCreateData = null;
+    const setCreateData = vi.fn((updater) => {
+      updatedCreateData = typeof updater === 'function'
+        ? updater(baseBodyProps.createData)
+        : updater;
+    });
+
+    renderSheet({
+      sheet: 'project',
+      bodyProps: {
+        ...baseBodyProps,
+        activeTaskProjects: [
+          { id: 'project-1', name: 'Первый проект' },
+          { id: 'project-2', name: 'Второй проект' },
+        ],
+        setCreateData,
+      },
+    });
+
+    const sheet = screen.getByTestId('create-mobile-sheet');
+    fireEvent.mouseDown(within(sheet).getByRole('combobox', { name: 'Проект' }));
+
+    const listbox = await screen.findByRole('listbox');
+    const menuRoot = listbox.closest('.MuiMenu-root');
+    expect(menuRoot).not.toBeNull();
+    expect(window.getComputedStyle(menuRoot).zIndex).toBe(String(theme.zIndex.modal + 5));
+
+    fireEvent.click(within(listbox).getByText('Второй проект'));
+    expect(setCreateData).toHaveBeenCalled();
+    expect(updatedCreateData).toMatchObject({ project_id: 'project-2', object_id: '' });
+  });
 });

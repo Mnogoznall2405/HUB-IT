@@ -12,6 +12,9 @@ import psutil
 
 
 DEFAULT_TASK_NAME = "HUB-IT Agent"
+TELEGRAM_PROBE_TASK_NAME = "HUB-IT Telegram Probe"
+MAX_PROBE_TASK_NAME = "HUB-IT MAX Probe"
+BROWSER_PROBE_TASK_NAME = "HUB-IT Browser Probe"
 LEGACY_TASK_NAMES = ("IT-Invent Agent",)
 DEFAULT_REPEAT_MINUTES = 60
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\HUB-IT\Agent")
@@ -20,13 +23,22 @@ DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData"
 LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 DEFAULT_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "Agent"
 DEFAULT_SCAN_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent"
+DEFAULT_TELEGRAM_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "TelegramProbe"
+DEFAULT_MAX_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "MaxProbe"
+DEFAULT_BROWSER_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "BrowserProbe"
 DEFAULT_UPGRADE_BACKUP_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "AgentUpgrade"
 LEGACY_UPGRADE_BACKUP_ROOT = LEGACY_PROGRAM_DATA_ROOT / "AgentUpgrade"
 EXECUTABLE_NAME = "ITInventAgent.exe"
 SCAN_AGENT_EXECUTABLE_NAME = "ITInventScanAgent.exe"
+TELEGRAM_PROBE_EXECUTABLE_NAME = "ITInventTelegramProbe.exe"
+MAX_PROBE_EXECUTABLE_NAME = "ITInventMaxProbe.exe"
+BROWSER_PROBE_EXECUTABLE_NAME = "ITInventBrowserProbe.exe"
 MSI_HELPER_EXECUTABLE_NAME = "ITInventAgentMsiHelper.exe"
 ENV_FILE_NAME = ".env"
 INSTALL_SCRIPT_NAME = "install_agent_task.ps1"
+INSTALL_TELEGRAM_PROBE_SCRIPT_NAME = "install_telegram_probe_task.ps1"
+INSTALL_MAX_PROBE_SCRIPT_NAME = "install_max_probe_task.ps1"
+INSTALL_BROWSER_PROBE_SCRIPT_NAME = "install_browser_probe_task.ps1"
 UNINSTALL_SCRIPT_NAME = "uninstall_agent_task.ps1"
 FULL_UNINSTALL_SCRIPT_NAME = "full_uninstall_agent.ps1"
 SCRIPTS_DIR_NAME = "scripts"
@@ -38,6 +50,9 @@ AGENT_RUNTIME_PROCESS_NAMES = (
     "ITInventAgent",
     "ITInventScanAgent",
     "ITInventOutlookProbe",
+    "ITInventTelegramProbe",
+    "ITInventMaxProbe",
+    "ITInventBrowserProbe",
 )
 FORCED_SCAN_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_SEC": "600",
@@ -56,6 +71,13 @@ MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_SEC": "600",
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
+    "ITINV_FS_EGRESS_ENABLED": "1",
+    "ITINV_TELEGRAM_PROBE_ENABLED": "1",
+    "ITINV_TELEGRAM_PROBE_SYNC_SEC": "900",
+    "ITINV_BROWSER_PROBE_ENABLED": "1",
+    "ITINV_BROWSER_PROBE_SYNC_SEC": "120",
+    "ITINV_MAX_PROBE_ENABLED": "1",
+    "ITINV_MAX_PROBE_SYNC_SEC": "900",
     "SCAN_AGENT_SERVER_BASE": "https://hubit.zsgp.ru/api/v1/scan",
     "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
     "SCAN_AGENT_POLL_JITTER_SEC": "30",
@@ -76,6 +98,13 @@ MSI_ARG_TO_ENV_KEY = {
     "itinv_agent_heartbeat_sec": "ITINV_AGENT_HEARTBEAT_SEC",
     "itinv_agent_heartbeat_jitter_sec": "ITINV_AGENT_HEARTBEAT_JITTER_SEC",
     "itinv_scan_enabled": "ITINV_SCAN_ENABLED",
+    "itinv_fs_egress_enabled": "ITINV_FS_EGRESS_ENABLED",
+    "itinv_telegram_probe_enabled": "ITINV_TELEGRAM_PROBE_ENABLED",
+    "itinv_telegram_probe_sync_sec": "ITINV_TELEGRAM_PROBE_SYNC_SEC",
+    "itinv_browser_probe_enabled": "ITINV_BROWSER_PROBE_ENABLED",
+    "itinv_browser_probe_sync_sec": "ITINV_BROWSER_PROBE_SYNC_SEC",
+    "itinv_max_probe_enabled": "ITINV_MAX_PROBE_ENABLED",
+    "itinv_max_probe_sync_sec": "ITINV_MAX_PROBE_SYNC_SEC",
     "scan_agent_server_base": "SCAN_AGENT_SERVER_BASE",
     "scan_agent_api_key": "SCAN_AGENT_API_KEY",
     "scan_agent_poll_interval_sec": "SCAN_AGENT_POLL_INTERVAL_SEC",
@@ -138,6 +167,41 @@ def add_msi_args(parser) -> None:
         "--itinv-outlook-search-roots",
         default="",
         help="MSI runtime config: ITINV_OUTLOOK_SEARCH_ROOTS",
+    )
+    parser.add_argument(
+        "--itinv-fs-egress-enabled",
+        default="",
+        help="MSI runtime config: ITINV_FS_EGRESS_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-telegram-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_TELEGRAM_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-telegram-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_TELEGRAM_PROBE_SYNC_SEC",
+    )
+    parser.add_argument(
+        "--itinv-browser-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_BROWSER_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-browser-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_BROWSER_PROBE_SYNC_SEC",
+    )
+    parser.add_argument(
+        "--itinv-max-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_MAX_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-max-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_MAX_PROBE_SYNC_SEC",
     )
     parser.add_argument("--log-path", default="", help="Optional PowerShell cleanup log path")
     parser.add_argument(
@@ -622,6 +686,85 @@ def run_msi_install(namespace, logger) -> int:
             "-StartAfterRegister",
         ],
     )
+
+    telegram_enabled = str(merged.get("ITINV_TELEGRAM_PROBE_ENABLED", "1") or "1").strip().lower()
+    if telegram_enabled not in {"0", "false", "no", "off"}:
+        telegram_exe = install_dir / TELEGRAM_PROBE_EXECUTABLE_NAME
+        if telegram_exe.exists():
+            try:
+                stop_scheduled_task(TELEGRAM_PROBE_TASK_NAME, logger)
+                tg_script = resolve_script_path(INSTALL_TELEGRAM_PROBE_SCRIPT_NAME)
+                DEFAULT_TELEGRAM_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    tg_script,
+                    [
+                        "-TaskName",
+                        TELEGRAM_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(telegram_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("Telegram probe task registered (%s)", TELEGRAM_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("Telegram probe task registration failed: %s", exc)
+        else:
+            logger.warning("Telegram probe executable missing: %s", telegram_exe)
+
+    browser_enabled = str(merged.get("ITINV_BROWSER_PROBE_ENABLED", "1") or "1").strip().lower()
+    if browser_enabled not in {"0", "false", "no", "off"}:
+        browser_exe = install_dir / BROWSER_PROBE_EXECUTABLE_NAME
+        if browser_exe.exists():
+            try:
+                stop_scheduled_task(BROWSER_PROBE_TASK_NAME, logger)
+                br_script = resolve_script_path(INSTALL_BROWSER_PROBE_SCRIPT_NAME)
+                DEFAULT_BROWSER_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    br_script,
+                    [
+                        "-TaskName",
+                        BROWSER_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(browser_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("Browser probe task registered (%s)", BROWSER_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("Browser probe task registration failed: %s", exc)
+        else:
+            logger.warning("Browser probe executable missing: %s", browser_exe)
+
+    max_enabled = str(merged.get("ITINV_MAX_PROBE_ENABLED", "1") or "1").strip().lower()
+    if max_enabled not in {"0", "false", "no", "off"}:
+        max_exe = install_dir / MAX_PROBE_EXECUTABLE_NAME
+        if max_exe.exists():
+            try:
+                stop_scheduled_task(MAX_PROBE_TASK_NAME, logger)
+                max_script = resolve_script_path(INSTALL_MAX_PROBE_SCRIPT_NAME)
+                DEFAULT_MAX_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    max_script,
+                    [
+                        "-TaskName",
+                        MAX_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(max_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("MAX probe task registered (%s)", MAX_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("MAX probe task registration failed: %s", exc)
+        else:
+            logger.warning("MAX probe executable missing: %s", max_exe)
+
     logger.info("MSI install helper completed successfully. Runtime env written to %s", env_file_path)
     return 0
 

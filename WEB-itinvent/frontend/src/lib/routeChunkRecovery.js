@@ -24,9 +24,11 @@ export function clearRouteChunkRecoveryState() {
 
 export function buildChunkReloadFingerprint(reason = '') {
   if (typeof window === 'undefined') return '';
+  // Fingerprint by route only. Including the full error reason caused reload
+  // loops on mobile: each failed chunk URL produced a new fingerprint.
   const route = `${window.location.pathname}${window.location.search}`;
-  const normalizedReason = String(reason || '').trim().slice(0, 240);
-  return normalizedReason ? `${route}::${normalizedReason}` : route;
+  void reason;
+  return route || '/';
 }
 
 export function tryRecoverChunkLoad(reason = '') {

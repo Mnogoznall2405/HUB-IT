@@ -70,8 +70,14 @@ export function sortBalancesByWarehouse(rows = []) {
   });
 }
 
+function foldSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+}
+
 export function filterBalancesByText(rows = [], query = '') {
-  const needle = String(query || '').trim().toLowerCase();
+  const needle = foldSearchText(String(query || '').trim());
   if (!needle) return Array.isArray(rows) ? rows : [];
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     const haystack = [
@@ -84,7 +90,7 @@ export function filterBalancesByText(rows = [], query = '') {
       row?.hub_employee_name,
       row?.hub_employee_dept,
     ]
-      .map((part) => String(part || '').toLowerCase())
+      .map((part) => foldSearchText(part))
       .join(' ');
     return haystack.includes(needle);
   });

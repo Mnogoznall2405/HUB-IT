@@ -16,7 +16,7 @@
 
 | Подсистема | Назначение |
 |------------|------------|
-| **WEB-itinvent** | Web UI + FastAPI: оборудование, сети, hub/tasks, почта, чат, tickets, Scan Center |
+| **WEB-itinvent** | Web UI + FastAPI: оборудование, сети, hub/tasks, почта, чат, tickets, Scan Center. Chat runtime может работать отдельным процессом `itinvent-chat` (`backend/chat_main.py`, порт **8002**) |
 | **bot** | Telegram-бот: поиск, акты, OCR, экспорты, регистрация работ |
 | **agent** + **agent.py** | Windows inventory-agent (MSI, Scheduled Task) |
 | **scan_agent** | Sidecar: поиск чувствительных документов на ПК |
@@ -245,6 +245,8 @@ npx expo start
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1
+# отдельный Chat API (порт 8002), если включён HUBIT_RUNTIME_ROLE split:
+powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-chat.ps1
 ```
 
 Если `pm2.cmd` падает с ошибкой `node is not recognized`, запускать тот же скрипт с проектным Node в PATH:

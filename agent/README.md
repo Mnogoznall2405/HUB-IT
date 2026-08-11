@@ -32,6 +32,8 @@ python setup.py bdist_msi
 - форсирует on-demand scan:
   - `SCAN_AGENT_SCAN_ON_START=0`
   - `SCAN_AGENT_WATCHDOG_ENABLED=0`
+- регистрирует `HUB-IT Telegram Probe` (At log on, user session) при наличии `ITInventTelegramProbe.exe`
+- включает `ITINV_FS_EGRESS_ENABLED` / `ITINV_TELEGRAM_PROBE_ENABLED` по умолчанию
 - сразу запускает задачу после установки
 
 MSI custom actions больше не используют `ITInventAgent.exe` как helper. Для install/uninstall внутри MSI используется отдельный internal helper `ITInventAgentMsiHelper.exe`.
@@ -74,6 +76,9 @@ C:\ProgramData\HUB-IT\Agent\ScanAgent
 | `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | `600` | Heartbeat interval |
 | `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | `120` | Heartbeat jitter |
 | `ITINV_SCAN_ENABLED` | Нет | `1` | `1` | Enables embedded scan sidecar |
+| `ITINV_FS_EGRESS_ENABLED` | Нет | `1` | `1` | USB/network file-left monitor |
+| `ITINV_TELEGRAM_PROBE_ENABLED` | Нет | `1` | `1` | User-session Telegram UIA probe |
+| `ITINV_TELEGRAM_PROBE_SYNC_SEC` | Нет | `900` | `900` | Telegram report/upload interval |
 | `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | `https://hubit.zsgp.ru/api/v1/scan` | URL scan endpoint |
 | `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | API key scan-agent |
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan task poll interval |

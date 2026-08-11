@@ -22,14 +22,16 @@ import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import { AnimatePresence, motion } from 'framer-motion';
 
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatComposer from './ChatComposer';
+import ChatFileDropOverlay from './ChatFileDropOverlay';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
+import ChatEmojiPanel from './ChatEmojiPanel';
 import ChatThreadComposerBridge from './ChatThreadComposerBridge';
 import ChatThreadHeader, { AiRunStatusBanner } from './ChatThreadHeader';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
@@ -49,6 +51,7 @@ import {
 } from './chatUiTokens';
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
+const DESKTOP_EMOJI_PANEL_WIDTH = 'clamp(300px, 36%, 384px)';
 const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
@@ -423,6 +426,7 @@ function ChatThread({
   onScrollToMessage,
   currentUserId,
   mobileEmojiPickerOpen = false,
+  desktopEmojiPickerOpen = false,
   onInsertEmoji,
   onSendSticker,
   onSendGif,
@@ -1202,7 +1206,11 @@ function ChatThread({
           minHeight: 360,
           px: 3,
           textAlign: 'center',
-          ...threadWallpaperSx,
+          backgroundColor: ui.threadBg,
+          backgroundImage: `
+            radial-gradient(circle at 50% 42%, ${alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.14 : 0.1)} 0%, transparent 42%),
+            linear-gradient(180deg, ${alpha(ui.threadBg, 0.92)} 0%, ${ui.threadBg} 100%)
+          `,
         }}
       >
         <Avatar
@@ -1214,15 +1222,15 @@ function ChatThread({
             color: ui.accentText,
           }}
         >
-          {showConversationLoadingState ? <CircularProgress size={28} color="inherit" /> : <SmartToyOutlinedIcon fontSize="large" />}
+          {showConversationLoadingState ? <CircularProgress size={28} color="inherit" /> : <ForumOutlinedIcon fontSize="large" />}
         </Avatar>
         <Typography variant="h5" sx={{ fontWeight: 800 }}>
-          {showConversationLoadingState ? 'Открываем диалог…' : 'Выберите чат'}
+          {showConversationLoadingState ? 'Открываем диалог…' : 'Выберите беседу'}
         </Typography>
         <Typography variant="body2" sx={{ mt: 1, color: ui.textSecondary, maxWidth: 460 }}>
           {showConversationLoadingState
             ? 'Загружаем сообщения и карточку собеседника.'
-            : 'Откройте диалог слева, чтобы продолжить переписку, отправить файл или поделиться задачей.'}
+            : 'Выберите диалог в списке слева, чтобы начать переписку.'}
         </Typography>
       </Stack>
     );
@@ -1256,6 +1264,10 @@ function ChatThread({
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
+        boxSizing: 'border-box',
+        paddingInlineEnd: desktopEmojiPickerOpen && !compactMobile
+          ? DESKTOP_EMOJI_PANEL_WIDTH
+          : 0,
         bgcolor: compactMobile ? ui.threadBg : (ui.desktopShellBg || ui.threadBg),
         position: 'relative',
         overscrollBehaviorY: compactMobile ? 'none' : 'contain',
@@ -1323,74 +1335,92 @@ function ChatThread({
       </AnimatePresence>
 
       <Box
-        ref={threadScrollRef}
-        data-testid="chat-thread-scroll"
-        className="chat-scroll-hidden chat-native-shell"
-        onScroll={handleThreadScroll}
-        onWheel={handleThreadWheel}
-        onTouchMove={armHistoryAutoLoadIfNearTop}
-        onDrop={onComposerDrop}
         onDragOver={onComposerDragOver}
         onDragLeave={onComposerDragLeave}
         sx={{
-          ...threadWallpaperSx,
           flex: 1,
           minHeight: 0,
-          overflowY: 'auto',
-          overflowAnchor: 'none',
-          overscrollBehaviorY: compactMobile ? 'none' : 'contain',
-          px: { xs: compactMobile ? 0.7 : 1.8, md: density.threadScrollPxMd || 3.5 },
-          pt: { xs: 0.5, md: density.threadScrollPtMd || 1.8 },
-          pb: {
-            xs: `${scrollBottomPadding}px`,
-            md: `${density.threadScrollPbMd || 18}px`,
-          },
-          scrollPaddingBottom: {
-            xs: `${Math.max(24, scrollBottomPadding + 16)}px`,
-            md: `${Math.max(28, scrollBottomPadding + 10)}px`,
-          },
           position: 'relative',
-          userSelect: 'none',
         }}
       >
-        <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-          <ChatMessageList
+        <Box
+          ref={threadScrollRef}
+          data-testid="chat-thread-scroll"
+          className="chat-scroll-hidden chat-native-shell"
+          onScroll={handleThreadScroll}
+          onWheel={handleThreadWheel}
+          onTouchMove={armHistoryAutoLoadIfNearTop}
+          onDrop={onComposerDrop}
+          sx={{
+            ...threadWallpaperSx,
+            width: '100%',
+            height: '100%',
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowAnchor: 'none',
+            overscrollBehaviorY: compactMobile ? 'none' : 'contain',
+            px: { xs: compactMobile ? 0.7 : 1.8, md: density.threadScrollPxMd || 3.5 },
+            pt: { xs: 0.5, md: density.threadScrollPtMd || 1.8 },
+            pb: {
+              xs: `${scrollBottomPadding}px`,
+              md: `${density.threadScrollPbMd || 18}px`,
+            },
+            scrollPaddingBottom: {
+              xs: `${Math.max(24, scrollBottomPadding + 16)}px`,
+              md: `${Math.max(28, scrollBottomPadding + 10)}px`,
+            },
+            userSelect: 'none',
+          }}
+        >
+          <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
+            <ChatMessageList
+              theme={theme}
+              ui={ui}
+              isMobile={isMobile}
+              compactMobile={compactMobile}
+              mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
+              activeConversation={activeConversation}
+              navigate={navigate}
+              messages={messages}
+              messagesLoading={messagesLoading}
+              effectiveLastReadMessageId={effectiveLastReadMessageId}
+              messagesHasMore={messagesHasMore}
+              loadingOlder={loadingOlder}
+              onLoadOlder={onLoadOlder}
+              historyAutoLoadEnabled={historyAutoLoadEnabled}
+              threadScrollRef={threadScrollRef}
+              threadContentRef={threadContentRef}
+              bottomRef={bottomRef}
+              onOpenReads={onOpenReads}
+              onOpenAttachmentPreview={onOpenAttachmentPreview}
+              onReplyMessage={onReplyMessage}
+              onOpenMessageMenu={onOpenMessageMenu}
+              onConfirmAction={onConfirmAction}
+              onCancelAction={onCancelAction}
+              onEditAction={onEditAction}
+              selectedMessageIds={selectedMessageIds}
+              onToggleMessageSelection={onToggleMessageSelection}
+              onStartMessageSelection={onStartMessageSelection}
+              highlightedMessageId={highlightedMessageId}
+              getReadTargetRef={getReadTargetRef}
+              onToggleReaction={onToggleReaction}
+              onScrollToMessage={onScrollToMessage}
+              currentUserId={currentUserId}
+              aiTypingStatus={aiTypingStatus}
+            />
+          </Box>
+        </Box>
+
+        {isFileDragActive ? (
+          <ChatFileDropOverlay
+            compactMobile={compactMobile}
+            onDragLeave={onComposerDragLeave}
+            onDragOver={onComposerDragOver}
+            onDrop={onComposerDrop}
             theme={theme}
             ui={ui}
-            isMobile={isMobile}
-            compactMobile={compactMobile}
-            mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
-            activeConversation={activeConversation}
-            navigate={navigate}
-            messages={messages}
-            messagesLoading={messagesLoading}
-            effectiveLastReadMessageId={effectiveLastReadMessageId}
-            messagesHasMore={messagesHasMore}
-            loadingOlder={loadingOlder}
-            onLoadOlder={onLoadOlder}
-            historyAutoLoadEnabled={historyAutoLoadEnabled}
-            threadScrollRef={threadScrollRef}
-            threadContentRef={threadContentRef}
-            bottomRef={bottomRef}
-            onOpenReads={onOpenReads}
-            onOpenAttachmentPreview={onOpenAttachmentPreview}
-            onReplyMessage={onReplyMessage}
-            onOpenMessageMenu={onOpenMessageMenu}
-            onConfirmAction={onConfirmAction}
-            onCancelAction={onCancelAction}
-            onEditAction={onEditAction}
-            selectedMessageIds={selectedMessageIds}
-            onToggleMessageSelection={onToggleMessageSelection}
-            onStartMessageSelection={onStartMessageSelection}
-            highlightedMessageId={highlightedMessageId}
-            isFileDragActive={isFileDragActive}
-            getReadTargetRef={getReadTargetRef}
-            onToggleReaction={onToggleReaction}
-            onScrollToMessage={onScrollToMessage}
-            currentUserId={currentUserId}
-            aiTypingStatus={aiTypingStatus}
           />
-        </Box>
+        ) : null}
       </Box>
 
       <AnimatePresence initial={false}>{showJumpToLatest ? (
@@ -1492,9 +1522,11 @@ function ChatThread({
             composerDockRef,
             keyboardInset,
             mobileEmojiPickerOpen,
+            emojiPickerOpen: desktopEmojiPickerOpen,
             onInsertEmoji,
             onSendSticker,
             onSendGif,
+            currentUserId,
             voiceRecording,
             voiceRecordingDuration,
             voiceRecordingLevelRef,
@@ -1540,9 +1572,11 @@ function ChatThread({
           composerDockRef={composerDockRef}
           keyboardInset={keyboardInset}
           mobileEmojiPickerOpen={mobileEmojiPickerOpen}
+          emojiPickerOpen={desktopEmojiPickerOpen}
           onInsertEmoji={onInsertEmoji}
           onSendSticker={onSendSticker}
           onSendGif={onSendGif}
+          currentUserId={currentUserId}
           voiceRecording={voiceRecording}
           voiceRecordingDuration={voiceRecordingDuration}
           voiceRecordingLevelRef={voiceRecordingLevelRef}
@@ -1551,6 +1585,38 @@ function ChatThread({
           onCancelVoiceRecording={onCancelVoiceRecording}
         />
       )}
+
+      {desktopEmojiPickerOpen && !compactMobile ? (
+        <Box
+          data-testid="chat-desktop-emoji-panel"
+          role="dialog"
+          aria-label="Эмодзи, стикеры и GIF"
+          sx={{
+            position: 'absolute',
+            insetBlock: 0,
+            insetInlineEnd: 0,
+            zIndex: 20,
+            width: DESKTOP_EMOJI_PANEL_WIDTH,
+            minWidth: 0,
+            overflow: 'hidden',
+            bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
+            borderInlineStart: `1px solid ${ui.borderSoft || theme.palette.divider}`,
+            boxShadow: `-14px 0 32px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.28 : 0.16)}`,
+          }}
+        >
+          <ChatEmojiPanel
+            open
+            desktopDocked
+            theme={theme}
+            ui={ui}
+            onInsertEmoji={onInsertEmoji}
+            onSendSticker={onSendSticker}
+            onSendGif={onSendGif}
+            currentUserId={currentUserId}
+            onClose={onCloseEmojiPicker}
+          />
+        </Box>
+      ) : null}
     </Box>
   );
 }

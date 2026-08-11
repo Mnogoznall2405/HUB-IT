@@ -190,6 +190,87 @@ describe('service worker background push', () => {
     expect(showNotification).toHaveBeenCalledTimes(1);
   });
 
+  it('suppresses external chat push when the open conversation is visible even without focused', async () => {
+    const postMessage = vi.fn();
+    workerSelf.clients.matchAll.mockResolvedValue([{
+      url: 'https://hub.example/chat?conversation=7',
+      visibilityState: 'visible',
+      focused: false,
+      postMessage,
+    }]);
+
+    let lifetimePromise;
+    listeners.push({
+      data: {
+        json: () => ({
+          title: 'New chat message',
+          body: 'Open chat',
+          channel: 'chat',
+          tag: 'chat:msg:44',
+          data: {
+            route: '/chat?conversation=7&message=44',
+            conversation_id: '7',
+            message_id: '44',
+          },
+        }),
+      },
+      waitUntil: (promise) => {
+        lifetimePromise = promise;
+      },
+    });
+
+    await lifetimePromise;
+
+    expect(showNotification).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'itinvent:push-foreground-notification',
+    }));
+  });
+
+  it('suppresses external chat push using page-reported active conversation on mobile SPA urls', async () => {
+    const postMessage = vi.fn();
+    workerSelf.clients.matchAll.mockResolvedValue([{
+      url: 'https://hub.example/chat',
+      visibilityState: 'visible',
+      focused: false,
+      postMessage,
+    }]);
+    listeners.message({
+      data: {
+        type: 'itinvent:active-chat-conversation',
+        conversationId: '7',
+        visible: true,
+      },
+    });
+
+    let lifetimePromise;
+    listeners.push({
+      data: {
+        json: () => ({
+          title: 'New chat message',
+          body: 'Open chat',
+          channel: 'chat',
+          tag: 'chat:msg:45',
+          data: {
+            route: '/chat?conversation=7&message=45',
+            conversation_id: '7',
+            message_id: '45',
+          },
+        }),
+      },
+      waitUntil: (promise) => {
+        lifetimePromise = promise;
+      },
+    });
+
+    await lifetimePromise;
+
+    expect(showNotification).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'itinvent:push-foreground-notification',
+    }));
+  });
+
   it('does not wait for slow push telemetry before showing the notification', async () => {
     fetchMock.mockImplementation((url) => {
       if (String(url).includes('/notifications/push-debug')) {
@@ -377,6 +458,47 @@ describe('service worker background push', () => {
     await expect(dispatchChatPush()).resolves.toBeUndefined();
 
     expect(showNotification).toHaveBeenCalledTimes(3);
+  });
+
+  it('opens notification targets via SPA postMessage without client.navigate reload', async () => {
+    const focusedClient = {
+      url: 'https://hub.example/dashboard',
+      visibilityState: 'visible',
+      focused: true,
+      postMessage: vi.fn(),
+      focus: vi.fn(async () => {}),
+      navigate: vi.fn(async () => {}),
+    };
+    workerSelf.clients.matchAll.mockResolvedValue([focusedClient]);
+
+    let lifetimePromise;
+    listeners.notificationclick({
+      action: '',
+      notification: {
+        close: vi.fn(),
+        tag: 'chat:msg:spa-1',
+        data: {
+          route: 'https://hub.example/chat?conversation=7&message=spa-1',
+          channel: 'chat',
+          actions: [],
+        },
+      },
+      waitUntil: (promise) => {
+        lifetimePromise = promise;
+      },
+    });
+
+    await lifetimePromise;
+
+    expect(focusedClient.postMessage).toHaveBeenCalledWith({
+      type: 'itinvent:navigate',
+      route: '/chat?conversation=7&message=spa-1',
+      url: 'https://hub.example/chat?conversation=7&message=spa-1',
+      source: 'notificationclick',
+    });
+    expect(focusedClient.focus).toHaveBeenCalledTimes(1);
+    expect(focusedClient.navigate).not.toHaveBeenCalled();
+    expect(workerSelf.clients.openWindow).not.toHaveBeenCalled();
   });
 
   it('disables IIS caching for the service worker entry script', () => {

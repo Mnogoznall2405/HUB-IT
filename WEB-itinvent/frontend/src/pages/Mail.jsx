@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -186,7 +186,9 @@ const MailHeadersDialog = lazy(() => import('../components/mail/MailHeadersDialo
 const MailSignatureDialog = lazy(() => import('../components/mail/MailSignatureDialog'));
 const MailTemplatesDialog = lazy(() => import('../components/mail/MailTemplatesDialog'));
 
-const MAIL_ACTIVE_REFRESH_INTERVAL_MS = 90000;
+// Keep the open inbox close to Exchange without a chat-style websocket.
+// 90s felt like "mail never arrives"; 20s matches hub unread polling.
+const MAIL_ACTIVE_REFRESH_INTERVAL_MS = 20_000;
 const MAIL_VIEW_REFRESH_COOLDOWN_MS = 4000;
 const MAIL_SWR_STALE_TIME_MS = 45000;
 const MAIL_DETAIL_SWR_STALE_TIME_MS = 10 * 60 * 1000;
@@ -317,7 +319,7 @@ const getMailRenderedContentSx = ({ ui, theme, variant = 'message', mine = false
 };
 const COMPOSE_DRAFT_STORAGE_KEY = 'mail_compose_draft_v2';
 const MAIL_BOOTSTRAP_LIMIT = 20;
-const MAIL_STANDARD_PREFETCH_FOLDERS = ['inbox'];
+const MAIL_STANDARD_PREFETCH_FOLDERS = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
 const FOLDER_LABELS = {
   inbox: 'Входящие',
@@ -602,6 +604,7 @@ function Mail() {
   const detailPrefetchInFlightRef = useRef(new Set());
   const detailPrefetchCompletedAtRef = useRef(new Map());
   const skipNextListRefreshRef = useRef(false);
+  const lastListRefreshContextKeyRef = useRef('');
   const prefetchedListContextsRef = useRef(new Set());
   const prefetchedDetailListSignaturesRef = useRef(new Set());
   // Recent hydration should paint immediately, but the first live refresh for that context must still hit the network.
@@ -818,13 +821,31 @@ function Mail() {
   useEffect(() => {
     const previousScope = String(previousMailCacheScopeRef.current || '').trim();
     if (previousScope && previousScope !== mailCacheScope) {
-      setRecentHydratedScope('');
-      setFolderSummary({});
-      setFolderTree([]);
-      setListData(createEmptyListData());
+      // Prefer cached paint for the next mailbox; never flash a blank "Нет писем" while loading.
+      const hydration = getMailRecentHydration({
+        scope: mailCacheScope,
+        contextKey: currentListContextKey,
+      });
+      if (hydration?.listData && Array.isArray(hydration.listData.items) && hydration.listData.items.length > 0) {
+        setFolderSummary(hydration.folderSummary || {});
+        setFolderTree(Array.isArray(hydration.folderTree) ? hydration.folderTree : []);
+        setListData(normalizeMailListResponse(hydration.listData));
+        setRecentHydratedScope(mailCacheScope);
+        setLoading(false);
+      } else {
+        setRecentHydratedScope('');
+        // Keep previous mailbox rows clickable; Exchange refresh is background-only.
+        const hasPaintedItems = Array.isArray(listDataRef.current?.items) && listDataRef.current.items.length > 0;
+        if (hasPaintedItems) {
+          setLoading(false);
+          setMailBackgroundRefreshing(true);
+        } else {
+          setLoading(true);
+        }
+      }
     }
     previousMailCacheScopeRef.current = mailCacheScope;
-  }, [mailCacheScope]);
+  }, [currentListContextKey, mailCacheScope]);
   useEffect(() => {
     if (!activeMailboxId) return;
     if (lastAppliedMailboxViewStateRef.current === activeMailboxId) return;
@@ -1034,6 +1055,16 @@ function Mail() {
       contextKey: currentListContextKey,
     });
     const cachedList = peekSWRCache(currentListCacheKey, { staleTimeMs: MAIL_SWR_STALE_TIME_MS });
+    const applyPendingListContext = () => {
+      // Context changed but no list cache yet — drop the previous folder's rows and show loading.
+      // Keeping stale inbox items under Sent/Drafts looks like a broken empty folder.
+      if (String(currentListKeyRef.current || '') === currentListContextKey) return;
+      const emptyList = createEmptyListData();
+      listDataRef.current = emptyList;
+      setListData(emptyList);
+      currentListKeyRef.current = currentListContextKey;
+      setLoading(true);
+    };
     if (!hydration) {
       recentHydratedListContextsRef.current.delete(currentListContextKey);
       if (recentHydratedScope === mailCacheScope) {
@@ -1046,12 +1077,7 @@ function Mail() {
         currentListKeyRef.current = currentListContextKey;
         return true;
       }
-      if (String(currentListKeyRef.current || '') !== currentListContextKey) {
-        const emptyList = createEmptyListData();
-        listDataRef.current = emptyList;
-        setListData(emptyList);
-        currentListKeyRef.current = currentListContextKey;
-      }
+      applyPendingListContext();
       return false;
     }
     if (hydration.folderSummary && Object.keys(hydration.folderSummary).length > 0) {
@@ -1067,8 +1093,15 @@ function Mail() {
       setSWRCache(currentListCacheKey, normalizedList);
       currentListKeyRef.current = currentListContextKey;
       recentHydratedListContextsRef.current.add(currentListContextKey);
+    } else if (cachedList?.data) {
+      const normalizedList = normalizeMailListResponse(cachedList.data);
+      listDataRef.current = normalizedList;
+      setListData(normalizedList);
+      currentListKeyRef.current = currentListContextKey;
+      recentHydratedListContextsRef.current.delete(currentListContextKey);
     } else {
       recentHydratedListContextsRef.current.delete(currentListContextKey);
+      applyPendingListContext();
     }
     setRecentHydratedScope(mailCacheScope);
     return true;
@@ -1244,18 +1277,51 @@ function Mail() {
     clearSelection({ allModes: true });
     setSelectedItems([]);
     setMoveTarget('');
-    setMailboxInfo(null);
+    // Keep previous mailboxInfo until bootstrap applies the next one — nulling
+    // drops mailAccessReady and lets overlapping refresh/bootstrap thrash the UI.
     setSelectedMailboxId(normalizedMailboxId);
     writeStoredSelectedMailboxId(normalizedMailboxId);
     setMailConfigLoading(true);
-    setLoading(false);
-    setMailBackgroundRefreshing(false);
-    setRecentHydratedScope('');
-    setFolderSummary({});
-    setFolderTree([]);
-    setListData(createEmptyListData());
-    setFolder(storedState.folder || 'inbox');
-    setViewMode(storedState.viewMode || 'messages');
+    setMailBackgroundRefreshing(true);
+    const nextFolder = storedState.folder || 'inbox';
+    const nextViewMode = storedState.viewMode || 'messages';
+    const nextContextKey = buildMailListRequestContext({
+      scope: normalizedMailboxId,
+      folder: nextFolder,
+      viewMode: nextViewMode,
+      search: '',
+      unreadOnly: false,
+      hasAttachmentsOnly: false,
+      dateFrom: '',
+      dateTo: '',
+      advancedFilters: DEFAULT_ADVANCED_FILTERS,
+      limit: 50,
+      offset: 0,
+    }).contextKey;
+    const hydration = getMailRecentHydration({
+      scope: normalizedMailboxId,
+      contextKey: nextContextKey,
+    });
+    if (hydration?.listData && Array.isArray(hydration.listData.items) && hydration.listData.items.length > 0) {
+      setFolderSummary(hydration.folderSummary || {});
+      setFolderTree(Array.isArray(hydration.folderTree) ? hydration.folderTree : []);
+      setListData(normalizeMailListResponse(hydration.listData));
+      setRecentHydratedScope(normalizedMailboxId);
+      setLoading(false);
+      setMailBackgroundRefreshing(true);
+    } else {
+      // Keep previous rows interactive; MailMessageList hides items when loading=true.
+      setRecentHydratedScope('');
+      const hasPaintedItems = Array.isArray(listDataRef.current?.items) && listDataRef.current.items.length > 0;
+      if (hasPaintedItems) {
+        setLoading(false);
+        setMailBackgroundRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+    }
+    setFolder(nextFolder);
+    setViewMode(nextViewMode);
     setSearch('');
     setUnreadOnly(false);
     setHasAttachmentsOnly(false);
@@ -1264,7 +1330,7 @@ function Mail() {
     setAdvancedFiltersDraft(DEFAULT_ADVANCED_FILTERS);
     setAdvancedFiltersApplied(DEFAULT_ADVANCED_FILTERS);
     navigate(buildMailRoute({
-      folder: storedState.folder || 'inbox',
+      folder: nextFolder,
       mailboxId: normalizedMailboxId,
     }), { replace: true });
   }, [activeMailboxId, clearSelection, navigate, refreshMailboxUnreadCounts]);
@@ -1574,6 +1640,8 @@ function Mail() {
   });
   const silentRevalidateCurrentMailView = useCallback(async ({ reason = 'auto', force = false } = {}) => {
     if (!mailAccessReady) return;
+    // During mailbox switch bootstrap owns the refresh; timer/focus must not stack more work.
+    if (mailConfigLoading) return;
     const refreshKey = `${mailCacheScope}:${currentListContextKey}:${viewMode}:${folder}`;
     return runMailViewRefreshGate(refreshKey, async () => {
       setMailBackgroundRefreshing(true);
@@ -1611,6 +1679,7 @@ function Mail() {
     folder,
     mailAccessReady,
     mailCacheScope,
+    mailConfigLoading,
     mailboxInfo,
     refreshBootstrap,
     refreshFolderSummary,
@@ -1636,12 +1705,35 @@ function Mail() {
 
   useEffect(() => {
     if (!mailAccessReady) return;
+    const previousContextKey = String(lastListRefreshContextKeyRef.current || '');
+    const nextContextKey = String(currentListContextKey || '');
+    const isFirstContext = !previousContextKey;
+    const contextChanged = previousContextKey !== nextContextKey;
     if (skipNextListRefreshRef.current) {
       skipNextListRefreshRef.current = false;
+      // Skip only the duplicate pull for the already-painted context.
+      // Folder/filter changes must still fetch immediately (skip must not swallow them).
+      if (!contextChanged || isFirstContext) {
+        lastListRefreshContextKeyRef.current = nextContextKey;
+        return;
+      }
+    }
+    // handleFolderChange already kicked an immediate fetch for this context.
+    if (!contextChanged && !isFirstContext) {
       return;
     }
-    refreshList({ force: false });
-  }, [mailAccessReady, refreshList]);
+    lastListRefreshContextKeyRef.current = nextContextKey;
+    // Force network on folder/filter changes so a stale/empty SWR entry cannot stick for 45s.
+    void refreshList({
+      force: contextChanged && !isFirstContext,
+      reason: contextChanged && !isFirstContext ? 'context-effect' : 'access-ready',
+      startedAt: Date.now(),
+    });
+    // Depend on currentListContextKey (folder/filters/view/scope), not refreshList:
+    // refreshList identity churn was re-firing full pulls and freezing mailbox switches,
+    // but omitting the list context entirely broke Sent/Drafts/etc. folder changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mailAccessReady, currentListContextKey]);
 
   useEffect(() => {
     const hasPrefetchBlockingFilters = Boolean(
@@ -1668,6 +1760,8 @@ function Mail() {
     const runPrefetch = () => {
       if (cancelled) return;
       MAIL_STANDARD_PREFETCH_FOLDERS.forEach((folderId) => {
+        // Current folder is already loaded via bootstrap/list refresh.
+        if (String(folderId) === String(folder || 'inbox')) return;
         const params = {
           folder: folderId,
           folder_scope: 'current',
@@ -1696,10 +1790,11 @@ function Mail() {
         }).catch(() => {});
       });
     };
+    // Prefetch standard folders ASAP so Sent/Drafts open from cache on first click.
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(runPrefetch, { timeout: 1500 });
+      idleId = window.requestIdleCallback(runPrefetch, { timeout: 250 });
     } else if (typeof window !== 'undefined') {
-      timeoutId = window.setTimeout(runPrefetch, 900);
+      timeoutId = window.setTimeout(runPrefetch, 50);
     } else {
       runPrefetch();
     }
@@ -1718,6 +1813,7 @@ function Mail() {
     debouncedSearch,
     filterDateFrom,
     filterDateTo,
+    folder,
     hasAttachmentsOnly,
     mailAccessReady,
     mailCacheScope,
@@ -2501,11 +2597,68 @@ function Mail() {
       closeMobileNavigationIfNeeded();
       return;
     }
+    const startedAt = Date.now();
+    const nextContext = buildMailListRequestContext({
+      scope: mailCacheScope,
+      folder: nextFolder,
+      viewMode,
+      search: debouncedSearch,
+      unreadOnly,
+      hasAttachmentsOnly,
+      dateFrom: filterDateFrom,
+      dateTo: filterDateTo,
+      advancedFilters: advancedFiltersApplied,
+      limit: 50,
+      offset: 0,
+    });
+    const cachedList = peekSWRCache(nextContext.cacheKey, { staleTimeMs: MAIL_SWR_STALE_TIME_MS });
+    const hydration = getMailRecentHydration({
+      scope: mailCacheScope,
+      contextKey: nextContext.contextKey,
+    });
+    const cachedPayload = hydration?.listData || cachedList?.data || null;
     clearSelection({ allModes: true });
     setSelectedItems([]);
+    skipNextListRefreshRef.current = false;
+    lastListRefreshContextKeyRef.current = nextContext.contextKey;
+    currentListKeyRef.current = nextContext.contextKey;
+    if (cachedPayload) {
+      const normalizedList = normalizeMailListResponse(cachedPayload);
+      listDataRef.current = normalizedList;
+      setListData(normalizedList);
+      setLoading(false);
+      recentHydratedListContextsRef.current.add(nextContext.contextKey);
+    } else {
+      const emptyList = createEmptyListData();
+      listDataRef.current = emptyList;
+      setListData(emptyList);
+      setLoading(true);
+      recentHydratedListContextsRef.current.delete(nextContext.contextKey);
+    }
     setFolder(nextFolder);
     closeMobileNavigationIfNeeded();
-  }, [clearSelection, closeMobileNavigationIfNeeded, folder]);
+    void refreshList({
+      force: true,
+      listParams: nextContext.params,
+      listCacheKey: nextContext.cacheKey,
+      listContextKey: nextContext.contextKey,
+      reason: 'folder-click',
+      startedAt,
+    });
+  }, [
+    advancedFiltersApplied,
+    clearSelection,
+    closeMobileNavigationIfNeeded,
+    debouncedSearch,
+    filterDateFrom,
+    filterDateTo,
+    folder,
+    hasAttachmentsOnly,
+    mailCacheScope,
+    refreshList,
+    unreadOnly,
+    viewMode,
+  ]);
   const handleViewModeChange = useCallback((value) => {
     const nextMode = value === 'conversations' ? 'conversations' : 'messages';
     const nextSelectedId = String(selectedByMode?.[nextMode] || '');
@@ -2649,7 +2802,7 @@ function Mail() {
         folder={folder}
         viewMode={viewMode}
         listData={listData}
-        loading={loading}
+        loading={Boolean(loading || (mailConfigLoading && !(Array.isArray(listData?.items) && listData.items.length > 0)))}
         loadingMore={loadingMore}
         selectedItems={selectedItems}
         selectedId={selectedId}

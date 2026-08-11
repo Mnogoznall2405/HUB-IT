@@ -951,6 +951,11 @@ function Warehouse1C() {
       || state.employeeName
       || '',
     ).trim();
+    const employeeWarehouseRef = String(
+      reopenEmployee?.warehouseRef
+      || state.employeeWarehouseRef
+      || '',
+    ).trim();
     const detailTab = String(
       reopenDetail?.detailTab
       || state.detailTab
@@ -958,7 +963,7 @@ function Warehouse1C() {
     ).trim() || 'warehouse1c';
     const returnTo = String(state.returnTo || '').trim() || '/database';
     const returnLabel = String(state.returnLabel || '').trim()
-      || (invNo ? 'Назад к карточке' : ownerNo ? 'Назад к сотруднику' : 'Назад в Инвентарь');
+      || (invNo ? 'Назад к карточке' : (ownerNo || employeeName || employeeWarehouseRef) ? 'Назад к сотруднику' : 'Назад в Инвентарь');
     const detailSnapshot = reopenDetail?.detailSnapshot && typeof reopenDetail.detailSnapshot === 'object'
       ? reopenDetail.detailSnapshot
       : (state.detailSnapshot && typeof state.detailSnapshot === 'object' ? state.detailSnapshot : null);
@@ -974,6 +979,7 @@ function Warehouse1C() {
       invNo,
       ownerNo,
       employeeName,
+      employeeWarehouseRef,
       detailTab,
       detailSnapshot,
       uiSnapshot,
@@ -1214,7 +1220,9 @@ function Warehouse1C() {
     const nextStr = next.toString();
     const currStr = searchParams.toString();
     if (nextStr !== currStr) {
-      setSearchParams(next, { replace: true });
+      // Keep navigation return context (employee/card) when syncing query params.
+      // setSearchParams clears location.state unless it is passed explicitly.
+      setSearchParams(next, { replace: true, state: location.state });
     }
   }, [
     tab,
@@ -1225,6 +1233,7 @@ function Warehouse1C() {
     movSeriesFilter,
     searchParams,
     setSearchParams,
+    location.state,
   ]);
 
   const handleShowMovement = useCallback((row) => {
@@ -1325,13 +1334,14 @@ function Warehouse1C() {
       });
       return;
     }
-    if (returnContext.ownerNo) {
+    if (returnContext.ownerNo || returnContext.employeeName || returnContext.employeeWarehouseRef) {
       navigate(returnContext.returnTo || '/database', {
         state: {
           ...sharedState,
           reopenEmployee: {
             ownerNo: returnContext.ownerNo,
             employeeName: returnContext.employeeName || '',
+            warehouseRef: returnContext.employeeWarehouseRef || '',
           },
         },
       });
@@ -1568,7 +1578,7 @@ function Warehouse1C() {
                 const next = new URLSearchParams(prev);
                 next.set('tab', 'reconcile');
                 return next;
-              }, { replace: true });
+              }, { replace: true, state: location.state });
             }}
           >
             Сверка Hub ↔ 1С

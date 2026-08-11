@@ -151,6 +151,14 @@ export const getOfficeAttachmentSourceKind = ({ filename = '', contentType = '' 
   ) {
     return 'word';
   }
+  if (
+    normalizedContentType.includes('presentationml')
+    || normalizedContentType.includes('ms-powerpoint')
+    || normalizedContentType.includes('opendocument.presentation')
+    || ['ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'odp'].includes(extension)
+  ) {
+    return 'presentation';
+  }
   return '';
 };
 

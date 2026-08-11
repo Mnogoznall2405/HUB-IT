@@ -3,6 +3,7 @@ import useChatComposerUiController from './useChatComposerUiController';
 import useChatComposerInteractionController from './useChatComposerInteractionController';
 import { loadChatDialogsModule } from './useChatDialogsController';
 import useChatUploadsController from './useChatUploadsController';
+import useChatStickerSending from './useChatStickerSending';
 import { readSelectedDatabaseId } from './chatSessionStorage';
 
 export default function useChatPageComposerStack({
@@ -113,6 +114,15 @@ export default function useChatPageComposerStack({
     syncComposerSelection,
   });
 
+  const handleSendSticker = useChatStickerSending({
+    activeConversationId,
+    applyOutgoingThreadMessage,
+    cancelPendingInitialAnchor,
+    notifyApiError,
+    replyMessage,
+    setReplyMessage,
+  });
+
   const composerInteraction = useChatComposerInteractionController({
     focusComposer,
     handleComposerSend,
@@ -126,6 +136,7 @@ export default function useChatPageComposerStack({
     sendMessage,
     ...uploads,
     ...composerUi,
+    handleSendSticker,
     ...composerInteraction,
   };
 }

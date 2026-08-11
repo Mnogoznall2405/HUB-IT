@@ -8,9 +8,11 @@ process start.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
-import re
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -18,16 +20,45 @@ from sqlalchemy import case, delete, exists, insert, or_, select, text
 
 from backend.appdb.db import app_session, is_app_database_configured
 from backend.appdb.models import AppOneCCatalogEntry, AppOneCCatalogSnapshot, AppOneCCatalogToken
-from backend.services.one_c_catalog_search import catalog_index_tokens, catalog_query_tokens
+from backend.services.one_c_catalog_compact_flags import get_compact_flags
+from backend.services.one_c_catalog_compact_search import (
+    OneCCatalogCompactSearch,
+    compact_reader_requested,
+)
+from backend.services.one_c_catalog_compact_shadow import shadow_after_tokens
+from backend.services.one_c_catalog_compact_writer import OneCCatalogCompactWriter
+from backend.services.one_c_catalog_search import (
+    catalog_index_tokens,
+    catalog_query_tokens,
+    normalize_catalog_text,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+def _new_compact_sync_id(
+    source_base: str,
+    generation: int,
+    nomenclature_fingerprint: str,
+    warehouses_fingerprint: str,
+) -> str:
+    """Opaque sync id for compact idempotency (never logs catalogue content)."""
+    material = "|".join(
+        (
+            str(source_base or ""),
+            str(int(generation or 0)),
+            str(nomenclature_fingerprint or "")[:64],
+            str(warehouses_fingerprint or "")[:64],
+            uuid.uuid4().hex[:12],
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 CATALOG_NOMENCLATURE = "nomenclature"
 CATALOG_WAREHOUSES = "warehouses"
 CATALOG_TYPES = {CATALOG_NOMENCLATURE, CATALOG_WAREHOUSES}
 DEFAULT_SOURCE_BASE = "buh20"
-_WHITESPACE_RE = re.compile(r"\s+")
 _ENTRY_INSERT_CHUNK = 10_000
 _TOKEN_INSERT_CHUNK = 50_000
 _DELETE_REF_CHUNK = 2_000
@@ -62,7 +93,7 @@ def _text(value: Any, *, maximum: int | None = None) -> str:
 
 
 def _normalized(value: Any, *, maximum: int | None = None) -> str:
-    return _WHITESPACE_RE.sub(" ", _text(value, maximum=maximum).casefold()).strip()
+    return normalize_catalog_text(_text(value, maximum=maximum))
 
 
 def _flag_enabled() -> bool:
@@ -422,15 +453,22 @@ class OneCCatalogSnapshotStore:
                 )
             )
 
-        if changed_rows or added_rows:
+        upserts = [*changed_rows, *added_rows]
+        if upserts:
             self._insert_generation(
                 session,
                 source_base=source_base,
                 generation=generation,
                 catalog_type=catalog_type,
-                entries=[*changed_rows, *added_rows],
+                entries=upserts,
             )
-        return incoming_count, len(removed_refs) + len(changed_rows) + len(added_rows)
+        patch = {
+            "incoming_count": incoming_count,
+            "changed_count": len(removed_refs) + len(changed_rows) + len(added_rows),
+            "upserts": [(row["ref"], row["code"], row["name"]) for row in upserts],
+            "deletes": list(removed_refs),
+        }
+        return patch
 
     def replace_snapshot(
         self,
@@ -468,6 +506,10 @@ class OneCCatalogSnapshotStore:
                 previous_generation = int(state.active_generation or 0)
             generation = previous_generation or 1
             changed_count = 0
+            compact_patches: dict[str, dict[str, Any]] = {}
+            # CAS base = previously indexed catalogue fingerprints (before this sync).
+            base_nom_fp = _text(getattr(state, "nomenclature_fingerprint", ""), maximum=64)
+            base_wh_fp = _text(getattr(state, "warehouses_fingerprint", ""), maximum=64)
             if previous_generation == 0:
                 deferred_initial_indexes = self._prepare_initial_postgres_load(session)
                 nomenclature_count = self._insert_generation(
@@ -488,22 +530,69 @@ class OneCCatalogSnapshotStore:
                     self._finish_initial_postgres_load(session)
                 changed_count = nomenclature_count + warehouses_count
                 state.active_generation = generation
+                # Initial load: compact dual-write rebuilds full scopes post-commit.
+                sync_id = _new_compact_sync_id(
+                    source, generation, nomenclature_fingerprint, warehouses_fingerprint
+                )
+                compact_patches = {
+                    CATALOG_NOMENCLATURE: {
+                        "full_rebuild": True,
+                        "expected_count": nomenclature_count,
+                        "incoming_count": nomenclature_count,
+                        "changed_count": nomenclature_count,
+                        "catalog_fingerprint": _text(nomenclature_fingerprint, maximum=64),
+                        "base_fingerprint": "",
+                        "sync_id": f"{sync_id}:nomenclature",
+                    },
+                    CATALOG_WAREHOUSES: {
+                        "full_rebuild": True,
+                        "expected_count": warehouses_count,
+                        "incoming_count": warehouses_count,
+                        "changed_count": warehouses_count,
+                        "catalog_fingerprint": _text(warehouses_fingerprint, maximum=64),
+                        "base_fingerprint": "",
+                        "sync_id": f"{sync_id}:warehouses",
+                    },
+                }
             else:
-                nomenclature_count, nomenclature_changed = self._update_catalog_in_place(
+                nomenclature_patch = self._update_catalog_in_place(
                     session,
                     source_base=source,
                     generation=generation,
                     catalog_type=CATALOG_NOMENCLATURE,
                     entries=nomenclature,
                 )
-                warehouses_count, warehouses_changed = self._update_catalog_in_place(
+                warehouses_patch = self._update_catalog_in_place(
                     session,
                     source_base=source,
                     generation=generation,
                     catalog_type=CATALOG_WAREHOUSES,
                     entries=warehouses,
                 )
-                changed_count = nomenclature_changed + warehouses_changed
+                nomenclature_count = int(nomenclature_patch["incoming_count"])
+                warehouses_count = int(warehouses_patch["incoming_count"])
+                changed_count = int(nomenclature_patch["changed_count"]) + int(
+                    warehouses_patch["changed_count"]
+                )
+                sync_id = _new_compact_sync_id(
+                    source, generation, nomenclature_fingerprint, warehouses_fingerprint
+                )
+                compact_patches = {
+                    CATALOG_NOMENCLATURE: {
+                        **nomenclature_patch,
+                        "expected_count": nomenclature_count,
+                        "catalog_fingerprint": _text(nomenclature_fingerprint, maximum=64),
+                        "base_fingerprint": base_nom_fp,
+                        "sync_id": f"{sync_id}:nomenclature",
+                    },
+                    CATALOG_WAREHOUSES: {
+                        **warehouses_patch,
+                        "expected_count": warehouses_count,
+                        "catalog_fingerprint": _text(warehouses_fingerprint, maximum=64),
+                        "base_fingerprint": base_wh_fp,
+                        "sync_id": f"{sync_id}:warehouses",
+                    },
+                }
             state.nomenclature_count = nomenclature_count
             state.warehouses_count = warehouses_count
             metadata_changed = (
@@ -520,7 +609,92 @@ class OneCCatalogSnapshotStore:
             state.last_error = ""
             session.flush()
 
+        # Compact dual-write runs AFTER catalogue commit so compact failures
+        # cannot roll back the primary entry/token snapshot.
+        self._maybe_dual_write_compact(
+            source_base=source,
+            generation=generation,
+            patches=compact_patches,
+        )
         return self.get_status(source_base=source)
+
+    def _maybe_dual_write_compact(
+        self,
+        *,
+        source_base: str,
+        generation: int,
+        patches: dict[str, dict[str, Any]],
+    ) -> None:
+        flags = get_compact_flags()
+        if not flags.write_compact or generation <= 0:
+            return
+        writer = OneCCatalogCompactWriter(enabled=True)
+        try:
+            with app_session(self._database_url) as session:
+                if session.get_bind().dialect.name != "postgresql":
+                    return
+                for catalog_type, patch in (patches or {}).items():
+                    expected = int(patch.get("expected_count") or 0)
+                    fingerprint = _text(patch.get("catalog_fingerprint"), maximum=64)
+                    base_fp = _text(patch.get("base_fingerprint"), maximum=64)
+                    sync_id = _text(patch.get("sync_id"), maximum=64)
+                    if patch.get("full_rebuild"):
+                        # Initial load / migration bootstrap — versioned rebuild only.
+                        writer.sync_scope_safe(
+                            session,
+                            source_base=source_base,
+                            generation=generation,
+                            catalog_type=catalog_type,
+                            upserts=[],
+                            deletes=[],
+                            expected_count=expected,
+                            catalog_fingerprint=fingerprint,
+                            base_fingerprint="",
+                            sync_id=sync_id,
+                            full_rebuild=True,
+                            incoming_count=int(patch.get("incoming_count") or expected),
+                            changed_count=int(patch.get("changed_count") or expected),
+                        )
+                        continue
+                    upserts = list(patch.get("upserts") or [])
+                    deletes = list(patch.get("deletes") or [])
+                    if not upserts and not deletes:
+                        # Empty legacy patch — keep compact ready; fingerprint align.
+                        if fingerprint:
+                            writer.sync_scope_safe(
+                                session,
+                                source_base=source_base,
+                                generation=generation,
+                                catalog_type=catalog_type,
+                                upserts=[],
+                                deletes=[],
+                                expected_count=expected,
+                                catalog_fingerprint=fingerprint,
+                                base_fingerprint=base_fp,
+                                sync_id=sync_id,
+                                incoming_count=int(patch.get("incoming_count") or expected),
+                                changed_count=0,
+                            )
+                        continue
+                    writer.sync_scope_safe(
+                        session,
+                        source_base=source_base,
+                        generation=generation,
+                        catalog_type=catalog_type,
+                        upserts=upserts,
+                        deletes=deletes,
+                        expected_count=expected,
+                        catalog_fingerprint=fingerprint,
+                        base_fingerprint=base_fp,
+                        sync_id=sync_id,
+                        incoming_count=int(patch.get("incoming_count") or expected),
+                        changed_count=int(patch.get("changed_count") or 0),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "1C compact dual-write session failed err_type=%s",
+                type(exc).__name__,
+            )
 
     def record_attempt_failure(self, error: Any, *, source_base: str = DEFAULT_SOURCE_BASE) -> None:
         """Publish a failed refresh attempt without discarding the old snapshot."""
@@ -536,16 +710,103 @@ class OneCCatalogSnapshotStore:
             state.last_error = _text(error, maximum=2_000)
 
     def record_attempt_success(self, *, source_base: str = DEFAULT_SOURCE_BASE) -> None:
-        """Record a verified unchanged 1C read without rebuilding indexes."""
+        """Record a verified unchanged 1C read without rebuilding indexes.
+
+        Also runs compact crash-recovery when WRITE_COMPACT is on and the
+        compact index fingerprint/status drifted after a legacy commit.
+        """
         if not self._storage_enabled():
             return
         source = self._source_base(source_base)
+        generation = 0
+        nom_fp = ""
+        wh_fp = ""
+        nom_count = 0
+        wh_count = 0
         with app_session(self._database_url) as session:
             state = session.get(AppOneCCatalogSnapshot, source)
             if state is None or int(state.active_generation or 0) <= 0:
                 return
             state.last_attempt_at = _now()
             state.last_error = ""
+            generation = int(state.active_generation or 0)
+            nom_fp = _text(state.nomenclature_fingerprint, maximum=64)
+            wh_fp = _text(state.warehouses_fingerprint, maximum=64)
+            nom_count = int(state.nomenclature_count or 0)
+            wh_count = int(state.warehouses_count or 0)
+        self._maybe_reconcile_compact_after_catalogue_noop(
+            source_base=source,
+            generation=generation,
+            nomenclature_fingerprint=nom_fp,
+            warehouses_fingerprint=wh_fp,
+            nomenclature_count=nom_count,
+            warehouses_count=wh_count,
+        )
+
+    def _maybe_reconcile_compact_after_catalogue_noop(
+        self,
+        *,
+        source_base: str,
+        generation: int,
+        nomenclature_fingerprint: str,
+        warehouses_fingerprint: str,
+        nomenclature_count: int,
+        warehouses_count: int,
+    ) -> None:
+        """Recover compact after legacy commit + process death (fingerprint no-op)."""
+        flags = get_compact_flags()
+        if not flags.write_compact or generation <= 0:
+            return
+        writer = OneCCatalogCompactWriter(enabled=True)
+        scopes = (
+            (CATALOG_NOMENCLATURE, nomenclature_fingerprint, nomenclature_count),
+            (CATALOG_WAREHOUSES, warehouses_fingerprint, warehouses_count),
+        )
+        try:
+            with app_session(self._database_url) as session:
+                if session.get_bind().dialect.name != "postgresql":
+                    return
+                for catalog_type, fingerprint, expected in scopes:
+                    state = writer._read_active_state(
+                        session, source_base=source_base, catalog_type=catalog_type
+                    )
+                    if state is None:
+                        writer.reconcile_stale_scope(
+                            session,
+                            source_base=source_base,
+                            generation=generation,
+                            catalog_type=catalog_type,
+                            expected_count=expected,
+                            catalog_fingerprint=fingerprint,
+                            sync_id=f"recover:{catalog_type}:{fingerprint[:16]}",
+                        )
+                        continue
+                    status = str(state.get("status") or "")
+                    indexed_fp = str(state.get("source_fingerprint") or "")
+                    active = int(state.get("active_index_version") or 0)
+                    if (
+                        status == "ready"
+                        and active > 0
+                        and fingerprint
+                        and indexed_fp == fingerprint
+                        and int(state.get("indexed_count") or 0)
+                        == int(state.get("expected_count") or 0)
+                    ):
+                        continue
+                    writer.reconcile_stale_scope(
+                        session,
+                        source_base=source_base,
+                        generation=generation,
+                        catalog_type=catalog_type,
+                        expected_count=expected,
+                        catalog_fingerprint=fingerprint,
+                        sync_id=f"recover:{catalog_type}:{fingerprint[:16]}",
+                    )
+        except Exception as exc:
+            logger.warning(
+                "1C compact noop reconciliation failed err_type=%s",
+                type(exc).__name__,
+            )
 
     def get_status(self, *, source_base: str = DEFAULT_SOURCE_BASE) -> dict[str, Any] | None:
         if not self.enabled:
@@ -616,8 +877,17 @@ class OneCCatalogSnapshotStore:
         text: str,
         limit: int,
         source_base: str = DEFAULT_SOURCE_BASE,
+        routing_user_key: str | None = None,
     ) -> tuple[bool, list[dict[str, str]]]:
-        """Search the current generation with an AND token index query."""
+        """Search the current generation with an AND token index query.
+
+        Default engine is ``tokens`` (fail-closed).  Compact is used when
+        ``SEARCH_ENGINE=compact`` or deterministic canary selects the request
+        *and* index_state is ready; otherwise tokens.
+
+        ``routing_user_key`` is an opaque canary routing key from the API layer.
+        Without it, canary percent never flips traffic (fail-closed, no random).
+        """
         if not self._storage_enabled():
             return False, []
         source = self._source_base(source_base)
@@ -626,6 +896,46 @@ class OneCCatalogSnapshotStore:
         if not tokens:
             return True, []
         safe_limit = max(1, min(int(limit or 1), 1_000))
+        flags = get_compact_flags()
+        started = time.perf_counter()
+
+        # Compact / canary path. Fail closed → tokens when not ready or errors.
+        from backend.services.one_c_catalog_compact_search import CANARY_ROUTE_METRICS
+        from backend.services.one_c_catalog_compact_flags import canary_selects_compact
+
+        if compact_reader_requested(flags, routing_user_key=routing_user_key):
+            CANARY_ROUTE_METRICS["compact_attempts"] += 1
+            if canary_selects_compact(routing_user_key, flags):
+                CANARY_ROUTE_METRICS["canary_selected"] += 1
+            try:
+                with app_session(self._database_url) as session:
+                    state = self._read_snapshot(session, source)
+                    if state is None:
+                        return False, []
+                    generation = int(state.active_generation)
+                compact = OneCCatalogCompactSearch(self._database_url, flags=flags)
+                compact_result = compact.search_entries(
+                    catalog_type=kind,
+                    text_query=text,
+                    limit=safe_limit,
+                    source_base=source,
+                    generation=generation,
+                )
+                if compact_result.available and compact_result.ready:
+                    CANARY_ROUTE_METRICS["compact_hits"] += 1
+                    return True, list(compact_result.rows)
+                CANARY_ROUTE_METRICS["legacy_fallback"] += 1
+                logger.info(
+                    "1C compact search not ready; falling back to tokens stage=%s",
+                    compact_result.stage,
+                )
+            except Exception as exc:
+                CANARY_ROUTE_METRICS["legacy_fallback"] += 1
+                logger.warning(
+                    "1C compact search failed; falling back to tokens err_type=%s",
+                    type(exc).__name__,
+                )
+
         try:
             with app_session(self._database_url) as session:
                 state = self._read_snapshot(session, source)
@@ -697,11 +1007,33 @@ class OneCCatalogSnapshotStore:
             logger.warning("1C app catalogue search is unavailable: %s", exc)
             return False, []
         if kind == CATALOG_WAREHOUSES:
-            return True, [{"ref": str(row.ref), "name": str(row.name or "")} for row in rows]
-        return True, [
-            {"ref": str(row.ref), "code": str(row.code or ""), "name": str(row.name or "")}
-            for row in rows
-        ]
+            result_rows = [{"ref": str(row.ref), "name": str(row.name or "")} for row in rows]
+        else:
+            result_rows = [
+                {"ref": str(row.ref), "code": str(row.code or ""), "name": str(row.name or "")}
+                for row in rows
+            ]
+
+        # Shadow compare: user still gets tokens; compact runs with timeout.
+        if flags.search_shadow:
+            try:
+                shadow_after_tokens(
+                    database_url=self._database_url,
+                    catalog_type=kind,
+                    text_query=text,
+                    limit=safe_limit,
+                    source_base=source,
+                    generation=generation,
+                    primary_rows=result_rows,
+                    primary_started=started,
+                    flags=flags,
+                )
+            except Exception as exc:
+                logger.info(
+                    "1C compact shadow ignored err_type=%s",
+                    type(exc).__name__,
+                )
+        return True, result_rows
 
     def lookup_entry(
         self,
@@ -784,8 +1116,15 @@ class OneCCatalogSnapshotStore:
         catalog_type: str,
         tokens: Iterable[str],
         source_base: str = DEFAULT_SOURCE_BASE,
+        routing_user_key: str | None = None,
     ) -> tuple[bool, dict[str, int]]:
-        """Return indexed exact-token document frequencies for suggestion rank."""
+        """Return indexed exact-token document frequencies for suggestion rank.
+
+        Routing:
+        - ``SEARCH_ENGINE=tokens`` (and canary not selected) → legacy token rows
+        - compact selected + ready → ``one_c_catalog_search_token_stats``
+        - compact selected + not ready → fallback to token rows
+        """
         if not self._storage_enabled():
             return False, {}
         source = self._source_base(source_base)
@@ -793,16 +1132,32 @@ class OneCCatalogSnapshotStore:
         normalized_tokens = sorted({token for value in tokens for token in catalog_search_tokens(value)})
         if not normalized_tokens:
             return True, {}
+        flags = get_compact_flags()
         try:
             with app_session(self._database_url) as session:
                 state = self._read_snapshot(session, source)
                 if state is None:
                     return False, {}
+                generation = int(state.active_generation)
+                if compact_reader_requested(flags, routing_user_key=routing_user_key):
+                    compact = OneCCatalogCompactSearch(self._database_url, flags=flags)
+                    stats = compact.token_frequencies_from_stats(
+                        session,
+                        source_base=source,
+                        generation=generation,
+                        catalog_type=kind,
+                        tokens=normalized_tokens,
+                    )
+                    if stats is not None:
+                        return True, stats
+                    logger.info(
+                        "1C compact token_stats not ready; falling back to token rows"
+                    )
                 rows = session.execute(
                     select(AppOneCCatalogToken.token, AppOneCCatalogToken.entry_ref)
                     .where(
                         AppOneCCatalogToken.source_base == source,
-                        AppOneCCatalogToken.generation == int(state.active_generation),
+                        AppOneCCatalogToken.generation == generation,
                         AppOneCCatalogToken.catalog_type == kind,
                         AppOneCCatalogToken.token.in_(normalized_tokens),
                     )
@@ -814,3 +1169,46 @@ class OneCCatalogSnapshotStore:
         for row in rows:
             result.setdefault(str(row.token), set()).add(str(row.entry_ref))
         return True, {token: len(refs) for token, refs in result.items()}
+
+    def suggest_token_prefixes(
+        self,
+        *,
+        catalog_type: str,
+        prefix: str,
+        limit: int = 20,
+        source_base: str = DEFAULT_SOURCE_BASE,
+        routing_user_key: str | None = None,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        """Prefix suggest from compact token_stats when compact+ready; else unavailable.
+
+        When engine/canary selects tokens (or compact not ready), returns
+        ``(True, [])`` so callers keep using the legacy token-row suggest path.
+        """
+        if not self._storage_enabled():
+            return False, []
+        flags = get_compact_flags()
+        if not compact_reader_requested(flags, routing_user_key=routing_user_key):
+            return True, []
+        source = self._source_base(source_base)
+        kind = self._catalog_type(catalog_type)
+        try:
+            with app_session(self._database_url) as session:
+                state = self._read_snapshot(session, source)
+                if state is None:
+                    return False, []
+                compact = OneCCatalogCompactSearch(self._database_url, flags=flags)
+                rows = compact.suggest_token_prefixes(
+                    session,
+                    source_base=source,
+                    generation=int(state.active_generation),
+                    catalog_type=kind,
+                    prefix=prefix,
+                    limit=limit,
+                )
+                return True, rows
+        except Exception as exc:
+            logger.warning(
+                "1C compact suggest prefixes unavailable err_type=%s",
+                type(exc).__name__,
+            )
+            return False, []

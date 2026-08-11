@@ -41,6 +41,7 @@ import {
   hasChatMarkdownTable,
   isAudioAttachment,
   isImageAttachment,
+  isStickerAttachment,
   isVideoAttachment,
 } from './chatHelpers';
 import {
@@ -771,7 +772,7 @@ export function ChatBubble({
     && attachments.some((attachment) => isAudioAttachment(attachment));
   const mediaOnlyAttachments = attachments.length > 0
     && !hasAudioAttachments
-    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment));
+    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment));
   const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
   const {
     swipeDx,
@@ -1247,7 +1248,7 @@ export function ChatBubble({
                       key={attachment.id}
                       messageId={message.id}
                       attachment={
-                        isImageAttachment(attachment) || isVideoAttachment(attachment)
+                        isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment)
                           ? {
                             ...attachment,
                             mediaMaxWidth: mediaPreviewMaxWidth,

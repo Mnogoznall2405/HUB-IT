@@ -8,6 +8,7 @@
 
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import sys
 import warnings
 
@@ -445,6 +446,11 @@ def main() -> None:
         # Запускаем фоновые задачи обслуживания
         from bot.utils.maintenance import start_maintenance
         start_maintenance()
+
+        from bot.telegram_dns import install_telegram_dns_fallback
+
+        if install_telegram_dns_fallback(os.getenv("TELEGRAM_BOT_API_FALLBACK_IP")):
+            logger.info("Telegram DNS fallback enabled for api.telegram.org")
 
         # Создаем Application с увеличенным таймаутом
         from telegram.request import BaseRequest

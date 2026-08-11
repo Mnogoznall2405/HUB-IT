@@ -1,7 +1,8 @@
-"""Central OpenRouter LLM gateway for HUB-IT."""
+"""Central RouterAI/OpenAI-compatible LLM gateway for HUB-IT."""
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -10,6 +11,10 @@ import re
 import threading
 import time
 from typing import Any, Optional, Union
+from urllib.parse import urlparse
+
+import httpcore
+import httpx
 
 from shared.llm.env import (
     DEFAULT_AI_MODEL,
@@ -76,6 +81,160 @@ DEFAULT_RETRY_BASE_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_BASE_DE
 DEFAULT_RETRY_MAX_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_MAX_DELAY", "8.0"))
 
 UserContent = Union[str, list[dict[str, Any]]]
+
+_ROUTERAI_DNS_CACHE_LOCK = threading.Lock()
+_ROUTERAI_DNS_CACHE: dict[str, tuple[str, float]] = {}
+_DNS_ERROR_MARKERS = (
+    "getaddrinfo failed",
+    "name or service not known",
+    "nodename nor servname",
+    "11001",
+    "11002",
+)
+
+
+def _routerai_dns_fallback_enabled() -> bool:
+    value = str(read_env("ROUTERAI_DNS_FALLBACK", "1") or "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _routerai_dns_prefer_doh() -> bool:
+    value = str(read_env("ROUTERAI_DNS_PREFER_DOH", "1") or "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _is_dns_resolution_error(exc: BaseException) -> bool:
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(str(current or ""))
+        current = current.__cause__ or current.__context__
+    text = " ".join(parts).lower()
+    return any(marker in text for marker in _DNS_ERROR_MARKERS)
+
+
+def _resolve_routerai_ipv4_via_doh(host: str) -> str:
+    normalized_host = str(host or "").strip().lower()
+    if not normalized_host:
+        raise RuntimeError("RouterAI DNS fallback received an empty host.")
+    now = time.monotonic()
+    with _ROUTERAI_DNS_CACHE_LOCK:
+        cached = _ROUTERAI_DNS_CACHE.get(normalized_host)
+        if cached and cached[1] > now:
+            return cached[0]
+
+    doh_url = str(read_env("ROUTERAI_DOH_URL", "https://1.1.1.1/dns-query") or "").strip()
+    if not doh_url:
+        raise RuntimeError("ROUTERAI_DOH_URL is empty.")
+    with httpx.Client(timeout=8.0, trust_env=False) as client:
+        response = client.get(
+            doh_url,
+            params={"name": normalized_host, "type": "A"},
+            headers={"accept": "application/dns-json"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    if int(payload.get("Status", -1)) != 0:
+        raise RuntimeError(f"RouterAI DoH lookup failed with status {payload.get('Status')}.")
+    for answer in payload.get("Answer") or []:
+        if int(answer.get("type", 0) or 0) != 1:
+            continue
+        candidate = str(answer.get("data") or "").strip()
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if parsed.version != 4 or not parsed.is_global:
+            continue
+        ttl = max(15, min(300, int(answer.get("TTL", 60) or 60)))
+        with _ROUTERAI_DNS_CACHE_LOCK:
+            _ROUTERAI_DNS_CACHE[normalized_host] = (candidate, now + ttl)
+        return candidate
+    raise RuntimeError("RouterAI DoH lookup returned no public IPv4 address.")
+
+
+class _RouterAIDnsFallbackBackend(httpcore.SyncBackend):
+    """Retry only RouterAI DNS failures through DoH while preserving TLS SNI."""
+
+    def __init__(self, delegate: httpcore.SyncBackend | None = None) -> None:
+        self._delegate = delegate or httpcore.SyncBackend()
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        normalized_host = str(host or "").strip().lower()
+        fallback_local_address = (
+            str(read_env("ROUTERAI_LOCAL_ADDRESS") or "").strip()
+            or local_address
+        )
+        if (
+            normalized_host == "routerai.ru"
+            and _routerai_dns_fallback_enabled()
+            and _routerai_dns_prefer_doh()
+        ):
+            try:
+                resolved_ip = _resolve_routerai_ipv4_via_doh(normalized_host)
+                return self._delegate.connect_tcp(
+                    resolved_ip,
+                    port,
+                    timeout=timeout,
+                    local_address=fallback_local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "RouterAI preferred DoH connection failed; trying system DNS: %s",
+                    exc,
+                )
+        try:
+            return self._delegate.connect_tcp(
+                host,
+                port,
+                timeout=timeout,
+                local_address=local_address,
+                socket_options=socket_options,
+            )
+        except Exception as exc:
+            if (
+                normalized_host != "routerai.ru"
+                or not _routerai_dns_fallback_enabled()
+                or not _is_dns_resolution_error(exc)
+            ):
+                raise
+            resolved_ip = _resolve_routerai_ipv4_via_doh(normalized_host)
+            logger.warning(
+                "RouterAI system DNS failed; retrying via DoH address %s%s",
+                resolved_ip,
+                f" from {fallback_local_address}" if fallback_local_address else "",
+            )
+            return self._delegate.connect_tcp(
+                resolved_ip,
+                port,
+                timeout=timeout,
+                local_address=fallback_local_address,
+                socket_options=socket_options,
+            )
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return self._delegate.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+    def sleep(self, seconds):
+        return self._delegate.sleep(seconds)
+
+
+def _build_routerai_http_client(*, base_url: str, timeout: float) -> httpx.Client | None:
+    if str(urlparse(base_url).hostname or "").lower() != "routerai.ru":
+        return None
+    local_address = str(read_env("ROUTERAI_LOCAL_ADDRESS") or "").strip() or None
+    transport = httpx.HTTPTransport(retries=0, local_address=local_address)
+    pool = getattr(transport, "_pool", None)
+    backend = getattr(pool, "_network_backend", None)
+    if pool is None or backend is None:
+        logger.warning("RouterAI DNS fallback is unavailable for this httpx/httpcore version.")
+        return httpx.Client(transport=transport, timeout=timeout)
+    pool._network_backend = _RouterAIDnsFallbackBackend(backend)
+    return httpx.Client(transport=transport, timeout=timeout)
 
 
 def _extract_completion_text(completion: Any) -> str:
@@ -171,7 +330,7 @@ def provider_error_text(exc: BaseException | None) -> str:
 
 def _wrap_openrouter_error(exc: Exception) -> OpenRouterClientError:
     detail = str(exc).strip() or "unknown error"
-    err = OpenRouterClientError(f"Failed to call OpenRouter: {detail}")
+    err = OpenRouterClientError(f"Failed to call RouterAI: {detail}")
     err.__cause__ = exc
     return err
 
@@ -230,15 +389,25 @@ class OpenRouterClient:
     def get_status(self) -> dict[str, Any]:
         return {
             "configured": self.is_configured(),
+            "provider": "routerai",
             "base_url": self._resolve_base_url(),
             "default_model": self._resolve_default_model(),
         }
 
     def _resolve_api_key(self) -> str:
-        return str(read_env("OPENROUTER_API_KEY") or read_env("OPENAI_API_KEY") or "").strip()
+        return str(
+            read_env("ROUTERAI_API_KEY")
+            or read_env("OPENROUTER_API_KEY")
+            or read_env("OPENAI_API_KEY")
+            or ""
+        ).strip()
 
     def _resolve_base_url(self) -> str:
-        return normalize_openrouter_base_url(read_env("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL))
+        return normalize_openrouter_base_url(
+            read_env("ROUTERAI_BASE_URL")
+            or read_env("OPENROUTER_BASE_URL")
+            or DEFAULT_OPENROUTER_BASE_URL
+        )
 
     def _resolve_default_model(self) -> str:
         return resolve_model("chat", default=DEFAULT_AI_MODEL)
@@ -253,7 +422,7 @@ class OpenRouterClient:
             raise OpenRouterClientError("openai package is not installed.")
         api_key = self._resolve_api_key()
         if not api_key:
-            raise OpenRouterClientError("OPENROUTER_API_KEY is not configured.")
+            raise OpenRouterClientError("ROUTERAI_API_KEY is not configured.")
         base_url = self._resolve_base_url()
         resolved_timeout = self._resolve_timeout(timeout)
         cache_key = (api_key, base_url, resolved_timeout)
@@ -261,10 +430,19 @@ class OpenRouterClient:
         cached_key = getattr(self._thread_local, "client_key", None)
         if cached_client is not None and cached_key == cache_key:
             return cached_client
-        client = OpenAI(
-            api_key=api_key,
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "timeout": resolved_timeout,
+        }
+        provider_http_client = _build_routerai_http_client(
             base_url=base_url,
             timeout=resolved_timeout,
+        )
+        if provider_http_client is not None:
+            client_kwargs["http_client"] = provider_http_client
+        client = OpenAI(
+            **client_kwargs,
         )
         self._thread_local.client = client
         self._thread_local.client_key = cache_key
@@ -282,7 +460,7 @@ class OpenRouterClient:
                     raise
                 delay = _retry_delay_seconds(attempt)
                 logger.warning(
-                    "OpenRouter transient error; retrying in %.2fs: model=%s attempt=%s/%s error=%s",
+                    "RouterAI transient error; retrying in %.2fs: model=%s attempt=%s/%s error=%s",
                     delay,
                     model,
                     attempt,
@@ -292,7 +470,7 @@ class OpenRouterClient:
                 time.sleep(delay)
         if last_exc is not None:
             raise last_exc
-        raise OpenRouterClientError("Failed to call OpenRouter (no response).")
+        raise OpenRouterClientError("Failed to call RouterAI (no response).")
 
     def complete_text(
         self,
@@ -326,7 +504,7 @@ class OpenRouterClient:
         try:
             completion = self._with_transient_retry(model=resolved_model, call=_request)
         except Exception as exc:
-            logger.warning("OpenRouter text completion failed: model=%s error=%s", resolved_model, exc)
+            logger.warning("RouterAI text completion failed: model=%s error=%s", resolved_model, exc)
             raise _wrap_openrouter_error(exc)
         text = _extract_completion_text(completion)
         return text, _usage_dict(completion, model=resolved_model)
@@ -345,6 +523,7 @@ class OpenRouterClient:
         schema_name: str = "ai_chat_response",
         strict_json_schema: bool = True,
         response_healing: bool = True,
+        thinking: bool | None = None,
         timeout: float | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         client = self._build_client(timeout=timeout)
@@ -366,8 +545,13 @@ class OpenRouterClient:
                     {"role": "user", "content": content},
                 ],
             }
+            extra_body: dict[str, Any] = {}
             if use_response_healing:
-                request_kwargs["extra_body"] = {"plugins": [{"id": "response-healing"}]}
+                extra_body["plugins"] = [{"id": "response-healing"}]
+            if thinking is not None:
+                extra_body["thinking"] = {"type": "enabled" if thinking else "disabled"}
+            if extra_body:
+                request_kwargs["extra_body"] = extra_body
             return client.chat.completions.create(**request_kwargs)
 
         def _request_with_transient_retry(*, use_schema: bool, use_response_healing: bool):
@@ -384,21 +568,21 @@ class OpenRouterClient:
         except Exception as exc:
             if (bool(response_schema) or bool(response_healing)) and _is_json_mode_retryable_error(exc):
                 logger.warning(
-                    "OpenRouter strict JSON mode failed; retrying with json_object: model=%s error=%s",
+                    "RouterAI strict JSON mode failed; retrying with json_object: model=%s error=%s",
                     resolved_model,
                     exc,
                 )
                 try:
                     completion = _request_with_transient_retry(use_schema=False, use_response_healing=False)
                 except Exception as fallback_exc:
-                    logger.warning("OpenRouter completion failed: model=%s error=%s", resolved_model, fallback_exc)
+                    logger.warning("RouterAI completion failed: model=%s error=%s", resolved_model, fallback_exc)
                     raise _wrap_openrouter_error(fallback_exc)
             else:
-                logger.warning("OpenRouter completion failed: model=%s error=%s", resolved_model, exc)
+                logger.warning("RouterAI completion failed: model=%s error=%s", resolved_model, exc)
                 raise _wrap_openrouter_error(exc)
         if completion is None:
-            logger.warning("OpenRouter completion returned no response: model=%s", resolved_model)
-            raise OpenRouterClientError("Failed to call OpenRouter: empty response.")
+            logger.warning("RouterAI completion returned no response: model=%s", resolved_model)
+            raise OpenRouterClientError("Failed to call RouterAI: empty response.")
         payload = _extract_json_payload(_extract_completion_text(completion))
         return payload, _usage_dict(completion, model=resolved_model)
 

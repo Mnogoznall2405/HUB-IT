@@ -8,6 +8,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   InputLabel,
   MenuItem,
@@ -19,6 +20,7 @@ import {
   useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import CheckOutlinedIcon from '@mui/icons-material/CheckOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
@@ -51,6 +53,19 @@ const SEND_CHANNELS = [
 ];
 
 const SEARCH_DEBOUNCE_MS = 300;
+
+const formatExpiresAt = (expiresAt) => {
+  if (!expiresAt) return '';
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
 
 const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   const [debounced, setDebounced] = useState(value);
@@ -102,6 +117,7 @@ export default function MyFilesShareDialog({
     () => buildMyFilesShareMessage({ fileName, url, expiresAt }),
     [expiresAt, fileName, url],
   );
+  const expiresLabel = useMemo(() => formatExpiresAt(expiresAt), [expiresAt]);
 
   useEffect(() => {
     if (!open) return;
@@ -202,12 +218,14 @@ export default function MyFilesShareDialog({
     try {
       await navigator.clipboard?.writeText(text);
       setCopyState('copied');
-      notifySuccess('Ссылка скопирована.', { source: 'my-files-share-copy', dedupeMode: 'none' });
     } catch {
       setCopyState('error');
-      notifyWarning('Не удалось скопировать ссылку.', { source: 'my-files-share-copy', dedupeMode: 'none' });
+      notifyWarning('Не удалось скопировать. Выделите ссылку и скопируйте вручную.', {
+        source: 'my-files-share-copy',
+        dedupeMode: 'none',
+      });
     }
-  }, [notifySuccess, notifyWarning, url]);
+  }, [notifyWarning, url]);
 
   const handleOpenMail = useCallback(() => {
     openMailCompose({ navigate, fileName, url, expiresAt });
@@ -230,13 +248,13 @@ export default function MyFilesShareDialog({
       notifyWarning('Не удалось открыть чат Telegram. Попробуйте ещё раз.', { source: 'my-files-share-telegram', dedupeMode: 'none' });
       return;
     }
-    notifySuccess('Открываем Telegram с готовым текстом сообщения.', {
+    notifySuccess('Открываем Telegram.', {
       source: 'my-files-share-telegram',
       dedupeMode: 'none',
-      durationMs: 3200,
+      durationMs: 2800,
     });
     onClose?.();
-  }, [notifySuccess, notifyWarning, onClose, selectedContact, selectedPhone?.digits, shareMessage, url]);
+  }, [notifySuccess, notifyWarning, onClose, selectedContact, selectedPhone?.digits, shareMessage]);
 
   const handleOpenChat = useCallback(() => {
     const peerUserId = Number(selectedChatUser?.id || 0);
@@ -264,7 +282,7 @@ export default function MyFilesShareDialog({
   const handleCopyForMax = useCallback(async () => {
     try {
       await navigator.clipboard?.writeText(shareMessage);
-      notifySuccess('Текст сообщения скопирован.', { source: 'my-files-share-max', dedupeMode: 'none' });
+      notifySuccess('Текст скопирован — вставьте его в MAX.', { source: 'my-files-share-max', dedupeMode: 'none' });
     } catch {
       notifyWarning('Не удалось скопировать текст.', { source: 'my-files-share-max', dedupeMode: 'none' });
     }
@@ -285,261 +303,258 @@ export default function MyFilesShareDialog({
       fullWidth
       fullScreen={isMobile}
     >
-      <DialogTitle>Публичная ссылка</DialogTitle>
+      <DialogTitle sx={{ pb: 1 }}>
+        <Typography component="div" variant="h6" sx={{ fontWeight: 700 }}>
+          Поделиться
+        </Typography>
+        {fileName ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {fileName}
+          </Typography>
+        ) : null}
+      </DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 0.5 }}>
-          {copyState === 'copied' ? (
-            <Alert severity="success" data-testid="my-files-share-copied-alert">
-              Ссылка скопирована в буфер обмена.
-            </Alert>
-          ) : null}
-          {copyState === 'error' ? (
-            <Alert severity="warning">Ссылка создана. Скопируйте её вручную.</Alert>
-          ) : null}
-
-          <Alert severity="info" sx={{ py: 0.75 }}>
-            Одна и та же ссылка подставляется во все каналы отправки ниже.
-          </Alert>
-
-          <Alert severity="warning">
-            Ссылка доступна без авторизации{expiresAt ? ` до ${new Date(expiresAt).toLocaleString('ru-RU', {
-              day: '2-digit',
-              month: '2-digit',
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}` : ''}.
-          </Alert>
-
-          <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'action.hover' }}>
-            <Typography variant="body2" sx={{ wordBreak: 'break-all' }} data-testid="my-files-share-url">
-              {url}
+          <Stack spacing={1}>
+            <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'action.hover' }}>
+              <Typography variant="body2" sx={{ wordBreak: 'break-all' }} data-testid="my-files-share-url">
+                {url}
+              </Typography>
+            </Paper>
+            <Typography variant="caption" color="text.secondary">
+              {expiresLabel
+                ? `Открывается без входа · до ${expiresLabel}`
+                : 'Открывается без входа'}
             </Typography>
-          </Paper>
-
-          <FormControl fullWidth size="small">
-            <InputLabel id="my-files-share-channel-label">Отправить через</InputLabel>
-            <Select
-              labelId="my-files-share-channel-label"
-              label="Отправить через"
-              value={sendChannel}
-              onChange={(event) => setSendChannel(event.target.value)}
-              data-testid="my-files-share-channel"
+            {copyState === 'error' ? (
+              <Typography variant="caption" color="warning.main">
+                Скопируйте ссылку вручную: выделите текст выше.
+              </Typography>
+            ) : null}
+            <Button
+              variant="contained"
+              startIcon={copyState === 'copied' ? <CheckOutlinedIcon /> : <ContentCopyOutlinedIcon />}
+              onClick={handleCopyLink}
+              fullWidth={isMobile}
+              color={copyState === 'copied' ? 'success' : 'primary'}
+              data-testid={copyState === 'copied' ? 'my-files-share-copied-alert' : 'my-files-share-copy'}
+              aria-live="polite"
             >
-              {visibleSendChannels.map((channel) => (
-                <MenuItem key={channel.id} value={channel.id}>{channel.label}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+              {copyState === 'copied' ? 'Скопировано' : 'Скопировать ссылку'}
+            </Button>
+          </Stack>
 
-          {sendChannel === 'mail' ? (
-            <Stack spacing={1.25}>
-              <Typography variant="body2" color="text.secondary">
-                Откроется редактор письма с готовым текстом и ссылкой на файл.
-              </Typography>
-              <Button
-                variant="contained"
-                startIcon={<MailOutlineIcon />}
-                onClick={handleOpenMail}
-                disabled={!canUseMail}
-                fullWidth={isMobile}
-                data-testid="my-files-share-open-mail"
+          <Divider />
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              Отправить
+            </Typography>
+            <FormControl fullWidth size="small">
+              <InputLabel id="my-files-share-channel-label">Куда</InputLabel>
+              <Select
+                labelId="my-files-share-channel-label"
+                label="Куда"
+                value={sendChannel}
+                onChange={(event) => setSendChannel(event.target.value)}
+                data-testid="my-files-share-channel"
               >
-                Открыть почту
-              </Button>
-              {!canUseMail ? (
-                <Typography variant="caption" color="text.secondary">
-                  Нет доступа к почте. Скопируйте ссылку или выберите другой канал.
-                </Typography>
-              ) : null}
-            </Stack>
-          ) : null}
+                {visibleSendChannels.map((channel) => (
+                  <MenuItem key={channel.id} value={channel.id}>{channel.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-          {sendChannel === 'chat' ? (
-            <Stack spacing={1.25}>
-              <Typography variant="body2" color="text.secondary">
-                Введите фамилию — откроется личный диалог с готовым текстом сообщения.
-              </Typography>
-              <Autocomplete
-                options={chatOptions}
-                loading={chatLoading}
-                value={selectedChatUser}
-                inputValue={chatQuery}
-                onInputChange={(_event, value, reason) => {
-                  setChatQuery(value);
-                  if (reason === 'clear' || !value) {
-                    setSelectedChatUser(null);
-                  }
-                }}
-                onChange={handleChatUserChange}
-                getOptionLabel={(option) => formatChatDirectoryUserLabel(option)}
-                isOptionEqualToValue={(option, value) => (
-                  String(option?.id || '') === String(value?.id || '')
-                )}
-                noOptionsText={chatQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label="Фамилия"
-                    size="small"
-                    InputProps={{
-                      ...params.InputProps,
-                      endAdornment: (
-                        <>
-                          {chatLoading ? <CircularProgress color="inherit" size={18} /> : null}
-                          {params.InputProps.endAdornment}
-                        </>
-                      ),
-                    }}
-                    inputProps={{
-                      ...params.inputProps,
-                      'data-testid': 'my-files-share-chat-query',
-                    }}
-                  />
-                )}
-              />
-              <Button
-                variant="contained"
-                startIcon={<ForumOutlinedIcon />}
-                onClick={handleOpenChat}
-                disabled={!selectedChatUser}
-                fullWidth={isMobile}
-                data-testid="my-files-share-open-chat"
-              >
-                Открыть чат
-              </Button>
-            </Stack>
-          ) : null}
-
-          {sendChannel === 'telegram' ? (
-            <Stack spacing={1.25}>
-              {!canSearchAddressBook ? (
-                <Alert severity="info">
-                  Для отправки в Telegram нужен доступ к адресной книге.
-                </Alert>
-              ) : (
-                <>
-                  <Typography variant="body2" color="text.secondary">
-                    Введите фамилию сотрудника — номер подставится из адресной книги.
-                  </Typography>
-                  <Autocomplete
-                    options={telegramOptions}
-                    loading={telegramLoading}
-                    value={selectedContact}
-                    inputValue={telegramQuery}
-                    onInputChange={(_event, value, reason) => {
-                      setTelegramQuery(value);
-                      if (reason === 'clear' || !value) {
-                        setSelectedContact(null);
-                      }
-                    }}
-                    onChange={handleContactChange}
-                    getOptionLabel={(option) => formatAddressBookOptionLabel(option)}
-                    isOptionEqualToValue={(option, value) => (
-                      String(option?.employee_code || option?.id || '') === String(value?.employee_code || value?.id || '')
-                    )}
-                    noOptionsText={telegramQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        label="Фамилия"
-                        size="small"
-                        InputProps={{
-                          ...params.InputProps,
-                          endAdornment: (
-                            <>
-                              {telegramLoading ? <CircularProgress color="inherit" size={18} /> : null}
-                              {params.InputProps.endAdornment}
-                            </>
-                          ),
-                        }}
-                        inputProps={{
-                          ...params.inputProps,
-                          'data-testid': 'my-files-share-telegram-query',
-                        }}
-                      />
-                    )}
-                  />
-                  {selectedContact && contactPhones.length === 0 ? (
-                    <Alert severity="warning">У выбранного сотрудника нет номера для Telegram.</Alert>
-                  ) : null}
-                  {contactPhones.length > 1 ? (
-                    <FormControl fullWidth size="small">
-                      <InputLabel id="my-files-share-phone-label">Номер телефона</InputLabel>
-                      <Select
-                        labelId="my-files-share-phone-label"
-                        label="Номер телефона"
-                        value={selectedPhoneId}
-                        onChange={(event) => setSelectedPhoneId(event.target.value)}
-                        data-testid="my-files-share-telegram-phone"
-                      >
-                        {contactPhones.map((phone) => (
-                          <MenuItem key={phone.id} value={phone.id}>{phone.label}</MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                  ) : null}
-                  {selectedContact && contactPhones.length === 1 ? (
-                    <Typography variant="body2" color="text.secondary" data-testid="my-files-share-telegram-phone-auto">
-                      Номер: {contactPhones[0].label}
-                    </Typography>
-                  ) : null}
-                  <Button
-                    variant="contained"
-                    startIcon={<SendOutlinedIcon />}
-                    onClick={handleOpenTelegram}
-                    disabled={!selectedContact || !selectedPhone}
-                    fullWidth={isMobile}
-                    data-testid="my-files-share-open-telegram"
-                  >
-                    Открыть Telegram
-                  </Button>
+            {sendChannel === 'mail' ? (
+              <Stack spacing={1.25}>
+                <Button
+                  variant="outlined"
+                  startIcon={<MailOutlineIcon />}
+                  onClick={handleOpenMail}
+                  disabled={!canUseMail}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-open-mail"
+                >
+                  Открыть почту
+                </Button>
+                {!canUseMail ? (
                   <Typography variant="caption" color="text.secondary">
-                    Текст сообщения подставится в Telegram автоматически.
+                    Нет доступа к почте — скопируйте ссылку выше.
                   </Typography>
-                </>
-              )}
-            </Stack>
-          ) : null}
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    Откроется письмо с текстом и ссылкой.
+                  </Typography>
+                )}
+              </Stack>
+            ) : null}
 
-          {sendChannel === 'max' ? (
-            <Stack spacing={1.25}>
-              <Alert severity="info" data-testid="my-files-share-max-help">
-                <Typography variant="body2" component="div" sx={{ fontWeight: 600, mb: 0.5 }}>
-                  Как отправить в MAX
+            {sendChannel === 'chat' ? (
+              <Stack spacing={1.25}>
+                <Autocomplete
+                  options={chatOptions}
+                  loading={chatLoading}
+                  value={selectedChatUser}
+                  inputValue={chatQuery}
+                  onInputChange={(_event, value, reason) => {
+                    setChatQuery(value);
+                    if (reason === 'clear' || !value) {
+                      setSelectedChatUser(null);
+                    }
+                  }}
+                  onChange={handleChatUserChange}
+                  getOptionLabel={(option) => formatChatDirectoryUserLabel(option)}
+                  isOptionEqualToValue={(option, value) => (
+                    String(option?.id || '') === String(value?.id || '')
+                  )}
+                  noOptionsText={chatQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Кому"
+                      size="small"
+                      placeholder="Фамилия"
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {chatLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        ),
+                      }}
+                      inputProps={{
+                        ...params.inputProps,
+                        'data-testid': 'my-files-share-chat-query',
+                      }}
+                    />
+                  )}
+                />
+                <Button
+                  variant="outlined"
+                  startIcon={<ForumOutlinedIcon />}
+                  onClick={handleOpenChat}
+                  disabled={!selectedChatUser}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-open-chat"
+                >
+                  Открыть чат
+                </Button>
+              </Stack>
+            ) : null}
+
+            {sendChannel === 'telegram' ? (
+              <Stack spacing={1.25}>
+                {!canSearchAddressBook ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Нужен доступ к адресной книге.
+                  </Typography>
+                ) : (
+                  <>
+                    <Autocomplete
+                      options={telegramOptions}
+                      loading={telegramLoading}
+                      value={selectedContact}
+                      inputValue={telegramQuery}
+                      onInputChange={(_event, value, reason) => {
+                        setTelegramQuery(value);
+                        if (reason === 'clear' || !value) {
+                          setSelectedContact(null);
+                        }
+                      }}
+                      onChange={handleContactChange}
+                      getOptionLabel={(option) => formatAddressBookOptionLabel(option)}
+                      isOptionEqualToValue={(option, value) => (
+                        String(option?.employee_code || option?.id || '') === String(value?.employee_code || value?.id || '')
+                      )}
+                      noOptionsText={telegramQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Кому"
+                          size="small"
+                          placeholder="Фамилия"
+                          InputProps={{
+                            ...params.InputProps,
+                            endAdornment: (
+                              <>
+                                {telegramLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                                {params.InputProps.endAdornment}
+                              </>
+                            ),
+                          }}
+                          inputProps={{
+                            ...params.inputProps,
+                            'data-testid': 'my-files-share-telegram-query',
+                          }}
+                        />
+                      )}
+                    />
+                    {selectedContact && contactPhones.length === 0 ? (
+                      <Alert severity="warning" sx={{ py: 0.5 }}>У сотрудника нет номера для Telegram.</Alert>
+                    ) : null}
+                    {contactPhones.length > 1 ? (
+                      <FormControl fullWidth size="small">
+                        <InputLabel id="my-files-share-phone-label">Номер</InputLabel>
+                        <Select
+                          labelId="my-files-share-phone-label"
+                          label="Номер"
+                          value={selectedPhoneId}
+                          onChange={(event) => setSelectedPhoneId(event.target.value)}
+                          data-testid="my-files-share-telegram-phone"
+                        >
+                          {contactPhones.map((phone) => (
+                            <MenuItem key={phone.id} value={phone.id}>{phone.label}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : null}
+                    {selectedContact && contactPhones.length === 1 ? (
+                      <Typography variant="caption" color="text.secondary" data-testid="my-files-share-telegram-phone-auto">
+                        {contactPhones[0].label}
+                      </Typography>
+                    ) : null}
+                    <Button
+                      variant="outlined"
+                      startIcon={<SendOutlinedIcon />}
+                      onClick={handleOpenTelegram}
+                      disabled={!selectedContact || !selectedPhone}
+                      fullWidth={isMobile}
+                      data-testid="my-files-share-open-telegram"
+                    >
+                      Открыть Telegram
+                    </Button>
+                  </>
+                )}
+              </Stack>
+            ) : null}
+
+            {sendChannel === 'max' ? (
+              <Stack spacing={1.25}>
+                <Typography variant="body2" color="text.secondary" data-testid="my-files-share-max-help">
+                  Скопируйте текст и вставьте его в чат MAX.
                 </Typography>
-                <Typography variant="body2" component="div">1. Нажмите «Скопировать текст».</Typography>
-                <Typography variant="body2" component="div">2. Откройте приложение MAX.</Typography>
-                <Typography variant="body2" component="div">3. Найдите нужный контакт в поиске.</Typography>
-                <Typography variant="body2" component="div">4. Вставьте текст в сообщение и отправьте.</Typography>
-              </Alert>
-              <Button
-                variant="contained"
-                startIcon={<ContentCopyOutlinedIcon />}
-                onClick={handleCopyForMax}
-                fullWidth={isMobile}
-                data-testid="my-files-share-copy-max"
-              >
-                Скопировать текст
-              </Button>
-            </Stack>
-          ) : null}
+                <Button
+                  variant="outlined"
+                  startIcon={<ContentCopyOutlinedIcon />}
+                  onClick={handleCopyForMax}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-copy-max"
+                >
+                  Скопировать текст
+                </Button>
+              </Stack>
+            ) : null}
+          </Stack>
         </Stack>
       </DialogContent>
       <DialogActions sx={{ flexDirection: { xs: 'column', sm: 'row' }, alignItems: 'stretch', gap: 1, px: 2, pb: 2 }}>
-        <Button
-          startIcon={<ContentCopyOutlinedIcon />}
-          onClick={handleCopyLink}
-          fullWidth={isMobile}
-        >
-          Скопировать ссылку
-        </Button>
         {typeof onRotateShare === 'function' ? (
           <Button onClick={onRotateShare} fullWidth={isMobile} data-testid="my-files-share-rotate">
             Новая ссылка
           </Button>
         ) : null}
-        <Button onClick={onClose} fullWidth={isMobile}>Закрыть</Button>
+        <Button onClick={onClose} fullWidth={isMobile} variant="text">Закрыть</Button>
       </DialogActions>
     </Dialog>
   );

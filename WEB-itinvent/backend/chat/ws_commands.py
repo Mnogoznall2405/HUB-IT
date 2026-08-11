@@ -90,7 +90,42 @@ async def dispatch_chat_ws_command(
             raise ValueError("conversation_id is required")
         command_started_at = time.perf_counter()
         body_text = chat_api._normalize_text(payload.get("body"))
-        message, _ = await chat_api._run_chat_call_with_meta(
+        client_message_id = chat_api._normalize_text(payload.get("client_message_id")) or None
+        from backend.chat.send_audit import audit_send_trace, new_trace_id
+
+        trace_id = new_trace_id()
+        wall_ts_ms = int(time.time() * 1000)
+        # ws_frame_received ≈ moment Python got the command (not TCP arrival).
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="ws_frame_received",
+            elapsed_ms=0.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            request_id=str(request_id or "")[:64],
+            wall_ts_ms=wall_ts_ms,
+        )
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="command_dispatch_started",
+            elapsed_ms=0.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            wall_ts_ms=wall_ts_ms,
+        )
+        # Keep legacy alias for existing SLO aggregators.
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="websocket_received",
+            elapsed_ms=0.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            request_id=str(request_id or "")[:64],
+        )
+        message, write_meta = await chat_api._run_chat_write_call_with_meta(
             chat_api.chat_service.send_message,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
@@ -99,15 +134,182 @@ async def dispatch_chat_ws_command(
             client_message_id=payload.get("client_message_id"),
             reply_to_message_id=payload.get("reply_to_message_id"),
             defer_push_notifications=True,
+            send_trace_id=trace_id,
+            write_job_type="send",
         )
+        write_ms = (time.perf_counter() - command_started_at) * 1000.0
+        stage_metrics = {}
+        if isinstance(write_meta, dict):
+            stage_metrics = dict(write_meta.get("send_stage_metrics") or {})
+            audit_send_trace(
+                trace_id=trace_id,
+                stage="write_pool_wait",
+                elapsed_ms=float(write_meta.get("write_pool_wait_ms") or 0.0),
+                client_message_id=(client_message_id or "")[:80],
+                chat_id=str(conversation_id or "")[:64],
+                sender_id=int(current_user.id),
+            )
+        for stage_name in (
+            "db_pool_acquired_ms",
+            "db_checkout_wait_ms",
+            "membership_ms",
+            "sequence_ms",
+            "seq_claim_ms",
+            "message_insert_ms",
+            "conversation_touch_ms",
+            "outbox_insert_ms",
+            "prepare_write_ms",
+            "flush_ms",
+            "commit_ms",
+            "send_received_to_db_commit_ms",
+            "serialize_ms",
+            "ack_payload_prepare_ms",
+            "message_reload_ms",
+            "sender_load_ms",
+            "participants_load_ms",
+            "attachment_load_ms",
+            "preview_build_ms",
+            "schema_validate_ms",
+            "json_encode_ms",
+            "conversation_lock_hold_ms",
+            "seq_update_total_ms",
+            "insert_total_ms",
+            "pre_commit_gap_ms",
+            "commit_total_ms",
+            "invalidate_ms",
+            "notifications_ms",
+            "second_db_session",
+        ):
+            if stage_name in stage_metrics:
+                audit_send_trace(
+                    trace_id=trace_id,
+                    stage=stage_name.replace("_ms", ""),
+                    elapsed_ms=float(stage_metrics.get(stage_name) or 0.0),
+                    client_message_id=(client_message_id or "")[:80],
+                    chat_id=str(conversation_id or "")[:64],
+                    sender_id=int(current_user.id),
+                    message_id=str(message.get("id") or "")[:64],
+                    member_count=int(stage_metrics.get("member_count") or 0),
+                )
+        deferred_notifications = chat_api._pop_deferred_chat_notifications(message)
+        deferred_realtime_publish = chat_api._pop_deferred_realtime_publish(message)
+        deferred_delivery_outbox = chat_api._pop_deferred_delivery_outbox(message)
+        deferred_presence = None
+        if isinstance(message, dict):
+            deferred_presence = message.pop("_deferred_presence_activity", None)
+        # Attach real sender display from the authenticated user (no APP DB lookup).
+        # Lean stub sender (empty/user-N) breaks hub toasts and OS notification titles.
+        from backend.chat.lean_ack import apply_sender_summary_to_message
+
+        if isinstance(message, dict):
+            message = apply_sender_summary_to_message(
+                message,
+                user_id=int(current_user.id),
+                username=getattr(current_user, "username", None),
+                full_name=getattr(current_user, "full_name", None),
+                role=getattr(current_user, "role", None),
+                avatar_url=getattr(current_user, "avatar_url", None),
+            )
+        if isinstance(deferred_realtime_publish, dict):
+            deferred_realtime_publish["trace_id"] = trace_id
+            realtime_message = deferred_realtime_publish.get("message")
+            if isinstance(realtime_message, dict):
+                deferred_realtime_publish["message"] = apply_sender_summary_to_message(
+                    realtime_message,
+                    user_id=int(current_user.id),
+                    username=getattr(current_user, "username", None),
+                    full_name=getattr(current_user, "full_name", None),
+                    role=getattr(current_user, "role", None),
+                    avatar_url=getattr(current_user, "avatar_url", None),
+                )
+        # commit → critical enqueue → ACK → background
+        commit_done_at = time.perf_counter()
+        fast_publish = await chat_api._enqueue_critical_message_created(
+            conversation_id=conversation_id,
+            message_id=str(message.get("id") or ""),
+            deferred_realtime_publish=deferred_realtime_publish,
+        )
+        enqueue_ms = (time.perf_counter() - commit_done_at) * 1000.0
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="recipient_event_enqueued",
+            elapsed_ms=enqueue_ms,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="db_commit_to_event_enqueued",
+            elapsed_ms=enqueue_ms,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        ok_started_at = time.perf_counter()
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="sender_ack_enqueued",
+            elapsed_ms=(ok_started_at - commit_done_at) * 1000.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        from backend.chat.lean_ack import build_lean_command_ok_payload
+
         await chat_api.chat_realtime.send_command_ok(
             connection_id,
             request_id=request_id,
             conversation_id=conversation_id,
-            payload={
-                "message_id": message.get("id"),
-                "message": message,
-            },
+            payload=build_lean_command_ok_payload(
+                message=message if isinstance(message, dict) else {},
+                conversation_id=conversation_id,
+            ),
+        )
+        ok_ms = (time.perf_counter() - ok_started_at) * 1000.0
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="sender_ack_socket_write_finished",
+            elapsed_ms=ok_ms,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="db_commit_to_sender_ack",
+            elapsed_ms=(time.perf_counter() - commit_done_at) * 1000.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="command_ok_sent",
+            elapsed_ms=ok_ms,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+        )
+        audit_send_trace(
+            trace_id=trace_id,
+            stage="total_until_ack",
+            elapsed_ms=(time.perf_counter() - command_started_at) * 1000.0,
+            client_message_id=(client_message_id or "")[:80],
+            chat_id=str(conversation_id or "")[:64],
+            sender_id=int(current_user.id),
+            message_id=str(message.get("id") or "")[:64],
+            write_ms=round(write_ms, 1),
+            ok_ms=round(ok_ms, 1),
+            write_pool_wait_ms=float((write_meta or {}).get("write_pool_wait_ms") or 0.0)
+            if isinstance(write_meta, dict)
+            else 0.0,
         )
         chat_api._log_ws_command_timing(
             "send_message",
@@ -118,18 +320,28 @@ async def dispatch_chat_ws_command(
             conversation_id=conversation_id,
             message_id=chat_api._normalize_text(message.get("id")) or None,
             body_len=len(body_text),
-            client_message_id=chat_api._normalize_text(payload.get("client_message_id")) or None,
+            client_message_id=client_message_id,
             has_reply=int(bool(chat_api._normalize_text(payload.get("reply_to_message_id")))),
+            write_ms=f"{write_ms:.1f}",
+            ok_ms=f"{ok_ms:.1f}",
+            trace_id=trace_id,
         )
         chat_api._schedule_chat_message_side_effects(
             conversation_id=conversation_id,
             message_id=message["id"],
+            deferred_notifications=deferred_notifications,
+            deferred_realtime_publish=deferred_realtime_publish,
+            deferred_presence=deferred_presence if isinstance(deferred_presence, dict) else None,
+            deferred_delivery_outbox=deferred_delivery_outbox,
+            fast_publish=fast_publish,
+            critical_already_enqueued=True,
         )
         chat_api._schedule_ai_run_for_message(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             message_id=message["id"],
             effective_database_id=chat_api._normalize_text(payload.get("database_id")) or None,
+            conversation_kind=str((write_meta or {}).get("conversation_kind") or ""),
         )
         return
 
@@ -140,17 +352,22 @@ async def dispatch_chat_ws_command(
         if not message_id:
             raise ValueError("message_id is required")
         command_started_at = time.perf_counter()
-        read_payload = await chat_api._run_chat_call(
+        read_payload = await chat_api._run_chat_mark_read_call(
             chat_api.chat_service.mark_read,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             message_id=message_id,
         )
+        changed = bool((read_payload or {}).get("changed"))
+        clear_hub = bool((read_payload or {}).get("clear_hub_notifications"))
+        client_payload = dict(read_payload or {})
+        client_payload.pop("changed", None)
+        client_payload.pop("clear_hub_notifications", None)
         await chat_api.chat_realtime.send_command_ok(
             connection_id,
             request_id=request_id,
             conversation_id=conversation_id,
-            payload=read_payload,
+            payload=client_payload,
         )
         chat_api._log_ws_command_timing(
             "mark_read",
@@ -161,15 +378,24 @@ async def dispatch_chat_ws_command(
             conversation_id=conversation_id,
             message_id=message_id,
         )
-        chat_api._schedule_chat_background_task(
-            chat_api._publish_message_read_after_mark_read(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                reader_user_id=int(current_user.id),
-                read_at=read_payload.get("read_at"),
-            ),
-            label="publish_message_read",
-        )
+        if changed:
+            chat_api._schedule_chat_background_task(
+                chat_api._publish_message_read_after_mark_read(
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    reader_user_id=int(current_user.id),
+                    read_at=read_payload.get("read_at"),
+                ),
+                label="publish_message_read",
+            )
+        if clear_hub:
+            chat_api._schedule_chat_background_task(
+                chat_api._clear_hub_notifications_after_mark_read(
+                    conversation_id=conversation_id,
+                    reader_user_id=int(current_user.id),
+                ),
+                label="clear_hub_notifications_after_mark_read",
+            )
         return
 
     if message_type == "chat.typing":

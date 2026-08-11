@@ -103,6 +103,27 @@ describe('warehouse 1C API contracts', () => {
     });
   });
 
+  it('passes AbortSignal to the lightweight employee warehouse lookup', async () => {
+    const controller = new AbortController();
+
+    await warehouse1cAPI.getEmployeeWarehouse({
+      employeeName: 'Иванов Иван Иванович',
+      loadBalances: false,
+      signal: controller.signal,
+    });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/employee-warehouse', {
+      params: {
+        employee_name: 'Иванов Иван Иванович',
+        warehouse_ref: '',
+        load_balances: false,
+        limit: 200,
+      },
+      timeout: 50_000,
+      signal: controller.signal,
+    });
+  });
+
   it('uses one bounded batch request for up to 50 unique nomenclature refs', async () => {
     await warehouse1cAPI.getBalancesBatch({
       nomenclatureRefs: ['nom-1', 'nom-1', 'nom-2'],

@@ -9,11 +9,13 @@ class _FakeOpenRouterClient:
     def __init__(self, payload):
         self.payload = payload
         self.configured = True
+        self.calls = []
 
     def is_configured(self) -> bool:
         return self.configured
 
-    def complete_json(self, **_kwargs):
+    def complete_json(self, **kwargs):
+        self.calls.append(kwargs)
         return self.payload, {}
 
 
@@ -47,6 +49,9 @@ def test_smart_replies_returns_suggestions(monkeypatch):
     )
 
     assert result == {"suggestions": ["Спасибо, посмотрю.", "Принято."]}
+    assert fake_client.calls[0]["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert fake_client.calls[0]["thinking"] is False
+    assert fake_client.calls[0]["max_tokens"] == 512
 
 
 def test_summarize_message_requires_ai_configuration(monkeypatch):

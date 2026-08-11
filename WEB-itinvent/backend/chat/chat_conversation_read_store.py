@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -10,7 +11,7 @@ from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
 from backend.chat.chat_formatting import _iso
-from backend.chat.db import chat_session
+from backend.chat.db import chat_read_session as chat_session
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
@@ -94,14 +95,38 @@ class ChatConversationReadStore:
             )
             if cached is not None:
                 cached_items = list((cached or {}).get("items") or [])
+                # Soft/list cache keeps stale status_text ("Сегодня в 20:55") even after new messages.
+                refreshed_items = self._service._presence_service.refresh_presence_on_conversation_items(cached_items)
+                refreshed_payload = {
+                    **(cached if isinstance(cached, dict) else {}),
+                    "items": refreshed_items,
+                }
                 self._service._set_request_meta(
                     route="conversations",
                     cache_hit=True,
                     limit=page_size,
                     query=None,
-                    items_count=len(cached_items),
+                    items_count=len(refreshed_items),
                 )
-                return cached
+                # #region agent log
+                try:
+                    from backend.chat.send_audit import audit_send_trace
+
+                    audit_send_trace(
+                        trace_id="conv",
+                        stage="conversations_cache_hit",
+                        elapsed_ms=0.0,
+                        user_id=int(current_user_id),
+                        items_count=len(refreshed_items),
+                        page_size=page_size,
+                    )
+                except Exception:
+                    pass
+                # #endregion
+                return refreshed_payload
+        # #region agent log
+        _list_started = time.perf_counter()
+        # #endregion
         with chat_session() as session:
             my_member = aliased(ChatMember)
             conv_state = aliased(ChatConversationUserState)
@@ -344,6 +369,22 @@ class ChatConversationReadStore:
                 query=search or None,
                 items_count=len(items),
             )
+            # #region agent log
+            try:
+                from backend.chat.send_audit import audit_send_trace
+
+                audit_send_trace(
+                    trace_id="conv",
+                    stage="conversations_cache_miss",
+                    elapsed_ms=round((time.perf_counter() - _list_started) * 1000.0, 1),
+                    user_id=int(current_user_id),
+                    items_count=len(items),
+                    members_loaded=len(members),
+                    page_size=page_size,
+                )
+            except Exception:
+                pass
+            # #endregion
             return result_payload
 
     def get_conversation_summary(

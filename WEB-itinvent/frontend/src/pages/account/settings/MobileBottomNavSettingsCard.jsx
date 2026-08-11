@@ -7,6 +7,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import { alpha, useTheme } from '@mui/material/styles';
 import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../../../contexts/PreferencesContext';
 import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
@@ -17,6 +18,8 @@ export function MobileBottomNavSettingsCard({
   selectedPaths,
   resolvedItems,
   onChange,
+  onSave,
+  saving = false,
 }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -176,9 +179,25 @@ export function MobileBottomNavSettingsCard({
           </Stack>
         </Box>
 
-        <Typography variant="caption" color="text.secondary">
-          Изменения применятся после нажатия общей кнопки «Сохранить».
-        </Typography>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+          justifyContent="space-between"
+          spacing={1}
+        >
+          <Typography variant="caption" color="text.secondary">
+            Состав нижнего меню обновится после сохранения.
+          </Typography>
+          <Button
+            variant="contained"
+            startIcon={<SaveOutlinedIcon />}
+            onClick={onSave}
+            disabled={saving || !onSave}
+            sx={{ minHeight: 44, width: { xs: '100%', sm: 'auto' }, flexShrink: 0 }}
+          >
+            {saving ? 'Сохранение...' : 'Сохранить нижнее меню'}
+          </Button>
+        </Stack>
       </Stack>
     </SectionCard>
   );

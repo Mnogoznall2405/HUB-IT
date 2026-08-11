@@ -15,7 +15,11 @@ def scrub_scan_job_pdf_payloads(
     database_url: Optional[str] = None,
 ) -> Dict[str, int]:
     """Remove embedded pdf_slice_b64 blobs from job payloads (SQLite or PostgreSQL)."""
-    url = str(database_url or os.getenv("SCAN_DATABASE_URL", "") or "").strip()
+    # Explicit database_url="" forces SQLite even when SCAN_DATABASE_URL is set.
+    if database_url is not None:
+        url = str(database_url or "").strip()
+    else:
+        url = str(os.getenv("SCAN_DATABASE_URL", "") or "").strip()
     if url:
         return _scrub_postgres(database_url=url, batch_size=batch_size)
     return _scrub_sqlite(db_path=Path(db_path), batch_size=batch_size, vacuum=vacuum)

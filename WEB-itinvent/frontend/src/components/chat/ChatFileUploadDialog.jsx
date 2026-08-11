@@ -12,6 +12,7 @@ import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 import ChatFileUploadPanel from './ChatFileUploadPanel';
+import { isChatMediaFile } from './chatUploadPrep';
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
 
@@ -29,15 +30,18 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
 export default function ChatFileUploadDialog({
   caption = '',
   fileInputRef,
+  mediaFileInputRef,
   files = [],
   onCaptionChange,
   onClearFiles,
   onClose,
   onRemoveFile,
   onSend,
+  onSendMediaAsFilesChange,
   open = false,
   preparing = false,
   sending = false,
+  sendMediaAsFiles = false,
   theme,
   ui = {},
   uploadProgress = 0,
@@ -55,6 +59,9 @@ export default function ChatFileUploadDialog({
   const popupHoverBg = ui.drawerHover || ui.surfaceHover || (isDarkTheme ? alpha('#ffffff', 0.07) : alpha('#17212b', 0.06));
   const popupShadow = ui.shadowStrong || (isDarkTheme ? '0 20px 56px rgba(0, 0, 0, 0.42)' : '0 18px 48px rgba(15, 23, 42, 0.18)');
   const actionsMenuOpen = Boolean(actionsAnchorEl);
+  const addMoreInputRef = selectedFiles.length > 0 && selectedFiles.every(isChatMediaFile)
+    ? mediaFileInputRef
+    : fileInputRef;
 
   useEffect(() => {
     if (!open) {
@@ -65,8 +72,8 @@ export default function ChatFileUploadDialog({
 
   const triggerFilePicker = useCallback(() => {
     if (busy) return;
-    fileInputRef?.current?.click?.();
-  }, [busy, fileInputRef]);
+    addMoreInputRef?.current?.click?.();
+  }, [addMoreInputRef, busy]);
 
   const openActionsMenu = useCallback((event) => {
     if (busy) return;
@@ -138,8 +145,10 @@ export default function ChatFileUploadDialog({
           onOpenMenu={openActionsMenu}
           onRemoveFile={onRemoveFile}
           onSend={onSend}
+          onSendMediaAsFilesChange={onSendMediaAsFilesChange}
           preparing={preparing}
           sending={sending}
+          sendMediaAsFiles={sendMediaAsFiles}
           theme={theme}
           ui={ui}
           uploadProgress={normalizedUploadProgress}

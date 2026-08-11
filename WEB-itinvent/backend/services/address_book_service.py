@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from backend.json_db.manager import JSONDataManager
@@ -18,6 +18,14 @@ DEFAULT_1C_SERVER = "tmn-srv-1c-01.zsgp.corp,tmn-srv-1c-02.zsgp.corp"
 DEFAULT_1C_REF = "zar31"
 DEFAULT_SYNC_INTERVAL_SECONDS = 14_400
 CACHE_FILE = "address_book_cache.json"
+# Open-ended ZUP states without ReturnsOn older than this are treated as stale noise.
+OPEN_ABSENCE_MAX_AGE_DAYS = 180
+ABSENCE_KIND_LABELS = {
+    "vacation": "Отпуск",
+    "sick": "Больничный",
+    "trip": "Командировка",
+    "other": "Другое",
+}
 
 
 def utc_now_iso() -> str:
@@ -30,6 +38,28 @@ def normalize_text(value: Any) -> str:
 
 def normalize_search_text(value: Any) -> str:
     return re.sub(r"\s+", " ", normalize_text(value)).casefold()
+
+
+OFFICE_LOCATION_MARKERS = (
+    "москва",
+    "moscow",
+    "санктпетербург",
+    "петербург",
+    "спб",
+    "питер",
+    "saintpetersburg",
+    "stpetersburg",
+    "тюмень",
+    "tyumen",
+)
+
+
+def classify_department_location(location: Any) -> str:
+    """Classify a ZUP площадка for manual office/object card binding."""
+    compact = re.sub(r"[^0-9a-zа-яё]+", "", normalize_search_text(location))
+    if any(marker in compact for marker in OFFICE_LOCATION_MARKERS):
+        return "office"
+    return "object"
 
 
 def format_department_label(department: Any, department_location: Any = "") -> str:
@@ -294,10 +324,155 @@ def one_c_text(connection: Any, value: Any) -> str:
     return normalize_text(text)
 
 
-def execute_query(connection: Any, text: str):
+def execute_query(connection: Any, text: str, *, parameters: dict[str, Any] | None = None):
     query = connection.NewObject("Query")
     query.Text = text
+    if parameters:
+        for key, value in parameters.items():
+            query.SetParameter(str(key), value)
     return query.Execute().Select()
+
+
+def map_absence_kind(state_label: str) -> str:
+    """Map ZUP Состояние presentation to Hub absence kind."""
+    text = normalize_search_text(state_label)
+    if not text or text == "работа":
+        return ""
+    if text.startswith("работа "):
+        # e.g. «Работа в отпуске по уходу за ребенком» — special on-duty status
+        return "other"
+    if "командир" in text:
+        return "trip"
+    if "болезн" in text or "больнич" in text:
+        return "sick"
+    if "отпуск" in text:
+        return "vacation"
+    return "other"
+
+
+def build_absence_payload(*, state_label: str, starts_on: str, returns_on: str = "") -> dict[str, Any] | None:
+    kind = map_absence_kind(state_label)
+    label = normalize_text(state_label)
+    if not kind or not label:
+        return None
+    payload = {
+        "kind": kind,
+        "label": label,
+        "starts_on": normalize_text(starts_on)[:10] or None,
+        "returns_on": normalize_text(returns_on)[:10] or None,
+        "source": "zup",
+    }
+    return payload
+
+
+def parse_absence_date(value: Any) -> date | None:
+    text = normalize_text(value)[:10]
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def absence_last_day(absence: dict[str, Any] | None) -> date | None:
+    """Last calendar day away: day before returns_on (first day back at work)."""
+    if not isinstance(absence, dict):
+        return None
+    returns_on = parse_absence_date(absence.get("returns_on"))
+    if returns_on is None:
+        return None
+    return returns_on - timedelta(days=1)
+
+
+def absence_overlaps_range(
+    absence: dict[str, Any] | None,
+    *,
+    range_start: date,
+    range_end: date,
+    today: date | None = None,
+    open_max_age_days: int = OPEN_ABSENCE_MAX_AGE_DAYS,
+) -> bool:
+    if not isinstance(absence, dict):
+        return False
+    starts_on = parse_absence_date(absence.get("starts_on"))
+    if starts_on is None:
+        return False
+    if range_end < range_start:
+        range_start, range_end = range_end, range_start
+    if starts_on > range_end:
+        return False
+    ends_on = absence_last_day(absence)
+    if ends_on is not None and ends_on < range_start:
+        return False
+    if ends_on is None:
+        ref = today or date.today()
+        if (ref - starts_on).days > int(open_max_age_days):
+            return False
+    return True
+
+
+def serialize_cache_absence_item(person: dict[str, Any], absence: dict[str, Any]) -> dict[str, Any]:
+    kind = normalize_text(absence.get("kind")).lower() or "other"
+    code = normalize_text(person.get("employee_code"))
+    starts_on = parse_absence_date(absence.get("starts_on"))
+    ends_on = absence_last_day(absence)
+    returns_on = parse_absence_date(absence.get("returns_on"))
+    zup_label = normalize_text(absence.get("label"))
+    return {
+        "id": f"zup:{code}" if code else f"zup:{normalize_search_text(person.get('full_name'))}",
+        "employee_code": code or None,
+        "user_id": None,
+        "display_name": normalize_text(person.get("full_name")) or code or "Без имени",
+        "department": normalize_text(person.get("department")) or None,
+        "position": normalize_text(person.get("position")) or None,
+        "kind": kind if kind in ABSENCE_KIND_LABELS else "other",
+        "kind_label": zup_label or ABSENCE_KIND_LABELS.get(kind, ABSENCE_KIND_LABELS["other"]),
+        "label": zup_label or None,
+        "starts_on": starts_on.isoformat() if starts_on else None,
+        "ends_on": ends_on.isoformat() if ends_on else None,
+        "returns_on": returns_on.isoformat() if returns_on else None,
+        "comment": None,
+        "source": "zup",
+    }
+
+
+def employee_states_query() -> str:
+    """Latest HR state per employee with the next state date as return-to-work."""
+    return """
+ВЫБРАТЬ
+    Текущее.Сотрудник.Код КАК EmployeeCode,
+    Текущее.Период КАК StartsOn,
+    ПРЕДСТАВЛЕНИЕ(Текущее.Состояние) КАК StateLabel,
+    МИНИМУМ(Следующее.Период) КАК ReturnsOn
+ИЗ
+    (
+        ВЫБРАТЬ
+            Состояния.Сотрудник КАК Сотрудник,
+            МАКСИМУМ(Состояния.Период) КАК Период
+        ИЗ
+            РегистрСведений.СостоянияСотрудников КАК Состояния
+                ВНУТРЕННЕЕ СОЕДИНЕНИЕ РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Кадры
+                ПО Состояния.Сотрудник = Кадры.Сотрудник
+        ГДЕ
+            Состояния.Период <= &НаДату
+            И Кадры.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
+            И Кадры.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+            И Кадры.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+        СГРУППИРОВАТЬ ПО
+            Состояния.Сотрудник
+    ) КАК Последние
+        ВНУТРЕННЕЕ СОЕДИНЕНИЕ РегистрСведений.СостоянияСотрудников КАК Текущее
+        ПО Текущее.Сотрудник = Последние.Сотрудник
+            И Текущее.Период = Последние.Период
+        ЛЕВОЕ СОЕДИНЕНИЕ РегистрСведений.СостоянияСотрудников КАК Следующее
+        ПО Следующее.Сотрудник = Текущее.Сотрудник
+            И Следующее.Период > Текущее.Период
+СГРУППИРОВАТЬ ПО
+    Текущее.Сотрудник.Код,
+    Текущее.Период,
+    ПРЕДСТАВЛЕНИЕ(Текущее.Состояние)
+"""
 
 
 def employee_query() -> str:
@@ -427,6 +602,7 @@ def emails_query() -> str:
     И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
     И (
         Контакты.Вид.Наименование = "Email"
+        ИЛИ Контакты.Вид.Наименование = "Email Корпоративный"
         ИЛИ Контакты.Вид.Наименование = "Корпоративный E-mail"
     )
 """
@@ -530,6 +706,23 @@ def one_c_date_iso(connection: Any, value: Any) -> str:
     if "T" in text:
         return text.split("T", 1)[0]
     return text[:10] if len(text) >= 10 else ""
+
+
+def calculate_age(date_of_birth: Any, *, today: date | None = None) -> int | None:
+    """Calculate a public age value without exposing the underlying birth date."""
+    text = normalize_text(date_of_birth)[:10]
+    if not text:
+        return None
+    try:
+        born_on = date.fromisoformat(text)
+    except ValueError:
+        return None
+
+    current = today or date.today()
+    age = current.year - born_on.year - (
+        (current.month, current.day) < (born_on.month, born_on.day)
+    )
+    return age if 0 <= age <= 120 else None
 
 
 def is_passport_document_kind(kind: Any) -> bool:
@@ -682,29 +875,155 @@ class AddressBookService:
             "sync_in_progress": self._sync_lock.locked(),
         }
 
-    def search(self, query: str = "", limit: int = 50) -> dict[str, Any]:
+    def list_absences(
+        self,
+        *,
+        on: date | None = None,
+        starts_on: date | None = None,
+        ends_on: date | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Absences from address-book cache (ZUP СостоянияСотрудников), filtered by date range."""
+        today = date.today()
+        if on is not None:
+            range_start = range_end = on
+        else:
+            range_start = starts_on or today
+            range_end = ends_on or range_start
+        if range_end < range_start:
+            range_start, range_end = range_end, range_start
+        safe_limit = max(1, min(500, int(limit or 200)))
+        cache = self.load_cache()
+        items: list[dict[str, Any]] = []
+        for person in cache.get("items") or []:
+            if not isinstance(person, dict):
+                continue
+            absence = person.get("absence")
+            if not isinstance(absence, dict):
+                continue
+            if not absence_overlaps_range(
+                absence,
+                range_start=range_start,
+                range_end=range_end,
+                today=today,
+            ):
+                continue
+            items.append(serialize_cache_absence_item(person, absence))
+        items.sort(
+            key=lambda item: (
+                normalize_text(item.get("starts_on")) or "9999-99-99",
+                normalize_search_text(item.get("display_name")),
+            )
+        )
+        return {
+            "starts_on": range_start.isoformat(),
+            "ends_on": range_end.isoformat(),
+            "on": on.isoformat() if on is not None else None,
+            "count": len(items),
+            "items": items[:safe_limit],
+            "as_of": normalize_text(cache.get("updated_at")) or None,
+            "source": "zup",
+        }
+
+    def search(
+        self,
+        query: str = "",
+        limit: int = 50,
+        *,
+        include_age: bool = True,
+        include_personal_emails: bool = True,
+        include_personal_phones: bool = True,
+    ) -> dict[str, Any]:
         cache = self.load_cache()
         items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        personal_by_code = cache.get("personal_by_code")
+        if not isinstance(personal_by_code, dict):
+            personal_by_code = {}
         tokens = normalize_search_text(query).split()
         limited = max(1, min(int(limit or 50), 200))
 
         if tokens:
-            items = [item for item in items if self._matches_query(item, tokens)]
-            items.sort(key=lambda item: (-self._query_score(item, tokens), normalize_search_text(item.get("full_name"))))
+            items = [
+                item
+                for item in items
+                if self._matches_query(
+                    item,
+                    tokens,
+                    include_personal_emails=include_personal_emails,
+                    include_personal_phones=include_personal_phones,
+                )
+            ]
+            items.sort(
+                key=lambda item: (
+                    -self._query_score(
+                        item,
+                        tokens,
+                        include_personal_emails=include_personal_emails,
+                        include_personal_phones=include_personal_phones,
+                    ),
+                    normalize_search_text(item.get("full_name")),
+                )
+            )
         else:
             items.sort(key=lambda item: normalize_search_text(item.get("full_name")))
 
         return {
-            "items": items[:limited],
+            "items": [
+                self._serialize_public_search_item(
+                    item,
+                    personal_by_code,
+                    include_age=include_age,
+                    include_personal_emails=include_personal_emails,
+                    include_personal_phones=include_personal_phones,
+                )
+                for item in items[:limited]
+            ],
             "total": len(items),
             "limit": limited,
             "updated_at": normalize_text(cache.get("updated_at")),
             "last_error": normalize_text(cache.get("last_error")),
         }
 
-    def _matches_query(self, item: dict[str, Any], tokens: list[str]) -> bool:
-        phones = list(item.get("work_phones") or []) + list(item.get("personal_phones") or [])
-        emails = list(item.get("work_emails") or []) + list(item.get("personal_emails") or [])
+    @staticmethod
+    def _serialize_public_search_item(
+        item: dict[str, Any],
+        personal_by_code: dict[str, Any],
+        *,
+        include_age: bool = True,
+        include_personal_emails: bool = True,
+        include_personal_phones: bool = True,
+    ) -> dict[str, Any]:
+        public_item = dict(item)
+        for key in PERSONAL_CACHE_KEYS:
+            public_item.pop(key, None)
+        public_item.pop("age", None)
+        if not include_personal_emails:
+            public_item["personal_emails"] = []
+        if not include_personal_phones:
+            public_item["personal_phones"] = []
+
+        employee_code = normalize_text(item.get("employee_code"))
+        personal = personal_by_code.get(employee_code)
+        if include_age and isinstance(personal, dict):
+            age = calculate_age(personal.get("date_of_birth"))
+            if age is not None:
+                public_item["age"] = age
+        return public_item
+
+    def _matches_query(
+        self,
+        item: dict[str, Any],
+        tokens: list[str],
+        *,
+        include_personal_emails: bool = True,
+        include_personal_phones: bool = True,
+    ) -> bool:
+        phones = list(item.get("work_phones") or [])
+        emails = list(item.get("work_emails") or [])
+        if include_personal_phones:
+            phones.extend(item.get("personal_phones") or [])
+        if include_personal_emails:
+            emails.extend(item.get("personal_emails") or [])
         text = normalize_search_text(
             " ".join(
                 [
@@ -807,9 +1126,20 @@ class AddressBookService:
                 score += 25
         return score
 
-    def _query_score(self, item: dict[str, Any], tokens: list[str]) -> int:
-        phones = list(item.get("work_phones") or []) + list(item.get("personal_phones") or [])
-        emails = list(item.get("work_emails") or []) + list(item.get("personal_emails") or [])
+    def _query_score(
+        self,
+        item: dict[str, Any],
+        tokens: list[str],
+        *,
+        include_personal_emails: bool = True,
+        include_personal_phones: bool = True,
+    ) -> int:
+        phones = list(item.get("work_phones") or [])
+        emails = list(item.get("work_emails") or [])
+        if include_personal_phones:
+            phones.extend(item.get("personal_phones") or [])
+        if include_personal_emails:
+            emails.extend(item.get("personal_emails") or [])
         return (
             self._field_match_score(item.get("full_name"), tokens, contains_score=120, prefix_score=160)
             + self._field_match_score(item.get("position"), tokens, contains_score=45)
@@ -873,37 +1203,61 @@ class AddressBookService:
     def list_department_names(self, query: str = "", limit: int = 50) -> dict[str, Any]:
         cache = self.load_cache()
         items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
-        resolve_label = build_department_label_resolver(items)
+        groups_by_code: dict[str, set[str]] = {}
+        for item in items:
+            code = normalize_text(item.get("department_code"))
+            if code:
+                groups_by_code.setdefault(code, set()).add(
+                    classify_department_location(item.get("department_location"))
+                )
+
         by_name: dict[str, dict[str, Any]] = {}
         for item in items:
             base = normalize_text(item.get("department"))
             if not base:
                 continue
             location = normalize_text(item.get("department_location"))
-            label = resolve_label(item)
-            if not label:
-                continue
+            code = normalize_text(item.get("department_code"))
+            code_groups = groups_by_code.get(code, set())
+            binding_group = (
+                "mixed"
+                if len(code_groups) > 1
+                else next(iter(code_groups), classify_department_location(location))
+            )
+            if binding_group == "office":
+                label = base
+            elif binding_group == "object":
+                label = f"{base} объект"
+            else:
+                label = f"{base} — смешанные площадки"
             key = normalize_search_text(label)
             current = by_name.get(key)
             if current is None:
                 by_name[key] = {
                     "department": label,
                     "department_base": base,
-                    "department_location": location if label != base else "",
+                    "department_location": "",
+                    "department_locations": {location},
                     "people_count": 1,
-                    "department_codes": (
-                        [normalize_text(item.get("department_code"))]
-                        if normalize_text(item.get("department_code"))
-                        else []
-                    ),
+                    "department_codes": [code] if code else [],
+                    "binding_group": binding_group,
                 }
             else:
                 current["people_count"] = int(current.get("people_count") or 0) + 1
-                code = normalize_text(item.get("department_code"))
+                current["department_locations"].add(location)
                 if code and code not in current["department_codes"]:
                     current["department_codes"].append(code)
 
         rows = list(by_name.values())
+        for row in rows:
+            locations = sorted(
+                row.get("department_locations") or {""},
+                key=lambda value: (not bool(value), normalize_search_text(value)),
+            )
+            row["department_locations"] = locations
+            row["department_location"] = ", ".join(
+                location or "Без площадки" for location in locations
+            )
         tokens = normalize_search_text(query).split()
         if tokens:
             rows = [
@@ -918,8 +1272,8 @@ class AddressBookService:
             ]
         rows.sort(
             key=lambda row: (
-                -int(row.get("people_count") or 0),
-                normalize_search_text(row.get("department")),
+                normalize_search_text(row.get("department_base")),
+                {"office": 0, "object": 1, "mixed": 2}.get(row.get("binding_group"), 3),
             )
         )
         # The org-structure importer may need the complete ZUP department catalog.
@@ -946,19 +1300,41 @@ class AddressBookService:
                     "department_code": code,
                     "department": normalize_text(item.get("department")),
                     "people_count": 1,
+                    "department_locations": {normalize_text(item.get("department_location"))},
+                    "binding_groups": {classify_department_location(item.get("department_location"))},
                 }
             else:
                 current["people_count"] = int(current.get("people_count") or 0) + 1
                 if not current.get("department"):
                     current["department"] = normalize_text(item.get("department"))
+                current["department_locations"].add(normalize_text(item.get("department_location")))
+                current["binding_groups"].add(classify_department_location(item.get("department_location")))
 
-        rows = list(by_code.values())
+        rows: list[dict[str, Any]] = []
+        for current in by_code.values():
+            groups = current.pop("binding_groups")
+            locations = current.pop("department_locations")
+            current["department_locations"] = sorted(
+                locations,
+                key=lambda value: (not bool(value), normalize_search_text(value)),
+            )
+            current["binding_group"] = next(iter(groups)) if len(groups) == 1 else "mixed"
+            rows.append(current)
         tokens = normalize_search_text(query).split()
         if tokens:
             filtered = []
             for row in rows:
+                locations = " ".join(
+                    location or "без площадки"
+                    for location in row.get("department_locations") or []
+                )
+                group_label = {
+                    "office": "офис",
+                    "object": "объект",
+                    "mixed": "смешанный",
+                }.get(row.get("binding_group"), "")
                 hay = normalize_search_text(
-                    f"{row.get('department_code')} {row.get('department')}"
+                    f"{row.get('department_code')} {row.get('department')} {locations} {group_label}"
                 )
                 if all(token in hay for token in tokens):
                     filtered.append(row)
@@ -1029,6 +1405,7 @@ class AddressBookService:
             phones = self._load_phones(connection)
             emails = self._load_emails(connection)
             personal_by_code = self._load_personal_data(connection)
+            absences_by_code = self._load_employee_absences(connection)
             for employee in employees:
                 employee_code = employee.pop("_employee_code", "")
                 # Keep the stable ZUP key in the cache.  It is deliberately
@@ -1042,6 +1419,9 @@ class AddressBookService:
                 employee["personal_phones"] = employee_phones.get("personal", [])
                 employee["work_emails"] = employee_emails.get("work", [])
                 employee["personal_emails"] = employee_emails.get("personal", [])
+                absence = absences_by_code.get(employee_code)
+                if absence:
+                    employee["absence"] = absence
             employees.sort(key=lambda item: normalize_search_text(item.get("full_name")))
             return employees, personal_by_code
         finally:
@@ -1077,6 +1457,43 @@ class AddressBookService:
                 }
             )
         return rows
+
+    def _load_employee_absences(self, connection: Any) -> dict[str, dict[str, Any]]:
+        """Current ZUP HR states (vacation/sick/trip/…) with return date; fail-soft."""
+        result: dict[str, dict[str, Any]] = {}
+        try:
+            today = datetime.now().date()
+            selection = execute_query(
+                connection,
+                employee_states_query(),
+                parameters={"НаДату": datetime(today.year, today.month, today.day)},
+            )
+            latest_by_code: dict[str, dict[str, str]] = {}
+            while selection.Next():
+                employee_code = one_c_text(connection, selection.EmployeeCode)
+                state_label = one_c_text(connection, selection.StateLabel)
+                if not employee_code:
+                    continue
+                candidate = {
+                    "state_label": state_label,
+                    "starts_on": one_c_date_iso(connection, selection.StartsOn),
+                    "returns_on": one_c_date_iso(connection, selection.ReturnsOn),
+                }
+                existing = latest_by_code.get(employee_code)
+                if existing is None or candidate["starts_on"] >= existing["starts_on"]:
+                    latest_by_code[employee_code] = candidate
+
+            for employee_code, current_state in latest_by_code.items():
+                payload = build_absence_payload(**current_state)
+                if payload is None:
+                    continue
+                returns_on = parse_absence_date(payload.get("returns_on"))
+                if returns_on is not None and returns_on <= today:
+                    continue
+                result[employee_code] = payload
+        except Exception:
+            logger.exception("Address book ZUP employee states load failed")
+        return result
 
     def _load_phones(self, connection: Any) -> dict[str, dict[str, list[dict[str, str]]]]:
         records: list[dict[str, str]] = []

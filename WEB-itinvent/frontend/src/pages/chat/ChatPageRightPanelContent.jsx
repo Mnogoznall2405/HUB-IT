@@ -47,6 +47,7 @@ export default function ChatPageRightPanelContent({
           onOpenInTasks={openTaskInTasks}
           onNavigate={navigate}
           onTaskUpdated={handleTaskPanelUpdated}
+          currentUser={user}
         />
       </Suspense>
     );

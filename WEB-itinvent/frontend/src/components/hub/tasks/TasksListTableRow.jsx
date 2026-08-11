@@ -1,5 +1,6 @@
 import { memo } from 'react';
-import { TableCell, TableRow, Typography } from '@mui/material';
+import { Box, IconButton, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import { formatDateTime, formatShortDate } from '../../../pages/tasks/taskFormatters';
 import TaskTagsRow from './TaskTagsRow';
 
@@ -9,7 +10,9 @@ function TasksListTableRow({
   alpha,
   taskDiscussionChatEnabled = false,
   projectLabel = '-',
+  canDelete = false,
   onOpen,
+  onDelete,
 }) {
   return (
     <TableRow
@@ -23,12 +26,27 @@ function TasksListTableRow({
       }}
     >
       <TableCell sx={{ minWidth: 260, borderColor: ui.borderSoft }}>
-        <Typography sx={{ fontWeight: 850, lineHeight: 1.25 }}>{task?.title || '-'}</Typography>
-        {task?.description ? (
-          <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mt: 0.2, maxWidth: 420, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {task.description}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Typography sx={{ minWidth: 0, flex: 1, fontWeight: 850, lineHeight: 1.25 }}>
+            {task?.title || '-'}
           </Typography>
-        ) : null}
+          {canDelete ? (
+            <Tooltip title="Удалить задачу">
+              <IconButton
+                size="small"
+                color="error"
+                aria-label={`Удалить задачу «${task?.title || 'Без названия'}»`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete?.(task);
+                }}
+                sx={{ flexShrink: 0 }}
+              >
+                <DeleteOutlineOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+        </Box>
       </TableCell>
       <TableCell sx={{ minWidth: 150, borderColor: ui.borderSoft }}>
         <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatShortDate(task?.updated_at || task?.created_at) || '-'}</Typography>

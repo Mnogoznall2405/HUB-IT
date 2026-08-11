@@ -18,8 +18,13 @@ import {
 } from './chatThreadMessages';
 import {
   buildCursorInvalidThreadReloadOptions,
+  isChatReadConcurrencyFullError,
   shouldNotifyLoadMessagesError,
 } from './chatThreadTransport';
+import {
+  buildHistoryInFlightKey,
+  createKeyedInFlightController,
+} from './chatKeyedInFlight';
 
 const CHAT_SWR_STALE_TIME_MS = 30_000;
 
@@ -58,6 +63,11 @@ export default function useChatThreadController({
   const messagesHasMoreRef = useRef(false);
   const messagesHasNewerRef = useRef(false);
   const olderHistoryExhaustedRef = useRef(new Map());
+  const historyInFlightRef = useRef(null);
+  if (!historyInFlightRef.current) {
+    historyInFlightRef.current = createKeyedInFlightController();
+  }
+  const historyInFlightConversationRef = useRef('');
 
   const [messages, setMessages] = useState(() => (
     Array.isArray(initialThreadCache?.data?.items) ? initialThreadCache.data.items : []
@@ -280,101 +290,115 @@ export default function useChatThreadController({
       return [];
     }
 
-    abortActiveThreadLoad();
-    if (!silent) {
-      messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
-      setMessagesLoading(true);
-    } else if (messagesLoadingRef.current) {
-      messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
-    }
-
-    const requestSeq = messagesRequestSeqRef.current + 1;
-    messagesRequestSeqRef.current = requestSeq;
-    logChatDebug('loadThreadBootstrap:start', {
+    const inFlightKey = buildHistoryInFlightKey({
       conversationId: id,
-      reason,
-      requestSeq,
-      silent,
-      force,
+      cursor: '',
+      direction: 'latest',
+      limit: CHAT_THREAD_BOOTSTRAP_LIMIT,
     });
+    // Abort only when switching conversations; same-key callers share in-flight.
+    if (historyInFlightConversationRef.current && historyInFlightConversationRef.current !== id) {
+      abortActiveThreadLoad();
+    }
+    historyInFlightConversationRef.current = id;
 
-    try {
-      const cacheKeyParts = buildChatThreadCacheKeyParts(userCacheId, id);
-      const cachedEntry = !silent && !force
-        ? peekSWRCache(cacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
-        : null;
+    return historyInFlightRef.current.run(inFlightKey, async ({ isTrailing = false } = {}) => {
+      const effectiveForce = Boolean(force || isTrailing);
+      const effectiveSilent = Boolean(silent || isTrailing);
+      if (!effectiveSilent) {
+        messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
+        setMessagesLoading(true);
+      } else if (messagesLoadingRef.current) {
+        messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
+      }
 
-      if (cachedEntry?.data) {
+      const requestSeq = messagesRequestSeqRef.current + 1;
+      messagesRequestSeqRef.current = requestSeq;
+      logChatDebug('loadThreadBootstrap:start', {
+        conversationId: id,
+        reason: isTrailing ? `${reason}:trailing` : reason,
+        requestSeq,
+        silent: effectiveSilent,
+        force: effectiveForce,
+      });
+
+      try {
+        const cacheKeyParts = buildChatThreadCacheKeyParts(userCacheId, id);
+        const cachedEntry = !effectiveSilent && !effectiveForce
+          ? peekSWRCache(cacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
+          : null;
+
+        if (cachedEntry?.data) {
+          if (requestSeq !== messagesRequestSeqRef.current || activeConversationIdRef.current !== id) {
+            return [];
+          }
+          const cachedItems = applyLatestThreadPayload(id, cachedEntry.data);
+          scheduleThreadHydrate(id, cachedItems, requestSeq);
+          resolvePendingInitialAnchorFromPayload(id, cachedEntry.data);
+          if (requestSeq === messagesLoadingRequestSeqRef.current) {
+            messagesLoadingRequestSeqRef.current = 0;
+            setMessagesLoading(false);
+          }
+          if (!cachedEntry.isFresh) {
+            historyInFlightRef.current.markDirty(inFlightKey);
+          }
+          return cachedItems;
+        }
+
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        threadLoadAbortRef.current = controller;
+        const result = await getOrFetchSWR(
+          cacheKeyParts,
+          () => (typeof chatAPI.getThreadBootstrap === 'function'
+            ? chatAPI.getThreadBootstrap(
+                id,
+                { limit: CHAT_THREAD_BOOTSTRAP_LIMIT, lightweight: 1 },
+                { signal: controller?.signal },
+              )
+            : chatAPI.getMessages(
+                id,
+                { limit: CHAT_THREAD_BOOTSTRAP_LIMIT },
+                { signal: controller?.signal },
+              )),
+          {
+            staleTimeMs: CHAT_SWR_STALE_TIME_MS,
+            force: effectiveForce,
+            revalidateStale: false,
+          },
+        );
+        if (controller && threadLoadAbortRef.current === controller) {
+          threadLoadAbortRef.current = null;
+        }
         if (requestSeq !== messagesRequestSeqRef.current || activeConversationIdRef.current !== id) {
           return [];
         }
-        const cachedItems = applyLatestThreadPayload(id, cachedEntry.data);
-        scheduleThreadHydrate(id, cachedItems, requestSeq);
-        resolvePendingInitialAnchorFromPayload(id, cachedEntry.data);
+
+        const data = result?.data || {};
+        resolvePendingInitialAnchorFromPayload(id, data);
+        applyLatestThreadPayload(id, data);
+        scheduleThreadHydrate(id, data.items, requestSeq);
+        if (result?.fromCache && !result?.isFresh && !effectiveForce) {
+          historyInFlightRef.current.markDirty(inFlightKey);
+        }
+        return Array.isArray(data?.items) ? data.items : [];
+      } catch (error) {
+        if (String(error?.code || '') !== 'ERR_CANCELED' && String(error?.name || '') !== 'CanceledError') {
+          logChatDebug('loadThreadBootstrap:error', {
+            conversationId: id,
+            reason,
+            requestSeq,
+            error: String(error?.message || error),
+          });
+          if (!effectiveSilent) notifyApiError(error, 'Не удалось открыть чат.');
+        }
+        return [];
+      } finally {
         if (requestSeq === messagesLoadingRequestSeqRef.current) {
           messagesLoadingRequestSeqRef.current = 0;
           setMessagesLoading(false);
         }
-        if (!cachedEntry.isFresh) {
-          void loadThreadBootstrap(id, {
-            silent: true,
-            reason: `${reason}:revalidate`,
-            force: true,
-          }).catch(() => {});
-        }
-        return cachedItems;
       }
-
-      const controller = typeof AbortController === 'function' ? new AbortController() : null;
-      threadLoadAbortRef.current = controller;
-      const result = await getOrFetchSWR(
-        cacheKeyParts,
-        () => (typeof chatAPI.getThreadBootstrap === 'function'
-          ? chatAPI.getThreadBootstrap(
-              id,
-              { limit: CHAT_THREAD_BOOTSTRAP_LIMIT, lightweight: 1 },
-              { signal: controller?.signal },
-            )
-          : chatAPI.getMessages(
-              id,
-              { limit: CHAT_THREAD_BOOTSTRAP_LIMIT },
-              { signal: controller?.signal },
-            )),
-        {
-          staleTimeMs: CHAT_SWR_STALE_TIME_MS,
-          force,
-          revalidateStale: false,
-        },
-      );
-      if (controller && threadLoadAbortRef.current === controller) {
-        threadLoadAbortRef.current = null;
-      }
-      if (requestSeq !== messagesRequestSeqRef.current || activeConversationIdRef.current !== id) {
-        return [];
-      }
-
-      const data = result?.data || {};
-      resolvePendingInitialAnchorFromPayload(id, data);
-      applyLatestThreadPayload(id, data);
-      scheduleThreadHydrate(id, data.items, requestSeq);
-      return Array.isArray(data?.items) ? data.items : [];
-    } catch (error) {
-      if (String(error?.code || '') !== 'ERR_CANCELED' && String(error?.name || '') !== 'CanceledError') {
-        logChatDebug('loadThreadBootstrap:error', {
-          conversationId: id,
-          reason,
-          requestSeq,
-          error: String(error?.message || error),
-        });
-        if (!silent) notifyApiError(error, 'Не удалось открыть чат.');
-      }
-      return [];
-    } finally {
-      if (requestSeq === messagesLoadingRequestSeqRef.current) {
-        messagesLoadingRequestSeqRef.current = 0;
-        setMessagesLoading(false);
-      }
-    }
+    });
   }, [abortActiveThreadLoad, activeConversationIdRef, applyLatestThreadPayload, hydratedThreadConversationIdRef, logChatDebug, notifyApiError, resolvePendingInitialAnchorFromPayload, scheduleThreadHydrate, threadLoadAbortRef, userCacheId]);
 
   const loadMessages = useCallback(async (conversationId, {
@@ -403,10 +427,21 @@ export default function useChatThreadController({
 
     const loadingOlderRequest = Boolean(beforeId);
     const loadingNewerRequest = Boolean(afterId);
+    const historyLimit = 50;
+    const inFlightKey = buildHistoryInFlightKey({
+      conversationId: id,
+      cursor: beforeId || afterId || '',
+      direction: loadingOlderRequest ? 'before' : 'after',
+      limit: historyLimit,
+    });
+
+    return historyInFlightRef.current.run(inFlightKey, async ({ isTrailing = false } = {}) => {
+    const effectiveForce = Boolean(force || isTrailing);
+    const effectiveSilent = Boolean(silent || isTrailing);
     if (loadingOlderRequest) {
       setLoadingOlder(true);
       prependScrollRestoreRef.current = capturePrependScrollRestore();
-    } else if (!silent) {
+    } else if (!effectiveSilent) {
       messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
       setMessagesLoading(true);
     }
@@ -419,15 +454,15 @@ export default function useChatThreadController({
     }
     logChatDebug('loadMessages:start', {
       conversationId: id,
-      reason,
+      reason: isTrailing ? `${reason}:trailing` : reason,
       requestSeq,
-      silent,
+      silent: effectiveSilent,
       beforeMessageId: beforeId || null,
       afterMessageId: afterId || null,
       loadingOlderRequest,
       loadingNewerRequest,
     });
-    if (!loadingOlderRequest && silent && messagesLoadingRef.current) {
+    if (!loadingOlderRequest && effectiveSilent && messagesLoadingRef.current) {
       messagesLoadingRequestSeqRef.current = requestSeq;
     }
     const previousLastMessage = !loadingOlderRequest && !loadingNewerRequest && activeConversationIdRef.current === id
@@ -439,7 +474,7 @@ export default function useChatThreadController({
 
     try {
       const latestThreadCacheKeyParts = buildChatThreadCacheKeyParts(userCacheId, id);
-      const cachedEntry = !loadingOlderRequest && !loadingNewerRequest && !silent && !force
+      const cachedEntry = !loadingOlderRequest && !loadingNewerRequest && !effectiveSilent && !effectiveForce
         ? peekSWRCache(latestThreadCacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
         : null;
 
@@ -454,18 +489,14 @@ export default function useChatThreadController({
           setMessagesLoading(false);
         }
         if (!cachedEntry.isFresh) {
-          void loadMessages(id, {
-            silent: true,
-            reason: `${reason}:revalidate`,
-            force: true,
-          }).catch(() => {});
+          historyInFlightRef.current.markDirty(inFlightKey);
         }
         return cachedItems;
       }
 
       const data = loadingOlderRequest || loadingNewerRequest
         ? await chatAPI.getMessages(id, {
-            limit: 50,
+            limit: historyLimit,
             before_message_id: beforeId || undefined,
             after_message_id: afterId || undefined,
           })
@@ -476,7 +507,7 @@ export default function useChatThreadController({
             }),
             {
               staleTimeMs: CHAT_SWR_STALE_TIME_MS,
-              force,
+              force: effectiveForce,
               revalidateStale: false,
             },
           )).data;
@@ -635,7 +666,7 @@ export default function useChatThreadController({
         error: String(error?.message || error),
       });
       const notifyLoadError = shouldNotifyLoadMessagesError({
-        silent,
+        silent: effectiveSilent,
         reason,
         error,
         loadingOlderRequest,
@@ -647,7 +678,7 @@ export default function useChatThreadController({
         hypothesisId: 'H-502',
         data: {
           reason,
-          silent,
+          silent: effectiveSilent,
           loadingOlderRequest,
           loadingNewerRequest,
           status: Number(error?.response?.status || 0),
@@ -656,6 +687,10 @@ export default function useChatThreadController({
       });
       if (notifyLoadError) {
         notifyApiError(error, loadingOlderRequest ? 'Не удалось загрузить более ранние сообщения.' : 'Не удалось загрузить сообщения чата.');
+      }
+      // Propagate admission-control errors so pollers can honour Retry-After / backoff.
+      if (isChatReadConcurrencyFullError(error)) {
+        throw error;
       }
       return [];
     } finally {
@@ -666,6 +701,7 @@ export default function useChatThreadController({
         setMessagesLoading(false);
       }
     }
+    });
   }, [
     activeConversationIdRef,
     applyLatestThreadPayload,

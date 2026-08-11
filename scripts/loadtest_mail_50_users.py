@@ -4,12 +4,14 @@ import argparse
 import json
 import ssl
 import statistics
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import timedelta
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ DEFAULT_API_BASE = "http://127.0.0.1:8001/api/v1"
 class Credential:
     username: str
     password: str
+    access_token: str = ""
 
 
 @dataclass
@@ -41,6 +44,7 @@ class RunStats:
             "list_cold": [],
             "list_warm": [],
             "detail": [],
+            "attachment_preview": [],
             "mark_read": [],
         }
     )
@@ -74,12 +78,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--users-file", help="JSON file with a list of {username,password} objects")
     parser.add_argument("--username", help="Single username to reuse when users-file is not provided")
     parser.add_argument("--password", help="Single password to reuse when users-file is not provided")
+    parser.add_argument(
+        "--active-mail-sessions",
+        action="store_true",
+        help="Use existing active mail-authenticated sessions on this server (tokens stay in memory)",
+    )
     parser.add_argument("--virtual-users", type=int, default=50, help="Number of virtual users to run")
     parser.add_argument("--duration-sec", type=int, default=15 * 60, help="Test duration in seconds")
     parser.add_argument("--think-time-sec", type=float, default=2.0, help="Pause between scenario loops")
     parser.add_argument("--stagger-ms", type=int, default=150, help="Delay between virtual-user starts")
+    parser.add_argument(
+        "--client-ip",
+        default="10.10.30.50",
+        help="Base internal X-Forwarded-For address; each VU gets a distinct last octet",
+    )
     parser.add_argument("--request-timeout-sec", type=float, default=20.0, help="Per-request timeout")
     parser.add_argument("--mailbox-id", default="", help="Optional mailbox_id to pin the scenario to one mailbox")
+    parser.add_argument(
+        "--preview-attachments",
+        action="store_true",
+        help="Read preview metadata for the first attachment of an opened message",
+    )
+    parser.add_argument(
+        "--include-mark-read",
+        action="store_true",
+        help="Opt in to marking opened messages as read (disabled by default)",
+    )
     parser.add_argument("--report-json", default="", help="Optional path to save JSON report")
     parser.add_argument("--progress-sec", type=int, default=30, help="Progress print interval")
     parser.add_argument("--rss-pid", type=int, default=0, help="Optional backend PID for RSS sampling")
@@ -89,6 +113,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_credentials(args: argparse.Namespace) -> list[Credential]:
+    if bool(getattr(args, "active_mail_sessions", False)):
+        return load_active_mail_session_credentials(limit=max(1, int(args.virtual_users)))
     entries: list[Credential] = []
     if args.users_file:
         payload = json.loads(Path(args.users_file).read_text(encoding="utf-8"))
@@ -110,6 +136,51 @@ def load_credentials(args: argparse.Namespace) -> list[Credential]:
     if not entries:
         raise SystemExit("No credentials provided for load test")
     return entries
+
+
+def load_active_mail_session_credentials(*, limit: int) -> list[Credential]:
+    project_root = Path(__file__).resolve().parents[1]
+    web_root = project_root / "WEB-itinvent"
+    if str(web_root) not in sys.path:
+        sys.path.insert(0, str(web_root))
+
+    from backend.services.session_auth_context_service import session_auth_context_service
+    from backend.services.session_service import session_service
+    from backend.services.user_service import UserService
+    from backend.utils.security import create_access_token
+
+    users_svc = UserService()
+    credentials: list[Credential] = []
+    used_user_ids: set[int] = set()
+    for session in session_service.list_sessions(active_only=True):
+        session_id = str((session or {}).get("session_id") or "").strip()
+        user_id = int((session or {}).get("user_id") or 0)
+        if not session_id or user_id <= 0 or user_id in used_user_ids:
+            continue
+        user = users_svc.get_by_id(user_id)
+        if not user or not bool(user.get("is_active")) or not bool(user.get("mail_is_configured")):
+            continue
+        if not session_auth_context_service.resolve_session_password(session_id, user_id=user_id):
+            continue
+        token = create_access_token(
+            {
+                "sub": user["username"],
+                "user_id": user_id,
+                "role": user.get("role", "viewer"),
+                "session_id": session_id,
+                "telegram_id": user.get("telegram_id"),
+                "device_id": f"mail-loadtest:{session_id}",
+            },
+            expires_delta=timedelta(minutes=30),
+        )
+        credentials.append(Credential(username=str(user["username"]), password="", access_token=token))
+        used_user_ids.add(user_id)
+        if len(credentials) >= max(1, int(limit)):
+            break
+    if not credentials:
+        raise SystemExit("No active mail-authenticated sessions are available for read-only load testing")
+    print(f"active mail sessions available for test: {len(credentials)}")
+    return credentials
 
 
 def build_ssl_context(insecure: bool) -> ssl.SSLContext | None:
@@ -190,6 +261,18 @@ def build_opener(ssl_context: ssl.SSLContext | None = None) -> urllib.request.Op
     return urllib.request.build_opener(*handlers)
 
 
+def client_ip_for_worker(base_ip: str, worker_id: int) -> str:
+    parts = str(base_ip or "").strip().split(".")
+    if len(parts) != 4:
+        return str(base_ip or "").strip()
+    try:
+        last = int(parts[-1])
+    except ValueError:
+        return str(base_ip or "").strip()
+    parts[-1] = str(2 + ((last - 2 + int(worker_id)) % 252))
+    return ".".join(parts)
+
+
 def maybe_message_id(bootstrap_payload: dict[str, Any] | None, list_payload: dict[str, Any] | None) -> str:
     for payload in (bootstrap_payload, list_payload):
         items = (((payload or {}).get("messages") or {}).get("items")) if payload is bootstrap_payload else ((payload or {}).get("items"))
@@ -202,6 +285,17 @@ def maybe_message_id(bootstrap_payload: dict[str, Any] | None, list_payload: dic
     return ""
 
 
+def maybe_attachment_ref(detail_payload: dict[str, Any] | None) -> str:
+    for item in list((detail_payload or {}).get("attachments") or []):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("download_token") or item.get("id") or item.get("attachment_ref")
+        attachment_ref = str(value or "").strip()
+        if attachment_ref:
+            return attachment_ref
+    return ""
+
+
 def user_worker(
     worker_id: int,
     credential: Credential,
@@ -211,28 +305,44 @@ def user_worker(
     ssl_context: ssl.SSLContext | None,
 ) -> None:
     opener = build_opener(ssl_context=ssl_context)
+    opener.addheaders = [
+        ("X-Auth-Client", "mobile"),
+        ("X-Forwarded-For", client_ip_for_worker(str(args.client_ip or ""), worker_id)),
+    ]
     mailbox_id = str(args.mailbox_id or "").strip()
     first_bootstrap = True
     first_list = True
 
     try:
-        login_payload, login_ms = request_json(
-            opener,
-            method="POST",
-            url=build_url(args.api_base, "/auth/login"),
-            timeout_sec=args.request_timeout_sec,
-            payload={
-                "username": credential.username,
-                "password": credential.password,
-            },
-        )
-        stats.record_timing("login", login_ms)
-        if str((login_payload or {}).get("status") or "authenticated") != "authenticated":
-            stats.record_error(
-                "login",
-                f"user={credential.username} status={str((login_payload or {}).get('status') or '')}",
+        if credential.access_token:
+            opener.addheaders = [
+                *[item for item in opener.addheaders if str(item[0]).lower() != "authorization"],
+                ("Authorization", f"Bearer {credential.access_token}"),
+            ]
+        else:
+            login_payload, login_ms = request_json(
+                opener,
+                method="POST",
+                url=build_url(args.api_base, "/auth/login"),
+                timeout_sec=args.request_timeout_sec,
+                payload={
+                    "username": credential.username,
+                    "password": credential.password,
+                },
             )
-            return
+            stats.record_timing("login", login_ms)
+            if str((login_payload or {}).get("status") or "authenticated") != "authenticated":
+                stats.record_error(
+                    "login",
+                    f"user={credential.username} status={str((login_payload or {}).get('status') or '')}",
+                )
+                return
+            access_token = str((login_payload or {}).get("access_token") or "").strip()
+            if access_token:
+                opener.addheaders = [
+                    *[item for item in opener.addheaders if str(item[0]).lower() != "authorization"],
+                    ("Authorization", f"Bearer {access_token}"),
+                ]
     except Exception as exc:
         stats.record_error("login", f"user={credential.username} error={exc}")
         return
@@ -278,7 +388,7 @@ def user_worker(
 
             message_id = maybe_message_id(bootstrap_payload, list_payload)
             if message_id:
-                _detail_payload, detail_ms = request_json(
+                detail_payload, detail_ms = request_json(
                     opener,
                     method="GET",
                     url=build_url(
@@ -292,19 +402,35 @@ def user_worker(
                 )
                 stats.record_timing("detail", detail_ms)
 
-                _mark_read_payload, mark_read_ms = request_json(
-                    opener,
-                    method="POST",
-                    url=build_url(
-                        args.api_base,
-                        f"/mail/messages/{urllib.parse.quote(message_id, safe='')}/read",
-                        {
-                            "mailbox_id": mailbox_id or None,
-                        },
-                    ),
-                    timeout_sec=args.request_timeout_sec,
-                )
-                stats.record_timing("mark_read", mark_read_ms)
+                attachment_ref = maybe_attachment_ref(detail_payload)
+                if bool(args.preview_attachments) and attachment_ref:
+                    _preview_payload, preview_ms = request_json(
+                        opener,
+                        method="GET",
+                        url=build_url(
+                            args.api_base,
+                            (
+                                f"/mail/messages/{urllib.parse.quote(message_id, safe='')}"
+                                f"/attachments/{urllib.parse.quote(attachment_ref, safe='')}/preview"
+                            ),
+                            {"mailbox_id": mailbox_id or None},
+                        ),
+                        timeout_sec=args.request_timeout_sec,
+                    )
+                    stats.record_timing("attachment_preview", preview_ms)
+
+                if bool(args.include_mark_read):
+                    _mark_read_payload, mark_read_ms = request_json(
+                        opener,
+                        method="POST",
+                        url=build_url(
+                            args.api_base,
+                            f"/mail/messages/{urllib.parse.quote(message_id, safe='')}/read",
+                            {"mailbox_id": mailbox_id or None},
+                        ),
+                        timeout_sec=args.request_timeout_sec,
+                    )
+                    stats.record_timing("mark_read", mark_read_ms)
 
             stats.record_loop()
         except urllib.error.HTTPError as exc:
@@ -390,6 +516,8 @@ def build_report(stats: RunStats, args: argparse.Namespace) -> dict[str, Any]:
         "duration_sec": int(args.duration_sec),
         "think_time_sec": float(args.think_time_sec),
         "mailbox_id": str(args.mailbox_id or ""),
+        "preview_attachments": bool(getattr(args, "preview_attachments", False)),
+        "include_mark_read": bool(getattr(args, "include_mark_read", False)),
         "scenario_loops": int(stats.scenario_loops),
         "request_count": request_count,
         "error_count": error_count,
@@ -415,7 +543,16 @@ def print_report(report: dict[str, Any]) -> None:
     print(f"  error_rate={report['error_rate'] * 100.0:.2f}%")
     print("")
     print("Latency")
-    for name in ("login", "bootstrap_cold", "bootstrap_warm", "list_cold", "list_warm", "detail", "mark_read"):
+    for name in (
+        "login",
+        "bootstrap_cold",
+        "bootstrap_warm",
+        "list_cold",
+        "list_warm",
+        "detail",
+        "attachment_preview",
+        "mark_read",
+    ):
         entry = timings.get(name) or {}
         print(
             f"  {name}: count={entry.get('count', 0)}"
@@ -426,11 +563,13 @@ def print_report(report: dict[str, Any]) -> None:
     print("")
     rss = report["rss"]
     if int(rss.get("samples") or 0) > 0:
+        growth_mb = rss.get("growth_mb")
+        growth_text = f"{growth_mb:.1f} MB" if growth_mb is not None else "-"
         print(
             "RSS"
             f" min={rss.get('min_mb', 0):.1f} MB"
             f" max={rss.get('max_mb', 0):.1f} MB"
-            f" growth={rss.get('growth_mb', 0):.1f} MB"
+            f" growth={growth_text}"
         )
     else:
         print("RSS  not collected")

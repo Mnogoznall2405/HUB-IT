@@ -1,4 +1,4 @@
-"""Model resolution by purpose for OpenRouter callers."""
+"""Model resolution by purpose for the shared LLM provider."""
 from __future__ import annotations
 
 from typing import Iterable, Optional
@@ -9,6 +9,8 @@ ModelPurpose = str
 
 _PURPOSE_CHAINS: dict[str, tuple[str, ...]] = {
     "mail": (
+        "ROUTERAI_MODEL_MAIL",
+        "ROUTERAI_MODEL",
         "OPENROUTER_MODEL_MAIL",
         "OPENROUTER_MODEL_CHAT",
         "OPENROUTER_MODEL_MARKDOWN",
@@ -16,24 +18,34 @@ _PURPOSE_CHAINS: dict[str, tuple[str, ...]] = {
         "OCR_MODEL",
     ),
     "chat": (
+        "ROUTERAI_MODEL_CHAT",
+        "ROUTERAI_MODEL",
         "OPENROUTER_MODEL_CHAT",
         "OPENROUTER_MODEL_MARKDOWN",
         "ACT_PARSE_MODEL",
         "OCR_MODEL",
     ),
     "markdown": (
+        "ROUTERAI_MODEL_MARKDOWN",
+        "ROUTERAI_MODEL",
         "OPENROUTER_MODEL_MARKDOWN",
         "ACT_PARSE_MODEL",
         "OCR_MODEL",
     ),
     "act": (
+        "ROUTERAI_MODEL_ACT",
+        "ROUTERAI_MODEL",
         "ACT_PARSE_MODEL",
         "OCR_MODEL",
     ),
     "ocr": (
+        "ROUTERAI_MODEL_OCR",
+        "ROUTERAI_MODEL",
         "OCR_MODEL",
     ),
     "doc_convert": (
+        "ROUTERAI_MODEL_DOC_CONVERT",
+        "ROUTERAI_MODEL",
         "DOC_CONVERT_MODEL",
         "OPENROUTER_MODEL_CHAT",
         "ACT_PARSE_MODEL",

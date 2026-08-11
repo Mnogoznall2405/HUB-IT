@@ -16,6 +16,7 @@ import {
 } from './detail';
 import TaskDetailShell from './TaskDetailShell';
 import TaskDetailChecklist from './TaskDetailChecklist';
+import TaskAttachmentPreviewDialog, { useTaskAttachmentPreview } from './TaskAttachmentPreviewDialog';
 import { getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
 import { hideMobileScrollbarSx } from '../../../pages/tasks/taskFormatters';
 import { buildMobileTaskActionState } from '../../../pages/tasksViewModel';
@@ -140,6 +141,7 @@ export default function TasksDetailWorkspace({
   onOpenReviewTask,
   renderChecklist,
 }) {
+  const attachmentPreview = useTaskAttachmentPreview();
   const checklistRenderer = renderChecklist || ((taskItem) => (
     <TaskDetailChecklist
       task={taskItem}
@@ -274,6 +276,7 @@ export default function TasksDetailWorkspace({
                 uploadingAttachment={uploadingAttachment}
                 onUploadAttachment={(file) => void onUploadAttachment(task.id, file)}
                 onDownloadAttachment={(attachment) => void onDownloadAttachment(task, attachment)}
+                onPreviewAttachment={(attachment) => void attachmentPreview.openPreview(task, attachment)}
                 onDownloadReport={(report) => void onDownloadReport(report)}
                 onOpenChecklist={onOpenMobileChecklist}
                 taskDiscussionEnabled={taskDiscussionChatEnabled}
@@ -320,6 +323,7 @@ export default function TasksDetailWorkspace({
                   onUploadAttachment={(file) => void onUploadAttachment(task.id, file)}
                   uploadingAttachment={uploadingAttachment}
                   onDownloadAttachment={(attachment) => void onDownloadAttachment(task, attachment)}
+                  onPreviewAttachment={(attachment) => void attachmentPreview.openPreview(task, attachment)}
                   formatDateTime={formatDateTime}
                   formatFileSize={formatFileSize}
                   getInitials={getInitials}
@@ -350,6 +354,7 @@ export default function TasksDetailWorkspace({
           </Typography>
         )}
       </Box>
+      <TaskAttachmentPreviewDialog preview={attachmentPreview} formatFileSize={formatFileSize} />
     </TaskDetailShell>
   );
 }

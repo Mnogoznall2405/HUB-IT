@@ -60,6 +60,15 @@ describe('warehouse1cShared sorting/filter', () => {
     expect(filterBalancesByText(rows, '')).toHaveLength(2);
   });
 
+  it('treats ё and е as equivalent in free-text filter', () => {
+    const rows = [
+      { nomenclature_name: 'Кабель', warehouse_name: 'Лераман Алёна Юрьевна' },
+      { nomenclature_name: 'Мышь', warehouse_name: 'Иванов' },
+    ];
+    expect(filterBalancesByText(rows, 'алена')).toHaveLength(1);
+    expect(filterBalancesByText(rows, 'АЛЁНА')).toHaveLength(1);
+  });
+
   it('compares russian text stably', () => {
     expect(compareRuText('а', 'б')).toBeLessThan(0);
     expect(compareRuText('Б', 'а')).toBeGreaterThan(0);

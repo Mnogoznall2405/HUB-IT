@@ -434,7 +434,7 @@ export default function AgentsSection({
                           {String(agent.hostname || agent.agent_id || '').trim() || '-'}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          {String(agent.branch || '').trim() || 'Без филиала'} · {String(agent.ip_address || '').trim() || 'IP неизвестен'}
+                          {String(agent.branch || '').trim() || 'Не определён'} · {String(agent.ip_address || '').trim() || 'IP неизвестен'}
                         </Typography>
                       </Box>
                       <Tooltip title={formatTs(agent.last_seen_at) || 'Нет данных'}>
@@ -527,7 +527,7 @@ export default function AgentsSection({
                     <TableCell sx={cellSx}>
                       <HostnameCell agent={agent} expectedAgentVersion={expectedAgentVersion} />
                     </TableCell>
-                    <TableCell sx={cellSx}>{String(agent.branch || '').trim() || 'Без филиала'}</TableCell>
+                    <TableCell sx={cellSx}>{String(agent.branch || '').trim() || 'Не определён'}</TableCell>
                     <TableCell sx={cellSx}>{String(agent.ip_address || '').trim() || '-'}</TableCell>
                     <TableCell sx={cellSx}>
                       <ConnectionCell agent={agent} formatLastSeen={formatLastSeen} formatTs={formatTs} />

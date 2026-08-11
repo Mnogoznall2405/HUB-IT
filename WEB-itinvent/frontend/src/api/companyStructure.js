@@ -25,6 +25,10 @@ export const companyStructureAPI = {
     );
     return data;
   },
+  resetLayout: async () => {
+    const { data } = await apiClient.delete('/company-structure/layout');
+    return data;
+  },
   setParent: async (nodeId, payload) => {
     const { data } = await apiClient.put(
       `/company-structure/nodes/${encodeURIComponent(nodeId)}/parent`,
@@ -46,10 +50,10 @@ export const companyStructureAPI = {
     );
     return data;
   },
-  getNodePeople: async (nodeId, { limit = 500 } = {}) => {
+  getNodePeople: async (nodeId, { limit = 2000, includeDescendants = true } = {}) => {
     const { data } = await apiClient.get(
       `/company-structure/nodes/${encodeURIComponent(nodeId)}/people`,
-      { params: { limit } },
+      { params: { limit, include_descendants: includeDescendants } },
     );
     return data;
   },
@@ -57,6 +61,28 @@ export const companyStructureAPI = {
     const { data } = await apiClient.get('/company-structure/search', {
       params: { q, limit },
     });
+    return data;
+  },
+  searchLeaderCandidates: async ({ q = '', limit = 30 } = {}) => {
+    const { data } = await apiClient.get('/company-structure/leader-candidates', {
+      params: { q, limit },
+    });
+    return data;
+  },
+  uploadNodePhoto: async (nodeId, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    const { data } = await apiClient.post(
+      `/company-structure/nodes/${encodeURIComponent(nodeId)}/photo`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return data;
+  },
+  deleteNodePhoto: async (nodeId) => {
+    const { data } = await apiClient.delete(
+      `/company-structure/nodes/${encodeURIComponent(nodeId)}/photo`,
+    );
     return data;
   },
   importFromZup: async ({ parentId = null, departments }) => {

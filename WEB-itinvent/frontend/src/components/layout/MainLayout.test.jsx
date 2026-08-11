@@ -145,18 +145,52 @@ vi.mock('../../lib/chatSocket', () => ({
   CHAT_SOCKET_UNREAD_SUMMARY_EVENT: 'chat-ws-unread-summary',
 }));
 
-vi.mock('../../lib/chatNotifications', () => ({
-  buildChatNotificationRoute: ({ conversationId }) => `/chat?conversation=${conversationId}`,
-  claimChatMessageNotification: mockClaimChatMessageNotification,
-  createChatSystemNotification: mockCreateChatSystemNotification,
-  getChatNotificationState: mockGetChatNotificationState,
-  refreshChatNotificationState: vi.fn(),
-  setChatForegroundDiagnostic: vi.fn(),
-  setChatSocketStatus: vi.fn(),
-  shouldDeliverExternalChatViaPushOnly: vi.fn((state) => Boolean(state?.backgroundCapable || state?.pushSubscribed)),
-  shouldSkipChatPushForegroundNotification: mockShouldSkipChatPushForegroundNotification,
-  syncChatPushSubscription: mockSyncChatPushSubscription,
-}));
+vi.mock('../../lib/chatNotifications', () => {
+  const ordinary = new Set([
+    'chat.message_received',
+    'chat.file_shared',
+    'chat.task_shared',
+    'chat.message_forwarded',
+  ]);
+  const isLegacyOrdinaryChatHubNotification = (item) => (
+    String(item?.entity_type || '').trim().toLowerCase() === 'chat'
+    && ordinary.has(String(item?.event_type || '').trim().toLowerCase())
+  );
+  return {
+    buildChatNotificationRoute: ({ conversationId, messageId } = {}) => {
+      const query = new URLSearchParams();
+      if (conversationId) query.set('conversation', conversationId);
+      if (messageId) query.set('message', messageId);
+      const q = query.toString();
+      return q ? `/chat?${q}` : '/chat';
+    },
+    claimChatMessageNotification: mockClaimChatMessageNotification,
+    createChatSystemNotification: mockCreateChatSystemNotification,
+    filterHubBellNotifications: (items, { ordinaryReadVisible = true } = {}) => {
+      const list = Array.isArray(items) ? items : [];
+      if (ordinaryReadVisible) return list;
+      return list.filter((item) => !isLegacyOrdinaryChatHubNotification(item));
+    },
+    getChatNotificationState: mockGetChatNotificationState,
+    isLegacyOrdinaryChatHubNotification,
+    resolveOrdinaryChatHubReadVisible: (flags) => {
+      if (flags && typeof flags === 'object' && Object.prototype.hasOwnProperty.call(flags, 'ordinary_read_visible')) {
+        return Boolean(flags.ordinary_read_visible);
+      }
+      return true;
+    },
+    refreshChatNotificationState: vi.fn(),
+    resolveChatNotificationSenderName: (message) => (
+      String(message?.sender?.full_name || message?.sender_name || 'Коллега').trim() || 'Коллега'
+    ),
+    setChatForegroundDiagnostic: vi.fn(),
+    setChatSocketStatus: vi.fn(),
+    shouldDeliverExternalChatViaPushOnly: vi.fn((state) => Boolean(state?.backgroundCapable || state?.pushSubscribed)),
+    shouldSkipChatPushForegroundNotification: mockShouldSkipChatPushForegroundNotification,
+    syncActiveChatConversationToServiceWorker: vi.fn(),
+    syncChatPushSubscription: mockSyncChatPushSubscription,
+  };
+});
 
 vi.mock('../chat/chatHelpers', () => ({
   getMessagePreview: (message) => String(message?.body || '').trim() || 'Preview',
@@ -685,8 +719,9 @@ describe('MainLayout hub Windows notifications', () => {
 
     mockGetUnreadCount.mockClear();
 
+    // Stay strictly inside MAIL_UNREAD_REFRESH_TTL_MS (20s) — avoid the exact TTL boundary.
     await act(async () => {
-      vi.advanceTimersByTime(20_000);
+      vi.advanceTimersByTime(15_000);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -959,7 +994,7 @@ describe('MainLayout hub Windows notifications', () => {
                 body: 'Old chat body',
                 entity_type: 'chat',
                 entity_id: 'conv-1',
-                event_type: 'chat.message_received',
+                event_type: 'chat.mention',
                 created_at: '2026-03-21T10:00:00Z',
                 unread: 0,
               },
@@ -969,12 +1004,26 @@ describe('MainLayout hub Windows notifications', () => {
                 body: 'New chat body',
                 entity_type: 'chat',
                 entity_id: 'conv-2',
-                event_type: 'chat.message_received',
+                event_type: 'chat.mention',
                 created_at: '2026-03-21T10:01:00Z',
+                unread: 1,
+              },
+              {
+                id: 'chat-ordinary-legacy',
+                title: 'Legacy ordinary chat',
+                body: 'Should be hidden from bell',
+                entity_type: 'chat',
+                entity_id: 'conv-3',
+                event_type: 'chat.message_received',
+                created_at: '2026-03-21T10:02:00Z',
                 unread: 1,
               },
             ],
             unread_counts: { notifications_unread_total: 1 },
+            hub_chat_ordinary: {
+              ordinary_write_enabled: true,
+              ordinary_read_visible: false,
+            },
           },
         };
       }
@@ -1007,6 +1056,7 @@ describe('MainLayout hub Windows notifications', () => {
     }));
     expect(screen.getByText('Unread chat item')).toBeTruthy();
     expect(screen.queryByText('Already read chat item')).toBeNull();
+    expect(screen.queryByText('Legacy ordinary chat')).toBeNull();
   });
 
   it('refreshes an open notification center when chat unread state changes', async () => {
@@ -1017,7 +1067,7 @@ describe('MainLayout hub Windows notifications', () => {
         body: 'Needs reading',
         entity_type: 'chat',
         entity_id: 'conv-1',
-        event_type: 'chat.message_received',
+        event_type: 'chat.mention',
         created_at: '2026-03-21T10:00:00Z',
         unread: 1,
       },

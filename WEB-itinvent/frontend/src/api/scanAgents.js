@@ -6,8 +6,8 @@ export const scanAgentsAPI = {
     return response.data;
   },
 
-  getAgentsTable: async (params = {}) => {
-    const response = await apiClient.get('/scan/agents/table', { params });
+  getAgentsTable: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/scan/agents/table', { params, signal: options?.signal });
     return response.data;
   },
 

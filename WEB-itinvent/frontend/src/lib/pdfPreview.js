@@ -48,13 +48,14 @@ export const resolveInitialPdfFitZoom = ({
   containerWidth = 0,
   horizontalPadding = 24,
   minZoom = 0.5,
-  maxZoom = 2.5,
+  maxZoom = 1.6,
 } = {}) => {
   const availableWidth = Math.max(0, Number(containerWidth || 0) - Number(horizontalPadding || 0));
   const normalizedPageWidth = Number(pageWidth || 0);
   if (availableWidth <= 0 || normalizedPageWidth <= 0) return 1;
-  if (normalizedPageWidth <= availableWidth * 1.05) return 1;
-  return Math.min(maxZoom, Math.max(minZoom, availableWidth / normalizedPageWidth));
+  const fitZoom = availableWidth / normalizedPageWidth;
+  if (fitZoom >= 0.95 && fitZoom <= 1.05) return 1;
+  return Math.min(maxZoom, Math.max(minZoom, fitZoom));
 };
 
 export const ensurePdfWorker = async () => {
@@ -273,6 +274,7 @@ export const renderPdfPage = ({
   pageNumber,
   canvas,
   scale = 1,
+  cssScale,
   rotation = 0,
   devicePixelRatio,
   layerContainer,
@@ -311,23 +313,30 @@ export const renderPdfPage = ({
     const page = await pdf.getPage(safePage);
     if (cancelled) throw createPdfRenderAbortError();
 
-    const displayScale = clampPdfDisplayScale(scale);
+    const renderScale = clampPdfDisplayScale(scale);
+    const displayScale = cssScale == null
+      ? renderScale
+      : clampPdfDisplayScale(cssScale);
     const outputScale = resolvePdfOutputScale(
       devicePixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio : 1),
     );
-    const viewport = page.getViewport({
-      scale: displayScale,
-      rotation: normalizePdfRotation(rotation),
+    const normalizedRotation = normalizePdfRotation(rotation);
+    const renderViewport = page.getViewport({
+      scale: renderScale,
+      rotation: normalizedRotation,
     });
+    const displayViewport = displayScale === renderScale
+      ? renderViewport
+      : page.getViewport({ scale: displayScale, rotation: normalizedRotation });
     const context = canvas.getContext('2d');
     if (!context) {
       throw new Error('Canvas 2D context is unavailable.');
     }
 
-    const cssWidth = Math.floor(viewport.width);
-    const cssHeight = Math.floor(viewport.height);
-    canvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
-    canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
+    const cssWidth = Math.floor(displayViewport.width);
+    const cssHeight = Math.floor(displayViewport.height);
+    canvas.width = Math.max(1, Math.floor(renderViewport.width * outputScale));
+    canvas.height = Math.max(1, Math.floor(renderViewport.height * outputScale));
     canvas.style.width = `${cssWidth}px`;
     canvas.style.height = `${cssHeight}px`;
 
@@ -340,7 +349,7 @@ export const renderPdfPage = ({
     const annotationCanvasMap = layerContainer ? new Map() : undefined;
     const renderParameters = {
       canvasContext: context,
-      viewport,
+      viewport: renderViewport,
       transform,
     };
     if (annotationCanvasMap) renderParameters.annotationCanvasMap = annotationCanvasMap;
@@ -356,7 +365,7 @@ export const renderPdfPage = ({
         pdfjs,
         pdf,
         page,
-        viewport,
+        viewport: displayViewport,
         displayScale,
         layerContainer,
         viewerCss,
@@ -368,6 +377,7 @@ export const renderPdfPage = ({
       width: cssWidth,
       height: cssHeight,
       outputScale,
+      renderScale,
       displayScale,
       layers,
     };

@@ -4,7 +4,7 @@ import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 
 import { PresenceAvatar } from './ChatCommon';
-import { formatFullDate, getSearchResultPreview } from './chatHelpers';
+import { formatFullDate, getPersonStatusLine, getSearchResultPreview } from './chatHelpers';
 import { CHAT_FONT_FAMILY } from './chatUiTokens';
 
 function DialogSkeletonLine({ ui, width = '100%', height = 14, radius = 999, sx }) {

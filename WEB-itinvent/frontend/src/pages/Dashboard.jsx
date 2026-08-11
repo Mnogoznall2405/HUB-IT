@@ -61,13 +61,13 @@ import {
 
 const DASHBOARD_ANNOUNCEMENTS_LIMIT = 12;
 const DASHBOARD_TASKS_LIMIT = 40;
-const OPTIONAL_SECTION_KEYS = ['tasks', 'communication', 'news'];
+const OPTIONAL_SECTION_KEYS = ['tasks', 'absences', 'communication', 'news'];
 const normalizeDashboardLayoutSections = (value, legacyValue) => {
   const normalized = normalizeDashboardSections(value, legacyValue);
   return [
     'attention',
     ...(normalized.includes('tasks') ? ['tasks'] : []),
-    ...normalized.filter((key) => ['communication', 'news'].includes(key)),
+    ...normalized.filter((key) => ['absences', 'communication', 'news'].includes(key)),
   ];
 };
 
@@ -79,6 +79,10 @@ const SECTION_META = {
   tasks: {
     title: 'Ближайшие задачи',
     description: 'До пяти открытых задач с ближайшими сроками.',
+  },
+  absences: {
+    title: 'Отсутствуют сегодня',
+    description: 'Кто в отпуске, на больничном или в командировке.',
   },
   communication: {
     title: 'Связь',
@@ -95,6 +99,24 @@ const EMPTY_DASHBOARD = {
   my_tasks: { items: [], total: 0 },
   unread_counts: {},
   summary: {},
+  absences_today: { count: 0, items: [] },
+};
+
+const formatAbsenceRange = (item) => {
+  const start = String(item?.starts_on || '').slice(0, 10);
+  const end = String(item?.ends_on || '').slice(0, 10);
+  if (!start) return '';
+  if (!end || end === start) {
+    return new Date(`${start}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  }
+  const startLabel = new Date(`${start}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  const endLabel = new Date(`${end}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  return `${startLabel} — ${endLabel}`;
+};
+
+const absenceInitials = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return parts.slice(0, 2).map((part) => part[0]?.toLocaleUpperCase('ru-RU') || '').join('') || '?';
 };
 
 const formatShortDateTime = (value) => {
@@ -476,7 +498,7 @@ function DashboardCustomizeDialog({ open, sections, saving, onClose, onSave }) {
   }, [open, sections]);
 
   const tasksVisible = draft.includes('tasks');
-  const visibleSecondary = draft.filter((item) => ['communication', 'news'].includes(item));
+  const visibleSecondary = draft.filter((item) => ['absences', 'communication', 'news'].includes(item));
   const hiddenOptional = OPTIONAL_SECTION_KEYS.filter((item) => !draft.includes(item));
 
   const move = (key, direction) => {
@@ -484,7 +506,7 @@ function DashboardCustomizeDialog({ open, sections, saving, onClose, onSave }) {
       const next = [...current];
       const index = next.indexOf(key);
       const secondaryIndexes = next
-        .map((item, itemIndex) => (['communication', 'news'].includes(item) ? itemIndex : -1))
+        .map((item, itemIndex) => (['absences', 'communication', 'news'].includes(item) ? itemIndex : -1))
         .filter((itemIndex) => itemIndex >= 0);
       const secondaryPosition = secondaryIndexes.indexOf(index);
       const targetPosition = secondaryPosition + direction;
@@ -647,6 +669,7 @@ export default function Dashboard() {
     );
     return normalized.filter((key) => {
       if (key === 'tasks') return canReadTasks;
+      if (key === 'absences') return canReadNews;
       if (key === 'communication') return canReadMail || canReadChat || hasPermission('notifications.read');
       if (key === 'news') return canReadNews;
       return true;
@@ -845,7 +868,10 @@ export default function Dashboard() {
   };
 
   if (announcementId) {
-    return <Navigate to={`/dashboard/news${location.search}`} replace />;
+    const params = new URLSearchParams(location.search || '');
+    params.set('post', announcementId);
+    params.delete('announcement');
+    return <Navigate to={`/feed?${params.toString()}`} replace />;
   }
 
   const todayLabel = new Date().toLocaleDateString('ru-RU', {
@@ -966,7 +992,7 @@ export default function Dashboard() {
                   title={entry.item?.title || 'Обязательное объявление'}
                   secondary="Нужно прочитать и подтвердить"
                   tone="warning"
-                  onClick={() => navigate(`/dashboard/news?announcement=${encodeURIComponent(entry.id)}`)}
+                  onClick={() => navigate(`/feed?post=${encodeURIComponent(entry.id)}`)}
                 />
               );
             }
@@ -1060,6 +1086,106 @@ export default function Dashboard() {
         )}
       </SectionSurface>
     ),
+    absences: (() => {
+      const absences = payload?.absences_today || EMPTY_DASHBOARD.absences_today;
+      const items = Array.isArray(absences.items) ? absences.items : [];
+      const count = Number(absences.count || items.length || 0);
+      return (
+        <SectionSurface
+          key="absences"
+          sectionKey="absences"
+        >
+          {loading ? (
+            <Stack spacing={0.5}>{[0, 1].map((item) => <Skeleton key={item} height={48} />)}</Stack>
+          ) : items.length ? (
+            isMobile ? (
+              <Box
+                data-testid="dashboard-absences-mobile-strip"
+                sx={{
+                  display: 'flex',
+                  gap: 1,
+                  overflowX: 'auto',
+                  pb: 0.5,
+                  mx: -0.5,
+                  px: 0.5,
+                }}
+              >
+                <Chip
+                  color="primary"
+                  label={`${count} отсутствуют`}
+                  sx={{ fontWeight: 800 }}
+                />
+                {items.map((item) => (
+                  <Chip
+                    key={String(item.id)}
+                    avatar={(
+                      <Box
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: '50%',
+                          display: 'grid',
+                          placeItems: 'center',
+                          bgcolor: 'action.selected',
+                          fontSize: 11,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {absenceInitials(item.display_name)}
+                      </Box>
+                    )}
+                    label={`${item.display_name} · ${item.kind_label || item.kind}`}
+                    variant="outlined"
+                    sx={{ maxWidth: 260 }}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Stack
+                data-testid="dashboard-absences-list"
+                divider={<Divider sx={{ borderColor: ui.borderSoft }} />}
+              >
+                {items.map((item) => (
+                  <Stack
+                    key={String(item.id)}
+                    direction="row"
+                    spacing={1.1}
+                    alignItems="center"
+                    sx={{ py: 0.85, minHeight: 52 }}
+                  >
+                    <Box
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: '50%',
+                        display: 'grid',
+                        placeItems: 'center',
+                        bgcolor: alpha(theme.palette.primary.main, 0.1),
+                        color: 'primary.main',
+                        fontWeight: 800,
+                        fontSize: 12,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {absenceInitials(item.display_name)}
+                    </Box>
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography variant="body2" fontWeight={800} noWrap>{item.display_name}</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap>
+                        {[item.department, formatAbsenceRange(item)].filter(Boolean).join(' · ')}
+                      </Typography>
+                    </Box>
+                    <Chip size="small" label={item.kind_label || item.kind} variant="outlined" />
+                  </Stack>
+                ))}
+              </Stack>
+            )
+          ) : (
+            <EmptySection title="Сегодня все на месте" text="Записи об отпусках и неявках появятся здесь." />
+          )}
+        </SectionSurface>
+      );
+    })(),
     communication: (
       <SectionSurface key="communication" sectionKey="communication">
         <Stack divider={<Divider sx={{ borderColor: ui.borderSoft }} />}>
@@ -1081,8 +1207,8 @@ export default function Dashboard() {
         key="news"
         sectionKey="news"
         action={(
-          <Button size="small" onClick={() => navigate('/dashboard/news')} endIcon={<ChevronRightRoundedIcon />}>
-            Все новости
+          <Button size="small" onClick={() => navigate('/feed')} endIcon={<ChevronRightRoundedIcon />}>
+            Открыть ленту
           </Button>
         )}
       >
@@ -1094,7 +1220,7 @@ export default function Dashboard() {
               <NewsRow
                 key={String(item.id)}
                 item={item}
-                onClick={() => navigate(`/dashboard/news?announcement=${encodeURIComponent(String(item.id))}`)}
+                onClick={() => navigate(`/feed?post=${encodeURIComponent(String(item.id))}`)}
               />
             ))}
           </Stack>
@@ -1106,7 +1232,7 @@ export default function Dashboard() {
   };
 
   const tasksVisible = sections.includes('tasks');
-  const secondarySectionKeys = sections.filter((key) => ['communication', 'news'].includes(key));
+  const secondarySectionKeys = sections.filter((key) => ['absences', 'communication', 'news'].includes(key));
   const renderedSectionOrder = [
     'attention',
     ...(tasksVisible ? ['tasks'] : []),

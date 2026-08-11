@@ -1,5 +1,6 @@
 import { startTransition, useCallback } from 'react';
 
+import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import {
   removeThreadMessageFromList,
   resolveThreadMessageMerge,
@@ -21,6 +22,25 @@ export default function useChatThreadMessageMerge({
   const upsertThreadMessages = useCallback((incomingMessages, { replaceByMessageId = null } = {}) => {
     const activeConversationId = String(activeConversationIdRef.current || '').trim();
     if (!activeConversationId) return;
+    const incoming = Array.isArray(incomingMessages) ? incomingMessages : [incomingMessages];
+    const accepted = incoming.filter((message) => {
+      const normalizedConversationId = String(message?.conversation_id || '').trim();
+      return message?.id && normalizedConversationId && normalizedConversationId === activeConversationId;
+    }).length;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'useChatThreadMessageMerge.js:upsertThreadMessages',
+      message: accepted > 0 ? 'upsert accepted messages' : 'upsert filtered all messages',
+      hypothesisId: 'H3',
+      data: {
+        activeConversationId,
+        incomingCount: incoming.length,
+        acceptedCount: accepted,
+        sampleConversationId: String(incoming[0]?.conversation_id || '').trim(),
+        sampleMessageId: String(incoming[0]?.id || '').trim(),
+      },
+    });
+    // #endregion
     setMessages((current) => upsertThreadMessagesInList(current, incomingMessages, {
       activeConversationId,
       replaceByMessageId,

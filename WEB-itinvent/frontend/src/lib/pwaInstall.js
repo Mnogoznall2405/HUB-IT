@@ -250,6 +250,8 @@ export function bindPwaRuntime(registration) {
   }
 
   if (currentRegistration.waiting) {
+    // Do not silently claim a waiting worker without reload: on mobile PWA
+    // that leaves a stale JS graph and breaks /chat opens from push.
     updateRuntimeState({ updateAvailable: true });
   }
   watchInstallingWorker(currentRegistration.installing);

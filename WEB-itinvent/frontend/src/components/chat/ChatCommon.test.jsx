@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AttachmentCard, FileAttachment } from './ChatCommon';
 import { buildAttachmentUrl } from './chatHelpers';
+import { chatStickersAPI } from '../../api/chatStickers';
 
 const theme = createTheme();
 const ui = {
@@ -64,6 +65,151 @@ describe('FileAttachment', () => {
     expect(onOpenPreview).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('img', { name: 'photo.png' })).toHaveAttribute('src', '/files/photo.png');
     expect(screen.queryByText('Скачать')).not.toBeInTheDocument();
+  });
+
+  it('renders sticker attachments inline without an open-file link', () => {
+    renderWithTheme(
+      <FileAttachment
+        fileName="sticker-pack.webp"
+        fileSize={2048}
+        fileUrl="/files/sticker.webp?inline=1"
+        mimeType="image/webp"
+        fileType="sticker"
+        theme={theme}
+        ui={ui}
+      />,
+    );
+
+    expect(screen.getByRole('img', { name: 'Стикер' })).toHaveAttribute(
+      'src',
+      '/files/sticker.webp?inline=1',
+    );
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('opens the sticker pack from a sticker message and adds it to the picker', async () => {
+    const pack = {
+      id: 'pack-1',
+      short_name: 'frrl52',
+      title: 'Funny pack',
+      is_added: false,
+      stickers: [
+        {
+          id: 'sticker-1',
+          emoji: '🙂',
+          format: 'static',
+          mime_type: 'image/webp',
+          file_url: '/stickers/sticker-1/file',
+          preview_url: '/stickers/sticker-1/preview',
+        },
+      ],
+    };
+    const previewSpy = vi.spyOn(chatStickersAPI, 'previewPack').mockResolvedValue(pack);
+    const importSpy = vi.spyOn(chatStickersAPI, 'importPack').mockResolvedValue({
+      items: [{ ...pack, is_added: true }],
+    });
+
+    try {
+      renderWithTheme(
+        <AttachmentCard
+          messageId="msg-sticker"
+          attachment={{
+            id: 'att-sticker',
+            file_name: 'sticker-frrl52.webp',
+            mime_type: 'image/webp',
+            media_kind: 'sticker',
+          }}
+          theme={theme}
+          ui={ui}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Открыть набор стикеров' }));
+
+      await waitFor(() => expect(previewSpy).toHaveBeenCalledWith('frrl52', expect.any(Object)));
+      expect(await screen.findByText('Funny pack')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Добавить набор' }));
+
+      await waitFor(() => expect(importSpy).toHaveBeenCalledWith('frrl52'));
+      expect(await screen.findByRole('button', { name: 'Набор добавлен' })).toBeDisabled();
+    } finally {
+      previewSpy.mockRestore();
+      importSpy.mockRestore();
+    }
+  });
+
+  it('autoplays animated sticker messages without a playback button', async () => {
+    const previousMatchMedia = window.matchMedia;
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const pauseSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    const loadSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    window.matchMedia = vi.fn().mockImplementation((query) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    try {
+      const { container, unmount } = renderWithTheme(
+        <FileAttachment
+          fileName="animated-sticker.webm"
+          fileSize={4096}
+          fileUrl="/files/animated-sticker.webm"
+          mimeType="video/webm"
+          fileType="sticker"
+          theme={theme}
+          ui={ui}
+        />,
+      );
+
+      const video = container.querySelector('video');
+      expect(video).toHaveAttribute('autoplay');
+      expect(video).toHaveAttribute('loop');
+      expect(video).toHaveProperty('muted', true);
+      expect(screen.queryByRole('button', { name: /анимацию стикера/i })).not.toBeInTheDocument();
+      await waitFor(() => expect(playSpy).toHaveBeenCalled());
+      unmount();
+    } finally {
+      window.matchMedia = previousMatchMedia;
+      playSpy.mockRestore();
+      pauseSpy.mockRestore();
+      loadSpy.mockRestore();
+    }
+  });
+
+  it('uses the generated poster while an animated sticker is loading', () => {
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const pauseSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    const loadSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    const attachment = {
+      id: 'att-sticker',
+      file_name: 'animated-sticker.webm',
+      mime_type: 'video/webm',
+      media_kind: 'sticker',
+      variant_urls: {
+        poster: '/api/v1/chat/messages/msg-sticker/attachments/att-sticker/file?inline=1&variant=poster',
+      },
+    };
+
+    const { container, unmount } = renderWithTheme(
+      <AttachmentCard
+        messageId="msg-sticker"
+        attachment={attachment}
+        theme={theme}
+        ui={ui}
+      />,
+    );
+
+    expect(container.querySelector('video')).toHaveAttribute('poster', attachment.variant_urls.poster);
+    unmount();
+    playSpy.mockRestore();
+    pauseSpy.mockRestore();
+    loadSpy.mockRestore();
   });
 
   it('falls back to the next image URL when a thumbnail cannot be loaded', async () => {

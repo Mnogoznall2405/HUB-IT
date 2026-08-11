@@ -70,7 +70,7 @@ def test_send_chat_message_route_uses_async_boundary_and_background_publish(monk
                 "body": "Hello",
                 "client_message_id": "client-msg-1",
             },
-            {},
+            {"conversation_kind": "direct"},
         )
 
     def _fake_schedule(coro, *, label):
@@ -79,7 +79,7 @@ def test_send_chat_message_route_uses_async_boundary_and_background_publish(monk
         return None
 
     monkeypatch.setattr(chat_api_module.chat_service, "send_message", _direct)
-    monkeypatch.setattr(chat_api_module, "_run_chat_call_with_meta", _fake_run_chat_call_with_meta)
+    monkeypatch.setattr(chat_api_module, "_run_chat_write_call_with_meta", _fake_run_chat_call_with_meta)
     monkeypatch.setattr(chat_api_module, "_schedule_chat_background_task", _fake_schedule)
 
     response = asyncio.run(
@@ -91,13 +91,11 @@ def test_send_chat_message_route_uses_async_boundary_and_background_publish(monk
         )
     )
 
-    assert response == {
-        "id": "msg-1",
-        "conversation_id": "conv-1",
-        "kind": "text",
-        "body": "Hello",
-        "client_message_id": "client-msg-1",
-    }
+    assert response["id"] == "msg-1"
+    assert response["conversation_id"] == "conv-1"
+    assert response["kind"] == "text"
+    assert response["body"] == "Hello"
+    assert response["client_message_id"] == "client-msg-1"
     assert len(async_boundary_calls) == 1
     assert async_boundary_calls[0]["func"] is _direct
     assert async_boundary_calls[0]["kwargs"]["current_user_id"] == 100
@@ -105,7 +103,34 @@ def test_send_chat_message_route_uses_async_boundary_and_background_publish(monk
     assert async_boundary_calls[0]["kwargs"]["body"] == "Hello"
     assert async_boundary_calls[0]["kwargs"]["client_message_id"] == "client-msg-1"
     assert async_boundary_calls[0]["kwargs"]["defer_push_notifications"] is True
-    assert scheduled_labels == ["publish_message_created", "queue_ai_run"]
+    assert scheduled_labels == ["after_send_side_effects"]
+
+
+def test_ai_run_is_scheduled_only_for_ai_conversations(monkeypatch):
+    scheduled_labels = []
+
+    def _fake_schedule(coro, *, label):
+        scheduled_labels.append(label)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(chat_api_module, "_schedule_chat_background_task", _fake_schedule)
+
+    chat_api_module._schedule_ai_run_for_message(
+        current_user_id=100,
+        conversation_id="conv-direct",
+        message_id="msg-direct",
+        conversation_kind="direct",
+    )
+    assert scheduled_labels == []
+
+    chat_api_module._schedule_ai_run_for_message(
+        current_user_id=100,
+        conversation_id="conv-ai",
+        message_id="msg-ai",
+        conversation_kind="ai",
+    )
+    assert scheduled_labels == ["queue_ai_run"]
 
 
 def test_forward_chat_message_route_passes_body_format(monkeypatch):
@@ -267,6 +292,7 @@ def test_complete_upload_session_reads_service_meta_inside_threadpool(monkeypatc
         request_meta_var.set(
             {
                 "upload_session_completed_now": True,
+                "conversation_kind": "direct",
             }
         )
         return {
@@ -297,7 +323,7 @@ def test_complete_upload_session_reads_service_meta_inside_threadpool(monkeypatc
     )
 
     assert response["id"] == "msg-upload-1"
-    assert scheduled_labels == ["publish_message_created", "queue_ai_run"]
+    assert scheduled_labels == ["after_send_side_effects"]
 
 
 def test_get_chat_messages_logs_request_meta_from_threadpool(monkeypatch):
@@ -423,7 +449,7 @@ def test_publish_presence_updated_uses_presence_watch_distribution(monkeypatch):
     monkeypatch.setattr(chat_api_module, "_run_chat_call", _fake_run_chat_call)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_presence_event", _fake_publish_presence_event)
 
-    asyncio.run(chat_api_module._publish_presence_updated(100))
+    asyncio.run(chat_api_module._publish_presence_updated(100, debounce=False))
 
     assert publish_calls == [{
         "user_id": 100,

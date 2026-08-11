@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib
 import io
@@ -86,6 +86,8 @@ def chat_env(temp_dir, monkeypatch):
 
     chat_db_module._engine = None
     chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
     monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
     monkeypatch.setattr(chat_db_module.config.chat, "database_url", f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}", raising=False)
     monkeypatch.setattr(chat_db_module.config.chat, "pool_size", 5, raising=False)
@@ -103,6 +105,8 @@ def chat_env(temp_dir, monkeypatch):
 
     chat_db_module._engine = None
     chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
 
 
 def test_send_files_persists_attachment_and_creates_chat_notification(chat_env):
@@ -215,6 +219,67 @@ def test_send_voice_file_preserves_audio_metadata(chat_env):
     assert summary["recent_audio"][0]["kind"] == "audio"
 
 
+def test_send_video_as_file_skips_legacy_upload_compression(chat_env, monkeypatch):
+    video_compress_module = importlib.import_module("backend.chat.video_compress")
+    compress_calls: list[tuple[Path, Path]] = []
+
+    def fake_compress(source_path: Path, output_path: Path):
+        compress_calls.append((source_path, output_path))
+        return None
+
+    monkeypatch.setattr(video_compress_module, "compress_video", fake_compress)
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"original legacy video payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("clip.mp4", payload, "video/mp4")],
+        files_meta=[{
+            "media_kind": "file",
+            "original_size": len(payload),
+            "transfer_encoding": "identity",
+        }],
+    )
+
+    attachment = created["attachments"][0]
+    assert attachment["kind"] == "file"
+    assert attachment["media_kind"] == "file"
+    assert compress_calls == []
+    download = service.get_attachment_for_download(
+        current_user_id=1,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+
+
+def test_sticker_download_preserves_media_kind_for_private_cache_policy(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"animated sticker payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sticker.webm", payload, "video/webm")],
+    )
+    attachment = created["attachments"][0]
+    with chat_db_module.chat_session() as session:
+        attachment_row = session.get(chat_models_module.ChatMessageAttachment, attachment["id"])
+        attachment_row.media_kind = "sticker"
+        session.commit()
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+
+    assert download["media_kind"] == "sticker"
+
+
 def test_send_files_without_caption_keeps_file_name_preview(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
@@ -231,6 +296,15 @@ def test_send_files_without_caption_keeps_file_name_preview(chat_env):
     assert conversations[0]["last_message_preview"].endswith("report.pdf")
 
 
+def _enqueue_and_apply_delivery_state(service, created: dict) -> None:
+    from backend.chat.event_outbox_service import chat_event_outbox_service
+
+    deferred = created.pop("_deferred_delivery_outbox", None)
+    if isinstance(deferred, dict) and deferred:
+        assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
+    assert service.apply_delivery_state_for_message(message_id=created["id"]) is True
+
+
 def test_mark_read_clears_chat_notifications_and_updates_unread_summary(chat_env):
     service = chat_env["service"]
     hub_service = chat_env["hub_service"]
@@ -239,8 +313,10 @@ def test_mark_read_clears_chat_notifications_and_updates_unread_summary(chat_env
     created = service.send_message(
         current_user_id=1,
         conversation_id=conversation["id"],
-        body="РџСЂРѕРІРµСЂСЊ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, С„Р°Р№Р»",
+        body="Проверь, пожалуйста, файл",
     )
+    # Unread counters are applied via delivery-state outbox after ACK in production.
+    _enqueue_and_apply_delivery_state(service, created)
 
     summary_before = service.get_unread_summary(current_user_id=2)
     assert summary_before["messages_unread_total"] == 1
@@ -250,11 +326,18 @@ def test_mark_read_clears_chat_notifications_and_updates_unread_summary(chat_env
     chat_items_before = [item for item in polled_before["items"] if item.get("entity_type") == "chat"]
     assert any(int(item.get("unread") or 0) == 1 for item in chat_items_before)
 
-    service.mark_read(
+    read_payload = service.mark_read(
         current_user_id=2,
         conversation_id=conversation["id"],
         message_id=created["id"],
     )
+    assert read_payload.get("changed") is True
+    # Hub clear is scheduled after ACK in API; service path exposes an explicit helper.
+    if read_payload.get("clear_hub_notifications"):
+        service.clear_hub_notifications_after_mark_read(
+            conversation_id=conversation["id"],
+            user_id=2,
+        )
 
     summary_after = service.get_unread_summary(current_user_id=2)
     assert summary_after["messages_unread_total"] == 0
@@ -264,6 +347,15 @@ def test_mark_read_clears_chat_notifications_and_updates_unread_summary(chat_env
     chat_items_after = [item for item in polled_after["items"] if item.get("entity_type") == "chat"]
     assert chat_items_after
     assert all(int(item.get("unread") or 0) == 0 for item in chat_items_after)
+
+    # Idempotent early-return: second mark_read must not require hub work.
+    again = service.mark_read(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert again.get("changed") is False
+    assert again.get("clear_hub_notifications") is False
 
 
 def test_send_files_validates_limits(chat_env):
@@ -670,6 +762,18 @@ def test_send_message_defer_push_notifications_enqueues_outbox_jobs(chat_env, mo
         body="Отложенный push",
         defer_push_notifications=True,
     )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
 
     assert created["conversation_id"] == conversation["id"]
     assert sent_payloads == []
@@ -769,6 +873,18 @@ def test_send_message_mention_notifies_muted_group_member(chat_env, monkeypatch)
         conversation_id=conversation["id"],
         body="@assignee проверь, пожалуйста",
         defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
     )
 
     polled = hub_service.poll_notifications(user_id=2, limit=20)
@@ -905,14 +1021,15 @@ def test_send_message_client_message_id_is_idempotent_for_same_sender(chat_env):
                 chat_models_module.ChatMessage.conversation_id == conversation["id"],
             )
         ).scalar_one()
-        outbox_count = session.execute(
-            select(func.count()).select_from(chat_models_module.ChatPushOutbox).where(
-                chat_models_module.ChatPushOutbox.message_id == created["id"],
+        delivery_outbox_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatEventOutbox).where(
+                chat_models_module.ChatEventOutbox.message_id == created["id"],
             )
         ).scalar_one()
 
     assert int(message_count) == 1
-    assert int(outbox_count) == 1
+    # Push notifications are deferred; durable delivery-state outbox is written once.
+    assert int(delivery_outbox_count) == 1
 
 
 def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
@@ -925,12 +1042,14 @@ def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
         body="First persisted message",
         defer_push_notifications=True,
     )
+    assert service.apply_delivery_state_for_message(message_id=first["id"]) is True
     second = service.send_message(
         current_user_id=1,
         conversation_id=conversation["id"],
         body="Second persisted message",
         defer_push_notifications=True,
     )
+    assert service.apply_delivery_state_for_message(message_id=second["id"]) is True
 
     with chat_db_module.chat_session() as session:
         conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
@@ -1169,3 +1288,138 @@ def test_group_avatar_file_path_requires_group_membership(chat_env):
             current_user_id=3,
             filename=f"{safe_id}.jpg",
         )
+
+
+def _disable_ordinary_hub_notifications(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "backend.chat.hub_bell_events.hub_ordinary_write_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "backend.chat.latency_profile.hub_ordinary_write_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "backend.chat.hub_bell_events.hub_ordinary_notifications_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "backend.chat.latency_profile.hub_ordinary_notifications_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "backend.chat.hub_bell_events.hub_ordinary_read_visible",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "backend.chat.latency_profile.hub_ordinary_read_visible",
+        lambda: False,
+    )
+
+
+def test_ordinary_message_creates_no_hub_rows_when_ordinary_disabled(chat_env, monkeypatch):
+    _disable_ordinary_hub_notifications(monkeypatch)
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Ordinary without hub",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    stats = service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+    assert int(stats.get("hub_count") or 0) == 0
+    # No browser push subscription exists in chat_env, so do not create a
+    # queued outbox row that the worker can only mark no_subscriptions later.
+    assert int(stats.get("push_count") or 0) == 0
+    assert int(stats.get("ordinary_hub_rows_skipped") or 0) >= 1
+
+    polled = hub_service.poll_notifications(user_id=2, limit=50)
+    chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
+    assert chat_items == []
+    # Chat unread remains owned by ChatConversationUserState / delivery outbox,
+    # not hub_notifications (exercised separately in mark_read / delivery tests).
+
+
+def test_mention_still_creates_hub_row_when_ordinary_disabled(chat_env, monkeypatch):
+    _disable_ordinary_hub_notifications(monkeypatch)
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    users_by_id = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {
+            int(user_id): dict(users_by_id[int(user_id)])
+            for user_id in list(user_ids or [])
+            if int(user_id) in users_by_id
+        },
+    )
+
+    conversation = service.create_group_conversation(
+        current_user_id=1,
+        title="Ops",
+        member_user_ids=[2, 3],
+    )
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="@assignee important",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    stats = service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+    assert int(stats.get("important_hub_rows_created") or 0) >= 1
+    assert int(stats.get("ordinary_hub_rows_created") or 0) == 0
+
+    polled = hub_service.poll_notifications(user_id=2, limit=20)
+    assert any(
+        item.get("event_type") == "chat.mention" and item.get("entity_id") == conversation["id"]
+        for item in polled["items"]
+    )
+
+    read_payload = service.mark_read(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert read_payload.get("changed") is True
+    cleared = service.clear_hub_notifications_after_mark_read(
+        conversation_id=conversation["id"],
+        user_id=2,
+    )
+    assert cleared >= 1
+    polled_after = hub_service.poll_notifications(user_id=2, limit=20)
+    mention_unread = [
+        item for item in polled_after["items"]
+        if item.get("event_type") == "chat.mention"
+        and item.get("entity_id") == conversation["id"]
+        and int(item.get("unread") or 0) == 1
+    ]
+    assert mention_unread == []

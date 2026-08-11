@@ -11,6 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { isChatComposePrefillRoute } from '../../lib/chatComposePrefill';
 import { isNativeShellRuntime } from '../../lib/platform';
+import { mergeInboxPreviewsIntoConversations } from '../../lib/chatSocket';
 import { peekSWRCache } from '../../lib/swrCache';
 import { canUseAiChatPermission } from './chatAiModel';
 import {
@@ -87,7 +88,9 @@ export default function useChatPageInitialState() {
   const [health, setHealth] = useState(null);
   const [healthError, setHealthError] = useState('');
   const [conversations, setConversations] = useState(() => (
-    Array.isArray(initialConversationsCache?.data?.items) ? initialConversationsCache.data.items : []
+    mergeInboxPreviewsIntoConversations(
+      Array.isArray(initialConversationsCache?.data?.items) ? initialConversationsCache.data.items : [],
+    )
   ));
   const [conversationDetailsById, setConversationDetailsById] = useState({});
   const [conversationsLoading, setConversationsLoading] = useState(() => !initialConversationsCache?.data);

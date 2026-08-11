@@ -183,6 +183,8 @@ describe('pickChatPageLayoutSections', () => {
       fileDialogOpen: false,
       closeFileDialog: () => {},
       setFileCaption: () => {},
+      sendMediaAsFiles: true,
+      changeSendMediaAsFiles: () => {},
       sendFiles: () => {},
       removeSelectedFile: () => {},
       groupOpen: false,
@@ -245,5 +247,7 @@ describe('pickChatPageLayoutSections', () => {
     expect(sections.sidebar.activeConversationId).toBe('c1');
     expect(sections.thread.messageText).toBe('');
     expect(sections.dialogs.searchOpen).toBe(false);
+    expect(sections.dialogs.sendMediaAsFiles).toBe(true);
+    expect(sections.dialogs.changeSendMediaAsFiles).toBe(input.changeSendMediaAsFiles);
   });
 });

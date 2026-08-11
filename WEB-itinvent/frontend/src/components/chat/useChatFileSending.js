@@ -3,15 +3,58 @@ import { useCallback } from 'react';
 import { chatAPI } from '../../api/client';
 import {
   buildChatUploadSignature,
+  isChatMediaFile,
   prepareChatUploadFiles,
 } from './chatUploadPrep';
 import {
   CHAT_MAX_FILE_BYTES,
   CHAT_MAX_FILE_COUNT,
+  formatFileSize,
   isArchiveFile,
 } from './chatHelpers';
 
 const CHAT_ARCHIVE_UPLOAD_WARNING = 'Архивы (.zip, .rar, .7z, .tar, .gz) нельзя отправлять в чат.';
+const CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES = 25 * 1024 * 1024;
+const CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING = 'Суммарный размер оригиналов превышает 25 МБ.';
+
+export const buildChatSendUploadItems = (items, sendMediaAsFiles = false) => (
+  (Array.isArray(items) ? items : []).map((item) => {
+    const originalFile = item?.originalFile || item?.file || null;
+    if (!sendMediaAsFiles || !isChatMediaFile(originalFile)) return item;
+    const originalSize = Number(originalFile?.size || 0);
+    return {
+      ...item,
+      originalFile,
+      file: originalFile,
+      transferFile: originalFile,
+      originalSize,
+      preparedSize: originalSize,
+      transferSize: originalSize,
+      finalSize: originalSize,
+      transferEncoding: 'identity',
+      media_kind: 'file',
+      mediaKind: 'file',
+      wasPrepared: false,
+      imageWasPrepared: false,
+      transportWasPrepared: false,
+      changedFormat: false,
+    };
+  })
+);
+
+const getChatUploadItemsTotalBytes = (items) => (
+  (Array.isArray(items) ? items : []).reduce(
+    (sum, item) => sum + Number(item?.transferSize || item?.transferFile?.size || item?.file?.size || 0),
+    0,
+  )
+);
+
+const getChatUploadItemsOriginalTotalBytes = (items) => (
+  (Array.isArray(items) ? items : []).reduce(
+    (sum, item) => sum + Number(item?.originalFile?.size || item?.originalSize || item?.file?.size || 0),
+    0,
+  )
+);
 
 export default function useChatFileSending({
   activeConversation,
@@ -33,6 +76,7 @@ export default function useChatFileSending({
   removeThreadMessage,
   replyMessage,
   revokeObjectUrls,
+  sendMediaAsFiles,
   selectedFiles,
   selectedUploadItems,
   sendingFiles,
@@ -44,11 +88,12 @@ export default function useChatFileSending({
   setOptimisticAiQueuedStatus,
   setPreparingFiles,
   setReplyMessage,
+  setSendMediaAsFiles,
   setSelectedUploadItems,
   setSendingFiles,
   setThreadMenuAnchor,
 }) {
-  const queueSelectedFiles = useCallback(async (files) => {
+  const queueSelectedFiles = useCallback(async (files, options = {}) => {
     if (preparingFiles || sendingFiles) return false;
 
     const incomingFiles = Array.from(files || []).filter(Boolean);
@@ -88,7 +133,24 @@ export default function useChatFileSending({
       return false;
     }
 
+    const hasRequestedMediaMode = typeof options?.sendMediaAsFiles === 'boolean';
+    const requestedMediaAsFiles = options?.sendMediaAsFiles === true;
+    const requestedOriginalTotalBytes = (
+      getChatUploadItemsOriginalTotalBytes(existingItems)
+      + uniqueIncomingFiles.reduce((sum, file) => sum + Number(file?.size || 0), 0)
+    );
+    const canUseRequestedOriginalMode = (
+      requestedMediaAsFiles
+      && requestedOriginalTotalBytes <= CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES
+    );
+    if (requestedMediaAsFiles && !canUseRequestedOriginalMode) {
+      notifyWarning?.(CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING);
+    }
+
     setFileDialogOpen(true);
+    if (existingItems.length === 0 || (hasRequestedMediaMode && !canUseRequestedOriginalMode)) {
+      setSendMediaAsFiles(false);
+    }
     setPreparingFiles(true);
     setFileUploadProgress(0);
 
@@ -108,10 +170,14 @@ export default function useChatFileSending({
       const nextItems = [...existingItems, ...preparedItems];
       const totalBytes = nextItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
       if (totalBytes > CHAT_MAX_FILE_BYTES) {
-        notifyWarning?.('Суммарный размер файлов после подготовки превышает 25 МБ.');
+        notifyWarning?.(`Суммарный размер файлов после подготовки превышает ${formatFileSize(CHAT_MAX_FILE_BYTES)}.`);
         return false;
       }
       setSelectedUploadItems(nextItems);
+      if (hasRequestedMediaMode) {
+        const hasMedia = nextItems.some((item) => isChatMediaFile(item?.originalFile || item?.file));
+        setSendMediaAsFiles(Boolean(hasMedia && canUseRequestedOriginalMode));
+      }
       return true;
     } catch {
       notifyWarning?.('Не удалось подготовить файлы к отправке.');
@@ -127,7 +193,27 @@ export default function useChatFileSending({
     setFileDialogOpen,
     setFileUploadProgress,
     setPreparingFiles,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
+  ]);
+
+  const changeSendMediaAsFiles = useCallback((nextValue) => {
+    if (preparingFiles || sendingFiles) return false;
+    const checked = Boolean(nextValue);
+    if (checked) {
+      if (getChatUploadItemsOriginalTotalBytes(selectedUploadItems) > CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES) {
+        notifyWarning?.(CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING);
+        return false;
+      }
+    }
+    setSendMediaAsFiles(checked);
+    return true;
+  }, [
+    notifyWarning,
+    preparingFiles,
+    selectedUploadItems,
+    sendingFiles,
+    setSendMediaAsFiles,
   ]);
 
   const handleSelectFiles = useCallback((event) => {
@@ -183,20 +269,31 @@ export default function useChatFileSending({
 
   const sendFiles = useCallback(async () => {
     const conversationId = String(activeConversationId || '').trim();
-    if (!conversationId || selectedFiles.length === 0 || preparingFiles) return;
+    if (!conversationId || selectedFiles.length === 0 || preparingFiles || sendingFiles) return;
 
     // Capture current state into local variables before clearing UI
-    const snapshotUploadItems = [...selectedUploadItems];
+    const snapshotUploadItems = buildChatSendUploadItems(selectedUploadItems, sendMediaAsFiles);
+    const snapshotFiles = snapshotUploadItems.map((item) => item?.file).filter(Boolean);
     const snapshotCaption = fileCaption;
-    const totalBytes = snapshotUploadItems.reduce(
-      (sum, item) => sum + Number(item?.transferSize || item?.transferFile?.size || item?.file?.size || 0),
-      0,
-    );
+    if (
+      sendMediaAsFiles
+      && getChatUploadItemsOriginalTotalBytes(selectedUploadItems) > CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES
+    ) {
+      setSendMediaAsFiles(false);
+      notifyWarning?.(CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING);
+      return;
+    }
+    const totalBytes = getChatUploadItemsTotalBytes(snapshotUploadItems);
+    if (totalBytes > CHAT_MAX_FILE_BYTES) {
+      notifyWarning?.(`Суммарный размер файлов превышает ${formatFileSize(CHAT_MAX_FILE_BYTES)}.`);
+      return;
+    }
     const abortController = typeof AbortController === 'function' ? new AbortController() : null;
     const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
     const optimisticMessage = createOptimisticFileMessage({
       conversationId,
-      files: selectedFiles,
+      files: snapshotFiles,
+      mediaKinds: snapshotUploadItems.map((item) => item?.media_kind || item?.mediaKind || ''),
       body: snapshotCaption,
       replyPreview: buildReplyPreview(draftReplyMessage),
     });
@@ -206,6 +303,7 @@ export default function useChatFileSending({
     setSelectedUploadItems([]);
     setFileCaption('');
     setFileDialogOpen(false);
+    setSendMediaAsFiles(false);
     setFileUploadProgress(0);
     setReplyMessage(null);
     setSendingFiles(true);
@@ -278,13 +376,16 @@ export default function useChatFileSending({
     removeThreadMessage,
     replyMessage,
     revokeObjectUrls,
+    sendMediaAsFiles,
     selectedFiles,
     selectedUploadItems,
+    sendingFiles,
     setFileCaption,
     setFileDialogOpen,
     setFileUploadProgress,
     setOptimisticAiQueuedStatus,
     setReplyMessage,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
     setSendingFiles,
   ]);
@@ -292,6 +393,7 @@ export default function useChatFileSending({
   const closeFileDialog = useCallback(() => {
     if (preparingFiles || sendingFiles) return;
     setFileDialogOpen(false);
+    setSendMediaAsFiles(false);
     setSelectedUploadItems([]);
     setFileCaption('');
     setFileUploadProgress(0);
@@ -301,12 +403,14 @@ export default function useChatFileSending({
     setFileCaption,
     setFileDialogOpen,
     setFileUploadProgress,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
   ]);
 
   const clearSelectedFiles = useCallback(() => {
     if (preparingFiles || sendingFiles) return;
     setFileDialogOpen(false);
+    setSendMediaAsFiles(false);
     setSelectedUploadItems([]);
     setFileCaption('');
     setFileUploadProgress(0);
@@ -316,6 +420,7 @@ export default function useChatFileSending({
     setFileCaption,
     setFileDialogOpen,
     setFileUploadProgress,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
   ]);
 
@@ -329,6 +434,7 @@ export default function useChatFileSending({
         setFileDialogOpen(false);
         setFileCaption('');
         setFileUploadProgress(0);
+        setSendMediaAsFiles(false);
       }
       return next;
     });
@@ -338,10 +444,12 @@ export default function useChatFileSending({
     setFileCaption,
     setFileDialogOpen,
     setFileUploadProgress,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
   ]);
 
   return {
+    changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
     handleSelectFiles,

@@ -1,4 +1,4 @@
-import { Suspense, forwardRef, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -93,9 +93,6 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
   'sans-serif',
 ].join(', ');
 
-const LazyEmojiPickerModule = lazy(() => import('emoji-picker-react'));
-const LazyEmojiPicker = LazyEmojiPickerModule;
-
 const MobileInfoTransition = forwardRef(function MobileInfoTransition(props, ref) {
   return (
     <Slide
@@ -149,10 +146,6 @@ export default function ChatDialogs({
   onOpenShare,
   onOpenFilePicker,
   onOpenMediaPicker,
-  emojiPickerOpen,
-  emojiAnchorEl,
-  onCloseEmojiPicker,
-  onInsertEmoji,
   fileInputRef,
   mediaFileInputRef,
   fileDialogOpen,
@@ -160,6 +153,8 @@ export default function ChatDialogs({
   selectedFiles,
   fileCaption,
   onFileCaptionChange,
+  sendMediaAsFiles = false,
+  onSendMediaAsFilesChange,
   preparingFiles = false,
   sendingFiles,
   fileUploadProgress = 0,
@@ -235,7 +230,6 @@ export default function ChatDialogs({
 }) {
   const previewFullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const density = ui.density || {};
-  const isMobileEmojiLayout = useMediaQuery(theme.breakpoints.down('md'));
   const prefersReducedMotion = typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -941,87 +935,21 @@ export default function ChatDialogs({
         </MenuItem>
       </Menu>
 
-      {/* Desktop: Popover emoji picker */}
-      <Popover
-        open={emojiPickerOpen && !isMobileEmojiLayout}
-        anchorEl={emojiAnchorEl}
-        onClose={onCloseEmojiPicker}
-        anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
-        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        slotProps={{ paper: { elevation: 8 } }}
-        PaperProps={{
-          sx: {
-            borderRadius: '8px',
-            border: `1px solid ${ui.borderSoft}`,
-            bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
-            backdropFilter: 'blur(12px)',
-            overflow: 'hidden',
-            '& .EmojiPickerReact': {
-              '--epr-bg-color': ui.composerBg || ui.panelBg || theme.palette.background.paper,
-              '--epr-category-label-bg-color': ui.composerBg || ui.panelBg || theme.palette.background.paper,
-              '--epr-hover-bg-color': alpha(ui.accentText || theme.palette.primary.main, 0.1),
-              '--epr-search-bg-color': alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', 0.06),
-              '--epr-text-color': ui.textPrimary || theme.palette.text.primary,
-              '--epr-search-input-bg-color': alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', 0.06),
-              '--epr-search-border-color': ui.borderSoft || theme.palette.divider,
-              '--epr-category-icon-active-color': ui.accentText || theme.palette.primary.main,
-              '--epr-highlight-color': ui.accentText || theme.palette.primary.main,
-              border: 'none',
-              borderRadius: 0,
-            },
-          },
-        }}
-      >
-        {emojiPickerOpen && !isMobileEmojiLayout ? (
-          <Suspense
-            fallback={(
-              <Box sx={{ width: 352, height: 400, display: 'grid', placeItems: 'center' }}>
-                <CircularProgress size={24} />
-              </Box>
-            )}
-          >
-            <LazyEmojiPicker
-              onEmojiClick={(emojiData) => onInsertEmoji?.(emojiData?.emoji || '')}
-              autoFocusSearch={false}
-              searchPlaceholder="Поиск"
-              skinTonesDisabled={false}
-              previewConfig={{ showPreview: false }}
-              emojiStyle="native"
-              suggestedEmojisMode="recent"
-              lazyLoadEmojis
-              width={352}
-              height={400}
-              theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
-              categories={[
-                { category: 'suggested', name: 'Недавние' },
-                { category: 'smileys_people', name: 'Смайлы и люди' },
-                { category: 'animals_nature', name: 'Животные' },
-                { category: 'food_drink', name: 'Еда' },
-                { category: 'travel_places', name: 'Путешествия' },
-                { category: 'activities', name: 'Активности' },
-                { category: 'objects', name: 'Объекты' },
-                { category: 'symbols', name: 'Символы' },
-                { category: 'flags', name: 'Флаги' },
-              ]}
-            />
-          </Suspense>
-        ) : null}
-      </Popover>
-
-      {/* Mobile emoji panel moved to ChatComposer dock */}
-
       <ChatFileUploadDialog
         caption={fileCaption}
         fileInputRef={fileInputRef}
+        mediaFileInputRef={mediaFileInputRef}
         files={selectedFiles}
         onCaptionChange={onFileCaptionChange}
         onClearFiles={onClearSelectedFiles}
         onClose={onCloseFileDialog}
         onRemoveFile={onRemoveSelectedFile}
         onSend={onSendFiles}
+        onSendMediaAsFilesChange={onSendMediaAsFilesChange}
         open={fileDialogOpen}
         preparing={preparingFiles}
         sending={sendingFiles}
+        sendMediaAsFiles={sendMediaAsFiles}
         theme={theme}
         ui={ui}
         uploadProgress={fileUploadProgress}

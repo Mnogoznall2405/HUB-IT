@@ -1,5 +1,6 @@
 param(
-    [string]$ChatHealthUrl = 'http://127.0.0.1:8001/api/v1/chat/health',
+    [string]$ChatHealthUrl = 'http://127.0.0.1:8002/api/v1/chat/health',
+    [string]$BearerToken = $env:HUBIT_CHAT_BEARER_TOKEN,
     [string]$OutputPath = ''
 )
 
@@ -57,7 +58,11 @@ function Evaluate-GoNoGo($health) {
     return $notes
 }
 
-$response = Invoke-RestMethod -Uri $ChatHealthUrl -Method Get -TimeoutSec 15
+$headers = @{}
+if ($BearerToken) {
+    $headers['Authorization'] = "Bearer $BearerToken"
+}
+$response = Invoke-RestMethod -Uri $ChatHealthUrl -Method Get -Headers $headers -TimeoutSec 15
 $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $routeRows = Format-RouteMetrics $response.route_metrics
 $goNoGo = Evaluate-GoNoGo $response

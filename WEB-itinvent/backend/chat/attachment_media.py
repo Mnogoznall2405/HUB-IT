@@ -265,7 +265,7 @@ class ChatAttachmentMedia:
     @staticmethod
     def get_kind(mime_type: object, media_kind: object = None) -> str:
         normalized_media_kind = _normalize_text(media_kind).lower()
-        if normalized_media_kind in {"image", "video", "audio", "file"}:
+        if normalized_media_kind in {"image", "video", "audio", "file", "sticker"}:
             return normalized_media_kind
         normalized_mime_type = _normalize_text(mime_type).lower()
         if normalized_mime_type.startswith("image/"):

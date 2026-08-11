@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $envPath = Join-Path $projectRoot '.env'
-$backendScaleConfig = Join-Path $projectRoot 'scripts\pm2\ecosystem.backend.scale.config.js'
+$chatScaleConfig = Join-Path $projectRoot 'scripts\pm2\ecosystem.chat.scale.config.js'
 $backendConfig = Join-Path $projectRoot 'scripts\pm2\ecosystem.backend.config.js'
 $healthCheckScript = Join-Path $projectRoot 'scripts\pm2\health-check.ps1'
 
@@ -88,7 +88,8 @@ function Update-RedisEnvConfig {
     param(
         [string]$Path,
         [string]$Url,
-        [string]$Password
+        [string]$Password,
+        [bool]$Required
     )
 
     if (-not (Test-Path $Path)) {
@@ -99,6 +100,7 @@ function Update-RedisEnvConfig {
     $lines = Set-Or-AppendEnvValue -Lines $lines -Name 'REDIS_URL' -Value $Url
     $lines = Set-Or-AppendEnvValue -Lines $lines -Name 'REDIS_PASSWORD' -Value $Password
     $lines = Set-Or-AppendEnvValue -Lines $lines -Name 'CHAT_REDIS_CHANNEL' -Value 'itinvent:chat:events'
+    $lines = Set-Or-AppendEnvValue -Lines $lines -Name 'CHAT_REDIS_REQUIRED' -Value $(if ($Required) { '1' } else { '0' })
     Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
 }
 
@@ -117,16 +119,24 @@ if ($ValidateOnly) {
     exit 0
 }
 
-Update-RedisEnvConfig -Path $envPath -Url $RedisUrl -Password $RedisPassword
+Update-RedisEnvConfig -Path $envPath -Url $RedisUrl -Password $RedisPassword -Required ([bool]$DualNode)
 Write-Host ".env updated with Redis settings." -ForegroundColor Green
 
 if ($DualNode) {
-    & $pm2Cmd delete itinvent-backend 2>$null
-    & $pm2Cmd start $backendScaleConfig
-    & powershell -File $healthCheckScript -BackendUrl 'http://127.0.0.1:8001/health' -BackendSecondaryUrl 'http://127.0.0.1:8002/health'
+    # Keep the main API on 8001. Replace only the single Chat node with two
+    # Redis-gated Chat nodes on 8002/8004.
+    & $pm2Cmd delete itinvent-chat 2>$null
+    & $pm2Cmd start $chatScaleConfig --update-env
+    & powershell -File $healthCheckScript `
+        -BackendUrl 'http://127.0.0.1:8001/health' `
+        -ChatUrl 'http://127.0.0.1:8002/health' `
+        -ChatReadyUrl 'http://127.0.0.1:8002/health/ready' `
+        -BackendSecondaryUrl 'http://127.0.0.1:8004/health' `
+        -BackendSecondaryReadyUrl 'http://127.0.0.1:8004/health/ready'
 } else {
-    & $pm2Cmd delete itinvent-backend-a 2>$null
-    & $pm2Cmd delete itinvent-backend-b 2>$null
-    & $pm2Cmd start $backendConfig
+    & $pm2Cmd delete itinvent-chat-a 2>$null
+    & $pm2Cmd delete itinvent-chat-b 2>$null
+    & $pm2Cmd start $backendConfig --only itinvent-chat --update-env
+    & $pm2Cmd start $backendConfig --only itinvent-preview-worker --update-env
     & powershell -File $healthCheckScript
 }

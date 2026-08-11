@@ -172,6 +172,12 @@ def _normalize_device_row(row: Dict[str, Any], db_id: Optional[str]) -> Dict[str
     location_name = _normalize_text(_read_first(row, ["LOCATION_NAME", "location_name", "LOCATION", "location"]), "Не указано")
     status = _normalize_text(_read_first(row, ["STATUS", "status"]), "Не указано")
     ip_address = _normalize_text(_read_first(row, ["IP_ADDRESS", "ip_address"]))
+    hostname = _normalize_text(
+        _read_first(
+            row,
+            ["NETBIOS_NAME", "network_name", "NETWORK_NAME", "hostname", "HOSTNAME", "host_name", "HOST_NAME"],
+        )
+    )
     mac_address = _normalize_text(_read_first(row, ["MAC_ADDRESS", "mac_address"]))
     employee_name = _normalize_text(_read_first(row, ["EMPLOYEE_NAME", "employee_name"]))
     employee_dept = _normalize_text(_read_first(row, ["EMPLOYEE_DEPT", "employee_dept"]))
@@ -195,10 +201,21 @@ def _normalize_device_row(row: Dict[str, Any], db_id: Optional[str]) -> Dict[str
         "location_name": location_name,
         "status": status,
         "ip_address": ip_address,
+        "hostname": hostname,
         "mac_address": mac_address,
         "employee_name": employee_name,
         "employee_dept": employee_dept,
     }
+
+
+def _resolve_device_hostname(device: Dict[str, Any], runtime: Dict[str, Any]) -> str:
+    inventory_hostname = _normalize_text(device.get("hostname"))
+    if inventory_hostname:
+        return inventory_hostname
+
+    snmp_state = runtime.get("snmp") if isinstance(runtime, dict) else {}
+    device_info = snmp_state.get("device_info") if isinstance(snmp_state, dict) else {}
+    return _normalize_text(device_info.get("sys_name") if isinstance(device_info, dict) else "")
 
 
 def _build_mfu_events_index(db_id: Optional[str], period_days: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -358,6 +375,7 @@ async def get_mfu_devices(
         maintenance = _collect_device_maintenance(device, events_index, recent_limit=recent_limit)
 
         payload = dict(device)
+        payload["hostname"] = _resolve_device_hostname(device, runtime)
         payload["runtime"] = runtime
         payload["maintenance"] = maintenance
 

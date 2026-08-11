@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from sqlalchemy import and_, func, or_, select
 
 from backend.chat.chat_formatting import _iso
-from backend.chat.db import chat_session
+from backend.chat.db import chat_read_session as chat_session
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
@@ -977,17 +977,16 @@ class ChatThreadReadStore:
                 )
             ).scalar_one_or_none()
             message_ids = [item.id for item in messages]
-            action_cards_by_message_id = svc._batch_action_cards_for_messages(
-                session=session,
-                message_ids=message_ids,
-            )
+            # Keep chat DB connection short: skip APP-DB work (action cards + presence).
+            # Frontend hydrates those via /messages/hydrate after first paint.
             attachments_by_message = svc._list_attachments_by_message(
                 session=session,
                 message_ids=message_ids,
             ) if message_ids else {}
+            sender_ids = {int(item.sender_user_id) for item in messages}
             users_by_id = svc._get_users_map(
-                presence_map=svc._get_presence_map(user_ids={int(item.sender_user_id) for item in messages}),
-                user_ids={int(item.sender_user_id) for item in messages},
+                presence_map={},
+                user_ids=sender_ids,
             )
             reply_previews = svc._build_reply_previews(
                 session=session,
@@ -1018,7 +1017,7 @@ class ChatThreadReadStore:
                         reply_previews=reply_previews,
                         forward_previews=forward_previews,
                         attachments=attachments_by_message.get(item.id, []),
-                        action_cards_by_message_id=action_cards_by_message_id,
+                        action_cards_by_message_id={},
                     )
                     for item in messages
                 ],

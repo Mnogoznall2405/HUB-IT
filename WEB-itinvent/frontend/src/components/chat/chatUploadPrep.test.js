@@ -51,6 +51,7 @@ describe('prepareChatUploadFile', () => {
     expect(prepared.wasPrepared).toBe(true);
     expect(prepared.imageWasPrepared).toBe(true);
     expect(prepared.transportWasPrepared).toBe(false);
+    expect(prepared.originalFile).toBe(sourceFile);
     expect(prepared.file.size).toBeLessThan(sourceFile.size);
     expect(prepared.transferEncoding).toBe('identity');
   });

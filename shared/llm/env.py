@@ -1,4 +1,4 @@
-"""Env helpers for the shared OpenRouter gateway."""
+"""Environment helpers for the shared OpenAI-compatible LLM gateway."""
 from __future__ import annotations
 
 import os
@@ -12,8 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ROOT_ENV_PATH = PROJECT_ROOT / ".env"
 ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
 
-DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_AI_MODEL = "openai/gpt-4o-mini"
+DEFAULT_ROUTERAI_BASE_URL = "https://routerai.ru/api/v1"
+# Backwards-compatible export for callers that still import the old name.
+DEFAULT_OPENROUTER_BASE_URL = DEFAULT_ROUTERAI_BASE_URL
+DEFAULT_AI_MODEL = "google/gemini-3.6-flash"
 
 
 def read_env(name: str, default: Optional[str] = None) -> Optional[str]:

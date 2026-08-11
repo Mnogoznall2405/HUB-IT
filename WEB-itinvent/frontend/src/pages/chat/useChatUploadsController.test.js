@@ -1,16 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 
 import useChatUploadsController from './useChatUploadsController';
 
+const { queueSelectedFilesMock } = vi.hoisted(() => ({
+  queueSelectedFilesMock: vi.fn(),
+}));
+
 vi.mock('../../components/chat/useChatFileSending', () => ({
   default: vi.fn(() => ({
+    changeSendMediaAsFiles: vi.fn(),
     clearSelectedFiles: vi.fn(),
     closeFileDialog: vi.fn(),
     handleSelectFiles: vi.fn(),
     openFilePicker: vi.fn(),
     openMediaPicker: vi.fn(),
-    queueSelectedFiles: vi.fn(),
+    queueSelectedFiles: queueSelectedFilesMock,
     removeSelectedFile: vi.fn(),
     sendFiles: vi.fn(),
   })),
@@ -59,7 +64,21 @@ describe('useChatUploadsController', () => {
     expect(result.current.fileDialogOpen).toBe(false);
     expect(result.current.selectedFiles).toEqual([]);
     expect(result.current.fileDragActive).toBe(false);
+    expect(result.current.sendMediaAsFiles).toBe(false);
     expect(typeof result.current.openFilePicker).toBe('function');
+    expect(typeof result.current.changeSendMediaAsFiles).toBe('function');
     expect(typeof result.current.handleComposerPaste).toBe('function');
+
+    const file = new File(['photo'], 'photo.jpg', { type: 'image/jpeg' });
+    const dropEvent = {
+      dataTransfer: { files: [file] },
+      preventDefault: vi.fn(),
+    };
+    act(() => {
+      result.current.handleComposerDrop(dropEvent, { sendMediaAsFiles: true });
+    });
+
+    expect(dropEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(queueSelectedFilesMock).toHaveBeenCalledWith([file], { sendMediaAsFiles: true });
   });
 });

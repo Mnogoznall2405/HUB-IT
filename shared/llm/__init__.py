@@ -1,4 +1,4 @@
-"""Shared OpenRouter LLM gateway.
+"""Shared OpenAI-compatible LLM gateway.
 
 All production LLM calls in HUB-IT must go through this package.
 """
@@ -11,6 +11,7 @@ from shared.llm.client import (
 from shared.llm.env import (
     DEFAULT_AI_MODEL,
     DEFAULT_OPENROUTER_BASE_URL,
+    DEFAULT_ROUTERAI_BASE_URL,
     normalize_openrouter_base_url,
     read_env,
 )
@@ -20,6 +21,7 @@ from shared.llm.models import resolve_model, resolve_model_candidates
 __all__ = [
     "DEFAULT_AI_MODEL",
     "DEFAULT_OPENROUTER_BASE_URL",
+    "DEFAULT_ROUTERAI_BASE_URL",
     "OpenRouterClient",
     "OpenRouterClientError",
     "is_image_unsupported_error",

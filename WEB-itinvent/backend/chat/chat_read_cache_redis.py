@@ -57,6 +57,27 @@ class ChatReadCacheRedis:
             self._errors += 1
             logger.debug("chat.read_cache.redis set failed for %s", redis_key, exc_info=True)
 
+    def delete_keys(self, internal_keys: list[str]) -> None:
+        """Delete known read-cache keys without SCAN (hot path for message send)."""
+        client = self._get_client()
+        if client is None:
+            return
+        redis_keys = [
+            _KEY_PREFIX + str(key)
+            for key in list(internal_keys or [])
+            if str(key or "").strip()
+        ]
+        if not redis_keys:
+            return
+        try:
+            pipe = client.pipeline(transaction=False)
+            for redis_key in redis_keys:
+                pipe.delete(redis_key)
+            pipe.execute()
+        except Exception:
+            self._errors += 1
+            logger.debug("chat.read_cache.redis delete_keys failed", exc_info=True)
+
     def invalidate_prefix(self, prefix: str) -> None:
         client = self._get_client()
         normalized_prefix = str(prefix or "").strip()

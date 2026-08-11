@@ -102,4 +102,46 @@ describe('EmployeeEquipmentDialog', () => {
       await balancesPending;
     });
   });
+
+  it('loads an explicit 1C warehouse without calling Hub when ownerNo is absent', async () => {
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+        balances: [{ nomenclature_ref: 'nom-1', nomenclature_name: 'Ноутбук', qty_balance: 1 }],
+      });
+
+    render(
+      <MemoryRouter>
+        <EmployeeEquipmentDialog
+          open
+          ownerNo={null}
+          employeeName="Иванов И.И."
+          warehouseRef="wh-1"
+          canViewWarehouse1C
+          onClose={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Сотрудник не найден в справочнике Хаба.')).toBeInTheDocument();
+    await waitFor(() => expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2));
+
+    expect(getEmployeeEquipment).not.toHaveBeenCalled();
+    expect(getEmployeeWarehouse).toHaveBeenNthCalledWith(1, {
+      employeeName: 'Иванов И.И.',
+      warehouseRef: 'wh-1',
+      loadBalances: false,
+    });
+    expect(getEmployeeWarehouse).toHaveBeenNthCalledWith(2, {
+      employeeName: 'Иванов И.И.',
+      warehouseRef: 'wh-1',
+      loadBalances: true,
+    });
+  });
 });

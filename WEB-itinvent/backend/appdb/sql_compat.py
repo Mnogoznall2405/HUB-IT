@@ -93,6 +93,13 @@ class SqlAlchemyCompatConnection:
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
         statement = str(sql or "")
+        try:
+            from backend.services.sql_query_counter import note_sql_execute
+
+            note_sql_execute(statement)
+        except Exception:
+            # Counter is optional diagnostics; never break request path.
+            pass
         if self._is_pragma_foreign_keys(statement):
             return CompatResult([])
         if self._is_pragma_table_info(statement):

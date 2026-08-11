@@ -10,6 +10,7 @@ export default function ChatPageDesktopLayout({
   sidebarPane,
   threadPane,
   desktopRightPanelContent,
+  taskSplitLayout = false,
   renderDesktopRightPanel = false,
   renderPersistentRightPanel = false,
   showTaskPanel = false,
@@ -25,14 +26,18 @@ export default function ChatPageDesktopLayout({
   handleMobileThreadScreenAnimationComplete,
   gridTemplateColumns,
 }) {
+  const showTaskSplitLayout = taskSplitLayout && renderDesktopRightPanel && showTaskPanel;
   const resolvedGridTemplateColumns = gridTemplateColumns ?? (
-    renderPersistentRightPanel
+    showTaskSplitLayout
+      ? 'minmax(0, 1fr) minmax(320px, 420px)'
+      : renderPersistentRightPanel
       ? `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr) clamp(460px, 38vw, 620px)`
       : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`
   );
 
   return (
     <Paper
+      data-testid="chat-desktop-shell"
       elevation={0}
       sx={{
         flex: 1,
@@ -42,6 +47,7 @@ export default function ChatPageDesktopLayout({
         overflow: 'hidden',
         borderRadius: isPhone ? 0 : 1.5,
         border: isPhone ? 'none' : `1px solid ${ui.desktopShellBorder || ui.borderSoft}`,
+        borderBottom: isPhone ? undefined : 'none',
         bgcolor: isPhone ? ui.threadBg : ui.panelBg,
         boxShadow: isPhone ? 'none' : `0 18px 42px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.18 : 0.1)}`,
       }}
@@ -122,6 +128,27 @@ export default function ChatPageDesktopLayout({
               )}
             </AnimatePresence>
           </Box>
+        ) : showTaskSplitLayout ? (
+          <>
+            <Box
+              data-testid="chat-desktop-thread-pane"
+              sx={{ position: 'relative', minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex' }}
+            >
+              {threadPane}
+            </Box>
+            <Box
+              data-testid="chat-desktop-task-pane"
+              sx={{
+                minWidth: 0,
+                minHeight: 0,
+                overflow: 'hidden',
+                borderLeft: `1px solid ${ui.borderSoft}`,
+                bgcolor: ui.panelSolid,
+              }}
+            >
+              {desktopRightPanelContent}
+            </Box>
+          </>
         ) : (
           <>
             {sidebarPane}

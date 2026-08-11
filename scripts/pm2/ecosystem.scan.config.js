@@ -19,6 +19,11 @@ function readDotEnvValue(key) {
 const SCAN_DATABASE_URL =
   String(process.env.SCAN_DATABASE_URL || '').trim() || readDotEnvValue('SCAN_DATABASE_URL');
 
+const SCAN_PERF_TIMING_HEADERS_ENABLED =
+  String(process.env.SCAN_PERF_TIMING_HEADERS_ENABLED || '').trim() ||
+  readDotEnvValue('SCAN_PERF_TIMING_HEADERS_ENABLED') ||
+  'false';
+
 const sharedDbEnv = SCAN_DATABASE_URL ? { SCAN_DATABASE_URL } : {};
 
 module.exports = {
@@ -33,6 +38,8 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
+      // Windows: give PM2 time to win32-kill before spawning a replacement.
+      kill_timeout: 15000,
       max_memory_restart: '4G',
       env: {
         PYTHONUNBUFFERED: '1',
@@ -45,7 +52,10 @@ module.exports = {
         SCAN_INGEST_MAX_CONCURRENCY: '2',
         SCAN_TRANSIENT_MAX_GB: '5',
         SCAN_INGEST_RETRY_AFTER_SEC: '60',
-        SCAN_DASHBOARD_CACHE_TTL_SEC: '15',
+        SCAN_DASHBOARD_CACHE_TTL_SEC: '60',
+        SCAN_SYSTEM_METRICS_SAMPLE_INTERVAL_SECONDS: '30',
+        // Ops toggle via root .env (S1a load-gate). Default false; never pair with NullLock on prod.
+        SCAN_PERF_TIMING_HEADERS_ENABLED,
         // Kept short deliberately: this is the SQLite-internal busy wait, and it runs
         // while the process-wide DB lock is held, so a large value here head-of-line
         // blocks every other request (reads included) behind one contended write.
@@ -57,8 +67,8 @@ module.exports = {
         SCAN_FAILED_JOB_RETENTION_DAYS: '30',
         SCAN_INCIDENT_RETENTION_DAYS: '90',
         // Mirror worker capacity/tuning so /health reports the deployed worker profile.
-        SCAN_JOB_MAX_WORKERS: '12',
-        SCAN_OCR_MAX_PROCESSES: '12',
+        SCAN_JOB_MAX_WORKERS: '2',
+        SCAN_OCR_MAX_PROCESSES: '2',
         SCAN_OCR_DPI: '250',
         SCAN_OCR_LANG: 'rus',
         SCAN_OCR_FOCUSED_DPI: '300',
@@ -78,13 +88,14 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
+      kill_timeout: 15000,
       max_memory_restart: '8G',
       env: {
         PYTHONUNBUFFERED: '1',
         SCAN_WORKER_LOCK_WAIT_SEC: '30',
         SCAN_WORKER_INTERVAL_SEC: '3',
-        SCAN_JOB_MAX_WORKERS: '12',
-        SCAN_OCR_MAX_PROCESSES: '12',
+        SCAN_JOB_MAX_WORKERS: '2',
+        SCAN_OCR_MAX_PROCESSES: '2',
         SCAN_WORKER_MEMORY_LIMIT_MB: '6144',
         SCAN_OCR_DPI: '250',
         SCAN_OCR_LANG: 'rus',
@@ -100,6 +111,34 @@ module.exports = {
         SCAN_FAILED_JOB_RETENTION_DAYS: '30',
         SCAN_INCIDENT_RETENTION_DAYS: '90',
         SCAN_PDF_MAX_BYTES: String(50 * 1024 * 1024),
+        ...sharedDbEnv,
+      },
+    },
+    {
+      // Dedicated system-metrics retention (24h). Independent of itinvent-scan-worker restart storm.
+      name: 'itinvent-scan-system-metrics-retention-worker',
+      cwd: PROJECT_ROOT,
+      script: PYTHON,
+      args: '-m scan_server.system_metrics_retention_main',
+      interpreter: 'none',
+      windowsHide: true,
+      autorestart: true,
+      max_restarts: 20,
+      restart_delay: 10000,
+      max_memory_restart: '512M',
+      instances: 1,
+      env: {
+        PYTHONUNBUFFERED: '1',
+        SCAN_SYSTEM_METRICS_RETENTION_ENABLED: 'true',
+        SCAN_SYSTEM_METRICS_RETENTION_DRY_RUN: 'false',
+        SCAN_SYSTEM_METRICS_RETENTION_HOURS: '24',
+        SCAN_SYSTEM_METRICS_RETENTION_DAYS: '3',
+        SCAN_SYSTEM_METRICS_RETENTION_BATCH_SIZE: '5000',
+        SCAN_SYSTEM_METRICS_RETENTION_PAUSE_MS: '500',
+        SCAN_SYSTEM_METRICS_RETENTION_INTERVAL_SECONDS: '3600',
+        SCAN_SYSTEM_METRICS_RETENTION_MAX_RUNTIME_SECONDS: '300',
+        SCAN_SYSTEM_METRICS_RETENTION_STATEMENT_TIMEOUT_MS: '15000',
+        SCAN_SYSTEM_METRICS_RETENTION_LOCK_TIMEOUT_MS: '1000',
         ...sharedDbEnv,
       },
     },

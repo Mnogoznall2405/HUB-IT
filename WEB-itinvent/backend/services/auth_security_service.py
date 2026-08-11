@@ -79,7 +79,7 @@ class AuthSecurityService:
         return timedelta(minutes=max(1, int(config.jwt.access_token_expire_minutes or 15)))
 
     def _refresh_ttl(self) -> timedelta:
-        return timedelta(days=max(1, int(config.jwt.refresh_token_expire_days or 7)))
+        return timedelta(days=max(7, int(config.jwt.refresh_token_expire_days or 7)))
 
     def _build_public_user(
         self,
@@ -541,6 +541,7 @@ class AuthSecurityService:
             user_agent=str(challenge.get("user_agent") or ""),
             expires_at=session_expires.isoformat(),
             trusted_device_id=trusted_device_id,
+            login_network_zone=str(challenge.get("network_zone") or "").strip().lower() or None,
         )
         auth_source = str(user.get("auth_source") or "local").strip().lower() or "local"
         password_enc = str(challenge.get("password_enc") or "").strip()

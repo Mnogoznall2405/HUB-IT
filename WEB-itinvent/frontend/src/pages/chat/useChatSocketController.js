@@ -81,10 +81,11 @@ export default function useChatSocketController({
 
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED || !activeConversationId) return undefined;
+    const conversationId = activeConversationId;
     const normalizedMessageText = String(deferredMessageText || '').trim();
     if (!normalizedMessageText) {
       if (typingStartedRef.current) {
-        chatSocket.sendTyping(activeConversationId, false);
+        chatSocket.sendTyping(conversationId, false);
         typingStartedRef.current = false;
       }
       if (typingStopTimeoutRef.current) {
@@ -94,25 +95,23 @@ export default function useChatSocketController({
       return undefined;
     }
     if (!typingStartedRef.current) {
-      chatSocket.sendTyping(activeConversationId, true);
+      chatSocket.sendTyping(conversationId, true);
       typingStartedRef.current = true;
     }
     if (typingStopTimeoutRef.current) {
       window.clearTimeout(typingStopTimeoutRef.current);
     }
     typingStopTimeoutRef.current = window.setTimeout(() => {
-      chatSocket.sendTyping(activeConversationId, false);
+      chatSocket.sendTyping(conversationId, false);
       typingStartedRef.current = false;
       typingStopTimeoutRef.current = null;
     }, 1800);
+    // Only clear the idle timer here. Sending typing=false on every text change
+    // made the remote indicator flicker stop/start on each keystroke.
     return () => {
       if (typingStopTimeoutRef.current) {
         window.clearTimeout(typingStopTimeoutRef.current);
         typingStopTimeoutRef.current = null;
-      }
-      if (typingStartedRef.current) {
-        chatSocket.sendTyping(activeConversationId, false);
-        typingStartedRef.current = false;
       }
     };
   }, [activeConversationId, deferredMessageText]);
@@ -120,8 +119,8 @@ export default function useChatSocketController({
   useEffect(() => () => {
     if (typingStopTimeoutRef.current) {
       window.clearTimeout(typingStopTimeoutRef.current);
+      typingStopTimeoutRef.current = null;
     }
-    typingStartedRef.current = false;
     typingParticipantsTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
     });

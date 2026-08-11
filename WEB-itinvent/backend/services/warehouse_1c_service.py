@@ -42,6 +42,7 @@ from backend.services.one_c_catalog_search import (
     catalog_entry_match_rank,
     catalog_query_tokens,
     catalog_rows_fingerprint,
+    fold_search_text,
 )
 from backend.services.warehouse_1c_scope import (
     Warehouse1CAllScopeConfigurationError,
@@ -287,13 +288,13 @@ def empty_catalog_cache() -> dict[str, Any]:
 # Nomenclature: (ref, code, name, name_casefold)
 def build_warehouse_entry(ref: str, name: str) -> tuple[str, str, str]:
     normalized_name = normalize_text(name)
-    return (normalize_text(ref), normalized_name, normalized_name.casefold())
+    return (normalize_text(ref), normalized_name, fold_search_text(normalized_name))
 
 
 def build_nomenclature_entry(ref: str, code: str, name: str) -> tuple[str, str, str, str]:
     normalized_name = normalize_text(name)
     normalized_code = normalize_text(code)
-    return (normalize_text(ref), normalized_code, normalized_name, normalized_name.casefold())
+    return (normalize_text(ref), normalized_code, normalized_name, fold_search_text(normalized_name))
 
 
 def catalog_entries_to_json_rows(entries: list[tuple[str, str, str]]) -> list[list[str]]:
@@ -344,7 +345,7 @@ def json_rows_to_nomenclature_entries(rows: Any) -> list[tuple[str, str, str, st
 
 
 def normalize_match_key(value: Any) -> str:
-    return _MATCH_WS_RE.sub(" ", normalize_text(value).casefold()).strip()
+    return _MATCH_WS_RE.sub(" ", fold_search_text(normalize_text(value))).strip()
 
 
 def match_tokens(value: str) -> list[str]:
@@ -469,8 +470,8 @@ def search_text_tokens(text: str) -> list[str]:
 def haystack_matches_all_tokens(haystack: str, tokens: list[str]) -> bool:
     if not tokens:
         return False
-    hay = str(haystack or "").casefold()
-    return all(token in hay for token in tokens)
+    hay = fold_search_text(haystack)
+    return all(fold_search_text(token) in hay for token in tokens)
 
 
 def one_c_text(connection: Any, value: Any) -> str:
@@ -1631,7 +1632,13 @@ class Warehouse1CService:
             )
         return items
 
-    async def search_nomenclature(self, text: str = "", limit: int | None = None) -> list[dict[str, Any]]:
+    async def search_nomenclature(
+        self,
+        text: str = "",
+        limit: int | None = None,
+        *,
+        routing_user_key: str | None = None,
+    ) -> list[dict[str, Any]]:
         normalized_text = normalize_text(text)
         if len(normalized_text) < 2:
             return []
@@ -1642,6 +1649,7 @@ class Warehouse1CService:
                 "nomenclature",
                 normalized_text,
                 normalized_limit,
+                routing_user_key=routing_user_key,
             )
             if available:
                 return app_rows
@@ -1659,7 +1667,13 @@ class Warehouse1CService:
             "Каталог номенклатуры 1С ещё не загружен. Запустите обновление каталога и повторите поиск."
         )
 
-    async def search_warehouses(self, text: str = "", limit: int | None = None) -> list[dict[str, Any]]:
+    async def search_warehouses(
+        self,
+        text: str = "",
+        limit: int | None = None,
+        *,
+        routing_user_key: str | None = None,
+    ) -> list[dict[str, Any]]:
         normalized_text = normalize_text(text)
         if len(normalized_text) < 2:
             return []
@@ -1670,6 +1684,7 @@ class Warehouse1CService:
                 "warehouses",
                 normalized_text,
                 normalized_limit,
+                routing_user_key=routing_user_key,
             )
             if available:
                 return app_rows
@@ -1713,6 +1728,8 @@ class Warehouse1CService:
         catalog_type: str,
         text: str,
         limit: int,
+        *,
+        routing_user_key: str | None = None,
     ) -> tuple[bool, list[dict[str, Any]]]:
         store = self._catalog_snapshot_store
         if store is None:
@@ -1723,6 +1740,7 @@ class Warehouse1CService:
                 text=text,
                 limit=limit,
                 source_base=DEFAULT_1C_REF,
+                routing_user_key=routing_user_key,
             )
             return bool(available), list(rows or [])
         except Exception as exc:
@@ -1925,12 +1943,23 @@ class Warehouse1CService:
             "source_text": normalized,
         }
 
-    def _suggest_nomenclature_from_app_snapshot(self, hub_text: str, limit: int) -> dict[str, Any] | None:
+    def _suggest_nomenclature_from_app_snapshot(
+        self,
+        hub_text: str,
+        limit: int,
+        *,
+        routing_user_key: str | None = None,
+    ) -> dict[str, Any] | None:
         """Use indexed token rows for suggestion ranking without a RAM index."""
         normalized = normalize_text(hub_text)
         if not normalized:
             return {"tried_query": "", "results": [], "source_text": ""}
-        available, results = self._search_app_catalog_snapshot("nomenclature", normalized, limit)
+        available, results = self._search_app_catalog_snapshot(
+            "nomenclature",
+            normalized,
+            limit,
+            routing_user_key=routing_user_key,
+        )
         if not available:
             return None
         if results:
@@ -1947,6 +1976,7 @@ class Warehouse1CService:
                 catalog_type="nomenclature",
                 tokens=tokens,
                 source_base=DEFAULT_1C_REF,
+                routing_user_key=routing_user_key,
             )
         except Exception as exc:
             logger.warning("Warehouse 1C app catalogue token ranking failed: %s", exc)
@@ -1964,6 +1994,7 @@ class Warehouse1CService:
                     "nomenclature",
                     candidate,
                     limit,
+                    routing_user_key=routing_user_key,
                 )
                 if not available:
                     return None
@@ -2058,7 +2089,13 @@ class Warehouse1CService:
         result["employment_matched_name"] = employment.get("matched_name")
         return result
 
-    async def suggest_nomenclature(self, text: str = "", limit: int | None = None) -> dict[str, Any]:
+    async def suggest_nomenclature(
+        self,
+        text: str = "",
+        limit: int | None = None,
+        *,
+        routing_user_key: str | None = None,
+    ) -> dict[str, Any]:
         normalized_text = normalize_text(text)
         if not normalized_text:
             return {"tried_query": "", "results": [], "source_text": ""}
@@ -2067,6 +2104,7 @@ class Warehouse1CService:
             self._suggest_nomenclature_from_app_snapshot,
             normalized_text,
             normalized_limit,
+            routing_user_key=routing_user_key,
         )
         if app_payload is not None:
             return app_payload

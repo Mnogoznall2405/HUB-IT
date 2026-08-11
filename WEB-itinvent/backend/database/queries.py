@@ -376,8 +376,22 @@ def search_employees(search_term: str, page: int = 1, limit: int = 50, db_id: Op
         (pattern, pattern, offset, limit)
     )
 
+    # The legacy ODBC driver preserves the uppercase source column names even
+    # when the API response models use snake_case.  Normalize at the database
+    # boundary so Pydantic does not reject otherwise valid SQL Server rows.
+    normalized_employees = [
+        {
+            "owner_no": row.get("owner_no", row.get("OWNER_NO")),
+            "name": row.get("name", row.get("OWNER_DISPLAY_NAME")) or "",
+            "department": row.get("department", row.get("OWNER_DEPT")),
+            "email": row.get("email", row.get("OWNER_EMAIL")),
+            "equipment_count": row.get("equipment_count", row.get("EQUIPMENT_COUNT", 0)) or 0,
+        }
+        for row in employees
+    ]
+
     return {
-        "employees": employees,
+        "employees": normalized_employees,
         "total": total,
         "page": page,
         "limit": limit,
@@ -2309,9 +2323,14 @@ def get_all_equipment(page: int = 1, limit: int = 50, db_id: Optional[str] = Non
 
     # Get equipment
     equipment = db.execute_query(QUERY_GET_ALL_EQUIPMENT, (offset, limit))
+    normalized_equipment = []
+    for row in equipment:
+        normalized = {str(key).lower(): value for key, value in row.items()}
+        normalized["inv_no"] = _normalize_inv_no_token(normalized.get("inv_no")) or ""
+        normalized_equipment.append(normalized)
 
     return {
-        "equipment": equipment,
+        "equipment": normalized_equipment,
         "total": total,
         "page": page,
         "limit": limit,

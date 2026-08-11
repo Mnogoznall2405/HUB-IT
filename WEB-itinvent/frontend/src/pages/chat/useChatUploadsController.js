@@ -39,6 +39,7 @@ export default function useChatUploadsController({
   const [sendingFiles, setSendingFiles] = useState(false);
   const [fileUploadProgress, setFileUploadProgress] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
+  const [sendMediaAsFiles, setSendMediaAsFiles] = useState(false);
 
   const selectedFiles = useMemo(
     () => selectedUploadItems.map((item) => item?.file).filter(Boolean),
@@ -59,6 +60,7 @@ export default function useChatUploadsController({
   }, []);
 
   const {
+    changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
     handleSelectFiles,
@@ -87,6 +89,7 @@ export default function useChatUploadsController({
     removeThreadMessage,
     replyMessage,
     revokeObjectUrls,
+    sendMediaAsFiles,
     selectedFiles,
     selectedUploadItems,
     sendingFiles,
@@ -98,6 +101,7 @@ export default function useChatUploadsController({
     setOptimisticAiQueuedStatus,
     setPreparingFiles,
     setReplyMessage,
+    setSendMediaAsFiles,
     setSelectedUploadItems,
     setSendingFiles,
     setThreadMenuAnchor,
@@ -150,15 +154,16 @@ export default function useChatUploadsController({
     }
   }, []);
 
-  const handleComposerDrop = useCallback((event) => {
+  const handleComposerDrop = useCallback((event, options = {}) => {
     if (!event?.dataTransfer?.files?.length) return;
     event.preventDefault();
     setFileDragActive(false);
-    void queueSelectedFiles(Array.from(event.dataTransfer.files || []));
+    void queueSelectedFiles(Array.from(event.dataTransfer.files || []), options);
   }, [queueSelectedFiles]);
 
   return {
     cancelVoiceRecording,
+    changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
     fileCaption,
@@ -179,6 +184,7 @@ export default function useChatUploadsController({
     selectedFiles,
     selectedFilesSummary,
     selectedUploadItems,
+    sendMediaAsFiles,
     sendFiles,
     sendingFiles,
     setFileCaption,

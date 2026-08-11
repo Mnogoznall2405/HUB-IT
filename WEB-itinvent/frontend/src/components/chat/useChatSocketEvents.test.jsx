@@ -132,13 +132,45 @@ describe('useChatSocketEvents', () => {
             conversation_id: 'conv-1',
             body: 'hello',
             is_own: false,
+            sender: { id: 99 },
           },
         },
       }));
     });
 
-    expect(mergeMessageIntoThread).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-2' }));
+    expect(mergeMessageIntoThread).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-2', is_own: false }));
     expect(queueAutoScroll).toHaveBeenCalledWith('bottom_instant', 'socket:message_created');
+  });
+
+  it('resolves room-broadcast is_own=false back to true when sender matches current user', () => {
+    const mergeMessageIntoThread = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-1"
+        mergeMessageIntoThread={mergeMessageIntoThread}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-1',
+          payload: {
+            id: 'msg-own',
+            conversation_id: 'conv-1',
+            body: 'mine',
+            is_own: false,
+            sender: { id: 1 },
+          },
+        },
+      }));
+    });
+
+    expect(mergeMessageIntoThread).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'msg-own',
+      is_own: true,
+      delivery_status: 'sent',
+    }));
   });
 
   it('does not auto-scroll for a new incoming message when the user is reading above bottom', () => {

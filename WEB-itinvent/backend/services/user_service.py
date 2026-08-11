@@ -88,6 +88,15 @@ class UserService:
         self._users_cache: tuple[float, list[dict]] | None = None
         self._users_cache_lock = Lock()
         self._users_cache_ttl_sec = 60.0
+        # Authentication resolves the same user on every protected request.
+        # Keep direct lookups cached; all in-process user mutations invalidate it.
+        self._identity_cache_lock = Lock()
+        self._identity_cache_ttl_sec = 300.0
+        self._identity_cache_by_id: dict[int, tuple[float, dict]] = {}
+        self._identity_cache_by_username: dict[str, tuple[float, dict]] = {}
+        self._delegate_links_cache: tuple[float, list[dict]] | None = None
+        self._delegate_links_cache_lock = Lock()
+        self._delegate_links_cache_ttl_sec = 60.0
         self._ensure_defaults()
 
     @staticmethod
@@ -108,30 +117,77 @@ class UserService:
     def _invalidate_users_cache(self) -> None:
         with self._users_cache_lock:
             self._users_cache = None
+        with self._identity_cache_lock:
+            self._identity_cache_by_id.clear()
+            self._identity_cache_by_username.clear()
+
+    def _cache_identity(self, user: dict | None) -> None:
+        if not user:
+            return
+        user_id = int(user.get("id", 0) or 0)
+        username = self._normalize_username(user.get("username"))
+        if user_id <= 0 or not username:
+            return
+        cached = dict(user)
+        cached_at = time.monotonic()
+        with self._identity_cache_lock:
+            self._identity_cache_by_id[user_id] = (cached_at, cached)
+            self._identity_cache_by_username[username] = (cached_at, cached)
+
+    def _get_cached_identity_by_id(self, user_id: int) -> Optional[dict]:
+        now_mono = time.monotonic()
+        with self._identity_cache_lock:
+            cached = self._identity_cache_by_id.get(int(user_id))
+            if cached is None:
+                return None
+            cached_at, user = cached
+            if (now_mono - cached_at) >= self._identity_cache_ttl_sec:
+                self._identity_cache_by_id.pop(int(user_id), None)
+                self._identity_cache_by_username.pop(self._normalize_username(user.get("username")), None)
+                return None
+            return dict(user)
+
+    def _get_cached_identity_by_username(self, username: str) -> Optional[dict]:
+        normalized = self._normalize_username(username)
+        now_mono = time.monotonic()
+        with self._identity_cache_lock:
+            cached = self._identity_cache_by_username.get(normalized)
+            if cached is None:
+                return None
+            cached_at, user = cached
+            if (now_mono - cached_at) >= self._identity_cache_ttl_sec:
+                self._identity_cache_by_username.pop(normalized, None)
+                self._identity_cache_by_id.pop(int(user.get("id", 0) or 0), None)
+                return None
+            return dict(user)
 
     def _load_users(self) -> list[dict]:
-        now_mono = time.monotonic()
+        # Keep the lock through a cold reload. Auth dependencies call this path
+        # in bursts (several requests per browser), so releasing it before the
+        # query lets every waiting request repeat the same full-table load.
         with self._users_cache_lock:
+            now_mono = time.monotonic()
             cached = self._users_cache
             if cached is not None and (now_mono - cached[0]) < self._users_cache_ttl_sec:
                 return list(cached[1])
 
-        if self._use_app_database:
-            def _load_from_app_db() -> list[dict]:
-                with app_session(self._database_url) as session:
-                    if session.get_bind().dialect.name == "postgresql":
-                        session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
-                    rows = session.scalars(select(AppUser).order_by(AppUser.id.asc())).all()
-                    return [self._row_to_user_dict(row) for row in rows]
+            if self._use_app_database:
+                def _load_from_app_db() -> list[dict]:
+                    with app_session(self._database_url) as session:
+                        if session.get_bind().dialect.name == "postgresql":
+                            session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+                        rows = session.scalars(select(AppUser).order_by(AppUser.id.asc())).all()
+                        return [self._row_to_user_dict(row) for row in rows]
 
-            users = run_with_transient_lock_retry(_load_from_app_db)
-        else:
-            data = self.store.load_json(self.FILE_NAME, default_content=[])
-            users = data if isinstance(data, list) else []
+                users = run_with_transient_lock_retry(_load_from_app_db)
+            else:
+                data = self.store.load_json(self.FILE_NAME, default_content=[])
+                users = data if isinstance(data, list) else []
 
-        with self._users_cache_lock:
             self._users_cache = (time.monotonic(), list(users))
-        return users
+            for user in users:
+                self._cache_identity(user)
+            return list(users)
 
     def _save_users(self, users: list[dict]) -> None:
         if self._use_app_database:
@@ -165,6 +221,12 @@ class UserService:
         return normalized
 
     def _load_task_delegate_links(self) -> list[dict]:
+        now_mono = time.monotonic()
+        with self._delegate_links_cache_lock:
+            cached = self._delegate_links_cache
+            if cached is not None and (now_mono - cached[0]) < self._delegate_links_cache_ttl_sec:
+                return list(cached[1])
+
         if self._use_app_database:
             def _load_links_from_app_db() -> list[dict]:
                 with app_session(self._database_url) as session:
@@ -188,11 +250,21 @@ class UserService:
                         for row in rows
                     ]
 
-            return run_with_transient_lock_retry(_load_links_from_app_db)
-        data = self.store.load_json(self.TASK_DELEGATES_FILE_NAME, default_content=[])
-        return data if isinstance(data, list) else []
+            links = run_with_transient_lock_retry(_load_links_from_app_db)
+        else:
+            data = self.store.load_json(self.TASK_DELEGATES_FILE_NAME, default_content=[])
+            links = data if isinstance(data, list) else []
+
+        with self._delegate_links_cache_lock:
+            self._delegate_links_cache = (time.monotonic(), list(links))
+        return list(links)
+
+    def _invalidate_delegate_links_cache(self) -> None:
+        with self._delegate_links_cache_lock:
+            self._delegate_links_cache = None
 
     def _save_task_delegate_links(self, links: list[dict]) -> None:
+        self._invalidate_delegate_links_cache()
         if self._use_app_database:
             with app_session(self._database_url) as session:
                 existing_rows = session.scalars(select(AppTaskDelegateUserLink)).all()
@@ -603,6 +675,9 @@ class UserService:
         normalized = self._normalize_username(username)
         if not normalized:
             return None
+        cached = self._get_cached_identity_by_username(normalized)
+        if cached is not None:
+            return cached
         if self._use_app_database:
             def _load_user_from_app_db() -> Optional[dict]:
                 with app_session(self._database_url) as session:
@@ -612,16 +687,22 @@ class UserService:
                     ).first()
                     return self._row_to_user_dict(row) if row is not None else None
 
-            return run_with_transient_lock_retry(_load_user_from_app_db)
+            user = run_with_transient_lock_retry(_load_user_from_app_db)
+            self._cache_identity(user)
+            return dict(user) if user is not None else None
         for user in self._load_users():
             if self._normalize_username(user.get("username")) == normalized:
-                return user
+                self._cache_identity(user)
+                return dict(user)
         return None
 
     def get_by_id(self, user_id: int) -> Optional[dict]:
         normalized_user_id = int(user_id or 0)
         if normalized_user_id <= 0:
             return None
+        cached = self._get_cached_identity_by_id(normalized_user_id)
+        if cached is not None:
+            return cached
         if self._use_app_database:
             def _load_user_from_app_db() -> Optional[dict]:
                 with app_session(self._database_url) as session:
@@ -629,10 +710,13 @@ class UserService:
                     row = session.get(AppUser, normalized_user_id)
                     return self._row_to_user_dict(row) if row is not None else None
 
-            return run_with_transient_lock_retry(_load_user_from_app_db)
+            user = run_with_transient_lock_retry(_load_user_from_app_db)
+            self._cache_identity(user)
+            return dict(user) if user is not None else None
         for user in self._load_users():
             if int(user.get("id", 0)) == normalized_user_id:
-                return user
+                self._cache_identity(user)
+                return dict(user)
         return None
 
     def authenticate(self, username: str, password: str) -> Optional[dict]:
@@ -857,16 +941,27 @@ class UserService:
         }
         if not normalized_user_ids:
             return {}
+        cached_users: dict[int, dict] = {}
+        missing_user_ids: set[int] = set()
+        for user_id in normalized_user_ids:
+            cached = self._get_cached_identity_by_id(user_id)
+            if cached is None:
+                missing_user_ids.add(user_id)
+            else:
+                cached_users[user_id] = cached
         if self._use_app_database:
             def _load_map_users_from_app_db() -> list[dict]:
                 with app_session(self._database_url) as session:
                     apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
                     rows = session.scalars(
-                        select(AppUser).where(AppUser.id.in_(normalized_user_ids)).order_by(AppUser.id.asc())
+                        select(AppUser).where(AppUser.id.in_(missing_user_ids)).order_by(AppUser.id.asc())
                     ).all()
                     return [self._row_to_user_dict(row) for row in rows]
 
-            users = run_with_transient_lock_retry(_load_map_users_from_app_db)
+            loaded_users = run_with_transient_lock_retry(_load_map_users_from_app_db) if missing_user_ids else []
+            for user in loaded_users:
+                self._cache_identity(user)
+            users = [*cached_users.values(), *loaded_users]
         else:
             users = self._load_users()
         result: dict[int, dict] = {}
@@ -1069,7 +1164,9 @@ class UserService:
                     row.avatar_url = (str(avatar_url or "").strip() or None)
                     session.flush()
                     return self._row_to_user_dict(row)
-            return run_with_transient_lock_retry(_update_in_db)
+            updated_user = run_with_transient_lock_retry(_update_in_db)
+            self._invalidate_users_cache()
+            return updated_user
         users = self._load_users()
         updated_user: Optional[dict] = None
         for user in users:

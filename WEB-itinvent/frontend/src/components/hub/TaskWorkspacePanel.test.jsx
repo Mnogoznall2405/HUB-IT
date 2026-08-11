@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TaskWorkspacePanel from './TaskWorkspacePanel';
 import { hubAPI } from '../../api/client';
 import { departmentsAPI } from '../../api/departments';
+import { hubTaskFilesAPI } from '../../api/hubTaskFiles';
 
 vi.mock('../../api/client', () => ({
   hubAPI: {
     getTask: vi.fn(),
+    deleteTask: vi.fn(),
     updateTask: vi.fn(),
     startTask: vi.fn(),
     submitTask: vi.fn(),
@@ -24,6 +26,14 @@ vi.mock('../../api/client', () => ({
 vi.mock('../../api/departments', () => ({
   departmentsAPI: {
     list: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskFiles', () => ({
+  hubTaskFilesAPI: {
+    getTaskAttachmentPreview: vi.fn(),
+    downloadTaskAttachment: vi.fn(),
+    downloadTaskAttachmentPreviewPdf: vi.fn(),
   },
 }));
 
@@ -68,13 +78,18 @@ const task = {
 
 const renderPanel = (props = {}) => render(
   <ThemeProvider theme={createTheme()}>
-    <TaskWorkspacePanel taskId="task-1" {...props} />
+    <TaskWorkspacePanel
+      taskId="task-1"
+      currentUser={{ id: 1, role: 'viewer', permissions: ['tasks.read'] }}
+      {...props}
+    />
   </ThemeProvider>,
 );
 
 beforeEach(() => {
   vi.clearAllMocks();
   hubAPI.getTask.mockResolvedValue(task);
+  hubAPI.deleteTask.mockResolvedValue({ ok: true, task_id: task.id });
   hubAPI.updateTask.mockResolvedValue(task);
   hubAPI.startTask.mockResolvedValue({ ...task, status: 'in_progress' });
   hubAPI.getAssignees.mockResolvedValue({ items: [{ id: 2, full_name: 'Пётр Исполнитель' }] });
@@ -82,18 +97,82 @@ beforeEach(() => {
   hubAPI.getTaskProjects.mockResolvedValue({ items: [{ id: 'project-1', name: 'Офис', is_active: true }] });
   hubAPI.getTaskObjects.mockResolvedValue({ items: [{ id: 'object-1', project_id: 'project-1', name: 'Кабинет 12', is_active: true }] });
   departmentsAPI.list.mockResolvedValue({ items: [] });
+  hubTaskFilesAPI.getTaskAttachmentPreview.mockResolvedValue({
+    status: 'ready',
+    preview_kind: 'office_pdf',
+    source_kind: 'excel',
+    pdf_filename: 'plan.pdf',
+    page_count: 1,
+    sheets: [],
+  });
+  hubTaskFilesAPI.downloadTaskAttachment.mockRejectedValue(new Error('Excel grid unavailable'));
+  hubTaskFilesAPI.downloadTaskAttachmentPreviewPdf.mockResolvedValue({
+    data: new Blob(['%PDF'], { type: 'application/pdf' }),
+    headers: { 'content-type': 'application/pdf' },
+  });
 });
 
 describe('TaskWorkspacePanel', () => {
+  it('lets the task creator delete it from the chat workspace', async () => {
+    const onOpenInTasks = vi.fn();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderPanel({ onOpenInTasks });
+
+    await screen.findByText('Настроить рабочее место');
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+
+    await waitFor(() => {
+      expect(hubAPI.deleteTask).toHaveBeenCalledWith('task-1');
+      expect(onOpenInTasks).toHaveBeenCalledTimes(1);
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('hides deletion from a user who did not create the task', async () => {
+    renderPanel({ currentUser: { id: 2, role: 'viewer', permissions: ['tasks.read'] } });
+
+    await screen.findByText('Настроить рабочее место');
+
+    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument();
+  });
+
+  it('shows a direct way back to the tasks list', async () => {
+    const onOpenInTasks = vi.fn();
+    renderPanel({ onOpenInTasks });
+
+    await screen.findByText('Настроить рабочее место');
+    fireEvent.click(screen.getByRole('button', { name: 'К задачам' }));
+
+    expect(onOpenInTasks).toHaveBeenCalledTimes(1);
+  });
+
   it('loads and renders the complete task workspace', async () => {
     renderPanel();
 
     expect(await screen.findByText('Настроить рабочее место')).toBeInTheDocument();
     expect(screen.getByText('Пётр Исполнитель')).toBeInTheDocument();
     expect(screen.getByText('plan.xlsx')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Предпросмотр plan\.xlsx/i })).toBeInTheDocument();
     expect(screen.getByTestId('task-workspace-checklist')).toHaveTextContent('1/2');
     expect(screen.getByRole('button', { name: 'Начать' })).toBeInTheDocument();
     expect(hubAPI.getTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('opens task files through the background preview flow', async () => {
+    renderPanel();
+    await screen.findByText('plan.xlsx');
+
+    fireEvent.click(screen.getByRole('button', { name: /Предпросмотр plan\.xlsx/i }));
+
+    await waitFor(() => {
+      expect(hubTaskFilesAPI.getTaskAttachmentPreview).toHaveBeenCalledWith({
+        taskId: 'task-1',
+        attachmentId: 'file-1',
+        signal: expect.any(AbortSignal),
+      });
+      expect(hubTaskFilesAPI.downloadTaskAttachmentPreviewPdf).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByRole('dialog')).toHaveTextContent('plan.xlsx');
   });
 
   it('does not reload the task when only the update callback identity changes', async () => {

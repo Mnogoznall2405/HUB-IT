@@ -1,6 +1,7 @@
 const MAIL_RECENT_CACHE_STORAGE_KEY = 'mail_recent_cache_v3';
-const MAIL_RECENT_CACHE_TTL_MS = 90 * 1000;
-const MAIL_RECENT_DETAIL_TTL_MS = 10 * 60 * 1000;
+// Keep last inbox paint long enough that a page refresh does not flash "Нет писем".
+const MAIL_RECENT_CACHE_TTL_MS = 30 * 60 * 1000;
+const MAIL_RECENT_DETAIL_TTL_MS = 60 * 60 * 1000;
 const MAIL_RECENT_CACHE_MAX_CONTEXTS = 4;
 const MAIL_RECENT_CACHE_MAX_ITEMS = 50;
 const MAIL_RECENT_CACHE_MAX_DETAILS = 20;

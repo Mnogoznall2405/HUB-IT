@@ -2,7 +2,7 @@
  * Main App component with routing and authentication.
  */
 import { Component, lazy, Suspense, useCallback, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED } from './lib/chatFeature';
@@ -17,6 +17,7 @@ import {
   requestChatPushSyncDrain,
   syncChatPushSubscription,
 } from './lib/chatNotifications';
+import { emitAgentDebugLog } from './lib/debugClientLog';
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
@@ -27,7 +28,7 @@ import {
   loadChatRoute,
   loadComputersRoute,
   loadDashboardRoute,
-  loadDashboardNewsRoute,
+  loadFeedRoute,
   loadDatabaseRoute,
   loadDocflowRoute,
   loadLoginRoute,
@@ -49,12 +50,13 @@ import {
   loadTicketsRoute,
   loadVcsRoute,
   loadWarehouse1CRoute,
+  loadFileEgressRoute,
 } from './lib/routeLoaders';
 
 // Pages
 const Login = lazy(loadLoginRoute);
 const Dashboard = lazy(loadDashboardRoute);
-const DashboardNews = lazy(loadDashboardNewsRoute);
+const Feed = lazy(loadFeedRoute);
 const Tasks = lazy(loadTasksRoute);
 const Tickets = lazy(loadTicketsRoute);
 const Chat = lazy(loadChatRoute);
@@ -65,6 +67,7 @@ const Profile = lazy(loadProfileRoute);
 const Admin = lazy(loadAdminRoute);
 const Statistics = lazy(loadStatisticsRoute);
 const Computers = lazy(loadComputersRoute);
+const FileEgress = lazy(loadFileEgressRoute);
 const ScanCenter = lazy(loadScanCenterRoute);
 const Mfu = lazy(loadMfuRoute);
 const Mail = lazy(loadMailRoute);
@@ -82,6 +85,7 @@ const SharedFile = lazy(loadSharedFileRoute);
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
+  { path: '/feed', permissions: ['dashboard.read'] },
   { path: '/tasks', permissions: ['tasks.read'] },
   { path: '/tickets', permissions: ['tickets.read'] },
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', permissions: ['chat.read'] }] : []),
@@ -90,6 +94,8 @@ const routePermissions = [
   { path: '/mfu', permissions: ['mfu.read'] },
   { path: '/computers', permissions: ['computers.read'] },
   { path: '/scan-center', permissions: ['scan.read'] },
+  { path: '/dlp', adminOnly: true },
+  { path: '/file-egress', adminOnly: true },
   { path: '/statistics', permissions: ['statistics.read'] },
   { path: '/kb', permissions: ['kb.read'] },
   { path: '/vcs', permissions: ['vcs.read'] },
@@ -143,6 +149,11 @@ const HomeRedirect = () => {
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
+const LegacyNewsRedirect = () => {
+  const location = useLocation();
+  return <Navigate to={{ pathname: '/feed', search: location.search }} replace />;
+};
+
 const PermissionRoute = ({ permission, permissions, adminOnly = false, children }) => {
   const { hasPermission, user } = useAuth();
   const requiredPermissions = Array.isArray(permissions) ? permissions : (permission ? [permission] : []);
@@ -169,6 +180,7 @@ const AdminAreaRoute = ({ children }) => {
 export const AppPushBootstrap = () => {
   const { user, hasPermission } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const hasAppPushPermission = hasAnyAppPushPermission(hasPermission, {
     chatFeatureEnabled: CHAT_FEATURE_ENABLED,
   });
@@ -310,6 +322,53 @@ export const AppPushBootstrap = () => {
       const messageType = String(event?.data?.type || '').trim();
       if (!messageType) return;
 
+      if (messageType === 'itinvent:navigate') {
+        const rawRoute = String(event?.data?.route || event?.data?.url || '').trim();
+        if (!rawRoute) return;
+        const source = String(event?.data?.source || '').trim();
+        try {
+          const target = new URL(rawRoute, window.location.origin);
+          if (target.origin !== window.location.origin) return;
+          const nextRoute = `${target.pathname}${target.search}${target.hash}` || '/';
+          const fromPath = `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
+          // #region agent log
+          emitAgentDebugLog({
+            location: 'App.jsx:itinvent:navigate',
+            message: 'Navigate from notification/service worker',
+            hypothesisId: 'H-NAV',
+            runId: 'post-fix',
+            data: {
+              route: nextRoute,
+              source,
+              fromPath,
+            },
+          });
+          // #endregion
+          // Push opens on mobile often resume a long-lived PWA with a stale JS graph.
+          // Soft React navigate then fails lazy /chat chunk load and shows "Нужно обновить экран".
+          // One hard assign loads a fresh document that matches the active service worker.
+          if (source === 'notificationclick') {
+            if (fromPath !== nextRoute) {
+              window.location.assign(nextRoute);
+            }
+            return;
+          }
+          navigate(nextRoute);
+        } catch {
+          if (rawRoute.startsWith('/')) {
+            if (source === 'notificationclick') {
+              const fromPath = `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
+              if (fromPath !== rawRoute) {
+                window.location.assign(rawRoute);
+              }
+              return;
+            }
+            navigate(rawRoute);
+          }
+        }
+        return;
+      }
+
       if (messageType === 'itinvent:push-subscription-updated') {
         refreshChatNotificationState();
         return;
@@ -343,7 +402,7 @@ export const AppPushBootstrap = () => {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleWorkerMessage);
     };
-  }, [schedulePushSync]);
+  }, [navigate, schedulePushSync]);
 
   return null;
 };
@@ -447,8 +506,12 @@ function App() {
                   element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}
                 />
                 <Route
+                  path="/feed"
+                  element={<PermissionRoute permission="dashboard.read"><Feed /></PermissionRoute>}
+                />
+                <Route
                   path="/dashboard/news"
-                  element={<PermissionRoute permission="dashboard.read"><DashboardNews newsOnly /></PermissionRoute>}
+                  element={<PermissionRoute permission="dashboard.read"><LegacyNewsRedirect /></PermissionRoute>}
                 />
                 <Route
                   path="/tasks"
@@ -492,6 +555,14 @@ function App() {
                 <Route
                   path="/scan-center"
                   element={<PermissionRoute permission="scan.read"><ScanCenter /></PermissionRoute>}
+                />
+                <Route
+                  path="/dlp"
+                  element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
+                />
+                <Route
+                  path="/file-egress"
+                  element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
                 />
                 <Route
                   path="/statistics"

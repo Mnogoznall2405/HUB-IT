@@ -20,6 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from anyio import to_thread
 from fastapi import FastAPI, Request
@@ -27,8 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure
 from backend.api.v1.auth import handle_safari_password_beacon_form
+from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
 from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
@@ -42,6 +44,10 @@ from backend.services.my_files_service import my_files_worker
 from backend.services.task_due_notification_worker import (
     background_enabled as task_due_notification_background_enabled,
     background_task_due_notification_loop,
+)
+from backend.services.announcement_publish_worker import (
+    background_announcement_publish_loop,
+    background_enabled as announcement_publish_background_enabled,
 )
 from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
@@ -173,6 +179,7 @@ async def lifespan(app: FastAPI):
     address_book_sync_task: asyncio.Task | None = None
     warehouse_1c_catalog_sync_task: asyncio.Task | None = None
     task_due_notification_task: asyncio.Task | None = None
+    announcement_publish_task: asyncio.Task | None = None
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
     if LDAP_APP_USER_SYNC_ENABLED:
@@ -185,11 +192,14 @@ async def lifespan(app: FastAPI):
         warehouse_1c_catalog_sync_task = asyncio.create_task(background_warehouse_1c_catalog_sync_loop())
     if TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled():
         task_due_notification_task = asyncio.create_task(background_task_due_notification_loop())
+    if announcement_publish_background_enabled():
+        announcement_publish_task = asyncio.create_task(background_announcement_publish_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.start()
     print(f"Starting {config.app.app_name} v{config.app.version}")
+    print(f"Runtime role: {get_runtime_role()}")
     print(f"Database: {config.database.host} / {config.database.database}")
     print(f"Debug mode: {config.app.debug}")
     print(
@@ -202,6 +212,7 @@ async def lifespan(app: FastAPI):
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
         f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
+        f" announcement_publish={announcement_publish_background_enabled()}"
     )
     print(f"AnyIO thread tokens: {thread_tokens}")
     print(
@@ -222,6 +233,27 @@ async def lifespan(app: FastAPI):
             expired_runtime_items = auth_runtime_store_service.cleanup_expired()
             if expired_runtime_items:
                 print(f"Auth runtime cleanup: removed {expired_runtime_items} expired items")
+            try:
+                from backend.config import session_policy_snapshot
+                from backend.services.session_service import session_service as _session_service
+
+                policy = session_policy_snapshot()
+                print(
+                    "Session policy:"
+                    f" internal_idle_days={policy.get('idle_timeout_internal_days')}"
+                    f" trusted_idle_days={policy.get('idle_timeout_trusted_days')}"
+                    f" external_idle_minutes={policy.get('idle_timeout_minutes')}"
+                    f" refresh_days={policy.get('refresh_token_expire_days')}"
+                    f" refresh_grace_sec={policy.get('refresh_rotation_grace_seconds')}"
+                )
+                backfill = _session_service.reapply_idle_policy_for_active_sessions()
+                print(
+                    "Session idle backfill:"
+                    f" inspected={backfill.get('inspected')}"
+                    f" updated={backfill.get('updated')}"
+                )
+            except Exception as session_policy_exc:
+                print(f"Session policy/backfill warning: {session_policy_exc}")
             if config.my_files_security.inline_worker_enabled:
                 await my_files_worker.start()
                 print("My files worker: started inline")
@@ -235,7 +267,7 @@ async def lifespan(app: FastAPI):
             print(f"Local SQLite store: {store.db_path}")
         except Exception as exc:
             print(f"SQLite init warning: {exc}")
-    if config.chat.enabled:
+    if config.chat.enabled and chat_routes_enabled():
         try:
             from backend.chat.service import chat_service
             from backend.chat.push_service import chat_push_service
@@ -246,6 +278,25 @@ async def lifespan(app: FastAPI):
             ai_chat_service.initialize_runtime()
             await chat_service.start()
             await chat_realtime.start()
+
+            async def _chat_event_loop_lag_probe() -> None:
+                """Measure event-loop scheduling lag while chat is under load."""
+                from backend.chat.send_audit import audit_send_trace
+
+                interval_sec = 0.25
+                while True:
+                    started = time.perf_counter()
+                    await asyncio.sleep(interval_sec)
+                    lag_ms = max(0.0, (time.perf_counter() - started - interval_sec) * 1000.0)
+                    if lag_ms >= 20.0:
+                        audit_send_trace(
+                            trace_id="loop",
+                            stage="event_loop_lag",
+                            elapsed_ms=lag_ms,
+                            process="main",
+                        )
+
+            asyncio.create_task(_chat_event_loop_lag_probe(), name="chat-event-loop-lag-probe")
             print(
                 "Chat module:"
                 f" enabled={chat_status.enabled}"
@@ -264,6 +315,8 @@ async def lifespan(app: FastAPI):
             )
         except Exception as exc:
             print(f"Chat init warning: {exc}")
+    elif config.chat.enabled and not chat_routes_enabled():
+        print("Chat module: disabled in this process (HUBIT_RUNTIME_ROLE=api); served by Chat API")
     yield
     # Shutdown
     print("Shutting down...")
@@ -279,12 +332,14 @@ async def lifespan(app: FastAPI):
         warehouse_1c_catalog_sync_task.cancel()
     if task_due_notification_task is not None:
         task_due_notification_task.cancel()
+    if announcement_publish_task is not None:
+        announcement_publish_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
     await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()
-    if config.chat.enabled:
+    if config.chat.enabled and chat_routes_enabled():
         try:
             from backend.chat.service import chat_service
             from backend.chat.realtime import chat_realtime
@@ -321,6 +376,11 @@ async def lifespan(app: FastAPI):
     if task_due_notification_task is not None:
         try:
             await task_due_notification_task
+        except asyncio.CancelledError:
+            pass
+    if announcement_publish_task is not None:
+        try:
+            await announcement_publish_task
         except asyncio.CancelledError:
             pass
     try:
@@ -369,14 +429,24 @@ if rate_limit_exception is not None and rate_limit_exception_handler is not None
 @app.get("/health")
 async def health_check():
     """Liveness probe: cheap response without chat/outbox work."""
-    return {"status": "ok", "version": config.app.version}
+    return {
+        "status": "ok",
+        "version": config.app.version,
+        "runtime_role": get_runtime_role(),
+        "process": "main",
+    }
 
 
 @app.get("/health/ready")
 async def health_ready():
     """Readiness probe: includes chat runtime metrics for ops checks."""
-    payload = {"status": "ok", "version": config.app.version}
-    if config.chat.enabled:
+    payload = {
+        "status": "ok",
+        "version": config.app.version,
+        "runtime_role": get_runtime_role(),
+        "process": "main",
+    }
+    if config.chat.enabled and chat_routes_enabled():
         try:
             from backend.chat.service import chat_service
 
@@ -388,7 +458,54 @@ async def health_ready():
                 "configured": bool(config.chat.database_url),
                 "realtime_mode": "unknown",
             }
+    elif config.chat.enabled:
+        payload["chat"] = {
+            "enabled": True,
+            "available": False,
+            "served_by": "chat-api",
+            "realtime_mode": "external",
+        }
     return payload
+
+
+@app.get("/health/pools")
+async def health_pools():
+    """DB pool utilization for Main API process."""
+    from backend.appdb.db import get_app_engine
+
+    def _snap(engine):
+        pool = getattr(engine, "pool", None)
+        if pool is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "pool_size": int(getattr(pool, "size", lambda: 0)() or 0),
+            "checked_out": int(getattr(pool, "checkedout", lambda: 0)() or 0),
+            "checked_in": int(getattr(pool, "checkedin", lambda: 0)() or 0),
+            "overflow": int(getattr(pool, "overflow", lambda: 0)() or 0),
+            "max_overflow": int(getattr(pool, "_max_overflow", 0) or 0),
+            "timeout": float(getattr(pool, "_timeout", 0) or 0),
+        }
+
+    app_pool = {}
+    chat_pool = {"available": False, "note": "chat engine not owned by main when role=api"}
+    try:
+        app_pool = _snap(get_app_engine())
+    except Exception as exc:
+        app_pool = {"available": False, "error": str(exc)}
+    if chat_routes_enabled():
+        try:
+            from backend.chat.db import get_chat_engine
+
+            chat_pool = _snap(get_chat_engine())
+        except Exception as exc:
+            chat_pool = {"available": False, "error": str(exc)}
+    return {
+        "process": "main",
+        "runtime_role": get_runtime_role(),
+        "app_db": app_pool,
+        "chat_db": chat_pool,
+    }
 
 
 @app.post("/login/save-password")
@@ -416,6 +533,7 @@ app.include_router(settings.router, prefix="/api/v1/settings", tags=["User Setti
 app.include_router(networks.router, prefix="/api/v1/networks", tags=["Networks"])
 app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
 app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["Inventory"])
+app.include_router(fs_egress.router, prefix="/api/v1/inventory", tags=["File Egress"])
 app.include_router(kb.router, prefix="/api/v1/kb", tags=["Knowledge Base"])
 app.include_router(mfu.router, prefix="/api/v1/mfu", tags=["MFU"])
 app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
@@ -435,13 +553,22 @@ app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
 app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
-if config.chat.enabled:
+if config.chat.enabled and chat_routes_enabled():
     try:
         from backend.api.v1 import chat
 
         app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
     except Exception as exc:
         print(f"Chat router warning: {exc}")
+elif config.chat.enabled:
+    print("Chat router: not registered (HUBIT_RUNTIME_ROLE=api)")
+
+# Guard: Chat-only process must not load the full HUB surface via this module.
+if not heavy_api_routes_enabled():
+    print(
+        "WARNING: backend.main loaded with non-api runtime role; "
+        "prefer backend.chat_main for the Chat process"
+    )
 
 # Root endpoint
 @app.get("/")

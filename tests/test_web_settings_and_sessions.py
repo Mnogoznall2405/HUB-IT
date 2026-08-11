@@ -55,11 +55,13 @@ def isolated_session_service(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backend_config_module.config.session, "idle_timeout_minutes", 30)
     monkeypatch.setattr(backend_config_module.config.session, "idle_timeout_trusted_days", 7)
+    monkeypatch.setattr(backend_config_module.config.session, "idle_timeout_internal_days", 7)
     monkeypatch.setattr(backend_config_module.config.session, "history_retention_days", 14)
     monkeypatch.setattr(backend_config_module.config.session, "cleanup_min_interval_seconds", 0)
     monkeypatch.setattr(backend_config_module.config.jwt, "access_token_expire_minutes", 480)
     monkeypatch.setattr(session_service_module.config.session, "idle_timeout_minutes", 30)
     monkeypatch.setattr(session_service_module.config.session, "idle_timeout_trusted_days", 7)
+    monkeypatch.setattr(session_service_module.config.session, "idle_timeout_internal_days", 7)
     monkeypatch.setattr(session_service_module.config.session, "history_retention_days", 14)
     monkeypatch.setattr(session_service_module.config.session, "cleanup_min_interval_seconds", 0)
     monkeypatch.setattr(session_service_module.config.jwt, "access_token_expire_minutes", 480)
@@ -97,12 +99,35 @@ def test_idle_expired_session_becomes_invalid_without_logout(isolated_session_se
     sessions = isolated_session_service._load_sessions()
     sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(minutes=-31))
     isolated_session_service._save_sessions(sessions)
+    isolated_session_service._cache_invalidate("session-idle")
 
     assert isolated_session_service.is_session_active("session-idle") is False
 
     session = next(item for item in isolated_session_service.list_sessions(active_only=False) if item["session_id"] == "session-idle")
     assert session["status"] == "expired_idle"
     assert session["is_active"] is False
+
+
+def test_session_auth_check_does_not_trigger_global_cleanup(isolated_session_service, monkeypatch):
+    """A cache miss must validate only its own session, not scan every session."""
+    isolated_session_service.create_session(
+        session_id="session-hot-auth",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(hours=8)),
+    )
+    isolated_session_service._cache_invalidate("session-hot-auth")
+
+    monkeypatch.setattr(
+        isolated_session_service,
+        "_run_maintenance",
+        lambda **_kwargs: pytest.fail("hot auth path must not run global cleanup"),
+    )
+
+    assert isolated_session_service.is_session_active("session-hot-auth") is True
 
 
 def test_touch_session_throttles_recent_last_seen_writes(isolated_session_service):
@@ -123,6 +148,7 @@ def test_touch_session_throttles_recent_last_seen_writes(isolated_session_servic
     sessions = isolated_session_service._load_sessions()
     sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(seconds=-90))
     isolated_session_service._save_sessions(sessions)
+    isolated_session_service._cache_invalidate("session-touch-throttle")
 
     assert isolated_session_service.touch_session("session-touch-throttle") is True
     assert isolated_session_service._load_sessions()[0]["last_seen_at"] != sessions[0]["last_seen_at"]
@@ -138,6 +164,7 @@ def test_absolute_expired_session_becomes_invalid_even_when_recently_active(isol
         user_agent="Mozilla/5.0",
         expires_at=_utc_now_iso(timedelta(minutes=-5)),
     )
+    isolated_session_service._cache_invalidate("session-absolute")
 
     assert isolated_session_service.is_session_active("session-absolute") is False
 
@@ -436,11 +463,60 @@ def test_password_session_idle_expires_in_thirty_minutes(isolated_session_servic
         ip_address="127.0.0.1",
         user_agent="Mozilla/5.0",
         expires_at=_utc_now_iso(timedelta(days=7)),
+        login_network_zone="external",
     )
 
     idle_expires_at = datetime.fromisoformat(created["idle_expires_at"])
     expected = datetime.now(timezone.utc) + timedelta(minutes=30)
     assert abs((idle_expires_at - expected).total_seconds()) < 5
+    assert created.get("login_network_zone") == "external"
+
+
+def test_internal_session_idle_expires_in_seven_days(isolated_session_service):
+    created = isolated_session_service.create_session(
+        session_id="session-internal",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="10.12.34.56",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+        login_network_zone="internal",
+    )
+
+    idle_expires_at = datetime.fromisoformat(created["idle_expires_at"])
+    expected = datetime.now(timezone.utc) + timedelta(days=7)
+    assert abs((idle_expires_at - expected).total_seconds()) < 5
+    assert created.get("login_network_zone") == "internal"
+
+
+def test_legacy_session_internal_ip_fallback_idle_seven_days(isolated_session_service):
+    created = isolated_session_service.create_session(
+        session_id="session-legacy-internal-ip",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="10.1.2.3",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+        login_network_zone="external",
+    )
+    # Simulate pre-migration row: no zone stored, only office IP.
+    sessions = isolated_session_service._load_sessions()
+    sessions[0]["login_network_zone"] = None
+    sessions[0]["idle_expires_at"] = None
+    isolated_session_service._save_sessions(sessions)
+
+    assert isolated_session_service.is_session_active("session-legacy-internal-ip") is True
+    session = next(
+        item
+        for item in isolated_session_service.list_sessions(active_only=False)
+        if item["session_id"] == "session-legacy-internal-ip"
+    )
+    idle_expires_at = datetime.fromisoformat(session["idle_expires_at"])
+    expected = datetime.fromisoformat(session["last_seen_at"]) + timedelta(days=7)
+    assert abs((idle_expires_at - expected).total_seconds()) < 5
+    assert created.get("ip_address") == "10.1.2.3"
 
 
 def test_revoked_trusted_device_recalculates_idle_to_thirty_minutes(isolated_session_service, monkeypatch):
@@ -472,6 +548,8 @@ def test_revoked_trusted_device_recalculates_idle_to_thirty_minutes(isolated_ses
     sessions = isolated_session_service._load_sessions()
     sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(minutes=-45))
     isolated_session_service._save_sessions(sessions)
+    # Direct JSON mutation bypasses cache writers; force re-evaluation after revoke.
+    isolated_session_service._cache_invalidate("session-revoked-trusted")
 
     active_device["is_active"] = False
     assert isolated_session_service.is_session_active("session-revoked-trusted") is False

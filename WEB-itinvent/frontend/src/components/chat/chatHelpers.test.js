@@ -223,6 +223,25 @@ describe('chatHelpers mojibake recovery', () => {
     expect(getConversationStatusLine(conversation)).toBe('В сети • Сервак немного не вывозит');
   });
 
+  it('uses peer last message time when presence last_seen is older', () => {
+    const conversation = {
+      kind: 'direct',
+      last_message_is_own: false,
+      last_message_at: '2026-08-02T16:56:00.000Z',
+      last_message_preview: 'Привет',
+      direct_peer: {
+        presence: {
+          is_online: false,
+          last_seen_at: '2026-08-02T15:55:00.000Z',
+          status_text: 'Сегодня в 20:55',
+        },
+      },
+    };
+
+    expect(getConversationHeaderSubtitle(conversation)).toMatch(/В сети|только что|мин назад|Сегодня в/);
+    expect(getConversationHeaderSubtitle(conversation)).not.toContain('20:55');
+  });
+
   it('formats notes conversation preview without presence', () => {
     const conversation = {
       kind: 'notes',

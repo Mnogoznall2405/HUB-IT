@@ -1,5 +1,5 @@
 ﻿"""
-Service for converting plain text into Markdown using OpenRouter.
+Service for converting plain text into Markdown using RouterAI.
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class MarkdownTransformService:
             raise ValueError("Неверный context. Допустимо: announcement или task.")
 
         if not openrouter_client.is_configured():
-            raise MarkdownTransformConfigError("OPENROUTER_API_KEY не задан.")
+            raise MarkdownTransformConfigError("ROUTERAI_API_KEY не задан.")
 
         model = resolve_model("markdown")
 

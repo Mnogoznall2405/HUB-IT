@@ -17,14 +17,16 @@ const withMailboxQuery = (params = {}, mailboxId) => {
   return nextParams;
 };
 
+const withSignal = (config, signal) => (signal ? { ...config, signal } : config);
+
 export const mailMessageFilesAPI = {
   downloadAttachment: async (messageId, attachmentRef, options = {}) => {
     const response = await apiClient.get(
       `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}`,
-      {
+      withSignal({
         params: withMailboxQuery({}, options?.mailboxId),
         responseType: 'blob',
-      }
+      }, options?.signal)
     );
     return response;
   },
@@ -32,9 +34,9 @@ export const mailMessageFilesAPI = {
   getAttachmentPreview: async (messageId, attachmentRef, options = {}) => {
     const response = await apiClient.get(
       `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/preview`,
-      {
+      withSignal({
         params: withMailboxQuery({}, options?.mailboxId),
-      },
+      }, options?.signal),
     );
     return response.data;
   },
@@ -42,10 +44,10 @@ export const mailMessageFilesAPI = {
   downloadAttachmentPreviewPdf: async (messageId, attachmentRef, options = {}) => (
     apiClient.get(
       `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/preview/pdf`,
-      {
+      withSignal({
         params: withMailboxQuery({}, options?.mailboxId),
         responseType: 'blob',
-      },
+      }, options?.signal),
     )
   ),
 

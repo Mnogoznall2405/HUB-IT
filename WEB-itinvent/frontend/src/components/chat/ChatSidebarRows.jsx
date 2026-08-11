@@ -242,6 +242,7 @@ function SidebarActionButton({
 function ConversationRowMeta({
   item,
   active,
+  unread,
   compactMobile,
   ui,
   theme,
@@ -270,7 +271,11 @@ function ConversationRowMeta({
         <span className={joinClasses(
           'text-right',
           compactMobile ? 'text-[12px]' : 'text-[12px]',
-          active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]',
+          active
+            ? 'text-[color:var(--chat-row-active-subtle)]'
+            : (unread
+              ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+              : 'text-[color:var(--chat-text-secondary)]'),
         )}
         >
           {formatSidebarConversationTime(item.last_message_at || item.updated_at)}
@@ -305,6 +310,8 @@ function ConversationRow({
   const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
   const active = item.id === activeConversationId;
+  const unread = unreadCount > 0;
+  const highlightUnread = unread && !active;
   const taskConversation = isTaskConversation(item);
   const taskTitle = getConversationDisplayTitle(item);
   const taskMetaLine = getTaskConversationMetaLine(item);
@@ -320,12 +327,17 @@ function ConversationRow({
     <>
       {unreadCount > 0 ? (
         <span
-          className="inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+          data-testid={`chat-unread-badge-${item.id}`}
+          aria-label={`Непрочитанных сообщений: ${unreadCount}`}
+          className="inline-flex min-w-[24px] items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
           style={{
-            backgroundColor: active ? 'rgba(255,255,255,0.16)' : 'var(--chat-unread-bg)',
-            color: active ? '#ffffff' : 'var(--chat-unread-text)',
-            height: unreadCount > 9 ? 20 : 18,
-            boxShadow: active ? 'none' : '0 1px 4px rgba(51,144,236,0.25)',
+            backgroundColor: active ? 'var(--chat-unread-active-bg)' : 'var(--chat-unread-bg)',
+            color: active ? 'var(--chat-unread-active-text)' : 'var(--chat-unread-text)',
+            minWidth: 24,
+            height: 24,
+            boxShadow: active
+              ? '0 1px 5px rgba(8,19,32,0.26)'
+              : '0 2px 9px rgba(25,118,210,0.38)',
           }}
         >
           {unreadCount}
@@ -374,6 +386,7 @@ function ConversationRow({
         onTouchMove={clearLongPress}
         aria-current={active ? 'page' : undefined}
         data-chat-active={active ? 'true' : 'false'}
+        data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
           'relative w-full overflow-hidden text-left transition duration-100 active:scale-[0.995] active:opacity-90',
           compactMobile
@@ -385,16 +398,24 @@ function ConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
-          backgroundColor: active ? 'var(--chat-sidebar-row-active)' : 'transparent',
+          backgroundColor: active
+            ? 'var(--chat-sidebar-row-active)'
+            : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
-          borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : (active ? alpha(theme.palette.primary.main, 0.18) : 'transparent'),
+          borderColor: compactMobile
+            ? 'var(--chat-sidebar-divider)'
+            : (active
+              ? alpha(theme.palette.primary.main, 0.18)
+              : (highlightUnread ? 'var(--chat-sidebar-row-unread-border)' : 'transparent')),
           boxShadow: active
             ? (
               theme.palette.mode === 'dark'
                 ? 'inset 3px 0 0 rgba(125,211,252,0.9), 0 10px 24px rgba(8,19,32,0.22)'
                 : '0 12px 30px rgba(51,144,236,0.24), inset 0 0 0 1px rgba(255,255,255,0.12)'
             )
-            : 'none',
+            : (highlightUnread
+              ? 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)'
+              : 'none'),
           outline: 'none',
         }}
       >
@@ -410,7 +431,10 @@ function ConversationRow({
               <div className="flex min-w-0 items-center gap-1.5">
                 <p className={joinClasses(
                   'min-w-0 truncate leading-[1.15] tracking-[-0.01em]',
-                  compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
+                  compactMobile ? 'text-[16px]' : 'text-[15px]',
+                  highlightUnread
+                    ? 'font-bold text-[color:var(--chat-text-strong)]'
+                    : 'font-semibold',
                 )}
                 style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
                 >
@@ -435,6 +459,7 @@ function ConversationRow({
                 compactMobile={compactMobile}
                 ui={ui}
                 theme={theme}
+                unread={highlightUnread}
               />
             </div>
 
@@ -446,7 +471,11 @@ function ConversationRow({
                     className={joinClasses(
                       'min-w-0 flex-1 truncate',
                       compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12px] leading-[1.3]',
-                      active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]',
+                      active
+                        ? 'text-[color:var(--chat-row-active-subtle)]'
+                        : (highlightUnread
+                          ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+                          : 'text-[color:var(--chat-text-secondary)]'),
                     )}
                   >
                     {taskMetaLine}{compactMobile && draftPreview ? ' • Черновик' : ''}
@@ -460,7 +489,11 @@ function ConversationRow({
                       'mt-0.5 truncate text-[12px] leading-[1.25]',
                       draftPreview
                         ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
-                        : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
+                        : (active
+                          ? 'text-[color:var(--chat-row-active-subtle)]'
+                          : (highlightUnread
+                            ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+                            : 'text-[color:var(--chat-text-secondary)]')),
                     )}
                   >
                     {taskPreviewText}
@@ -474,7 +507,11 @@ function ConversationRow({
                   compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12.5px] leading-[1.3]',
                   draftPreview
                     ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
-                    : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
+                    : (active
+                      ? 'text-[color:var(--chat-row-active-subtle)]'
+                      : (highlightUnread
+                        ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+                        : 'text-[color:var(--chat-text-secondary)]')),
                 )}
                 style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
                 >
@@ -601,6 +638,8 @@ function AiConversationRow({
   const conversationId = String(bot?.conversation_id || '').trim();
   const active = Boolean(conversationId && conversationId === String(activeConversationId || '').trim());
   const unreadCount = Number(bot?.unread_count || 0);
+  const unread = unreadCount > 0;
+  const highlightUnread = unread && !active;
   const draftPreview = String(bot?.draft_preview || '').trim();
   const previewText = draftPreview
     ? `Черновик: ${draftPreview}`
@@ -641,6 +680,7 @@ function AiConversationRow({
         disabled={opening}
         aria-current={active ? 'page' : undefined}
         data-chat-active={active ? 'true' : 'false'}
+        data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
           'relative w-full overflow-hidden text-left transition duration-100 active:scale-[0.995] active:opacity-90 disabled:opacity-60',
           compactMobile
@@ -652,16 +692,24 @@ function AiConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
-          backgroundColor: active ? 'var(--chat-sidebar-row-active)' : 'transparent',
+          backgroundColor: active
+            ? 'var(--chat-sidebar-row-active)'
+            : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
-          borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : (active ? alpha(theme.palette.primary.main, 0.18) : 'transparent'),
+          borderColor: compactMobile
+            ? 'var(--chat-sidebar-divider)'
+            : (active
+              ? alpha(theme.palette.primary.main, 0.18)
+              : (highlightUnread ? 'var(--chat-sidebar-row-unread-border)' : 'transparent')),
           boxShadow: active
             ? (
               theme.palette.mode === 'dark'
                 ? 'inset 3px 0 0 rgba(125,211,252,0.9), 0 10px 24px rgba(8,19,32,0.24)'
                 : '0 12px 30px rgba(51,144,236,0.24), inset 0 0 0 1px rgba(255,255,255,0.12)'
             )
-            : 'none',
+            : (highlightUnread
+              ? 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)'
+              : 'none'),
         }}
       >
         <div className="flex items-center gap-2.5">
@@ -670,7 +718,10 @@ function AiConversationRow({
             <div className="flex items-start justify-between gap-3">
               <p className={joinClasses(
                 'truncate leading-[1.15] tracking-[-0.01em]',
-                compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
+                compactMobile ? 'text-[16px]' : 'text-[15px]',
+                highlightUnread
+                  ? 'font-bold text-[color:var(--chat-text-strong)]'
+                  : 'font-semibold',
               )}
               style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
               >
@@ -679,7 +730,11 @@ function AiConversationRow({
               <span className={joinClasses(
                 'shrink-0 pt-0.5 text-right',
                 compactMobile ? 'text-[12px]' : 'text-[12px]',
-                active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]',
+                active
+                  ? 'text-[color:var(--chat-row-active-subtle)]'
+                  : (highlightUnread
+                    ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+                    : 'text-[color:var(--chat-text-secondary)]'),
               )}
               >
                 {formatShortTime(bot?.last_message_at || bot?.updated_at)}
@@ -692,7 +747,11 @@ function AiConversationRow({
                 compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12.5px] leading-[1.3]',
                 draftPreview
                   ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
-                  : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
+                  : (active
+                    ? 'text-[color:var(--chat-row-active-subtle)]'
+                    : (highlightUnread
+                      ? 'font-semibold text-[color:var(--chat-sidebar-unread-text)]'
+                      : 'text-[color:var(--chat-text-secondary)]')),
               )}
               style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
               >
@@ -705,12 +764,17 @@ function AiConversationRow({
               {!opening && unreadCount <= 0 && !conversationId ? <SmartToyOutlinedIcon sx={{ fontSize: 16, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
               {unreadCount > 0 ? (
                 <span
-                  className="inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+                  data-testid={`chat-unread-badge-ai-${bot?.id}`}
+                  aria-label={`Непрочитанных сообщений: ${unreadCount}`}
+                  className="inline-flex min-w-[24px] items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
                   style={{
-                    backgroundColor: active ? 'rgba(255,255,255,0.16)' : 'var(--chat-unread-bg)',
-                    color: active ? '#ffffff' : 'var(--chat-unread-text)',
-                    height: unreadCount > 9 ? 20 : 18,
-                    boxShadow: active ? 'none' : '0 1px 4px rgba(51,144,236,0.25)',
+                    backgroundColor: active ? 'var(--chat-unread-active-bg)' : 'var(--chat-unread-bg)',
+                    color: active ? 'var(--chat-unread-active-text)' : 'var(--chat-unread-text)',
+                    minWidth: 24,
+                    height: 24,
+                    boxShadow: active
+                      ? '0 1px 5px rgba(8,19,32,0.26)'
+                      : '0 2px 9px rgba(25,118,210,0.38)',
                   }}
                 >
                   {unreadCount}

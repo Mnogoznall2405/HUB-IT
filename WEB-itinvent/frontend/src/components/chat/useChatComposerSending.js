@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { chatAPI } from '../../api/client';
 import { CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { chatSocket } from '../../lib/chatSocket';
+import { resolveServerMessageFromSendAck } from '../../pages/chat/chatOptimisticMessages';
 import { buildChatDraftKey } from './chatHelpers';
 
 export default function useChatComposerSending({
@@ -112,7 +113,10 @@ export default function useChatComposerSending({
             reply_to_message_id: draftReplyMessage?.id || undefined,
             body_format: bodyFormat,
           });
-          serverMessage = response?.message || null;
+          serverMessage = resolveServerMessageFromSendAck(response, {
+            conversationId,
+            optimisticMessage,
+          });
         } catch (socketError) {
           logChatDebug('sendMessage:socketFallback', {
             conversationId,
@@ -124,11 +128,15 @@ export default function useChatComposerSending({
         }
       }
       if (!serverMessage) {
-        serverMessage = await chatAPI.sendMessage(conversationId, body, {
+        const httpMessage = await chatAPI.sendMessage(conversationId, body, {
           client_message_id: optimisticMessage?.client_message_id || undefined,
           reply_to_message_id: draftReplyMessage?.id || undefined,
           body_format: bodyFormat,
         });
+        serverMessage = resolveServerMessageFromSendAck(
+          { message: httpMessage, message_id: httpMessage?.id, ok: true },
+          { conversationId, optimisticMessage },
+        );
       }
       if (serverMessage?.id) {
         applyOutgoingThreadMessage(conversationId, serverMessage, {

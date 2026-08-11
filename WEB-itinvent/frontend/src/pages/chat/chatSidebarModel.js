@@ -12,6 +12,6 @@ export const buildConversationFilterCounts = (conversations) => (
 );
 
 export const filterSidebarConversations = (conversations, conversationFilter, conversationIdsByFolder = {}) => {
-  const folderKey = conversationFilter === 'direct' ? 'personal' : String(conversationFilter || 'all');
+  const folderKey = conversationFilter === 'direct' ? 'personal' : String(conversationFilter || 'personal');
   return filterSidebarConversationsByFolder(conversations, folderKey, conversationIdsByFolder);
 };

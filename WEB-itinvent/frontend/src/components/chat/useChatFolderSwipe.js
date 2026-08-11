@@ -18,10 +18,10 @@ const resetSwipeState = () => ({
 
 export function useChatFolderSwipe({
   enabled = false,
-  activeFolderKey = 'all',
+  activeFolderKey = 'personal',
   customFolders = [],
   onFolderChange,
-  includeAllTab = true,
+  includeAllTab = false,
 }) {
   const [scrollElement, setScrollElementState] = useState(null);
   const swipeRef = useRef(resetSwipeState());

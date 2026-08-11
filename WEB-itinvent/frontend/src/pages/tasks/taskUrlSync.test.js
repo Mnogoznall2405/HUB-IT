@@ -26,6 +26,7 @@ describe('taskUrlSync', () => {
       focusMode: 'overdue',
       hasAttachments: true,
       unreadCommentsOnly: true,
+      dateSortDirection: 'asc',
     }, { canManageAllTasks: false });
 
     expect(params.get('task_mode')).toBe('board');
@@ -33,6 +34,15 @@ describe('taskUrlSync', () => {
     expect(params.get('task_files')).toBe('1');
     expect(params.get('task_unread_comments')).toBe('1');
     expect(params.get('task_focus')).toBe('overdue');
+    expect(params.get('task_date_sort')).toBe('asc');
+  });
+
+  it('omits the default newest-first date sort from search params', () => {
+    const params = applyTaskListFiltersToSearchParams(new URLSearchParams('task_date_sort=asc'), {
+      dateSortDirection: 'desc',
+    });
+
+    expect(params.get('task_date_sort')).toBeNull();
   });
 
   it('omits task_q when debounced search is empty', () => {

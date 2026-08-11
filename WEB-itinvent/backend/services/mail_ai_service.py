@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 MAX_BODY_CHARS = 6000
 MAX_SUBJECT_CHARS = 300
+SMART_REPLIES_MODEL = "deepseek/deepseek-v4-flash-0731"
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -91,8 +92,19 @@ def _extract_summary(payload: dict[str, Any] | None) -> str:
 
 
 class MailAiService:
-    def _complete_json(self, *, system_prompt: str, user_prompt: str, response_schema: dict[str, Any], schema_name: str, max_tokens: int, temperature: float) -> dict[str, Any]:
-        model = _resolve_mail_model()
+    def _complete_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        response_schema: dict[str, Any],
+        schema_name: str,
+        max_tokens: int,
+        temperature: float,
+        model: str | None = None,
+        thinking: bool | None = None,
+    ) -> dict[str, Any]:
+        resolved_model = model or _resolve_mail_model()
         request_kwargs: dict[str, Any] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -103,14 +115,16 @@ class MailAiService:
             "schema_name": schema_name,
             "response_healing": False,
         }
-        if model:
-            request_kwargs["model"] = model
+        if resolved_model:
+            request_kwargs["model"] = resolved_model
+        if thinking is not None:
+            request_kwargs["thinking"] = thinking
         payload, _usage = openrouter_client.complete_json(**request_kwargs)
         return payload if isinstance(payload, dict) else {}
 
     def summarize_message(self, message: dict[str, Any]) -> dict[str, str]:
         if not openrouter_client.is_configured():
-            raise MailAiServiceError("AI не настроен: проверьте OPENROUTER_API_KEY в .env и перезапустите backend.")
+            raise MailAiServiceError("AI не настроен: проверьте ROUTERAI_API_KEY в .env и перезапустите backend.")
         _subject, user_prompt = _build_message_prompt(message)
         try:
             payload = self._complete_json(
@@ -135,7 +149,7 @@ class MailAiService:
 
     def smart_replies(self, message: dict[str, Any]) -> dict[str, list[str]]:
         if not openrouter_client.is_configured():
-            raise MailAiServiceError("AI не настроен: проверьте OPENROUTER_API_KEY в .env и перезапустите backend.")
+            raise MailAiServiceError("AI не настроен: проверьте ROUTERAI_API_KEY в .env и перезапустите backend.")
         _subject, user_prompt = _build_message_prompt(message)
         try:
             payload = self._complete_json(
@@ -146,9 +160,11 @@ class MailAiService:
                 ),
                 user_prompt=user_prompt,
                 temperature=0.4,
-                max_tokens=250,
+                max_tokens=512,
                 response_schema=SMART_REPLIES_SCHEMA,
                 schema_name="mail_smart_replies",
+                model=SMART_REPLIES_MODEL,
+                thinking=False,
             )
         except OpenRouterClientError as exc:
             logger.warning("Mail smart replies failed: %s", exc)

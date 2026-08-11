@@ -3729,6 +3729,40 @@ describe('chatAttachmentsAPI contract', () => {
     );
   });
 
+  it('passes abort signals through preview metadata and PDF requests', async () => {
+    const { chatAttachmentsAPI } = await importChatAttachmentsAPI();
+    const controller = new AbortController();
+    const pdfResponse = {
+      data: new Blob(['%PDF'], { type: 'application/pdf' }),
+      headers: { 'content-type': 'application/pdf' },
+    };
+    apiClientMock.get
+      .mockResolvedValueOnce({ data: { status: 'ready', preview_kind: 'office_pdf' } })
+      .mockResolvedValueOnce(pdfResponse);
+
+    await expect(chatAttachmentsAPI.getAttachmentPreview(
+      'msg/1 A',
+      'att/2 B',
+      { signal: controller.signal },
+    )).resolves.toMatchObject({ status: 'ready' });
+    await expect(chatAttachmentsAPI.downloadAttachmentPreviewPdf(
+      'msg/1 A',
+      'att/2 B',
+      { signal: controller.signal },
+    )).resolves.toBe(pdfResponse);
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(
+      1,
+      '/chat/messages/msg%2F1%20A/attachments/att%2F2%20B/preview',
+      { signal: controller.signal },
+    );
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(
+      2,
+      '/chat/messages/msg%2F1%20A/attachments/att%2F2%20B/preview/pdf',
+      { responseType: 'blob', signal: controller.signal },
+    );
+  });
+
   it('keeps client chat attachment methods compatible with the dedicated module and re-export', async () => {
     const { chatAttachmentsAPI } = await importChatAttachmentsAPI();
     const {
@@ -3996,6 +4030,7 @@ describe('chatFileUploadsAPI contract', () => {
       preparedSize: displayFile.size,
       transferSize: transferFile.size,
       transferEncoding: 'gzip',
+      media_kind: 'file',
     }], { body: 'gzip transport' })).resolves.toEqual({ id: 'msg-2' });
 
     expect(createSpy.mock.calls[0][1]).toEqual({
@@ -4007,6 +4042,7 @@ describe('chatFileUploadsAPI contract', () => {
         size: transferFile.size,
         original_size: displayFile.size,
         transfer_encoding: 'gzip',
+        media_kind: 'file',
       }],
     });
     expect(uploadSpy.mock.calls[0][3]).toBeInstanceOf(Blob);
@@ -4029,7 +4065,11 @@ describe('chatFileUploadsAPI contract', () => {
       }));
     apiClientMock.post.mockResolvedValue({ data: { ok: true } });
 
-    await expect(chatFileUploadsAPI.sendFiles('conv-1', [file], {
+    await expect(chatFileUploadsAPI.sendFiles('conv-1', [{
+      file,
+      transferFile: file,
+      media_kind: 'file',
+    }], {
       body: '  fallback  ',
       signal: controller.signal,
       onUploadProgress: progress,
@@ -4045,6 +4085,7 @@ describe('chatFileUploadsAPI contract', () => {
     expect(JSON.parse(String(multipartCall[1].get('files_meta_json') || '[]'))).toEqual([{
       original_size: file.size,
       transfer_encoding: 'identity',
+      media_kind: 'file',
     }]);
     expect(multipartCall[2]).toEqual({
       onUploadProgress: progress,
@@ -4849,6 +4890,38 @@ describe('hubTaskFilesAPI', () => {
     );
   });
 
+  it('polls and downloads task attachment previews through dedicated endpoints', async () => {
+    const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
+    const metadata = { status: 'ready', preview_kind: 'office_pdf' };
+    const pdfResponse = { data: new Blob(['pdf']), headers: { 'content-type': 'application/pdf' } };
+    apiClientMock.get
+      .mockResolvedValueOnce({ data: metadata })
+      .mockResolvedValueOnce(pdfResponse);
+    const controller = new AbortController();
+
+    await expect(hubTaskFilesAPI.getTaskAttachmentPreview({
+      taskId: 'task/1',
+      attachmentId: 'file 1',
+      signal: controller.signal,
+    })).resolves.toEqual(metadata);
+    await expect(hubTaskFilesAPI.downloadTaskAttachmentPreviewPdf({
+      taskId: 'task/1',
+      attachmentId: 'file 1',
+      signal: controller.signal,
+    })).resolves.toBe(pdfResponse);
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(
+      1,
+      '/hub/tasks/task%2F1/attachments/file%201/preview',
+      { signal: controller.signal },
+    );
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(
+      2,
+      '/hub/tasks/task%2F1/attachments/file%201/preview/pdf',
+      { responseType: 'blob', signal: controller.signal },
+    );
+  });
+
   it('returns the raw blob response when downloading task reports', async () => {
     const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
     const blobResponse = { data: new Blob(['report']), headers: { 'content-type': 'application/pdf' } };
@@ -4869,6 +4942,8 @@ describe('hubTaskFilesAPI', () => {
     expect(clientHubTaskFilesAPI).toBe(hubTaskFilesAPI);
     expect(hubAPI.uploadTaskAttachment).toBe(hubTaskFilesAPI.uploadTaskAttachment);
     expect(hubAPI.downloadTaskAttachment).toBe(hubTaskFilesAPI.downloadTaskAttachment);
+    expect(hubAPI.getTaskAttachmentPreview).toBe(hubTaskFilesAPI.getTaskAttachmentPreview);
+    expect(hubAPI.downloadTaskAttachmentPreviewPdf).toBe(hubTaskFilesAPI.downloadTaskAttachmentPreviewPdf);
     expect(hubAPI.downloadTaskReport).toBe(hubTaskFilesAPI.downloadTaskReport);
   });
 });
@@ -5866,7 +5941,7 @@ describe('scanIncidentsAPI contract', () => {
       .resolves.toEqual({ total: 1, items: [] });
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/scan/incidents', {
-      params,
+      params: { view: 'summary', ...params },
       signal: controller.signal,
     });
   });
@@ -5880,7 +5955,7 @@ describe('scanIncidentsAPI contract', () => {
       .resolves.toEqual({ total: 1, items: [] });
 
     expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/scan/hosts/HOST%2F1%20A/scan-runs', {
-      params: { limit: 30, offset: 0 },
+      params: { view: 'summary', limit: 30, offset: 0 },
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/scan/tasks/task%2F1%20A/observations', {
       params: { limit: 10, offset: 5 },
@@ -5952,6 +6027,7 @@ describe('scanTasksAPI contract', () => {
     'getPatterns',
     'getTasks',
     'createTask',
+    'getTaskSystemMetrics',
   ];
 
   beforeEach(() => {
@@ -5988,7 +6064,9 @@ describe('scanTasksAPI contract', () => {
 
     await expect(scanTasksAPI.getTasks(params)).resolves.toEqual({ total: 1, items: [] });
 
-    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/tasks', { params });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/tasks', {
+      params: { view: 'summary', ...params },
+    });
   });
 
   it('posts createTask payloads unchanged through the dedicated scan tasks module', async () => {
@@ -6006,6 +6084,46 @@ describe('scanTasksAPI contract', () => {
     await expect(scanTasksAPI.createTask(payload)).resolves.toEqual({ ok: true });
 
     expect(apiClientMock.post).toHaveBeenCalledWith('/scan/tasks', payload);
+  });
+
+  it('requests chart system metrics with a 6h window and 500 point cap by default', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
+    try {
+      const { scanTasksAPI } = await importScanTasksAPI();
+      apiClientMock.get.mockResolvedValueOnce({ data: { series: [] } });
+
+      await expect(scanTasksAPI.getTaskSystemMetrics('task-42')).resolves.toEqual({ series: [] });
+
+      expect(apiClientMock.get).toHaveBeenCalledWith('/scan/tasks/task-42/system-metrics', {
+        params: {
+          max_points: 500,
+          view: 'chart',
+          from_ts: Math.floor(Date.parse('2026-08-05T12:00:00.000Z') / 1000) - 6 * 3600,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows overriding chart system metrics query params', async () => {
+    const { scanTasksAPI } = await importScanTasksAPI();
+    apiClientMock.get.mockResolvedValueOnce({ data: { series: [] } });
+
+    await scanTasksAPI.getTaskSystemMetrics('task-42', {
+      view: 'raw',
+      max_points: 120,
+      from_ts: 1700000000,
+    });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/tasks/task-42/system-metrics', {
+      params: {
+        max_points: 120,
+        view: 'raw',
+        from_ts: 1700000000,
+      },
+    });
   });
 
   it('keeps client scanAPI task methods compatible with the dedicated module and re-export', async () => {
@@ -6260,6 +6378,7 @@ describe('scanAPI table endpoints', () => {
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/scan/tasks', {
       params: {
+        view: 'summary',
         agent_id: 'agent-1',
         status: 'active',
         command: 'scan_now',

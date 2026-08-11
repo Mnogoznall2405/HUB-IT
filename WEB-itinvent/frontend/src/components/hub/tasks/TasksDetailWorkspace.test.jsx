@@ -109,6 +109,23 @@ describe('TasksDetailWorkspace', () => {
     expect(onOpenMobileChecklist).toHaveBeenCalled();
   });
 
+  it('offers task attachment preview on mobile', () => {
+    renderWorkspace({
+      isMobile: true,
+      task: {
+        ...baseTask,
+        attachments: [{
+          id: 'attachment-1',
+          file_name: 'manual.pdf',
+          file_mime: 'application/pdf',
+          file_size: 1024,
+        }],
+      },
+    });
+
+    expect(screen.getByRole('button', { name: 'Предпросмотр manual.pdf' })).toBeInTheDocument();
+  });
+
   it('renders mobile checklist screen when selected view is checklist', () => {
     renderWorkspace({
       isMobile: true,

@@ -85,6 +85,7 @@ export default function useChatPageRealtimeEffects({
     messagesRef,
     sidebarSearchActive,
     shouldPollActiveThreadIncrementally,
+    socketStatus,
     threadPollMs,
   });
 

@@ -38,6 +38,14 @@ def test_fio_different_surnames_do_not_match():
     assert fio_person_match_score("Иванов Петр", "Петров Иванов") == 0
 
 
+def test_fio_treats_yo_and_ye_as_equivalent():
+    score = fio_person_match_score(
+        "Лераман Алена Юрьевна",
+        "Лераман Алёна Юрьевна",
+    )
+    assert score == 100
+
+
 def test_tokenize_hub_text_keeps_hyphenated_part_no():
     tokens = tokenize_hub_text("BE850G2-RS")
     assert "be850g2-rs" in tokens

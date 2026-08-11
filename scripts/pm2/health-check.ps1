@@ -1,6 +1,8 @@
 param(
     [string]$BackendUrl = 'http://127.0.0.1:8001/health',
     [string]$BackendReadyUrl = 'http://127.0.0.1:8001/health/ready',
+    [string]$ChatUrl = 'http://127.0.0.1:8002/health',
+    [string]$ChatReadyUrl = 'http://127.0.0.1:8002/health/ready',
     [string]$BackendSecondaryUrl = '',
     [string]$BackendSecondaryReadyUrl = '',
     [string]$InventoryUrl = 'http://127.0.0.1:8012/health',
@@ -218,26 +220,37 @@ function Test-BackendChatRuntime {
         $payload = Invoke-RestMethod -Uri $Url -TimeoutSec 5
     } catch {
         return [pscustomobject]@{
-            Name    = $Name
-            Status  = 'fail'
-            Details = $_.Exception.Message
+            Name         = $Name
+            Status       = 'fail'
+            Details      = $_.Exception.Message
+            RealtimeMode = ''
+            ServedBy     = ''
         }
     }
 
     if (-not $payload.chat) {
         return [pscustomobject]@{
-            Name    = $Name
-            Status  = 'warn'
-            Details = 'chat snapshot missing from /health'
+            Name         = $Name
+            Status       = 'warn'
+            Details      = 'chat snapshot missing from /health'
+            RealtimeMode = ''
+            ServedBy     = ''
         }
     }
 
     $chat = $payload.chat
+    $realtimeMode = [string]$chat.realtime_mode
+    $servedBy = [string]$chat.served_by
+    $delegatedExternal = $realtimeMode -eq 'external' -and $servedBy -eq 'chat-api'
     $redisConfigured = [bool]$chat.redis_configured
     $redisReady = [bool]$chat.redis_available -and [bool]$chat.pubsub_subscribed
     $chatAvailable = [bool]$chat.available
     $eventDispatcherActive = [bool]$chat.event_dispatcher_active
-    $status = if (-not $chatAvailable) {
+    $status = if ($delegatedExternal) {
+        # The API role intentionally does not host Chat in split mode. The
+        # delegated Chat process is probed separately below.
+        'ok'
+    } elseif (-not $chatAvailable) {
         'fail'
     } elseif (-not $eventDispatcherActive) {
         'fail'
@@ -249,6 +262,8 @@ function Test-BackendChatRuntime {
 
     $details = @(
         "mode=$($chat.realtime_mode)"
+        "served_by=$($chat.served_by)"
+        "delegated_external=$delegatedExternal"
         "available=$($chat.available)"
         "redis_configured=$($chat.redis_configured)"
         "redis_available=$($chat.redis_available)"
@@ -262,9 +277,11 @@ function Test-BackendChatRuntime {
     ) -join ' '
 
     return [pscustomobject]@{
-        Name    = $Name
-        Status  = $status
-        Details = $details
+        Name         = $Name
+        Status       = $status
+        Details      = $details
+        RealtimeMode = $realtimeMode
+        ServedBy     = $servedBy
     }
 }
 
@@ -449,9 +466,12 @@ $healthRows = @(
     Test-HttpHealth -Name 'inventory-health' -Url $InventoryUrl
     Test-HttpHealth -Name 'scan-health' -Url $ScanUrl
 )
-$chatRuntimeRows = @(
-    Test-BackendChatRuntime -Name 'backend-chat-runtime' -Url $BackendReadyUrl
-)
+$backendChatRuntime = Test-BackendChatRuntime -Name 'backend-chat-runtime' -Url $BackendReadyUrl
+$chatRuntimeRows = @($backendChatRuntime)
+if ($backendChatRuntime.RealtimeMode -eq 'external') {
+    $healthRows += Test-HttpHealth -Name 'chat-health' -Url $ChatUrl
+    $chatRuntimeRows += Test-BackendChatRuntime -Name 'chat-runtime' -Url $ChatReadyUrl
+}
 if ($BackendSecondaryUrl) {
     $healthRows += Test-HttpHealth -Name 'backend-secondary-health' -Url $BackendSecondaryUrl
 }
@@ -463,10 +483,12 @@ if ($BackendSecondaryReadyUrl) {
 }
 $pm2RuntimeRows = @(
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-backend'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-preview-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-mail-notification-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-chat-push-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-chat-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-my-files-worker'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-hub-notifications-retention-worker'
 )
 $healthRows | Format-Table Name, Status, Details -AutoSize
 Write-Host 'Chat runtime checks:' -ForegroundColor Cyan
@@ -484,15 +506,18 @@ $scanRuntimeRows | Format-Table Name, Status, Details -AutoSize
 if (@($scanRuntimeRows | Where-Object { $_.Name -eq 'scan-runtime' -and $_.Status -eq 'fail' }).Count -gt 0) {
     Write-Host 'Scan runtime mismatch detected. Run recovery:' -ForegroundColor Red
     if ($RepairScan) {
-        Write-Host 'RepairScan: restarting itinvent-scan and itinvent-scan-worker...' -ForegroundColor Cyan
+        Write-Host 'RepairScan: running restart-scan.ps1 (stop + orphan cleanup + start)...' -ForegroundColor Cyan
         try {
-            $pm2Cmd = Resolve-Pm2Command
-            & $pm2Cmd restart itinvent-scan itinvent-scan-worker --update-env | Out-Null
+            $repairScanScript = Join-Path $projectRoot 'scripts\pm2\restart-scan.ps1'
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $repairScanScript
+            if ($LASTEXITCODE -ne 0) {
+                throw "restart-scan.ps1 failed with exit code $LASTEXITCODE"
+            }
         } catch {
             Write-Host "RepairScan failed: $($_.Exception.Message)" -ForegroundColor Red
         }
     } else {
-        Write-Host 'Run: pm2 restart itinvent-scan itinvent-scan-worker --update-env' -ForegroundColor Yellow
+        Write-Host 'Run: powershell -File scripts\pm2\restart-scan.ps1' -ForegroundColor Yellow
         Write-Host 'Or:  powershell -File scripts\pm2\health-check.ps1 -RepairScan' -ForegroundColor Yellow
     }
 }

@@ -64,6 +64,7 @@ describe('TaskCard', () => {
   it('renders desktop card with action buttons', () => {
     const onOpen = vi.fn();
     const onCopyLink = vi.fn();
+    const onDelete = vi.fn();
     render(
       <ThemeProvider theme={theme}>
         <TaskCard
@@ -72,7 +73,9 @@ describe('TaskCard', () => {
           isMobile={false}
           ui={ui}
           canEdit
+          canDelete
           onOpen={onOpen}
+          onDelete={onDelete}
           onCopyLink={onCopyLink}
         />
       </ThemeProvider>,
@@ -81,5 +84,8 @@ describe('TaskCard', () => {
     expect(screen.getByText('Проверить акт')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Скопировать ссылку/i }));
     expect(onCopyLink).toHaveBeenCalledWith(baseTask);
+    fireEvent.click(screen.getByRole('button', { name: `Удалить задачу «${baseTask.title}»` }));
+    expect(onDelete).toHaveBeenCalledWith(baseTask);
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

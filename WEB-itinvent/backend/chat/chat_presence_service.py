@@ -40,6 +40,76 @@ class ChatPresenceService:
             self._service._build_presence_payload(is_online=False, last_seen_at=None),
         )
 
+    def refresh_presence_on_conversation_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Recompute embedded presence on cached conversation rows (status_text goes stale fast)."""
+        rows = [dict(item) for item in list(items or []) if isinstance(item, dict)]
+        if not rows:
+            return rows
+        user_ids: set[int] = set()
+        for item in rows:
+            peer = item.get("direct_peer") if isinstance(item.get("direct_peer"), dict) else {}
+            peer_id = int(peer.get("id") or 0)
+            if peer_id > 0:
+                user_ids.add(peer_id)
+            for member in list(item.get("member_preview") or []):
+                if not isinstance(member, dict):
+                    continue
+                user = member.get("user") if isinstance(member.get("user"), dict) else member
+                uid = int((user or {}).get("id") or 0)
+                if uid > 0:
+                    user_ids.add(uid)
+        presence_map = self._get_presence_map(user_ids=user_ids) if user_ids else {}
+
+        def _with_activity(user_id: int, presence: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+            _ = user_id
+            payload = dict(presence or self._service._build_presence_payload(is_online=False, last_seen_at=None))
+            # A peer message newer than last_seen proves they were active then.
+            if not bool(item.get("last_message_is_own")):
+                activity_at = _parse_dt(item.get("last_message_at") or item.get("updated_at"))
+                current_last_seen = _parse_dt(payload.get("last_seen_at"))
+                if activity_at is not None and (current_last_seen is None or activity_at > current_last_seen):
+                    now = _utc_now()
+                    recently_active = (now - activity_at) <= CHAT_PRESENCE_ONLINE_WINDOW
+                    return self._service._build_presence_payload(
+                        is_online=bool(payload.get("is_online")) or recently_active,
+                        last_seen_at=activity_at,
+                    )
+            return payload
+
+        refreshed: list[dict[str, Any]] = []
+        for item in rows:
+            next_item = dict(item)
+            peer = next_item.get("direct_peer") if isinstance(next_item.get("direct_peer"), dict) else None
+            if peer is not None:
+                peer_id = int(peer.get("id") or 0)
+                if peer_id > 0:
+                    next_item["direct_peer"] = {
+                        **peer,
+                        "presence": _with_activity(peer_id, presence_map.get(peer_id) or {}, next_item),
+                    }
+            preview = list(next_item.get("member_preview") or [])
+            if preview:
+                next_preview = []
+                for member in preview:
+                    if not isinstance(member, dict):
+                        next_preview.append(member)
+                        continue
+                    user = member.get("user") if isinstance(member.get("user"), dict) else None
+                    if user is None:
+                        next_preview.append(member)
+                        continue
+                    uid = int(user.get("id") or 0)
+                    next_preview.append({
+                        **member,
+                        "user": {
+                            **user,
+                            "presence": _with_activity(uid, presence_map.get(uid) or {}, next_item),
+                        },
+                    })
+                next_item["member_preview"] = next_preview
+            refreshed.append(next_item)
+        return refreshed
+
     def _get_presence_map(self, *, user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None) -> dict[int, dict]:
         normalized_ids = sorted({int(item) for item in list(user_ids or []) if int(item) > 0})
         cache_key = ",".join(str(i) for i in normalized_ids) if normalized_ids else "__all__"

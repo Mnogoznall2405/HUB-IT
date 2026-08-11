@@ -97,9 +97,14 @@ if ($listener.Count -eq 0) {
 
 Write-Host "Port $Port listener PID: $($listener[0])" -ForegroundColor Green
 
-Write-Host 'PM2: restarting scan services to reload shared JWT auth config...' -ForegroundColor Cyan
-& $pm2Cmd restart itinvent-scan itinvent-scan-worker --update-env | Out-Null
-Start-Sleep -Seconds 5
+# Bare `pm2 restart` on Windows often leaves orphan python -m scan_server*
+# holding singleton locks while PM2 spawns replacements → restart storm.
+Write-Host 'PM2: safely reloading scan services (stop + orphan cleanup + start)...' -ForegroundColor Cyan
+$restartScan = Join-Path $projectRoot 'scripts\pm2\restart-scan.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $restartScan
+if ($LASTEXITCODE -ne 0) {
+    throw "restart-scan.ps1 failed with exit code $LASTEXITCODE"
+}
 
 $logs = & $pm2Cmd logs $ProcessName --lines 10 --nostream 2>$null
 $uvicornLine = $logs | Select-String 'Uvicorn running on http://127.0.0.1:' | Select-Object -Last 1

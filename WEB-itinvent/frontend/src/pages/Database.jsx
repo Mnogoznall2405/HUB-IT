@@ -77,6 +77,7 @@ import {
 import { executeMaintenanceAction, getActionErrorMessage } from './database/actionExecution';
 import { useDatabaseSearch } from './database/useDatabaseSearch';
 import { useDatabaseActSearch } from './database/useDatabaseActSearch';
+import { useDatabaseEmployeeFallback } from './database/useDatabaseEmployeeFallback';
 import { useDatabaseLookups } from './database/useDatabaseLookups';
 import { useDatabaseSelection } from './database/useDatabaseSelection';
 import { useDatabaseAddWorkflows } from './database/useDatabaseAddWorkflows';
@@ -109,6 +110,7 @@ import DatabaseSearchBar, {
   SEARCH_SCOPE_EQUIPMENT,
 } from './database/DatabaseSearchBar';
 import DatabaseActSearchResults from './database/DatabaseActSearchResults';
+import DatabaseEmployeeSearchFallback from './database/DatabaseEmployeeSearchFallback';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import DatabaseDesktopToolbar from './database/DatabaseDesktopToolbar';
 import DatabaseMobileHeader from './database/DatabaseMobileHeader';
@@ -360,6 +362,7 @@ function Database() {
     handleSearchKeyDown,
     clearSearch,
     runSearchNow,
+    appliedSearchQuery,
   } = useDatabaseSearch({
     allEquipment,
     selectedBranch,
@@ -504,6 +507,21 @@ function Database() {
   }, [applyPersistedBranchForDatabase, branches, db_name]);
 
   const displayData = filteredData !== null ? filteredData : equipment;
+  const hubSearchEmpty = Boolean(
+    filteredData !== null
+    && Object.keys(filteredData || {}).length === 0,
+  );
+  const employeeFallback = useDatabaseEmployeeFallback({
+    enabled: Boolean(
+      canViewWarehouse1C
+      && !isConsumablesMode
+      && searchScope === SEARCH_SCOPE_EQUIPMENT
+      && !modeLoading,
+    ),
+    searchQuery,
+    appliedSearchQuery,
+    hubSearchEmpty,
+  });
   const canAutoLoadMoreEquipment = filteredData === null && Boolean(nextEquipmentPage) && !modeLoading;
   const equipmentLoadMoreSentinelRef = useDatabaseEquipmentInfiniteScroll({
     enabled: canAutoLoadMoreEquipment,
@@ -1249,19 +1267,37 @@ function Database() {
     open: false,
     ownerNo: null,
     employeeName: '',
+    warehouseRef: '',
+    stackAboveParent: false,
   });
 
-  const handleOpenEmployee = useCallback(({ ownerNo, employeeName }) => {
-    if (!ownerNo) return;
+  const handleOpenEmployee = useCallback(({ ownerNo, employeeName, warehouseRef = '' }) => {
+    const normalizedEmployeeName = String(employeeName || '').trim();
+    const normalizedWarehouseRef = String(warehouseRef || '').trim();
+    if (!ownerNo && !normalizedEmployeeName && !normalizedWarehouseRef) return;
+    if (!ownerNo && !canViewWarehouse1C) return;
+    // Close equipment card first — otherwise it stays on top and the employee
+    // dialog only becomes visible after the equipment window is closed.
+    if (detailModal.open) {
+      handleDetailClose();
+    }
     setEmployeeEquipmentDialog({
       open: true,
-      ownerNo,
-      employeeName: String(employeeName || '').trim(),
+      ownerNo: ownerNo || null,
+      employeeName: normalizedEmployeeName,
+      warehouseRef: normalizedWarehouseRef,
+      stackAboveParent: false,
     });
-  }, []);
+  }, [canViewWarehouse1C, detailModal.open, handleDetailClose]);
 
   const handleCloseEmployeeEquipmentDialog = useCallback(() => {
-    setEmployeeEquipmentDialog({ open: false, ownerNo: null, employeeName: '' });
+    setEmployeeEquipmentDialog({
+      open: false,
+      ownerNo: null,
+      employeeName: '',
+      warehouseRef: '',
+      stackAboveParent: false,
+    });
   }, []);
 
   const handleOpenEquipmentFromEmployee = useCallback(async (invNo, meta = {}) => {
@@ -1282,6 +1318,14 @@ function Database() {
       }
     }
 
+    // Close employee overlay so the equipment card is not hidden underneath it.
+    setEmployeeEquipmentDialog({
+      open: false,
+      ownerNo: null,
+      employeeName: '',
+      warehouseRef: '',
+      stackAboveParent: false,
+    });
     const item = findEquipmentByInvNo?.(normalized);
     openDetailView(item || normalized, { invNo: normalized, loading: !item });
   }, [currentDb?.id, db_name, findEquipmentByInvNo, notifyDatabaseError, openDetailView]);
@@ -1340,12 +1384,19 @@ function Database() {
         }
         handled = true;
       }
-    } else if (reopenEmployee?.ownerNo || (reopenDetail?.kind === 'employee' && reopenDetail?.ownerNo)) {
+    } else if (
+      reopenEmployee?.ownerNo
+      || reopenEmployee?.employeeName
+      || reopenEmployee?.warehouseRef
+      || (reopenDetail?.kind === 'employee' && (reopenDetail?.ownerNo || reopenDetail?.employeeName))
+    ) {
       const employee = reopenEmployee || reopenDetail;
       setEmployeeEquipmentDialog({
         open: true,
-        ownerNo: employee.ownerNo,
+        ownerNo: employee.ownerNo || null,
         employeeName: String(employee.employeeName || '').trim(),
+        warehouseRef: String(employee.warehouseRef || '').trim(),
+        stackAboveParent: false,
       });
       handled = true;
     }
@@ -1478,6 +1529,14 @@ function Database() {
           onChange={handleSearchChange}
           onKeyDown={handleCombinedSearchKeyDown}
           onClear={clearSearch}
+        />
+
+        <DatabaseEmployeeSearchFallback
+          {...employeeFallback}
+          theme={theme}
+          ui={ui}
+          onOpenEmployee={handleOpenEmployee}
+          onRetry={employeeFallback.retry}
         />
 
         {isMobile && !isActsScope && (
@@ -1661,6 +1720,7 @@ function Database() {
             ) : (
               <>
             {dataSections || (
+              employeeFallback.active ? null :
               !selectedBranch ? (
                 <Box sx={{ textAlign: 'center', py: 8 }}>
                   <Typography color="text.secondary">Выберите филиал</Typography>
@@ -1877,14 +1937,17 @@ function Database() {
           formatHistoryTransition={formatHistoryTransition}
           onOpenEmployee={handleOpenEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}
+          disableEnforceFocus={employeeEquipmentDialog.open}
         />
 
         <EmployeeEquipmentDialog
           open={employeeEquipmentDialog.open}
           ownerNo={employeeEquipmentDialog.ownerNo}
           employeeName={employeeEquipmentDialog.employeeName}
+          warehouseRef={employeeEquipmentDialog.warehouseRef}
           canViewWarehouse1C={canViewWarehouse1C}
           allowCrossDatabase={isAdmin}
+          stackAboveParent={employeeEquipmentDialog.stackAboveParent}
           onClose={handleCloseEmployeeEquipmentDialog}
           onOpenInvNo={handleOpenEquipmentFromEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}

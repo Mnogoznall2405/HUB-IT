@@ -63,16 +63,21 @@ describe('chatSessionStorage helpers', () => {
 });
 
 describe('chatUnreadRefresh', () => {
-  it('dispatches unread and hub refresh events', () => {
+  it('trailing-coalesces unread and hub refresh events', () => {
+    vi.useFakeTimers();
     const unreadHandler = vi.fn();
     const hubHandler = vi.fn();
     window.addEventListener('chat-unread-needs-refresh', unreadHandler);
     window.addEventListener('hub-refresh-notifications', hubHandler);
     emitChatUnreadRefresh();
+    emitChatUnreadRefresh();
+    expect(unreadHandler).toHaveBeenCalledTimes(0);
+    vi.advanceTimersByTime(2000);
     expect(unreadHandler).toHaveBeenCalledTimes(1);
     expect(hubHandler).toHaveBeenCalledTimes(1);
     window.removeEventListener('chat-unread-needs-refresh', unreadHandler);
     window.removeEventListener('hub-refresh-notifications', hubHandler);
+    vi.useRealTimers();
   });
 });
 

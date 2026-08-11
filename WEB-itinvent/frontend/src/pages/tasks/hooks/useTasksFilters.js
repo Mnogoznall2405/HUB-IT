@@ -58,6 +58,7 @@ export default function useTasksFilters({
   const [hasAttachments, setHasAttachments] = useState(initialFilters.hasAttachments);
   const [unreadCommentsOnly, setUnreadCommentsOnly] = useState(initialFilters.unreadCommentsOnly);
   const [focusMode, setFocusMode] = useState(initialFilters.focusMode || 'all');
+  const [dateSortDirection, setDateSortDirection] = useState(initialFilters.dateSortDirection);
   const [showFilters, setShowFilters] = useState(false);
   const [mobileBoardFiltersOpen, setMobileBoardFiltersOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(() => Boolean(initialFilters.q));
@@ -113,6 +114,7 @@ export default function useTasksFilters({
     setHasAttachments((prev) => (prev === next.hasAttachments ? prev : next.hasAttachments));
     setUnreadCommentsOnly((prev) => (prev === next.unreadCommentsOnly ? prev : next.unreadCommentsOnly));
     setFocusMode((prev) => (prev === (next.focusMode || 'all') ? prev : (next.focusMode || 'all')));
+    setDateSortDirection((prev) => (prev === next.dateSortDirection ? prev : next.dateSortDirection));
   }, [location.search, canManageAllTasks, canUseControllerTab]);
 
   useEffect(() => {
@@ -130,12 +132,14 @@ export default function useTasksFilters({
         hasAttachments,
         unreadCommentsOnly,
         focusMode,
+        dateSortDirection,
       }, { canManageAllTasks });
     });
   }, [
     assigneeFilter,
     canManageAllTasks,
     controllerFilter,
+    dateSortDirection,
     departmentFilter,
     dueState,
     focusMode,
@@ -301,6 +305,8 @@ export default function useTasksFilters({
     setUnreadCommentsOnly,
     focusMode,
     setFocusMode,
+    dateSortDirection,
+    setDateSortDirection,
     showFilters,
     setShowFilters,
     mobileBoardFiltersOpen,

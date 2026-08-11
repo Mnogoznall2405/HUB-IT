@@ -107,8 +107,18 @@ class SessionConfig:
 
     idle_timeout_minutes: int = 30
     idle_timeout_trusted_days: int = 7
+    idle_timeout_internal_days: int = 7
+    refresh_rotation_grace_seconds: int = 15
     history_retention_days: int = 14
     cleanup_min_interval_seconds: int = 300
+
+
+def _clamp_min_int(value: object, *, default: int, minimum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(int(minimum), int(parsed))
 
 
 @dataclass
@@ -150,6 +160,13 @@ class ChatConfig:
     database_url: Optional[str] = None
     pool_size: int = 5
     max_overflow: int = 10
+    # Dual pools (same URL). pool_size/max_overflow remain legacy aliases for write.
+    write_pool_size: int = 8
+    write_max_overflow: int = 2
+    read_pool_size: int = 12
+    read_max_overflow: int = 4
+    connection_budget: int = 40
+    connection_budget_fail_start: bool = False
     conversation_page_size: int = 50
     message_page_size: int = 100
     task_discussion_enabled: bool = False
@@ -362,11 +379,28 @@ class Config:
                         os.getenv("JWT_EXPIRE_MINUTES", "15"),
                     )
                 ),
-                refresh_token_expire_days=int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7")),
+                refresh_token_expire_days=_clamp_min_int(
+                    os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"),
+                    default=7,
+                    minimum=7,
+                ),
             ),
             session=SessionConfig(
-                idle_timeout_minutes=int(os.getenv("SESSION_IDLE_TIMEOUT_MINUTES", "30")),
-                idle_timeout_trusted_days=int(os.getenv("SESSION_IDLE_TIMEOUT_TRUSTED_DAYS", "7")),
+                idle_timeout_minutes=max(1, int(os.getenv("SESSION_IDLE_TIMEOUT_MINUTES", "30"))),
+                idle_timeout_trusted_days=_clamp_min_int(
+                    os.getenv("SESSION_IDLE_TIMEOUT_TRUSTED_DAYS", "7"),
+                    default=7,
+                    minimum=7,
+                ),
+                idle_timeout_internal_days=_clamp_min_int(
+                    os.getenv("SESSION_IDLE_TIMEOUT_INTERNAL_DAYS", "7"),
+                    default=7,
+                    minimum=7,
+                ),
+                refresh_rotation_grace_seconds=max(
+                    1,
+                    int(os.getenv("REFRESH_ROTATION_GRACE_SECONDS", "15") or 15),
+                ),
                 history_retention_days=int(os.getenv("SESSION_HISTORY_RETENTION_DAYS", "14")),
                 cleanup_min_interval_seconds=int(os.getenv("SESSION_CLEANUP_MIN_INTERVAL_SECONDS", "300")),
             ),
@@ -393,8 +427,15 @@ class Config:
             chat=ChatConfig(
                 enabled=str(os.getenv("CHAT_MODULE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 database_url=(str(os.getenv("CHAT_DATABASE_URL", "") or "").strip() or None),
-                pool_size=int(os.getenv("CHAT_DB_POOL_SIZE", "5")),
-                max_overflow=int(os.getenv("CHAT_DB_MAX_OVERFLOW", "5")),
+                pool_size=int(os.getenv("CHAT_DB_WRITE_POOL_SIZE", os.getenv("CHAT_DB_POOL_SIZE", "8"))),
+                max_overflow=int(os.getenv("CHAT_DB_WRITE_MAX_OVERFLOW", os.getenv("CHAT_DB_MAX_OVERFLOW", "2"))),
+                write_pool_size=int(os.getenv("CHAT_DB_WRITE_POOL_SIZE", os.getenv("CHAT_DB_POOL_SIZE", "8"))),
+                write_max_overflow=int(os.getenv("CHAT_DB_WRITE_MAX_OVERFLOW", os.getenv("CHAT_DB_MAX_OVERFLOW", "2"))),
+                read_pool_size=int(os.getenv("CHAT_DB_READ_POOL_SIZE", "12")),
+                read_max_overflow=int(os.getenv("CHAT_DB_READ_MAX_OVERFLOW", "4")),
+                connection_budget=int(os.getenv("CHAT_DB_CONNECTION_BUDGET", "40")),
+                connection_budget_fail_start=str(os.getenv("CHAT_DB_CONNECTION_BUDGET_FAIL_START", "0")).strip().lower()
+                in {"1", "true", "yes", "on"},
                 conversation_page_size=int(os.getenv("CHAT_CONVERSATION_PAGE_SIZE", "50")),
                 message_page_size=int(os.getenv("CHAT_MESSAGE_PAGE_SIZE", "100")),
                 task_discussion_enabled=str(os.getenv("TASK_DISCUSSION_CHAT_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
@@ -498,6 +539,19 @@ class Config:
 
 # Global config instance
 config = Config.from_env()
+
+
+def session_policy_snapshot() -> dict:
+    """Shared session/JWT policy seen by api/auth/chat processes."""
+    return {
+        "access_token_expire_minutes": int(config.jwt.access_token_expire_minutes),
+        "refresh_token_expire_days": int(config.jwt.refresh_token_expire_days),
+        "idle_timeout_minutes": int(config.session.idle_timeout_minutes),
+        "idle_timeout_trusted_days": int(config.session.idle_timeout_trusted_days),
+        "idle_timeout_internal_days": int(config.session.idle_timeout_internal_days),
+        "refresh_rotation_grace_seconds": int(config.session.refresh_rotation_grace_seconds),
+        "history_retention_days": int(config.session.history_retention_days),
+    }
 
 
 def reload_runtime_config() -> Config:

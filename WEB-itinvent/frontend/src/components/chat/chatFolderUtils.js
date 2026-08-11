@@ -1,15 +1,19 @@
 export const CHAT_ACTIVE_FOLDER_STORAGE_KEY = 'hub.chat.activeFolder';
 
+export const DEFAULT_CHAT_FOLDER_KEY = 'personal';
+
 export const SYSTEM_CHAT_FOLDERS = [
   { key: 'personal', label: 'Личные' },
+  { key: 'groups', label: 'Беседы' },
   { key: 'tasks', label: 'Задачи' },
 ];
 
+/** @deprecated «Все» больше не показывается; оставлено для совместимости старых вызовов. */
 export const ALL_CHAT_FOLDER_TAB = { key: 'all', label: 'Все' };
 
-/** Telegram-style order: system tabs → custom folders → «Все» at the end (optional). */
+/** Telegram-style order: system tabs → custom folders. */
 export const buildChatFolderTabList = (customFolders = [], options = {}) => {
-  const { includeAllTab = true } = options;
+  const { includeAllTab = false } = options;
   const custom = (Array.isArray(customFolders) ? customFolders : [])
     .map((folder) => ({
       key: String(folder?.id || '').trim(),
@@ -36,11 +40,11 @@ export const resolveAdjacentFolderKey = ({ tabs, activeKey, direction }) => {
     .filter(Boolean);
   if (!navigationTabs.length) return null;
 
-  const normalizedActiveKey = String(activeKey || 'all').trim() || 'all';
+  const normalizedActiveKey = String(activeKey || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
   const currentIndex = navigationTabs.indexOf(normalizedActiveKey);
   const resolvedIndex = currentIndex >= 0
     ? currentIndex
-    : navigationTabs.indexOf('all');
+    : navigationTabs.indexOf(DEFAULT_CHAT_FOLDER_KEY);
 
   if (resolvedIndex < 0) return null;
 
@@ -53,10 +57,10 @@ export const resolveAdjacentFolderKey = ({ tabs, activeKey, direction }) => {
 };
 
 export const resolveFolderSwipeTarget = (activeKey, direction, customFolders = [], options = {}) => {
-  const { includeAllTab = true } = options;
-  const normalizedActiveKey = String(activeKey || 'all').trim() || 'all';
+  const { includeAllTab = false } = options;
+  const normalizedActiveKey = String(activeKey || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
   if (normalizedActiveKey === 'archived') {
-    return includeAllTab ? 'all' : 'personal';
+    return includeAllTab ? 'all' : DEFAULT_CHAT_FOLDER_KEY;
   }
 
   const tabs = getChatFolderNavigationList(customFolders, { includeAllTab });
@@ -86,22 +90,33 @@ export const isPersonalSidebarConversation = (item) => {
   return kind === 'direct' || kind === 'notes';
 };
 
-export const shouldShowAiChatSection = (activeFolderKey) => (
-  ['all', 'personal'].includes(String(activeFolderKey || 'all').trim())
+export const isGroupConversation = (item) => (
+  String(item?.kind || '').trim() === 'group'
 );
 
+export const shouldShowAiChatSection = (activeFolderKey) => (
+  ['all', 'personal'].includes(String(activeFolderKey || DEFAULT_CHAT_FOLDER_KEY).trim())
+);
+
+const normalizeStoredFolderKey = (value) => {
+  const normalized = String(value || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
+  // Legacy «Все» tab removed — map to personal.
+  if (normalized === 'all') return DEFAULT_CHAT_FOLDER_KEY;
+  return normalized;
+};
+
 export const readStoredActiveFolderKey = () => {
-  if (typeof window === 'undefined' || !window.localStorage) return 'all';
+  if (typeof window === 'undefined' || !window.localStorage) return DEFAULT_CHAT_FOLDER_KEY;
   try {
-    return String(window.localStorage.getItem(CHAT_ACTIVE_FOLDER_STORAGE_KEY) || 'all').trim() || 'all';
+    return normalizeStoredFolderKey(window.localStorage.getItem(CHAT_ACTIVE_FOLDER_STORAGE_KEY));
   } catch {
-    return 'all';
+    return DEFAULT_CHAT_FOLDER_KEY;
   }
 };
 
 export const writeStoredActiveFolderKey = (value) => {
   if (typeof window === 'undefined' || !window.localStorage) return;
-  const normalized = String(value || 'all').trim() || 'all';
+  const normalized = normalizeStoredFolderKey(value);
   try {
     window.localStorage.setItem(CHAT_ACTIVE_FOLDER_STORAGE_KEY, normalized);
   } catch {
@@ -127,7 +142,7 @@ export const filterSidebarConversationsByFolder = (
   conversationIdsByFolder = {},
 ) => {
   const items = (Array.isArray(conversations) ? conversations : []).filter(isRegularSidebarConversation);
-  const folderKey = String(activeFolderKey || 'all').trim() || 'all';
+  const folderKey = normalizeStoredFolderKey(activeFolderKey);
 
   if (folderKey === 'archived') {
     return items.filter((item) => Boolean(item?.is_archived));
@@ -135,12 +150,12 @@ export const filterSidebarConversationsByFolder = (
 
   const activeItems = items.filter((item) => !item?.is_archived);
 
-  if (folderKey === 'all') return activeItems;
   if (folderKey === 'personal') {
     return (Array.isArray(conversations) ? conversations : [])
       .filter((item) => !item?.is_archived)
       .filter(isPersonalSidebarConversation);
   }
+  if (folderKey === 'groups') return activeItems.filter(isGroupConversation);
   if (folderKey === 'tasks') return activeItems.filter(isTaskConversation);
 
   const allowedIds = new Set(
@@ -163,6 +178,7 @@ export const buildFolderUnreadCounts = (conversations, customFolders = [], conve
         .filter((item) => !item?.is_archived)
         .filter(isPersonalConversation),
     ),
+    groups: sumUnread(activeItems.filter(isGroupConversation)),
     tasks: sumUnread(activeItems.filter(isTaskConversation)),
     archived: sumUnread(items.filter((item) => Boolean(item?.is_archived))),
   };

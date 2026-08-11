@@ -65,5 +65,26 @@ class NotificationPreferencesService:
             return True
         return bool(self.get_preferences(user_id=int(user_id))["channels"].get(normalized, True))
 
+    def enabled_user_ids(
+        self,
+        *,
+        user_ids: list[int] | set[int] | tuple[int, ...],
+        channel: str,
+    ) -> set[int]:
+        """Resolve one notification channel for many users with one store read."""
+        normalized_channel = str(channel or "").strip().lower()
+        normalized_user_ids = {int(user_id) for user_id in user_ids if int(user_id) > 0}
+        if normalized_channel not in self.DEFAULTS:
+            return normalized_user_ids
+        data = self._load_all()
+        default_enabled = bool(self.DEFAULTS[normalized_channel])
+        enabled: set[int] = set()
+        for user_id in normalized_user_ids:
+            raw = data.get(str(user_id)) or {}
+            value = raw.get(normalized_channel, default_enabled) if isinstance(raw, dict) else default_enabled
+            if bool(value):
+                enabled.add(user_id)
+        return enabled
+
 
 notification_preferences_service = NotificationPreferencesService()

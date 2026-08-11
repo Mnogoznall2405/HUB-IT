@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Optional
 
@@ -26,6 +27,40 @@ def _chat_realtime():
 
 async def _run_chat_call(func, /, **kwargs):
     return await _pkg()._run_chat_call(func, **kwargs)
+
+
+_PRESENCE_DEBOUNCE_SEC = max(
+    0.05,
+    float(str(os.getenv("CHAT_PRESENCE_DEBOUNCE_MS", "300") or "300").strip() or "300") / 1000.0,
+)
+_PRESENCE_PUBLISH_CONCURRENCY = max(1, int(str(os.getenv("CHAT_PRESENCE_PUBLISH_CONCURRENCY", "4") or "4").strip() or "4"))
+_PRESENCE_DEFER_CONNECT = str(os.getenv("CHAT_PRESENCE_DEFER_CONNECT", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_presence_debounce_tasks: dict[int, asyncio.Task] = {}
+_presence_publish_sem: asyncio.Semaphore | None = None
+_MARK_READ_PUBLISH_CONCURRENCY = max(
+    1,
+    int(str(os.getenv("CHAT_MARK_READ_PUBLISH_CONCURRENCY", "2") or "2").strip() or "2"),
+)
+_mark_read_publish_sem: asyncio.Semaphore | None = None
+
+
+def _presence_sem() -> asyncio.Semaphore:
+    global _presence_publish_sem
+    if _presence_publish_sem is None:
+        _presence_publish_sem = asyncio.Semaphore(_PRESENCE_PUBLISH_CONCURRENCY)
+    return _presence_publish_sem
+
+
+def _mark_read_publish_semaphore() -> asyncio.Semaphore:
+    global _mark_read_publish_sem
+    if _mark_read_publish_sem is None:
+        _mark_read_publish_sem = asyncio.Semaphore(_MARK_READ_PUBLISH_CONCURRENCY)
+    return _mark_read_publish_sem
 
 
 def _log_request_timing(route_name: str, request_id: str, started_at: float, **context: Any) -> None:
@@ -390,16 +425,10 @@ async def _publish_message_updated(
     )
 
     async def _publish_for_member(member_user_id: int, payload: dict) -> None:
-        await _chat_realtime().publish_inbox_event(
+        await _chat_realtime().publish_user_event(
             user_id=int(member_user_id),
             event_type="chat.message.updated",
             conversation_id=conversation_id,
-            payload=payload,
-        )
-        await _chat_realtime().publish_conversation_event(
-            user_id=int(member_user_id),
-            conversation_id=conversation_id,
-            event_type="chat.message.updated",
             payload=payload,
         )
 
@@ -433,14 +462,15 @@ async def _publish_message_read(
     reader_user_id: int,
     read_at: Optional[str],
 ) -> None:
-    member_ids = sorted({
-        int(item)
-        for item in list(member_user_ids or [])
-        if int(item) > 0
-    })
-    if not member_ids:
+    # Only the reader's unread/sidebar changes. Peers only need a read-receipt in the
+    # open thread — one room broadcast instead of N×3 targeted publishes (was multi-second
+    # for 100-member groups and starved send/write under load).
+    _ = member_user_ids
+    reader_id = int(reader_user_id or 0)
+    if reader_id <= 0:
         return
 
+    stage_started = time.perf_counter()
     read_delta, conversation_updates_by_user, unread_summaries_by_user = await asyncio.gather(
         _run_chat_call(
             _chat_service().get_message_read_delta,
@@ -449,43 +479,52 @@ async def _publish_message_read(
         ),
         _get_conversation_updates_for_users(
             conversation_id=conversation_id,
-            user_ids=member_ids,
+            user_ids=[reader_id],
             reason="read",
         ),
-        _get_unread_summaries(member_ids),
+        _get_unread_summaries([reader_id]),
     )
-
-    async def _publish_for_member(member_user_id: int) -> None:
-        await _chat_realtime().publish_conversation_event(
-            user_id=int(member_user_id),
+    load_ms = (time.perf_counter() - stage_started) * 1000.0
+    read_payload = {
+        **dict(read_delta or {}),
+        "reader_user_id": reader_id,
+        "read_at": str(read_at or "").strip() or None,
+    }
+    stage_started = time.perf_counter()
+    await _chat_realtime().publish_conversation_room_event(
+        conversation_id=conversation_id,
+        event_type="chat.message.read",
+        payload=read_payload,
+    )
+    if (conversation_payload := conversation_updates_by_user.get(reader_id)) is not None:
+        await _chat_realtime().publish_inbox_event(
+            user_id=reader_id,
+            event_type="chat.conversation.updated",
             conversation_id=conversation_id,
-            event_type="chat.message.read",
-            payload={
-                **dict(read_delta or {}),
-                "reader_user_id": int(reader_user_id),
-                "read_at": str(read_at or "").strip() or None,
-            },
+            payload=conversation_payload,
         )
-        if (conversation_payload := conversation_updates_by_user.get(int(member_user_id))) is not None:
-            await _chat_realtime().publish_inbox_event(
-                user_id=int(member_user_id),
-                event_type="chat.conversation.updated",
-                conversation_id=conversation_id,
-                payload=conversation_payload,
-            )
-        if (unread_payload := unread_summaries_by_user.get(int(member_user_id))) is not None:
-            await _chat_realtime().publish_inbox_event(
-                user_id=int(member_user_id),
-                event_type="chat.unread.summary",
-                payload=unread_payload,
-            )
+    if (unread_payload := unread_summaries_by_user.get(reader_id)) is not None:
+        await _chat_realtime().publish_inbox_event(
+            user_id=reader_id,
+            event_type="chat.unread.summary",
+            payload=unread_payload,
+        )
+    publish_ms = (time.perf_counter() - stage_started) * 1000.0
+    # #region agent log
+    try:
+        from backend.chat.send_audit import audit_send_trace
 
-    publish_tasks = [
-        _publish_for_member(int(member_user_id))
-        for member_user_id in member_ids
-    ]
-    if publish_tasks:
-        await asyncio.gather(*publish_tasks)
+        audit_send_trace(
+            trace_id="mark_read",
+            stage="mark_read_publish",
+            elapsed_ms=float(publish_ms),
+            reader_user_id=reader_id,
+            load_ms=round(load_ms, 1),
+            publish_ms=round(publish_ms, 1),
+        )
+    except Exception:
+        pass
+    # #endregion
 
 
 async def _publish_message_created_after_send(*, conversation_id: str, message_id: str) -> None:
@@ -519,17 +558,18 @@ async def _publish_message_read_after_mark_read(
 ) -> None:
     started_at = time.perf_counter()
     try:
-        member_user_ids = await _run_chat_call(
-            _chat_service().get_conversation_member_ids,
-            conversation_id=conversation_id,
-        )
-        await _publish_message_read(
-            conversation_id=conversation_id,
-            message_id=message_id,
-            member_user_ids=member_user_ids,
-            reader_user_id=reader_user_id,
-            read_at=read_at,
-        )
+        # No need to load all members — read receipts are room-broadcast + reader inbox only.
+        # One receipt fans out to several read snapshots. Bound that fan-out so
+        # bursts cannot occupy every AnyIO thread and read-pool connection.
+        # Tasks wait here without dropping or coalescing receipt events.
+        async with _mark_read_publish_semaphore():
+            await _publish_message_read(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                member_user_ids=[],
+                reader_user_id=reader_user_id,
+                read_at=read_at,
+            )
     finally:
         _log_request_timing(
             "publish_message_read",
@@ -541,15 +581,86 @@ async def _publish_message_read_after_mark_read(
         )
 
 
-async def _publish_presence_updated(user_id: int) -> None:
+async def _clear_hub_notifications_after_mark_read(
+    *,
+    conversation_id: str,
+    reader_user_id: int,
+) -> None:
+    """Hub SQLite clear off the critical mark_read path (idempotent)."""
+    if not conversation_id or int(reader_user_id or 0) <= 0:
+        return
+    from backend.chat.latency_profile import hub_clear_after_mark_read_enabled
+
+    if not hub_clear_after_mark_read_enabled():
+        return
+    # Share the capped notification pool/sem with hub_batch — never stampede Hub SQLite.
+    from backend.api.v1.chat._common import _notification_sem, _run_chat_notification_call
+
+    async with _notification_sem():
+        await _run_chat_notification_call(
+            _chat_service().clear_hub_notifications_after_mark_read,
+            conversation_id=conversation_id,
+            user_id=int(reader_user_id),
+        )
+
+
+async def _publish_presence_updated_now(user_id: int) -> None:
+    """Immediate presence publish (after debounce / off connect path)."""
     if int(user_id or 0) <= 0:
         return
-    _chat_service().invalidate_presence_cache(user_id=int(user_id))
-    payload = await _run_chat_call(_chat_service().get_presence, user_id=int(user_id))
-    await _chat_realtime().publish_presence_event(
-        user_id=int(user_id),
-        payload={
-            "user_id": int(user_id),
-            "presence": payload,
-        },
+    from backend.chat.latency_profile import presence_sidefx_enabled
+
+    if not presence_sidefx_enabled():
+        return
+    async with _presence_sem():
+        _chat_service().invalidate_presence_cache(user_id=int(user_id))
+        payload = await _run_chat_call(_chat_service().get_presence, user_id=int(user_id))
+        await _chat_realtime().publish_presence_event(
+            user_id=int(user_id),
+            payload={
+                "user_id": int(user_id),
+                "presence": payload,
+            },
+        )
+
+
+async def _publish_presence_updated(user_id: int, *, debounce: bool | None = None) -> None:
+    """Schedule presence publish; default debounce coalesces online/offline storms."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return
+    use_debounce = _PRESENCE_DEFER_CONNECT if debounce is None else bool(debounce)
+    if not use_debounce:
+        await _publish_presence_updated_now(uid)
+        return
+
+    existing = _presence_debounce_tasks.get(uid)
+    if existing is not None and not existing.done():
+        existing.cancel()
+
+    async def _debounced() -> None:
+        try:
+            await asyncio.sleep(_PRESENCE_DEBOUNCE_SEC)
+            await _publish_presence_updated_now(uid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            current = _presence_debounce_tasks.get(uid)
+            if current is asyncio.current_task():
+                _presence_debounce_tasks.pop(uid, None)
+
+    _presence_debounce_tasks[uid] = asyncio.create_task(
+        _debounced(),
+        name=f"chat-presence-debounce:{uid}",
     )
+
+
+def schedule_presence_updated(user_id: int) -> None:
+    """Fire-and-forget presence update (never await on connect hot path)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_publish_presence_updated(int(user_id)), name=f"chat-presence-schedule:{int(user_id)}")

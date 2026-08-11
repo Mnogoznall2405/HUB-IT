@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from starlette.concurrency import run_in_threadpool
 
 from backend.api.deps import require_permission
 from backend.chat.link_preview_service import fetch_link_preview
@@ -17,4 +18,5 @@ async def get_link_preview(
     _: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
     """Fetch Open Graph metadata for the given URL."""
-    return fetch_link_preview(url)
+    # urllib/ssl I/O is blocking — keep it off the asyncio event loop.
+    return await run_in_threadpool(fetch_link_preview, url)

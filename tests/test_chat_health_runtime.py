@@ -52,6 +52,16 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
         "redis_configured": True,
         "pubsub_subscribed": True,
         "realtime_node_id": "node-a",
+        "publish_queue_depth": 17,
+        "publish_queue_capacity": 2048,
+        "publish_volatile_dropped": 9,
+        "publish_critical_waiters": 4,
+        "publish_batches_total": 12,
+        "publish_events_total": 345,
+        "publish_queue_wait_ms_critical_p95": 7.5,
+        "relay_cursor": 991,
+        "relay_caught_up": True,
+        "relay_db_dispatch_lag_ms_p95": 18.2,
         "outbound_queue_depth": 7,
         "slow_consumer_disconnects": 1,
         "presence_watch_count": 6,
@@ -69,6 +79,19 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     monkeypatch.setitem(sys.modules, "backend.chat.realtime", type("_RealtimeModule", (), {
         "get_chat_realtime_metrics": staticmethod(lambda: fake_realtime_metrics),
     })())
+    monkeypatch.setitem(sys.modules, "backend.chat.postgres_runtime_metrics", type("_PgMetricsModule", (), {
+        "postgres_connection_metrics": type("_PgMetrics", (), {
+            "get_snapshot": staticmethod(lambda: {
+                "available": True,
+                "max_connections": 100,
+                "total_connections": 76,
+                "available_connections": 24,
+                "reserve_target": 20,
+                "reserve_available": True,
+                "reserve_shortfall": 0,
+            }),
+        })(),
+    })())
     monkeypatch.setitem(sys.modules, "backend.ai_chat.retrieval_interface", type("_RetrievalModule", (), {
         "ai_kb_retrieval": type("_Retrieval", (), {
             "get_metrics": staticmethod(lambda: {"index_age_sec": 21.5}),
@@ -85,6 +108,16 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     assert payload["realtime_mode"] == "redis"
     assert payload["redis_available"] is True
     assert payload["pubsub_subscribed"] is True
+    assert payload["publish_queue_depth"] == 17
+    assert payload["publish_queue_capacity"] == 2048
+    assert payload["publish_volatile_dropped"] == 9
+    assert payload["publish_critical_waiters"] == 4
+    assert payload["publish_batches_total"] == 12
+    assert payload["publish_events_total"] == 345
+    assert payload["publish_queue_wait_ms_critical_p95"] == 7.5
+    assert payload["relay_cursor"] == 991
+    assert payload["relay_caught_up"] is True
+    assert payload["relay_db_dispatch_lag_ms_p95"] == 18.2
     assert payload["push_outbox_backlog"] == 4
     assert payload["push_outbox_oldest_queued_age_sec"] == 18.5
     assert payload["event_outbox_backlog"] == 3
@@ -98,6 +131,8 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     assert payload["ai_worker_concurrency"] == 3
     assert payload["ai_kb_index_age_sec"] == 21.5
     assert payload["ai_last_run_duration_ms"] == 3456.7
+    assert payload["postgres_connections"]["available_connections"] == 24
+    assert payload["postgres_connections"]["reserve_available"] is True
 
 
 def test_main_health_ready_includes_chat_snapshot_when_enabled(monkeypatch):

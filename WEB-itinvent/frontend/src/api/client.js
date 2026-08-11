@@ -22,6 +22,7 @@ import { chatAttachmentsAPI } from './chatAttachments';
 import { chatUploadSessionsAPI } from './chatUploadSessions';
 import { chatFileUploadsAPI } from './chatFileUploads';
 import { chatFoldersAPI } from './chatFolders';
+import { chatStickersAPI } from './chatStickers';
 import { equipmentComputersAPI } from './equipmentComputers';
 import { equipmentConsumablesAPI } from './equipmentConsumables';
 import { equipmentDirectoriesAPI } from './equipmentDirectories';
@@ -193,6 +194,27 @@ const apiClient = axios.create({
   timeout: 30000,
 });
 
+function reportAuthSessionTelemetry({ event, detail, path } = {}) {
+  const name = String(event || '').trim();
+  if (!name) return;
+  try {
+    void apiClient.post(
+      '/auth/session-telemetry',
+      {
+        event: name,
+        detail: detail ? String(detail).slice(0, 200) : undefined,
+        path: path ? String(path).slice(0, 200) : undefined,
+      },
+      {
+        suppressAuthRequired: true,
+        timeout: 3000,
+      },
+    );
+  } catch {
+    // Best-effort beacon; never block logout path.
+  }
+}
+
 /**
  * Request interceptor - add selected database to all requests
  */
@@ -272,12 +294,18 @@ apiClient.interceptors.response.use(
       const suppressAuthRequired = Boolean(error.config?.suppressAuthRequired);
       const isLoginRequest = requestUrl.includes('/auth/login');
       const isRefreshRequest = requestUrl.includes('/auth/refresh');
+      const isSessionTelemetryRequest = requestUrl.includes('/auth/session-telemetry');
       const isInteractiveAuthFlowRequest =
         requestUrl.includes('/auth/verify-2fa') ||
         requestUrl.includes('/auth/enable-2fa') ||
         requestUrl.includes('/auth/trusted-devices/auth/') ||
         requestUrl.includes('/auth/passkey-login/');
-      const canRetryWithRefresh = !error.config?._retry && !isLoginRequest && !isRefreshRequest && !isInteractiveAuthFlowRequest;
+      const canRetryWithRefresh =
+        !error.config?._retry
+        && !isLoginRequest
+        && !isRefreshRequest
+        && !isSessionTelemetryRequest
+        && !isInteractiveAuthFlowRequest;
 
       if (canRetryWithRefresh) {
         try {
@@ -285,9 +313,22 @@ apiClient.interceptors.response.use(
             refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
           }
           await refreshInFlight;
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('auth-token-refreshed'));
+          }
           error.config._retry = true;
           return apiClient.request(error.config);
-        } catch {
+        } catch (refreshError) {
+          const refreshDetail = String(
+            refreshError?.response?.data?.detail
+            || refreshError?.message
+            || 'refresh_failed',
+          );
+          reportAuthSessionTelemetry({
+            event: 'client_refresh_failed',
+            detail: refreshDetail,
+            path: requestUrl,
+          });
           // Fall through to auth-required handling below.
         } finally {
           refreshInFlight = null;
@@ -303,7 +344,12 @@ apiClient.interceptors.response.use(
 
       // Session expired or invalid - clear cached user and notify app state.
       localStorage.removeItem('user');
-      if (!suppressAuthRequired && !isLoginRequest) {
+      if (!suppressAuthRequired && !isLoginRequest && !isSessionTelemetryRequest) {
+        reportAuthSessionTelemetry({
+          event: 'client_auth_required',
+          detail: isRefreshRequest ? 'refresh_endpoint' : 'api_401',
+          path: requestUrl,
+        });
         window.dispatchEvent(new CustomEvent('auth-required', { detail: { requestUrl } }));
       }
     }
@@ -340,6 +386,9 @@ export const authAPI = {
 
   refresh: async () => {
     const response = await apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('auth-token-refreshed'));
+    }
     return response.data;
   },
 
@@ -674,6 +723,22 @@ export const chatAPI = {
     return chatFileUploadsAPI.sendFiles;
   },
 
+  get listStickerPacks() {
+    return chatStickersAPI.listPacks;
+  },
+
+  get importStickerPack() {
+    return chatStickersAPI.importPack;
+  },
+
+  get removeStickerPack() {
+    return chatStickersAPI.removePack;
+  },
+
+  get sendSticker() {
+    return chatStickersAPI.sendSticker;
+  },
+
   get downloadAttachment() {
     return chatAttachmentsAPI.downloadAttachment;
   },
@@ -874,6 +939,14 @@ export const hubAPI = {
     return hubTaskFilesAPI.downloadTaskAttachment;
   },
 
+  get getTaskAttachmentPreview() {
+    return hubTaskFilesAPI.getTaskAttachmentPreview;
+  },
+
+  get downloadTaskAttachmentPreviewPdf() {
+    return hubTaskFilesAPI.downloadTaskAttachmentPreviewPdf;
+  },
+
   get downloadTaskReport() {
     return hubTaskFilesAPI.downloadTaskReport;
   },
@@ -923,6 +996,7 @@ export {
   chatUploadSessionsAPI,
   chatFileUploadsAPI,
   chatFoldersAPI,
+  chatStickersAPI,
   equipmentComputersAPI,
   equipmentConsumablesAPI,
   equipmentDirectoriesAPI,
@@ -1474,6 +1548,10 @@ export const scanAPI = {
 
   get createTask() {
     return scanTasksAPI.createTask;
+  },
+
+  get getTaskSystemMetrics() {
+    return scanTasksAPI.getTaskSystemMetrics;
   },
 };
 

@@ -7,7 +7,13 @@ from fastapi.concurrency import run_in_threadpool
 from backend.api.deps import get_current_admin_user, require_permission
 from backend.models.auth import User
 from backend.services.address_book_service import address_book_service
-from backend.services.authorization_service import PERM_ADDRESS_BOOK_READ
+from backend.services.authorization_service import (
+    PERM_ADDRESS_BOOK_AGE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
+    PERM_ADDRESS_BOOK_READ,
+    authorization_service,
+)
 
 
 router = APIRouter()
@@ -17,9 +23,24 @@ router = APIRouter()
 async def search_address_book(
     q: str = Query("", min_length=0, max_length=200),
     limit: int = Query(50, ge=1, le=200),
-    _: User = Depends(require_permission(PERM_ADDRESS_BOOK_READ)),
+    current_user: User = Depends(require_permission(PERM_ADDRESS_BOOK_READ)),
 ):
-    return await run_in_threadpool(address_book_service.search, q, int(limit))
+    permissions = set(getattr(current_user, "permissions", []) or [])
+    permissions.update(
+        authorization_service.get_effective_permissions(
+            current_user.role,
+            use_custom_permissions=bool(current_user.use_custom_permissions),
+            custom_permissions=current_user.custom_permissions,
+        )
+    )
+    return await run_in_threadpool(
+        address_book_service.search,
+        q,
+        int(limit),
+        include_age=PERM_ADDRESS_BOOK_AGE_READ in permissions,
+        include_personal_emails=PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ in permissions,
+        include_personal_phones=PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ in permissions,
+    )
 
 
 @router.get("/status")

@@ -906,6 +906,9 @@ def test_dashboard_reports_server_pdf_job_queue(temp_dir):
     assert dashboard["totals"]["server_pdf_done_clean"] == 0
     assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
     assert dashboard["totals"]["server_pdf_failed"] == 0
+    # Exact business counters stay COUNT-based; performance samples are capped separately.
+    assert dashboard["performance"]["samples_capped"] is True
+    assert isinstance(dashboard["performance"]["samples"], int)
 
     store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
     store.record_job_metrics(
@@ -2437,7 +2440,8 @@ def test_scrub_scan_job_pdf_payloads_removes_legacy_pdf_from_sqlite_payloads(tem
         )
         conn.commit()
 
-    result = scrub_scan_job_pdf_payloads(db_path=store.db_path, batch_size=10)
+    # Force SQLite path: ambient SCAN_DATABASE_URL must not redirect this unit test to PG.
+    result = scrub_scan_job_pdf_payloads(db_path=store.db_path, batch_size=10, database_url="")
 
     job_row = _get_job(store, queued["job_id"])
     payload = json.loads(job_row["payload_json"])
@@ -2445,21 +2449,14 @@ def test_scrub_scan_job_pdf_payloads_removes_legacy_pdf_from_sqlite_payloads(tem
     assert "pdf_slice_b64" not in payload
 
 
-def test_list_agents_table_uses_sql_branch_fallback_when_heartbeat_branch_is_empty(monkeypatch, temp_dir):
-    root = Path(temp_dir)
-    store = ScanStore(
-        db_path=root / "scan-server.db",
-        archive_dir=root / "archive",
-        task_ack_timeout_sec=300,
-        agent_online_timeout_sec=1800,
-        resolve_agent_sql_context=True,
-    )
+def test_list_agents_table_uses_job_branch_when_agent_branch_empty(monkeypatch, temp_dir):
+    store = _make_store(temp_dir)
     now_ts = int(time.time())
 
     monkeypatch.setattr(
         scan_database,
         "_resolve_agent_sql_context",
-        lambda mac_address, hostname: {"branch_name": "Тюмень"} if str(hostname) == "HOST-SQL-0004" else None,
+        lambda mac_address, hostname: (_ for _ in ()).throw(AssertionError("sql context invent disabled")),
     )
 
     store.upsert_agent_heartbeat(
@@ -2474,22 +2471,34 @@ def test_list_agents_table_uses_sql_branch_fallback_when_heartbeat_branch_is_emp
             "metadata": {"mac_address": "9C:2F:9D:B2:6A:E0"},
         }
     )
+    store.queue_job(
+        {
+            "agent_id": "agent-sql-0004",
+            "hostname": "HOST-SQL-0004",
+            "branch": "Тюмень",
+            "file_path": r"C:\Docs\a.pdf",
+            "file_name": "a.pdf",
+            "file_hash": "hash-sql-0004",
+            "source_kind": "pdf",
+        }
+    )
 
     response = store.list_agents_table(branch="тюм", limit=10, offset=0)
 
     assert response["total"] == 1
     assert response["items"][0]["agent_id"] == "agent-sql-0004"
     assert response["items"][0]["branch"] == "Тюмень"
+    assert response["items"][0]["branch_source"] == "job"
 
 
-def test_list_agents_table_infers_branch_from_agent_prefix_before_sql_lookup(monkeypatch, temp_dir):
+def test_list_agents_table_does_not_invent_branch_from_hostname_prefix(monkeypatch, temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())
 
     monkeypatch.setattr(
         scan_database,
         "_resolve_agent_sql_context",
-        lambda mac_address, hostname: (_ for _ in ()).throw(AssertionError("SQL fallback should not run for known prefixes")),
+        lambda mac_address, hostname: (_ for _ in ()).throw(AssertionError("SQL invent disabled")),
     )
 
     store.upsert_agent_heartbeat(
@@ -2507,7 +2516,8 @@ def test_list_agents_table_infers_branch_from_agent_prefix_before_sql_lookup(mon
     response = store.list_agents_table(limit=10, offset=0)
 
     assert response["total"] == 1
-    assert response["items"][0]["branch"] == "Тюмень"
+    assert response["items"][0]["branch"] == ""
+    assert response["items"][0]["branch_source"] == "unknown"
 
 
 def test_list_branches_returns_unique_sorted_values(temp_dir):
@@ -2551,4 +2561,203 @@ def test_list_branches_returns_unique_sorted_values(temp_dir):
         created_at=now_ts - 90,
     )
 
-    assert store.list_branches() == ["Москва", "Санкт-Петербург", "Тюмень"]
+    assert store.list_branches() == ["Москва", "Санкт-Петербург"]
+
+
+def test_downsample_metric_points_preserves_endpoints_and_peaks():
+    from scan_server.database import downsample_metric_points
+
+    items = []
+    for idx in range(100):
+        cpu = 10.0
+        disk = 5.0
+        if idx == 40:
+            cpu = 99.0
+        if idx == 70:
+            cpu = 1.0
+        if idx == 55:
+            disk = 900.0
+        items.append(
+            {
+                "captured_at": 1000 + idx,
+                "cpu_percent": cpu,
+                "memory_percent": 20.0,
+                "disk_read_bps": disk,
+                "disk_write_bps": 1.0,
+                "network_sent_bps": 1.0,
+                "network_received_bps": 1.0,
+            }
+        )
+
+    out = downsample_metric_points(items, max_points=12)
+    assert len(out) <= 12
+    assert out[0]["captured_at"] == items[0]["captured_at"]
+    assert out[-1]["captured_at"] == items[-1]["captured_at"]
+    captured = {int(row["captured_at"]) for row in out}
+    assert (1000 + 40) in captured
+    assert (1000 + 70) in captured
+    assert (1000 + 55) in captured
+
+
+def test_list_task_system_metrics_range_and_downsample(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    for idx in range(30):
+        store.record_system_metric_samples(
+            task_ids=[task["id"]],
+            sample={
+                "captured_at": 1000 + idx,
+                "cpu_percent": float(idx),
+                "memory_percent": 50.0,
+                "memory_used_bytes": 1000,
+                "memory_available_bytes": 1000,
+                "disk_read_bytes": 100,
+                "disk_write_bytes": 200,
+                "disk_read_bps": 10.0,
+                "disk_write_bps": 20.0,
+                "network_sent_bytes": 300,
+                "network_received_bytes": 400,
+                "network_sent_bps": 30.0,
+                "network_received_bps": 40.0,
+                "process_rss_bytes": 500,
+            },
+        )
+
+    report = store.list_task_system_metrics(
+        task_id=task["id"],
+        from_ts=1005,
+        to_ts=1020,
+        max_points=5,
+        limit=1000,
+    )
+    assert report["total"] == 16
+    assert report["from_ts"] == 1005
+    assert report["to_ts"] == 1020
+    assert report["downsampled"] is True
+    assert len(report["items"]) <= 5
+    assert report["items"][0]["captured_at"] == 1005
+    assert report["items"][-1]["captured_at"] == 1020
+
+
+def test_list_tasks_summary_view_keeps_slim_payload(temp_dir):
+    store = _make_store(temp_dir)
+    store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={
+            "force_rescan": True,
+            "server_pdf_pattern_ids": ["password_strict"],
+            "huge_blob": "x" * 5000,
+        },
+    )
+    detail = store.list_tasks(view="detail")
+    summary = store.list_tasks(view="summary")
+    assert detail["view"] == "detail"
+    assert summary["view"] == "summary"
+    assert "huge_blob" in detail["items"][0]["payload"]
+    assert "huge_blob" not in summary["items"][0]["payload"]
+    assert summary["items"][0]["payload"]["force_rescan"] is True
+
+
+def test_list_host_scan_runs_returns_summary_view(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-run", "hostname": "HOST-RUN", "last_seen_at": int(time.time())})
+    task = store.create_task(
+        agent_id="agent-run",
+        command="scan_now",
+        payload={"force_rescan": True, "noise": "y" * 2000, "server_pdf_pattern_ids": ["p1"]},
+    )
+    store.report_task_result(
+        agent_id="agent-run",
+        task_id=task["id"],
+        status="completed",
+        result={"scanned": 3, "skipped": 1, "noise": "z" * 2000},
+        error_text="",
+    )
+    detail = store.list_host_scan_runs(hostname="HOST-RUN")
+    assert detail["view"] == "detail"
+    assert detail["items"][0]["payload"].get("noise") == "y" * 2000
+    runs = store.list_host_scan_runs(hostname="HOST-RUN", view="summary")
+    assert runs["view"] == "summary"
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["payload"].get("force_rescan") is True
+    assert "noise" not in runs["items"][0]["payload"]
+    assert runs["items"][0]["result"].get("scanned") == 3
+    assert "noise" not in runs["items"][0]["result"]
+
+
+def test_list_task_system_metrics_absent_max_points_keeps_legacy_rows(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    for idx in range(40):
+        store.record_system_metric_samples(
+            task_ids=[task["id"]],
+            sample={
+                "captured_at": 2000 + idx,
+                "cpu_percent": float(idx),
+                "memory_percent": 40.0,
+                "memory_used_bytes": 1000,
+                "memory_available_bytes": 1000,
+                "disk_read_bytes": 100,
+                "disk_write_bytes": 200,
+                "disk_read_bps": 10.0,
+                "disk_write_bps": 20.0,
+                "network_sent_bytes": 300,
+                "network_received_bytes": 400,
+                "network_sent_bps": 30.0,
+                "network_received_bps": 40.0,
+                "process_rss_bytes": 500,
+            },
+        )
+    legacy = store.list_task_system_metrics(task_id=task["id"], limit=40)
+    assert legacy["total"] == 40
+    assert legacy["downsampled"] is False
+    assert len(legacy["items"]) == 40
+    chart = store.list_task_system_metrics(task_id=task["id"], limit=40, max_points=10)
+    assert chart["downsampled"] is True
+    assert len(chart["items"]) <= 10
+
+
+def test_list_incident_inbox_groups_batches_file_previews(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+    for idx in range(3):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-BATCH",
+            branch="Тюмень",
+            user_login="corp\\user",
+            user_full_name="User",
+            file_path=rf"C:\Docs\file-{idx}.pdf",
+            file_name=f"file-{idx}.pdf",
+            source_kind="pdf",
+            severity="high",
+            status="new",
+            created_at=now_ts - idx,
+        )
+    payload = store.list_incident_inbox_groups(status="new", host_limit=10, files_per_host=10)
+    assert payload["total_hosts"] == 1
+    assert len(payload["items"][0]["files"]) == 3
+    for file_row in payload["items"][0]["files"]:
+        assert file_row["preview_incident_id"]
+        assert isinstance(file_row["preview_incident"]["matched_patterns"], list)
+
+    hosts_only = store.list_incident_inbox_groups(
+        status="new", host_limit=10, files_per_host=0, view="summary"
+    )
+    assert hosts_only["total_hosts"] == 1
+    assert hosts_only["files_per_host"] == 0
+    assert hosts_only["items"][0]["files"] == []
+
+    expand = store.list_incident_inbox_groups(
+        status="new",
+        hostname="HOST-BATCH",
+        host_limit=1,
+        host_offset=0,
+        files_per_host=10,
+    )
+    assert expand["total_hosts"] == 1
+    assert expand["has_more"] is False
+    assert len(expand["items"]) == 1
+    assert len(expand["items"][0]["files"]) == 3

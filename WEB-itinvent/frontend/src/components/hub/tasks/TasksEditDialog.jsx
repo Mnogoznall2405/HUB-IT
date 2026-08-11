@@ -2,6 +2,7 @@ import {
   Autocomplete,
   Box,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -35,6 +36,7 @@ export default function TasksEditDialog({
   editData,
   setEditData,
   editSaving = false,
+  editLoading = false,
   onSave,
   onEditDescriptionDraftChange,
   onAiTransform,
@@ -78,18 +80,36 @@ export default function TasksEditDialog({
       <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 }), position: { xs: 'sticky', sm: 'static' }, top: 0, zIndex: 2 }}>
         <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Редактирование задачи</Typography>
         <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
-          Автор и администратор могут менять состав участников, срок, приоритет и описание.
+          {editLoading
+            ? 'Загрузка данных задачи…'
+            : 'Автор и администратор могут менять состав участников, срок, приоритет и описание.'}
         </Typography>
       </Box>
 
-      <DialogContent sx={{ px: { xs: 1, sm: 2.2 }, py: { xs: 1, sm: 1.6 } }}>
-        <Stack spacing={1.5}>
+      <DialogContent sx={{ px: { xs: 1, sm: 2.2 }, py: { xs: 1, sm: 1.6 }, position: 'relative' }}>
+        {editLoading ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 2,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              bgcolor: 'rgba(255,255,255,0.55)',
+            }}
+          >
+            <CircularProgress size={28} />
+          </Box>
+        ) : null}
+        <Stack spacing={1.5} sx={{ opacity: editLoading ? 0.55 : 1, pointerEvents: editLoading ? 'none' : 'auto' }}>
           <TextField
             label="Заголовок"
             value={editData.title}
             onChange={(event) => setEditData((prev) => ({ ...prev, title: event.target.value }))}
             fullWidth
             required
+            disabled={editLoading}
           />
 
           <LocalTaskMarkdownEditor
@@ -294,16 +314,16 @@ export default function TasksEditDialog({
       </DialogContent>
 
       <DialogActions sx={{ px: { xs: 1, sm: 2.2 }, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: { xs: 'sticky', sm: 'static' }, bottom: 0, bgcolor: ui.pageBg, flexDirection: { xs: 'column-reverse', sm: 'row' }, gap: { xs: 0.8, sm: 0 }, '& > :not(style)': { m: 0, width: { xs: '100%', sm: 'auto' } } }}>
-        <Button onClick={onClose} disabled={editSaving} sx={{ textTransform: 'none', fontWeight: 700 }}>
+        <Button onClick={onClose} disabled={editSaving || editLoading} sx={{ textTransform: 'none', fontWeight: 700 }}>
           Отмена
         </Button>
         <Button
           variant="contained"
           onClick={onSave}
-          disabled={editSaving || !titleValid}
+          disabled={editSaving || editLoading || !titleValid}
           sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
         >
-          {editSaving ? 'Сохранение...' : 'Сохранить изменения'}
+          {editLoading ? 'Загрузка...' : (editSaving ? 'Сохранение...' : 'Сохранить изменения')}
         </Button>
       </DialogActions>
     </Dialog>

@@ -1,3 +1,4 @@
+import { memo, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -10,6 +11,8 @@ import {
   Divider,
   Drawer,
   IconButton,
+  Link,
+  List,
   ListItem,
   ListItemButton,
   Paper,
@@ -32,6 +35,17 @@ import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
 import MailAttachmentCard from '../../components/mail/MailAttachmentCard';
 
+
+const TITLE_EXPAND_THRESHOLD = 120;
+
+const clampedTitleSx = (lines) => ({
+  display: '-webkit-box',
+  WebkitBoxOrient: 'vertical',
+  WebkitLineClamp: lines,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  overflowWrap: 'anywhere',
+});
 
 function parseDocflowDate(value) {
   if (!value) return null;
@@ -65,24 +79,158 @@ export function formatDocflowFileSize(value) {
   return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
 }
 
+const DESCRIPTION_LINK_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|https?:\/\/[^\s<>"')\]]+)/g;
+
+function looksLikeInitialFragment(text) {
+  return /(?:^|[\s(«"'])[А-ЯA-Z]\.$/.test(String(text || '').trim())
+    || /[А-ЯA-Z]\.[А-ЯA-Z]\.$/.test(String(text || '').trim());
+}
+
+function softSplitDescriptionSentences(text) {
+  const source = String(text || '').trim();
+  if (!source) return [];
+  const tokens = source.split(/(?<=[.!?…])\s+/).map((part) => part.trim()).filter(Boolean);
+  if (tokens.length <= 1) return [source];
+
+  const paragraphs = [];
+  let buffer = '';
+  tokens.forEach((token) => {
+    if (!buffer) {
+      buffer = token;
+      return;
+    }
+    if (looksLikeInitialFragment(buffer) || (!/[.!?…]$/.test(buffer) && buffer.length < 48)) {
+      buffer = `${buffer} ${token}`;
+      return;
+    }
+    paragraphs.push(buffer);
+    buffer = token;
+  });
+  if (buffer) paragraphs.push(buffer);
+  return paragraphs.length > 1 ? paragraphs : [source];
+}
+
+/** Разбивает текст задания 1С на абзацы для читаемой вёрстки. */
+export function splitDocflowDescriptionParagraphs(text) {
+  const raw = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return [];
+
+  let parts = raw.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 1 && parts[0].includes('\n')) {
+    const lines = parts[0].split('\n').map((line) => line.trim()).filter(Boolean);
+    if (lines.length >= 2) parts = lines;
+  }
+  if (parts.length === 1 && parts[0].length > 140) {
+    const soft = softSplitDescriptionSentences(parts[0]);
+    if (soft.length > 1) parts = soft;
+  }
+  return parts;
+}
+
+function DescriptionInlineText({ text }) {
+  const value = String(text || '');
+  const nodes = [];
+  let lastIndex = 0;
+  DESCRIPTION_LINK_RE.lastIndex = 0;
+  let match = DESCRIPTION_LINK_RE.exec(value);
+  while (match) {
+    if (match.index > lastIndex) nodes.push(value.slice(lastIndex, match.index));
+    const token = match[0];
+    if (token.includes('@')) {
+      nodes.push(
+        <Link key={`mail-${match.index}`} href={`mailto:${token}`} underline="hover" sx={{ fontWeight: 600 }}>
+          {token}
+        </Link>,
+      );
+    } else {
+      nodes.push(
+        <Link
+          key={`url-${match.index}`}
+          href={token}
+          target="_blank"
+          rel="noopener noreferrer"
+          underline="hover"
+          sx={{ fontWeight: 600, overflowWrap: 'anywhere' }}
+        >
+          {token}
+        </Link>,
+      );
+    }
+    lastIndex = match.index + token.length;
+    match = DESCRIPTION_LINK_RE.exec(value);
+  }
+  if (lastIndex < value.length) nodes.push(value.slice(lastIndex));
+  return nodes.length > 0 ? nodes : value;
+}
+
+function TaskDescriptionBody({ description }) {
+  const paragraphs = splitDocflowDescriptionParagraphs(description);
+  if (paragraphs.length === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        Описание в 1С не указано.
+      </Typography>
+    );
+  }
+  return (
+    <Stack spacing={1.35} sx={{ width: '100%' }}>
+      {paragraphs.map((paragraph, index) => (
+        <Typography
+          key={`${index}-${paragraph.slice(0, 24)}`}
+          variant="body2"
+          component="p"
+          sx={{
+            m: 0,
+            width: '100%',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+            lineHeight: 1.65,
+            fontWeight: index === 0 && paragraphs.length > 1 ? 600 : 400,
+            color: 'text.primary',
+          }}
+        >
+          <DescriptionInlineText text={paragraph} />
+        </Typography>
+      ))}
+    </Stack>
+  );
+}
+
 function TaskStatusChips({ task }) {
   const processLabel = task?.process_type_label || task?.process_type;
   const importance = String(task?.importance || '').trim();
   const showImportance = importance && !importance.toLocaleLowerCase('ru-RU').includes('обычн');
   return (
-    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
       <Chip
         size="small"
         color={task?.completed ? 'success' : 'primary'}
         label={task?.completed ? 'Завершено' : (task?.accepted ? 'Принято в работу' : 'Новое')}
+        sx={{ height: 22, '& .MuiChip-label': { px: 0.7, fontSize: '0.65rem' } }}
       />
-      {processLabel ? <Chip size="small" variant="outlined" label={processLabel} /> : null}
-      {showImportance ? <Chip size="small" color="warning" variant="outlined" label={importance} /> : null}
+      {processLabel ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={processLabel}
+          sx={{ height: 22, '& .MuiChip-label': { px: 0.7, fontSize: '0.65rem' } }}
+        />
+      ) : null}
+      {showImportance ? (
+        <Chip
+          size="small"
+          color="warning"
+          variant="outlined"
+          label={importance}
+          sx={{ height: 22, '& .MuiChip-label': { px: 0.7, fontSize: '0.65rem' } }}
+        />
+      ) : null}
     </Stack>
   );
 }
 
-export function DocflowTaskCard({ task, onOpen }) {
+export const DocflowTaskCard = memo(function DocflowTaskCard({ task, onOpen }) {
+  const title = String(task?.title || 'Задание 1С').trim() || 'Задание 1С';
   const due = formatDocflowDate(task?.due_at);
   const created = formatDocflowDate(task?.created_at);
   const completed = formatDocflowDate(task?.completed_at);
@@ -98,104 +246,179 @@ export function DocflowTaskCard({ task, onOpen }) {
       disablePadding
       divider
       data-testid={`docflow-task-${task?.ref || 'unknown'}`}
-      sx={{ contentVisibility: 'auto', containIntrinsicSize: '0 112px' }}
+      sx={{ contentVisibility: 'auto', containIntrinsicSize: '0 72px' }}
     >
       <ListItemButton
         onClick={() => onOpen(task)}
         alignItems="flex-start"
+        title={title}
+        aria-label={title}
         sx={{
-          px: { xs: 1.5, sm: 2.5 },
-          py: { xs: 1.5, sm: 1.8 },
-          minHeight: 104,
-          gap: { xs: 1, sm: 2 },
+          px: { xs: 1.1, sm: 1.75 },
+          py: { xs: 0.85, sm: 1 },
+          minHeight: { xs: 68, sm: 72 },
+          gap: { xs: 0.75, sm: 1.25 },
           transitionProperty: 'background-color',
           transitionDuration: '150ms',
         }}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" spacing={1} alignItems="flex-start">
+          <Stack direction="row" spacing={0.75} alignItems="flex-start">
             <Typography
-              fontWeight={800}
-              sx={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', lineHeight: 1.35, textWrap: 'pretty' }}
+              variant="body2"
+              fontWeight={700}
+              sx={{ flex: 1, minWidth: 0, lineHeight: 1.25, fontSize: { xs: '0.8125rem', sm: '0.875rem' }, ...clampedTitleSx(2) }}
             >
-              {task?.title || 'Задание 1С'}
+              {title}
             </Typography>
-            <ChevronRightOutlinedIcon color="action" sx={{ flexShrink: 0, mt: 0.1 }} />
+            <ChevronRightOutlinedIcon color="action" aria-hidden sx={{ flexShrink: 0, mt: 0.05, fontSize: 20 }} />
           </Stack>
 
-          <Stack spacing={1.15} sx={{ mt: 1.15 }}>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={{ xs: 0.5, sm: 1.25 }}
+            alignItems={{ xs: 'flex-start', sm: 'center' }}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{ mt: 0.65 }}
+          >
             <TaskStatusChips task={task} />
-            <Stack
-              direction={{ xs: 'column', sm: 'row' }}
-              spacing={{ xs: 0.75, sm: 2 }}
-              alignItems={{ xs: 'flex-start', sm: 'center' }}
-              useFlexGap
-            >
-              {task?.author ? (
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.55, minWidth: 0 }}
-                >
-                  <PersonOutlineOutlinedIcon sx={{ fontSize: 16, flexShrink: 0 }} />
-                  <Box component="span" sx={{ overflowWrap: 'anywhere' }}>{task.author}</Box>
+            {task?.author ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.4, minWidth: 0, fontSize: '0.7rem' }}
+              >
+                <PersonOutlineOutlinedIcon sx={{ fontSize: 14, flexShrink: 0 }} />
+                <Box component="span" sx={{ overflowWrap: 'anywhere' }}>{task.author}</Box>
+              </Typography>
+            ) : null}
+            {dateValue ? (
+              <Box
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 0.45,
+                  px: 0.75,
+                  py: 0.25,
+                  borderRadius: 1.25,
+                  bgcolor: overdue ? 'error.main' : 'action.hover',
+                  color: overdue ? 'error.contrastText' : 'text.primary',
+                }}
+              >
+                {task?.completed ? (
+                  <CheckCircleOutlineOutlinedIcon sx={{ fontSize: 14 }} />
+                ) : (
+                  <ScheduleOutlinedIcon sx={{ fontSize: 14 }} />
+                )}
+                <Typography variant="caption" fontWeight={700} sx={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.65rem' }}>
+                  {dateLabel}: {dateValue}
                 </Typography>
-              ) : null}
-              {dateValue ? (
-                <Box
-                  sx={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 0.65,
-                    px: 1,
-                    py: 0.55,
-                    borderRadius: 1.5,
-                    bgcolor: overdue ? 'error.main' : 'action.hover',
-                    color: overdue ? 'error.contrastText' : 'text.primary',
-                  }}
-                >
-                  {task?.completed ? (
-                    <CheckCircleOutlineOutlinedIcon sx={{ fontSize: 17 }} />
-                  ) : (
-                    <ScheduleOutlinedIcon sx={{ fontSize: 17 }} />
-                  )}
-                  <Typography variant="caption" fontWeight={750} sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {dateLabel}: {dateValue}
-                  </Typography>
-                </Box>
-              ) : null}
-            </Stack>
+              </Box>
+            ) : null}
           </Stack>
         </Box>
       </ListItemButton>
     </ListItem>
   );
-}
+});
 
-function DetailValue({ label, children, icon: IconComponent, accent = false }) {
+export const DocflowTaskList = memo(function DocflowTaskList({ tasks, onOpen }) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return null;
+  return (
+    <List disablePadding>
+      {tasks.map((task) => (
+        <DocflowTaskCard key={task.ref} task={task} onOpen={onOpen} />
+      ))}
+    </List>
+  );
+});
+
+function DetailValue({ label, children, icon: IconComponent, accent = false, tone = 'default' }) {
   if (children === null || children === undefined || children === '') return null;
+  const success = tone === 'success';
+  const emphasized = accent || success;
   return (
     <Box
       sx={{
         display: 'flex',
-        gap: 1,
+        gap: 1.25,
         alignItems: 'flex-start',
         minWidth: 0,
-        p: 1.25,
-        borderRadius: 2,
-        bgcolor: accent ? 'primary.main' : 'action.hover',
+        p: 1.5,
+        borderRadius: 2.25,
+        border: 1,
+        borderColor: accent
+          ? 'primary.main'
+          : (success
+            ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(129,199,132,0.35)' : 'rgba(46,125,50,0.28)'))
+            : 'divider'),
+        bgcolor: accent
+          ? 'primary.main'
+          : (success
+            ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(129,199,132,0.10)' : 'rgba(46,125,50,0.06)'))
+            : 'background.paper'),
         color: accent ? 'primary.contrastText' : 'text.primary',
+        boxShadow: (theme) => (emphasized ? 'none' : `inset 0 0 0 1px ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,.02)' : 'rgba(15,23,42,.02)'}`),
       }}
     >
-      {IconComponent ? <IconComponent sx={{ fontSize: 19, mt: 0.15, flexShrink: 0, opacity: accent ? 0.9 : 0.72 }} /> : null}
-      <Box sx={{ minWidth: 0 }}>
-        <Typography variant="caption" sx={{ color: accent ? 'inherit' : 'text.secondary', opacity: accent ? 0.82 : 1 }}>
+      {IconComponent ? (
+        <Box
+          aria-hidden
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: 1.75,
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+            bgcolor: accent
+              ? 'rgba(255,255,255,.16)'
+              : (success
+                ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(129,199,132,0.16)' : 'rgba(46,125,50,0.10)'))
+                : 'action.selected'),
+            color: accent
+              ? 'inherit'
+              : (success
+                ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(165,214,167,0.95)' : themeValue.palette.success.dark))
+                : 'text.secondary'),
+          }}
+        >
+          <IconComponent sx={{ fontSize: 18 }} />
+        </Box>
+      ) : null}
+      <Box sx={{ minWidth: 0, pt: 0.1 }}>
+        <Typography
+          variant="overline"
+          sx={{
+            display: 'block',
+            lineHeight: 1.2,
+            letterSpacing: '0.08em',
+            color: accent
+              ? 'inherit'
+              : (success
+                ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(165,214,167,0.75)' : themeValue.palette.success.dark))
+                : 'text.secondary'),
+            opacity: accent ? 0.86 : 1,
+          }}
+        >
           {label}
         </Typography>
         <Typography
           variant="body2"
-          fontWeight={650}
-          sx={{ mt: 0.2, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontVariantNumeric: 'tabular-nums' }}
+          fontWeight={700}
+          sx={{
+            mt: 0.45,
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+            fontVariantNumeric: 'tabular-nums',
+            lineHeight: 1.35,
+            color: accent
+              ? 'inherit'
+              : (success
+                ? ((themeValue) => (themeValue.palette.mode === 'dark' ? 'rgba(200,230,201,0.95)' : themeValue.palette.success.dark))
+                : 'inherit'),
+          }}
         >
           {children}
         </Typography>
@@ -259,39 +482,90 @@ function TaskFiles({ task, loading, error, onPreviewFile, onDownloadFile }) {
   );
 }
 
-function TaskActionBar({ task, working, commandState, onAction, onCheckCommand }) {
+function TaskActionBar({ task, working, progressLabel, commandState, onAction, onCheckCommand }) {
   const actions = Array.isArray(task?.available_actions) ? task.available_actions : [];
   const requiresDigitalSignature = Boolean(task?.requires_digital_signature);
-  if (actions.length === 0 && !commandState && !requiresDigitalSignature) return null;
+  const waitingCommand = commandState?.status === 'state_unknown' || commandState?.status === 'pending';
+  const showProgress = Boolean(working || waitingCommand);
+  const resolvedProgressLabel = String(progressLabel || '').trim() || (waitingCommand ? 'Действие в 1С' : '');
+  if (actions.length === 0 && !commandState && !requiresDigitalSignature && !showProgress) return null;
   return (
     <Stack
       spacing={1}
       sx={{
+        flexShrink: 0,
         px: 2,
         py: 1.5,
         pb: 'calc(env(safe-area-inset-bottom, 0px) + 12px)',
         bgcolor: 'background.paper',
+        borderTop: 1,
+        borderColor: 'divider',
+        boxShadow: (theme) => `0 -8px 24px ${theme.palette.mode === 'dark' ? 'rgba(0,0,0,.35)' : 'rgba(15,23,42,.08)'}`,
       }}
     >
-      {commandState?.status === 'state_unknown' || commandState?.status === 'pending' ? (
-        <Alert
-          severity="warning"
-          action={(
-            <Button color="inherit" size="small" disabled={working} onClick={onCheckCommand}>
-              Проверить
-            </Button>
-          )}
+      {showProgress ? (
+        <Paper
+          variant="outlined"
+          role="status"
+          aria-live="polite"
+          aria-busy={working || undefined}
+          sx={{
+            p: 1.5,
+            borderRadius: 2.25,
+            borderColor: 'primary.main',
+            bgcolor: (themeValue) => (
+              themeValue.palette.mode === 'dark'
+                ? 'rgba(25,118,210,0.12)'
+                : 'rgba(25,118,210,0.06)'
+            ),
+          }}
         >
-          Проверяем результат в 1С. Не нажимайте действие повторно.
-          {commandState?.correlation_id ? (
-            <Typography variant="caption" display="block">
-              Код обращения: {commandState.correlation_id}
-            </Typography>
-          ) : null}
-        </Alert>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1.25}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            justifyContent="space-between"
+          >
+            <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+              <CircularProgress size={22} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" fontWeight={800} sx={{ overflowWrap: 'anywhere' }}>
+                  {resolvedProgressLabel}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  {working
+                    ? (waitingCommand ? 'Проверяем результат в 1С…' : 'Отправляем в 1С и ждём ответ…')
+                    : 'Ждём подтверждение от 1С. Не нажимайте действие повторно.'}
+                </Typography>
+                {commandState?.correlation_id ? (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Код обращения: {commandState.correlation_id}
+                  </Typography>
+                ) : null}
+              </Box>
+            </Stack>
+            {waitingCommand ? (
+              <Button
+                color="primary"
+                variant="outlined"
+                size="small"
+                disabled={working}
+                onClick={onCheckCommand}
+                sx={{ alignSelf: { xs: 'stretch', sm: 'center' }, minHeight: 36 }}
+              >
+                Проверить
+              </Button>
+            ) : null}
+          </Stack>
+        </Paper>
       ) : null}
-      {actions.length > 0 && commandState?.status !== 'state_unknown' && commandState?.status !== 'pending' ? (
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+      {!showProgress && actions.length > 0 ? (
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1}
+          useFlexGap
+          flexWrap="wrap"
+        >
           {actions.map((action) => (
             <Button
               key={action.code}
@@ -299,14 +573,23 @@ function TaskActionBar({ task, working, commandState, onAction, onCheckCommand }
               color={action.tone || 'primary'}
               disabled={working}
               onClick={() => onAction?.(action)}
-              sx={{ minHeight: 44, flex: { xs: '1 1 132px', sm: '0 0 auto' } }}
+              sx={{
+                minHeight: { xs: 40, sm: 44 },
+                width: { xs: '100%', sm: 'auto' },
+                flex: { sm: '0 0 auto' },
+                px: { xs: 1.25, sm: 2 },
+                fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                lineHeight: 1.25,
+                whiteSpace: { xs: 'normal', sm: 'nowrap' },
+                textAlign: 'center',
+              }}
             >
               {action.label}
             </Button>
           ))}
         </Stack>
       ) : null}
-      {requiresDigitalSignature && task?.open_in_1c_url ? (
+      {!showProgress && requiresDigitalSignature && task?.open_in_1c_url ? (
         <Button
           component="a"
           href={task.open_in_1c_url}
@@ -314,7 +597,12 @@ function TaskActionBar({ task, working, commandState, onAction, onCheckCommand }
           rel="noopener noreferrer"
           variant="contained"
           endIcon={<OpenInNewOutlinedIcon />}
-          sx={{ minHeight: 44, alignSelf: { sm: 'flex-start' } }}
+          sx={{
+            minHeight: { xs: 40, sm: 44 },
+            width: { xs: '100%', sm: 'auto' },
+            alignSelf: { sm: 'flex-start' },
+            fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+          }}
         >
           Выполнить в 1С
         </Button>
@@ -323,7 +611,7 @@ function TaskActionBar({ task, working, commandState, onAction, onCheckCommand }
   );
 }
 
-function TaskDetailsContent({ task, loading, error, fileError, actionNotice, onRetry, onPreviewFile, onDownloadFile }) {
+function TaskDetailsContent({ task, loading, filesLoading = false, error, fileError, actionNotice, onRetry, onPreviewFile, onDownloadFile }) {
   const created = formatDocflowDate(task?.created_at);
   const due = formatDocflowDate(task?.due_at);
   const completed = formatDocflowDate(task?.completed_at);
@@ -354,7 +642,15 @@ function TaskDetailsContent({ task, loading, error, fileError, actionNotice, onR
         <Typography component="h3" variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
           Описание
         </Typography>
-        <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2.5, bgcolor: 'action.hover' }}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: { xs: 1.5, sm: 2 },
+            borderRadius: 2.5,
+            bgcolor: 'background.paper',
+            borderColor: 'divider',
+          }}
+        >
           {loading ? (
             <Stack spacing={0.35} sx={{ mt: 0.5 }}>
               <Skeleton width="96%" />
@@ -362,39 +658,57 @@ function TaskDetailsContent({ task, loading, error, fileError, actionNotice, onR
               <Skeleton width="58%" />
             </Stack>
           ) : (
-            <Typography
-              variant="body2"
-              sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.6, maxWidth: '70ch', textWrap: 'pretty' }}
-            >
-              {task?.description || 'Описание в 1С не указано.'}
-            </Typography>
+            <TaskDescriptionBody description={task?.description} />
           )}
         </Paper>
       </Box>
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' },
-          gap: 1,
-        }}
-      >
-        <DetailValue label="Автор" icon={PersonOutlineOutlinedIcon}>{task?.author}</DetailValue>
-        <DetailValue label="Поставлено" icon={CalendarTodayOutlinedIcon}>{created}</DetailValue>
-        <DetailValue label="Срок исполнения" icon={ScheduleOutlinedIcon} accent={Boolean(due && !task?.completed)}>{due}</DetailValue>
-        <DetailValue label="Выполнено" icon={CheckCircleOutlineOutlinedIcon}>{completed}</DetailValue>
-        <DetailValue label="Результат" icon={CheckCircleOutlineOutlinedIcon}>{task?.result}</DetailValue>
+      <Box>
+        <Typography component="h3" variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+          Сведения
+        </Typography>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' },
+            gap: 1.25,
+          }}
+        >
+          <DetailValue label="Автор" icon={PersonOutlineOutlinedIcon}>{task?.author}</DetailValue>
+          <DetailValue label="Поставлено" icon={CalendarTodayOutlinedIcon}>{created}</DetailValue>
+          <DetailValue label="Срок исполнения" icon={ScheduleOutlinedIcon} accent={Boolean(due && !task?.completed)}>{due}</DetailValue>
+          <DetailValue label="Выполнено" icon={CheckCircleOutlineOutlinedIcon}>{completed}</DetailValue>
+          <DetailValue label="Результат" icon={CheckCircleOutlineOutlinedIcon} tone="success">{task?.result}</DetailValue>
+        </Box>
       </Box>
       {relatedObjects.length > 0 ? (
-        <Stack spacing={1}>
+        <Stack spacing={1.15}>
           <Stack direction="row" spacing={0.75} alignItems="center">
             <DescriptionOutlinedIcon color="action" fontSize="small" />
-            <Typography component="h3" fontWeight={800}>
+            <Typography component="h3" variant="subtitle1" fontWeight={800}>
               {relatedObjects.length === 1 ? 'Связанный документ' : 'Связанные документы'}
             </Typography>
           </Stack>
           {relatedObjects.map((item) => (
-            <Paper key={item.ref} variant="outlined" sx={{ p: 1.5, borderRadius: 2.25, bgcolor: 'action.hover' }}>
-              <Typography variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere', textWrap: 'pretty' }}>
+            <Paper
+              key={item.ref}
+              variant="outlined"
+              sx={{
+                p: 1.5,
+                borderRadius: 2.25,
+                bgcolor: 'background.paper',
+                borderColor: 'divider',
+                borderLeftWidth: 3,
+                borderLeftColor: 'primary.main',
+              }}
+            >
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'block', letterSpacing: '0.06em', textTransform: 'uppercase', mb: 0.45 }}
+              >
+                Документ 1С
+              </Typography>
+              <Typography variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere', textWrap: 'pretty', lineHeight: 1.4 }}>
                 {item.title}
               </Typography>
             </Paper>
@@ -403,7 +717,7 @@ function TaskDetailsContent({ task, loading, error, fileError, actionNotice, onR
       ) : null}
       <TaskFiles
         task={task}
-        loading={loading}
+        loading={Boolean(loading || filesLoading)}
         error={fileError}
         onPreviewFile={onPreviewFile}
         onDownloadFile={onDownloadFile}
@@ -419,8 +733,21 @@ function TaskDetailsContent({ task, loading, error, fileError, actionNotice, onR
 }
 
 function DetailsHeader({ task, loading, onRefresh, onClose }) {
+  const title = String(task?.title || 'Задание 1С').trim() || 'Задание 1С';
+  const canExpand = title.length > TITLE_EXPAND_THRESHOLD;
+  const [titleExpanded, setTitleExpanded] = useState(false);
+
+  useEffect(() => {
+    setTitleExpanded(false);
+  }, [task?.ref, title]);
+
   return (
-    <Stack direction="row" spacing={1.25} alignItems="flex-start" sx={{ px: 2, pt: 1.5, pb: 1.25 }}>
+    <Stack
+      direction="row"
+      spacing={1.25}
+      alignItems="flex-start"
+      sx={{ flexShrink: 0, px: 2, pt: 1.5, pb: 1.25 }}
+    >
       <Box sx={{ width: 38, height: 38, borderRadius: 2, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
         <AssignmentTurnedInOutlinedIcon fontSize="small" />
       </Box>
@@ -430,11 +757,26 @@ function DetailsHeader({ task, loading, onRefresh, onClose }) {
         </Typography>
         <Typography
           component="h2"
-          fontWeight={800}
-          sx={{ mt: 0.25, overflowWrap: 'anywhere', lineHeight: 1.3, textWrap: 'balance' }}
+          variant="subtitle1"
+          fontWeight={700}
+          title={title}
+          sx={{
+            mt: 0.25,
+            lineHeight: 1.35,
+            ...(titleExpanded ? { overflowWrap: 'anywhere' } : clampedTitleSx(3)),
+          }}
         >
-          {task?.title || 'Задание 1С'}
+          {title}
         </Typography>
+        {canExpand ? (
+          <Button
+            size="small"
+            onClick={() => setTitleExpanded((value) => !value)}
+            sx={{ mt: 0.35, minHeight: 32, px: 0.5, alignSelf: 'flex-start' }}
+          >
+            {titleExpanded ? 'Свернуть' : 'Показать полностью'}
+          </Button>
+        ) : null}
       </Box>
       <Tooltip title="Обновить карточку">
         <span>
@@ -454,10 +796,12 @@ export function DocflowTaskDetails({
   task,
   mobile,
   loading = false,
+  filesLoading = false,
   error = null,
   fileError = null,
   actionNotice = null,
   actionWorking = false,
+  actionProgressLabel = '',
   commandState = null,
   onRetry,
   onRefresh,
@@ -487,13 +831,14 @@ export function DocflowTaskDetails({
           },
         }}
       >
-        <Box sx={{ width: 42, height: 4, borderRadius: 999, bgcolor: 'divider', mx: 'auto', mt: 1 }} />
+        <Box sx={{ width: 42, height: 4, borderRadius: 999, bgcolor: 'divider', mx: 'auto', mt: 1, flexShrink: 0 }} />
         <DetailsHeader task={task} loading={loading} onRefresh={onRefresh} onClose={onClose} />
-        <Divider />
-        <Box sx={{ p: 2, overflowY: 'auto', minHeight: 0, pb: 2.5 }}>
+        <Divider sx={{ flexShrink: 0 }} />
+        <Box sx={{ p: 2, flex: 1, minHeight: 0, overflowY: 'auto', pb: 2.5 }}>
           <TaskDetailsContent
             task={task}
             loading={loading}
+            filesLoading={filesLoading}
             error={error}
             fileError={fileError}
             actionNotice={actionNotice}
@@ -502,10 +847,10 @@ export function DocflowTaskDetails({
             onDownloadFile={onDownloadFile}
           />
         </Box>
-        <Divider />
         <TaskActionBar
           task={task}
           working={actionWorking}
+          progressLabel={actionProgressLabel}
           commandState={commandState}
           onAction={onAction}
           onCheckCommand={onCheckCommand}
@@ -520,16 +865,34 @@ export function DocflowTaskDetails({
       onClose={onClose}
       fullWidth
       maxWidth="md"
-      PaperProps={{ sx: { maxHeight: '92dvh', borderRadius: 3, overflow: 'hidden', overscrollBehavior: 'contain' } }}
+      PaperProps={{
+        sx: {
+          maxHeight: '92dvh',
+          borderRadius: 3,
+          overflow: 'hidden',
+          overscrollBehavior: 'contain',
+          display: 'flex',
+          flexDirection: 'column',
+        },
+      }}
     >
-      <DialogTitle component="div" sx={{ p: 0 }}>
+      <DialogTitle component="div" sx={{ p: 0, flexShrink: 0 }}>
         <DetailsHeader task={task} loading={loading} onRefresh={onRefresh} onClose={onClose} />
       </DialogTitle>
-      <Divider />
-      <DialogContent sx={{ py: 2.5, px: { sm: 3 }, minWidth: 0 }}>
+      <Divider sx={{ flexShrink: 0 }} />
+      <DialogContent
+        sx={{
+          py: 2.5,
+          px: { sm: 3 },
+          minWidth: 0,
+          flex: 1,
+          overflowY: 'auto',
+        }}
+      >
         <TaskDetailsContent
           task={task}
           loading={loading}
+          filesLoading={filesLoading}
           error={error}
           fileError={fileError}
           actionNotice={actionNotice}
@@ -538,10 +901,10 @@ export function DocflowTaskDetails({
           onDownloadFile={onDownloadFile}
         />
       </DialogContent>
-      <Divider />
       <TaskActionBar
         task={task}
         working={actionWorking}
+        progressLabel={actionProgressLabel}
         commandState={commandState}
         onAction={onAction}
         onCheckCommand={onCheckCommand}

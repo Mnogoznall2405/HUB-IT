@@ -1,4 +1,4 @@
-import { Avatar, Box, IconButton, Stack, Tooltip, Typography } from '@mui/material';
+import { Avatar, Box, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import PhoneIcon from '@mui/icons-material/Phone';
@@ -8,7 +8,9 @@ import { isValidEmailRecipient } from '../mail/mailComposeState';
 import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import HighlightText from './HighlightText';
 import {
+  absenceChipColor,
   buildEmployeeSubtitle,
+  formatAbsenceLabel,
   getInitials,
   pickPrimaryEmail,
   pickQuickActionPhone,
@@ -31,6 +33,7 @@ export default function AddressBookEntryRow({
   const primaryPhone = pickQuickActionPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
   const subtitle = buildEmployeeSubtitle(item);
+  const absenceLabel = formatAbsenceLabel(item?.absence);
   const canCall = enableTelLinks && Boolean(primaryPhone?.telHref);
   const canTelegram = primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits);
   const canMail = primaryEmail?.value && isValidEmailRecipient(primaryEmail.value);
@@ -91,6 +94,14 @@ export default function AddressBookEntryRow({
           <Typography variant="caption" color="text.secondary" noWrap display="block">
             <HighlightText value={subtitle} query={query} />
           </Typography>
+        ) : null}
+        {absenceLabel ? (
+          <Chip
+            size="small"
+            color={absenceChipColor(item.absence)}
+            label={absenceLabel}
+            sx={{ mt: 0.35, maxWidth: '100%', height: 22, '& .MuiChip-label': { px: 0.75, fontSize: '0.7rem', fontWeight: 700 } }}
+          />
         ) : null}
         {primaryPhone?.value ? (
           <Typography variant="caption" color="text.disabled" noWrap display="block">

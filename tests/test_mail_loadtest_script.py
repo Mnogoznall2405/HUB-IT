@@ -27,6 +27,22 @@ def test_percentile_ms_interpolates_expected_value():
     assert result == 385.0
 
 
+def test_attachment_preview_reference_prefers_download_token():
+    module = _load_module()
+
+    result = module.maybe_attachment_ref({
+        "attachments": [{"id": "raw-id", "download_token": "safe-token"}],
+    })
+
+    assert result == "safe-token"
+
+
+def test_client_ip_for_worker_rotates_last_octet():
+    module = _load_module()
+
+    assert module.client_ip_for_worker("10.10.30.50", 3) == "10.10.30.53"
+
+
 def test_build_report_evaluates_mail_slos():
     module = _load_module()
     stats = module.RunStats()

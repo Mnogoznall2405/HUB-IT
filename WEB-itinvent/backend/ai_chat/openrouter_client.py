@@ -1,7 +1,7 @@
-"""Compatibility re-export of the shared OpenRouter LLM gateway.
+"""Compatibility re-export of the shared RouterAI LLM gateway.
 
 Prefer importing from ``shared.llm`` in new code. This module keeps existing
-``backend.ai_chat.openrouter_client`` imports working.
+``backend.ai_chat.openrouter_client`` imports working during the provider migration.
 """
 from __future__ import annotations
 

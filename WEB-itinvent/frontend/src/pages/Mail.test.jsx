@@ -1550,7 +1550,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
     });
 
-    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 90000)).toBe(false);
+    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 20_000)).toBe(false);
 
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -1563,7 +1563,7 @@ describe('Mail read-state behavior', () => {
       await Promise.resolve();
     });
 
-    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 90000)).toBe(true);
+    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 20_000)).toBe(true);
     setIntervalSpy.mockRestore();
   });
 
@@ -2738,6 +2738,7 @@ describe('Mail read-state behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Отправленные');
+      expect(screen.getByTestId('mail-item-msg-sent-1')).toBeTruthy();
     });
 
     firstRender.unmount();

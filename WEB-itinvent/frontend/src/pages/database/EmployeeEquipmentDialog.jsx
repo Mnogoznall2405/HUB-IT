@@ -172,7 +172,15 @@ function HubEquipmentMobileRow({ item, onOpenInvNo, showDbChip = false }) {
   );
 }
 
-function HubEquipmentTable({ items, loading, error, onOpenInvNo, isMobile = false, filterActive = false }) {
+function HubEquipmentTable({
+  items,
+  loading,
+  error,
+  onOpenInvNo,
+  isMobile = false,
+  filterActive = false,
+  emptyMessage = '',
+}) {
   const showDbChip = useMemo(() => {
     const ids = new Set(
       (Array.isArray(items) ? items : [])
@@ -203,9 +211,9 @@ function HubEquipmentTable({ items, loading, error, onOpenInvNo, isMobile = fals
   if (!items.length) {
     return (
       <Typography variant="body2" color="text.secondary">
-        {filterActive
+        {emptyMessage || (filterActive
           ? 'По фильтру в Хабе ничего не найдено.'
-          : 'У сотрудника нет закреплённого оборудования в Хабе.'}
+          : 'У сотрудника нет закреплённого оборудования в Хабе.')}
       </Typography>
     );
   }
@@ -552,8 +560,10 @@ export default function EmployeeEquipmentDialog({
   open,
   ownerNo,
   employeeName,
+  warehouseRef = '',
   canViewWarehouse1C = false,
   allowCrossDatabase = false,
+  stackAboveParent = false,
   onClose,
   onOpenInvNo = null,
   buildWarehouseReturnContext = null,
@@ -603,7 +613,9 @@ export default function EmployeeEquipmentDialog({
   }, []);
 
   useEffect(() => {
-    if (!open || !ownerNo) {
+    const canLoadHub = Boolean(ownerNo);
+    const canLoadWarehouse = Boolean(canViewWarehouse1C && (employeeName || warehouseRef));
+    if (!open || (!canLoadHub && !canLoadWarehouse)) {
       setHubItems([]);
       setHubError('');
       setHubLoading(false);
@@ -613,38 +625,41 @@ export default function EmployeeEquipmentDialog({
     }
 
     let cancelled = false;
-    setHubLoading(true);
+    setHubLoading(canLoadHub);
     setHubError('');
+    if (!canLoadHub) setHubItems([]);
     setSharedFilter('');
     resetWarehouseState();
 
-    const hubPromise = equipmentSearchAPI.getEmployeeEquipment(ownerNo, {
-      employeeName,
-      allDatabases: allowCrossDatabase,
-    })
-      .then((data) => {
-        if (cancelled) return;
-        const items = Array.isArray(data)
-          ? data
-          : (Array.isArray(data?.equipment) ? data.equipment : []);
-        setHubItems(items);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error('Failed to load employee equipment:', err);
-        setHubError('Не удалось загрузить оборудование сотрудника из Хаба.');
-        setHubItems([]);
-      })
-      .finally(() => {
-        if (!cancelled) setHubLoading(false);
-      });
+    const hubPromise = canLoadHub
+      ? equipmentSearchAPI.getEmployeeEquipment(ownerNo, {
+          employeeName,
+          allDatabases: allowCrossDatabase,
+        })
+          .then((data) => {
+            if (cancelled) return;
+            const items = Array.isArray(data)
+              ? data
+              : (Array.isArray(data?.equipment) ? data.equipment : []);
+            setHubItems(items);
+          })
+          .catch((err) => {
+            if (cancelled) return;
+            console.error('Failed to load employee equipment:', err);
+            setHubError('Не удалось загрузить оборудование сотрудника из Хаба.');
+            setHubItems([]);
+          })
+          .finally(() => {
+            if (!cancelled) setHubLoading(false);
+          })
+      : Promise.resolve();
 
     let warehousePromise = Promise.resolve();
-    if (canViewWarehouse1C && employeeName) {
+    if (canLoadWarehouse) {
       setWarehouseLoading(true);
       warehousePromise = warehouse1cAPI.getEmployeeWarehouse({
         employeeName,
-        warehouseRef: '',
+        warehouseRef,
         loadBalances: false,
       })
         .then((data) => {
@@ -709,10 +724,10 @@ export default function EmployeeEquipmentDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, ownerNo, employeeName, canViewWarehouse1C, allowCrossDatabase, resetWarehouseState]);
+  }, [open, ownerNo, employeeName, warehouseRef, canViewWarehouse1C, allowCrossDatabase, resetWarehouseState]);
 
-  const loadWarehouseData = useCallback(async (warehouseRef = '') => {
-    if (!canViewWarehouse1C || !employeeName) return;
+  const loadWarehouseData = useCallback(async (nextWarehouseRef = '') => {
+    if (!canViewWarehouse1C || (!employeeName && !nextWarehouseRef)) return;
 
     setWarehouseLoading(true);
     setWarehouseBalancesLoading(true);
@@ -720,7 +735,7 @@ export default function EmployeeEquipmentDialog({
     try {
       const data = await warehouse1cAPI.getEmployeeWarehouse({
         employeeName,
-        warehouseRef,
+        warehouseRef: nextWarehouseRef,
         loadBalances: true,
       });
       setWarehouseStatus(data?.status || '');
@@ -753,17 +768,18 @@ export default function EmployeeEquipmentDialog({
   const returnState = useCallback(() => {
     const base = {
       returnTo: '/database',
-      returnLabel: 'Назад к сотруднику',
+      returnLabel: ownerNo ? 'Назад к сотруднику' : 'Назад к результату поиска',
       reopenEmployee: {
         ownerNo,
         employeeName,
+        warehouseRef: warehouseInfo?.ref || warehouseRef || '',
       },
     };
     if (typeof buildWarehouseReturnContext === 'function') {
       return buildWarehouseReturnContext(base);
     }
     return base;
-  }, [buildWarehouseReturnContext, ownerNo, employeeName]);
+  }, [buildWarehouseReturnContext, employeeName, ownerNo, warehouseInfo?.ref, warehouseRef]);
 
   const handleOpenWarehousePage = useCallback((warehouse) => {
     if (!warehouse?.ref) return;
@@ -819,6 +835,10 @@ export default function EmployeeEquipmentDialog({
       fullWidth
       fullScreen={isMobile}
       scroll="paper"
+      sx={stackAboveParent ? {
+        // Keep above EquipmentDetailDialog (and beat ModalManager inline z-index).
+        zIndex: (t) => `${t.zIndex.modal + 2} !important`,
+      } : undefined}
       PaperProps={{
         sx: {
           height: isMobile ? '100%' : 'min(90vh, 920px)',
@@ -905,6 +925,7 @@ export default function EmployeeEquipmentDialog({
               error={hubError}
               isMobile={isMobile}
               filterActive={filterActive}
+              emptyMessage={!ownerNo ? 'Сотрудник не найден в справочнике Хаба.' : ''}
               onOpenInvNo={onOpenInvNo ? handleOpenInvNo : null}
             />
           </Box>
@@ -957,6 +978,7 @@ export default function EmployeeEquipmentDialog({
       onClose={handleCloseHubMatch}
       onOpenInvNo={onOpenInvNo ? handleOpenInvNo : null}
       onOpenInWarehouse1C={handleOpenBalanceInWarehouse1C}
+      stackAboveParent={stackAboveParent}
     />
     </>
   );

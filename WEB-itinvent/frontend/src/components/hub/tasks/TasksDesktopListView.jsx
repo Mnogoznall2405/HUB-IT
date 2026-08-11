@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -10,11 +10,28 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Typography,
 } from '@mui/material';
 import TaskListSectionHeader from '../TaskListSectionHeader';
 import { getOfficeEmptyStateSx, getOfficePanelSx } from '../../../theme/officeUiTokens';
 import TasksListTableRow from './TasksListTableRow';
+
+const getActivityTimestamp = (task) => {
+  const timestamp = new Date(task?.updated_at || task?.created_at || '').getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const sortTasksByActivity = (items, direction) => [...items].sort((left, right) => {
+  const leftTimestamp = getActivityTimestamp(left);
+  const rightTimestamp = getActivityTimestamp(right);
+  if (leftTimestamp === null && rightTimestamp === null) return 0;
+  if (leftTimestamp === null) return 1;
+  if (rightTimestamp === null) return -1;
+  return direction === 'asc'
+    ? leftTimestamp - rightTimestamp
+    : rightTimestamp - leftTimestamp;
+});
 
 function TaskListRow({
   task,
@@ -22,7 +39,9 @@ function TaskListRow({
   alpha,
   taskDiscussionChatEnabled,
   projectLabel,
+  canDeleteTask,
   onOpenTask,
+  onDeleteTask,
 }) {
   const handleOpen = useCallback(() => {
     onOpenTask?.(task);
@@ -35,7 +54,9 @@ function TaskListRow({
       alpha={alpha}
       taskDiscussionChatEnabled={taskDiscussionChatEnabled}
       projectLabel={projectLabel}
+      canDelete={canDeleteTask?.(task) === true}
       onOpen={handleOpen}
+      onDelete={onDeleteTask}
     />
   );
 }
@@ -46,17 +67,34 @@ export default function TasksDesktopListView({
   loading = false,
   visibleTaskItems = [],
   taskListSections,
+  dateSortDirection = 'desc',
+  onDateSortDirectionChange,
   completedTasksOpen = false,
   onToggleCompletedTasks,
   taskDiscussionChatEnabled = false,
   activeTaskProjects = [],
+  canDeleteTask,
   onOpenTask,
+  onDeleteTask,
   hasMoreTasks = false,
   onLoadMore,
   tasksTotal = 0,
 }) {
   const { active, completed } = taskListSections || { active: { items: [] }, completed: { items: [] } };
-  const hasAnyTasks = active.items.length > 0 || completed.items.length > 0;
+  const activeSourceItems = Array.isArray(active?.items) ? active.items : [];
+  const completedSourceItems = Array.isArray(completed?.items) ? completed.items : [];
+  const activeItems = useMemo(
+    () => sortTasksByActivity(activeSourceItems, dateSortDirection),
+    [activeSourceItems, dateSortDirection],
+  );
+  const completedItems = useMemo(
+    () => sortTasksByActivity(completedSourceItems, dateSortDirection),
+    [completedSourceItems, dateSortDirection],
+  );
+  const hasAnyTasks = activeItems.length > 0 || completedItems.length > 0;
+  const activitySortLabel = dateSortDirection === 'asc'
+    ? 'Дата изменения, сначала старые'
+    : 'Дата изменения, сначала новые';
 
   const resolveProjectLabel = (task) => (
     task?.project_name
@@ -80,9 +118,10 @@ export default function TasksDesktopListView({
         <Table stickyHeader size="small" aria-label="Список задач">
           <TableHead>
             <TableRow>
-              {['Название', 'Активность', 'Крайний срок', 'Постановщик', 'Исполнитель', 'Проект', 'Теги'].map((label) => (
+              {['Название', 'Дата изменения', 'Крайний срок', 'Постановщик', 'Исполнитель', 'Проект', 'Теги'].map((label) => (
                 <TableCell
                   key={label}
+                  sortDirection={label === 'Дата изменения' ? dateSortDirection : false}
                   sx={{
                     bgcolor: ui.panelSolid,
                     color: ui.subtleText,
@@ -92,7 +131,21 @@ export default function TasksDesktopListView({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {label}
+                  {label === 'Дата изменения' ? (
+                    <TableSortLabel
+                      active
+                      direction={dateSortDirection}
+                      aria-label={activitySortLabel}
+                      onClick={() => onDateSortDirectionChange?.(dateSortDirection === 'desc' ? 'asc' : 'desc')}
+                      sx={{
+                        color: 'inherit',
+                        '&.Mui-active': { color: ui.textPrimary },
+                        '& .MuiTableSortLabel-icon': { color: `${ui.textPrimary} !important` },
+                      }}
+                    >
+                      {label}
+                    </TableSortLabel>
+                  ) : label}
                 </TableCell>
               ))}
             </TableRow>
@@ -121,11 +174,11 @@ export default function TasksDesktopListView({
               <>
                 <TableRow>
                   <TableCell colSpan={7} sx={{ borderColor: ui.borderSoft, p: 0 }}>
-                    <TaskListSectionHeader label="Активные" count={active.items.length} ui={ui} />
+                    <TaskListSectionHeader label="Активные" count={activeItems.length} ui={ui} />
                   </TableCell>
                 </TableRow>
-                {active.items.length > 0 ? (
-                  active.items.map((task) => (
+                {activeItems.length > 0 ? (
+                  activeItems.map((task) => (
                     <TaskListRow
                       key={task.id}
                       task={task}
@@ -133,7 +186,9 @@ export default function TasksDesktopListView({
                       alpha={alpha}
                       taskDiscussionChatEnabled={taskDiscussionChatEnabled}
                       projectLabel={resolveProjectLabel(task)}
+                      canDeleteTask={canDeleteTask}
                       onOpenTask={onOpenTask}
+                      onDeleteTask={onDeleteTask}
                     />
                   ))
                 ) : (
@@ -147,7 +202,7 @@ export default function TasksDesktopListView({
                   <TableCell colSpan={7} sx={{ borderColor: ui.borderSoft, p: 0 }}>
                     <TaskListSectionHeader
                       label="Завершённые"
-                      count={completed.items.length}
+                      count={completedItems.length}
                       collapsible
                       expanded={completedTasksOpen}
                       onToggle={onToggleCompletedTasks}
@@ -156,8 +211,8 @@ export default function TasksDesktopListView({
                   </TableCell>
                 </TableRow>
                 {completedTasksOpen ? (
-                  completed.items.length > 0 ? (
-                    completed.items.map((task) => (
+                  completedItems.length > 0 ? (
+                    completedItems.map((task) => (
                       <TaskListRow
                         key={task.id}
                         task={task}
@@ -165,7 +220,9 @@ export default function TasksDesktopListView({
                         alpha={alpha}
                         taskDiscussionChatEnabled={taskDiscussionChatEnabled}
                         projectLabel={resolveProjectLabel(task)}
+                        canDeleteTask={canDeleteTask}
                         onOpenTask={onOpenTask}
+                        onDeleteTask={onDeleteTask}
                       />
                     ))
                   ) : (

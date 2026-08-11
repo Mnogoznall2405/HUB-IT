@@ -90,8 +90,10 @@ export const docflowAPI = {
     return data;
   },
 
-  getTask: async (taskRef) => {
+  getTask: async (taskRef, { includeRelated = true } = {}) => {
     const { data } = await apiClient.get(`/docflow/tasks/${encodeURIComponent(taskRef)}`, {
+      // Explicit 0/1 so proxies/serializers never drop boolean false.
+      params: { include_related: includeRelated ? 1 : 0 },
       ...noStore,
       timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS,
     });
@@ -138,6 +140,17 @@ export const docflowAPI = {
       },
     )
   ),
+
+  getFilePreview: async (taskRef, fileRef, { signal } = {}) => {
+    const { data } = await apiClient.get(
+      `/docflow/tasks/${encodeURIComponent(taskRef)}/files/${encodeURIComponent(fileRef)}/preview`,
+      {
+        signal,
+        timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS,
+      },
+    );
+    return data;
+  },
 
   getMetadata: async () => {
     const { data } = await apiClient.get('/docflow/metadata', {

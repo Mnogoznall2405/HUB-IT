@@ -100,24 +100,22 @@ export default function useChatPanelsController({
     }
   }, [activeTaskConversationTaskId, isMobile]);
 
-  const openTaskInTasks = useCallback((taskId) => {
-    const normalizedTaskId = String(taskId || '').trim();
-    if (!normalizedTaskId) return;
-    navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}`);
+  const openTaskInTasks = useCallback(() => {
+    navigate('/tasks');
   }, [navigate]);
 
   const openTaskFromChat = useCallback((taskId) => {
     const normalizedTaskId = String(taskId || '').trim();
     if (!normalizedTaskId) return;
     if (isMobile) {
-      openTaskInTasks(normalizedTaskId);
+      navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}`);
       return;
     }
     void loadTaskWorkspacePanelModule();
     setContextPanelOpen(false);
     setTaskPanelTaskId(normalizedTaskId);
     setTaskPanelOpen(true);
-  }, [isMobile, openTaskInTasks]);
+  }, [isMobile, navigate]);
 
   const closeTaskPanel = useCallback(() => {
     setTaskPanelOpen(false);

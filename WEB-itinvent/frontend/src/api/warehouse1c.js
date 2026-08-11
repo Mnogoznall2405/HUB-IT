@@ -234,7 +234,13 @@ export const warehouse1cAPI = {
     return response;
   },
 
-  getEmployeeWarehouse: async ({ employeeName = '', warehouseRef = '', loadBalances = true, limit = 200 } = {}) => {
+  getEmployeeWarehouse: async ({
+    employeeName = '',
+    warehouseRef = '',
+    loadBalances = true,
+    limit = 200,
+    signal,
+  } = {}) => {
     const { data } = await apiClient.get('/warehouse-1c/employee-warehouse', {
       params: {
         employee_name: employeeName,
@@ -243,6 +249,7 @@ export const warehouse1cAPI = {
         limit,
       },
       timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
     });
     return data;
   },

@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
+from urllib.parse import quote
 
 from sqlalchemy import inspect
 
@@ -4065,39 +4066,26 @@ class MailService:
         message_id: str,
         attachment_ref: str,
     ) -> dict[str, Any]:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-            build_preview_metadata,
-            classify_office_source,
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_MAIL,
+            document_preview_job_service,
         )
 
-        filename, content_type, content = self.download_attachment(
-            user_id=int(user_id),
-            mailbox_id=mailbox_id,
-            message_id=message_id,
-            attachment_ref=attachment_ref,
-        )
-        if not classify_office_source(filename=filename, content_type=content_type):
-            raise MailServiceError("Attachment type is not supported for Office preview.")
-        try:
-            artifact = build_office_preview_artifact(
-                filename=filename,
-                content_type=content_type,
-                content=content,
-            )
-        except MailAttachmentPreviewError as exc:
-            raise MailServiceError(str(exc)) from exc
         preview_pdf_path = (
-            f"/api/v1/mail/messages/{message_id}/attachments/{attachment_ref}/preview/pdf"
+            f"/api/v1/mail/messages/{quote(_normalize_text(message_id), safe='')}"
+            f"/attachments/{quote(_normalize_text(attachment_ref), safe='')}/preview/pdf"
         )
         if mailbox_id:
-            preview_pdf_path = f"{preview_pdf_path}?mailbox_id={mailbox_id}"
-        return build_preview_metadata(
-            filename=filename,
-            content_type=content_type,
-            artifact=artifact,
-            preview_pdf_path=preview_pdf_path,
+            preview_pdf_path = f"{preview_pdf_path}?mailbox_id={quote(_normalize_text(mailbox_id), safe='')}"
+        return document_preview_job_service.get_state(
+            scope=PREVIEW_SCOPE_MAIL,
+            owner_user_id=int(user_id),
+            source_payload={
+                "message_id": message_id,
+                "attachment_ref": attachment_ref,
+                "mailbox_id": mailbox_id,
+            },
+            preview_url=preview_pdf_path,
         )
 
     def download_attachment_preview_pdf(
@@ -4107,30 +4095,28 @@ class MailService:
         mailbox_id: str | None = None,
         message_id: str,
         attachment_ref: str,
-    ) -> tuple[str, bytes]:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-            classify_office_source,
+    ) -> dict[str, Any]:
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_MAIL,
+            document_preview_job_service,
         )
 
-        filename, content_type, content = self.download_attachment(
-            user_id=int(user_id),
-            mailbox_id=mailbox_id,
-            message_id=message_id,
-            attachment_ref=attachment_ref,
+        preview_pdf_path = (
+            f"/api/v1/mail/messages/{quote(_normalize_text(message_id), safe='')}"
+            f"/attachments/{quote(_normalize_text(attachment_ref), safe='')}/preview/pdf"
         )
-        if not classify_office_source(filename=filename, content_type=content_type):
-            raise MailServiceError("Attachment type is not supported for Office preview.")
-        try:
-            artifact = build_office_preview_artifact(
-                filename=filename,
-                content_type=content_type,
-                content=content,
-            )
-        except MailAttachmentPreviewError as exc:
-            raise MailServiceError(str(exc)) from exc
-        return artifact.pdf_filename, artifact.pdf_bytes
+        if mailbox_id:
+            preview_pdf_path = f"{preview_pdf_path}?mailbox_id={quote(_normalize_text(mailbox_id), safe='')}"
+        return document_preview_job_service.get_ready_artifact(
+            scope=PREVIEW_SCOPE_MAIL,
+            owner_user_id=int(user_id),
+            source_payload={
+                "message_id": message_id,
+                "attachment_ref": attachment_ref,
+                "mailbox_id": mailbox_id,
+            },
+            preview_url=preview_pdf_path,
+        )
 
     def _log_message(
         self,

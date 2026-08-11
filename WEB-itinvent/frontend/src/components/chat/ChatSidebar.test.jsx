@@ -63,19 +63,17 @@ const buildProps = (overrides = {}) => ({
   conversations: [baseConversation],
   onOpenGroup: vi.fn(),
   sidebarScrollRef: { current: null },
-  activeFolderKey: 'all',
+  activeFolderKey: 'groups',
   onActiveFolderChange: vi.fn(),
   customFolders: [],
   folderUnreadCounts: {},
   conversationIdsByFolder: {},
-  conversationFilter: 'all',
+  conversationFilter: 'groups',
   onConversationFilterChange: vi.fn(),
   conversationFilterCounts: {
-    all: 1,
-    unread: 1,
-    direct: 0,
-    group: 1,
-    pinned: 0,
+    personal: 0,
+    groups: 1,
+    tasks: 0,
     archived: 0,
   },
   draftsByConversation: {
@@ -103,11 +101,40 @@ describe('ChatSidebar', () => {
     renderWithTheme(buildProps());
 
     expect(screen.getByRole('button', { current: 'page' })).toHaveAttribute('data-chat-active', 'true');
+    expect(screen.getByTestId('chat-unread-badge-conv-1')).toHaveStyle({
+      backgroundColor: 'var(--chat-unread-active-bg)',
+      color: 'var(--chat-unread-active-text)',
+    });
+  });
+
+  it('makes an unread inactive conversation visually prominent', () => {
+    renderWithTheme(buildProps({
+      activeConversationId: 'another-conversation',
+      draftsByConversation: {},
+    }));
+
+    const row = document.querySelector('[data-chat-unread="true"]');
+    expect(row).toHaveStyle({
+      backgroundColor: 'var(--chat-sidebar-row-unread)',
+      boxShadow: 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)',
+    });
+    expect(screen.getByText(baseConversation.title)).toHaveClass(
+      'font-bold',
+      'text-[color:var(--chat-text-strong)]',
+    );
+    expect(row.querySelectorAll('p')[1]).toHaveClass(
+      'font-semibold',
+      'text-[color:var(--chat-sidebar-unread-text)]',
+    );
+    expect(screen.getByTestId('chat-unread-badge-conv-1')).toHaveStyle({
+      height: '24px',
+      minWidth: '24px',
+    });
   });
 
   it('renders task chats with task identity metadata and a desktop message preview', () => {
     renderWithTheme(buildProps({
-      activeFolderKey: 'all',
+      activeFolderKey: 'personal',
       activeConversationId: 'task-conv',
       conversations: [{
         ...baseConversation,
@@ -234,7 +261,7 @@ describe('ChatSidebar', () => {
     fireEvent.touchMove(row, { touches: [{ clientX: 120, clientY: 302 }] });
     fireEvent.touchEnd(row);
 
-    expect(onActiveFolderChange).toHaveBeenCalledWith('tasks');
+    expect(onActiveFolderChange).toHaveBeenCalledWith('groups');
     expect(onOpenConversation).not.toHaveBeenCalled();
   });
 
@@ -300,6 +327,7 @@ describe('ChatSidebar', () => {
     const onOpenConversation = vi.fn();
 
     renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
       showAiSection: true,
       onOpenConversation,
       aiBots: [{
@@ -329,6 +357,7 @@ describe('ChatSidebar', () => {
     const onOpenAiBot = vi.fn();
 
     renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
       showAiSection: true,
       aiBots: [{ id: 'ai-2', title: 'Fresh Bot', slug: 'fresh-bot', description: 'Ready' }],
       onOpenAiBot,
@@ -341,6 +370,7 @@ describe('ChatSidebar', () => {
 
   it('shows AI sidebar loading and error states when AI chat is enabled', () => {
     const { rerender } = renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
       showAiSection: true,
       aiBotsLoading: true,
     }));
@@ -351,6 +381,7 @@ describe('ChatSidebar', () => {
       <ThemeProvider theme={theme}>
         <ChatSidebar
           {...buildProps({
+            activeFolderKey: 'personal',
             showAiSection: true,
             aiBotsError: 'Failed to load AI bots.',
           })}
@@ -404,21 +435,43 @@ describe('ChatSidebar', () => {
     expect(screen.getByText('08.06.2026')).toBeInTheDocument();
   });
 
-  it('hides the All folder tab on compact mobile', () => {
+  it('shows system folders without All on compact mobile', () => {
     renderWithTheme(buildProps({
       compactMobile: true,
       isMobile: true,
     }));
 
     expect(screen.getByRole('button', { name: 'Личные' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Беседы' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Задачи' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Все' })).not.toBeInTheDocument();
   });
 
-  it('keeps the All folder tab on desktop', () => {
+  it('shows system folders without All on desktop', () => {
     renderWithTheme(buildProps());
 
-    expect(screen.getByRole('button', { name: 'Все' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Личные' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Беседы' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Задачи' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Все' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the active folder unread badge distinct from its selected pill', () => {
+    renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
+      folderUnreadCounts: { personal: 1 },
+    }));
+
+    const folderButton = screen.getByRole('button', { name: /Личные/i });
+    expect(folderButton.querySelector('.chat-folder-tab-shimmer')).toHaveStyle({
+      backgroundColor: 'var(--chat-folder-tab-active-bg)',
+    });
+    expect(folderButton.querySelector('[data-chat-folder-unread-badge]')).toHaveStyle({
+      backgroundColor: 'var(--chat-folder-tab-active-badge-bg)',
+      color: 'var(--chat-folder-tab-active-badge-text)',
+      height: '20px',
+      minWidth: '20px',
+    });
   });
 
   it('collapses mobile search on list scroll and expands from header icon', async () => {

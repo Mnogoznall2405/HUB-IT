@@ -48,7 +48,7 @@ export default function useChatFolderMutationsController({
     try {
       await chatFoldersAPI.deleteFolder(folderId);
       if (String(conversationFilter) === String(folderId)) {
-        handleActiveFolderChange('all');
+        handleActiveFolderChange('personal');
       }
       await loadChatFolders({ silent: true });
     } catch (error) {

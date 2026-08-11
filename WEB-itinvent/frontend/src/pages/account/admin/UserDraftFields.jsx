@@ -170,11 +170,19 @@ export default function UserDraftFields({ draft, onChange, dbOptions, linkedSess
                 <AccordionDetails>
                   <FormGroup>
                     {group.permissions.map((permission) => {
-                      const checked = normalizePermissions(draft.custom_permissions).includes(permission.value);
+                      const alwaysGranted = Boolean(permission.alwaysGranted);
+                      const checked = alwaysGranted || normalizePermissions(draft.custom_permissions).includes(permission.value);
                       return (
                         <FormControlLabel
                           key={permission.value}
-                          control={<Checkbox size="small" checked={checked} onChange={() => togglePermission(permission.value)} />}
+                          control={(
+                            <Checkbox
+                              size="small"
+                              checked={checked}
+                              disabled={alwaysGranted}
+                              onChange={() => togglePermission(permission.value)}
+                            />
+                          )}
                           label={permission.label}
                         />
                       );

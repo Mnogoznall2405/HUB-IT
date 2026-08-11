@@ -50,5 +50,33 @@ describe('company structure API contracts', () => {
       params: { q: 'Иванов', limit: 30 },
     });
   });
-});
 
+  it('loads the same employee subtree that is counted on an org card', async () => {
+    await companyStructureAPI.getNodePeople('node/1');
+
+    expect(apiClientMock.get).toHaveBeenCalledWith(
+      '/company-structure/nodes/node%2F1/people',
+      { params: { limit: 2000, include_descendants: true } },
+    );
+  });
+
+  it('searches leader candidates without exposing personal contacts', async () => {
+    await companyStructureAPI.searchLeaderCandidates({ q: 'Иванов', limit: 20 });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/company-structure/leader-candidates', {
+      params: { q: 'Иванов', limit: 20 },
+    });
+  });
+
+  it('uploads a leader photo as multipart data', async () => {
+    const file = new File(['photo'], 'photo.png', { type: 'image/png' });
+
+    await companyStructureAPI.uploadNodePhoto('node/1', file);
+
+    const [url, body, config] = apiClientMock.post.mock.calls[0];
+    expect(url).toBe('/company-structure/nodes/node%2F1/photo');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('file')).toBe(file);
+    expect(config).toEqual({ headers: { 'Content-Type': 'multipart/form-data' } });
+  });
+});

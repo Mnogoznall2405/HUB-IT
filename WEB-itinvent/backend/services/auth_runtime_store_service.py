@@ -426,6 +426,41 @@ class AuthRuntimeStoreService:
             return payload
         return None
 
+    def save_refresh_rotation_grace(self, old_jti: str, payload: dict[str, Any], ttl_seconds: int) -> None:
+        """Store newly issued tokens so a parallel refresh with old_jti can reuse them."""
+        normalized = str(old_jti or "").strip()
+        if not normalized or not isinstance(payload, dict):
+            return
+        self.set_json(
+            "refresh_grace",
+            normalized,
+            payload,
+            ttl_seconds=max(1, int(ttl_seconds or 1)),
+        )
+
+    def get_refresh_rotation_grace(self, old_jti: str) -> dict[str, Any] | None:
+        normalized = str(old_jti or "").strip()
+        if not normalized:
+            return None
+        payload = self.get_json("refresh_grace", normalized)
+        return payload if isinstance(payload, dict) else None
+
+    def wait_refresh_rotation_grace(
+        self,
+        old_jti: str,
+        *,
+        attempts: int = 6,
+        sleep_seconds: float = 0.05,
+    ) -> dict[str, Any] | None:
+        """Briefly poll grace store for in-flight parallel refresh winners."""
+        for index in range(max(1, int(attempts))):
+            payload = self.get_refresh_rotation_grace(old_jti)
+            if payload:
+                return payload
+            if index + 1 < max(1, int(attempts)):
+                time.sleep(max(0.0, float(sleep_seconds)))
+        return None
+
     def save_login_challenge(self, challenge_id: str, payload: dict[str, Any], ttl_seconds: int) -> None:
         self.set_json("login_challenge", challenge_id, payload, ttl_seconds=max(1, int(ttl_seconds or 1)))
 

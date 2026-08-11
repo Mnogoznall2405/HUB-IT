@@ -69,7 +69,7 @@ export default function AppearanceTab({
               Сохранение сразу обновляет интерфейс.
             </Typography>
             <Button variant="contained" startIcon={<SaveOutlinedIcon />} onClick={handleSavePreferences} disabled={saving}>
-              {saving ? 'Сохранение...' : 'Сохранить'}
+              {saving ? 'Сохранение...' : 'Сохранить внешний вид'}
             </Button>
           </Box>
         </SectionCard>
@@ -80,6 +80,8 @@ export default function AppearanceTab({
           selectedPaths={mobileBottomNavItems}
           resolvedItems={resolvedMobileNavigationItems}
           onChange={setMobileBottomNavItems}
+          onSave={handleSavePreferences}
+          saving={saving}
         />
       </Grid>
     </Grid>

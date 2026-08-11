@@ -28,6 +28,7 @@ export default function useTaskCreate({
   setObserverSearchInput,
   resetTaskUserSearchInputs,
   refreshTasksAndDetails,
+  loadTaskDetails,
   closeTaskDetails,
   selectedTaskId,
   detailsTask,
@@ -95,6 +96,7 @@ export default function useTaskCreate({
   const workflow = useTaskWorkflowActions({
     setError,
     refreshTasksAndDetails,
+    loadTaskDetails,
     loadTasks,
     closeTaskDetails,
     selectedTaskId,

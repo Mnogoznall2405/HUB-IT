@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -21,6 +21,7 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .agent_package import package_payload, resolve_agent_package
@@ -29,9 +30,21 @@ from .database import ScanStore
 from .memory_guard import get_process_rss_bytes
 from .ocr import FOCUSED_REGION_DPI, MAX_FOCUSED_REGION_PIXELS, MAX_RENDERED_PAGE_PIXELS
 from .patterns import list_patterns
+from .pg_compat import begin_request_timings, get_request_timings
 from .report_export import XLSX_MEDIA_TYPE, build_scan_task_incidents_excel
-from .system_metrics import SystemMetricsSampler
+from .scan_view import InvalidScanView, ScanListView, coerce_optional_metrics_view, normalize_scan_list_view
+from .system_metrics import SystemMetricsSampler, resolve_system_metrics_sample_interval_sec
 from .worker import ScanWorker
+
+
+def _parse_scan_list_view(value: Optional[str], *, default: str) -> str:
+    try:
+        return normalize_scan_list_view(value, default=default)  # type: ignore[arg-type]
+    except InvalidScanView as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc) or "view must be 'summary' or 'detail'",
+        ) from exc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +58,15 @@ PERM_SCAN_READ = "scan.read"
 PERM_SCAN_ACK = "scan.ack"
 PERM_SCAN_TASKS = "scan.tasks"
 
-if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
-    # Proactor loop on Windows can leave uvicorn alive but no longer accepting
-    # new connections after transient socket errors such as WinError 64.
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+def _timing_headers_enabled() -> bool:
+    """Fail-closed: only true/1/yes/on enable response timing headers; invalid в†’ false."""
+    raw = str(os.getenv("SCAN_PERF_TIMING_HEADERS_ENABLED", "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+if sys.platform.startswith("win") and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+    # SelectorEventLoop hits Win32 select() FD cap (~512) under heavy scan I/O.
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 def _now_ts() -> int:
@@ -138,9 +156,11 @@ ingest_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
 dashboard_cache_lock = threading.Lock()
 dashboard_cache_payload: Optional[Dict[str, Any]] = None
 dashboard_cache_ts = 0.0
+dashboard_inflight_event: Optional[threading.Event] = None
+dashboard_inflight_error: Optional[Exception] = None
 web_auth_cache_lock = threading.Lock()
 web_auth_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
-SYSTEM_METRICS_INTERVAL_SEC = 5.0
+SYSTEM_METRICS_INTERVAL_SEC = resolve_system_metrics_sample_interval_sec()
 metrics_sampler: Optional[SystemMetricsSampler] = None
 
 
@@ -187,20 +207,56 @@ def _forbidden_exception(permission: str) -> HTTPException:
     )
 
 
-def _fetch_web_user(token: str) -> Dict[str, Any]:
-    cache_key = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()
+def _extract_forwarded_client_ip(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    for header_name in ("x-forwarded-for", "x-real-ip"):
+        raw = str(request.headers.get(header_name) or "").strip()
+        if not raw:
+            continue
+        candidate = raw.split(",", 1)[0].strip().strip('"').strip("'")
+        if candidate:
+            return candidate
+    if request.client and request.client.host:
+        return str(request.client.host).strip()
+    return ""
+
+
+def _fetch_web_user(
+    token: str,
+    *,
+    client_ip: Optional[str] = None,
+    forwarded_proto: Optional[str] = None,
+    forwarded_host: Optional[str] = None,
+) -> Dict[str, Any]:
+    normalized_client_ip = str(client_ip or "").strip()
+    cache_seed = f"{token}\0{normalized_client_ip}"
+    cache_key = hashlib.sha256(cache_seed.encode("utf-8", errors="ignore")).hexdigest()
     now_value = time.monotonic()
     with web_auth_cache_lock:
         cached = web_auth_cache.get(cache_key)
         if cached is not None and cached[0] > now_value:
             return dict(cached[1])
 
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    # Backend admin IP allowlist evaluates the caller of /auth/me. Scan must
+    # forward the browser IP, otherwise loopback 127.0.0.1 is rejected for admins.
+    if normalized_client_ip:
+        headers["X-Forwarded-For"] = normalized_client_ip
+        headers["X-Real-IP"] = normalized_client_ip
+    proto = str(forwarded_proto or "").strip()
+    if proto:
+        headers["X-Forwarded-Proto"] = proto
+    host = str(forwarded_host or "").strip()
+    if host:
+        headers["X-Forwarded-Host"] = host
+
     request = UrlRequest(
         config.web_auth_me_url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="GET",
     )
     try:
@@ -237,13 +293,22 @@ def _fetch_web_user(token: str) -> Dict[str, Any]:
 
 def require_web_permission(permission: str):
     def _dependency(
+        request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
         access_token_cookie: Optional[str] = Cookie(None, alias=AUTH_COOKIE_NAME),
     ) -> Dict[str, Any]:
         token = _resolve_access_token(credentials, access_token_cookie)
         if not token:
             raise _credentials_exception()
-        user_raw = _fetch_web_user(token)
+        user_raw = _fetch_web_user(
+            token,
+            client_ip=_extract_forwarded_client_ip(request),
+            forwarded_proto=str(request.headers.get("x-forwarded-proto") or "").strip() or None,
+            forwarded_host=str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip() or None,
+        )
+        role = str(user_raw.get("role") or "").strip().lower()
+        if role == "admin":
+            return user_raw
         permissions = {
             str(item or "").strip()
             for item in (user_raw.get("permissions") if isinstance(user_raw.get("permissions"), list) else [])
@@ -340,6 +405,127 @@ def _get_stale_dashboard(now_value: float) -> Optional[Dict[str, Any]]:
     payload["degraded"] = True
     payload["cache_age_sec"] = round(age_sec, 2)
     return payload
+
+
+def _compute_dashboard_payload() -> Dict[str, Any]:
+    payload = store.dashboard()
+    job_queue = payload.get("job_queue") if isinstance(payload.get("job_queue"), dict) else {}
+    payload["ingest_backpressure"] = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
+        transient_max_gb=config.transient_max_gb,
+        max_pending_jobs=getattr(config, "ingest_max_pending_jobs", None),
+        pdf_queued=int(job_queue.get("pdf_queued") or 0),
+        pdf_processing=int(job_queue.get("pdf_processing") or 0),
+        total_pending=int(job_queue.get("pending") or 0),
+        spool=payload.get("transient_pdf_spool") if isinstance(payload.get("transient_pdf_spool"), dict) else None,
+    )
+    payload["ingest_limits"] = {
+        "max_pending_pdf_jobs": int(config.ingest_max_pending_pdf_jobs),
+        "max_pending_jobs": int(getattr(config, "ingest_max_pending_jobs", 0) or 0),
+        "max_concurrency": int(getattr(config, "ingest_max_concurrency", 0) or 0),
+    }
+    payload["cached"] = False
+    payload["cache_age_sec"] = 0
+    payload["degraded"] = False
+    payload["refreshing"] = False
+    _store_dashboard_cache(payload, time.monotonic())
+    return payload
+
+
+def _finish_dashboard_refresh(error: Optional[Exception]) -> None:
+    global dashboard_inflight_event, dashboard_inflight_error
+    with dashboard_cache_lock:
+        dashboard_inflight_error = error
+        event = dashboard_inflight_event
+        dashboard_inflight_event = None
+    if event is not None:
+        event.set()
+
+
+def _refresh_dashboard_in_background() -> None:
+    error: Optional[Exception] = None
+    try:
+        _compute_dashboard_payload()
+    except Exception as exc:
+        error = exc
+        logger.warning("Scan dashboard background refresh failed: %s", exc)
+    finally:
+        _finish_dashboard_refresh(error)
+
+
+def _load_dashboard_single_flight() -> Dict[str, Any]:
+    """Single-flight cold load and stale-while-revalidate warm refresh."""
+    global dashboard_inflight_event, dashboard_inflight_error
+    ttl_sec = int(config.dashboard_cache_ttl_sec)
+    now_value = time.monotonic()
+    cached = _get_cached_dashboard(now_value, ttl_sec)
+    if cached is not None:
+        return cached
+
+    leader = False
+    refresh_in_background = False
+    stale_payload: Optional[Dict[str, Any]] = None
+    wait_event: Optional[threading.Event] = None
+    with dashboard_cache_lock:
+        now_value = time.monotonic()
+        if ttl_sec > 0 and dashboard_cache_payload is not None:
+            age_sec = max(0.0, now_value - dashboard_cache_ts)
+            if age_sec <= ttl_sec:
+                payload = _clone_jsonable(dashboard_cache_payload)
+                payload["cached"] = True
+                payload["cache_age_sec"] = round(age_sec, 2)
+                return payload
+            stale_payload = _clone_jsonable(dashboard_cache_payload)
+            stale_payload["cached"] = True
+            stale_payload["cache_age_sec"] = round(age_sec, 2)
+            stale_payload["degraded"] = dashboard_inflight_error is not None
+            stale_payload["refreshing"] = True
+            if dashboard_inflight_event is None:
+                dashboard_inflight_event = threading.Event()
+                dashboard_inflight_error = None
+                refresh_in_background = True
+            wait_event = dashboard_inflight_event
+        elif dashboard_inflight_event is not None:
+            wait_event = dashboard_inflight_event
+        else:
+            dashboard_inflight_event = threading.Event()
+            dashboard_inflight_error = None
+            wait_event = dashboard_inflight_event
+            leader = True
+
+    if stale_payload is not None:
+        if refresh_in_background:
+            threading.Thread(
+                target=_refresh_dashboard_in_background,
+                name="scan-dashboard-refresh",
+                daemon=True,
+            ).start()
+        return stale_payload
+
+    if not leader:
+        assert wait_event is not None
+        wait_event.wait(timeout=120.0)
+        now_value = time.monotonic()
+        cached = _get_cached_dashboard(now_value, ttl_sec)
+        if cached is not None:
+            return cached
+        with dashboard_cache_lock:
+            err = dashboard_inflight_error
+        if err is not None:
+            raise err
+        # Leader failed without cache — recompute as new leader.
+        return _load_dashboard_single_flight()
+
+    try:
+        return _compute_dashboard_payload()
+    except Exception as exc:
+        _finish_dashboard_refresh(exc)
+        raise
+    finally:
+        with dashboard_cache_lock:
+            refresh_pending = dashboard_inflight_event is not None
+        if refresh_pending:
+            _finish_dashboard_refresh(None)
 
 
 def _is_pdf_ingest_payload(data: Dict[str, Any], pdf_bytes: Optional[bytes] = None) -> bool:
@@ -592,6 +778,36 @@ app = FastAPI(
 )
 
 
+class _ScanTimingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        started = time.perf_counter()
+        begin_request_timings()
+        response = await call_next(request)
+        # Always collect internal timings; expose HTTP headers only when explicitly enabled.
+        if not _timing_headers_enabled():
+            return response
+        total_ms = (time.perf_counter() - started) * 1000.0
+        timings = get_request_timings() or {}
+        body_len = 0
+        try:
+            body_len = int(response.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            body_len = 0
+        # Safe timing headers only вЂ” no query/body/user/SQL fields.
+        response.headers["X-Scan-Request-Total-Ms"] = f"{total_ms:.1f}"
+        response.headers["X-Scan-Store-Lock-Wait-Ms"] = f"{float(timings.get('store_lock_wait_ms') or 0.0):.1f}"
+        response.headers["X-Scan-Store-Lock-Hold-Ms"] = f"{float(timings.get('store_lock_hold_ms') or 0.0):.1f}"
+        response.headers["X-Scan-Db-Query-Ms"] = f"{float(timings.get('db_query_ms') or 0.0):.1f}"
+        response.headers["X-Scan-Serialization-Ms"] = f"{float(timings.get('serialization_ms') or 0.0):.1f}"
+        response.headers["X-Scan-Rows-Returned"] = str(int(float(timings.get("rows_returned") or 0.0)))
+        if body_len > 0:
+            response.headers["X-Scan-Response-Bytes"] = str(body_len)
+        return response
+
+
+app.add_middleware(_ScanTimingMiddleware)
+
+
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     rss_bytes = get_process_rss_bytes()
@@ -601,6 +817,8 @@ async def health() -> Dict[str, Any]:
         "pid": os.getpid(),
         "rss_mb": round(rss_bytes / (1024 * 1024), 1) if rss_bytes else 0.0,
         "storage_backend": getattr(store, "backend", "sqlite"),
+        "store_lock_kind": getattr(store, "_lock_kind", "unknown"),
+        "timing_headers_enabled": bool(_timing_headers_enabled()),
         "db_size_mb": _path_size_mb(config.db_path) if not getattr(store, "is_postgres", False) else None,
         "wal_size_mb": (
             _path_size_mb(Path(str(config.db_path) + "-wal"))
@@ -836,7 +1054,7 @@ def create_task(
 
     task_payload = payload.payload if isinstance(payload.payload, dict) else {}
     if command == "self_update":
-        # Never trust client URL/hash — only server-side package config.
+        # Never trust client URL/hash вЂ” only server-side package config.
         try:
             info = resolve_agent_package(
                 package_path=config.agent_package_path,
@@ -876,8 +1094,10 @@ def incidents(
     q: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    view: Optional[str] = Query(None),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
+    resolved_view = _parse_scan_list_view(view, default="detail")
     return store.list_incidents(
         status=status_value,
         severity=severity,
@@ -894,6 +1114,7 @@ def incidents(
         q=q,
         limit=limit,
         offset=offset,
+        view=resolved_view,
     )
 
 
@@ -913,9 +1134,12 @@ def incident_inbox_groups(
     q: Optional[str] = Query(None),
     host_limit: int = Query(25, ge=1, le=100),
     host_offset: int = Query(0, ge=0),
-    files_per_host: int = Query(25, ge=1, le=100),
+    # None в†’ summary defaults to 0 (hosts-only); detail defaults to 25.
+    files_per_host: Optional[int] = Query(None, ge=0, le=100),
+    view: Optional[str] = Query("detail"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
+    resolved_view = _parse_scan_list_view(view, default=ScanListView.detail.value)
     return store.list_incident_inbox_groups(
         status=status_value,
         severity=severity,
@@ -932,6 +1156,7 @@ def incident_inbox_groups(
         host_limit=host_limit,
         host_offset=host_offset,
         files_per_host=files_per_host,
+        view=resolved_view,
     )
 
 
@@ -969,9 +1194,13 @@ def host_scan_runs(
     hostname: str,
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    view: Optional[str] = Query("detail"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.list_host_scan_runs(hostname=hostname, limit=limit, offset=offset)
+    resolved_view = _parse_scan_list_view(view, default=ScanListView.detail.value)
+    return store.list_host_scan_runs(
+        hostname=hostname, limit=limit, offset=offset, view=resolved_view
+    )
 
 
 @app.get("/api/v1/scan/tasks/{task_id}/observations")
@@ -989,9 +1218,29 @@ def task_system_metrics(
     task_id: str,
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
+    from_ts: Optional[int] = Query(None, ge=1),
+    to_ts: Optional[int] = Query(None, ge=1),
+    # Absent max_points preserves legacy (no downsample). Charts pass max_points explicitly.
+    max_points: Optional[int] = Query(None, ge=0, le=20000),
+    view: Optional[str] = Query(None),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.list_task_system_metrics(task_id=task_id, limit=limit, offset=offset)
+    effective_max_points = max_points
+    effective_from_ts = from_ts
+    metrics_view = coerce_optional_metrics_view(view)
+    if metrics_view in {"chart", "summary", "light"}:
+        if effective_max_points is None:
+            effective_max_points = 500
+        if effective_from_ts is None and metrics_view == "chart":
+            effective_from_ts = int(time.time()) - 6 * 3600
+    return store.list_task_system_metrics(
+        task_id=task_id,
+        limit=limit,
+        offset=offset,
+        from_ts=effective_from_ts,
+        to_ts=to_ts,
+        max_points=effective_max_points,
+    )
 
 
 @app.get("/api/v1/scan/tasks/{task_id}/incidents/export")
@@ -1015,21 +1264,8 @@ def dashboard(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
     now_value = time.monotonic()
-    cached = _get_cached_dashboard(now_value, int(config.dashboard_cache_ttl_sec))
-    if cached is not None:
-        return cached
     try:
-        payload = store.dashboard()
-        payload["ingest_backpressure"] = store.ingest_backpressure_status(
-            max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
-            transient_max_gb=config.transient_max_gb,
-            max_pending_jobs=getattr(config, "ingest_max_pending_jobs", None),
-        )
-        payload["ingest_limits"] = {
-            "max_pending_pdf_jobs": int(config.ingest_max_pending_pdf_jobs),
-            "max_pending_jobs": int(config.ingest_max_pending_jobs),
-            "max_concurrency": int(config.ingest_max_concurrency),
-        }
+        return _load_dashboard_single_flight()
     except Exception as exc:
         stale = _get_stale_dashboard(now_value)
         if stale is not None and _is_sqlite_busy_error(exc):
@@ -1041,20 +1277,17 @@ def dashboard(
                 detail="Scan dashboard is temporarily busy",
             ) from exc
         raise
-    payload["cached"] = False
-    payload["cache_age_sec"] = 0
-    payload["degraded"] = False
-    _store_dashboard_cache(payload, now_value)
-    return payload
 
 
 @app.get("/api/v1/scan/review-items")
 def review_items(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    view: Optional[str] = Query("summary"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.list_incomplete_jobs(limit=limit, offset=offset)
+    resolved_view = _parse_scan_list_view(view, default=ScanListView.summary.value)
+    return store.list_incomplete_jobs(limit=limit, offset=offset, view=resolved_view)
 
 
 @app.get("/api/v1/scan/patterns")
@@ -1160,14 +1393,17 @@ def tasks(
     command: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    view: Optional[str] = Query("detail"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
+    resolved_view = _parse_scan_list_view(view, default=ScanListView.detail.value)
     return store.list_tasks(
         agent_id=agent_id,
         status=status_value,
         command=command,
         limit=limit,
         offset=offset,
+        view=resolved_view,
     )
 
 
@@ -1179,5 +1415,5 @@ if __name__ == "__main__":
         host=config.host,
         port=config.port,
         reload=False,
-        loop="scan_server.uvicorn_loops:windows_selector_loop_factory",
+        loop="scan_server.uvicorn_loops:windows_proactor_loop_factory",
     )

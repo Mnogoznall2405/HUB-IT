@@ -428,6 +428,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   formatHistoryTransition,
   onOpenEmployee = null,
   buildWarehouseReturnContext = null,
+  disableEnforceFocus = false,
 }) {
   const showGeneralActions = Boolean(data) && tab === 'general';
 
@@ -490,6 +491,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
       fullWidth
       fullScreen={isMobile}
       scroll="paper"
+      disableEnforceFocus={disableEnforceFocus}
       sx={{
         '& .MuiDialog-paper': {
           height: isMobile ? '100%' : '88vh',

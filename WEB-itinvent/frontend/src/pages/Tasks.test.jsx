@@ -436,6 +436,33 @@ afterEach(() => {
 });
 
 describe('Tasks page detail workspace', () => {
+  it('lets a non-admin task creator delete from the desktop task list', async () => {
+    authState.user = {
+      id: 3,
+      role: 'viewer',
+      username: 'task-creator',
+      permissions: ['tasks.read'],
+    };
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubTasksAPI.deleteTask.mockResolvedValue({});
+    window.confirm = vi.fn(() => true);
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Удалить задачу/i }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.deleteTask).toHaveBeenCalledWith(taskSummary.id);
+    });
+  });
+
   it('opens the create dialog from the dashboard quick-action URL and consumes the flag', async () => {
     render(
       <MemoryRouter initialEntries={['/tasks?create=1']}>
@@ -594,7 +621,7 @@ describe('Tasks page detail workspace', () => {
 
     const listView = await screen.findByTestId('tasks-list-view');
     expect(within(listView).getByText('Название')).toBeInTheDocument();
-    expect(within(listView).getByText('Активность')).toBeInTheDocument();
+    expect(within(listView).getByText('Дата изменения')).toBeInTheDocument();
     expect(within(listView).getByText('Крайний срок')).toBeInTheDocument();
     expect(within(listView).getByText('Постановщик')).toBeInTheDocument();
     expect(within(listView).getByText('Исполнитель')).toBeInTheDocument();
@@ -615,6 +642,35 @@ describe('Tasks page detail workspace', () => {
 
     expect(await screen.findByRole('button', { name: 'Назад к доске' })).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
+  });
+
+  it('switches the task list date sort and keeps it in the URL', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Дата изменения, сначала новые' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+        sort_by: 'updated_at',
+        sort_dir: 'asc',
+      }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_date_sort=asc');
+    });
+    expect(screen.getByRole('button', { name: 'Дата изменения, сначала старые' })).toBeInTheDocument();
   });
 
   it('splits list view into active and completed sections and toggles completed rows', async () => {
@@ -1563,6 +1619,10 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(actionRail).getByRole('button', { name: 'Сдать' }));
 
     expect(await screen.findByText('Сдать работу')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Сдать работу')).not.toBeInTheDocument();
+    });
   });
 
   it('opens a dedicated mobile checklist screen, toggles and adds checklist items', async () => {
@@ -1692,11 +1752,12 @@ describe('Tasks page detail workspace', () => {
     const navigationDrawer = await screen.findByTestId('tasks-mobile-navigation-drawer');
     expect(navigationDrawer).toBeInTheDocument();
 
-    fireEvent.click(within(navigationDrawer).getByTestId('tasks-mobile-status-done'));
+    fireEvent.click(within(navigationDrawer).getByTestId('tasks-mobile-status-in_progress'));
     await waitFor(() => {
       expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
-        status: 'done',
+        status: 'in_progress',
       }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_status=in_progress');
     });
 
     fireEvent.click(screen.getByTestId('tasks-mobile-open-navigation'));
@@ -1740,7 +1801,7 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks');
   });
 
-  it('opens task discussion chat from detail banner when feature flag is enabled', async () => {
+  it('opens task discussion chat directly instead of the desktop detail page', async () => {
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
     hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
@@ -1766,17 +1827,42 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByTestId('task-detail-open-chat'));
-
     await waitFor(() => {
       expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
     });
     await waitFor(() => {
-      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1');
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1&task_layout=split');
     });
+    expect(screen.queryByTestId('task-detail-open-chat')).not.toBeInTheDocument();
 
     chatFeatureFlags.chat = false;
     chatFeatureFlags.taskDiscussion = false;
+  });
+
+  it('opens the task chat directly when a desktop task row is selected', async () => {
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
+      conversation_id: 'conv-task-row',
+      created: false,
+      kind: 'task',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+          <Route path="/chat" element={<><div data-testid="chat-page" /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByTestId('tasks-list-row-task-1'));
+
+    await waitFor(() => {
+      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-row&task_layout=split');
+    });
   });
 
   it('keeps the mobile task layout and exposes a direct chat button', async () => {
