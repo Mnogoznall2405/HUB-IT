@@ -6,12 +6,17 @@ import MailAttachmentsSheet, { MailAttachmentSummaryRow } from './MailAttachment
 import { shouldUseCompactAttachmentLayout } from './mailAttachmentLayout';
 import { buildMailUiTokens, getMailAttachmentStripSx } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
+import FileActionsContextMenu, {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../fileActions/FileActionsContextMenu';
 
 function MailAttachmentHeroCard({
   attachment,
   index = 0,
   formatFileSize,
   onOpen,
+  onFileActions,
   tokens,
 }) {
   const visual = getMailAttachmentVisual(attachment);
@@ -24,6 +29,8 @@ function MailAttachmentHeroCard({
     <ButtonBase
       data-testid={`mail-attachment-hero-item-${index}`}
       onClick={() => onOpen?.(attachment)}
+      onContextMenu={(event) => onFileActions?.(event, attachment)}
+      onKeyDown={(event) => onFileActions?.(event, attachment)}
       sx={{
         width: '100%',
         display: 'flex',
@@ -64,15 +71,26 @@ export default function MailAttachmentHero({
   attachmentTotalSize = '',
   formatFileSize,
   onOpen,
+  onDownload,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [fileActionsMenu, setFileActionsMenu] = useState({ attachment: null, anchorPosition: null });
 
   if (!attachments.length) return null;
 
   const compact = shouldUseCompactAttachmentLayout(attachments.length);
   const openSheet = () => setSheetOpen(true);
+  const openFileActionsMenu = (event, attachment) => {
+    if (event.type === 'keydown' && !isFileActionsKeyboardShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsMenu({ attachment, anchorPosition: getFileActionsAnchorPosition(event) });
+  };
+  const closeFileActionsMenu = () => {
+    setFileActionsMenu({ attachment: null, anchorPosition: null });
+  };
 
   return (
     <>
@@ -90,6 +108,7 @@ export default function MailAttachmentHero({
                   index={index}
                   formatFileSize={formatFileSize}
                   onOpen={onOpen}
+                  onFileActions={openFileActionsMenu}
                   tokens={tokens}
                 />
               ))}
@@ -110,6 +129,7 @@ export default function MailAttachmentHero({
               index={index}
               formatFileSize={formatFileSize}
               onOpen={onOpen}
+              onFileActions={openFileActionsMenu}
               tokens={tokens}
             />
           ))
@@ -122,6 +142,18 @@ export default function MailAttachmentHero({
         attachments={attachments}
         formatFileSize={formatFileSize}
         onOpen={onOpen}
+        onFileActions={openFileActionsMenu}
+      />
+
+      <FileActionsContextMenu
+        open={Boolean(fileActionsMenu.anchorPosition)}
+        anchorPosition={fileActionsMenu.anchorPosition}
+        fileName={fileActionsMenu.attachment?.name || ''}
+        canDownload={Boolean(fileActionsMenu.attachment && typeof onDownload === 'function')}
+        onClose={closeFileActionsMenu}
+        onDownload={fileActionsMenu.attachment
+          ? () => onDownload?.(fileActionsMenu.attachment)
+          : undefined}
       />
     </>
   );

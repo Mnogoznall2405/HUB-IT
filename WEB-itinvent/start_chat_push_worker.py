@@ -55,9 +55,11 @@ async def _main() -> None:
     )
 
     await chat_push_outbox_service.start()
-    wait_forever = asyncio.Event()
     try:
-        await wait_forever.wait()
+        if chat_push_outbox_service.enabled:
+            await chat_push_outbox_service.wait_until_stopped()
+        else:
+            await asyncio.Event().wait()
     finally:
         await chat_push_outbox_service.stop()
 

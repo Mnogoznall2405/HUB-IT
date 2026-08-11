@@ -1,9 +1,10 @@
-import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Typography } from '@mui/material';
+import { Box, ButtonBase, IconButton, Stack, Typography } from '@mui/material';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useMemo, useState } from 'react';
 import { buildMailUiTokens, getMailMenuPaperSx } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
+import FileActionsContextMenu, { getFileActionsAnchorPosition } from '../fileActions/FileActionsContextMenu';
 
 const normalizeText = (value, fallback = '') => {
   const text = String(value || '').trim();
@@ -26,7 +27,8 @@ export default function MailAttachmentCard({
   const sizeLabel = size > 0 && typeof formatFileSize === 'function' ? formatFileSize(size) : '';
   const isDownloadable = attachment?.downloadable !== false;
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
-  const menuOpen = Boolean(menuAnchorEl);
+  const [menuAnchorPosition, setMenuAnchorPosition] = useState(null);
+  const menuOpen = Boolean(menuAnchorEl || menuAnchorPosition);
 
   const cardBg = mine
     ? alpha(theme.palette.common.white, 0.12)
@@ -44,25 +46,24 @@ export default function MailAttachmentCard({
   const handleMenuOpen = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    setMenuAnchorPosition(null);
     setMenuAnchorEl(event.currentTarget);
+  };
+
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMenuAnchorEl(null);
+    setMenuAnchorPosition(getFileActionsAnchorPosition(event));
   };
 
   const handleMenuClose = () => {
     setMenuAnchorEl(null);
-  };
-
-  const handleOpenAction = () => {
-    handleMenuClose();
-    onOpen?.();
-  };
-
-  const handleDownloadAction = () => {
-    handleMenuClose();
-    onDownload?.();
+    setMenuAnchorPosition(null);
   };
 
   return (
-    <Box sx={{ width: 'min(100%, 320px)' }}>
+    <Box sx={{ width: 'min(100%, 320px)' }} onContextMenu={handleContextMenu}>
       <Box
         sx={{
           width: '100%',
@@ -158,19 +159,16 @@ export default function MailAttachmentCard({
         </Stack>
       </Box>
 
-      <Menu
+      <FileActionsContextMenu
         anchorEl={menuAnchorEl}
+        anchorPosition={menuAnchorPosition}
         open={menuOpen}
         onClose={handleMenuClose}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{
-          sx: getMailMenuPaperSx(tokens, { minWidth: 180 }),
-        }}
-      >
-        <MenuItem onClick={handleOpenAction}>Открыть</MenuItem>
-        {isDownloadable ? <MenuItem onClick={handleDownloadAction}>Скачать</MenuItem> : null}
-      </Menu>
+        fileName={name}
+        canDownload={isDownloadable && typeof onDownload === 'function'}
+        onDownload={onDownload}
+        paperSx={getMailMenuPaperSx(tokens, { minWidth: 180 })}
+      />
     </Box>
   );
 }

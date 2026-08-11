@@ -1,5 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
-import { API_V1_BASE, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
+import { API_V1_BASE, CLIENT_DEVICE_HEADER, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
 import * as tokenStore from '../auth/tokenStore';
 
 type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
@@ -23,6 +23,7 @@ let refreshPromise: Promise<string | null> | null = null;
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = await tokenStore.getRefreshToken();
   if (!refreshToken) return null;
+  const clientDeviceId = await tokenStore.getClientDeviceId();
   const response = await axios.post(
     `${API_V1_BASE}/auth/refresh`,
     { refresh_token: refreshToken },
@@ -30,6 +31,7 @@ async function refreshAccessToken(): Promise<string | null> {
       headers: {
         'Content-Type': 'application/json',
         [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE,
+        ...(clientDeviceId ? { [CLIENT_DEVICE_HEADER]: clientDeviceId } : {}),
       },
     },
   );
@@ -66,8 +68,11 @@ apiClient.interceptors.response.use(
   },
 );
 
-export function withMobileAuthHeaders() {
-  return { [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE };
+export function withMobileAuthHeaders(clientDeviceId?: string | null) {
+  return {
+    [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE,
+    ...(clientDeviceId ? { [CLIENT_DEVICE_HEADER]: clientDeviceId } : {}),
+  };
 }
 
 export default apiClient;

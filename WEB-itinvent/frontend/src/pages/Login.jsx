@@ -10,6 +10,7 @@ import {
   isPasskeySurfaceAvailable,
 } from '../lib/passkeyWebAuthn';
 import { emitAgentDebugLog } from '../lib/debugClientLog';
+import { getDesktopWindowsUsername } from '../lib/desktopBridge';
 import {
   auditLoginPageOverlays,
   resetLoginPagePresentation,
@@ -262,6 +263,31 @@ function InfoBanner({ tone = 'info', children, variant = 'inline' }) {
 }
 
 const VPN_HINT_DISMISS_KEY = 'hubit.login.vpn-hint.dismissed';
+const LAST_LOGIN_USERNAME_KEY = 'hubit.login.last-username';
+
+function readLastLoginUsername() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(window.localStorage.getItem(LAST_LOGIN_USERNAME_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function readInitialLoginUsername() {
+  return readLastLoginUsername() || getDesktopWindowsUsername();
+}
+
+function writeLastLoginUsername(value) {
+  if (typeof window === 'undefined') return;
+  const normalized = String(value || '').trim();
+  if (!normalized) return;
+  try {
+    window.localStorage.setItem(LAST_LOGIN_USERNAME_KEY, normalized);
+  } catch {
+    // Login can continue when storage is unavailable.
+  }
+}
 
 function readVpnHintDismissed() {
   if (typeof window === 'undefined') {
@@ -463,7 +489,7 @@ function Login() {
     verifyTrustedDeviceAuth,
   } = useAuth();
 
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(readInitialLoginUsername);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1231,15 +1257,22 @@ function Login() {
 
   const handlePasswordSubmit = async (event) => {
     event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const submittedUsername = String(formData.get('username') || username).trim();
+    const submittedPassword = String(formData.get('password') || password);
+    setUsername(submittedUsername);
+    setPassword(submittedPassword);
     dismissLoginNotice();
     setLoading(true);
-    const result = await login(username.trim(), password);
+    const result = await login(submittedUsername, submittedPassword);
     setLoading(false);
 
     if (!result.success) {
       reportLoginError(result.error);
       return;
     }
+
+    writeLastLoginUsername(submittedUsername);
 
     if (result.status === 'authenticated') {
       await completeAuthenticatedRedirect(result.user || null);
@@ -1256,12 +1289,12 @@ function Login() {
     const redirectSafariPasswordSave = (nextStep) => {
       persistTotpResumeState({
         loginChallengeId: result.login_challenge_id,
-        username: username.trim(),
+        username: submittedUsername,
         nextStep,
       });
       submitSafariPasswordSaveFullPage({
-        username: username.trim(),
-        password,
+        username: submittedUsername,
+        password: submittedPassword,
         loginChallengeId: result.login_challenge_id,
       });
     };

@@ -117,6 +117,7 @@ export function useAccountSectionData(area = 'settings') {
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
   const [cleaningSessions, setCleaningSessions] = useState(false);
   const [purgingSessions, setPurgingSessions] = useState(false);
+  const [normalizingSessions, setNormalizingSessions] = useState(false);
   const [envState, setEnvState] = useState({ items: [], deployment_targets: [], apply_plan: [], recent_changes: [], updated: 0 });
   const [envLoading, setEnvLoading] = useState(false);
   const [savingEnv, setSavingEnv] = useState(false);
@@ -694,6 +695,30 @@ export function useAccountSectionData(area = 'settings') {
     }
   }, [canManageUsers, loadSessions, loadUsers, notifyApiError, notifySuccess]);
 
+  const handleNormalizeSessionLimit = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Закрыть самые старые активные сессии сверх установленного лимита? Это действие нельзя отменить.',
+    )) {
+      return;
+    }
+    setNormalizingSessions(true);
+    try {
+      const result = await authAPI.normalizeSessionLimit(true);
+      await loadSessions();
+      notifySuccess(
+        `Лимит сессий применён: закрыто ${Number(result?.sessions_closed || 0)} излишних сессий.`,
+        { source: 'settings', dedupeMode: 'none' },
+      );
+    } catch (error) {
+      notifyApiError(error, 'Не удалось нормализовать лимит сессий.', {
+        source: 'settings',
+        dedupeMode: 'none',
+      });
+    } finally {
+      setNormalizingSessions(false);
+    }
+  }, [loadSessions, notifyApiError, notifySuccess]);
+
   const handleSaveEnv = useCallback(async (draftValues) => {
     const sourceItems = Array.isArray(envState?.items) ? envState.items : [];
     const changedItems = sourceItems
@@ -915,6 +940,8 @@ export function useAccountSectionData(area = 'settings') {
     cleanupResult,
     cleaningSessions,
     purgingSessions,
+    normalizingSessions,
+    handleNormalizeSessionLimit,
     envState,
     envLoading,
     savingEnv,

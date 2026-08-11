@@ -739,6 +739,63 @@ def test_auth_security_complete_login_saves_ldap_password_to_primary_mailbox(mon
     ]
 
 
+@pytest.mark.parametrize("session_reused", [False, True])
+def test_complete_login_closes_only_new_session_when_ldap_context_setup_fails(
+    monkeypatch,
+    session_reused,
+):
+    service = auth_security_module.AuthSecurityService()
+    user_payload = _sample_public_user(id=44, username="petrov_pp", auth_source="ldap")
+    challenge = {
+        "challenge_id": "challenge-context-failure",
+        "user_id": 44,
+        "username": "petrov_pp",
+        "request_username": "ZSGP\\petrov_pp",
+        "role": "viewer",
+        "auth_source": "ldap",
+        "ip_address": "10.12.13.14",
+        "user_agent": "pytest",
+        "network_zone": "internal",
+        "password_enc": auth_security_module.encrypt_secret("DomainPass123!"),
+    }
+    created: dict[str, object] = {}
+    closed_session_ids: list[str] = []
+
+    def _create_session(**kwargs):
+        created.update(kwargs)
+        return {
+            "session_id": "existing-session" if session_reused else kwargs["session_id"],
+            "_session_reused": session_reused,
+        }
+
+    def _fail_context_setup(**kwargs):
+        raise RuntimeError("context storage unavailable")
+
+    monkeypatch.setattr(auth_security_module.session_service, "create_session", _create_session)
+    monkeypatch.setattr(
+        auth_security_module.session_service,
+        "close_session",
+        lambda session_id: closed_session_ids.append(session_id),
+    )
+    monkeypatch.setattr(
+        auth_security_module.session_auth_context_service,
+        "store_session_context",
+        _fail_context_setup,
+    )
+
+    with pytest.raises(auth_security_module.AuthSecurityError, match="Failed to initialize mail session context"):
+        service._complete_login(
+            challenge=challenge,
+            user=user_payload,
+            auth_method="password_only",
+            device_id=None,
+            client_device_id="browser-client-device-0001",
+        )
+
+    expected_closed = [] if session_reused else [str(created["session_id"])]
+    assert closed_session_ids == expected_closed
+
+
 def test_complete_login_passes_trusted_device_id_for_webauthn(monkeypatch):
     service = auth_security_module.AuthSecurityService()
     user_payload = _sample_public_user(id=7, username="ivanov")
@@ -1507,7 +1564,7 @@ def test_legacy_trusted_device_verify_flow_still_authenticates(monkeypatch):
     monkeypatch.setattr(
         auth.auth_security_service,
         "finalize_trusted_device_login",
-        lambda challenge_id, device: {
+        lambda challenge_id, device, client_device_id=None: {
             "status": "authenticated",
             "user": _sample_public_user(is_2fa_enabled=True, trusted_devices_count=1),
             "session_id": "legacy-session-1",

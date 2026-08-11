@@ -158,7 +158,7 @@ describe('MailConversationReader', () => {
     expect(props.onOpenAttachment).toHaveBeenCalledWith(message, attachment);
 
     fireEvent.click(screen.getByLabelText(/diagnostic-log\.txt/i));
-    fireEvent.click(within(screen.getByRole('menu')).getAllByRole('menuitem')[1]);
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Скачать' }));
 
     expect(props.onDownloadAttachment).toHaveBeenCalledTimes(1);
     expect(props.onDownloadAttachment).toHaveBeenCalledWith(message, attachment);

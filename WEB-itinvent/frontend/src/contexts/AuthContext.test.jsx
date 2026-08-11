@@ -1,14 +1,16 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getCurrentUserMock = vi.fn();
 const clearAllMailRecentCacheMock = vi.fn();
 const disableChatPushSubscriptionMock = vi.fn();
+const logoutMock = vi.fn();
 
 vi.mock('../api/client', () => ({
   authAPI: {
     getCurrentUser: (...args) => getCurrentUserMock(...args),
+    logout: (...args) => logoutMock(...args),
   },
 }));
 
@@ -23,7 +25,7 @@ vi.mock('../lib/chatNotifications', () => ({
 import { AuthProvider, useAuth } from './AuthContext';
 
 function AuthProbe() {
-  const { loading, user, refreshSession, hasPermission } = useAuth();
+  const { loading, user, logout, refreshSession, hasPermission } = useAuth();
   return (
     <>
       <div data-testid="loading">{String(loading)}</div>
@@ -34,6 +36,9 @@ function AuthProbe() {
       <div data-testid="can-address-book">{String(hasPermission('address_book.read'))}</div>
       <button type="button" onClick={() => refreshSession({ suppressAuthRequired: true })}>
         refresh
+      </button>
+      <button type="button" onClick={() => logout()}>
+        logout
       </button>
     </>
   );
@@ -51,6 +56,8 @@ function renderAuth(pathname = '/login') {
 describe('AuthProvider startup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    logoutMock.mockResolvedValue({ ok: true });
+    disableChatPushSubscriptionMock.mockResolvedValue(undefined);
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
@@ -121,6 +128,20 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
     expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
     expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
+  });
+
+  it('keeps the current username for the next login after logout', async () => {
+    localStorage.setItem('user', JSON.stringify({ id: 7, username: 'ivanov', role: 'operator' }));
+    getCurrentUserMock.mockResolvedValue({ id: 7, username: 'ivanov', role: 'operator' });
+    renderAuth('/dashboard');
+    await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('ivanov'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'logout' }));
+
+    await waitFor(() => {
+      expect(localStorage.getItem('hubit.login.last-username')).toBe('ivanov');
+    });
+    expect(localStorage.getItem('user')).toBeNull();
   });
 
   it('always grants basic address-book access when the server permission list is empty', async () => {

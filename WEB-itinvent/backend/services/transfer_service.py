@@ -130,6 +130,33 @@ def _to_inv_text(value: Any) -> str:
         return str(value)
 
 
+def _iter_table_paragraphs(table: Any):
+    for row in table.rows:
+        for cell in row.cells:
+            yield from cell.paragraphs
+            for nested_table in cell.tables:
+                yield from _iter_table_paragraphs(nested_table)
+
+
+def _replace_document_placeholders(document: Any, replacements: dict[str, str]) -> None:
+    paragraphs = list(document.paragraphs)
+    for table in document.tables:
+        paragraphs.extend(_iter_table_paragraphs(table))
+
+    for paragraph in paragraphs:
+        updated_text = paragraph.text
+        for placeholder, value in replacements.items():
+            updated_text = updated_text.replace(placeholder, value)
+        if updated_text == paragraph.text:
+            continue
+        if not paragraph.runs:
+            paragraph.add_run(updated_text)
+            continue
+        paragraph.runs[0].text = updated_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+
+
 def _build_docx_act(
     old_employee: str,
     new_employee: str,
@@ -172,16 +199,14 @@ def _build_docx_act(
     now = datetime.now()
     date_text = now.strftime("%d.%m.%Y")
 
-    for paragraph in doc.paragraphs:
-        text = paragraph.text
-        if "{{DATE}}" in text:
-            paragraph.text = text.replace("{{DATE}}", date_text)
-            text = paragraph.text
-        if "{{TO_EMPLOYEE}}" in text:
-            paragraph.text = text.replace("{{TO_EMPLOYEE}}", str(new_employee))
-            text = paragraph.text
-        if "{{FROM_EMPLOYEE}}" in text:
-            paragraph.text = text.replace("{{FROM_EMPLOYEE}}", str(old_employee))
+    _replace_document_placeholders(
+        doc,
+        {
+            "{{DATE}}": date_text,
+            "{{TO_EMPLOYEE}}": str(new_employee),
+            "{{FROM_EMPLOYEE}}": str(old_employee),
+        },
+    )
 
     if doc.tables:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -201,7 +226,6 @@ def _build_docx_act(
                 str(item.get("model_name") or ""),
                 str(item.get("serial_no") or ""),
                 str(item.get("part_no") or ""),
-                str(new_employee_dept or ""),
                 _to_inv_text(item.get("inv_no")),
             ]
             for cell_idx, cell_text in enumerate(cells_data):

@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 
 const ACCESS_KEY = 'hubit_access_token';
 const REFRESH_KEY = 'hubit_refresh_token';
+const CLIENT_DEVICE_KEY = 'hubit_client_device_id';
 
 const isWeb = Platform.OS === 'web';
 
@@ -43,6 +44,15 @@ export async function getAccessToken(): Promise<string | null> {
 
 export async function getRefreshToken(): Promise<string | null> {
   return getItem(REFRESH_KEY);
+}
+
+export async function getClientDeviceId(): Promise<string | null> {
+  return getItem(CLIENT_DEVICE_KEY);
+}
+
+export async function setClientDeviceId(clientDeviceId: string | null | undefined): Promise<void> {
+  const normalized = String(clientDeviceId || '').trim();
+  if (normalized) await setItem(CLIENT_DEVICE_KEY, normalized);
 }
 
 export async function setTokens(accessToken: string, refreshToken: string): Promise<void> {

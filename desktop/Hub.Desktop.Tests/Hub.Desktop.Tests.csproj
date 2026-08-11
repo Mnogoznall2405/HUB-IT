@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WebView2EnableCsWinRTProjection>false</WebView2EnableCsWinRTProjection>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +22,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Hub.Desktop\Hub.Desktop.csproj" />
+    <ProjectReference Include="..\Hub.Desktop.UpdateCore\Hub.Desktop.UpdateCore.csproj" />
+    <ProjectReference Include="..\Hub.Desktop.UpdateRunner\Hub.Desktop.UpdateRunner.csproj" />
   </ItemGroup>
 
 </Project>

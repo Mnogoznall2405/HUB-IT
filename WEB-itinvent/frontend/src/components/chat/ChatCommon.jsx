@@ -26,6 +26,10 @@ import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerPackDialog from './ChatStickerPackDialog';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
+import FileActionsContextMenu, {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../fileActions/FileActionsContextMenu';
 
 const FILE_EXTENSION_COLORS = {
   pdf: '#e53935',
@@ -671,6 +675,7 @@ export function FileAttachment({
   fileName,
   fileSize,
   fileUrl,
+  downloadUrl,
   openUrl,
   posterUrl,
   fileType,
@@ -691,8 +696,10 @@ export function FileAttachment({
   fallbackFileUrls = EMPTY_URL_LIST,
 }) {
   const resolvedOpenUrl = String(openUrl || fileUrl || '').trim();
+  const resolvedDownloadUrl = String(downloadUrl || resolvedOpenUrl).trim();
   const [resolvedDuration, setResolvedDuration] = useState(() => formatVideoDuration(durationSeconds));
   const [isHovered, setIsHovered] = useState(false);
+  const [fileActionsAnchorPosition, setFileActionsAnchorPosition] = useState(null);
   const attachmentKind = useMemo(
     () => resolveAttachmentKind({ fileName, fileType, mimeType }),
     [fileName, fileType, mimeType],
@@ -736,6 +743,24 @@ export function FileAttachment({
   );
   const [activeImageUrl, setActiveImageUrl] = useState(() => imageSourceCandidates[0] || String(fileUrl || '').trim());
   const [failedUrls, setFailedUrls] = useState(new Set());
+
+  const openFileActionsMenu = (event) => {
+    if (event.type === 'keydown' && !isFileActionsKeyboardShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsAnchorPosition(getFileActionsAnchorPosition(event));
+  };
+
+  const downloadAttachment = () => {
+    if (!resolvedDownloadUrl) return;
+    const link = document.createElement('a');
+    link.href = resolvedDownloadUrl;
+    link.download = String(fileName || 'attachment.bin');
+    link.rel = 'noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
 
   useEffect(() => {
     setActiveImageUrl(imageSourceCandidates[0] || String(fileUrl || '').trim());
@@ -1136,7 +1161,8 @@ export function FileAttachment({
   }
 
   return (
-    <a
+    <>
+      <a
       href={resolvedOpenUrl}
       target="_blank"
       rel="noreferrer"
@@ -1152,6 +1178,8 @@ export function FileAttachment({
       onMouseLeave={() => setIsHovered(false)}
       onFocus={() => setIsHovered(true)}
       onBlur={() => setIsHovered(false)}
+      onContextMenu={openFileActionsMenu}
+      onKeyDown={openFileActionsMenu}
       style={{
         ...surfaceStyle,
         padding: 10,
@@ -1237,7 +1265,16 @@ export function FileAttachment({
           </div>
         </div>
       </div>
-    </a>
+      </a>
+      <FileActionsContextMenu
+        open={Boolean(fileActionsAnchorPosition)}
+        anchorPosition={fileActionsAnchorPosition}
+        fileName={fileName}
+        canDownload={Boolean(resolvedDownloadUrl)}
+        onClose={() => setFileActionsAnchorPosition(null)}
+        onDownload={downloadAttachment}
+      />
+    </>
   );
 }
 
@@ -1282,6 +1319,7 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
         fileName={attachment?.file_name}
         fileSize={attachment?.file_size}
         fileUrl={fileUrl}
+        downloadUrl={downloadOriginalUrl || originalUrl}
         openUrl={openUrl}
         posterUrl={posterUrl}
         mimeType={attachment?.mime_type}

@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-10 11:27 UTC_  
+_Сгенерировано: 2026-08-11 13:30 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -2338,9 +2338,11 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `client_os_family` | varchar(32) | no | `'unknown'::character varying` |
 | `client_fingerprint_hash` | varchar(64) | no | `''::character varying` |
 | `login_network_zone` | varchar(16) | yes | `` |
+| `client_device_key_hash` | varchar(64) | yes | `` |
 
 - **Primary key:** `session_id`
 - **Indexes:**
+  - `ix_app_sessions_client_device_key_hash`: (client_device_key_hash)
   - `ix_app_sessions_is_active`: (is_active)
   - `ix_app_sessions_status`: (status)
   - `ix_app_sessions_trusted_device_id`: (trusted_device_id)

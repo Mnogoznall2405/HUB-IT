@@ -176,6 +176,7 @@ _DIRECT_DESCRIPTIONS = {
     "REFRESH_ROTATION_GRACE_SECONDS": ("Сессии", "Grace-окно повторного /auth/refresh при параллельных запросах (секунды)."),
     "SESSION_HISTORY_RETENTION_DAYS": ("Сессии", "Сколько дней хранить историю закрытых сессий."),
     "SESSION_CLEANUP_MIN_INTERVAL_SECONDS": ("Сессии", "Минимальный интервал между авто-cleanup сессий."),
+    "SESSION_MAX_ACTIVE_PER_USER": ("Сессии", "Максимум активных web-сессий одного пользователя."),
     "LDAP_SERVER": ("Active Directory", "Адрес LDAP/AD сервера."),
     "LDAP_DOMAIN": ("Active Directory", "Домен Active Directory."),
     "LDAP_BASE_DN": ("Active Directory", "Base DN для поиска пользователей в AD."),

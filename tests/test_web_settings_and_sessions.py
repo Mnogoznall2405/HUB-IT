@@ -358,6 +358,42 @@ def test_non_admin_with_manage_sessions_permission_can_purge_inactive_sessions(m
     assert response.json() == {"deactivated": 1, "deleted": 4}
 
 
+def test_session_limit_normalization_defaults_to_dry_run_and_applies_explicitly(monkeypatch):
+    calls = []
+
+    def normalize_active_session_limits(*, apply=False):
+        calls.append(bool(apply))
+        return {
+            "limit": 3,
+            "users_affected": 1,
+            "sessions_to_close": 2,
+            "sessions_closed": 2 if apply else 0,
+            "_closed_session_ids": ["closed-session"] if apply else [],
+        }
+
+    monkeypatch.setattr(auth.session_service, "normalize_active_session_limits", normalize_active_session_limits)
+    deleted_contexts = []
+    monkeypatch.setattr(
+        auth.session_auth_context_service,
+        "delete_session_context",
+        lambda session_id: deleted_contexts.append(session_id),
+    )
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.sessions.manage"])
+
+    client = TestClient(app)
+    preview = client.post("/auth/sessions/normalize-limit")
+    applied = client.post("/auth/sessions/normalize-limit", json={"apply": True})
+
+    assert preview.status_code == 200
+    assert preview.json()["sessions_closed"] == 0
+    assert applied.status_code == 200
+    assert applied.json()["sessions_closed"] == 2
+    assert calls == [False, True]
+    assert deleted_contexts == ["closed-session"]
+
+
 def test_ldap_login_requires_2fa_setup_before_final_session(monkeypatch):
     authenticated_user = {
         "id": 15,

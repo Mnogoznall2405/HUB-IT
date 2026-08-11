@@ -18,6 +18,9 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function persistLoginResult(result: LoginResponse): Promise<void> {
+  if (result.client_device_id) {
+    await tokenStore.setClientDeviceId(result.client_device_id);
+  }
   const access = String(result.access_token || '').trim();
   const refresh = String(result.refresh_token || '').trim();
   if (result.status === 'authenticated' && access && refresh) {
@@ -52,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     const result = await authApi.login(username, password);
+    await persistLoginResult(result);
     if (result.status === '2fa_setup_required') {
       setLoginChallengeId('setup');
       return result;
@@ -60,7 +64,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoginChallengeId(result.login_challenge_id || null);
       return result;
     }
-    await persistLoginResult(result);
     setLoginChallengeId(null);
     if (result.user) setUser(result.user);
     else await refreshUser();

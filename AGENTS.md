@@ -188,6 +188,8 @@ OpenAPI в dev: `http://localhost:8001/docs`
 | Solution | `desktop/Hub.Desktop.sln` |
 | WPF shell | `desktop/Hub.Desktop/` |
 | Tray / autostart / single instance | `desktop/Hub.Desktop/Autostart/`, `desktop/Hub.Desktop/Lifecycle/`, `MainWindow.xaml.cs` |
+| MSI / Setup bundle | `desktop/Hub.Desktop.Installer/`, `desktop/Hub.Desktop.Setup/`, `scripts/desktop/build-installer.ps1` |
+| Фирменные Windows-иконки | `desktop/Hub.Desktop/Assets/`, источник `WEB-itinvent/frontend/scripts/icon-source.png` |
 | React/C# bridge | `desktop/Hub.Desktop/Interop/`, `WEB-itinvent/frontend/src/lib/desktopBridge.js`, `WEB-itinvent/frontend/src/lib/platform.js` |
 | Origin/navigation policy | `desktop/Hub.Desktop/Security/NavigationPolicy.cs` |
 | Тесты | `desktop/Hub.Desktop.Tests/` |
@@ -275,6 +277,9 @@ python agent.py --once
 
 # Windows Desktop (WPF/WebView2)
 dotnet run --project desktop\Hub.Desktop\Hub.Desktop.csproj
+
+# Windows Desktop Setup.exe + MSI
+powershell -ExecutionPolicy Bypass -File scripts\desktop\build-installer.ps1 -NoRestore
 
 # Mobile (Expo, Android)
 cd mobile-hub

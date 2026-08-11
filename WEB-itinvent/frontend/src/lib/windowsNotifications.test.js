@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const desktopBridgeMocks = vi.hoisted(() => ({
+  available: false,
+  show: vi.fn(() => false),
+}));
+
+vi.mock('./desktopBridge', () => ({
+  isDesktopNotificationAvailable: () => desktopBridgeMocks.available,
+  showDesktopNotification: desktopBridgeMocks.show,
+}));
+
 vi.mock('./chatFeature', () => ({
   TASK_DISCUSSION_CHAT_ENABLED: false,
 }));
@@ -8,6 +18,7 @@ import {
   createHubSystemNotification,
   createMailSystemNotification,
   getBrowserNotificationPermission,
+  getWindowsNotificationState,
   getHubNotificationActionLabel,
   getHubNotificationNavigateTo,
   getMailSystemNotificationId,
@@ -29,6 +40,9 @@ describe('windowsNotifications helper', () => {
     window.localStorage.clear();
     notificationPermission = 'default';
     notificationInstances = [];
+    desktopBridgeMocks.available = false;
+    desktopBridgeMocks.show.mockReset();
+    desktopBridgeMocks.show.mockReturnValue(false);
     window.focus = vi.fn();
 
     class MockNotification {
@@ -113,6 +127,44 @@ describe('windowsNotifications helper', () => {
     expect(window.focus).toHaveBeenCalled();
     expect(onNavigate).toHaveBeenCalledWith('/tasks?task=task-77&task_tab=comments', payload);
     expect(notificationInstances[0].close).toHaveBeenCalled();
+  });
+
+  it('routes hub and mail notifications through the desktop bridge when browser permission is blocked', () => {
+    notificationPermission = 'denied';
+    desktopBridgeMocks.available = true;
+    desktopBridgeMocks.show.mockReturnValue(true);
+
+    expect(getWindowsNotificationState()).toMatchObject({
+      supported: true,
+      permission: 'granted',
+    });
+
+    const hubCreated = createHubSystemNotification({
+      id: 'hub-notification-native',
+      title: 'Новая задача',
+      body: 'Добавление данных',
+      entity_type: 'task',
+      entity_id: 'task-77',
+    });
+    const mailCreated = createMailSystemNotification({
+      id: 'encoded-message-native',
+      internet_message_id: '<native-message@example.com>',
+      mailbox_id: 'mailbox-1',
+      folder: 'inbox',
+      subject: 'Mail subject',
+      sender: 'sender@example.com',
+    });
+
+    expect(hubCreated).toMatchObject({ native: true });
+    expect(mailCreated).toMatchObject({ native: true });
+    expect(notificationInstances).toHaveLength(0);
+    expect(desktopBridgeMocks.show).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      id: 'hub:hub-notification-native',
+      route: '/tasks?task=task-77&task_tab=comments',
+    }));
+    expect(desktopBridgeMocks.show).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      route: '/mail?folder=inbox&message=encoded-message-native&mailbox_id=mailbox-1',
+    }));
   });
 
   it('creates a browser mail notification once per stable message id and navigates on click', () => {

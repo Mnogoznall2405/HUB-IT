@@ -25,6 +25,7 @@ export default function MailAttachmentsSheet({
   attachments = [],
   formatFileSize,
   onOpen,
+  onFileActions,
   title = 'Все вложения',
   testId = 'mail-attachments-sheet',
 }) {
@@ -72,6 +73,8 @@ export default function MailAttachmentsSheet({
                   onOpen?.(attachment);
                   onClose?.();
                 }}
+                onContextMenu={(event) => onFileActions?.(event, attachment)}
+                onKeyDown={(event) => onFileActions?.(event, attachment)}
                 sx={{
                   borderRadius: tokens.radiusSm,
                   mb: 0.35,

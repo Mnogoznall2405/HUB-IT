@@ -483,6 +483,10 @@ export const authAPI = {
     return authSessionsAPI.purgeInactiveSessions;
   },
 
+  get normalizeSessionLimit() {
+    return authSessionsAPI.normalizeSessionLimit;
+  },
+
   get getUsers() {
     return authUserAdminAPI.getUsers;
   },

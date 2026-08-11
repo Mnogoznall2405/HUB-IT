@@ -1,0 +1,17 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <OutputType>Bundle</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName>HUB-Desktop-Setup-$(DesktopVersion)-win-x64</OutputName>
+    <DefineConstants>DesktopVersion=$(DesktopVersion);MsiPath=$(MsiPath);WebView2BootstrapperPath=$(WebView2BootstrapperPath);WindowsAppRuntimePath=$(WindowsAppRuntimePath);VCRedistPath=$(VCRedistPath);IconPath=$(IconPath);LogoPath=$(LogoPath)</DefineConstants>
+    <DebugType>none</DebugType>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.BootstrapperApplications.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

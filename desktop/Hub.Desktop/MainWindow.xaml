@@ -1,25 +1,336 @@
 <Window x:Class="Hub.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="HUB Desktop"
+        Icon="Assets/hub-icon.ico"
         Width="1360"
         Height="860"
         MinWidth="960"
         MinHeight="640"
+        WindowStyle="None"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         Loaded="Window_Loaded"
-        Closed="Window_Closed">
-    <Grid Background="#F5F7FA">
-        <Grid x:Name="BrowserHost" />
+        Activated="Window_Activated"
+        Deactivated="Window_Deactivated"
+        StateChanged="Window_StateChanged"
+        Closing="Window_Closing"
+        Closed="Window_Closed"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        Background="{DynamicResource AppBackgroundBrush}">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="34"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0F1115" />
+        <SolidColorBrush x:Key="TitleBarBackgroundBrush" Color="#11151B" />
+        <SolidColorBrush x:Key="TitleBarForegroundBrush" Color="#F3F2F1" />
+        <SolidColorBrush x:Key="TitleBarBorderBrush" Color="#292D34" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#A19F9D" />
+        <SolidColorBrush x:Key="TitleButtonHoverBrush" Color="#252A31" />
+        <SolidColorBrush x:Key="TitleButtonPressedBrush" Color="#303640" />
+        <SolidColorBrush x:Key="TitleButtonFocusBrush" Color="#479EF5" />
+        <SolidColorBrush x:Key="CloseButtonHoverBrush" Color="#C42B1C" />
+        <SolidColorBrush x:Key="CloseButtonPressedBrush" Color="#A4262C" />
+        <SolidColorBrush x:Key="UpdateBannerBackgroundBrush" Color="#18212C" />
+        <SolidColorBrush x:Key="UpdateBannerBorderBrush" Color="#334155" />
+        <SolidColorBrush x:Key="UpdateBannerAccentBrush" Color="#38BDF8" />
+        <SolidColorBrush x:Key="UpdateButtonBackgroundBrush" Color="#0EA5E9" />
+        <SolidColorBrush x:Key="UpdateButtonHoverBrush" Color="#0284C7" />
+        <SolidColorBrush x:Key="UpdateButtonPressedBrush" Color="#0369A1" />
+
+        <Style x:Key="TitleBarKeyboardFocusStyle">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border Margin="2"
+                                BorderBrush="{DynamicResource TitleButtonFocusBrush}"
+                                BorderThickness="2"
+                                SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TitleBarButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource TitleBarForegroundBrush}" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="IsTabStop" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource TitleBarKeyboardFocusStyle}" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonPressedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CloseTitleBarButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource TitleBarButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource CloseButtonHoverBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource CloseButtonPressedBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="UpdateSecondaryButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="84" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="Margin" Value="8,0,0,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource UpdateBannerBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource TitleBarForegroundBrush}" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource TitleBarKeyboardFocusStyle}" />
+        </Style>
+
+        <Style x:Key="UpdatePrimaryButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource UpdateSecondaryButtonStyle}">
+            <Setter Property="MinWidth" Value="198" />
+            <Setter Property="Background" Value="{DynamicResource UpdateButtonBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource UpdateButtonBackgroundBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource UpdateButtonHoverBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource UpdateButtonHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource UpdateButtonPressedBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource UpdateButtonPressedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="34" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="{DynamicResource TitleBarBackgroundBrush}"
+                BorderBrush="{DynamicResource TitleBarBorderBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Margin="10,0,0,0"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            IsHitTestVisible="False">
+                    <Image Width="22"
+                           Height="22"
+                           Margin="0,0,7,0"
+                           Source="Assets/hub-icon.png"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           Stretch="Uniform" />
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource TitleBarForegroundBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Text="HUB Desktop" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{StaticResource TitleBarButtonStyle}"
+                            Click="MinimizeButton_Click"
+                            ToolTip="Свернуть"
+                            AutomationProperties.Name="Свернуть окно">
+                        <Path Width="12"
+                              Height="12"
+                              Data="M 1,7 L 11,7"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2"
+                              Stretch="None" />
+                    </Button>
+                    <Button x:Name="MaximizeRestoreButton"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            Click="MaximizeRestoreButton_Click"
+                            ToolTip="Развернуть"
+                            AutomationProperties.Name="Развернуть окно">
+                        <Grid Width="12" Height="12">
+                            <Path x:Name="MaximizeGlyph"
+                                  Data="M 1.5,1.5 L 10.5,1.5 L 10.5,10.5 L 1.5,10.5 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                            <Grid x:Name="RestoreGlyph" Visibility="Collapsed">
+                                <Path Data="M 3.5,1.5 L 10.5,1.5 L 10.5,8.5"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.2"
+                                      Stretch="None" />
+                                <Path Data="M 1.5,3.5 L 8.5,3.5 L 8.5,10.5 L 1.5,10.5 Z"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      Fill="{DynamicResource TitleBarBackgroundBrush}"
+                                      StrokeThickness="1.2"
+                                      Stretch="None" />
+                            </Grid>
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource CloseTitleBarButtonStyle}"
+                            Click="CloseButton_Click"
+                            ToolTip="Закрыть в область уведомлений"
+                            AutomationProperties.Name="Закрыть окно в область уведомлений">
+                        <Path Width="12"
+                              Height="12"
+                              Data="M 1.5,1.5 L 10.5,10.5 M 10.5,1.5 L 1.5,10.5"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2"
+                              Stretch="None" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border x:Name="UpdateBanner"
+                Grid.Row="1"
+                Padding="14,10"
+                Background="{DynamicResource UpdateBannerBackgroundBrush}"
+                BorderBrush="{DynamicResource UpdateBannerBorderBrush}"
+                BorderThickness="0,0,0,1"
+                Visibility="Collapsed"
+                AutomationProperties.LiveSetting="Polite"
+                AutomationProperties.Name="Обновление HUB Desktop готово к установке">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Border Width="32"
+                        Height="32"
+                        Margin="0,0,11,0"
+                        VerticalAlignment="Center"
+                        Background="#163247"
+                        CornerRadius="9"
+                        IsHitTestVisible="False">
+                    <Path Width="17"
+                          Height="17"
+                          Data="M 14,4 A 6,6 0 1 0 15.5,10 M 14,4 L 14,8 L 10,8"
+                          Stroke="{DynamicResource UpdateBannerAccentBrush}"
+                          StrokeThickness="1.8"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          Stretch="Uniform" />
+                </Border>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock x:Name="UpdateTitle"
+                               Foreground="{DynamicResource TitleBarForegroundBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Text="Обновление HUB Desktop готово" />
+                    <TextBlock x:Name="UpdateDetails"
+                               Margin="0,2,12,0"
+                               Foreground="{DynamicResource SecondaryTextBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="12"
+                               Text="Новая версия загружена и будет установлена после перезапуска."
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <Button x:Name="DeferUpdateButton"
+                        Grid.Column="2"
+                        Style="{StaticResource UpdateSecondaryButtonStyle}"
+                        Click="DeferUpdateButton_Click"
+                        Content="Позже"
+                        AutomationProperties.Name="Отложить обновление HUB Desktop на 24 часа" />
+                <Button x:Name="InstallUpdateButton"
+                        Grid.Column="3"
+                        Style="{StaticResource UpdatePrimaryButtonStyle}"
+                        Click="InstallUpdateButton_Click"
+                        Content="Перезапустить и обновить"
+                        AutomationProperties.Name="Перезапустить HUB Desktop и установить обновление" />
+            </Grid>
+        </Border>
+
+        <Grid x:Name="BrowserHost" Grid.Row="2" />
 
         <ProgressBar x:Name="LoadingIndicator"
+                     Grid.Row="2"
                      Height="3"
                      VerticalAlignment="Top"
                      IsIndeterminate="True"
                      Visibility="Collapsed" />
 
         <Border x:Name="ErrorOverlay"
-                Background="#F5F7FA"
+                Grid.Row="2"
+                Background="{DynamicResource AppBackgroundBrush}"
                 Visibility="Collapsed">
             <StackPanel Width="480"
                         HorizontalAlignment="Center"
@@ -27,12 +338,13 @@
                 <TextBlock x:Name="ErrorTitle"
                            FontSize="24"
                            FontWeight="SemiBold"
+                           Foreground="{DynamicResource TitleBarForegroundBrush}"
                            Text="Не удалось открыть HUB"
                            TextAlignment="Center" />
                 <TextBlock x:Name="ErrorDetails"
                            Margin="0,12,0,24"
                            FontSize="14"
-                           Foreground="#52606D"
+                           Foreground="{DynamicResource SecondaryTextBrush}"
                            Text="Проверьте подключение к сети и повторите попытку."
                            TextAlignment="Center"
                            TextWrapping="Wrap" />

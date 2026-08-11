@@ -3,7 +3,9 @@ Session persistence and lifecycle management for web authentication.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
@@ -13,7 +15,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
-from backend.appdb.models import AppSessionRecord
+from backend.appdb.models import AppSessionRecord, AppUser
 from backend.config import config
 from backend.services.auth_session_metrics import note_session_expired
 from backend.services.trusted_device_service import trusted_device_service
@@ -27,6 +29,30 @@ def _utc_now() -> datetime:
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat()
+
+
+_CLIENT_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9._~-]{16,128}$")
+
+
+def normalize_client_device_id(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not _CLIENT_DEVICE_ID_RE.fullmatch(normalized):
+        return ""
+    return normalized
+
+
+def hash_client_device_id(value: object) -> str | None:
+    normalized = normalize_client_device_id(value)
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def new_client_device_id() -> str:
+    # The value is an opaque browser/app identifier, never an authentication token.
+    import secrets
+
+    return secrets.token_urlsafe(32)
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -206,6 +232,7 @@ class SessionService:
             "closed_at": row.closed_at.isoformat() if row.closed_at else None,
             "closed_reason": row.closed_reason,
             "trusted_device_id": row.trusted_device_id,
+            "client_device_key_hash": row.client_device_key_hash,
             "login_network_zone": row.login_network_zone,
             "device_label": row.device_label,
         }
@@ -226,6 +253,7 @@ class SessionService:
         row.closed_at = _parse_datetime(payload.get("closed_at"))
         row.closed_reason = str(payload.get("closed_reason") or "").strip() or None
         row.trusted_device_id = str(payload.get("trusted_device_id") or "").strip() or None
+        row.client_device_key_hash = str(payload.get("client_device_key_hash") or "").strip() or None
         row.login_network_zone = str(payload.get("login_network_zone") or "").strip().lower() or None
         row.device_label = str(payload.get("device_label") or "").strip() or None
 
@@ -457,6 +485,101 @@ class SessionService:
                 return False
             return (now_mono - last_touch_mono) < float(self.TOUCH_THROTTLE_SECONDS)
 
+    @staticmethod
+    def _session_lru_key(session: dict) -> tuple[datetime, datetime, str]:
+        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        return (
+            _parse_datetime(session.get("last_seen_at")) or oldest,
+            _parse_datetime(session.get("created_at")) or oldest,
+            str(session.get("session_id") or ""),
+        )
+
+    def _max_active_sessions_per_user(self) -> int:
+        return max(1, int(getattr(config.session, "max_active_per_user", 3) or 3))
+
+    def _enforce_active_session_limit(
+        self,
+        *,
+        user_id: int,
+        keep_session_id: str | None = None,
+        db_session=None,
+        sessions: list[dict] | None = None,
+    ) -> list[str]:
+        """Close least-recently-used sessions, preserving the current login.
+
+        The APP DB path is called inside the same transaction as session
+        creation/reuse. The user row is locked by the caller, so concurrent
+        logins cannot both observe free slots and exceed the limit.
+        """
+        limit = self._max_active_sessions_per_user()
+        normalized_user_id = int(user_id)
+        normalized_keep_id = str(keep_session_id or "").strip()
+        closed_ids: list[str] = []
+
+        if db_session is not None:
+            rows = db_session.scalars(
+                select(AppSessionRecord)
+                .where(
+                    AppSessionRecord.user_id == normalized_user_id,
+                    AppSessionRecord.is_active.is_(True),
+                    AppSessionRecord.status == "active",
+                )
+                .with_for_update()
+            ).all()
+            active_rows: list[tuple[dict, AppSessionRecord]] = []
+            now = _utc_now()
+            for row in rows:
+                item = self._normalize_db_row(row, now=now, db_session=db_session)
+                if item.get("status") == "active" and bool(item.get("is_active", True)):
+                    active_rows.append((item, row))
+            active_rows.sort(key=lambda pair: self._session_lru_key(pair[0]))
+            while len(active_rows) > limit:
+                victim_index = next(
+                    (
+                        index
+                        for index, (item, _row) in enumerate(active_rows)
+                        if str(item.get("session_id") or "") != normalized_keep_id
+                    ),
+                    None,
+                )
+                if victim_index is None:
+                    break
+                item, row = active_rows.pop(victim_index)
+                if self._close_session_record(item, reason="terminated", db_session=db_session):
+                    self._apply_session_payload(row, item)
+                closed_ids.append(str(item.get("session_id") or row.session_id or ""))
+                self._cache_invalidate(str(item.get("session_id") or row.session_id or ""))
+            return [item for item in closed_ids if item]
+
+        if sessions is None:
+            return []
+        active = [
+            item
+            for item in sessions
+            if int(item.get("user_id", 0) or 0) == normalized_user_id
+            and bool(item.get("is_active", True))
+            and str(item.get("status") or "active") == "active"
+        ]
+        active.sort(key=self._session_lru_key)
+        while len(active) > limit:
+            victim_index = next(
+                (
+                    index
+                    for index, item in enumerate(active)
+                    if str(item.get("session_id") or "") != normalized_keep_id
+                ),
+                None,
+            )
+            if victim_index is None:
+                break
+            victim = active.pop(victim_index)
+            self._close_session_record(victim, reason="terminated")
+            session_id = str(victim.get("session_id") or "")
+            if session_id:
+                closed_ids.append(session_id)
+                self._cache_invalidate(session_id)
+        return closed_ids
+
     def create_session(
         self,
         *,
@@ -469,9 +592,11 @@ class SessionService:
         expires_at: str,
         trusted_device_id: str | None = None,
         login_network_zone: str | None = None,
+        client_device_id: str | None = None,
     ) -> dict:
         self._run_maintenance()
         now_iso = _utc_now_iso()
+        client_device_key_hash = hash_client_device_id(client_device_id)
         zone = str(login_network_zone or "").strip().lower()
         if zone not in {"internal", "external"}:
             zone = classify_network_zone(ip_address)
@@ -494,22 +619,93 @@ class SessionService:
             "closed_at": None,
             "closed_reason": None,
             "trusted_device_id": str(trusted_device_id or "").strip() or None,
+            "client_device_key_hash": client_device_key_hash,
             "login_network_zone": zone,
             "device_label": "",
         }
-        self._normalize_session(item)
+        session_reused = False
         if self._use_app_database:
             with app_session(self._database_url) as session:
-                row = AppSessionRecord(session_id=str(session_id))
+                # Lock the stable user row before counting sessions. This
+                # serializes concurrent logins for one user across workers.
+                session.get(AppUser, int(user_id), with_for_update=True)
+                row = None
+                if client_device_key_hash:
+                    row = session.scalars(
+                        select(AppSessionRecord)
+                        .where(
+                            AppSessionRecord.user_id == int(user_id),
+                            AppSessionRecord.client_device_key_hash == client_device_key_hash,
+                            AppSessionRecord.is_active.is_(True),
+                        )
+                        .order_by(AppSessionRecord.last_seen_at.desc(), AppSessionRecord.created_at.desc())
+                        .with_for_update()
+                    ).first()
+                if row is None:
+                    row = AppSessionRecord(session_id=str(session_id))
+                    session.add(row)
+                else:
+                    existing = self._normalize_db_row(row, now=_utc_now(), db_session=session)
+                    if existing.get("status") != "active" or not bool(existing.get("is_active", True)):
+                        row = AppSessionRecord(session_id=str(session_id))
+                        session.add(row)
+                    else:
+                        session_reused = True
+                        item["session_id"] = str(row.session_id)
+                        item["created_at"] = existing.get("created_at") or item["created_at"]
+                self._normalize_session(item, db_session=session)
                 self._apply_session_payload(row, item)
-                session.add(row)
-            self._cache_put_active(str(session_id), is_active=True, touched=True)
-            return dict(item)
+                # The app session factory disables autoflush. Flush the new
+                # row before counting, otherwise the just-created login would
+                # be absent from the limit query until after enforcement.
+                session.flush()
+                closed_ids = self._enforce_active_session_limit(
+                    user_id=int(user_id),
+                    keep_session_id=str(item.get("session_id") or ""),
+                    db_session=session,
+                )
+            actual_session_id = str(item.get("session_id") or session_id)
+            self._cache_put_active(actual_session_id, is_active=True, touched=True)
+            result = dict(item)
+            result["_session_reused"] = session_reused
+            if closed_ids:
+                result["_closed_session_ids"] = closed_ids
+            return result
         sessions = self._load_sessions()
-        sessions.append(item)
+        existing = next(
+            (
+                candidate
+                for candidate in sessions
+                if int(candidate.get("user_id", 0) or 0) == int(user_id)
+                and bool(candidate.get("is_active", True))
+                and str(candidate.get("status") or "active") == "active"
+                and client_device_key_hash
+                and str(candidate.get("client_device_key_hash") or "").strip() == client_device_key_hash
+            ),
+            None,
+        )
+        if existing is not None:
+            session_reused = True
+            item["session_id"] = str(existing.get("session_id") or session_id)
+            item["created_at"] = existing.get("created_at") or item["created_at"]
+            existing.update(item)
+            item = existing
+        else:
+            sessions.append(item)
+        self._normalize_session(item)
+        closed_ids = self._enforce_active_session_limit(
+            user_id=int(user_id),
+            keep_session_id=str(item.get("session_id") or session_id),
+            sessions=sessions,
+        )
         self._save_sessions(sessions)
-        self._cache_put_active(str(session_id), is_active=True, touched=True)
-        return dict(item)
+        actual_session_id = str(item.get("session_id") or session_id)
+        self._cache_put_active(actual_session_id, is_active=True, touched=True)
+        result = dict(item)
+        result["_session_reused"] = session_reused
+        if closed_ids:
+            result["_closed_session_ids"] = closed_ids
+        return result
 
     def touch_session(self, session_id: str) -> bool:
         normalized_id = str(session_id or "").strip()
@@ -860,6 +1056,102 @@ class SessionService:
             "deactivated": cleanup_result["deactivated"],
             "deleted": cleanup_result["deleted"] + deleted,
         }
+
+    def normalize_active_session_limits(self, *, apply: bool = False) -> dict:
+        """Preview or apply the per-user active-session limit.
+
+        This is intentionally separate from automatic maintenance so an
+        operator can preview the impact before closing existing sessions.
+        """
+        limit = self._max_active_sessions_per_user()
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                statement = select(AppSessionRecord).where(
+                    AppSessionRecord.is_active.is_(True),
+                    AppSessionRecord.status == "active",
+                )
+                rows = session.scalars(statement).all()
+                if apply:
+                    # Keep lock ordering identical to create_session:
+                    # user row first, then session rows. This avoids a
+                    # deadlock between normalization and a concurrent login.
+                    user_ids = sorted({int(row.user_id) for row in rows})
+                    for user_id in user_ids:
+                        session.get(AppUser, user_id, with_for_update=True)
+                    rows = session.scalars(statement.with_for_update()).all()
+
+                grouped: dict[int, list[tuple[dict, AppSessionRecord]]] = {}
+                for row in rows:
+                    item = self._row_to_session_dict(row)
+                    grouped.setdefault(int(row.user_id), []).append((item, row))
+
+                closed_ids: list[str] = []
+                users_affected = 0
+                sessions_to_close = 0
+                for user_id, candidates in grouped.items():
+                    candidates.sort(key=lambda pair: self._session_lru_key(pair[0]))
+                    victims = candidates[: max(0, len(candidates) - limit)]
+                    if not victims:
+                        continue
+                    users_affected += 1
+                    sessions_to_close += len(victims)
+                    if not apply:
+                        continue
+                    for item, row in victims:
+                        if self._close_session_record(item, reason="terminated", db_session=session):
+                            self._apply_session_payload(row, item)
+                        session_id = str(row.session_id or item.get("session_id") or "")
+                        if session_id:
+                            closed_ids.append(session_id)
+                            self._cache_invalidate(session_id)
+                result = {
+                    "limit": limit,
+                    "users_affected": users_affected,
+                    "sessions_to_close": sessions_to_close,
+                    "sessions_closed": len(closed_ids) if apply else 0,
+                }
+                if closed_ids:
+                    result["_closed_session_ids"] = closed_ids
+                return result
+
+        sessions = self._load_sessions()
+        grouped: dict[int, list[dict]] = {}
+        for item in sessions:
+            if not bool(item.get("is_active", True)) or str(item.get("status") or "active") != "active":
+                continue
+            grouped.setdefault(int(item.get("user_id", 0) or 0), []).append(item)
+
+        closed_ids: list[str] = []
+        users_affected = 0
+        sessions_to_close = 0
+        changed = False
+        for candidates in grouped.values():
+            candidates.sort(key=self._session_lru_key)
+            victims = candidates[: max(0, len(candidates) - limit)]
+            if not victims:
+                continue
+            users_affected += 1
+            sessions_to_close += len(victims)
+            if not apply:
+                continue
+            for item in victims:
+                self._close_session_record(item, reason="terminated")
+                session_id = str(item.get("session_id") or "")
+                if session_id:
+                    closed_ids.append(session_id)
+                    self._cache_invalidate(session_id)
+                changed = True
+        if changed:
+            self._save_sessions(sessions)
+        result = {
+            "limit": limit,
+            "users_affected": users_affected,
+            "sessions_to_close": sessions_to_close,
+            "sessions_closed": len(closed_ids) if apply else 0,
+        }
+        if closed_ids:
+            result["_closed_session_ids"] = closed_ids
+        return result
 
     def get_session(self, session_id: str | None) -> dict | None:
         normalized_id = str(session_id or "").strip()

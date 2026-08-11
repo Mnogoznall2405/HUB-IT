@@ -71,6 +71,7 @@ class LoginResponse(BaseModel):
     login_challenge_id: Optional[str] = None
     available_second_factors: list[str] = Field(default_factory=list)
     trusted_devices_available: bool = False
+    client_device_id: Optional[str] = None
 
 
 class LoginModeResponse(BaseModel):
@@ -326,3 +327,7 @@ class SessionInfo(BaseModel):
     closed_reason: Optional[str] = None
     device_label: Optional[str] = None
     trusted_device_id: Optional[str] = None
+
+
+class SessionLimitNormalizeRequest(BaseModel):
+    apply: bool = False

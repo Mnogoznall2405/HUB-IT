@@ -1,0 +1,18 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName>HUB-Desktop-$(DesktopVersion)-win-x64</OutputName>
+    <DefineConstants>DesktopVersion=$(DesktopVersion);IconPath=$(IconPath)</DefineConstants>
+    <DebugType>none</DebugType>
+    <DefaultCompressionLevel>high</DefaultCompressionLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <BindPath Include="$(PublishDir)" BindName="Publish" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

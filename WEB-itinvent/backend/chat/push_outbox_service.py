@@ -115,15 +115,25 @@ class ChatPushOutboxService:
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run_loop(), name="chat-push-outbox-worker")
 
+    async def wait_until_stopped(self) -> None:
+        """Wait for the worker loop so a process supervisor can observe failures."""
+        task = self._task
+        if task is None:
+            raise RuntimeError("chat push outbox worker is not running")
+        await task
+
     async def stop(self) -> None:
         if self._stop_event is not None:
             self._stop_event.set()
         if self._task:
-            self._task.cancel()
+            if not self._task.done():
+                self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.exception("chat.push_outbox.worker failed before shutdown")
         self._task = None
         self._stop_event = None
 

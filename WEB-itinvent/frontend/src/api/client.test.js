@@ -5149,15 +5149,18 @@ describe('authSessionsAPI contract', () => {
   it('runs session cleanup and inactive-session purge through the dedicated module', async () => {
     apiClientMock.post
       .mockResolvedValueOnce({ data: { cleaned: 2 } })
-      .mockResolvedValueOnce({ data: { purged: 3 } });
+      .mockResolvedValueOnce({ data: { purged: 3 } })
+      .mockResolvedValueOnce({ data: { sessions_closed: 2 } });
 
     const { authSessionsAPI } = await importAuthSessionsAPI();
 
     await expect(authSessionsAPI.cleanupSessions()).resolves.toEqual({ cleaned: 2 });
     await expect(authSessionsAPI.purgeInactiveSessions()).resolves.toEqual({ purged: 3 });
+    await expect(authSessionsAPI.normalizeSessionLimit(true)).resolves.toEqual({ sessions_closed: 2 });
 
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/auth/sessions/cleanup');
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/auth/sessions/purge-inactive');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/auth/sessions/normalize-limit', { apply: true });
   });
 
   it('keeps client authAPI session methods compatible with the dedicated module and re-export', async () => {
@@ -5169,6 +5172,7 @@ describe('authSessionsAPI contract', () => {
     expect(authAPI.terminateSession).toBe(authSessionsAPI.terminateSession);
     expect(authAPI.cleanupSessions).toBe(authSessionsAPI.cleanupSessions);
     expect(authAPI.purgeInactiveSessions).toBe(authSessionsAPI.purgeInactiveSessions);
+    expect(authAPI.normalizeSessionLimit).toBe(authSessionsAPI.normalizeSessionLimit);
   });
 });
 

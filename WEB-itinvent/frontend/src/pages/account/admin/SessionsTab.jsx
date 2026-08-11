@@ -26,7 +26,7 @@ import { formatDateTime } from '../accountUserModel';
 import MetricTile from '../shared/MetricTile';
 import SectionCard from '../shared/SectionCard';
 
-export default function SessionsTab({ sessions, loading, cleanupResult, cleaning, purging, onCleanup, onPurge, onTerminate }) {
+export default function SessionsTab({ sessions, loading, cleanupResult, cleaning, purging, normalizing, onCleanup, onPurge, onNormalize, onTerminate }) {
 
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -45,7 +45,7 @@ export default function SessionsTab({ sessions, loading, cleanupResult, cleaning
             variant="outlined"
             startIcon={cleaning ? <CircularProgress size={18} color="inherit" /> : <BuildCircleOutlinedIcon />}
             onClick={onCleanup}
-            disabled={cleaning || purging}
+            disabled={cleaning || purging || normalizing}
           >
             {cleaning ? 'Очистка...' : 'Очистить устаревшие'}
           </Button>
@@ -54,9 +54,18 @@ export default function SessionsTab({ sessions, loading, cleanupResult, cleaning
             color="error"
             startIcon={purging ? <CircularProgress size={18} color="inherit" /> : <DeleteOutlineOutlinedIcon />}
             onClick={onPurge}
-            disabled={purging || cleaning}
+            disabled={purging || cleaning || normalizing}
           >
             {purging ? 'Удаление...' : 'Удалить неактивные'}
+          </Button>
+          <Button
+            variant="outlined"
+            color="warning"
+            startIcon={normalizing ? <CircularProgress size={18} color="inherit" /> : <CheckCircleOutlineOutlinedIcon />}
+            onClick={onNormalize}
+            disabled={normalizing || purging || cleaning}
+          >
+            {normalizing ? 'Нормализация...' : 'Нормализовать лимит'}
           </Button>
           </Stack>
         )}

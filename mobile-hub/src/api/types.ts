@@ -17,6 +17,7 @@ export type LoginResponse = {
   session_id?: string | null;
   login_challenge_id?: string | null;
   available_second_factors?: string[];
+  client_device_id?: string | null;
 };
 
 export type ChatConversationSummary = {

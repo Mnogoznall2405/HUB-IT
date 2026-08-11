@@ -28,6 +28,7 @@ const {
   mockSyncChatPushSubscription,
   mockClaimChatMessageNotification,
   mockShouldSkipChatPushForegroundNotification,
+  mockNotificationSurfaceVisible,
   mockLocation,
   mockChatSocketRetain,
   mockChatSocketSubscribeInbox,
@@ -55,6 +56,7 @@ const {
   mockSyncChatPushSubscription: vi.fn(),
   mockClaimChatMessageNotification: vi.fn((messageId) => Boolean(String(messageId || '').trim())),
   mockShouldSkipChatPushForegroundNotification: vi.fn(() => false),
+  mockNotificationSurfaceVisible: vi.fn(() => false),
   mockLocation: { pathname: '/dashboard', search: '' },
   mockChatSocketRetain: vi.fn(() => vi.fn()),
   mockChatSocketSubscribeInbox: vi.fn(),
@@ -172,6 +174,7 @@ vi.mock('../../lib/chatNotifications', () => {
       return list.filter((item) => !isLegacyOrdinaryChatHubNotification(item));
     },
     getChatNotificationState: mockGetChatNotificationState,
+    isNotificationSurfaceVisible: mockNotificationSurfaceVisible,
     isLegacyOrdinaryChatHubNotification,
     resolveOrdinaryChatHubReadVisible: (flags) => {
       if (flags && typeof flags === 'object' && Object.prototype.hasOwnProperty.call(flags, 'ordinary_read_visible')) {
@@ -369,6 +372,8 @@ describe('MainLayout hub Windows notifications', () => {
     mockGetChatNotificationState.mockReset();
     mockClaimChatMessageNotification.mockReset();
     mockShouldSkipChatPushForegroundNotification.mockReset();
+    mockNotificationSurfaceVisible.mockReset();
+    mockNotificationSurfaceVisible.mockImplementation(() => visibilityState === 'visible');
     mockSyncChatPushSubscription.mockReset();
     mockChatSocketRetain.mockClear();
     mockChatSocketSubscribeInbox.mockClear();
@@ -803,6 +808,42 @@ describe('MainLayout hub Windows notifications', () => {
 
     expect(mockNotifyInfo).not.toHaveBeenCalled();
     expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it('shows a desktop chat notification when the host window is minimized but WebView reports visible', async () => {
+    visibilityState = 'visible';
+    mockNotificationSurfaceVisible.mockReturnValue(false);
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-minimized',
+          payload: {
+            id: 'msg-minimized',
+            conversation_id: 'conv-minimized',
+            body: 'Message while minimized',
+            sender: { full_name: 'Colleague' },
+            is_own: false,
+          },
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(document.visibilityState).toBe('visible');
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(mockCreateChatSystemNotification).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'msg-minimized',
+      conversationId: 'conv-minimized',
+    }));
   });
 
   it('does not create a local chat notification when push can deliver it externally', async () => {

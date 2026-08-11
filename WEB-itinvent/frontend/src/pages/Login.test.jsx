@@ -19,6 +19,7 @@ const {
   mockSubmitSafariPasswordSaveFullPage,
   locationAssignMock,
   locationReplaceMock,
+  mockGetDesktopWindowsUsername,
 } = vi.hoisted(() => ({
   mockLogin: vi.fn(),
   mockStartTwoFactorSetup: vi.fn(),
@@ -36,6 +37,7 @@ const {
   mockSubmitSafariPasswordSaveFullPage: vi.fn(),
   locationAssignMock: vi.fn(),
   locationReplaceMock: vi.fn(),
+  mockGetDesktopWindowsUsername: vi.fn(),
 }));
 
 vi.mock('qrcode', () => ({
@@ -63,6 +65,10 @@ vi.mock('../api/client', () => ({
     getTrustedDeviceRegistrationOptions: mockGetTrustedDeviceRegistrationOptions,
     verifyTrustedDeviceRegistration: mockVerifyTrustedDeviceRegistration,
   },
+}));
+
+vi.mock('../lib/desktopBridge', () => ({
+  getDesktopWindowsUsername: mockGetDesktopWindowsUsername,
 }));
 
 vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
@@ -181,6 +187,8 @@ describe('Login hybrid internal/external flow', () => {
     mockSubmitSafariPasswordSaveFullPage.mockReset();
     locationAssignMock.mockReset();
     locationReplaceMock.mockReset();
+    mockGetDesktopWindowsUsername.mockReset();
+    mockGetDesktopWindowsUsername.mockReturnValue('');
 
     mockQrToDataUrl.mockResolvedValue('data:image/png;base64,qr-image');
     mockOfferPasswordSaveForAppleKeychain.mockResolvedValue({
@@ -190,6 +198,7 @@ describe('Login hybrid internal/external flow', () => {
     });
     mockSubmitSafariPasswordSaveFullPage.mockReturnValue({ submitted: true, reason: 'full_page_post' });
     sessionStorage.clear();
+    localStorage.clear();
     mockGetLoginMode.mockResolvedValue({
       network_zone: 'internal',
       biometric_login_enabled: false,
@@ -238,6 +247,43 @@ describe('Login hybrid internal/external flow', () => {
     expect(screen.queryByTestId('biometric-hero-button')).not.toBeInTheDocument();
     expect(mockGetLoginMode).toHaveBeenCalledTimes(1);
     expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+  });
+
+  it('prefills the last successful username without storing a password', async () => {
+    mockGetDesktopWindowsUsername.mockReturnValue('windows.user');
+    localStorage.setItem('hubit.login.last-username', 'ivanov');
+
+    render(<Login />);
+
+    expect(await screen.findByLabelText('Логин')).toHaveValue('ivanov');
+    expect(localStorage.getItem('hubit.login.password')).toBeNull();
+  });
+
+  it('prefills the Windows username in Desktop when no saved login exists', async () => {
+    mockGetDesktopWindowsUsername.mockReturnValue('petrov');
+
+    render(<Login />);
+
+    expect(await screen.findByLabelText('Логин')).toHaveValue('petrov');
+  });
+
+  it('reads a username inserted directly by the WebView password manager', async () => {
+    mockLogin.mockResolvedValue({ success: false, error: 'invalid_credentials' });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    const usernameField = document.getElementById('login-username');
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    nativeValueSetter?.call(usernameField, 'autofilled.user');
+    nativeValueSetter?.call(document.getElementById('login-password'), 'secret');
+    fireEvent.submit(screen.getByTestId('password-auth-form'));
+
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('autofilled.user', 'secret');
+    });
   });
 
   it('shows a dismissible VPN hint when login-mode reports outside Russia', async () => {

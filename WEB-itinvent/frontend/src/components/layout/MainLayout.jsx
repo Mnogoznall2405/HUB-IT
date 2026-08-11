@@ -82,6 +82,7 @@ import {
   createChatSystemNotification,
   resolveChatNotificationSenderName,
   getChatNotificationState,
+  isNotificationSurfaceVisible,
   filterHubBellNotifications,
   isLegacyOrdinaryChatHubNotification,
   resolveOrdinaryChatHubReadVisible,
@@ -93,6 +94,7 @@ import {
   syncActiveChatConversationToServiceWorker,
   syncChatPushSubscription,
 } from '../../lib/chatNotifications';
+import { DESKTOP_WINDOW_STATE_CHANGED_EVENT } from '../../lib/desktopBridge';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { hasAnyAppPushPermission } from '../../lib/appPushPermissions';
 import { syncAppBadge } from '../../lib/appBadge';
@@ -276,13 +278,15 @@ function MainLayout({
   useEffect(() => {
     const syncActiveChatToServiceWorker = () => {
       syncActiveChatConversationToServiceWorker(
-        document.visibilityState === 'visible' ? activeChatConversationId : '',
+        isNotificationSurfaceVisible() ? activeChatConversationId : '',
       );
     };
     syncActiveChatToServiceWorker();
     document.addEventListener('visibilitychange', syncActiveChatToServiceWorker);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, syncActiveChatToServiceWorker);
     return () => {
       document.removeEventListener('visibilitychange', syncActiveChatToServiceWorker);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, syncActiveChatToServiceWorker);
       syncActiveChatConversationToServiceWorker('');
     };
   }, [activeChatConversationId]);
@@ -504,7 +508,7 @@ function MainLayout({
     if (!hasHubNotificationPermission && !hasMailPermission) return undefined;
 
     const syncBackgroundBadge = () => {
-      if (document.visibilityState === 'visible') return;
+      if (isNotificationSurfaceVisible()) return;
       fetchUnreadCountsRef.current?.(null, {
         reason: 'pwa-badge-background',
         forceMailUnread: hasMailPermission,
@@ -514,15 +518,17 @@ function MainLayout({
     syncBackgroundBadge();
     const timer = window.setInterval(syncBackgroundBadge, PWA_BADGE_POLL_INTERVAL_MS);
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
+      if (!isNotificationSurfaceVisible()) {
         syncBackgroundBadge();
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
 
     return () => {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
     };
   }, [
     hasHubNotificationPermission,
@@ -576,14 +582,14 @@ function MainLayout({
       const navigateTo = route !== '/'
         ? route
         : buildChatNotificationRoute({ conversationId, messageId });
-      if (isMobileChatRoute && document.visibilityState === 'visible') {
+      if (isMobileChatRoute && isNotificationSurfaceVisible()) {
         setChatForegroundDiagnostic('mobile_chat_route_visible');
         return;
       }
       const isActiveVisibleConversation = (
         location.pathname.startsWith('/chat')
         && activeChatConversationId === conversationId
-        && document.visibilityState === 'visible'
+        && isNotificationSurfaceVisible()
       );
       if (isActiveVisibleConversation) {
         setChatForegroundDiagnostic('active_visible_conversation');
@@ -658,7 +664,7 @@ function MainLayout({
     const items = Array.isArray(feed?.items) ? feed.items.slice(0, Math.min(5, unreadGrowth)) : [];
     if (items.length === 0) return;
     const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
-    const isVisible = document.visibilityState === 'visible';
+    const isVisible = isNotificationSurfaceVisible();
     const currentPushNotificationState = getChatNotificationState();
     const suppressHiddenLocalSystemNotification = Boolean(
       !isVisible
@@ -806,9 +812,9 @@ function MainLayout({
       const isActiveVisibleConversation = (
         location.pathname.startsWith('/chat')
         && activeChatConversationId === conversationId
-        && document.visibilityState === 'visible'
+        && isNotificationSurfaceVisible()
       );
-      const isVisible = document.visibilityState === 'visible';
+      const isVisible = isNotificationSurfaceVisible();
       if (isActiveVisibleConversation) {
         setChatForegroundDiagnostic('active_visible_conversation');
         return;
@@ -1137,7 +1143,7 @@ useEffect(() => {
             const toastMessage = delta === 1
               ? 'Новое сообщение в чате'
               : `Новые сообщения в чате: ${delta}`;
-            const isVisible = typeof document !== 'undefined' && document.visibilityState === 'visible';
+            const isVisible = isNotificationSurfaceVisible();
             if (isVisible && !location.pathname.startsWith('/chat')) {
               notifyInfoRef.current?.(toastMessage, {
                 title: 'Чат',
@@ -1282,12 +1288,14 @@ useEffect(() => {
   useEffect(() => {
     if (!hasMailPermission) return undefined;
     const onVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') return;
+      if (!isNotificationSurfaceVisible()) return;
       fetchUnreadCountsRef.current?.(null, { reason: 'visibility' });
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
     };
   }, [hasMailPermission]);
 
@@ -1308,7 +1316,7 @@ useEffect(() => {
         currentWindowsNotificationState.enabled
         && currentWindowsNotificationState.permission === 'granted',
       );
-      if (document.visibilityState !== 'visible' && !allowBackgroundPolling) {
+      if (!isNotificationSurfaceVisible() && !allowBackgroundPolling) {
         if (hasMailPermission) {
           await fetchUnreadCounts(null, { reason: 'hub-poll-mail-only' });
         }
@@ -1344,7 +1352,7 @@ useEffect(() => {
           }, String(lastPollRef.current || ''));
           lastPollRef.current = maxTs || lastPollRef.current;
 
-          const isVisible = document.visibilityState === 'visible';
+          const isVisible = isNotificationSurfaceVisible();
           const shouldShowToasts = enableToasts && !forceFull && !hubPollSuppressToastsRef.current && isVisible;
           const shouldShowSystemNotifications = Boolean(
             enableToasts
@@ -1454,7 +1462,7 @@ useEffect(() => {
         pollNotifications({ forceFull: false, enableToasts: true });
       }, HUB_POLL_INTERVAL_MS);
       onVisible = () => {
-        if (document.visibilityState === 'visible') {
+        if (isNotificationSurfaceVisible()) {
           pollNotifications({ forceFull: false, enableToasts: false });
         }
       };
@@ -1465,6 +1473,7 @@ useEffect(() => {
         }
       };
       document.addEventListener('visibilitychange', onVisible);
+      window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisible);
       window.addEventListener('hub-refresh-notifications', onHubRefresh);
     } else if (hasMailPermission || (hasChatPermission && !CHAT_WS_ENABLED)) {
       pollNotificationsRef.current = null;
@@ -1506,7 +1515,10 @@ useEffect(() => {
     return () => {
       pollNotificationsRef.current = null;
       if (timer) clearInterval(timer);
-      if (onVisible) document.removeEventListener('visibilitychange', onVisible);
+      if (onVisible) {
+        document.removeEventListener('visibilitychange', onVisible);
+        window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisible);
+      }
       if (onHubRefresh) window.removeEventListener('hub-refresh-notifications', onHubRefresh);
       window.removeEventListener('mail-read', onMailChange);
       window.removeEventListener('mail-list-refreshed', onMailChange);
@@ -1728,7 +1740,7 @@ useEffect(() => {
 
   useEffect(() => {
     const updateTitle = () => {
-      if (document.visibilityState === 'visible') {
+      if (isNotificationSurfaceVisible()) {
         document.title = documentTitle;
         return;
       }
@@ -1741,8 +1753,10 @@ useEffect(() => {
 
     updateTitle();
     document.addEventListener('visibilitychange', updateTitle);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateTitle);
     return () => {
       document.removeEventListener('visibilitychange', updateTitle);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateTitle);
       document.title = APP_BRAND_NAME;
     };
   }, [documentTitle, notificationsBadgeValue]);
@@ -1878,7 +1892,10 @@ useEffect(() => {
         <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important', flexShrink: 0 }} />
       )}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)' }}>
+      <Box
+        className="hub-sidebar-scroll"
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)' }}
+      >
         {compact ? null : (
           <Typography variant="caption" sx={{ display: 'block', px: 1, pt: 0.65, pb: 0.3, color: ui.subtleText, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
             Основное

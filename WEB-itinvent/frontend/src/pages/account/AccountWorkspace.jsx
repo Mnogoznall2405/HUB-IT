@@ -123,8 +123,10 @@ function AccountWorkspace({ area = 'settings' }) {
           cleanupResult={data.cleanupResult}
           cleaning={data.cleaningSessions}
           purging={data.purgingSessions}
+          normalizing={data.normalizingSessions}
           onCleanup={data.handleCleanupSessions}
           onPurge={data.handlePurgeInactiveSessions}
+          onNormalize={data.handleNormalizeSessionLimit}
           onTerminate={data.handleTerminateSession}
         />
       );

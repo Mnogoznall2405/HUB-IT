@@ -1,4 +1,5 @@
 using Hub.Desktop.Configuration;
+using Xunit;
 
 namespace Hub.Desktop.Tests;
 
@@ -29,5 +30,12 @@ public sealed class DesktopOptionsTests
         var options = DesktopOptions.FromBaseUrl("http://localhost:5173/", allowHttpLoopback: true);
 
         Assert.Equal("http://localhost:5173/", options.BaseUri.AbsoluteUri);
+    }
+
+    [Fact]
+    public void RejectsDifferentHttpsOriginForRelease()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => DesktopOptions.FromProductionBaseUrl("https://portal.example.com/"));
     }
 }

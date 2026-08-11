@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import { alpha, createTheme } from '@mui/material/styles';
 import { settingsAPI } from '../api/client';
+import { syncDesktopTheme } from '../lib/desktopBridge';
 import {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
   normalizeMobileBottomNavItems,
@@ -136,6 +137,10 @@ function syncSelectedDatabase(databaseId) {
 export function PreferencesProvider({ children }) {
   const [preferences, setPreferences] = useState(() => readCachedPreferences());
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    syncDesktopTheme(preferences.theme_mode === 'dark' ? 'dark' : 'light');
+  }, [preferences.theme_mode]);
 
   const refreshFromServer = useCallback(async () => {
     const hasUser = !!localStorage.getItem('user');

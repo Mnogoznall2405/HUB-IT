@@ -59,9 +59,37 @@ _Avoid_: ticket object, ITINVENT database
 Справочник объектов/направлений для задач Hub (отдельная сущность, не объект Ticket).
 _Avoid_: **Equipment record**, **Ticket** object
 
+**Support case (обращение поддержки)**:
+Приватная рабочая единица поддержки с автором, очередью, исполнителем, статусом, сроками, связанным диалогом и результатом; сама учитывается как выполненная работа специалиста.
+_Avoid_: **Hub task**, **Ticket**, обычный **Chat conversation**, «заявка» без уточнения
+
+**Support dialogue (диалог поддержки)**:
+**Chat conversation** с `kind=support`, связан ровно с одним **Support case**; хранит сообщения и вложения, но не является источником статуса или текущей очереди.
+_Avoid_: обычный direct/group chat, **Support case** как синоним
+
+**Support queue (очередь поддержки)**:
+Текущая ответственная команда для **Support case**; членство специалиста управляется администратором отдельно от глобальной **Web role**.
+_Avoid_: chat folder, **Hub task project**, город сотрудника
+
+**Support request type (направление обращения)**:
+Простой выбор пользователя (`one_c`, `technical_support`, `security`, `unknown`), используемый как входной сигнал, но не заменяющий внутреннюю классификацию.
+_Avoid_: **Support queue**, окончательная категория, **Web permission**
+
+**Support classification (классификация обращения)**:
+Внутренние категория и подкатегория с источником, уверенностью и версией правил; могут быть исправлены без создания нового **Support case**.
+_Avoid_: пользовательская кнопка, текущая очередь
+
+**Potential security incident (возможный инцидент ИБ)**:
+**Support case** о подозрительном событии, которое ещё должно быть валидировано информационной безопасностью; подтверждённым инцидентом становится только после triage.
+_Avoid_: называть инцидентом ИБ любое обращение в закрытой очереди
+
+**Support queue transfer (перевод обращения)**:
+Аудируемая смена **Support queue** с причиной, сохраняющая исходное обращение, переписку, первоначальное время и историю исполнителей.
+_Avoid_: создание новой **Hub task** или нового обращения вместо перевода
+
 **Ticket**:
-Заявка в контуре service desk / logistics (объекты, исполнители, импорт, finops, история); UI — «Tickets», `/tickets`.
-_Avoid_: hub task, задача Hub, «задача» без уточнения контекста
+Заявка в контуре покупки билетов/логистики (маршрут, объект, касса, стоимость, возвраты и история); UI — «Tickets», `/tickets`.
+_Avoid_: **Support case**, hub task, задача Hub, «заявка» без уточнения контекста
 
 **Hub announcement**:
 Объявление в Hub с аудиторией, версией и опциональным подтверждением прочтения.
@@ -189,6 +217,11 @@ _Avoid_: **Equipment record**, **Inventory host**
 - Один **Hub task** — много отчётов, вложений, комментариев; опционально **Hub task project** и **Hub task object**.
 - **1С-задание Документооборота** не копируется в **Hub task**: HUB-IT хранит только зашифрованное персональное подключение, аудит и идемпотентные команды, а окончательное состояние всегда перечитывает из 1С через **DMService**.
 - **Ticket** не является разновидностью **Hub task**; общей таблицы нет.
+- **Support case** не является **Hub task** или **Ticket**: он сам учитывается как выполненная работа поддержки и может лишь опционально ссылаться на отдельную долгую **Hub task**.
+- Один **Support case** связан ровно с одним **Support dialogue**; очередь/статус живут в support domain, сообщения — в chat domain.
+- **Support request type**, **Support classification** и текущая **Support queue** — независимые значения; **Support queue transfer** не переписывает первоначальный выбор пользователя.
+- Обычная IT-очередь выбирается по однозначно связанной карточке сотрудника 1С/ZUP; Inventory/ITINVENT описывают компьютер и не переопределяют город сотрудника.
+- **Potential security incident** доступен только явно допущенным участникам закрытой очереди ИБ; общая роль `admin` не должна автоматически открывать содержание.
 - **Hub notification** ссылается на сущности Hub через `entity_type` / `entity_id`; не дублирует **Chat message**.
 - **Equipment record** живёт только в **Equipment catalog (ITINVENT)** в рамке **ITINVENT database**.
 - **Selected ITINVENT database** определяет, к какому SQL-подключению идут запросы equipment/database API и бота.
@@ -237,6 +270,18 @@ _Avoid_: **Equipment record**, **Inventory host**
 > **Dev:** «Отправь уведомление в чат задачи.»  
 > **Эксперт:** **Chat message** в **Chat conversation** (`/chat`). **Hub notification** — колокольчик Hub, не Telegram.
 
+> **Dev:** «Специалист взял сообщение пользователя и хочет создать задачу для отчётности.»
+>
+> **Эксперт:** Это уже **Support case**: после закрытия работа учитывается за исполнителем. Отдельная **Hub task** нужна только для самостоятельной длительной работы, а не для дублирования обращения.
+
+> **Dev:** «Пользователь нажал “Техническая поддержка”, но выяснилось, что проблема в 1С.»
+>
+> **Эксперт:** Исправляем **Support classification** и выполняем **Support queue transfer** в `one_c`; **Support case** и переписка остаются теми же.
+
+> **Dev:** «Пользователь сообщил о подозрительном письме — это уже инцидент ИБ?»
+>
+> **Эксперт:** Пока это **Potential security incident** в закрытой очереди; информационная безопасность валидирует или отклоняет его после triage.
+
 > **Dev:** «Сколько страниц напечатал МФУ?»  
 > **Эксперт:** Контур **MFU device**, таблицы `system.mfu_*`, не **Equipment record** и не inventory.
 
@@ -244,6 +289,8 @@ _Avoid_: **Equipment record**, **Inventory host**
 
 - **Один PostgreSQL или два:** в `.env` часто `APP_DATABASE_URL=${CHAT_DATABASE_URL}` — один инстанс; при раздельном `CHAT_DATABASE_URL` таблицы `chat_*` могут жить на другом хосте. Для агентов: смотреть фактический URL, не предполагать полный набор таблиц `chat` на app-инстансе ([POSTGRES_APP_SCHEMA.md](./documentation/technical/POSTGRES_APP_SCHEMA.md)).
 - **Обязателен ли Hub task для каждого перемещения:** **Equipment transfer** в JSON может существовать без **Transfer act reminder** / **Hub task**; напоминания и задачи — отдельный workflow.
+- **«Заявка поддержки»:** использовать **Support case** / «обращение поддержки»; **Ticket** уже занят логистическим модулем `/tickets`.
+- **«Инцидент ИБ»:** до валидации использовать **Potential security incident**, чтобы не смешивать пользовательское сообщение и подтверждённый инцидент.
 
 ## Known limitations
 
@@ -258,6 +305,9 @@ _Avoid_: **Equipment record**, **Inventory host**
 - **2026-05-26:** три слоя данных: **Equipment catalog**, **App runtime store**, **Shared JSON ledger**; не говорить «база» без уточнения.
 - **2026-05-26:** web-доступ: **Web role** vs **Web permission** vs **Custom permission profile**.
 - **2026-05-26:** **ITINVENT branch** vs **Scan branch label** vs **Network branch**.
+- **2026-08-11:** **Support case** — самостоятельная рабочая единица, не обязательный предшественник **Hub task** и не **Ticket**.
+- **2026-08-11:** направление пользователя, внутренняя классификация и текущая очередь поддержки разделены; перевод не создаёт новое обращение.
+- **2026-08-11:** сообщения ИБ до валидации называются возможными инцидентами и требуют закрытой ACL без автоматического admin-доступа к содержанию.
 - **2026-05-26:** справочник PostgreSQL — `documentation/technical/POSTGRES_APP_SCHEMA.md` (+ DDL snapshot); авто-обновление после Alembic, `SKIP_PG_SCHEMA_DOCS` в `.env`.
 - **2026-05-26:** перемещения: **Equipment transfer** (JSON) + **Transfer act job** (PG) + **Transfer act reminder** / **Hub task**; не смешивать с правкой **Equipment record** в SQL.
 - **2026-05-26:** **ITINVENT database** / **Selected ITINVENT database** — только SQL Server catalog; не путать с `APP_DATABASE_URL`.

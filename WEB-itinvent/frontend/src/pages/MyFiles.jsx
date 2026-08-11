@@ -40,6 +40,10 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
+import FileActionsContextMenu, {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../components/fileActions/FileActionsContextMenu';
 import PageShell from '../components/layout/PageShell';
 import {
   formatMyFilesUploadLimitLabel,
@@ -231,6 +235,7 @@ export default function MyFiles() {
   const [readingDrop, setReadingDrop] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
   const [downloadingFileId, setDownloadingFileId] = useState('');
+  const [fileActionsMenu, setFileActionsMenu] = useState({ item: null, anchorPosition: null });
   const [shareDialog, setShareDialog] = useState({
     open: false,
     fileId: '',
@@ -512,6 +517,16 @@ export default function MyFiles() {
       setDownloadingFileId('');
     }
   }, [notifyApiError, notifySuccess, notifyWarning]);
+
+  const openFileActionsMenu = useCallback((event, item) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsMenu({ item, anchorPosition: getFileActionsAnchorPosition(event) });
+  }, []);
+
+  const closeFileActionsMenu = useCallback(() => {
+    setFileActionsMenu({ item: null, anchorPosition: null });
+  }, []);
 
   const openDocumentPreview = useCallback(async (item) => {
     const fileId = String(item?.id || '').trim();
@@ -813,6 +828,10 @@ export default function MyFiles() {
                   key={item.id}
                   variant="outlined"
                   data-testid={`my-files-card-${item.id}`}
+                  onContextMenu={(event) => openFileActionsMenu(event, item)}
+                  onKeyDown={(event) => {
+                    if (isFileActionsKeyboardShortcut(event)) openFileActionsMenu(event, item);
+                  }}
                   sx={{
                     ...getOfficePanelSx(ui),
                     p: 1.5,
@@ -955,6 +974,24 @@ export default function MyFiles() {
               );
             })}
           </Box>
+
+          <FileActionsContextMenu
+            open={Boolean(fileActionsMenu.anchorPosition)}
+            anchorPosition={fileActionsMenu.anchorPosition}
+            fileName={getMyFileName(fileActionsMenu.item)}
+            canDownload={Boolean(
+              fileActionsMenu.item
+              && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase()),
+            )}
+            busy={Boolean(
+              fileActionsMenu.item
+              && downloadingFileId === String(fileActionsMenu.item.id || ''),
+            )}
+            onClose={closeFileActionsMenu}
+            onDownload={fileActionsMenu.item
+              ? () => { void handleDownload(fileActionsMenu.item); }
+              : undefined}
+          />
         </Stack>
 
         <Dialog open={uploadDialogOpen} onClose={closeUploadDialog} maxWidth="sm" fullWidth>

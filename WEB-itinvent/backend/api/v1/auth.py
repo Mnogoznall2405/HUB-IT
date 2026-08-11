@@ -49,10 +49,11 @@ from backend.models.auth import (
     TaskDelegateLinksUpdateRequest,
     UserUpdateRequest,
     SessionInfo,
+    SessionLimitNormalizeRequest,
 )
 from backend.utils.security import decode_access_token, token_ttl_seconds
 from backend.services.authorization_service import authorization_service
-from backend.services.session_service import session_service
+from backend.services.session_service import new_client_device_id, normalize_client_device_id, session_service
 from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
@@ -379,10 +380,49 @@ def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: s
 
 _MOBILE_AUTH_CLIENT_HEADER = "x-auth-client"
 _MOBILE_AUTH_CLIENT_VALUE = "mobile"
+_CLIENT_DEVICE_COOKIE_NAME = "hubit_client_device_id"
+_CLIENT_DEVICE_HEADER_NAME = "x-client-device-id"
+_CLIENT_DEVICE_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 
 
 def _is_mobile_auth_client(request: Request) -> bool:
     return str(request.headers.get(_MOBILE_AUTH_CLIENT_HEADER) or "").strip().lower() == _MOBILE_AUTH_CLIENT_VALUE
+
+
+def _resolve_client_device_id(request: Request) -> str:
+    """Resolve a stable browser-profile/app-install identifier.
+
+    IP is deliberately excluded: it changes on normal networks and is not a
+    device identity. Web clients use an HttpOnly cookie; mobile clients send a
+    value persisted in SecureStore.
+    """
+    if _is_mobile_auth_client(request):
+        raw_value = request.headers.get(_CLIENT_DEVICE_HEADER_NAME)
+    else:
+        cookies = getattr(request, "cookies", {}) or {}
+        raw_value = cookies.get(_CLIENT_DEVICE_COOKIE_NAME)
+    return normalize_client_device_id(raw_value) or new_client_device_id()
+
+
+def _deliver_client_device_id(
+    request: Request,
+    response: Response,
+    client_device_id: str | None,
+) -> Optional[str]:
+    normalized = normalize_client_device_id(client_device_id) or _resolve_client_device_id(request)
+    if _is_mobile_auth_client(request):
+        return normalized
+    response.set_cookie(
+        key=_CLIENT_DEVICE_COOKIE_NAME,
+        value=normalized,
+        max_age=_CLIENT_DEVICE_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=bool(config.app.auth_cookie_secure),
+        samesite=_auth_cookie_samesite(),
+        domain=config.app.auth_cookie_domain,
+        path="/",
+    )
+    return None
 
 
 def _apply_auth_delivery(
@@ -415,6 +455,11 @@ def _build_login_response(
     response: Response,
     login_result: dict[str, Any],
 ) -> LoginResponse:
+    body_client_device_id = _deliver_client_device_id(
+        request,
+        response,
+        login_result.get("client_device_id"),
+    )
     body_access: Optional[str] = None
     body_refresh: Optional[str] = None
     if str(login_result.get("status") or "") == "authenticated":
@@ -436,6 +481,7 @@ def _build_login_response(
         login_challenge_id=login_result.get("login_challenge_id"),
         available_second_factors=list(login_result.get("available_second_factors") or []),
         trusted_devices_available=bool(login_result.get("trusted_devices_available")),
+        client_device_id=body_client_device_id,
     )
 
 
@@ -535,6 +581,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
     Login endpoint - authenticate user and return JWT token.
     """
     network_context = build_request_network_context(request)
+    client_device_id = _resolve_client_device_id(request)
     ip_address = network_context.client_ip
     lockout_key = _login_lockout_key(client_ip=ip_address, username=payload.username)
     remote_host = str(request.client.host).strip() if request.client and request.client.host else ""
@@ -592,6 +639,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
             ip_address=ip_address,
             user_agent=request.headers.get("user-agent", ""),
             network_zone=network_context.network_zone,
+            client_device_id=client_device_id,
         )
         if login_result["status"] == "authenticated":
             login_result = await run_in_threadpool(
@@ -602,7 +650,9 @@ async def login(payload: LoginRequest, request: Request, response: Response):
                 ip_address=ip_address,
                 user_agent=request.headers.get("user-agent", ""),
                 network_zone=network_context.network_zone,
+                client_device_id=client_device_id,
             )
+        login_result["client_device_id"] = login_result.get("client_device_id") or client_device_id
         if login_result["status"] == "authenticated":
             await run_in_threadpool(_apply_default_database, login_result["user"])
         logger.info(
@@ -834,6 +884,7 @@ async def passkey_login_verify(payload: PasskeyLoginVerifyRequest, request: Requ
             user_agent=request.headers.get("user-agent", ""),
             network_zone=network_context.network_zone,
             request_username=str(user.get("username") or ""),
+            client_device_id=_resolve_client_device_id(request),
         )
     except AuthSecurityError as exc:
         await run_in_threadpool(
@@ -856,6 +907,7 @@ async def passkey_login_verify(payload: PasskeyLoginVerifyRequest, request: Requ
             "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
             "user": result["user"],
             "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id"),
         },
     )
 
@@ -953,6 +1005,7 @@ async def enable_twofa(payload: TwoFactorSetupStartRequest, request: Request):
 
 @router.post("/verify-2fa", response_model=TwoFactorSetupVerifyResponse)
 async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
     await run_in_threadpool(
         _enforce_rate_limit,
         namespace="auth_verify_twofa_setup",
@@ -966,6 +1019,7 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
             auth_security_service.finalize_totp_enrollment,
             payload.login_challenge_id,
             totp_code=payload.totp_code,
+            client_device_id=client_device_id,
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -980,6 +1034,7 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
             "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
             "user": result["user"],
             "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
         },
     )
     await run_in_threadpool(_apply_default_database, result["user"])
@@ -990,12 +1045,14 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
         token_type=login_response.token_type,
         user=login_response.user,
         session_id=login_response.session_id,
+        client_device_id=login_response.client_device_id,
         backup_codes=list(result.get("backup_codes") or []),
     )
 
 
 @router.post("/verify-2fa-login", response_model=LoginResponse)
 async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
     await run_in_threadpool(
         _enforce_rate_limit,
         namespace="auth_verify_twofa_login",
@@ -1010,6 +1067,7 @@ async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Requ
             payload.login_challenge_id,
             totp_code=payload.totp_code,
             backup_code=payload.backup_code,
+            client_device_id=client_device_id,
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1025,6 +1083,7 @@ async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Requ
             "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
             "user": result["user"],
             "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
         },
     )
 
@@ -1182,6 +1241,7 @@ def _session_info_from_row(item: dict[str, Any]) -> SessionInfo:
     payload = dict(item)
     payload["absolute_expires_at"] = absolute
     payload["refresh_expires_at"] = absolute
+    payload.pop("client_device_key_hash", None)
     return SessionInfo(**payload)
 
 
@@ -1357,6 +1417,7 @@ async def trusted_device_auth_options(payload: TrustedDeviceAuthOptionsRequest, 
 
 @router.post("/trusted-devices/auth/verify", response_model=LoginResponse)
 async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
     _enforce_rate_limit(
         namespace="auth_trusted_device_verify",
         key=str(payload.login_challenge_id or ""),
@@ -1390,7 +1451,11 @@ async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, re
             device=device,
         )
         trusted_device_service.update_sign_count(str(device.get("id") or ""), int(verification.get("new_sign_count") or 0))
-        result = auth_security_service.finalize_trusted_device_login(payload.login_challenge_id, device=device)
+        result = auth_security_service.finalize_trusted_device_login(
+            payload.login_challenge_id,
+            device=device,
+            client_device_id=client_device_id,
+        )
     except (TrustedDeviceServiceError, AuthSecurityError) as exc:
         auth_security_service.delete_login_challenge(payload.login_challenge_id)
         trusted_device_service.audit_event(
@@ -1412,6 +1477,7 @@ async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, re
             "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
             "user": result["user"],
             "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
         },
     )
 
@@ -1521,6 +1587,22 @@ async def cleanup_sessions(
         str(item.get("session_id") or "").strip()
         for item in active_sessions
     ])
+    return result
+
+
+@router.post("/sessions/normalize-limit")
+async def normalize_session_limit(
+    payload: SessionLimitNormalizeRequest = Body(default_factory=SessionLimitNormalizeRequest),
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """Preview or apply the active-session limit for every user.
+
+    The default is intentionally a dry-run. Existing sessions are not changed
+    until an administrator explicitly sends ``{"apply": true}``.
+    """
+    result = session_service.normalize_active_session_limits(apply=bool(payload.apply))
+    for closed_session_id in result.pop("_closed_session_ids", []) or []:
+        session_auth_context_service.delete_session_context(str(closed_session_id))
     return result
 
 

@@ -2,6 +2,11 @@ import { settingsAPI } from '../api/client';
 import { CHAT_WS_ENABLED } from './chatFeature';
 import { chatSocket } from './chatSocket';
 import { emitAgentDebugLog } from './debugClientLog';
+import {
+  getDesktopWindowForeground,
+  isDesktopNotificationAvailable,
+  showDesktopNotification,
+} from './desktopBridge';
 import { isNativeShellRuntime } from './platform';
 import { getBrowserNotificationPermission, isBrowserNotificationSupported, requestBrowserNotificationPermission } from './windowsNotifications';
 
@@ -195,8 +200,9 @@ function markMessageNotificationShown(messageId) {
 }
 
 function getSnapshot() {
-  const permission = getBrowserNotificationPermission();
-  const supported = isBrowserNotificationSupported();
+  const desktopNotificationAvailable = isDesktopNotificationAvailable();
+  const permission = desktopNotificationAvailable ? 'granted' : getBrowserNotificationPermission();
+  const supported = desktopNotificationAvailable || isBrowserNotificationSupported();
   const ios = isIosLike();
   const android = isAndroidLike();
   const standalone = isStandalone();
@@ -310,9 +316,7 @@ export function requestChatPushSyncDrain() {
 export function syncActiveChatConversationToServiceWorker(conversationId = '') {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
   const normalizedConversationId = String(conversationId || '').trim();
-  const visible = typeof document !== 'undefined'
-    && document.visibilityState === 'visible'
-    && Boolean(normalizedConversationId);
+  const visible = isNotificationSurfaceVisible() && Boolean(normalizedConversationId);
   navigator.serviceWorker.ready
     .then((registration) => {
       const target = registration?.active || navigator.serviceWorker.controller;
@@ -325,6 +329,14 @@ export function syncActiveChatConversationToServiceWorker(conversationId = '') {
     .catch(() => {
       // Ignore active-conversation sync failures.
     });
+}
+
+export function isNotificationSurfaceVisible() {
+  const desktopWindowForeground = getDesktopWindowForeground();
+  if (typeof desktopWindowForeground === 'boolean') {
+    return desktopWindowForeground;
+  }
+  return typeof document !== 'undefined' && document.visibilityState === 'visible';
 }
 
 export function applyChatPushDiagnostic(message = {}) {
@@ -461,6 +473,11 @@ export function setChatNotificationsEnabled(enabled) {
 }
 
 export async function requestChatNotificationPermission() {
+  if (isDesktopNotificationAvailable()) {
+    emitChange();
+    return 'granted';
+  }
+
   const result = await requestBrowserNotificationPermission();
   emitChange();
   return result;
@@ -605,10 +622,35 @@ export function createChatSystemNotification({ messageId, title, body, conversat
   if (!state.enabled || state.permission !== 'granted' || !state.supported) return null;
   if (hasShownMessageNotification(normalizedMessageId)) return null;
 
+  const normalizedTitle = String(title || 'Новое сообщение')
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 128) || 'Новое сообщение';
+  const normalizedBody = String(body || 'Откройте чат, чтобы посмотреть сообщение.')
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 512) || 'Откройте чат, чтобы посмотреть сообщение.';
+  const route = buildChatNotificationRoute({
+    conversationId: normalizedConversationId,
+    messageId: normalizedMessageId,
+  });
+
+  if (isNativeShellRuntime() && showDesktopNotification({
+    id: buildChatNotificationTag(normalizedMessageId),
+    title: normalizedTitle,
+    body: normalizedBody,
+    route,
+  })) {
+    markMessageNotificationShown(normalizedMessageId);
+    return { queued: false, native: true, messageId: normalizedMessageId };
+  }
+
   enqueueLocalChatNotification(() => {
     try {
-      const notification = new window.Notification(String(title || 'Новое сообщение').trim() || 'Новое сообщение', {
-        body: String(body || 'Откройте чат, чтобы посмотреть сообщение.').trim() || 'Откройте чат, чтобы посмотреть сообщение.',
+      const notification = new window.Notification(normalizedTitle, {
+        body: normalizedBody,
         tag: buildChatNotificationTag(normalizedMessageId),
         renotify: false,
         icon: '/pwa-192.png',
@@ -626,10 +668,7 @@ export function createChatSystemNotification({ messageId, title, body, conversat
           // Ignore focus failures.
         }
         if (typeof onNavigate === 'function') {
-          onNavigate(buildChatNotificationRoute({
-            conversationId: normalizedConversationId,
-            messageId: normalizedMessageId,
-          }));
+          onNavigate(route);
         }
       };
       return notification;

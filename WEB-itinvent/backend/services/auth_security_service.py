@@ -17,7 +17,11 @@ from backend.services.authorization_service import authorization_service
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 from backend.services.security_email_service import security_email_service
 from backend.services.session_auth_context_service import normalize_exchange_login, session_auth_context_service
-from backend.services.session_service import session_service, _build_device_label
+from backend.services.session_service import (
+    normalize_client_device_id,
+    session_service,
+    _build_device_label,
+)
 from backend.services.trusted_device_service import trusted_device_service
 from backend.services.twofa_service import TwoFactorServiceError, twofa_service
 from backend.services.user_service import user_service
@@ -132,6 +136,7 @@ class AuthSecurityService:
         ip_address: str,
         user_agent: str,
         network_zone: str,
+        client_device_id: str | None = None,
         twofa_policy: str | None = None,
         twofa_required_for_current_request: bool | None = None,
     ) -> dict[str, Any]:
@@ -152,6 +157,7 @@ class AuthSecurityService:
             "user_agent": str(user_agent or "").strip(),
             "created_at": _utc_iso(),
             "network_zone": effective_zone,
+            "client_device_id": normalize_client_device_id(client_device_id),
             "twofa_policy": effective_policy,
             "twofa_required_for_current_request": bool(twofa_required_for_current_request),
             "available_second_factors": methods,
@@ -233,6 +239,7 @@ class AuthSecurityService:
         ip_address: str,
         user_agent: str,
         network_zone: str,
+        client_device_id: str | None = None,
     ) -> dict[str, Any]:
         effective_policy = resolve_twofa_policy()
         twofa_required_for_current_request = is_twofa_required_for_zone(network_zone, policy=effective_policy)
@@ -250,6 +257,7 @@ class AuthSecurityService:
                 ip_address=ip_address,
                 user_agent=user_agent,
                 network_zone=network_zone,
+                client_device_id=client_device_id,
                 twofa_policy=effective_policy,
                 twofa_required_for_current_request=twofa_required_for_current_request,
             )
@@ -288,6 +296,7 @@ class AuthSecurityService:
         ip_address: str,
         user_agent: str,
         network_zone: str,
+        client_device_id: str | None = None,
     ) -> dict[str, Any]:
         effective_policy = resolve_twofa_policy()
         challenge = self.create_login_challenge(
@@ -297,6 +306,7 @@ class AuthSecurityService:
             ip_address=ip_address,
             user_agent=user_agent,
             network_zone=network_zone,
+            client_device_id=client_device_id,
             twofa_policy=effective_policy,
             twofa_required_for_current_request=False,
         )
@@ -381,7 +391,13 @@ class AuthSecurityService:
                     return True
         return False
 
-    def finalize_totp_enrollment(self, challenge_id: str, *, totp_code: str) -> dict[str, Any]:
+    def finalize_totp_enrollment(
+        self,
+        challenge_id: str,
+        *,
+        totp_code: str,
+        client_device_id: str | None = None,
+    ) -> dict[str, Any]:
         challenge = self.consume_login_challenge(challenge_id)
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
         if not user:
@@ -409,6 +425,7 @@ class AuthSecurityService:
             user=updated_user,
             auth_method="totp_setup",
             device_id=None,
+            client_device_id=client_device_id,
         )
         result["backup_codes"] = codes
         return result
@@ -419,6 +436,7 @@ class AuthSecurityService:
         *,
         totp_code: str | None = None,
         backup_code: str | None = None,
+        client_device_id: str | None = None,
     ) -> dict[str, Any]:
         challenge = self.consume_login_challenge(challenge_id)
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
@@ -444,7 +462,13 @@ class AuthSecurityService:
             auth_method = "backup_code"
         else:
             raise AuthSecurityError("Укажите код приложения или backup-код")
-        return self._complete_login(challenge=challenge, user=user, auth_method=auth_method, device_id=None)
+        return self._complete_login(
+            challenge=challenge,
+            user=user,
+            auth_method=auth_method,
+            device_id=None,
+            client_device_id=client_device_id,
+        )
 
     def issue_tokens(self, *, user: dict, session_id: str, device_id: str) -> dict[str, Any]:
         access_ttl = self._access_ttl()
@@ -525,15 +549,20 @@ class AuthSecurityService:
         user: dict,
         auth_method: str,
         device_id: str | None,
+        client_device_id: str | None = None,
     ) -> dict[str, Any]:
-        session_id = uuid.uuid4().hex
+        requested_session_id = uuid.uuid4().hex
+        effective_client_device_id = normalize_client_device_id(
+            client_device_id or challenge.get("client_device_id")
+        )
+        session_id = requested_session_id
         session_expires = _now_utc() + self._refresh_ttl()
         trusted_device_id: str | None = None
         raw_device_id = str(device_id or "").strip()
         if raw_device_id.startswith("trusted:"):
             trusted_device_id = raw_device_id.split(":", 1)[1].strip() or None
-        session_service.create_session(
-            session_id=session_id,
+        created_session = session_service.create_session(
+            session_id=requested_session_id,
             user_id=int(user.get("id") or 0),
             username=str(user.get("username") or ""),
             role=str(user.get("role") or "viewer"),
@@ -542,7 +571,14 @@ class AuthSecurityService:
             expires_at=session_expires.isoformat(),
             trusted_device_id=trusted_device_id,
             login_network_zone=str(challenge.get("network_zone") or "").strip().lower() or None,
+            client_device_id=effective_client_device_id or None,
         )
+        session_reused = False
+        if isinstance(created_session, dict):
+            session_id = str(created_session.get("session_id") or requested_session_id)
+            session_reused = bool(created_session.get("_session_reused")) or session_id != requested_session_id
+            for closed_session_id in created_session.get("_closed_session_ids") or []:
+                session_auth_context_service.delete_session_context(str(closed_session_id))
         auth_source = str(user.get("auth_source") or "local").strip().lower() or "local"
         password_enc = str(challenge.get("password_enc") or "").strip()
         login_password = ""
@@ -558,7 +594,8 @@ class AuthSecurityService:
                     expires_at=session_expires,
                 )
             except Exception as exc:
-                session_service.close_session(session_id)
+                if not session_reused:
+                    session_service.close_session(session_id)
                 raise AuthSecurityError(f"Failed to initialize mail session context: {exc}") from exc
             self._sync_ad_primary_mailbox_after_password_login(
                 user=user,
@@ -588,10 +625,17 @@ class AuthSecurityService:
             "login_challenge_id": None,
             "available_second_factors": [],
             "trusted_devices_available": False,
+            "client_device_id": effective_client_device_id or None,
             **tokens,
         }
 
-    def finalize_trusted_device_login(self, challenge_id: str, *, device: dict[str, Any]) -> dict[str, Any]:
+    def finalize_trusted_device_login(
+        self,
+        challenge_id: str,
+        *,
+        device: dict[str, Any],
+        client_device_id: str | None = None,
+    ) -> dict[str, Any]:
         challenge = self.consume_login_challenge(challenge_id)
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
         if not user:
@@ -602,6 +646,7 @@ class AuthSecurityService:
             user=user,
             auth_method="trusted_device",
             device_id=f"trusted:{str(device.get('id') or '').strip()}",
+            client_device_id=client_device_id,
         )
 
     def complete_passkey_login(
@@ -613,6 +658,7 @@ class AuthSecurityService:
         user_agent: str,
         network_zone: str,
         request_username: str | None = None,
+        client_device_id: str | None = None,
     ) -> dict[str, Any]:
         effective_policy = resolve_twofa_policy()
         effective_zone = str(network_zone or "external").strip().lower() or "external"
@@ -630,12 +676,14 @@ class AuthSecurityService:
                 "user_agent": str(user_agent or "").strip(),
                 "created_at": _utc_iso(),
                 "network_zone": effective_zone,
+                "client_device_id": normalize_client_device_id(client_device_id),
                 "twofa_policy": effective_policy,
                 "twofa_required_for_current_request": bool(twofa_required_for_current_request),
             },
             user=user,
             auth_method="passkey",
             device_id=f"trusted:{str(device.get('id') or '').strip()}",
+            client_device_id=client_device_id,
         )
 
     def refresh_session_tokens(

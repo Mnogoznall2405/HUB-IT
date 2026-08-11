@@ -314,6 +314,7 @@ class AppSessionRecord(AppBase):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     trusted_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    client_device_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     login_network_zone: Mapped[str | None] = mapped_column(String(16), nullable=True)
     device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

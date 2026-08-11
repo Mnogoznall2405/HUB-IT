@@ -1,0 +1,92 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="HUB Desktop"
+           Manufacturer="HUB-IT"
+           Version="$(DesktopVersion)"
+           UpgradeCode="E6CBB09A-A4C5-458B-995B-544B999F4A1F"
+           Scope="perMachine"
+           Language="1049"
+           Codepage="1251"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="Windows-клиент корпоративного портала HUB"
+                        Manufacturer="HUB-IT" />
+
+    <MajorUpgrade DowngradeErrorMessage="Установлена более новая версия HUB Desktop."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://hubit.zsgp.ru/" />
+    <Property Id="ARPCONTACT" Value="HUB-IT" />
+    <Property Id="ARPPRODUCTICON" Value="HubDesktop.ico" />
+    <Icon Id="HubDesktop.ico" SourceFile="$(IconPath)" />
+
+    <Property Id="WINDOWSBUILDNUMBER">
+      <RegistrySearch Id="FindWindowsBuildNumber"
+                      Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+
+    <Launch Condition="VersionNT64 AND WINDOWSBUILDNUMBER &gt;= 17763"
+            Message="HUB Desktop поддерживает только 64-разрядные Windows 10 и Windows 11." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="HUBITFOLDER" Name="HUB-IT">
+        <Directory Id="INSTALLFOLDER" Name="HUB Desktop" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDirectory" Name="HUB-IT" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.Publish)\**">
+        <Exclude Files="!(bindpath.Publish)\**\*.pdb" />
+        <Exclude Files="!(bindpath.Publish)\HUB.Desktop.exe" />
+      </Files>
+    </ComponentGroup>
+
+    <Component Id="MainExecutable"
+               Directory="INSTALLFOLDER"
+               Guid="BA7E279C-9E40-47D6-9FE7-2BDBD9FCAB4A">
+      <File Id="HubDesktopExecutable"
+            Source="!(bindpath.Publish)\HUB.Desktop.exe"
+            KeyPath="yes">
+        <Shortcut Id="HubDesktopStartMenuShortcut"
+                  Directory="ProgramMenuDirectory"
+                  Name="HUB Desktop"
+                  Description="Корпоративный портал HUB"
+                  Advertise="yes"
+                  Icon="HubDesktop.ico"
+                  IconIndex="0"
+                  WorkingDirectory="INSTALLFOLDER" />
+      </File>
+      <RemoveFolder Id="RemoveProgramMenuFolder"
+                    Directory="ProgramMenuDirectory"
+                    On="uninstall" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\HUB-IT\Desktop"
+                     Name="InstallerVersion"
+                     Type="string"
+                     Value="$(DesktopVersion)" />
+    </Component>
+
+    <Feature Id="Complete" Title="HUB Desktop" Level="1">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+
+    <util:CloseApplication Id="CloseHubDesktop"
+                           Target="HUB.Desktop.exe"
+                           Description="HUB Desktop необходимо закрыть для продолжения установки."
+                           CloseMessage="yes"
+                           ElevatedCloseMessage="yes"
+                           Timeout="5"
+                           TerminateProcess="0"
+                           RebootPrompt="no" />
+  </Package>
+</Wix>

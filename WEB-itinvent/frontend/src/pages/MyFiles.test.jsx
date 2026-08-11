@@ -252,6 +252,20 @@ describe('MyFiles page', () => {
     expect(screen.getByTestId('my-files-share-copied-alert')).toHaveTextContent('Скопировано');
   });
 
+  it('downloads a ready file directly from its right-click menu', async () => {
+    mockListFiles.mockResolvedValue({ items: [readyFile] });
+    renderPage();
+
+    const card = await screen.findByTestId('my-files-card-file-1');
+    fireEvent.contextMenu(card, { clientX: 120, clientY: 80 });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Скачать' }));
+
+    await waitFor(() => expect(mockCreateDownloadGrant).toHaveBeenCalledWith('file-1'));
+    expect(mockTriggerNativeDownload).toHaveBeenCalledWith(
+      'http://localhost/api/v1/my-files/download-grant/test-token',
+    );
+  });
+
   it('treats a dropped folder as a zip archive upload', async () => {
     const nested = new File(['hello'], 'readme.txt', { type: 'text/plain' });
     Object.defineProperty(nested, 'webkitRelativePath', {

@@ -6,6 +6,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Desktop", "Hub.Desktop\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Desktop.Tests", "Hub.Desktop.Tests\Hub.Desktop.Tests.csproj", "{5B143497-969B-420F-834C-2E6BC6DAD841}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Desktop.UpdateCore", "Hub.Desktop.UpdateCore\Hub.Desktop.UpdateCore.csproj", "{81B2C778-722B-4A32-8BEE-A3E2F5D5044C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Desktop.UpdateRunner", "Hub.Desktop.UpdateRunner\Hub.Desktop.UpdateRunner.csproj", "{F0FE6CB3-3B5D-4B86-B8A8-F359A8F3A965}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,5 +24,13 @@ Global
 		{5B143497-969B-420F-834C-2E6BC6DAD841}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5B143497-969B-420F-834C-2E6BC6DAD841}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5B143497-969B-420F-834C-2E6BC6DAD841}.Release|Any CPU.Build.0 = Release|Any CPU
+		{81B2C778-722B-4A32-8BEE-A3E2F5D5044C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{81B2C778-722B-4A32-8BEE-A3E2F5D5044C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{81B2C778-722B-4A32-8BEE-A3E2F5D5044C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{81B2C778-722B-4A32-8BEE-A3E2F5D5044C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F0FE6CB3-3B5D-4B86-B8A8-F359A8F3A965}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F0FE6CB3-3B5D-4B86-B8A8-F359A8F3A965}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F0FE6CB3-3B5D-4B86-B8A8-F359A8F3A965}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F0FE6CB3-3B5D-4B86-B8A8-F359A8F3A965}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

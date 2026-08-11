@@ -38,6 +38,7 @@ describe('chatNotifications', () => {
 
   beforeEach(() => {
     vi.resetModules();
+    delete window.chrome;
     window.localStorage.clear();
     notificationInstances = [];
     mockGetPushConfig.mockReset();
@@ -158,6 +159,50 @@ describe('chatNotifications', () => {
 
     notificationInstances[0].onclick?.();
     expect(onNavigate).toHaveBeenCalledWith('/chat?conversation=conv-1&message=msg-1');
+  });
+
+  it('routes foreground notifications to the native desktop bridge without browser duplicates', async () => {
+    const listeners = new Set();
+    const transport = {
+      addEventListener: vi.fn((type, listener) => {
+        if (type === 'message') listeners.add(listener);
+      }),
+      postMessage: vi.fn(),
+    };
+    Object.defineProperty(window, 'chrome', {
+      configurable: true,
+      value: { webview: transport },
+    });
+
+    const { initializeDesktopBridge } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    listeners.forEach((listener) => listener({
+      data: {
+        type: 'desktop.hostReady',
+        version: 1,
+        capabilities: { notifications: true },
+      },
+    }));
+    await initialization;
+
+    const { createChatSystemNotification } = await import('./chatNotifications');
+    const result = createChatSystemNotification({
+      messageId: 'msg-42',
+      title: 'Иван\nПетров',
+      body: 'Новое\nсообщение',
+      conversationId: 'conv-7',
+    });
+
+    expect(result).toEqual({ queued: false, native: true, messageId: 'msg-42' });
+    expect(notificationInstances).toHaveLength(0);
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'notification.show',
+      version: 1,
+      id: 'chat:msg:msg-42',
+      title: 'Иван Петров',
+      body: 'Новое сообщение',
+      route: '/chat?conversation=conv-7&message=msg-42',
+    });
   });
 
   it('prefers external push delivery when subscribed or background-capable', async () => {

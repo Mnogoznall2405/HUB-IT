@@ -22,3 +22,4 @@ export const API_V1_BASE = trimTrailingSlash(
 
 export const MOBILE_AUTH_HEADER = 'X-Auth-Client';
 export const MOBILE_AUTH_VALUE = 'mobile';
+export const CLIENT_DEVICE_HEADER = 'X-Client-Device-ID';

@@ -111,6 +111,7 @@ class SessionConfig:
     refresh_rotation_grace_seconds: int = 15
     history_retention_days: int = 14
     cleanup_min_interval_seconds: int = 300
+    max_active_per_user: int = 3
 
 
 def _clamp_min_int(value: object, *, default: int, minimum: int) -> int:
@@ -403,6 +404,11 @@ class Config:
                 ),
                 history_retention_days=int(os.getenv("SESSION_HISTORY_RETENTION_DAYS", "14")),
                 cleanup_min_interval_seconds=int(os.getenv("SESSION_CLEANUP_MIN_INTERVAL_SECONDS", "300")),
+                max_active_per_user=_clamp_min_int(
+                    os.getenv("SESSION_MAX_ACTIVE_PER_USER", "3"),
+                    default=3,
+                    minimum=1,
+                ),
             ),
             app=AppConfig(
                 app_name="IT-invent Web API",
@@ -551,6 +557,7 @@ def session_policy_snapshot() -> dict:
         "idle_timeout_internal_days": int(config.session.idle_timeout_internal_days),
         "refresh_rotation_grace_seconds": int(config.session.refresh_rotation_grace_seconds),
         "history_retention_days": int(config.session.history_retention_days),
+        "max_active_per_user": int(config.session.max_active_per_user),
     }
 
 

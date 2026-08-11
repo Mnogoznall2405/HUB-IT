@@ -1,3 +1,5 @@
+import { isDesktopNotificationAvailable, showDesktopNotification } from './desktopBridge';
+
 export const WINDOWS_NOTIFICATIONS_ENABLED_KEY = 'itinvent_windows_notifications_enabled';
 export const WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY = 'itinvent_windows_notifications_explicitly_set';
 export const WINDOWS_NOTIFICATIONS_SHOWN_KEY = 'itinvent_windows_notifications_shown_ids';
@@ -54,11 +56,20 @@ function persistShownNotificationIds(ids) {
 }
 
 function truncateNotificationText(value, { fallback = '', maxLength = 120 } = {}) {
-  const normalized = String(value || '').trim() || String(fallback || '').trim();
+  const normalized = (String(value || '').trim() || String(fallback || '').trim())
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
   if (!normalized) return '';
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 1) return normalized.slice(0, maxLength);
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function buildDesktopNotificationId(prefix, value) {
+  const normalizedPrefix = String(prefix || 'system').replace(/[^A-Za-z0-9._:-]/gu, '_');
+  const normalizedValue = String(value || '').replace(/[^A-Za-z0-9._:-]/gu, '_');
+  return `${normalizedPrefix}:${normalizedValue}`.slice(0, 128);
 }
 
 export function getMailNotificationDisplay(item) {
@@ -102,9 +113,10 @@ export function hasExplicitWindowsNotificationsPreference() {
 }
 
 export function getWindowsNotificationState() {
+  const desktopNotificationAvailable = isDesktopNotificationAvailable();
   return {
-    supported: isBrowserNotificationSupported(),
-    permission: getBrowserNotificationPermission(),
+    supported: desktopNotificationAvailable || isBrowserNotificationSupported(),
+    permission: desktopNotificationAvailable ? 'granted' : getBrowserNotificationPermission(),
     enabled: isWindowsNotificationsEnabled(),
     explicitlySet: hasExplicitWindowsNotificationsPreference(),
   };
@@ -127,8 +139,8 @@ export function setWindowsNotificationsEnabled(enabled) {
 }
 
 export function autoEnableWindowsNotificationsIfGranted() {
-  if (!isBrowserNotificationSupported()) return false;
-  if (getBrowserNotificationPermission() !== 'granted') return false;
+  const state = getWindowsNotificationState();
+  if (!state.supported || state.permission !== 'granted') return false;
   if (hasExplicitWindowsNotificationsPreference()) return false;
   writeStorage(WINDOWS_NOTIFICATIONS_ENABLED_KEY, '1');
   writeStorage(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY, '1');
@@ -253,8 +265,6 @@ export function getMailSystemNotificationId(item) {
 export function createHubSystemNotification(item, { onNavigate } = {}) {
   const normalizedId = String(item?.id || '').trim();
   if (!normalizedId) return null;
-  if (!isBrowserNotificationSupported()) return null;
-  if (getBrowserNotificationPermission() !== 'granted') return null;
   if (hasShownHubSystemNotification(normalizedId)) return null;
 
   const rawTitle = String(item?.title || '').trim();
@@ -262,6 +272,22 @@ export function createHubSystemNotification(item, { onNavigate } = {}) {
   const title = rawTitle || 'Новое уведомление';
   const body = rawBody || rawTitle || 'Откройте центр управления для просмотра деталей.';
   const navigateTo = getHubNotificationNavigateTo(item);
+
+  if (isDesktopNotificationAvailable() && showDesktopNotification({
+    id: buildDesktopNotificationId('hub', normalizedId),
+    title: truncateNotificationText(title, { fallback: 'Новое уведомление', maxLength: 128 }),
+    body: truncateNotificationText(body, {
+      fallback: 'Откройте HUB, чтобы посмотреть уведомление.',
+      maxLength: 512,
+    }),
+    route: navigateTo,
+  })) {
+    markHubSystemNotificationShown(normalizedId);
+    return { native: true, notificationId: normalizedId };
+  }
+
+  if (!isBrowserNotificationSupported()) return null;
+  if (getBrowserNotificationPermission() !== 'granted') return null;
 
   try {
     const notification = new window.Notification(title, {
@@ -295,8 +321,6 @@ export function createMailSystemNotification(item, { onNavigate } = {}) {
   const normalizedId = String(item?.id || '').trim();
   const notificationId = getMailSystemNotificationId(item);
   if (!normalizedId || !notificationId) return null;
-  if (!isBrowserNotificationSupported()) return null;
-  if (getBrowserNotificationPermission() !== 'granted') return null;
   if (hasShownMailSystemNotification(notificationId)) return null;
 
   const { title, body } = getMailNotificationDisplay(item);
@@ -314,6 +338,19 @@ export function createMailSystemNotification(item, { onNavigate } = {}) {
     routeParts.push(`mailbox_id=${encodeURIComponent(mailboxId)}`);
   }
   const route = `/mail?${routeParts.join('&')}`;
+
+  if (isDesktopNotificationAvailable() && showDesktopNotification({
+    id: buildDesktopNotificationId('mail', notificationId),
+    title: truncateNotificationText(title, { fallback: 'Новое письмо', maxLength: 128 }),
+    body: truncateNotificationText(body, { fallback: '(без темы)', maxLength: 512 }),
+    route,
+  })) {
+    markMailSystemNotificationShown(notificationId);
+    return { native: true, notificationId };
+  }
+
+  if (!isBrowserNotificationSupported()) return null;
+  if (getBrowserNotificationPermission() !== 'granted') return null;
 
   try {
     const notification = new window.Notification(title, {

@@ -16,6 +16,11 @@ export const authSessionsAPI = {
     return response.data;
   },
 
+  normalizeSessionLimit: async (apply = false) => {
+    const response = await apiClient.post('/auth/sessions/normalize-limit', { apply: Boolean(apply) });
+    return response.data;
+  },
+
   purgeInactiveSessions: async () => {
     const response = await apiClient.post('/auth/sessions/purge-inactive');
     return response.data;

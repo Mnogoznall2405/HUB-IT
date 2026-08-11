@@ -8,6 +8,7 @@
 
 - [PostgreSQL app/chat schema](./POSTGRES_APP_SCHEMA.md) и [DDL snapshot](./POSTGRES_APP_SCHEMA_DDL.md)
 - [Chat backend architecture](./CHAT_BACKEND_ARCHITECTURE.md)
+- [Support chat architecture](./SUPPORT_CHAT_ARCHITECTURE.md)
 - [Chat performance и observability](./CHAT_PERF_OBSERVABILITY.md)
 - [Scan architecture](./SCAN_ARCHITECTURE.md) и [Scan PostgreSQL migration](./SCAN_POSTGRES_MIGRATION.md)
 - [IIS deployment](./IIS_DEPLOYMENT_WEB.md)

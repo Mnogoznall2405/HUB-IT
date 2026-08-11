@@ -392,13 +392,17 @@ export const AuthProvider = ({ children }) => {
       } catch (err) {
         console.error('Logout error:', err);
       } finally {
+        const lastUsername = String(user?.username || '').trim();
+        if (lastUsername) {
+          localStorage.setItem('hubit.login.last-username', lastUsername);
+        }
         // Always clear local user cache
         localStorage.removeItem('user');
         clearAllMailRecentCache();
         setUser(null);
         window.dispatchEvent(new Event('auth-changed'));
       }
-  }, []);
+  }, [user?.username]);
 
   /**
    * Check if user is authenticated

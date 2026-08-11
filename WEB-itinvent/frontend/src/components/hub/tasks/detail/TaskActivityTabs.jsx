@@ -40,6 +40,10 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ThumbUpOffAltIcon from '@mui/icons-material/ThumbUpOffAlt';
 import MarkdownRenderer from '../../MarkdownRenderer';
 import OverflowMenu from '../../../common/OverflowMenu';
+import FileActionsContextMenu, {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../../../fileActions/FileActionsContextMenu';
 import {
   TASK_DETAIL_TABS,
   getDefaultTaskDetailTab,
@@ -94,7 +98,18 @@ export function TaskActivityTabs({
   activityLoading = false,
 }) {
   const commentsRef = useRef(null);
+  const [fileActionsMenu, setFileActionsMenu] = useState({ attachment: null, anchorPosition: null });
   const effectiveActiveTab = hideFilesTab && activeTab === 'files' ? 'comments' : activeTab;
+
+  const openFileActionsMenu = (event, attachment) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsMenu({ attachment, anchorPosition: getFileActionsAnchorPosition(event) });
+  };
+
+  const closeFileActionsMenu = () => {
+    setFileActionsMenu({ attachment: null, anchorPosition: null });
+  };
 
   useEffect(() => {
     if (effectiveActiveTab !== 'comments' || !commentsRef.current) return;
@@ -235,6 +250,10 @@ export function TaskActivityTabs({
                   <ListItem
                     key={attachment.id}
                     disableGutters
+                    onContextMenu={(event) => openFileActionsMenu(event, attachment)}
+                    onKeyDown={(event) => {
+                      if (isFileActionsKeyboardShortcut(event)) openFileActionsMenu(event, attachment);
+                    }}
                     secondaryAction={(
                       <Stack direction="row" spacing={0.25}>
                         <IconButton
@@ -320,6 +339,17 @@ export function TaskActivityTabs({
             )}
           </Stack>
         )}
+
+        <FileActionsContextMenu
+          open={Boolean(fileActionsMenu.anchorPosition)}
+          anchorPosition={fileActionsMenu.anchorPosition}
+          fileName={fileActionsMenu.attachment?.file_name || ''}
+          canDownload={Boolean(fileActionsMenu.attachment)}
+          onClose={closeFileActionsMenu}
+          onDownload={fileActionsMenu.attachment
+            ? () => onDownloadAttachment(fileActionsMenu.attachment)
+            : undefined}
+        />
       </Box>
     </Box>
   );

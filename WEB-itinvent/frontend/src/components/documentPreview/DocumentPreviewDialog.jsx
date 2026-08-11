@@ -20,10 +20,13 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import RotateLeftRoundedIcon from '@mui/icons-material/RotateLeftRounded';
 import RotateRightRoundedIcon from '@mui/icons-material/RotateRightRounded';
+import { requestDesktopOpenDownloadedFile } from '../../lib/desktopBridge';
+import { isNativeShellRuntime } from '../../lib/platform';
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
 const MailExcelPreviewGrid = lazy(() => import('../mail/MailExcelPreviewGrid'));
@@ -62,6 +65,7 @@ export default function DocumentPreviewDialog({
   const isExcel = sourceKind === 'excel' || kind === 'office_excel';
   const hasExcelTable = Boolean(isExcel && excelWorkbook);
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
+  const canOpenInDesktopApplication = Boolean(onDownloadOriginal && canDownloadOriginal && isNativeShellRuntime());
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
   const [mode, setMode] = useState(preferredMode);
   const [rotation, setRotation] = useState(0);
@@ -259,6 +263,24 @@ export default function DocumentPreviewDialog({
                   </IconButton>
                 </span>
               </Tooltip>
+            ) : null}
+            {onDownloadOriginal && canDownloadOriginal ? (
+              canOpenInDesktopApplication ? (
+                <Tooltip title="Открыть в приложении">
+                  <span>
+                    <IconButton
+                      onClick={() => {
+                        requestDesktopOpenDownloadedFile();
+                        onDownloadOriginal();
+                      }}
+                      disabled={loading}
+                      aria-label="Открыть в приложении"
+                    >
+                      <OpenInNewRoundedIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null
             ) : null}
             {onDownloadOriginal && canDownloadOriginal ? (
               <Tooltip title={originalLabel}>

@@ -10,6 +10,8 @@
 - Trusted-device session idle timeout: `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7` (passkey / WebAuthn login).
 - Internal-network session idle timeout: `SESSION_IDLE_TIMEOUT_INTERNAL_DAYS=7` (login from `AUTH_2FA_INTERNAL_CIDRS`, stored as `login_network_zone=internal`).
 - Session history retention: `SESSION_HISTORY_RETENTION_DAYS=14`.
+- Active session limit: `SESSION_MAX_ACTIVE_PER_USER=3`; a successful login closes the least recently used excess session.
+- Browser/app identity uses a stable client-device ID, not the IP address. Changing networks updates session metadata without creating a new session.
 - Trusted device/passkey lifetime: `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`.
 - Auth/session drop counters: in-process metrics under `auth_session` in `GET /api/v1/system/request-metrics` (admin). Client beacons: `POST /api/v1/auth/session-telemetry` (`client_auth_required`, `client_refresh_failed`).
 - Internal idle is clamped to **≥7 days** (`SESSION_IDLE_TIMEOUT_INTERNAL_DAYS`); refresh/absolute TTL clamped to **≥7 days** (`JWT_REFRESH_EXPIRE_DAYS`).
@@ -41,6 +43,7 @@
 - `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`
 - `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7`
 - `SESSION_IDLE_TIMEOUT_INTERNAL_DAYS=7`
+- `SESSION_MAX_ACTIVE_PER_USER=3`
 
 ## Runtime Storage
 Auth does not require Redis.
@@ -76,11 +79,18 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - **External network only:** 2FA (`AUTH_2FA_POLICY=external_only`) and passkey login/registration apply when `network_zone=external`. Internal `10.x` stays password-only unless `AUTH_PASSKEY_ALLOW_INTERNAL=1`.
    - **Multiple devices:** the backend allows several active trusted devices per user. After the first passkey, add another phone/PC from **Settings → Security → «Привязать это устройство»** (visible only on external network) or accept the optional prompt after password+2FA login.
    - **Revoke vs phone passkey list:** revoking a device in HUB-IT disables the server key only. Old passkeys may remain in Android/Google Password Manager until removed manually (Settings → Passwords / Passkeys → `hubit.zsgp.ru`). Registration sends `excludeCredentials` only for **active** server credentials (duplicate protection in DB). Stale passkeys in the phone OS vault are not removed by revoke; delete them manually if the picker shows obsolete entries.
+7. Session identity and limit
+   - Web stores an opaque random client-device ID in the HttpOnly `hubit_client_device_id` cookie.
+   - Native mobile sends the installation ID in `X-Client-Device-ID`; the backend returns `LoginResponse.client_device_id` only to mobile clients.
+   - The database stores only a SHA-256 hash of this identifier. It is scoped by `user_id` and is not an authentication credential.
+   - A repeated login for the same user and client-device ID reuses the active `session_id`, updates IP and activity time, and does not treat an IP change as a new device.
+   - `POST /api/v1/auth/sessions/normalize-limit` is admin-only and defaults to dry-run. Existing sessions are changed only with `{ "apply": true }`.
 
 ## Mobile client (Expo / React Native)
 
 Native clients do not use httpOnly cookies. Send `X-Auth-Client: mobile` on auth routes that complete a session.
 
+- Send the stable installation ID as `X-Client-Device-ID` on password, 2FA, passkey and trusted-device completion routes. Persist the returned `LoginResponse.client_device_id` in SecureStore and reuse it on later logins.
 - `POST /api/v1/auth/login`, `verify-2fa`, `verify-2fa-login`, `refresh`, `passkey-login/verify`, `trusted-devices/auth/verify` — JSON body includes `access_token` and `refresh_token` when `status=authenticated` (web keeps `access_token: null` and cookies).
 - `POST /api/v1/auth/refresh` — body `{ "refresh_token": "..." }` (cookie optional for web only).
 - `POST /api/v1/auth/logout` — `Authorization: Bearer` + optional body `{ "refresh_token": "..." }` to revoke refresh without cookies.

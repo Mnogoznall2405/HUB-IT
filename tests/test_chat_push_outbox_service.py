@@ -266,6 +266,23 @@ def test_chat_push_outbox_worker_retries_transient_failures_and_then_marks_termi
 
 
 @pytest.mark.asyncio
+async def test_chat_push_outbox_wait_propagates_worker_failure(monkeypatch):
+    worker = chat_push_outbox_service_module.ChatPushOutboxService()
+    monkeypatch.setenv("CHAT_PUSH_OUTBOX_ENABLED", "1")
+
+    async def _fail_loop() -> None:
+        raise RuntimeError("worker loop failed")
+
+    monkeypatch.setattr(worker, "_run_loop", _fail_loop)
+
+    await worker.start()
+    with pytest.raises(RuntimeError, match="worker loop failed"):
+        await worker.wait_until_stopped()
+
+    await worker.stop()
+
+
+@pytest.mark.asyncio
 async def test_chat_service_start_starts_push_outbox_worker(monkeypatch):
     push_started = []
     push_stopped = []

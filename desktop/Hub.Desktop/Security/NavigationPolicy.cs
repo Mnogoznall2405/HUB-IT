@@ -72,7 +72,8 @@ public sealed class NavigationPolicy
     private static bool IsAllowedExternalScheme(Uri uri)
     {
         return uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-            || uri.Scheme.Equals(Uri.UriSchemeMailto, StringComparison.OrdinalIgnoreCase);
+            || uri.Scheme.Equals(Uri.UriSchemeMailto, StringComparison.OrdinalIgnoreCase)
+            || uri.Scheme.Equals("vnc", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeOrigin(Uri uri)

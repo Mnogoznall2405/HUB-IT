@@ -42,6 +42,33 @@ describe('FileAttachment', () => {
     expect(overlay).toHaveStyle({ opacity: '1' });
   });
 
+  it('downloads a chat document directly from its right-click menu', async () => {
+    const anchorClick = vi.spyOn(window.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      renderWithTheme(
+        <FileAttachment
+          fileName="report.pdf"
+          fileSize={4096}
+          fileUrl="/files/report.pdf?inline=1"
+          downloadUrl="/files/report.pdf"
+          mimeType="application/pdf"
+          theme={theme}
+          ui={ui}
+        />,
+      );
+
+      fireEvent.contextMenu(screen.getByRole('link', { name: /report\.pdf/i }), {
+        clientX: 100,
+        clientY: 80,
+      });
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Скачать' }));
+
+      expect(anchorClick).toHaveBeenCalledTimes(1);
+    } finally {
+      anchorClick.mockRestore();
+    }
+  });
+
   it('renders image attachments as thumbnails and opens preview on click', () => {
     const onOpenPreview = vi.fn();
 

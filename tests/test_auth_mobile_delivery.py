@@ -87,6 +87,7 @@ def test_mobile_login_returns_tokens_in_json_body(monkeypatch):
     assert result.status == "authenticated"
     assert result.access_token == "access-test-token"
     assert result.refresh_token == "refresh-test-token"
+    assert result.client_device_id
     assert response.headers.get("set-cookie") is None
 
 
@@ -141,6 +142,7 @@ def test_web_login_keeps_cookie_delivery_and_hides_tokens(monkeypatch):
 
     assert result.access_token is None
     assert result.refresh_token is None
+    assert result.client_device_id is None
     assert "set-cookie" in str(response.headers).lower()
 
 

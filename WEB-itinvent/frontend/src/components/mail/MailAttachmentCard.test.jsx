@@ -24,4 +24,22 @@ describe('MailAttachmentCard', () => {
     fireEvent.click(screen.getByText(/08\.04\.2026 Kozlovskiy\.xlsx/i).closest('button'));
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+
+  it('downloads from the file right-click menu without opening preview', async () => {
+    const onOpen = vi.fn();
+    const onDownload = vi.fn();
+    render(
+      <MailAttachmentCard
+        attachment={{ name: 'report.pdf', downloadable: true }}
+        onOpen={onOpen}
+        onDownload={onDownload}
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByText('report.pdf'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Скачать' }));
+
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
 });

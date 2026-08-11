@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace Hub.Desktop.Configuration;
 
 public static class DesktopPaths
@@ -10,4 +12,10 @@ public static class DesktopPaths
     public static string UserDataFolder { get; } = Path.Combine(Root, "WebView2");
 
     public static string LogsFolder { get; } = Path.Combine(Root, "Logs");
+
+    public static string UpdatesFolder { get; } = Path.Combine(Root, "Updates");
+
+    public static string UpdatePackagesFolder { get; } = Path.Combine(UpdatesFolder, "Packages");
+
+    public static string UpdateRunnersFolder { get; } = Path.Combine(UpdatesFolder, "Runners");
 }

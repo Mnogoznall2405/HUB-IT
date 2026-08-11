@@ -1,11 +1,13 @@
 import apiClient, { withMobileAuthHeaders } from './client';
 import type { HubUser, LoginResponse } from './types';
+import * as tokenStore from '../auth/tokenStore';
 
 export async function login(username: string, password: string): Promise<LoginResponse> {
+  const clientDeviceId = await tokenStore.getClientDeviceId();
   const { data } = await apiClient.post<LoginResponse>(
     '/auth/login',
     { username, password },
-    { headers: withMobileAuthHeaders() },
+    { headers: withMobileAuthHeaders(clientDeviceId) },
   );
   return data;
 }
@@ -14,10 +16,11 @@ export async function verifyTwoFactorLogin(
   loginChallengeId: string,
   payload: { totp_code?: string; backup_code?: string },
 ): Promise<LoginResponse> {
+  const clientDeviceId = await tokenStore.getClientDeviceId();
   const { data } = await apiClient.post<LoginResponse>(
     '/auth/verify-2fa-login',
     { login_challenge_id: loginChallengeId, ...payload },
-    { headers: withMobileAuthHeaders() },
+    { headers: withMobileAuthHeaders(clientDeviceId) },
   );
   return data;
 }
@@ -35,10 +38,11 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 }
 
 export async function logout(refreshToken: string | null): Promise<void> {
+  const clientDeviceId = await tokenStore.getClientDeviceId();
   await apiClient.post(
     '/auth/logout',
     refreshToken ? { refresh_token: refreshToken } : {},
-    { headers: withMobileAuthHeaders() },
+    { headers: withMobileAuthHeaders(clientDeviceId) },
   );
 }
 

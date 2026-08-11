@@ -11,6 +11,7 @@ export default function MailAttachmentCompactCard({
   index = 0,
   formatFileSize,
   onOpen,
+  onFileActions,
   tokens,
   testId,
 }) {
@@ -25,6 +26,8 @@ export default function MailAttachmentCompactCard({
       data-testid={testId || `mail-attachment-compact-card-${index}`}
       aria-label={name}
       onClick={() => onOpen?.(attachment)}
+      onContextMenu={(event) => onFileActions?.(event, attachment)}
+      onKeyDown={(event) => onFileActions?.(event, attachment)}
       sx={getMailAttachmentCompactCardSx(tokens)}
     >
       <Box component="span" sx={getMailAttachmentCompactBadgeSx(tokens, visual.color)}>

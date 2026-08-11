@@ -1,3 +1,5 @@
+import { isDesktopBridgeReady } from './desktopBridge';
+
 export const APP_PLATFORM = 'web';
 export const IS_CAPACITOR_BUILD = false;
 
@@ -10,5 +12,5 @@ export function isCapacitorRuntime() {
 }
 
 export function isNativeShellRuntime() {
-  return false;
+  return isDesktopBridgeReady();
 }

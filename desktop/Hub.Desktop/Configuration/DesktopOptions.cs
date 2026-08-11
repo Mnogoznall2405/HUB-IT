@@ -1,10 +1,21 @@
+using System.IO;
 using System.Text.Json;
 
 namespace Hub.Desktop.Configuration;
 
-public sealed record DesktopOptions(Uri BaseUri)
+public sealed record DesktopUpdateOptions(
+    bool Enabled,
+    Uri ManifestUri,
+    TimeSpan InitialDelayMinimum,
+    TimeSpan InitialDelayMaximum,
+    TimeSpan CheckInterval,
+    TimeSpan RetryDelay);
+
+public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
 {
     private const string ConfigurationFileName = "appsettings.json";
+    private static readonly Uri ProductionBaseUri = new("https://hubit.zsgp.ru/");
+    private const string StableManifestPath = "/desktop-updates/stable/latest.json";
 
     public static DesktopOptions Load()
     {
@@ -18,8 +29,35 @@ public sealed record DesktopOptions(Uri BaseUri)
         baseUrl = Environment.GetEnvironmentVariable("HUB_DESKTOP_BASE_URL") ?? baseUrl;
         return FromBaseUrl(baseUrl, allowHttpLoopback: true);
 #else
-        return FromBaseUrl(baseUrl, allowHttpLoopback: false);
+        var options = FromProductionBaseUrl(baseUrl);
+        if (document.Updates?.Enabled is false)
+        {
+            throw new InvalidOperationException("Release updates cannot be disabled in appsettings.");
+        }
+
+        if (document.Updates?.ManifestPath is not null
+            && !string.Equals(
+                document.Updates.ManifestPath,
+                StableManifestPath,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Release update manifest path is fixed.");
+        }
+
+        return options;
 #endif
+    }
+
+    public static DesktopOptions FromProductionBaseUrl(string? baseUrl)
+    {
+        var options = FromBaseUrl(baseUrl);
+
+        if (options.BaseUri != ProductionBaseUri)
+        {
+            throw new InvalidOperationException("Release BaseUrl must use the HUB production origin.");
+        }
+
+        return options;
     }
 
     public static DesktopOptions FromBaseUrl(string? baseUrl, bool allowHttpLoopback = false)
@@ -54,8 +92,23 @@ public sealed record DesktopOptions(Uri BaseUri)
             Fragment = string.Empty,
         };
 
-        return new DesktopOptions(builder.Uri);
+        var normalizedBaseUri = builder.Uri;
+        return new DesktopOptions(
+            normalizedBaseUri,
+            new DesktopUpdateOptions(
+                Enabled: true,
+                ManifestUri: new Uri(normalizedBaseUri, StableManifestPath),
+                InitialDelayMinimum: TimeSpan.FromSeconds(30),
+                InitialDelayMaximum: TimeSpan.FromSeconds(120),
+                CheckInterval: TimeSpan.FromHours(12),
+                RetryDelay: TimeSpan.FromMinutes(15)));
     }
 
-    private sealed record ConfigurationDocument(string? BaseUrl);
+    private sealed record ConfigurationDocument(
+        string? BaseUrl,
+        UpdateConfigurationDocument? Updates);
+
+    private sealed record UpdateConfigurationDocument(
+        bool? Enabled,
+        string? ManifestPath);
 }

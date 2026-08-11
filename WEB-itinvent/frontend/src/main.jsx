@@ -10,6 +10,7 @@ import {
   storePwaInstallPrompt,
 } from './lib/pwaInstall'
 import { tryRecoverChunkLoad } from './lib/routeChunkRecovery'
+import { initializeDesktopBridge } from './lib/desktopBridge'
 import './index.css'
 
 const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
@@ -78,9 +79,14 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   });
 }
 
-if (needsMyFilesGrantHardReload()) {
-  window.location.reload();
-} else {
+const startApplication = async () => {
+  await initializeDesktopBridge();
+
+  if (needsMyFilesGrantHardReload()) {
+    window.location.reload();
+    return;
+  }
+
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <PreferencesProvider>
@@ -90,4 +96,6 @@ if (needsMyFilesGrantHardReload()) {
       </PreferencesProvider>
     </React.StrictMode>,
   );
-}
+};
+
+void startApplication();

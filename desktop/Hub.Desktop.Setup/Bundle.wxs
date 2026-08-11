@@ -1,0 +1,85 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="HUB Desktop"
+          Manufacturer="HUB-IT"
+          Version="$(DesktopVersion)"
+          UpgradeCode="00AB6996-3F42-4E0A-A348-16A62FF4FA09"
+          IconSourceFile="$(IconPath)"
+          Compressed="yes">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLargeLicense"
+                                              LicenseUrl=""
+                                              LogoFile="$(LogoPath)"
+                                              ShowVersion="yes"
+                                              LaunchTarget="[ProgramFiles64Folder]HUB-IT\HUB Desktop\HUB.Desktop.exe"
+                                              LaunchWorkingFolder="[ProgramFiles64Folder]HUB-IT\HUB Desktop" />
+    </BootstrapperApplication>
+
+    <bal:Condition Condition="VersionNT64 &gt;= v10.0 AND WindowsBuildNumber &gt;= 17763"
+                   Message="HUB Desktop поддерживает только 64-разрядные Windows 10 и Windows 11." />
+
+    <util:RegistrySearch Id="FindWebView2Machine"
+                         Root="HKLM"
+                         Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+                         Value="pv"
+                         Variable="WebView2MachineInstalled"
+                         Result="exists"
+                         Bitness="always32" />
+    <util:RegistrySearch Id="FindWebView2User"
+                         Root="HKCU"
+                         Key="Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+                         Value="pv"
+                         Variable="WebView2UserInstalled"
+                         Result="exists"
+                         Bitness="always32" />
+    <util:RegistrySearch Id="FindVCRuntime"
+                         Root="HKLM"
+                         Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                         Value="Installed"
+                         Variable="VCRuntimeInstalled"
+                         Result="exists"
+                         Bitness="always64" />
+
+    <Chain>
+      <ExePackage Id="VCRedistX64"
+                  DisplayName="Microsoft Visual C++ Redistributable x64"
+                  SourceFile="$(VCRedistPath)"
+                  DetectCondition="VCRuntimeInstalled"
+                  InstallArguments="/install /quiet /norestart"
+                  RepairArguments="/repair /quiet /norestart"
+                  PerMachine="yes"
+                  Permanent="yes"
+                  Vital="yes">
+        <ExitCode Value="0" Behavior="success" />
+        <ExitCode Value="1638" Behavior="success" />
+        <ExitCode Value="3010" Behavior="scheduleReboot" />
+        <ExitCode Value="1641" Behavior="forceReboot" />
+      </ExePackage>
+
+      <ExePackage Id="WebView2Evergreen"
+                  DisplayName="Microsoft Edge WebView2 Evergreen Runtime"
+                  SourceFile="$(WebView2BootstrapperPath)"
+                  DetectCondition="WebView2MachineInstalled OR WebView2UserInstalled"
+                  InstallArguments="/silent /install"
+                  PerMachine="yes"
+                  Permanent="yes"
+                  Vital="yes" />
+
+      <ExePackage Id="WindowsAppRuntime18"
+                  DisplayName="Microsoft Windows App SDK Runtime 1.8 x64"
+                  SourceFile="$(WindowsAppRuntimePath)"
+                  DetectCondition="0"
+                  InstallArguments="--quiet"
+                  PerMachine="yes"
+                  Permanent="yes"
+                  Vital="yes" />
+
+      <MsiPackage Id="HubDesktopMsi"
+                  DisplayName="HUB Desktop"
+                  SourceFile="$(MsiPath)"
+                  Visible="no"
+                  Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

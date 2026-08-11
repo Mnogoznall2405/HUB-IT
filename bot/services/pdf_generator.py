@@ -15,6 +15,33 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _iter_table_paragraphs(table: Any):
+    for row in table.rows:
+        for cell in row.cells:
+            yield from cell.paragraphs
+            for nested_table in cell.tables:
+                yield from _iter_table_paragraphs(nested_table)
+
+
+def _replace_document_placeholders(document: Any, replacements: Dict[str, str]) -> None:
+    paragraphs = list(document.paragraphs)
+    for table in document.tables:
+        paragraphs.extend(_iter_table_paragraphs(table))
+
+    for paragraph in paragraphs:
+        updated_text = paragraph.text
+        for placeholder, value in replacements.items():
+            updated_text = updated_text.replace(placeholder, value)
+        if updated_text == paragraph.text:
+            continue
+        if not paragraph.runs:
+            paragraph.add_run(updated_text)
+            continue
+        paragraph.runs[0].text = updated_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+
+
 def remove_file_with_retry(filepath: str, max_attempts: int = 5, delay: float = 0.5) -> bool:
     """
     Удаляет файл с механизмом повторных попыток при ошибке блокировки
@@ -126,14 +153,15 @@ async def generate_transfer_act_pdf(
         current_date = datetime.now()
         date_str = current_date.strftime('%d.%m.%Y')
         
-        # Заменяем плейсхолдеры в параграфах
-        for paragraph in doc.paragraphs:
-            if '{{DATE}}' in paragraph.text:
-                paragraph.text = paragraph.text.replace('{{DATE}}', date_str)
-            if '{{TO_EMPLOYEE}}' in paragraph.text:
-                paragraph.text = paragraph.text.replace('{{TO_EMPLOYEE}}', str(new_employee))
-            if '{{FROM_EMPLOYEE}}' in paragraph.text:
-                paragraph.text = paragraph.text.replace('{{FROM_EMPLOYEE}}', old_employee)
+        # Заменяем плейсхолдеры в параграфах документа и табличных ячейках.
+        _replace_document_placeholders(
+            doc,
+            {
+                '{{DATE}}': date_str,
+                '{{TO_EMPLOYEE}}': str(new_employee),
+                '{{FROM_EMPLOYEE}}': old_employee,
+            },
+        )
         
         # Работаем с таблицей оборудования
         if doc.tables:
@@ -182,7 +210,6 @@ async def generate_transfer_act_pdf(
                     str(model_name) if model_name else '',
                     serial,
                     str(batch_no),  # Теперь batch_no уже строка или пустая строка
-                    str(new_employee_dept) if new_employee_dept else '',  # Отдел получателя
                     inv_no_str
                 ]
                 

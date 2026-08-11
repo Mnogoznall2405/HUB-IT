@@ -66,6 +66,7 @@ export default function MailMessageReader({
           attachmentTotalSize={attachmentTotalSize}
           formatFileSize={formatFileSize}
           onOpen={(attachment) => onOpenAttachment?.(message, attachment)}
+          onDownload={(attachment) => onDownloadAttachment?.(message, attachment)}
         />
       ) : null}
       {hasQuotedHistory ? (
