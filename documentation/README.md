@@ -1,14 +1,14 @@
-# IT-invent Bot Documentation
+# HUB-IT Documentation
 
-Актуальная документация по Telegram-боту IT-invent.
+Актуальная пользовательская и техническая документация по платформе HUB-IT и Telegram-боту.
 
 ## Пользователям
 
-- [Функционал HUB-IT для руководства (DOCX)](user-guides/hub-platform-functionality-guide.docx) - перечень возможностей платформы, дорожная карта
+- [Функционал HUB-IT и дорожная карта (DOCX)](<user-guides/Функционал и дорожная карта.docx>) - перечень возможностей платформы, дорожная карта
 - [Основное руководство](user-guides/main-guide.md)
 - [Работы и обслуживание](user-guides/component-replacement-guide.md)
 - [Чистка ПК](user-guides/pc-cleaning-guide.md)
-- [Портал сбора документов при трудоустройстве (DOCX)](user-guides/hr-onboarding-portal-guide.docx) - правовая модель, процесс, макеты и интеграция в HUB-IT
+- [Портал сбора документов при трудоустройстве - материалы и схемы](user-guides/assets/hr-onboarding/) - исходные диаграммы и интеграционные материалы; отдельный DOCX в репозитории отсутствует
 - [Билеты / Логистика — руководство для руководства](user-guides/tickets-logistics-guide.md) - бизнес-процессы, роли, инструкции, диаграммы
 - [Билеты / Логистика (DOCX)](user-guides/tickets-logistics-guide.docx) - версия для печати и рассылки руководству
 

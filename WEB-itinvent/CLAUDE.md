@@ -36,7 +36,7 @@ npm run preview      # Preview production build
 
 **Entry Point:** [backend/main.py](backend/main.py) - FastAPI app with CORS, exception handlers, and router includes
 
-**Configuration:** [backend/config.py](backend/config.py) - Loads from [backend/.env](backend/.env) using dataclasses
+**Configuration:** [backend/config.py](backend/config.py) - Loads settings from the repository root `.env`; use the tracked [`.env.example`](../.env.example) as the template
 - `DatabaseConfig`: SQL Server connection (ODBC)
 - `JWTConfig`: Token settings (8-hour default expiry)
 - `AppConfig`: CORS origins, debug mode

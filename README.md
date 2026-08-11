@@ -190,6 +190,7 @@ python agent.py --once
 | Процесс PM2 | Назначение | Порт / примечание |
 |-------------|------------|-------------------|
 | `itinvent-backend` | Web API (FastAPI) | **8001** (`127.0.0.1`) |
+| `itinvent-chat` | Chat API (single-node baseline) | **8002**; scale-вариант — **8002 + 8004** |
 | `itinvent-chat-push-worker` | Web Push для чата | без HTTP-порта |
 | `itinvent-ai-chat-worker` | AI-ответы в чате | без HTTP-порта |
 | `itinvent-inventory` | Ingest inventory с агентов | см. `inventory_server` |
@@ -198,6 +199,8 @@ python agent.py --once
 | `itinvent-bot` | Telegram-бот | — |
 
 Frontend (React) — **IIS**, не PM2.
+
+Команды этого production-раздела изменяют состояние сервисов или конфигурацию. Выполнять их только после явного разрешения, read-only проверки цели и подготовки post-check/rollback.
 
 ### Команды (из корня репозитория)
 
@@ -223,7 +226,7 @@ powershell -File scripts\pm2\stop-all.ps1
 Только backend:
 
 ```powershell
-pm2 restart itinvent-backend
+powershell -File scripts\pm2\restart-backend.ps1
 pm2 logs itinvent-backend --lines 50
 ```
 
@@ -239,7 +242,7 @@ pm2 list
 ### Правила (чтобы не ловить конфликт порта)
 
 1. **На сервере не запускать** `python start_server.py`, `uvicorn … --port 8001` и не держать второй PM2-профиль `itinvent-backend-a/b`, если не настроен scale-out.
-2. **Перед ручной отладкой backend** на этой же машине: `pm2 stop itinvent-backend`, после отладки — снова `pm2 start itinvent-backend`.
+2. **Перед ручной отладкой backend** на этой же машине: после согласования остановить `itinvent-backend`, а после отладки запустить его штатным PM2-конфигом.
 3. **Не дублировать** службу NSSM/IIS `itinvent-backend` ([install_backend_service.ps1](./scripts/iis/install_backend_service.ps1)) и PM2 на одном порту **8001**.
 4. В `pm2 list` у `itinvent-backend` нормальный признак — **uptime минуты/дни**, счётчик `↺` почти не растёт. Если `↺` тысячи и uptime секунды — см. раздел ниже.
 
@@ -267,6 +270,8 @@ powershell -File scripts\pm2\restart-backend.ps1
 Скрипт сам: останавливает PM2-процесс, убивает зависший listener на **8001**, поднимает backend и проверяет лог.
 
 ### Восстановление вручную
+
+Этот сценарий допускается только после проверки владельца порта и подтверждения, что найденный PID не относится к нужному PM2-процессу.
 
 ```powershell
 # 1. Остановить цикл перезапусков PM2
@@ -302,6 +307,7 @@ pm2 list
 Процессы PM2 на типичном app-сервере:
 
 - `itinvent-backend` — **только один** listener на **8001**
+- `itinvent-chat` — single-node listener на **8002**; scale-вариант использует **8002/8004**
 - `itinvent-chat-push-worker`, `itinvent-ai-chat-worker`
 - `itinvent-inventory`, `itinvent-scan`, `itinvent-scan-worker`, `itinvent-bot`
 

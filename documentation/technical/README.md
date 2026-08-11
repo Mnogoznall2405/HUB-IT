@@ -1,6 +1,33 @@
-# Технический обзор IT-invent Bot
+# Техническая документация HUB-IT
 
-## Актуальные подсистемы
+Этот файл — индекс технических документов. Детали реализации и операционные процедуры хранятся в профильных документах ниже.
+
+## Быстрый индекс
+
+### Архитектура и runtime
+
+- [PostgreSQL app/chat schema](./POSTGRES_APP_SCHEMA.md) и [DDL snapshot](./POSTGRES_APP_SCHEMA_DDL.md)
+- [Chat backend architecture](./CHAT_BACKEND_ARCHITECTURE.md)
+- [Chat performance и observability](./CHAT_PERF_OBSERVABILITY.md)
+- [Scan architecture](./SCAN_ARCHITECTURE.md) и [Scan PostgreSQL migration](./SCAN_POSTGRES_MIGRATION.md)
+- [IIS deployment](./IIS_DEPLOYMENT_WEB.md)
+- [Request metrics](./REQUEST_METRICS.md)
+
+### Безопасность и интеграции
+
+- [Auth / 2FA / passkeys](./AUTH_SECURITY_STACK.md)
+- [1С integration](./ONE_C_INTEGRATION.md) и [1С document flow](./DOCFLOW_1C_INTEGRATION.md)
+- [Mobile-hub checklist](./MOBILE_HUB_CHECKLIST.md)
+- [My Files security review](./MY_FILES_SECURITY_REVIEW.md)
+
+### Нагрузочные проверки и эксплуатация
+
+- [Chat load test](./HUB_CHAT_LOAD_TEST.md)
+- [Mail load test](./MAIL_LOAD_TEST.md)
+- [Scan GPO deployment](./SCAN_GPO_DEPLOYMENT.md)
+- [Windows Chat PostgreSQL setup](./POSTGRES_CHAT_WINDOWS_SETUP.md)
+
+## Telegram-бот: актуальные подсистемы
 
 - поиск оборудования
 - поиск по сотруднику
@@ -12,11 +39,11 @@
   - замена компонентов ПК
   - чистка ПК
 
-## Текущее состояние
+## Telegram-бот: текущее состояние
 
 Бот больше не содержит пользовательского runtime-потока для замены комплектующих МФУ и не регистрирует соответствующий экспорт. Исторические JSON-файлы этого сценария сохранены только как архив.
 
-## Основные модули
+## Telegram-бот: основные модули
 
 - `bot/main.py` — регистрация handler-ов
 - `bot/config.py` — конфигурация и состояния
@@ -24,7 +51,7 @@
 - `bot/services/` — бизнес-логика
 - `bot/utils/` — вспомогательные функции
 
-## Хранилища данных
+## Telegram-бот: хранилища данных
 
 - [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md) — обзор схем `app` / `chat` / `system`
 - [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md) — колонки, PK/FK, индексы (live introspection)

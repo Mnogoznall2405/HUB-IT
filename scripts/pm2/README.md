@@ -2,6 +2,8 @@
 
 Frontend остаётся на `IIS` и не переводится под `pm2 serve`.
 
+Команды ниже могут менять production-состояние. Выполнять их только после явного разрешения, read-only проверки точной цели, фиксации ожидаемого эффекта и подготовки rollback/post-check. Команды с `-Mode Enable*`, restart/stop/start и изменением `.env`/IIS особенно нельзя запускать «для проверки».
+
 PM2 используется только для Python-процессов:
 
 - `scripts/pm2/ecosystem.backend.config.js`
@@ -19,7 +21,7 @@ PM2 используется только для Python-процессов:
 - `scripts/pm2/start-all.ps1` / `restart-all.ps1` / `stop-all.ps1` — вызывают orphan cleanup
 - `scripts/pm2/health-check.ps1`
 
-Если все 4 процесса запущены на одной машине, можно стартовать их одной командой:
+Если основные ecosystem-контуры backend, inventory, scan и bot запускаются на одной машине, их можно стартовать одной командой:
 
 ```powershell
 pm2 start scripts\pm2\ecosystem.all.config.js
