@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Release')]
     [string]$Configuration = 'Release',
-    [switch]$NoRestore
+    [switch]$NoRestore,
+    [switch]$SuppressMsiValidation
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +17,7 @@ $nugetConfig = Join-Path $repoRoot 'desktop\NuGet.Config'
 $publishScript = Join-Path $repoRoot 'scripts\desktop\publish.ps1'
 $iconPath = Join-Path $repoRoot 'desktop\Hub.Desktop\Assets\hub-icon.ico'
 $setupLogoPath = Join-Path $repoRoot 'desktop\Hub.Desktop.Setup\Assets\hub-setup-logo.png'
+$policySourceDirectory = Join-Path $repoRoot 'desktop\policy'
 $projectDocument = [xml](Get-Content -Raw -LiteralPath $desktopProject)
 $version = $projectDocument.SelectSingleNode('/Project/PropertyGroup/Version').InnerText
 $targetFramework = $projectDocument.SelectSingleNode('/Project/PropertyGroup/TargetFramework').InnerText
@@ -27,9 +29,14 @@ $prerequisiteDirectory = Join-Path $repoRoot '.codex_tmp\desktop-installer\prere
 $msiBuildDirectory = Join-Path $buildDirectory 'msi'
 $bundleBuildDirectory = Join-Path $buildDirectory 'bundle'
 
-$repoDotnet = Join-Path $repoRoot 'tools\dotnet-sdk-8\dotnet.exe'
-$dotnetPath = if (Test-Path -LiteralPath $repoDotnet) {
-    $repoDotnet
+$repoDotnet = @(
+    Join-Path $repoRoot 'tools\dotnet-sdk-8\dotnet.exe'
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tools') -Directory -Filter 'dotnet-sdk-8*' -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName 'dotnet.exe' }
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+$dotnetPath = if ($null -ne $repoDotnet) {
+    [string]$repoDotnet
 } else {
     (Get-Command dotnet -ErrorAction Stop).Source
 }
@@ -129,14 +136,14 @@ foreach ($brandingAsset in @($iconPath, $setupLogoPath)) {
 
 New-Item -ItemType Directory -Path $prerequisiteDirectory -Force | Out-Null
 $vcRedist = Join-Path $prerequisiteDirectory 'VC_redist.x64.exe'
-$webView2Bootstrapper = Join-Path $prerequisiteDirectory 'MicrosoftEdgeWebview2Setup.exe'
+$webView2Bootstrapper = Join-Path $prerequisiteDirectory 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
 $windowsAppRuntime = Join-Path $prerequisiteDirectory 'WindowsAppRuntimeInstall-x64.exe'
 
 Get-MicrosoftPrerequisite `
     'https://aka.ms/vs/17/release/vc_redist.x64.exe' `
     $vcRedist
 Get-MicrosoftPrerequisite `
-    'https://go.microsoft.com/fwlink/p/?LinkId=2124703' `
+    'https://go.microsoft.com/fwlink/p/?LinkId=2124701' `
     $webView2Bootstrapper
 Get-MicrosoftPrerequisite `
     'https://download.microsoft.com/download/712421b4-6f72-47fc-acb8-2ebf030b2260/WindowsAppRuntimeInstall-x64.exe' `
@@ -155,12 +162,17 @@ Invoke-DotnetRestore $bundleProject
 Invoke-DotnetClean $msiProject
 Invoke-DotnetClean $bundleProject
 
-Invoke-DotnetBuild $msiProject @(
+$msiBuildProperties = @(
     "-p:DesktopVersion=$version",
     "-p:PublishDir=$publishDirectory",
     "-p:IconPath=$iconPath",
     "-p:OutputPath=$msiBuildDirectory"
 )
+if ($SuppressMsiValidation) {
+    Write-Warning 'MSI ICE validation is suppressed for this build.'
+    $msiBuildProperties += '-p:SuppressValidation=true'
+}
+Invoke-DotnetBuild $msiProject $msiBuildProperties
 
 $msiFiles = @(Get-ChildItem -LiteralPath $msiBuildDirectory -Filter '*.msi' -File -Recurse)
 if ($msiFiles.Count -ne 1) {
@@ -188,7 +200,15 @@ $bundle = $bundleFiles[0]
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 $finalMsi = Join-Path $packageDirectory $msi.Name
 $finalBundle = Join-Path $packageDirectory $bundle.Name
-foreach ($artifact in @($finalMsi, $finalBundle, "$finalMsi.sha256", "$finalBundle.sha256")) {
+$policyArchive = Join-Path $packageDirectory 'HUB-Desktop-Policy-Templates.zip'
+foreach ($artifact in @(
+    $finalMsi,
+    $finalBundle,
+    "$finalMsi.sha256",
+    "$finalBundle.sha256",
+    $policyArchive,
+    "$policyArchive.sha256"
+)) {
     Assert-ChildPath $packageDirectory $artifact
     if (Test-Path -LiteralPath $artifact) {
         Remove-Item -LiteralPath $artifact -Force
@@ -197,13 +217,41 @@ foreach ($artifact in @($finalMsi, $finalBundle, "$finalMsi.sha256", "$finalBund
 
 Copy-Item -LiteralPath $msi.FullName -Destination $finalMsi
 Copy-Item -LiteralPath $bundle.FullName -Destination $finalBundle
+if (-not (Test-Path -LiteralPath (Join-Path $policySourceDirectory 'HUBDesktop.admx') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $policySourceDirectory 'ru-RU\HUBDesktop.adml') -PathType Leaf)) {
+    throw 'Desktop policy templates are incomplete'
+}
+Compress-Archive `
+    -Path (Join-Path $policySourceDirectory '*') `
+    -DestinationPath $policyArchive `
+    -CompressionLevel Optimal
 
 $msiHash = Get-FileHash -LiteralPath $finalMsi -Algorithm SHA256
 $bundleHash = Get-FileHash -LiteralPath $finalBundle -Algorithm SHA256
+$policyArchiveHash = Get-FileHash -LiteralPath $policyArchive -Algorithm SHA256
+$prerequisiteInventory = @(
+    [ordered]@{ name = 'Microsoft Visual C++ Redistributable x64'; file = $vcRedist },
+    [ordered]@{ name = 'Microsoft Edge WebView2 Evergreen Standalone x64'; file = $webView2Bootstrapper },
+    [ordered]@{ name = 'Microsoft Windows App SDK Runtime 1.8 x64'; file = $windowsAppRuntime }
+) | ForEach-Object {
+    $file = Get-Item -LiteralPath $_.file
+    [ordered]@{
+        name = $_.name
+        file_name = $file.Name
+        file_version = $file.VersionInfo.FileVersion
+        sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+$prerequisiteInventoryPath = Join-Path $packageDirectory 'HUB-Desktop-prerequisites.json'
+$prerequisiteInventory |
+    ConvertTo-Json -Depth 3 |
+    Set-Content -LiteralPath $prerequisiteInventoryPath -Encoding utf8
 "$($msiHash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($finalMsi))" |
     Set-Content -LiteralPath "$finalMsi.sha256" -Encoding ascii
 "$($bundleHash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($finalBundle))" |
     Set-Content -LiteralPath "$finalBundle.sha256" -Encoding ascii
+"$($policyArchiveHash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($policyArchive))" |
+    Set-Content -LiteralPath "$policyArchive.sha256" -Encoding ascii
 
 [pscustomobject]@{
     Version = $version
@@ -214,4 +262,6 @@ $bundleHash = Get-FileHash -LiteralPath $finalBundle -Algorithm SHA256
     MsiMiB = [math]::Round((Get-Item -LiteralPath $finalMsi).Length / 1MB, 2)
     Msi = $finalMsi
     MsiSHA256 = $msiHash.Hash.ToLowerInvariant()
+    Prerequisites = $prerequisiteInventoryPath
+    PolicyTemplates = $policyArchive
 }

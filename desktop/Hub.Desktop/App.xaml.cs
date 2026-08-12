@@ -1,11 +1,17 @@
+using System.Reflection;
 using System.Windows;
 using Hub.Desktop.Autostart;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
+using Hub.Desktop.DeepLinks;
 using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Notifications;
 using Hub.Desktop.Security;
+using Hub.Desktop.Shell;
+using Hub.Desktop.UpdateCore;
 using Hub.Desktop.Updates;
+using Hub.Desktop.ViewModels;
+using Microsoft.Web.WebView2.Core;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
 
@@ -16,8 +22,10 @@ public partial class App : Application
     private SingleInstanceCoordinator? _singleInstance;
     private FallbackDesktopNotificationService? _notifications;
     private WindowsAppNotificationService? _windowsNotifications;
-    private bool _windowsAppRuntimeInitialized;
-    private DesktopUpdateService? _updates;
+    private bool _windowsAppNotificationsAvailable;
+    private string _windowsAppSdkStatus = "Не проверен";
+    private DesktopUpdateService? _updateService;
+    private DesktopUpdateCoordinator? _updates;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -26,11 +34,17 @@ public partial class App : Application
 
         try
         {
+            if (!DesktopLaunchRequest.TryParse(e.Args, out var launchRequest))
+            {
+                launchRequest = DesktopLaunchRequest.Default;
+                DesktopLog.Warning("Ignored invalid desktop launch arguments");
+            }
+
             _singleInstance = new SingleInstanceCoordinator();
 
             if (!_singleInstance.IsPrimary)
             {
-                var activated = await _singleInstance.SignalPrimaryAsync();
+                var activated = await _singleInstance.SignalPrimaryAsync(launchRequest);
 
                 if (!activated)
                 {
@@ -47,8 +61,12 @@ public partial class App : Application
 
             IDesktopNotificationService primaryNotifications =
                 UnavailableDesktopNotificationService.Instance;
+            var policy = new RegistryDesktopPolicyProvider().Load();
 
-            if (!ProcessElevation.TryGetIsElevated(out var isElevated, out var elevationError))
+            var elevationKnown = ProcessElevation.TryGetIsElevated(
+                out var isElevated,
+                out var elevationError);
+            if (!elevationKnown)
             {
                 DesktopLog.Warning(
                     $"Process elevation could not be determined; error={elevationError}. " +
@@ -62,28 +80,46 @@ public partial class App : Application
             }
             else
             {
-                DesktopLog.Info("Initializing Windows App SDK Runtime");
-                _windowsAppRuntimeInitialized = WindowsAppRuntime.TryInitialize(out var runtimeError);
-                if (_windowsAppRuntimeInitialized)
+                DesktopLog.Info("Registering self-contained Windows app notifications");
+                try
                 {
-                    DesktopLog.Info("Registering Windows app notifications");
                     _windowsNotifications = new WindowsAppNotificationService();
                     _windowsNotifications.Activated += Notifications_Activated;
-                    _windowsNotifications.TryRegister();
-                    primaryNotifications = _windowsNotifications;
+                    _windowsAppNotificationsAvailable = _windowsNotifications.TryRegister();
+                    if (_windowsAppNotificationsAvailable)
+                    {
+                        primaryNotifications = _windowsNotifications;
+                    }
                 }
-                else
+                catch (Exception exception)
                 {
-                    DesktopLog.Warning($"Windows App SDK Runtime is unavailable; hresult=0x{runtimeError:X8}");
+                    DesktopLog.Error(
+                        "Self-contained Windows app notification initialization failed",
+                        exception);
                 }
             }
 
-            _notifications = new FallbackDesktopNotificationService(primaryNotifications);
+            _windowsAppSdkStatus = WindowsAppRuntime.DescribeStatus(
+                elevationKnown,
+                isElevated,
+                _windowsAppNotificationsAvailable);
+
+            var notificationFallbackEnabled =
+                policy.ResolveNotificationFallbackEnabled(defaultEnabled: true);
+            _notifications = new FallbackDesktopNotificationService(
+                primaryNotifications,
+                notificationFallbackEnabled);
 
             var options = DesktopOptions.Load();
+            var updateOptions = options.Updates with
+            {
+                Enabled = policy.ResolveUpdatesEnabled(options.Updates.Enabled),
+            };
             var executablePath = Environment.ProcessPath
                 ?? throw new InvalidOperationException("Desktop executable path is unavailable.");
-            var autostart = new WindowsAutostartService(executablePath);
+            var autostart = new WindowsAutostartService(
+                executablePath,
+                policy.AutostartMode);
             try
             {
                 autostart.EnsureEnabledByDefault();
@@ -97,21 +133,33 @@ public partial class App : Application
                 DesktopLog.Error("Default autostart configuration failed", exception);
             }
 
-            var startInBackground = WindowsAutostartService.IsBackgroundLaunch(e.Args);
-            _updates = new DesktopUpdateService(options.Updates);
+            var desktopSettings = new DesktopSettingsStore(DesktopPaths.SettingsFile).Load();
+            var startInBackground = launchRequest.StartInBackground
+                && desktopSettings.LaunchVisibility == DesktopLaunchVisibility.Hidden;
+            _updateService = new DesktopUpdateService(updateOptions);
+            _updates = new DesktopUpdateCoordinator(_updateService, updateOptions);
+            var runtime = CreateRuntimeSnapshot(notificationFallbackEnabled);
             var window = new MainWindow(
                 options,
                 _notifications,
                 autostart,
                 _updates,
+                runtime,
+                policy,
                 startInBackground);
             MainWindow = window;
 
-            _singleInstance.ActivationRequested += (_, _) =>
-                Dispatcher.BeginInvoke(new Action(window.ShowAndActivate));
+            _singleInstance.ActivationRequested += (_, eventArgs) =>
+                Dispatcher.BeginInvoke(() => window.HandleLaunchRequest(eventArgs.Request));
             _singleInstance.StartListening();
 
             window.Show();
+            if (launchRequest.Route is not null || launchRequest.OpenDownloads)
+            {
+                window.HandleLaunchRequest(launchRequest);
+            }
+
+            DesktopJumpListService.TryApply(this, executablePath);
             _updates.Start();
         }
         catch (Exception exception)
@@ -144,13 +192,9 @@ public partial class App : Application
             _windowsNotifications.Dispose();
         }
 
-        if (_windowsAppRuntimeInitialized)
-        {
-            WindowsAppRuntime.Shutdown();
-        }
-
         _singleInstance?.Dispose();
         _updates?.Dispose();
+        _updateService?.Dispose();
         base.OnExit(e);
     }
 
@@ -163,5 +207,37 @@ public partial class App : Application
                 window.ShowAndNavigate(e.Route);
             }
         });
+    }
+
+    private DesktopRuntimeSnapshot CreateRuntimeSnapshot(bool notificationFallbackEnabled)
+    {
+        var assemblyVersion = Assembly.GetEntryAssembly()?.GetName().Version
+            ?? new Version(0, 0, 0);
+        string webView2Version;
+        try
+        {
+            webView2Version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+            if (string.IsNullOrWhiteSpace(webView2Version))
+            {
+                webView2Version = "Недоступен";
+            }
+        }
+        catch
+        {
+            webView2Version = "Недоступен";
+        }
+
+        var notificationMode = _windowsAppNotificationsAvailable
+            ? notificationFallbackEnabled
+                ? "Windows App SDK + закреплённый fallback HUB"
+                : "Только Windows App SDK; fallback отключён политикой"
+            : notificationFallbackEnabled
+                ? "Закреплённые уведомления HUB; системный канал отключён"
+                : "Уведомления недоступны: системный канал и fallback отключены";
+        return new DesktopRuntimeSnapshot(
+            DesktopUpdateManifestVerifier.FormatVersion(assemblyVersion),
+            webView2Version,
+            _windowsAppSdkStatus,
+            notificationMode);
     }
 }

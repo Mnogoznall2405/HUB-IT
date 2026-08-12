@@ -43,6 +43,7 @@ export default function AppearanceTab({
                 <Select value={themeMode} label="Тема" onChange={(event) => setThemeMode(event.target.value)}>
                   <MenuItem value="light">Светлая</MenuItem>
                   <MenuItem value="dark">Тёмная</MenuItem>
+                  <MenuItem value="system">Как в Windows</MenuItem>
                 </Select>
               </FormControl>
             </Grid>

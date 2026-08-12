@@ -15,6 +15,9 @@ export default function MailAttachmentCard({
   attachment,
   onOpen,
   onDownload,
+  onSaveAll,
+  onDelete,
+  onSelectAll,
   formatFileSize,
   mine = false,
 }) {
@@ -152,7 +155,12 @@ export default function MailAttachmentCard({
             aria-haspopup="menu"
             aria-expanded={menuOpen ? 'true' : undefined}
             onClick={handleMenuOpen}
-            sx={{ color: mine ? alpha(theme.palette.common.white, 0.76) : tokens.textSecondary }}
+            sx={{
+              width: 36,
+              height: 36,
+              color: mine ? alpha(theme.palette.common.white, 0.76) : tokens.textSecondary,
+              '&:active': { transform: 'scale(0.96)' },
+            }}
           >
             <KeyboardArrowDownRoundedIcon />
           </IconButton>
@@ -166,7 +174,11 @@ export default function MailAttachmentCard({
         onClose={handleMenuClose}
         fileName={name}
         canDownload={isDownloadable && typeof onDownload === 'function'}
+        onPreview={typeof onOpen === 'function' ? onOpen : undefined}
         onDownload={onDownload}
+        onSaveAll={onSaveAll}
+        onDelete={onDelete}
+        onSelectAll={onSelectAll}
         paperSx={getMailMenuPaperSx(tokens, { minWidth: 180 })}
       />
     </Box>

@@ -319,6 +319,20 @@ class AppSessionRecord(AppBase):
     device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class AppDesktopPresence(AppBase):
+    __tablename__ = "desktop_presence"
+    __table_args__ = _table_args(
+        Index("ix_app_desktop_presence_user_expires", "user_id", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class AppSessionAuthContext(AppBase):
     __tablename__ = "session_auth_context"
     __table_args__ = _table_args(schema=SYSTEM_SCHEMA)

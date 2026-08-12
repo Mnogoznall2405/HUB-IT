@@ -12,7 +12,12 @@ vi.mock('../api/client', () => ({
   },
 }));
 
-import { PreferencesProvider, usePreferences } from './PreferencesContext';
+import {
+  PreferencesProvider,
+  normalizeThemeMode,
+  resolveThemeMode,
+  usePreferences,
+} from './PreferencesContext';
 import { DATABASE_BRANCH_FILTERS_CACHE_KEY } from '../pages/database/databaseBranchPreferences';
 
 function PreferencesProbe() {
@@ -198,5 +203,14 @@ describe('PreferencesContext dashboard mobile sections', () => {
         JSON.stringify({ main: 'HQ', remote: 'Remote' }),
       );
     });
+  });
+});
+
+describe('PreferencesContext theme mode', () => {
+  it('resolves the system preference without accepting unknown modes', () => {
+    expect(resolveThemeMode('system', true)).toBe('dark');
+    expect(resolveThemeMode('system', false)).toBe('light');
+    expect(resolveThemeMode('dark', false)).toBe('dark');
+    expect(normalizeThemeMode('automatic-magic')).toBe('light');
   });
 });

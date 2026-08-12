@@ -23,6 +23,7 @@ import FormatBoldRoundedIcon from '@mui/icons-material/FormatBoldRounded';
 import FormatItalicRoundedIcon from '@mui/icons-material/FormatItalicRounded';
 import FormatUnderlinedRoundedIcon from '@mui/icons-material/FormatUnderlinedRounded';
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -33,6 +34,7 @@ import {
   getMailTextFieldSx,
 } from './mailUiTokens';
 import MailRichTextEditor from './MailRichTextEditor';
+import FileActionsContextMenu from '../fileActions/FileActionsContextMenu';
 import { buildComposeMailPreviewHtml } from './mailOutgoingPreview';
 import { sanitizeMailHtmlFragment } from './mailHtmlContent';
 import { hasQuotedHistoryMarkup } from './mailQuotedHistory';
@@ -218,6 +220,7 @@ function ComposerContent({
   const [showMeta, setShowMeta] = useState(false);
   const [showFormatting, setShowFormatting] = useState(false);
   const [editorFocused, setEditorFocused] = useState(false);
+  const [attachmentMenu, setAttachmentMenu] = useState({ item: null, anchorEl: null });
   const [quoteExpanded, setQuoteExpanded] = useState(false);
   const [recipientInputs, setRecipientInputs] = useState({ to: '', cc: '', bcc: '' });
 
@@ -258,11 +261,13 @@ function ComposerContent({
   const attachmentChips = [
     ...composeDraftAttachments.map((attachment, index) => ({
       key: `draft_${attachment.id || attachment.name || index}`,
+      name: attachment.name || 'Вложение',
       label: `${attachment.name || 'Вложение'} • сервер`,
       onDelete: () => onRemoveDraftAttachment?.(attachment.id),
     })),
     ...composeFiles.map((file, index) => ({
       key: `${file.name}_${index}`,
+      name: file.name || 'Вложение',
       label: `${file.name} • ${formatFileSize(file.size)}`,
       onDelete: () => onRemoveComposeFile?.(index),
     })),
@@ -276,6 +281,7 @@ function ComposerContent({
       setEditorFocused(false);
       setQuoteExpanded(false);
       setShowMeta(false);
+      setAttachmentMenu({ item: null, anchorEl: null });
       return;
     }
     setShowMeta(Boolean(composeSubject || composeCcValues.length || composeBccValues.length || composeMode !== 'new'));
@@ -940,28 +946,70 @@ function ComposerContent({
             <Box className="mail-scroll-hidden" sx={{ overflowX: 'auto', pb: 0.2 }}>
               <Stack direction="row" spacing={0.75} sx={{ width: 'max-content', minWidth: '100%' }}>
                 {attachmentChips.map((item) => (
-                  <Chip
+                  <Box
                     key={item.key}
-                    icon={<AttachFileRoundedIcon sx={{ fontSize: '15px !important' }} />}
-                    label={item.label}
-                    onDelete={item.onDelete}
                     sx={{
                       maxWidth: 260,
-                      height: 34,
+                      minWidth: 0,
+                      display: 'inline-flex',
+                      alignItems: 'center',
                       bgcolor: tokens.surfaceBg,
                       border: '1px solid',
                       borderColor: tokens.surfaceBorder,
-                      '& .MuiChip-label': {
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      },
+                      borderRadius: tokens.radiusSm,
+                      overflow: 'hidden',
                     }}
-                  />
+                  >
+                    <Chip
+                      icon={<AttachFileRoundedIcon sx={{ fontSize: '15px !important' }} />}
+                      label={item.label}
+                      sx={{
+                        minWidth: 0,
+                        maxWidth: 224,
+                        height: 34,
+                        borderRadius: 0,
+                        bgcolor: 'transparent',
+                        '& .MuiChip-label': {
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        },
+                      }}
+                    />
+                    <IconButton
+                      size="small"
+                      aria-label={`Действия для вложения ${item.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={attachmentMenu.item?.key === item.key ? 'true' : undefined}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setAttachmentMenu({ item, anchorEl: event.currentTarget });
+                      }}
+                      sx={{
+                        width: 34,
+                        height: 34,
+                        flexShrink: 0,
+                        borderRadius: 0,
+                        color: tokens.textSecondary,
+                        '&:active': { transform: 'scale(0.96)' },
+                      }}
+                    >
+                      <KeyboardArrowDownRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
                 ))}
               </Stack>
             </Box>
           ) : null}
+
+          <FileActionsContextMenu
+            open={Boolean(attachmentMenu.anchorEl)}
+            anchorEl={attachmentMenu.anchorEl}
+            fileName={attachmentMenu.item?.name || ''}
+            canDownload={false}
+            onClose={() => setAttachmentMenu({ item: null, anchorEl: null })}
+            onDelete={attachmentMenu.item?.onDelete}
+          />
 
           {attachmentCount > 0 ? (
             <Typography sx={getMailMetaTextSx(tokens)}>

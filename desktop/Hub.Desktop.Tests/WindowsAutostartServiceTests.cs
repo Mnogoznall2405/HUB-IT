@@ -1,4 +1,5 @@
 using Hub.Desktop.Autostart;
+using Hub.Desktop.Configuration;
 using Xunit;
 
 namespace Hub.Desktop.Tests;
@@ -60,6 +61,44 @@ public sealed class WindowsAutostartServiceTests
         Assert.Null(registry.Value);
         Assert.False(registry.Preference);
         Assert.False(service.IsEnabled);
+    }
+
+    [Fact]
+    public void ForcedOnPolicyEnablesAutostartWithoutOverwritingUserPreference()
+    {
+        var registry = new FakeAutostartRegistry { Preference = false };
+        var service = new WindowsAutostartService(
+            ExecutablePath,
+            registry,
+            DesktopAutostartMode.ForcedOn);
+
+        service.EnsureEnabledByDefault();
+
+        Assert.True(service.IsEnabled);
+        Assert.False(service.CanUserChange);
+        Assert.False(registry.Preference);
+        Assert.Throws<InvalidOperationException>(() => service.SetEnabled(false));
+    }
+
+    [Fact]
+    public void ForcedOffPolicyRemovesAutostartWithoutOverwritingUserPreference()
+    {
+        var registry = new FakeAutostartRegistry
+        {
+            Preference = true,
+            Value = $"\"{ExecutablePath}\" --background",
+        };
+        var service = new WindowsAutostartService(
+            ExecutablePath,
+            registry,
+            DesktopAutostartMode.ForcedOff);
+
+        service.EnsureEnabledByDefault();
+
+        Assert.False(service.IsEnabled);
+        Assert.False(service.CanUserChange);
+        Assert.True(registry.Preference);
+        Assert.Throws<InvalidOperationException>(() => service.SetEnabled(true));
     }
 
     [Fact]

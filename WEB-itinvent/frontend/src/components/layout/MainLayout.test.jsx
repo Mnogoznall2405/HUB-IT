@@ -11,6 +11,7 @@ const {
   mockHasPermission,
   mockNavigate,
   mockNotifyInfo,
+  mockNotifyWarning,
   mockToastHistory,
   mockClearToastHistory,
   mockMarkHubNotificationsSeen,
@@ -39,6 +40,7 @@ const {
   mockHasPermission: vi.fn(() => true),
   mockNavigate: vi.fn(),
   mockNotifyInfo: vi.fn(),
+  mockNotifyWarning: vi.fn(),
   mockToastHistory: [],
   mockClearToastHistory: vi.fn(),
   mockMarkHubNotificationsSeen: vi.fn(),
@@ -88,6 +90,7 @@ vi.mock('../../contexts/NotificationContext', () => ({
   useNotification: () => ({
     notifyApiError: vi.fn(),
     notifyInfo: mockNotifyInfo,
+    notifyWarning: mockNotifyWarning,
     toastHistory: mockToastHistory,
     clearToastHistory: mockClearToastHistory,
     hasSeenHubNotification: vi.fn(() => false),
@@ -356,6 +359,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockHasPermission.mockImplementation(() => true);
     mockNavigate.mockReset();
     mockNotifyInfo.mockReset();
+    mockNotifyWarning.mockReset();
     mockToastHistory.length = 0;
     mockClearToastHistory.mockReset();
     mockMarkHubNotificationsSeen.mockReset();
@@ -581,6 +585,50 @@ describe('MainLayout hub Windows notifications', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('consumes the notifications tray route exactly once and preserves unrelated query state', async () => {
+    mockLocation.search = '?desktop_action=notifications&view=compact';
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      pathname: '/dashboard',
+      search: '?view=compact',
+    }, { replace: true });
+  });
+
+  it('opens the permission-aware command palette with Ctrl+K and navigates by keyboard', async () => {
+    render(
+      <MainLayout>
+        <div>Content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    });
+    const input = screen.getByRole('combobox', { name: 'Команда или раздел' });
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'Задачи' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await Promise.resolve();
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith('/tasks');
   });
 
   it('keeps polling in a hidden tab and opens a deep-linked system notification for new hub items', async () => {

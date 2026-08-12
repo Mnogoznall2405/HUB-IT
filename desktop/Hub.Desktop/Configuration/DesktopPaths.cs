@@ -13,6 +13,8 @@ public static class DesktopPaths
 
     public static string LogsFolder { get; } = Path.Combine(Root, "Logs");
 
+    public static string SettingsFile { get; } = Path.Combine(Root, "settings.json");
+
     public static string UpdatesFolder { get; } = Path.Combine(Root, "Updates");
 
     public static string UpdatePackagesFolder { get; } = Path.Combine(UpdatesFolder, "Packages");

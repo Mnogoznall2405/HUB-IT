@@ -1,8 +1,17 @@
+import { useEffect, useState } from 'react';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import { ListItemIcon, ListItemText, Menu, MenuItem } from '@mui/material';
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
+import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import { Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
 
-import { requestDesktopOpenDownloadedFile } from '../../lib/desktopBridge';
+import {
+  isDesktopCapabilityAvailable,
+  requestDesktopDownloadedFileAction,
+} from '../../lib/desktopBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
 
 const DESKTOP_APPLICATION_EXTENSIONS = new Set([
@@ -45,19 +54,57 @@ export default function FileActionsContextMenu({
   busy = false,
   paperSx = null,
   onClose,
+  onPreview,
   onDownload,
+  onSaveAll,
+  onDelete,
+  onSelectAll,
 }) {
+  const [requestingAction, setRequestingAction] = useState('');
+  const [openIntentMessage, setOpenIntentMessage] = useState('');
+  const nativeShell = isNativeShellRuntime();
+  const nativeFileActions = nativeShell && isDesktopCapabilityAvailable('file-actions-v2');
   const canOpenInApplication = Boolean(
     canDownload
-    && isNativeShellRuntime()
+    && nativeShell
     && canOpenInDesktopApplication(fileName),
   );
+  const canPrintInApplication = canOpenInApplication && nativeFileActions;
+  const canCopyFile = Boolean(canDownload && nativeFileActions);
 
-  const runDownload = (openInApplication = false) => {
+  useEffect(() => {
+    if (!open) {
+      setRequestingAction('');
+      setOpenIntentMessage('');
+    }
+  }, [fileName, open]);
+
+  const runDownload = async (action = '') => {
+    if (action) {
+      setRequestingAction(action);
+      setOpenIntentMessage('');
+      const result = await requestDesktopDownloadedFileAction(action);
+      setRequestingAction('');
+      if (!result.accepted) {
+        setOpenIntentMessage(
+          result.status === 'busy'
+            ? 'Дождитесь завершения текущей загрузки и повторите действие'
+            : 'Не удалось выполнить действие. Повторите попытку',
+        );
+        return;
+      }
+    }
+
     onClose?.();
-    if (openInApplication && !requestDesktopOpenDownloadedFile()) return;
     onDownload?.();
   };
+
+  const runDirectAction = (action) => {
+    onClose?.();
+    action?.();
+  };
+
+  const actionBusy = Boolean(busy || requestingAction);
 
   return (
     <Menu
@@ -76,26 +123,104 @@ export default function FileActionsContextMenu({
         },
       }}
     >
+      {typeof onPreview === 'function' ? (
+        <MenuItem
+          data-testid="file-action-preview"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onPreview)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><VisibilityOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Просмотр</ListItemText>
+        </MenuItem>
+      ) : null}
       {canOpenInApplication ? (
         <MenuItem
           data-testid="file-action-open-in-application"
-          disabled={busy}
-          onClick={() => runDownload(true)}
+          disabled={actionBusy}
+          onClick={() => runDownload('open')}
           sx={{ minHeight: 40 }}
         >
           <ListItemIcon><OpenInNewRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Открыть в приложении</ListItemText>
+          <ListItemText>Открыть</ListItemText>
         </MenuItem>
       ) : null}
-      <MenuItem
-        data-testid="file-action-download"
-        disabled={!canDownload || busy}
-        onClick={() => runDownload(false)}
-        sx={{ minHeight: 40 }}
-      >
-        <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>Скачать</ListItemText>
-      </MenuItem>
+      {canPrintInApplication ? (
+        <MenuItem
+          data-testid="file-action-quick-print"
+          disabled={actionBusy}
+          onClick={() => runDownload('print')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><PrintRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Быстрая печать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {openIntentMessage ? (
+        <ListSubheader
+          role="status"
+          aria-live="polite"
+          sx={{ maxWidth: 280, py: 0.75, lineHeight: 1.35, whiteSpace: 'normal' }}
+        >
+          {openIntentMessage}
+        </ListSubheader>
+      ) : null}
+      {typeof onDownload === 'function' ? (
+        <MenuItem
+          data-testid="file-action-download"
+          disabled={!canDownload || actionBusy}
+          onClick={() => runDownload(nativeFileActions ? 'saveAs' : '')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{nativeFileActions ? 'Сохранить как' : 'Скачать'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onSaveAll === 'function' ? (
+        <MenuItem
+          data-testid="file-action-save-all"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onSaveAll)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Сохранить все вложения…</ListItemText>
+        </MenuItem>
+      ) : null}
+      {canCopyFile || typeof onDelete === 'function' || typeof onSelectAll === 'function' ? <Divider /> : null}
+      {canCopyFile ? (
+        <MenuItem
+          data-testid="file-action-copy"
+          disabled={actionBusy}
+          onClick={() => runDownload('copy')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><ContentCopyRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Копировать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onDelete === 'function' ? (
+        <MenuItem
+          data-testid="file-action-delete"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onDelete)}
+          sx={{ minHeight: 40, color: 'error.main' }}
+        >
+          <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Удалить вложение</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onSelectAll === 'function' ? (
+        <MenuItem
+          data-testid="file-action-select-all"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onSelectAll)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><SelectAllRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Выделить все</ListItemText>
+        </MenuItem>
+      ) : null}
     </Menu>
   );
 }

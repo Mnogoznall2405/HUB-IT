@@ -195,6 +195,11 @@ export default function MailConversationReader({
                               event?.stopPropagation?.();
                               onDownloadAttachment?.(item, attachment);
                             }}
+                            onSaveAll={visibleConversationAttachments.length > 1
+                              ? () => visibleConversationAttachments.forEach((candidate) => (
+                                onDownloadAttachment?.(item, candidate)
+                              ))
+                              : undefined}
                           />
                         ))}
                       </Stack>

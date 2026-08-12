@@ -12,6 +12,7 @@ import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsAc
 import { useTheme } from '@mui/material/styles';
 import { settingsAPI } from '../../../../api/client';
 import { getChatNotificationState, subscribeChatNotificationState } from '../../../../lib/chatNotifications';
+import { dispatchNotificationPreferencesChanged } from '../../../../lib/notificationPreferences';
 import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../../theme/officeUiTokens';
 import SectionCard from '../../shared/SectionCard';
 
@@ -35,13 +36,15 @@ export function NotificationChannelsSettingsCard() {
     setLoading(true);
     try {
       const data = await settingsAPI.getNotificationPreferences();
-      setChannels({
+      const nextChannels = {
         mail: Boolean(data?.channels?.mail ?? true),
         tasks: Boolean(data?.channels?.tasks ?? true),
         task_email: Boolean(data?.channels?.task_email ?? true),
         announcements: Boolean(data?.channels?.announcements ?? true),
         chat: Boolean(data?.channels?.chat ?? true),
-      });
+      };
+      setChannels(nextChannels);
+      dispatchNotificationPreferencesChanged(nextChannels);
     } finally {
       setLoading(false);
     }
@@ -56,13 +59,15 @@ export function NotificationChannelsSettingsCard() {
     setSaving(true);
     try {
       const data = await settingsAPI.updateNotificationPreferences({ [key]: Boolean(value) });
-      setChannels({
+      const nextChannels = {
         mail: Boolean(data?.channels?.mail ?? true),
         tasks: Boolean(data?.channels?.tasks ?? true),
         task_email: Boolean(data?.channels?.task_email ?? true),
         announcements: Boolean(data?.channels?.announcements ?? true),
         chat: Boolean(data?.channels?.chat ?? true),
-      });
+      };
+      setChannels(nextChannels);
+      dispatchNotificationPreferencesChanged(nextChannels);
     } finally {
       setSaving(false);
     }

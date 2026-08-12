@@ -54,8 +54,26 @@ describe('MailAttachmentHero', () => {
     expect(screen.queryByTestId('mail-attachment-hero-item-0')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mail-attachment-show-all')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('mail-attachment-compact-card-1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Просмотр вложения file-1.pdf' }));
     expect(onOpen).toHaveBeenCalled();
+  });
+
+  it('opens an Outlook-style file menu from the visible arrow', async () => {
+    const onOpen = vi.fn();
+    const onDownload = vi.fn();
+    renderWithTheme(
+      <MailAttachmentHero
+        attachments={[buildAttachment(0), buildAttachment(1)]}
+        onOpen={onOpen}
+        onDownload={onDownload}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Действия для вложения file-0.pdf' }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Просмотр' })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Скачать' })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Сохранить все вложения…' })).toBeVisible();
   });
 
   it('shows all compact cards in scroll and opens sheet from show-all for many attachments', () => {

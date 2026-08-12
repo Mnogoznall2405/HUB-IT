@@ -5,7 +5,7 @@ import os
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from urllib.parse import quote
 
 from backend.api.deps import (
@@ -390,6 +390,65 @@ async def download_movement_file(
                 f"filename*=UTF-8''{utf8_name}"
             ),
             "Content-Length": str(int(payload.get("size") or len(payload["content"]))),
+        },
+    )
+
+
+@router.get("/movements/files/{file_ref}/preview")
+async def get_movement_file_preview(
+    file_ref: str,
+    registrar_ref: str = Query(..., max_length=64),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    preview = await run_in_threadpool(
+        warehouse_1c_service.get_movement_file_preview_state,
+        user_id=int(current_user.id),
+        registrar_ref=registrar_ref,
+        file_ref=file_ref,
+    )
+    preview_status = str(preview.get("status") or "queued").strip().lower()
+    if preview_status == "ready":
+        return preview
+    if preview_status == "failed":
+        return JSONResponse(content=preview, status_code=422)
+    retry_after_ms = max(100, int(preview.get("retry_after_ms") or 500))
+    return JSONResponse(
+        content=preview,
+        status_code=202,
+        headers={"Retry-After": str(max(1, (retry_after_ms + 999) // 1000))},
+    )
+
+
+@router.get("/movements/files/{file_ref}/preview/pdf")
+async def download_movement_file_preview_pdf(
+    file_ref: str,
+    registrar_ref: str = Query(..., max_length=64),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    preview = await run_in_threadpool(
+        warehouse_1c_service.get_movement_file_preview_artifact,
+        user_id=int(current_user.id),
+        registrar_ref=registrar_ref,
+        file_ref=file_ref,
+    )
+    preview_status = str(preview.get("status") or "queued").strip().lower()
+    if preview_status != "ready":
+        status_code = 422 if preview_status == "failed" else 202
+        headers = {}
+        if status_code == 202:
+            retry_after_ms = max(100, int(preview.get("retry_after_ms") or 500))
+            headers["Retry-After"] = str(max(1, (retry_after_ms + 999) // 1000))
+        return JSONResponse(content=preview, status_code=status_code, headers=headers)
+    return FileResponse(
+        path=str(preview["path"]),
+        filename=str(preview.get("pdf_filename") or "preview.pdf"),
+        media_type="application/pdf",
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Warehouse-Preview-Source-Kind": str(preview.get("source_kind") or ""),
+            "X-Warehouse-Preview-Page-Count": str(int(preview.get("page_count") or 0)),
         },
     )
 

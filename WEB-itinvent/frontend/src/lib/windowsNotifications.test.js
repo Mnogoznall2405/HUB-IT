@@ -159,7 +159,7 @@ describe('windowsNotifications helper', () => {
     expect(mailCreated).toMatchObject({ native: true });
     expect(notificationInstances).toHaveLength(0);
     expect(desktopBridgeMocks.show).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      id: 'hub:hub-notification-native',
+      id: 'task:hub-notification-native',
       route: '/tasks?task=task-77&task_tab=comments',
     }));
     expect(desktopBridgeMocks.show).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -183,7 +183,7 @@ describe('windowsNotifications helper', () => {
     const created = createMailSystemNotification(payload, { onNavigate });
     expect(created).toBeTruthy();
     expect(notificationInstances).toHaveLength(1);
-    expect(notificationInstances[0].options.tag).toBe(`mail:${notificationId}`);
+    expect(notificationInstances[0].options.tag).toBe('mail:mailbox-1:_stable-message_example.com_');
     expect(hasShownMailSystemNotification(notificationId)).toBe(true);
 
     const duplicated = createMailSystemNotification({ ...payload, id: 'encoded-message-2' }, { onNavigate });

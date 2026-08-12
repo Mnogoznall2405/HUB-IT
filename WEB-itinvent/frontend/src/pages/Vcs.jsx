@@ -31,6 +31,7 @@ import {
 import {
     Add as AddIcon,
     Computer as ComputerIcon,
+    ContentCopy as CopyIcon,
     Delete as DeleteIcon,
     Dns as IpIcon,
     Download as DownloadIcon,
@@ -44,6 +45,11 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { vcsAPI } from '../api/vcs';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
+import {
+    isDesktopCapabilityAvailable,
+    requestDesktopVncPreflight,
+} from '../lib/desktopBridge';
+import { normalizeVncEndpoint } from '../lib/vncEndpoint';
 
 const Vcs = () => {
     const theme = useTheme();
@@ -88,33 +94,7 @@ const Vcs = () => {
     }, [canReadVcs]);
 
     const normalizeEndpoint = (rawValue) => {
-        let value = String(rawValue || '').trim();
-        if (!value) {
-            return '';
-        }
-
-        const hostFieldMatch = value.match(/(?:^|[\s\r\n])host\s*=\s*([^\s\r\n]+)/i);
-        if (hostFieldMatch?.[1]) {
-            value = hostFieldMatch[1].trim();
-        }
-
-        const ipv4Match = value.match(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/);
-        if (ipv4Match?.[0]) {
-            return ipv4Match[0];
-        }
-
-        let cleaned = value
-            .replace(/^(vnc:\/\/|http:\/\/|https:\/\/)/i, '')
-            .replace(/^\/+/, '')
-            .split(/[/?#\s\r\n]/)[0]
-            .trim();
-
-        if (cleaned.endsWith(':')) {
-            cleaned = cleaned.slice(0, -1);
-        }
-
-        const hostMatch = cleaned.match(/^[a-zA-Z0-9][a-zA-Z0-9.-]*(?::\d+)?$/);
-        return hostMatch ? cleaned : '';
+        return normalizeVncEndpoint(rawValue);
     };
 
     const buildVncUri = (ipAddress, launchToken = '') => {
@@ -257,6 +237,16 @@ const Vcs = () => {
 
     const handleConnectClick = async (comp) => {
         try {
+            if (isDesktopCapabilityAvailable('vnc-preflight')) {
+                const preflight = await requestDesktopVncPreflight();
+                if (!preflight.available) {
+                    setError(preflight.status === 'missing'
+                        ? 'Обработчик VNC не найден. Установите VNC-протокол кнопкой выше и повторите подключение.'
+                        : 'Не удалось проверить VNC-протокол. Повторите попытку или скачайте файл подключения.');
+                    return;
+                }
+            }
+
             const launch = await vcsAPI.createLaunchToken(comp.id);
             const uri = buildVncUri(comp.ip_address, launch.token);
             if (!uri) return;
@@ -282,6 +272,22 @@ const Vcs = () => {
         } catch (err) {
             console.error("Download error", err);
             setError('Ошибка получения VNC конфигурации');
+        }
+    };
+
+    const handleCopyAddress = async (comp) => {
+        const endpoint = normalizeEndpoint(comp.ip_address);
+        if (!endpoint) {
+            setError('Некорректный адрес VNC. Исправьте адрес терминала и повторите попытку.');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(endpoint);
+            setError('');
+        } catch (err) {
+            console.error('VNC address copy failed', err);
+            setError('Не удалось скопировать адрес VNC. Выделите адрес в карточке вручную.');
         }
     };
 
@@ -628,6 +634,23 @@ const Vcs = () => {
                                                     }}
                                                 >
                                                     <DownloadIcon fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+
+                                            <Tooltip title="Скопировать адрес VNC">
+                                                <IconButton
+                                                    size="small"
+                                                    color="primary"
+                                                    onClick={() => handleCopyAddress(comp)}
+                                                    aria-label={`Скопировать адрес VNC ${comp.name}`}
+                                                    sx={{
+                                                        bgcolor: ui.actionBg,
+                                                        borderRadius: 1.5,
+                                                        border: `1px solid ${ui.borderSoft}`,
+                                                        '&:hover': { bgcolor: ui.actionHover, borderColor: ui.borderStrong },
+                                                    }}
+                                                >
+                                                    <CopyIcon fontSize="small" />
                                                 </IconButton>
                                             </Tooltip>
                                         </Box>

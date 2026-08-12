@@ -1,4 +1,12 @@
-import { isDesktopNotificationAvailable, showDesktopNotification } from './desktopBridge';
+import { isDesktopNotificationAvailable } from './desktopBridge';
+import {
+  buildSystemNotificationId,
+  createSystemNotificationEnvelope,
+} from './systemNotificationEnvelope';
+import {
+  hasDeliveredSystemNotification,
+  routeSystemNotification,
+} from './systemNotificationRouter';
 
 export const WINDOWS_NOTIFICATIONS_ENABLED_KEY = 'itinvent_windows_notifications_enabled';
 export const WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY = 'itinvent_windows_notifications_explicitly_set';
@@ -64,12 +72,6 @@ function truncateNotificationText(value, { fallback = '', maxLength = 120 } = {}
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 1) return normalized.slice(0, maxLength);
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function buildDesktopNotificationId(prefix, value) {
-  const normalizedPrefix = String(prefix || 'system').replace(/[^A-Za-z0-9._:-]/gu, '_');
-  const normalizedValue = String(value || '').replace(/[^A-Za-z0-9._:-]/gu, '_');
-  return `${normalizedPrefix}:${normalizedValue}`.slice(0, 128);
 }
 
 export function getMailNotificationDisplay(item) {
@@ -216,7 +218,10 @@ export function getHubNotificationActionLabel(item) {
 export function hasShownHubSystemNotification(notificationId) {
   const normalizedId = String(notificationId || '').trim();
   if (!normalizedId) return false;
-  return readShownNotificationIds().includes(`hub:${normalizedId}`);
+  if (readShownNotificationIds().includes(`hub:${normalizedId}`)) return true;
+  return ['task', 'feed', 'ticket', 'scan']
+    .some((channel) => hasDeliveredSystemNotification(buildSystemNotificationId(channel, normalizedId)))
+    || hasDeliveredSystemNotification(buildSystemNotificationId('chat', `hub:${normalizedId}`));
 }
 
 export function markHubSystemNotificationShown(notificationId) {
@@ -233,7 +238,8 @@ export function markHubSystemNotificationShown(notificationId) {
 export function hasShownMailSystemNotification(messageId) {
   const normalizedId = String(messageId || '').trim();
   if (!normalizedId) return false;
-  return readShownNotificationIds().includes(`mail:${normalizedId}`);
+  return readShownNotificationIds().includes(`mail:${normalizedId}`)
+    || hasDeliveredSystemNotification(buildSystemNotificationId('mail', normalizedId));
 }
 
 export function markMailSystemNotificationShown(messageId) {
@@ -262,59 +268,72 @@ export function getMailSystemNotificationId(item) {
   return mailboxId ? `${mailboxId}:${stableMessageId}` : stableMessageId;
 }
 
+function resolveHubNotificationChannel(item) {
+  const entityType = String(item?.entity_type || '').trim().toLowerCase();
+  if (entityType === 'task') return 'task';
+  if (entityType === 'announcement') return 'feed';
+  if (entityType === 'ticket') return 'ticket';
+  if (entityType === 'scan') return 'scan';
+  if (entityType === 'chat') {
+    const eventType = String(item?.event_type || '').trim().toLowerCase();
+    return eventType.includes('mention') ? 'mention' : 'chat';
+  }
+  return '';
+}
+
+function resolveHubNotificationEnvelopeId(item, channel, notificationId) {
+  if (channel === 'chat' || channel === 'mention') {
+    const messageId = String(
+      item?.message_id
+      || item?.entity_message_id
+      || item?.payload?.message_id
+      || '',
+    ).trim();
+    return buildSystemNotificationId('chat', messageId ? `msg:${messageId}` : `hub:${notificationId}`);
+  }
+  return buildSystemNotificationId(channel, notificationId);
+}
+
+function resolveNotificationCreatedAt(value) {
+  return Number.isFinite(Date.parse(value)) ? String(value) : new Date().toISOString();
+}
+
+function resolveNotificationUrgency(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'low') return 'low';
+  if (normalized === 'high' || normalized === 'urgent' || normalized === 'critical') return 'high';
+  return 'normal';
+}
+
 export function createHubSystemNotification(item, { onNavigate } = {}) {
   const normalizedId = String(item?.id || '').trim();
   if (!normalizedId) return null;
   if (hasShownHubSystemNotification(normalizedId)) return null;
 
+  const channel = resolveHubNotificationChannel(item);
+  if (!channel) return null;
   const rawTitle = String(item?.title || '').trim();
   const rawBody = String(item?.body || '').trim();
   const title = rawTitle || 'Новое уведомление';
   const body = rawBody || rawTitle || 'Откройте центр управления для просмотра деталей.';
   const navigateTo = getHubNotificationNavigateTo(item);
-
-  if (isDesktopNotificationAvailable() && showDesktopNotification({
-    id: buildDesktopNotificationId('hub', normalizedId),
+  const envelope = createSystemNotificationEnvelope({
+    id: resolveHubNotificationEnvelopeId(item, channel, normalizedId),
+    channel,
     title: truncateNotificationText(title, { fallback: 'Новое уведомление', maxLength: 128 }),
     body: truncateNotificationText(body, {
       fallback: 'Откройте HUB, чтобы посмотреть уведомление.',
       maxLength: 512,
     }),
     route: navigateTo,
-  })) {
-    markHubSystemNotificationShown(normalizedId);
+    created_at: resolveNotificationCreatedAt(item?.created_at),
+    urgency: resolveNotificationUrgency(item?.urgency || item?.priority),
+  });
+  const result = routeSystemNotification(envelope, { onNavigate, source: item });
+  if (result?.delivery === 'desktop') {
     return { native: true, notificationId: normalizedId };
   }
-
-  if (!isBrowserNotificationSupported()) return null;
-  if (getBrowserNotificationPermission() !== 'granted') return null;
-
-  try {
-    const notification = new window.Notification(title, {
-      body,
-      tag: `hub:${normalizedId}`,
-      renotify: false,
-    });
-    markHubSystemNotificationShown(normalizedId);
-    notification.onclick = () => {
-      try {
-        notification.close?.();
-      } catch {
-        // Ignore notification close failures.
-      }
-      try {
-        window.focus?.();
-      } catch {
-        // Ignore focus failures.
-      }
-      if (typeof onNavigate === 'function') {
-        onNavigate(navigateTo, item);
-      }
-    };
-    return notification;
-  } catch {
-    return null;
-  }
+  return result?.delivery === 'browser' ? result.notification : null;
 }
 
 export function createMailSystemNotification(item, { onNavigate } = {}) {
@@ -338,44 +357,18 @@ export function createMailSystemNotification(item, { onNavigate } = {}) {
     routeParts.push(`mailbox_id=${encodeURIComponent(mailboxId)}`);
   }
   const route = `/mail?${routeParts.join('&')}`;
-
-  if (isDesktopNotificationAvailable() && showDesktopNotification({
-    id: buildDesktopNotificationId('mail', notificationId),
+  const envelope = createSystemNotificationEnvelope({
+    id: buildSystemNotificationId('mail', notificationId),
+    channel: 'mail',
     title: truncateNotificationText(title, { fallback: 'Новое письмо', maxLength: 128 }),
     body: truncateNotificationText(body, { fallback: '(без темы)', maxLength: 512 }),
     route,
-  })) {
-    markMailSystemNotificationShown(notificationId);
+    created_at: resolveNotificationCreatedAt(item?.created_at || item?.received_at),
+    urgency: resolveNotificationUrgency(item?.urgency || item?.priority),
+  });
+  const result = routeSystemNotification(envelope, { onNavigate, source: item });
+  if (result?.delivery === 'desktop') {
     return { native: true, notificationId };
   }
-
-  if (!isBrowserNotificationSupported()) return null;
-  if (getBrowserNotificationPermission() !== 'granted') return null;
-
-  try {
-    const notification = new window.Notification(title, {
-      body,
-      tag: `mail:${notificationId}`,
-      renotify: false,
-    });
-    markMailSystemNotificationShown(notificationId);
-    notification.onclick = () => {
-      try {
-        notification.close?.();
-      } catch {
-        // Ignore notification close failures.
-      }
-      try {
-        window.focus?.();
-      } catch {
-        // Ignore focus failures.
-      }
-      if (typeof onNavigate === 'function') {
-        onNavigate(route, item);
-      }
-    };
-    return notification;
-  } catch {
-    return null;
-  }
+  return result?.delivery === 'browser' ? result.notification : null;
 }

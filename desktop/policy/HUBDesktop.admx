@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitions revision="1.0" schemaVersion="1.0">
+  <policyNamespaces>
+    <target prefix="hubdesktop" namespace="HUBIT.Policies.Desktop" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_HUB_DESKTOP" displayName="$(string.SUPPORTED_HUB_DESKTOP)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="HUBDesktop" displayName="$(string.HUBDesktop_Category)" />
+  </categories>
+  <policies>
+    <policy name="AutostartMode"
+            class="Machine"
+            displayName="$(string.AutostartMode_Name)"
+            explainText="$(string.AutostartMode_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="AutostartMode">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <elements>
+        <enum id="AutostartModeValue" valueName="AutostartMode" required="true">
+          <item displayName="$(string.AutostartMode_UserChoice)"><value><decimal value="0" /></value></item>
+          <item displayName="$(string.AutostartMode_ForcedOn)"><value><decimal value="1" /></value></item>
+          <item displayName="$(string.AutostartMode_ForcedOff)"><value><decimal value="2" /></value></item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="UpdatesEnabled"
+            class="Machine"
+            displayName="$(string.UpdatesEnabled_Name)"
+            explainText="$(string.UpdatesEnabled_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="UpdatesEnabled">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="UpdateDeferralHours"
+            class="Machine"
+            displayName="$(string.UpdateDeferralHours_Name)"
+            explainText="$(string.UpdateDeferralHours_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="UpdateDeferralHours">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <elements>
+        <decimal id="UpdateDeferralHoursValue"
+                 valueName="UpdateDeferralHours"
+                 required="true"
+                 minValue="0"
+                 maxValue="168" />
+      </elements>
+    </policy>
+    <policy name="DiagnosticsExportEnabled"
+            class="Machine"
+            displayName="$(string.DiagnosticsExportEnabled_Name)"
+            explainText="$(string.DiagnosticsExportEnabled_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="DiagnosticsExportEnabled">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="NotificationFallbackEnabled"
+            class="Machine"
+            displayName="$(string.NotificationFallbackEnabled_Name)"
+            explainText="$(string.NotificationFallbackEnabled_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="NotificationFallbackEnabled">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+  </policies>
+</policyDefinitions>

@@ -82,7 +82,7 @@ describe('MailMessageReader', () => {
     renderWithTheme(<MailMessageReader {...props} />);
 
     expect(screen.getByTestId('mail-attachment-hero-item-0')).toBeVisible();
-    fireEvent.click(screen.getByTestId('mail-attachment-hero-item-0'));
+    fireEvent.click(screen.getByRole('button', { name: 'Просмотр вложения quarterly-report.pdf' }));
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
     expect(props.onOpenAttachment).toHaveBeenCalledWith(props.message, reportAttachment);
   });

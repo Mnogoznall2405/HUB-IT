@@ -262,7 +262,7 @@ class SettingsService:
         data = self._load_all()
         raw = data.get(str(int(user_id))) or {}
         settings = {**self.DEFAULTS, **raw}
-        if settings["theme_mode"] not in {"light", "dark"}:
+        if settings["theme_mode"] not in {"light", "dark", "system"}:
             settings["theme_mode"] = "light"
         if settings["font_family"] not in self.ALLOWED_FONT_FAMILIES:
             settings["font_family"] = "Aptos"
@@ -294,7 +294,7 @@ class SettingsService:
         if "pinned_database" in patch:
             value = patch.get("pinned_database")
             current["pinned_database"] = str(value).strip() if value not in (None, "") else None
-        if "theme_mode" in patch and str(patch.get("theme_mode")) in {"light", "dark"}:
+        if "theme_mode" in patch and str(patch.get("theme_mode")) in {"light", "dark", "system"}:
             current["theme_mode"] = str(patch.get("theme_mode"))
         if "font_family" in patch and str(patch.get("font_family")) in self.ALLOWED_FONT_FAMILIES:
             current["font_family"] = str(patch.get("font_family"))

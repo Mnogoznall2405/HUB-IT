@@ -1,4 +1,5 @@
-import { Box, ButtonBase, Stack, Typography } from '@mui/material';
+import { Box, ButtonBase, IconButton, Stack, Typography } from '@mui/material';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useMemo, useState } from 'react';
 import MailAttachmentCompactCard from './MailAttachmentCompactCard';
@@ -17,6 +18,8 @@ function MailAttachmentHeroCard({
   formatFileSize,
   onOpen,
   onFileActions,
+  onMenuOpen,
+  menuOpen = false,
   tokens,
 }) {
   const visual = getMailAttachmentVisual(attachment);
@@ -26,11 +29,9 @@ function MailAttachmentHeroCard({
   const sizeLabel = size > 0 && typeof formatFileSize === 'function' ? formatFileSize(size) : '';
 
   return (
-    <ButtonBase
+    <Box
       data-testid={`mail-attachment-hero-item-${index}`}
-      onClick={() => onOpen?.(attachment)}
       onContextMenu={(event) => onFileActions?.(event, attachment)}
-      onKeyDown={(event) => onFileActions?.(event, attachment)}
       sx={{
         width: '100%',
         display: 'flex',
@@ -43,26 +44,56 @@ function MailAttachmentHeroCard({
         bgcolor: tokens.isDark ? '#191d24' : '#f5f6f8',
       }}
     >
-      <Box
+      <ButtonBase
+        aria-label={`Просмотр вложения ${name}`}
+        onClick={() => onOpen?.(attachment)}
+        onKeyDown={(event) => onFileActions?.(event, attachment)}
         sx={{
-          width: 56,
-          flexShrink: 0,
-          display: 'grid',
-          placeItems: 'center',
-          bgcolor: tokens.isDark ? alpha('#ffffff', 0.04) : alpha(visual.color, 0.08),
+          minWidth: 0,
+          flex: 1,
+          display: 'flex',
+          alignItems: 'stretch',
+          textAlign: 'left',
         }}
       >
-        <IconComponent sx={{ color: visual.color, fontSize: 28 }} />
+        <Box
+          sx={{
+            width: 56,
+            flexShrink: 0,
+            display: 'grid',
+            placeItems: 'center',
+            bgcolor: tokens.isDark ? alpha('#ffffff', 0.04) : alpha(visual.color, 0.08),
+          }}
+        >
+          <IconComponent sx={{ color: visual.color, fontSize: 28 }} />
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1, px: 1.2, py: 1.05 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', noWrap: true, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {name}
+          </Typography>
+          <Typography sx={{ mt: 0.2, color: tokens.textSecondary, fontSize: '0.78rem' }}>
+            {[visual.label, sizeLabel].filter(Boolean).join(' • ')}
+          </Typography>
+        </Box>
+      </ButtonBase>
+      <Box sx={{ display: 'grid', placeItems: 'center', px: 0.35 }}>
+        <IconButton
+          size="small"
+          aria-label={`Действия для вложения ${name}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen ? 'true' : undefined}
+          onClick={(event) => onMenuOpen?.(event, attachment)}
+          sx={{
+            width: 36,
+            height: 36,
+            color: tokens.textSecondary,
+            '&:active': { transform: 'scale(0.96)' },
+          }}
+        >
+          <KeyboardArrowDownRoundedIcon />
+        </IconButton>
       </Box>
-      <Box sx={{ minWidth: 0, flex: 1, px: 1.2, py: 1.05 }}>
-        <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', noWrap: true, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {name}
-        </Typography>
-        <Typography sx={{ mt: 0.2, color: tokens.textSecondary, fontSize: '0.78rem' }}>
-          {[visual.label, sizeLabel].filter(Boolean).join(' • ')}
-        </Typography>
-      </Box>
-    </ButtonBase>
+    </Box>
   );
 }
 
@@ -76,7 +107,11 @@ export default function MailAttachmentHero({
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [fileActionsMenu, setFileActionsMenu] = useState({ attachment: null, anchorPosition: null });
+  const [fileActionsMenu, setFileActionsMenu] = useState({
+    attachment: null,
+    anchorEl: null,
+    anchorPosition: null,
+  });
 
   if (!attachments.length) return null;
 
@@ -86,11 +121,24 @@ export default function MailAttachmentHero({
     if (event.type === 'keydown' && !isFileActionsKeyboardShortcut(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    setFileActionsMenu({ attachment, anchorPosition: getFileActionsAnchorPosition(event) });
+    setFileActionsMenu({
+      attachment,
+      anchorEl: null,
+      anchorPosition: getFileActionsAnchorPosition(event),
+    });
+  };
+  const openAnchoredFileActionsMenu = (event, attachment) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsMenu({ attachment, anchorEl: event.currentTarget, anchorPosition: null });
   };
   const closeFileActionsMenu = () => {
-    setFileActionsMenu({ attachment: null, anchorPosition: null });
+    setFileActionsMenu({ attachment: null, anchorEl: null, anchorPosition: null });
   };
+  const isMenuOpenFor = (attachment) => Boolean(
+    (fileActionsMenu.anchorEl || fileActionsMenu.anchorPosition)
+    && fileActionsMenu.attachment === attachment
+  );
 
   return (
     <>
@@ -109,6 +157,8 @@ export default function MailAttachmentHero({
                   formatFileSize={formatFileSize}
                   onOpen={onOpen}
                   onFileActions={openFileActionsMenu}
+                  onMenuOpen={openAnchoredFileActionsMenu}
+                  menuOpen={isMenuOpenFor(attachment)}
                   tokens={tokens}
                 />
               ))}
@@ -130,6 +180,8 @@ export default function MailAttachmentHero({
               formatFileSize={formatFileSize}
               onOpen={onOpen}
               onFileActions={openFileActionsMenu}
+              onMenuOpen={openAnchoredFileActionsMenu}
+              menuOpen={isMenuOpenFor(attachment)}
               tokens={tokens}
             />
           ))
@@ -143,16 +195,25 @@ export default function MailAttachmentHero({
         formatFileSize={formatFileSize}
         onOpen={onOpen}
         onFileActions={openFileActionsMenu}
+        onMenuOpen={openAnchoredFileActionsMenu}
+        activeAttachment={fileActionsMenu.attachment}
       />
 
       <FileActionsContextMenu
-        open={Boolean(fileActionsMenu.anchorPosition)}
+        open={Boolean(fileActionsMenu.anchorEl || fileActionsMenu.anchorPosition)}
+        anchorEl={fileActionsMenu.anchorEl}
         anchorPosition={fileActionsMenu.anchorPosition}
         fileName={fileActionsMenu.attachment?.name || ''}
         canDownload={Boolean(fileActionsMenu.attachment && typeof onDownload === 'function')}
+        onPreview={fileActionsMenu.attachment
+          ? () => onOpen?.(fileActionsMenu.attachment)
+          : undefined}
         onClose={closeFileActionsMenu}
         onDownload={fileActionsMenu.attachment
           ? () => onDownload?.(fileActionsMenu.attachment)
+          : undefined}
+        onSaveAll={attachments.length > 1 && typeof onDownload === 'function'
+          ? () => attachments.forEach((attachment) => onDownload(attachment))
           : undefined}
       />
     </>

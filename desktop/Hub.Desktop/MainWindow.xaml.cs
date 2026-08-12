@@ -1,22 +1,35 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shell;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using Hub.Desktop.Autostart;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
+using Hub.Desktop.DeepLinks;
+using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
+using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Notifications;
+using Hub.Desktop.Printing;
+using Hub.Desktop.Remote;
 using Hub.Desktop.Security;
+using Hub.Desktop.Shell;
+using Hub.Desktop.Transfers;
 using Hub.Desktop.UI;
 using Hub.Desktop.UpdateCore;
 using Hub.Desktop.Updates;
+using Hub.Desktop.ViewModels;
+using Hub.Desktop.Views;
+using Hub.Desktop.WebView;
+using Hub.Desktop.Workspace;
 using Application = System.Windows.Application;
 using Forms = System.Windows.Forms;
 using Drawing = System.Drawing;
@@ -25,52 +38,131 @@ namespace Hub.Desktop;
 
 public partial class MainWindow : Window
 {
-    private static readonly HashSet<string> DesktopDocumentExtensions = new(
-        [
-            ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
-            ".xls", ".xlsx", ".xlsm", ".xlt", ".xltx", ".xltm",
-            ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm",
-            ".odt", ".ods", ".odp", ".rtf", ".csv", ".pdf",
-        ],
-        StringComparer.OrdinalIgnoreCase);
-
     private readonly DesktopOptions _options;
     private readonly IDesktopNotificationService _notifications;
     private readonly IAutostartService _autostart;
     private readonly NavigationPolicy _navigationPolicy;
     private readonly bool _startHidden;
     private readonly Forms.ToolStripMenuItem _autostartItem;
-    private readonly Forms.ContextMenuStrip _trayMenu;
+    private readonly HubTrayContextMenu _trayMenu;
     private readonly Forms.NotifyIcon _trayIcon;
     private readonly Drawing.Icon _applicationIcon;
     private readonly DesktopNotificationWindow _desktopNotificationWindow;
-    private readonly DesktopUpdateService _updates;
+    private readonly DesktopUpdateCoordinator _updates;
+    private readonly DesktopRuntimeSnapshot _runtime;
+    private readonly DesktopPolicy _policy;
+    private readonly DesktopDownloadCoordinator _downloads = new();
+    private readonly WebViewRecoveryPolicy _webViewRecovery = new();
+    private readonly CancellationTokenSource _recoveryShutdown = new();
     private readonly Forms.ToolStripMenuItem _updateItem;
+    private readonly Forms.ToolStripMenuItem _checkUpdatesItem;
+    private readonly Forms.ToolStripMenuItem _settingsItem;
+    private readonly Forms.ToolStripMenuItem _aboutItem;
+    private readonly Forms.ToolStripMenuItem _diagnosticsItem;
+    private readonly Forms.ToolStripMenuItem _downloadsItem;
+    private readonly Forms.ToolStripMenuItem _openInBrowserItem;
+    private readonly Forms.ToolStripMenuItem _printItem;
+    private readonly Forms.ToolStripMenuItem _commandPaletteItem;
+    private readonly Forms.ToolStripMenuItem _quietModeItem;
+    private readonly Forms.ToolStripMenuItem _privacyNotificationItem;
+    private readonly Forms.ToolStripMenuItem _sectionsItem;
+    private readonly Forms.ToolStripMenuItem _desktopToolsItem;
+    private readonly Forms.ToolStripMenuItem _notificationsQuickRouteItem;
+    private readonly Forms.ToolStripMenuItem _tasksQuickRouteItem;
+    private readonly Forms.ToolStripMenuItem _chatQuickRouteItem;
+    private readonly Forms.ToolStripMenuItem _mailQuickRouteItem;
+    private readonly Forms.ToolStripMenuItem _moreQuickRoutesItem;
+    private readonly DesktopDiagnosticsCollector _diagnostics = new();
+    private readonly DesktopPerformanceMetrics _performance;
+    private readonly DispatcherTimer _performanceTimer;
+    private readonly DispatcherTimer _downloadFailureTimer;
+    private readonly DesktopWebViewHost _webViewHost;
+    private readonly DesktopWindowController _windowController;
+    private readonly DesktopApplicationController _applicationController;
+    private readonly DesktopSettingsStore _settingsStore = new(DesktopPaths.SettingsFile);
+    private readonly DesktopWindowPlacementService _windowPlacement = new();
+    private readonly DesktopPrintService _printing = new();
+    private readonly DesktopTaskbarProgress _downloadTaskbarProgress = new();
+    private readonly DesktopGlobalHotkey _globalHotkey = new();
+    private readonly DesktopSettings _startupSettings;
+    private DesktopSettings _notificationSettings;
     private DesktopBridgeHost? _desktopBridge;
     private WebView2? _webView;
     private HwndSource? _windowSource;
     private string? _pendingInternalRoute;
     private bool _initializing;
     private bool _requiresReset;
-    private bool _exitRequested;
+    private bool _recoveryInProgress;
     private bool _trayHintShown;
-    private DateTime _openDownloadedFileRequestedUntilUtc = DateTime.MinValue;
     private DesktopUpdatePackage? _readyUpdate;
+    private AboutWindow? _aboutWindow;
+    private DiagnosticsWindow? _diagnosticsWindow;
+    private DownloadsWindow? _downloadsWindow;
+    private CancellationTokenSource? _navigationTimeout;
+    private string _lastNavigationStatus = "NotStarted";
+    private DateTimeOffset? _lastNavigationAtUtc;
+    private DateTimeOffset? _lastBridgeHandshakeUtc;
+    private bool _diagnosticsOpening;
+    private DesktopThemeMode _currentThemeMode = DesktopThemeMode.Dark;
+    private DesktopShellStatus _shellStatus = DesktopShellStatus.Empty;
+    private bool _sessionLocked;
+    private bool _sessionNotificationsRegistered;
+    private string _presentedTaskbarBadgeText = string.Empty;
+    private string? _lastPersistedSafeRoute;
+    private bool _restoreMaximizedWhenShown;
+    private bool _pendingCommandPalette;
 
     public MainWindow(
         DesktopOptions options,
         IDesktopNotificationService notifications,
         IAutostartService autostart,
-        DesktopUpdateService updates,
+        DesktopUpdateCoordinator updates,
+        DesktopRuntimeSnapshot runtime,
+        DesktopPolicy policy,
         bool startHidden = false)
     {
         _options = options;
         _notifications = notifications;
         _autostart = autostart;
         _updates = updates;
+        _runtime = runtime;
+        _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _startHidden = startHidden;
+        _startupSettings = _settingsStore.Load();
+        _notificationSettings = _startupSettings;
+        _lastPersistedSafeRoute = _startupSettings.LastSafeRoute;
+        _pendingInternalRoute = _startupSettings.StartupPage == DesktopStartupPage.LastSafePage
+            ? _startupSettings.LastSafeRoute
+            : null;
         _navigationPolicy = new NavigationPolicy(options.BaseUri);
+        _performance = new DesktopPerformanceMetrics(GetProcessStartedAt());
+        _performanceTimer = new DispatcherTimer(
+            DispatcherPriority.Background,
+            Dispatcher)
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _performanceTimer.Tick += PerformanceTimer_Tick;
+        _performanceTimer.Start();
+        _downloadFailureTimer = new DispatcherTimer(
+            DispatcherPriority.Background,
+            Dispatcher)
+        {
+            Interval = TimeSpan.FromSeconds(3),
+        };
+        _downloadFailureTimer.Tick += DownloadFailureTimer_Tick;
         InitializeComponent();
+        if (_startupSettings.WindowPlacement is not null)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+        }
+        TaskbarItemInfo = new TaskbarItemInfo();
+        if (_policy.ResolveUpdateDeferralHours(defaultHours: 24) == 0)
+        {
+            DeferUpdateButton.Visibility = Visibility.Collapsed;
+        }
+        _webViewHost = new DesktopWebViewHost(BrowserHost);
+        _windowController = new DesktopWindowController(this);
         UpdateMaximizeRestoreButton();
 
         _applicationIcon = LoadApplicationIcon();
@@ -91,10 +183,130 @@ public partial class MainWindow : Window
             Visible = false,
         };
         _updateItem.Click += (_, _) => ShowReadyUpdate();
-        _updates.UpdateReady += Updates_UpdateReady;
+        _checkUpdatesItem = new Forms.ToolStripMenuItem("Проверить обновления")
+        {
+            AccessibleName = "Проверить обновления HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _checkUpdatesItem.Click += async (_, _) => await CheckForUpdatesFromTrayAsync();
+        _settingsItem = new Forms.ToolStripMenuItem("Открыть настройки")
+        {
+            AccessibleName = "Открыть настройки HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _settingsItem.Click += (_, _) => ShowDesktopSettingsWindow();
+        _aboutItem = new Forms.ToolStripMenuItem("О программе и обновления")
+        {
+            AccessibleName = "Открыть сведения о HUB Desktop и обновлениях",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _aboutItem.Click += (_, _) => ShowAboutWindow();
+        _diagnosticsItem = new Forms.ToolStripMenuItem("Диагностика")
+        {
+            AccessibleName = "Открыть диагностику HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _diagnosticsItem.Click += async (_, _) => await ShowDiagnosticsWindowAsync();
+        _downloadsItem = new Forms.ToolStripMenuItem("Загрузки")
+        {
+            AccessibleName = "Открыть загрузки HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _downloadsItem.Click += (_, _) => ShowDownloadsWindow();
+        _openInBrowserItem = new Forms.ToolStripMenuItem("Открыть текущую страницу в браузере")
+        {
+            AccessibleName = "Открыть текущую безопасную страницу HUB в браузере",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _openInBrowserItem.Click += (_, _) => OpenCurrentPageInBrowser();
+        _printItem = new Forms.ToolStripMenuItem("Печать текущей страницы…")
+        {
+            AccessibleName = "Открыть системный диалог печати текущей страницы HUB",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _printItem.Click += (_, _) => PrintCurrentPage();
+        _commandPaletteItem = new Forms.ToolStripMenuItem("Быстрый переход…    Ctrl+K")
+        {
+            AccessibleName = "Открыть быстрый переход по разделам и командам HUB",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _commandPaletteItem.Click += (_, _) => ShowCommandPalette();
+        _quietModeItem = new Forms.ToolStripMenuItem("Не беспокоить")
+        {
+            AccessibleName = "Настроить режим Не беспокоить HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _quietModeItem.DropDownItems.Add(
+            "На 1 час",
+            null,
+            (_, _) => UpdateNotificationSettings(settings =>
+                DesktopQuietMode.MuteForOneHour(settings, DateTimeOffset.UtcNow)));
+        _quietModeItem.DropDownItems.Add(
+            "До конца рабочего дня",
+            null,
+            (_, _) => UpdateNotificationSettings(settings =>
+                DesktopQuietMode.MuteUntilWorkdayEnd(settings, DateTimeOffset.Now)));
+        _quietModeItem.DropDownItems.Add(
+            "Пока не включу",
+            null,
+            (_, _) => UpdateNotificationSettings(DesktopQuietMode.MuteIndefinitely));
+        _quietModeItem.DropDownItems.Add(HubTrayContextMenu.CreateSeparator());
+        _quietModeItem.DropDownItems.Add(
+            "Включить уведомления",
+            null,
+            (_, _) => UpdateNotificationSettings(DesktopQuietMode.Unmute));
+        _privacyNotificationItem = new Forms.ToolStripMenuItem(
+            "Скрывать текст при блокировке Windows")
+        {
+            AccessibleName = "Скрывать личный текст уведомлений при блокировке Windows",
+            CheckOnClick = false,
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _privacyNotificationItem.Click += (_, _) => UpdateNotificationSettings(settings =>
+            settings with
+            {
+                HideNotificationContentWhenLocked =
+                    !settings.HideNotificationContentWhenLocked,
+            });
+        _sectionsItem = new Forms.ToolStripMenuItem("Разделы HUB")
+        {
+            AccessibleName = "Открыть список разделов HUB",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+            Visible = false,
+        };
+        _desktopToolsItem = new Forms.ToolStripMenuItem("Настройки Desktop")
+        {
+            AccessibleName = "Открыть настройки и инструменты HUB Desktop",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _notificationsQuickRouteItem = CreateQuickRouteMenuItem();
+        _tasksQuickRouteItem = CreateQuickRouteMenuItem();
+        _chatQuickRouteItem = CreateQuickRouteMenuItem();
+        _mailQuickRouteItem = CreateQuickRouteMenuItem();
+        _moreQuickRoutesItem = new Forms.ToolStripMenuItem("Ещё")
+        {
+            AccessibleName = "Открыть дополнительные разделы HUB",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+            Visible = false,
+        };
+        ((System.Collections.Specialized.INotifyCollectionChanged)_downloads.Items)
+            .CollectionChanged += (_, _) => RefreshDownloadsMenuItem();
+        _downloads.Changed += Downloads_Changed;
+        _updates.StateChanged += Updates_StateChanged;
         RefreshAutostartMenuItem();
         _trayMenu = CreateTrayMenu();
-        _trayMenu.Opening += (_, _) => RefreshAutostartMenuItem();
+        _trayMenu.ApplyTheme(_currentThemeMode);
+        _trayMenu.Opening += (_, _) =>
+        {
+            _trayMenu.ApplyTheme(_currentThemeMode);
+            RefreshAutostartMenuItem();
+            PresentUpdateState(_updates.Current);
+            _openInBrowserItem.Enabled = TryGetCurrentBrowserUri(out _);
+            _printItem.Enabled = DesktopPrintService.CanPrintCurrent(
+                _options.BaseUri,
+                _webView?.CoreWebView2?.Source);
+            RefreshNotificationPolicyMenu();
+        };
         _trayIcon = new Forms.NotifyIcon
         {
             ContextMenuStrip = _trayMenu,
@@ -102,6 +314,8 @@ public partial class MainWindow : Window
             Text = "HUB Desktop",
             Visible = true,
         };
+        _applicationController = new DesktopApplicationController(
+            () => _trayIcon.Visible = false);
         _trayIcon.MouseClick += (_, eventArgs) =>
         {
             if (eventArgs.Button == Forms.MouseButtons.Left)
@@ -111,6 +325,7 @@ public partial class MainWindow : Window
         };
         if (_notifications is FallbackDesktopNotificationService fallbackNotifications)
         {
+            fallbackNotifications.SetRequestPolicy(ApplyNotificationPolicy);
             fallbackNotifications.SetFallback(ShowPersistentNotification, preferFallback: true);
             DesktopLog.Info("Persistent desktop notification presenter registered");
         }
@@ -120,24 +335,18 @@ public partial class MainWindow : Window
             WindowState = WindowState.Minimized;
             ShowInTaskbar = false;
         }
+
+        PresentUpdateState(_updates.Current);
     }
 
     public void ShowAndActivate()
     {
-        if (!IsVisible)
+        _windowController.ShowAndActivate();
+        if (_restoreMaximizedWhenShown)
         {
-            Show();
+            _restoreMaximizedWhenShown = false;
+            WindowState = WindowState.Maximized;
         }
-
-        if (WindowState == WindowState.Minimized)
-        {
-            WindowState = WindowState.Normal;
-        }
-
-        var handle = new WindowInteropHelper(this).Handle;
-        NativeWindowActivation.RestoreAndForeground(handle);
-        Activate();
-        Focus();
         SendDesktopWindowForegroundState();
         DesktopLog.Info("Main window activated");
     }
@@ -160,10 +369,27 @@ public partial class MainWindow : Window
         _pendingInternalRoute = route;
     }
 
+    public void HandleLaunchRequest(DesktopLaunchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.OpenDownloads)
+        {
+            ShowDownloadsWindow();
+            return;
+        }
+
+        if (request.Route is not null)
+        {
+            ShowAndNavigate(request.Route);
+            return;
+        }
+
+        ShowAndActivate();
+    }
+
     public void PrepareForShutdown()
     {
-        _exitRequested = true;
-        _trayIcon.Visible = false;
+        _applicationController.PrepareForShutdown();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -171,19 +397,97 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         _windowSource = (HwndSource?)PresentationSource.FromVisual(this);
         _windowSource?.AddHook(WindowMessageHook);
+        var windowHandle = new WindowInteropHelper(this).Handle;
+        _restoreMaximizedWhenShown = _startHidden
+            && _startupSettings.WindowPlacement?.Maximized == true;
+        if (!_windowPlacement.TryApply(
+                windowHandle,
+                _startupSettings.WindowPlacement,
+                restoreMaximized: !_startHidden)
+            && _startupSettings.WindowPlacement is not null)
+        {
+            DesktopLog.Warning("Saved desktop window placement could not be restored");
+        }
+        _sessionNotificationsRegistered = WindowsSessionStateMonitor.TryRegister(windowHandle);
+        if (!_sessionNotificationsRegistered)
+        {
+            DesktopLog.Warning("Windows session lock notifications are unavailable");
+        }
+
+        if (_startupSettings.GlobalHotkeyEnabled && !_globalHotkey.TryRegister(windowHandle))
+        {
+            DesktopLog.Warning("Ctrl+Shift+H global hotkey is already in use");
+            try
+            {
+                _notificationSettings = _settingsStore.Update(settings =>
+                    settings with { GlobalHotkeyEnabled = false });
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException)
+            {
+                DesktopLog.Error("Conflicting desktop hotkey preference could not be cleared", exception);
+            }
+        }
     }
 
-    private static nint WindowMessageHook(
+    private void PerformanceTimer_Tick(object? sender, EventArgs e) =>
+        _performance.RecordUiPulse(DateTimeOffset.UtcNow);
+
+    private static DateTimeOffset GetProcessStartedAt()
+    {
+        try
+        {
+            return new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+        }
+        catch
+        {
+            return DateTimeOffset.UtcNow;
+        }
+    }
+
+    private nint WindowMessageHook(
         nint windowHandle,
         int message,
         nint wordParameter,
         nint longParameter,
         ref bool handled)
     {
-        if (message == NativeWindowActivation.GetMinimumMaximumInfoMessage)
+        if (DesktopGlobalHotkey.IsActivationMessage(message, wordParameter))
         {
-            NativeWindowActivation.ConstrainMaximizedBoundsToWorkArea(windowHandle, longParameter);
             handled = true;
+            if (IsVisible && WindowState != WindowState.Minimized && IsActive)
+            {
+                Hide();
+                SendDesktopWindowForegroundState();
+            }
+            else
+            {
+                ShowAndActivate();
+            }
+
+            return nint.Zero;
+        }
+
+        if (DesktopWindowController.TryHandleWindowMessage(
+                windowHandle,
+                message,
+                longParameter))
+        {
+            handled = true;
+        }
+
+        if (WindowsSessionStateMonitor.TryResolveLockState(
+                message,
+                wordParameter,
+                out var sessionLocked))
+        {
+            _sessionLocked = sessionLocked;
+            PresentShellStatus();
+            DesktopLog.Info(sessionLocked
+                ? "Windows session locked; shell counters hidden"
+                : "Windows session unlocked; shell counters restored");
         }
 
         return nint.Zero;
@@ -206,62 +510,58 @@ public partial class MainWindow : Window
 
     private async Task CreateWebViewAsync()
     {
+        var failure = await TryCreateWebViewAsync();
+        if (failure is not null)
+        {
+            await RecoverWebViewAsync(failure.Value);
+        }
+    }
+
+    private async Task<WebViewFailureKind?> TryCreateWebViewAsync()
+    {
         if (_initializing)
         {
-            return;
+            return null;
         }
 
         _initializing = true;
+        _lastNavigationStatus = "Initializing";
         ShowLoading();
 
         try
         {
-            ReplaceWebView();
-            Directory.CreateDirectory(DesktopPaths.UserDataFolder);
-
-            var environment = await CoreWebView2Environment.CreateAsync(
-                browserExecutableFolder: null,
-                userDataFolder: DesktopPaths.UserDataFolder);
-
-            await _webView!.EnsureCoreWebView2Async(environment);
-            ConfigureWebView(_webView.CoreWebView2);
+            DisposeDesktopBridge();
+            var core = await _webViewHost.RecreateAsync(
+                DesktopPaths.UserDataFolder,
+                _recoveryShutdown.Token);
+            _webView = _webViewHost.View;
+            ConfigureWebView(core);
 
             _requiresReset = false;
+            _performance.RecordWebViewInitialized(DateTimeOffset.UtcNow);
             DesktopLog.Info($"WebView2 initialized for {_navigationPolicy.TrustedOriginForLog}");
-            _webView.CoreWebView2.Navigate(_options.BaseUri.AbsoluteUri);
+            core.Navigate(_options.BaseUri.AbsoluteUri);
+            return null;
         }
         catch (WebView2RuntimeNotFoundException exception)
         {
+            _lastNavigationStatus = "RuntimeUnavailable";
             DesktopLog.Error("WebView2 Runtime is unavailable", exception);
             ShowError(
                 "Не установлен WebView2 Runtime",
                 "Установите Microsoft Edge WebView2 Runtime и повторите попытку.");
+            return WebViewFailureKind.RuntimeUnavailable;
         }
         catch (Exception exception)
         {
+            _lastNavigationStatus = "InitializationFailed";
             DesktopLog.Error("WebView2 initialization failed", exception);
-            ShowError(
-                "Не удалось запустить HUB",
-                "Проверьте подключение к сети и повторите попытку.");
+            return WebViewFailureKind.Initialization;
         }
         finally
         {
             _initializing = false;
         }
-    }
-
-    private void ReplaceWebView()
-    {
-        DisposeDesktopBridge();
-
-        if (_webView is not null)
-        {
-            _webView.Dispose();
-            BrowserHost.Children.Remove(_webView);
-        }
-
-        _webView = new WebView2();
-        BrowserHost.Children.Add(_webView);
     }
 
     private void ConfigureWebView(CoreWebView2 core)
@@ -282,6 +582,7 @@ public partial class MainWindow : Window
 
         core.NavigationStarting += Core_NavigationStarting;
         core.NavigationCompleted += Core_NavigationCompleted;
+        core.HistoryChanged += Core_HistoryChanged;
         core.NewWindowRequested += Core_NewWindowRequested;
         core.LaunchingExternalUriScheme += Core_LaunchingExternalUriScheme;
         core.ServerCertificateErrorDetected += Core_ServerCertificateErrorDetected;
@@ -291,10 +592,19 @@ public partial class MainWindow : Window
             core,
             _navigationPolicy,
             _notifications,
-            Environment.UserName);
+            Environment.UserName,
+            new DesktopVncHandlerProbe());
         _desktopBridge.Ready += DesktopBridge_Ready;
         _desktopBridge.ThemeChanged += DesktopBridge_ThemeChanged;
         _desktopBridge.OpenDownloadedFileRequested += DesktopBridge_OpenDownloadedFileRequested;
+        _desktopBridge.PrepareDownloadedFileRequested += DesktopBridge_PrepareDownloadedFileRequested;
+        _desktopBridge.ShellStatusChanged += DesktopBridge_ShellStatusChanged;
+        _desktopBridge.QuickRoutesChanged += DesktopBridge_QuickRoutesChanged;
+        _desktopBridge.PrintCurrentDocumentRequested += DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.OpenDownloadsRequested += DesktopBridge_OpenDownloadsRequested;
+        _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
+        _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
+        _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
@@ -303,9 +613,12 @@ public partial class MainWindow : Window
 
         if (decision == NavigationDisposition.TrustedOrigin)
         {
+            _lastNavigationStatus = "InProgress";
+            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
             _desktopBridge?.ResetDocumentReady();
             HideError();
             ShowLoading();
+            StartNavigationTimeout();
             return;
         }
 
@@ -320,20 +633,37 @@ public partial class MainWindow : Window
         DesktopLog.Warning($"Blocked top-level navigation with scheme '{NavigationPolicy.GetSchemeForLog(e.Uri)}'");
     }
 
-    private void Core_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    private async void Core_NavigationCompleted(
+        object? sender,
+        CoreWebView2NavigationCompletedEventArgs e)
     {
+        CancelNavigationTimeout();
         LoadingIndicator.Visibility = Visibility.Collapsed;
 
         if (e.IsSuccess)
         {
+            _lastNavigationStatus = "Success";
+            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
             HideError();
+            SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
             return;
         }
 
         DesktopLog.Warning($"Navigation failed with status '{e.WebErrorStatus}'");
-        ShowError(
-            "HUB временно недоступен",
-            "Проверьте подключение к корпоративной сети и повторите попытку.");
+        var status = e.WebErrorStatus.ToString();
+        _lastNavigationStatus = $"Failed:{status}";
+        _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+        var failure = status.Contains("Certificate", StringComparison.OrdinalIgnoreCase)
+            ? WebViewFailureKind.Certificate
+            : status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
+                ? WebViewFailureKind.NavigationTimeout
+                : WebViewFailureKind.Network;
+        await RecoverWebViewAsync(failure);
+    }
+
+    private void Core_HistoryChanged(object? sender, object e)
+    {
+        SaveLastSafeRoute((sender as CoreWebView2)?.Source);
     }
 
     private void Core_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -369,19 +699,33 @@ public partial class MainWindow : Window
     private void Core_ServerCertificateErrorDetected(object? sender, CoreWebView2ServerCertificateErrorDetectedEventArgs e)
     {
         e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+        _lastNavigationStatus = "CertificateError";
+        _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+        CancelNavigationTimeout();
+        _requiresReset = false;
         DesktopLog.Warning("TLS certificate validation failed");
         ShowError(
             "Не удалось проверить сертификат HUB",
             "Подключение остановлено. Обратитесь в IT-службу, если ошибка повторяется.");
     }
 
-    private void Core_ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    private async void Core_ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        _requiresReset = e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited;
+        CancelNavigationTimeout();
+        _performance.RecordWebViewProcessFailure();
+        _lastNavigationStatus = $"ProcessFailed:{e.ProcessFailedKind}";
+        _lastNavigationAtUtc = DateTimeOffset.UtcNow;
         DesktopLog.Warning($"WebView2 process failed: {e.ProcessFailedKind}");
-        ShowError(
-            "Веб-компонент HUB остановлен",
-            "Нажмите «Повторить», чтобы восстановить приложение.");
+        var failure = e.ProcessFailedKind switch
+        {
+            CoreWebView2ProcessFailedKind.RenderProcessExited
+                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
+                WebViewFailureKind.RendererProcessExited,
+            CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
+                WebViewFailureKind.FrameProcessExited,
+            _ => WebViewFailureKind.BrowserProcessExited,
+        };
+        await RecoverWebViewAsync(failure);
     }
 
     private void OpenExternalUri(string rawUri)
@@ -408,7 +752,14 @@ public partial class MainWindow : Window
 
     private void DesktopBridge_Ready(object? sender, EventArgs e)
     {
+        _lastBridgeHandshakeUtc = DateTimeOffset.UtcNow;
+        _performance.RecordBridgeReady(_lastBridgeHandshakeUtc.Value);
         SendDesktopWindowForegroundState();
+
+        if (_pendingCommandPalette && _desktopBridge?.TryOpenCommandPalette() == true)
+        {
+            _pendingCommandPalette = false;
+        }
 
         if (!DesktopBridgeProtocol.IsValidInternalRoute(_pendingInternalRoute)
             || _desktopBridge?.TryOpenInternalRoute(_pendingInternalRoute) != true)
@@ -425,65 +776,158 @@ public partial class MainWindow : Window
         _desktopNotificationWindow.ApplyTheme(e.Mode);
     }
 
-    private void DesktopBridge_OpenDownloadedFileRequested(object? sender, EventArgs e)
+    private void DesktopBridge_OpenDownloadedFileRequested(
+        object? sender,
+        DesktopOpenDownloadedFileRequestedEventArgs e)
     {
-        _openDownloadedFileRequestedUntilUtc = DateTime.UtcNow.AddSeconds(15);
+        e.Accepted = _downloads.RequestOpenNextDownload() == DesktopOpenIntentRequestResult.Accepted;
     }
 
-    private void Core_DownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs e)
+    private void DesktopBridge_PrepareDownloadedFileRequested(
+        object? sender,
+        DesktopPrepareDownloadedFileRequestedEventArgs e)
     {
-        if (DateTime.UtcNow > _openDownloadedFileRequestedUntilUtc)
+        e.Accepted = _downloads.RequestNextDownloadAction(e.Action)
+            == DesktopOpenIntentRequestResult.Accepted;
+    }
+
+    private void DesktopBridge_ShellStatusChanged(
+        object? sender,
+        DesktopShellStatusChangedEventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
         {
+            Dispatcher.BeginInvoke(() => DesktopBridge_ShellStatusChanged(sender, e));
             return;
         }
 
-        _openDownloadedFileRequestedUntilUtc = DateTime.MinValue;
+        var wasAuthenticated = _shellStatus.Authenticated;
+        _shellStatus = e.Status.Authenticated
+            ? e.Status
+            : DesktopShellStatus.Empty;
+        if (wasAuthenticated && !_shellStatus.Authenticated)
+        {
+            ClearLastSafeRoute();
+        }
+        PresentShellStatus();
+    }
+
+    private void DesktopBridge_QuickRoutesChanged(
+        object? sender,
+        DesktopQuickRoutesChangedEventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => DesktopBridge_QuickRoutesChanged(sender, e));
+            return;
+        }
+
+        PresentQuickRoutes(e.Routes);
+    }
+
+    private void DesktopBridge_PrintCurrentDocumentRequested(object? sender, EventArgs e) =>
+        PrintCurrentPage();
+
+    private void DesktopBridge_OpenDownloadsRequested(object? sender, EventArgs e) =>
+        ShowDownloadsWindow();
+
+    private async void DesktopBridge_OpenDiagnosticsRequested(object? sender, EventArgs e) =>
+        await ShowDiagnosticsWindowAsync();
+
+    private async void DesktopBridge_CheckForUpdatesRequested(object? sender, EventArgs e) =>
+        await CheckForUpdatesFromTrayAsync();
+
+    private void DesktopBridge_OpenCurrentInBrowserRequested(object? sender, EventArgs e) =>
+        OpenCurrentPageInBrowser();
+
+    private void Core_DownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs e)
+    {
         var operation = e.DownloadOperation;
-        e.Handled = true;
+        var item = _downloads.BeginDownload(operation.ResultFilePath, operation.Cancel);
+        if (item.CompletionAction == DesktopDownloadedFileAction.SaveAs)
+        {
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = item.FileName,
+                AddExtension = true,
+                OverwritePrompt = true,
+                Title = "Сохранить файл из HUB",
+            };
+            if (dialog.ShowDialog(this) != true)
+            {
+                operation.Cancel();
+                _downloads.CancelDownload(item.Id);
+                return;
+            }
+
+            e.ResultFilePath = dialog.FileName;
+        }
+
+        if (item.CompletionAction != DesktopDownloadedFileAction.None)
+        {
+            e.Handled = true;
+        }
 
         EventHandler<object>? stateChanged = null;
+        EventHandler<object>? bytesReceivedChanged = null;
+        bytesReceivedChanged = (_, _) =>
+        {
+            Dispatcher.BeginInvoke(() =>
+                _downloads.ReportProgress(
+                    item.Id,
+                    operation.BytesReceived,
+                    operation.TotalBytesToReceive is ulong totalBytes
+                        ? (long)Math.Min(totalBytes, (ulong)long.MaxValue)
+                        : 0));
+        };
         stateChanged = (_, _) =>
         {
             if (operation.State == CoreWebView2DownloadState.InProgress)
             {
+                Dispatcher.BeginInvoke(() => _downloads.ResumeDownload(item.Id));
+                return;
+            }
+
+            if (operation.State == CoreWebView2DownloadState.Interrupted
+                && DesktopDownloadInterruption.ShouldWaitForResume(operation.InterruptReason))
+            {
+                Dispatcher.BeginInvoke(() => _downloads.PauseDownload(item.Id));
                 return;
             }
 
             operation.StateChanged -= stateChanged;
+            operation.BytesReceivedChanged -= bytesReceivedChanged;
             if (operation.State == CoreWebView2DownloadState.Completed)
             {
-                Dispatcher.BeginInvoke(() => OpenDownloadedDocument(operation.ResultFilePath));
+                Dispatcher.BeginInvoke(() =>
+                    _downloads.CompleteDownload(item.Id, operation.ResultFilePath));
                 return;
             }
 
+            if (operation.State == CoreWebView2DownloadState.Interrupted
+                && DesktopDownloadInterruption.IsCanceled(operation.InterruptReason))
+            {
+                Dispatcher.BeginInvoke(() => _downloads.CancelDownload(item.Id));
+            }
+            else
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _downloads.FailDownload(item.Id);
+                    ShowDownloadFailureTaskbarState();
+                });
+            }
             DesktopLog.Warning($"Desktop document download did not complete: {operation.State}");
         };
+        operation.BytesReceivedChanged += bytesReceivedChanged;
         operation.StateChanged += stateChanged;
-    }
-
-    private static void OpenDownloadedDocument(string? path)
-    {
-        try
-        {
-            var normalizedPath = Path.GetFullPath(path ?? string.Empty);
-            var extension = Path.GetExtension(normalizedPath);
-            if (!File.Exists(normalizedPath) || !DesktopDocumentExtensions.Contains(extension))
-            {
-                DesktopLog.Warning("Rejected unsupported downloaded document type");
-                return;
-            }
-
-            Process.Start(new ProcessStartInfo(normalizedPath) { UseShellExecute = true });
-            DesktopLog.Info($"Downloaded document opened with the Windows handler; extension={extension}");
-        }
-        catch (Exception exception)
-        {
-            DesktopLog.Error("Downloaded document could not be opened", exception);
-        }
     }
 
     private void ApplyChromeTheme(DesktopThemeMode mode)
     {
+        _currentThemeMode = mode;
+        _trayMenu.ApplyTheme(mode);
+        _downloadsWindow?.ApplyTheme(mode);
         var isDark = mode == DesktopThemeMode.Dark;
         SetColorResource("AppBackgroundBrush", isDark ? "#0F1115" : "#F3F2F1");
         SetColorResource("TitleBarBackgroundBrush", isDark ? "#11151B" : "#FAF9F8");
@@ -539,10 +983,86 @@ public partial class MainWindow : Window
         SendDesktopWindowForegroundState();
     }
 
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.P && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = PrintCurrentPage();
+        }
+    }
+
     private void SendDesktopWindowForegroundState()
     {
         var foreground = IsVisible && WindowState != WindowState.Minimized && IsActive;
         _desktopBridge?.TrySetWindowForeground(foreground);
+        PresentShellStatus(foreground);
+    }
+
+    private void PresentShellStatus(bool? windowForeground = null)
+    {
+        var foreground = windowForeground
+            ?? (IsVisible && WindowState != WindowState.Minimized && IsActive);
+        var presentedStatus = _sessionLocked ? DesktopShellStatus.Empty : _shellStatus;
+        if (!string.Equals(_trayIcon.Text, presentedStatus.TrayToolTip, StringComparison.Ordinal))
+        {
+            _trayIcon.Text = presentedStatus.TrayToolTip;
+        }
+
+        var badgeText = presentedStatus.ShouldShowTaskbarBadge(foreground)
+            ? presentedStatus.TaskbarBadgeText
+            : string.Empty;
+        if (string.Equals(_presentedTaskbarBadgeText, badgeText, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _presentedTaskbarBadgeText = badgeText;
+        TaskbarItemInfo.Overlay = string.IsNullOrEmpty(badgeText)
+            ? null
+            : DesktopTaskbarBadgeRenderer.Create(badgeText);
+    }
+
+    private void Downloads_Changed(object? sender, EventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => Downloads_Changed(sender, e));
+            return;
+        }
+
+        PresentDownloadTaskbarProgress();
+    }
+
+    private void PresentDownloadTaskbarProgress()
+    {
+        if (_downloadFailureTimer.IsEnabled)
+        {
+            return;
+        }
+
+        var state = _downloadTaskbarProgress.Calculate(_downloads.Items);
+        TaskbarItemInfo.ProgressValue = state.Value;
+        TaskbarItemInfo.ProgressState = state.Mode switch
+        {
+            DesktopTaskbarProgressMode.Normal => TaskbarItemProgressState.Normal,
+            DesktopTaskbarProgressMode.Paused => TaskbarItemProgressState.Paused,
+            DesktopTaskbarProgressMode.Indeterminate => TaskbarItemProgressState.Indeterminate,
+            _ => TaskbarItemProgressState.None,
+        };
+    }
+
+    private void ShowDownloadFailureTaskbarState()
+    {
+        _downloadFailureTimer.Stop();
+        TaskbarItemInfo.ProgressValue = 1;
+        TaskbarItemInfo.ProgressState = TaskbarItemProgressState.Error;
+        _downloadFailureTimer.Start();
+    }
+
+    private void DownloadFailureTimer_Tick(object? sender, EventArgs e)
+    {
+        _downloadFailureTimer.Stop();
+        PresentDownloadTaskbarProgress();
     }
 
     private void UpdateMaximizeRestoreButton()
@@ -570,26 +1090,281 @@ public partial class MainWindow : Window
         _desktopBridge.Ready -= DesktopBridge_Ready;
         _desktopBridge.ThemeChanged -= DesktopBridge_ThemeChanged;
         _desktopBridge.OpenDownloadedFileRequested -= DesktopBridge_OpenDownloadedFileRequested;
+        _desktopBridge.PrepareDownloadedFileRequested -= DesktopBridge_PrepareDownloadedFileRequested;
+        _desktopBridge.ShellStatusChanged -= DesktopBridge_ShellStatusChanged;
+        _desktopBridge.QuickRoutesChanged -= DesktopBridge_QuickRoutesChanged;
+        _desktopBridge.PrintCurrentDocumentRequested -= DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.OpenDownloadsRequested -= DesktopBridge_OpenDownloadsRequested;
+        _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;
+        _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
+        _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.Dispose();
         _desktopBridge = null;
     }
 
+    private void SaveLastSafeRoute(string? candidateUrl)
+    {
+        if (!DesktopWorkspaceRoutePolicy.TryGetSafeRoute(
+                _options.BaseUri,
+                candidateUrl,
+                out var route)
+            || string.Equals(_lastPersistedSafeRoute, route, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            _settingsStore.Update(settings => settings with { LastSafeRoute = route });
+            _lastPersistedSafeRoute = route;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException)
+        {
+            DesktopLog.Error("Desktop workspace route could not be saved", exception);
+        }
+    }
+
+    private void ClearLastSafeRoute()
+    {
+        if (_lastPersistedSafeRoute is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _settingsStore.Update(settings => settings with { LastSafeRoute = null });
+            _lastPersistedSafeRoute = null;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException)
+        {
+            DesktopLog.Error("Desktop workspace route could not be cleared", exception);
+        }
+    }
+
+    private void SaveWindowPlacement()
+    {
+        try
+        {
+            var placement = _windowPlacement.TryCapture(
+                new WindowInteropHelper(this).Handle,
+                WindowState == WindowState.Maximized || _restoreMaximizedWhenShown);
+            if (placement is null)
+            {
+                return;
+            }
+
+            _settingsStore.Update(settings => settings with { WindowPlacement = placement });
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or InvalidOperationException)
+        {
+            DesktopLog.Error("Desktop window placement could not be saved", exception);
+        }
+    }
+
+    private async Task RecoverWebViewAsync(WebViewFailureKind failure)
+    {
+        if (_recoveryInProgress
+            || _applicationController.ExitRequested
+            || _recoveryShutdown.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _recoveryInProgress = true;
+        try
+        {
+            var currentFailure = failure;
+            while (!_recoveryShutdown.IsCancellationRequested)
+            {
+                var decision = _webViewRecovery.Next(currentFailure);
+                _requiresReset = currentFailure is not
+                    WebViewFailureKind.Network
+                    and not WebViewFailureKind.NavigationTimeout
+                    and not WebViewFailureKind.Certificate;
+                DesktopLog.Warning(
+                    $"WebView2 recovery decision; failure={currentFailure}; " +
+                    $"action={decision.Action}; attempt={decision.Attempt}; " +
+                    $"delay_ms={(long)decision.Delay.TotalMilliseconds}");
+                if (decision.Action == WebViewRecoveryAction.ShowManualRetry)
+                {
+                    RetryButton.IsEnabled = true;
+                    ShowRecoveryError(currentFailure);
+                    return;
+                }
+
+                RetryButton.IsEnabled = false;
+                ShowError(
+                    "Восстанавливаем HUB",
+                    decision.Delay > TimeSpan.Zero
+                        ? "Повторная попытка будет выполнена через несколько секунд."
+                        : "Выполняется автоматическая попытка восстановления.");
+                if (decision.Delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(decision.Delay, _recoveryShutdown.Token);
+                }
+
+                if (decision.Action == WebViewRecoveryAction.Reload)
+                {
+                    RetryCurrentNavigation();
+                    return;
+                }
+
+                var nextFailure = await TryCreateWebViewAsync();
+                if (nextFailure is null)
+                {
+                    return;
+                }
+
+                currentFailure = nextFailure.Value;
+            }
+        }
+        catch (OperationCanceledException) when (_recoveryShutdown.IsCancellationRequested)
+        {
+            // Normal shutdown.
+        }
+        finally
+        {
+            _recoveryInProgress = false;
+            RetryButton.IsEnabled = true;
+        }
+    }
+
+    private void ShowRecoveryError(WebViewFailureKind failure)
+    {
+        if (failure == WebViewFailureKind.RuntimeUnavailable)
+        {
+            ShowError(
+                "Не установлен WebView2 Runtime",
+                "Установите Microsoft Edge WebView2 Runtime и повторите попытку.");
+            return;
+        }
+
+        if (failure == WebViewFailureKind.Certificate)
+        {
+            ShowError(
+                "Не удалось проверить сертификат HUB",
+                "Подключение остановлено. Обратитесь в IT-службу, если ошибка повторяется.");
+            return;
+        }
+
+        ShowError(
+            failure is WebViewFailureKind.Network or WebViewFailureKind.NavigationTimeout
+                ? "HUB временно недоступен"
+                : "Веб-компонент HUB остановлен",
+            failure is WebViewFailureKind.Network or WebViewFailureKind.NavigationTimeout
+                ? "Проверьте подключение к корпоративной сети и повторите попытку."
+                : "Автоматическое восстановление остановлено. Нажмите «Повторить».");
+    }
+
+    private void RetryCurrentNavigation()
+    {
+        if (_webView?.CoreWebView2 is null)
+        {
+            _requiresReset = true;
+            ShowRecoveryError(WebViewFailureKind.Initialization);
+            return;
+        }
+
+        HideError();
+        ShowLoading();
+        var currentUri = _webView.Source;
+        var target = currentUri is not null && _navigationPolicy.IsTrustedOrigin(currentUri)
+            ? currentUri
+            : _options.BaseUri;
+        _webView.CoreWebView2.Navigate(target.AbsoluteUri);
+    }
+
+    private void StartNavigationTimeout()
+    {
+        CancelNavigationTimeout();
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            _recoveryShutdown.Token);
+        _navigationTimeout = timeout;
+        _ = MonitorNavigationTimeoutAsync(timeout);
+    }
+
+    private async Task MonitorNavigationTimeoutAsync(CancellationTokenSource timeout)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(45), timeout.Token);
+            if (!ReferenceEquals(_navigationTimeout, timeout))
+            {
+                return;
+            }
+
+            _webView?.CoreWebView2?.Stop();
+            DesktopLog.Warning("WebView2 navigation timed out");
+            await RecoverWebViewAsync(WebViewFailureKind.NavigationTimeout);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            // Navigation completed or application is shutting down.
+        }
+    }
+
+    private void CancelNavigationTimeout()
+    {
+        var timeout = _navigationTimeout;
+        _navigationTimeout = null;
+        if (timeout is null)
+        {
+            return;
+        }
+
+        timeout.Cancel();
+        timeout.Dispose();
+    }
+
     private async void RetryButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_recoveryInProgress)
+        {
+            return;
+        }
+
         if (_requiresReset || _webView?.CoreWebView2 is null)
         {
             await CreateWebViewAsync();
             return;
         }
 
-        HideError();
-        ShowLoading();
+        RetryCurrentNavigation();
+    }
 
-        var currentUri = _webView.Source;
-        var target = currentUri is not null && _navigationPolicy.IsTrustedOrigin(currentUri)
-            ? currentUri
-            : _options.BaseUri;
-        _webView.CoreWebView2.Navigate(target.AbsoluteUri);
+    private async void ErrorDiagnosticsButton_Click(object sender, RoutedEventArgs e) =>
+        await ShowDiagnosticsWindowAsync();
+
+    private void ErrorBrowserButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(_options.BaseUri.AbsoluteUri)
+            {
+                UseShellExecute = true,
+            });
+            DesktopLog.Info("Opened trusted HUB origin in the system browser from error recovery");
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("System browser failed to open HUB during error recovery", exception);
+            System.Windows.MessageBox.Show(
+                "Не удалось открыть HUB в системном браузере.",
+                "HUB Desktop",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void ShowLoading()
@@ -610,7 +1385,7 @@ public partial class MainWindow : Window
         ErrorOverlay.Visibility = Visibility.Collapsed;
     }
 
-    private Forms.ContextMenuStrip CreateTrayMenu()
+    private HubTrayContextMenu CreateTrayMenu()
     {
         var menu = new HubTrayContextMenu();
         var showItem = new Forms.ToolStripMenuItem("Открыть HUB")
@@ -623,21 +1398,106 @@ public partial class MainWindow : Window
         var exitItem = new Forms.ToolStripMenuItem("Выйти")
         {
             AccessibleName = "Выйти из HUB Desktop",
-            ForeColor = HubTrayContextMenu.ExitColor,
-            Image = HubTrayContextMenu.CreateExitIcon(),
+            Image = HubTrayContextMenu.CreateExitIcon(menu.Palette.Destructive),
             Padding = new Forms.Padding(2, 4, 8, 4),
         };
 
         showItem.Click += (_, _) => ShowAndActivate();
         exitItem.Click += (_, _) => RequestExit();
+
+        _sectionsItem.DropDownItems.Add(_notificationsQuickRouteItem);
+        _sectionsItem.DropDownItems.Add(_tasksQuickRouteItem);
+        _sectionsItem.DropDownItems.Add(_chatQuickRouteItem);
+        _sectionsItem.DropDownItems.Add(_mailQuickRouteItem);
+        _sectionsItem.DropDownItems.Add(_moreQuickRoutesItem);
+
+        _desktopToolsItem.DropDownItems.Add(_settingsItem);
+        _desktopToolsItem.DropDownItems.Add(_checkUpdatesItem);
+        _desktopToolsItem.DropDownItems.Add(_aboutItem);
+        _desktopToolsItem.DropDownItems.Add(_downloadsItem);
+        _desktopToolsItem.DropDownItems.Add(_diagnosticsItem);
+        _desktopToolsItem.DropDownItems.Add(HubTrayContextMenu.CreateSeparator());
+        _desktopToolsItem.DropDownItems.Add(_openInBrowserItem);
+        _desktopToolsItem.DropDownItems.Add(_printItem);
+        _desktopToolsItem.DropDownItems.Add(HubTrayContextMenu.CreateSeparator());
+        _desktopToolsItem.DropDownItems.Add(_privacyNotificationItem);
+        _desktopToolsItem.DropDownItems.Add(_autostartItem);
+
         menu.Items.Add(showItem);
+        menu.Items.Add(_commandPaletteItem);
+        menu.Items.Add(_sectionsItem);
         menu.Items.Add(HubTrayContextMenu.CreateSeparator());
         menu.Items.Add(_updateItem);
-        menu.Items.Add(HubTrayContextMenu.CreateSeparator());
-        menu.Items.Add(_autostartItem);
+        menu.Items.Add(_quietModeItem);
+        menu.Items.Add(_desktopToolsItem);
         menu.Items.Add(HubTrayContextMenu.CreateSeparator());
         menu.Items.Add(exitItem);
+        menu.RegisterDestructiveItem(exitItem);
         return menu;
+    }
+
+    private Forms.ToolStripMenuItem CreateQuickRouteMenuItem()
+    {
+        var item = new Forms.ToolStripMenuItem
+        {
+            Padding = new Forms.Padding(2, 4, 8, 4),
+            Visible = false,
+        };
+        item.Click += (_, _) =>
+        {
+            if (item.Tag is DesktopQuickRoute route)
+            {
+                ShowAndNavigate(route.Route);
+            }
+        };
+        return item;
+    }
+
+    private void PresentQuickRoutes(IReadOnlyList<DesktopQuickRoute> routes)
+    {
+        var routesById = routes.ToDictionary(route => route.Id, StringComparer.Ordinal);
+        PresentQuickRoute(_notificationsQuickRouteItem, routesById.GetValueOrDefault("notifications"));
+        PresentQuickRoute(_tasksQuickRouteItem, routesById.GetValueOrDefault("tasks"));
+        PresentQuickRoute(_chatQuickRouteItem, routesById.GetValueOrDefault("chat"));
+        PresentQuickRoute(_mailQuickRouteItem, routesById.GetValueOrDefault("mail"));
+
+        while (_moreQuickRoutesItem.DropDownItems.Count > 0)
+        {
+            var existingItem = _moreQuickRoutesItem.DropDownItems[0];
+            _moreQuickRoutesItem.DropDownItems.RemoveAt(0);
+            existingItem.Dispose();
+        }
+
+        foreach (var route in routes.Where(route =>
+                     route.Id is not ("notifications" or "tasks" or "chat" or "mail")))
+        {
+            var item = CreateQuickRouteMenuItem();
+            PresentQuickRoute(item, route);
+            _moreQuickRoutesItem.DropDownItems.Add(item);
+        }
+
+        _moreQuickRoutesItem.Visible = _moreQuickRoutesItem.DropDownItems.Count > 0;
+        _sectionsItem.Visible =
+            _notificationsQuickRouteItem.Visible
+            || _tasksQuickRouteItem.Visible
+            || _chatQuickRouteItem.Visible
+            || _mailQuickRouteItem.Visible
+            || _moreQuickRoutesItem.Visible;
+    }
+
+    private static void PresentQuickRoute(
+        Forms.ToolStripMenuItem item,
+        DesktopQuickRoute? route)
+    {
+        item.Tag = route;
+        item.Visible = route is not null;
+        if (route is null)
+        {
+            return;
+        }
+
+        item.Text = route.MenuText;
+        item.AccessibleName = route.AccessibleName;
     }
 
     private static Drawing.Icon LoadApplicationIcon()
@@ -655,13 +1515,85 @@ public partial class MainWindow : Window
         return (Drawing.Icon)Drawing.SystemIcons.Application.Clone();
     }
 
+    private bool TryGetCurrentBrowserUri(out Uri uri)
+    {
+        uri = default!;
+        if (!DesktopWorkspaceRoutePolicy.TryGetSafeRoute(
+                _options.BaseUri,
+                _webView?.CoreWebView2?.Source,
+                out var route))
+        {
+            return false;
+        }
+
+        uri = new Uri(_options.BaseUri, route);
+        return true;
+    }
+
+    private void OpenCurrentPageInBrowser()
+    {
+        if (!TryGetCurrentBrowserUri(out var uri))
+        {
+            DesktopLog.Warning("Current page is not eligible for browser handoff");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            DesktopLog.Info("Opened current trusted HUB page in the system browser");
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("System browser failed to open the current HUB page", exception);
+            System.Windows.MessageBox.Show(
+                "Не удалось открыть текущую страницу в браузере.",
+                "HUB Desktop",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private bool PrintCurrentPage()
+    {
+        if (_printing.TryPrintCurrent(_webView?.CoreWebView2, _options.BaseUri))
+        {
+            return true;
+        }
+
+        System.Windows.MessageBox.Show(
+            "Эту страницу сейчас нельзя безопасно передать в печать.",
+            "HUB Desktop",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return false;
+    }
+
+    private void ShowCommandPalette()
+    {
+        ShowAndActivate();
+        if (_desktopBridge?.TryOpenCommandPalette() == true)
+        {
+            _pendingCommandPalette = false;
+            return;
+        }
+
+        _pendingCommandPalette = true;
+    }
+
     private void ToggleAutostart()
     {
+        if (!_autostart.CanUserChange)
+        {
+            return;
+        }
+
         try
         {
             var enable = !_autostart.IsEnabled;
             _autostart.SetEnabled(enable);
             RefreshAutostartMenuItem();
+            _aboutWindow?.RefreshState();
             DesktopLog.Info(enable ? "Autostart enabled" : "Autostart disabled");
         }
         catch (Exception exception)
@@ -676,11 +1608,81 @@ public partial class MainWindow : Window
         }
     }
 
+    private DesktopNotificationRequest? ApplyNotificationPolicy(
+        DesktopNotificationRequest request)
+    {
+        var settings = _notificationSettings;
+        if (DesktopQuietMode.IsMuted(settings, DateTimeOffset.UtcNow))
+        {
+            return null;
+        }
+
+        if (_sessionLocked && settings.HideNotificationContentWhenLocked)
+        {
+            return request with
+            {
+                Title = "Новое уведомление HUB",
+                Body = "Откройте HUB после разблокировки Windows.",
+            };
+        }
+
+        return request;
+    }
+
+    private void UpdateNotificationSettings(
+        Func<DesktopSettings, DesktopSettings> update)
+    {
+        try
+        {
+            _notificationSettings = _settingsStore.Update(update);
+            RefreshNotificationPolicyMenu();
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException)
+        {
+            DesktopLog.Error("Desktop notification preference could not be saved", exception);
+        }
+    }
+
+    private void RefreshNotificationPolicyMenu()
+    {
+        var settings = _notificationSettings;
+        if (!settings.QuietIndefinitely
+            && settings.QuietUntilUtc is { } quietUntil
+            && quietUntil <= DateTimeOffset.UtcNow)
+        {
+            try
+            {
+                settings = _settingsStore.Update(DesktopQuietMode.Unmute);
+                _notificationSettings = settings;
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException)
+            {
+                DesktopLog.Error("Expired desktop quiet mode could not be cleared", exception);
+            }
+        }
+
+        _quietModeItem.Text = DesktopQuietMode.GetTrayLabel(settings, DateTimeOffset.Now);
+        _quietModeItem.AccessibleName = DesktopQuietMode.IsMuted(settings, DateTimeOffset.UtcNow)
+            ? $"{_quietModeItem.Text}. Изменить режим Не беспокоить"
+            : "Настроить режим Не беспокоить HUB Desktop";
+        _privacyNotificationItem.Checked = settings.HideNotificationContentWhenLocked;
+    }
+
     private void RefreshAutostartMenuItem()
     {
         try
         {
             _autostartItem.Checked = _autostart.IsEnabled;
+            _autostartItem.Enabled = _autostart.CanUserChange;
+            _autostartItem.Text = _autostart.CanUserChange
+                ? "Запускать вместе с Windows"
+                : "Запуск вместе с Windows (управляется администратором)";
         }
         catch (Exception exception)
         {
@@ -691,12 +1693,42 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
-        if (_exitRequested)
+        SaveWindowPlacement();
+        if (_applicationController.ExitRequested)
         {
             return;
         }
 
         e.Cancel = true;
+        if (_notificationSettings.CloseBehavior == DesktopCloseBehavior.AskOnce)
+        {
+            var confirmation = System.Windows.MessageBox.Show(
+                "Скрыть HUB в область уведомлений? Приложение продолжит получать сообщения.",
+                "HUB Desktop",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information,
+                MessageBoxResult.Yes);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            try
+            {
+                _notificationSettings = _settingsStore.Update(settings =>
+                    settings with { CloseBehavior = DesktopCloseBehavior.AlwaysHide });
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException)
+            {
+                DesktopLog.Error("Close-to-tray confirmation state could not be saved", exception);
+            }
+
+            _trayHintShown = true;
+        }
+
         Hide();
         SendDesktopWindowForegroundState();
         DesktopLog.Info("Main window hidden to tray");
@@ -749,11 +1781,25 @@ public partial class MainWindow : Window
 
     private void Window_Closed(object? sender, EventArgs e)
     {
+        _performanceTimer.Stop();
+        _performanceTimer.Tick -= PerformanceTimer_Tick;
+        _downloadFailureTimer.Stop();
+        _downloadFailureTimer.Tick -= DownloadFailureTimer_Tick;
+        _downloads.Changed -= Downloads_Changed;
+        CancelNavigationTimeout();
+        _recoveryShutdown.Cancel();
         _windowSource?.RemoveHook(WindowMessageHook);
+        _globalHotkey.Dispose();
+        if (_sessionNotificationsRegistered)
+        {
+            WindowsSessionStateMonitor.Unregister(new WindowInteropHelper(this).Handle);
+            _sessionNotificationsRegistered = false;
+        }
         _windowSource = null;
 
         if (_notifications is FallbackDesktopNotificationService fallbackNotifications)
         {
+            fallbackNotifications.ClearRequestPolicy();
             fallbackNotifications.ClearFallback();
         }
 
@@ -762,34 +1808,308 @@ public partial class MainWindow : Window
         _trayMenu.Dispose();
         _applicationIcon.Dispose();
         _desktopNotificationWindow.OpenRequested -= DesktopNotificationWindow_OpenRequested;
-        _updates.UpdateReady -= Updates_UpdateReady;
+        _updates.StateChanged -= Updates_StateChanged;
+        _aboutWindow?.Close();
+        _aboutWindow = null;
+        _diagnosticsWindow?.Close();
+        _diagnosticsWindow = null;
+        _downloadsWindow?.Close();
+        _downloadsWindow = null;
         _desktopNotificationWindow.Close();
         DisposeDesktopBridge();
-        _webView?.Dispose();
+        _webViewHost.Dispose();
+        _webView = null;
+        _recoveryShutdown.Dispose();
     }
 
-    private void Updates_UpdateReady(object? sender, DesktopUpdatePackage package)
+    private void Updates_StateChanged(object? sender, DesktopUpdateState state)
     {
-        Dispatcher.BeginInvoke(() => PresentReadyUpdate(package));
+        Dispatcher.BeginInvoke(() => PresentUpdateState(state));
     }
 
-    private void PresentReadyUpdate(DesktopUpdatePackage package)
+    private void PresentUpdateState(DesktopUpdateState state)
     {
+        _checkUpdatesItem.Enabled = _updates.ReadyPackage is null
+            && state.Status is DesktopUpdateStatus.Idle or DesktopUpdateStatus.Error;
+        _checkUpdatesItem.Text = state.Status switch
+        {
+            DesktopUpdateStatus.Checking => "Проверяем обновления…",
+            DesktopUpdateStatus.Downloading => $"Загружаем обновление — {state.DownloadPercent}%",
+            _ => "Проверить обновления",
+        };
+
+        var package = _updates.ReadyPackage;
+        if (package is null)
+        {
+            _readyUpdate = null;
+            _updateItem.Visible = false;
+            UpdateBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
         _readyUpdate = package;
         var version = DesktopUpdateManifestVerifier.FormatVersion(package.Manifest.Version);
         _updateItem.Text = $"Обновление готово — {version}";
         _updateItem.AccessibleName = $"Открыть обновление HUB Desktop {version}";
         _updateItem.Visible = true;
         UpdateTitle.Text = $"HUB Desktop {version} готов к установке";
-        UpdateDetails.Text = package.Manifest.ReleaseNotes.FirstOrDefault()
-            ?? "Новая версия загружена и будет установлена после перезапуска.";
+        UpdateDetails.Text = state.Status == DesktopUpdateStatus.Error
+            && string.Equals(state.ErrorCode, "runner_launch", StringComparison.Ordinal)
+                ? "Не удалось запустить установку. HUB продолжает работать. Повторите попытку."
+                : package.Manifest.ReleaseNotes.FirstOrDefault()
+                    ?? "Обновление загружено. Установка начнётся только после вашего подтверждения.";
         AutomationProperties.SetName(
             UpdateBanner,
             $"Обновление HUB Desktop {version} готово к установке");
 
-        if (package.DeferredUntil is null || package.DeferredUntil <= DateTimeOffset.UtcNow)
+        UpdateBanner.Visibility = state.Status == DesktopUpdateStatus.Ready
+            || state.Status == DesktopUpdateStatus.Error
+            && string.Equals(state.ErrorCode, "runner_launch", StringComparison.Ordinal)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private async Task CheckForUpdatesFromTrayAsync()
+    {
+        DesktopLog.Info("Manual desktop update check requested from tray");
+        ShowAboutWindow();
+        if (_updates.ReadyPackage is not null)
         {
-            UpdateBanner.Visibility = Visibility.Visible;
+            return;
+        }
+
+        await _updates.CheckNowAsync();
+    }
+
+    private void ShowAboutWindow()
+    {
+        ShowAndActivate();
+        if (_aboutWindow is not null)
+        {
+            _aboutWindow.Activate();
+            _aboutWindow.Focus();
+            return;
+        }
+
+        var deferralHours = _policy.ResolveUpdateDeferralHours(defaultHours: 24);
+        var aboutWindow = new AboutWindow(
+            _updates,
+            _runtime,
+            _autostart,
+            TryStartReadyUpdate,
+            DeferReadyUpdateFromUiAsync,
+            canDeferUpdate: deferralHours > 0)
+        {
+            Owner = this,
+        };
+        aboutWindow.Closed += (_, _) => _aboutWindow = null;
+        _aboutWindow = aboutWindow;
+        aboutWindow.Show();
+    }
+
+    private void ShowDesktopSettingsWindow()
+    {
+        ShowAndActivate();
+        var settingsWindow = new DesktopSettingsWindow(
+            _settingsStore.Load(),
+            TrySaveDesktopSettings)
+        {
+            Owner = this,
+        };
+        settingsWindow.ShowDialog();
+    }
+
+    private string? TrySaveDesktopSettings(DesktopSettings candidate)
+    {
+        var previous = _settingsStore.Load();
+        var registeredForCandidate = false;
+        if (candidate.GlobalHotkeyEnabled && !_globalHotkey.IsRegistered)
+        {
+            var windowHandle = new WindowInteropHelper(this).Handle;
+            if (!_globalHotkey.TryRegister(windowHandle))
+            {
+                return "Ctrl+Shift+H уже используется другой программой. Выберите другую настройку или освободите сочетание.";
+            }
+
+            registeredForCandidate = true;
+        }
+
+        try
+        {
+            _settingsStore.Save(candidate);
+            _notificationSettings = candidate;
+            if (!candidate.GlobalHotkeyEnabled)
+            {
+                _globalHotkey.Unregister();
+            }
+
+            DesktopLog.Info("Desktop shell preferences saved");
+            return null;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException)
+        {
+            if (registeredForCandidate && !previous.GlobalHotkeyEnabled)
+            {
+                _globalHotkey.Unregister();
+            }
+
+            DesktopLog.Error("Desktop shell preferences could not be saved", exception);
+            return "Не удалось сохранить настройки. Проверьте доступ к профилю пользователя и повторите попытку.";
+        }
+    }
+
+    private async Task ShowDiagnosticsWindowAsync()
+    {
+        ShowAndActivate();
+        if (_diagnosticsWindow is not null)
+        {
+            _diagnosticsWindow.Activate();
+            _diagnosticsWindow.Focus();
+            return;
+        }
+
+        if (_diagnosticsOpening)
+        {
+            return;
+        }
+
+        _diagnosticsOpening = true;
+        _diagnosticsItem.Enabled = false;
+        _diagnosticsItem.Text = "Собираем диагностику…";
+        try
+        {
+            var context = new DesktopDiagnosticsContext(
+                _options.BaseUri,
+                _runtime.WindowsAppSdkStatus,
+                _runtime.NotificationMode,
+                ReadAutostartStatus(),
+                _lastNavigationStatus,
+                _lastNavigationAtUtc,
+                _lastBridgeHandshakeUtc,
+                _updates.Current,
+                _performance.Snapshot());
+            var snapshot = await Task.Run(() => _diagnostics.Collect(context));
+            if (_applicationController.ExitRequested)
+            {
+                return;
+            }
+
+            var diagnosticsWindow = new DiagnosticsWindow(
+                snapshot,
+                _policy.ResolveDiagnosticsExportEnabled(defaultEnabled: true))
+            {
+                Owner = this,
+            };
+            diagnosticsWindow.Closed += (_, _) => _diagnosticsWindow = null;
+            _diagnosticsWindow = diagnosticsWindow;
+            diagnosticsWindow.Show();
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop diagnostics collection failed", exception);
+            System.Windows.MessageBox.Show(
+                "Не удалось собрать диагностику. Повторите попытку.",
+                "HUB Desktop",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _diagnosticsOpening = false;
+            _diagnosticsItem.Enabled = true;
+            _diagnosticsItem.Text = "Диагностика";
+        }
+    }
+
+    private void ShowDownloadsWindow()
+    {
+        ShowAndActivate();
+        if (_downloadsWindow is not null)
+        {
+            _downloadsWindow.Activate();
+            _downloadsWindow.Focus();
+            return;
+        }
+
+        var downloadsWindow = new DownloadsWindow(_downloads)
+        {
+            Owner = this,
+        };
+        downloadsWindow.ApplyTheme(_currentThemeMode);
+        downloadsWindow.OpenRequested += DownloadsWindow_OpenRequested;
+        downloadsWindow.RevealRequested += DownloadsWindow_RevealRequested;
+        downloadsWindow.CancelRequested += DownloadsWindow_CancelRequested;
+        downloadsWindow.ClearFinishedRequested += DownloadsWindow_ClearFinishedRequested;
+        downloadsWindow.OpenDownloadsFolderRequested += DownloadsWindow_OpenDownloadsFolderRequested;
+        downloadsWindow.Closed += (_, _) =>
+        {
+            downloadsWindow.OpenRequested -= DownloadsWindow_OpenRequested;
+            downloadsWindow.RevealRequested -= DownloadsWindow_RevealRequested;
+            downloadsWindow.CancelRequested -= DownloadsWindow_CancelRequested;
+            downloadsWindow.ClearFinishedRequested -= DownloadsWindow_ClearFinishedRequested;
+            downloadsWindow.OpenDownloadsFolderRequested -= DownloadsWindow_OpenDownloadsFolderRequested;
+            _downloadsWindow = null;
+        };
+        _downloadsWindow = downloadsWindow;
+        downloadsWindow.Show();
+    }
+
+    private void DownloadsWindow_OpenRequested(
+        object? sender,
+        DesktopDownloadActionRequestedEventArgs e)
+    {
+        _downloadsWindow?.PresentActionResult(_downloads.OpenDownload(e.ItemId));
+    }
+
+    private void DownloadsWindow_RevealRequested(
+        object? sender,
+        DesktopDownloadActionRequestedEventArgs e)
+    {
+        _downloadsWindow?.PresentActionResult(_downloads.RevealDownload(e.ItemId));
+    }
+
+    private void DownloadsWindow_CancelRequested(
+        object? sender,
+        DesktopDownloadActionRequestedEventArgs e)
+    {
+        _downloadsWindow?.PresentActionResult(
+            _downloads.TryRequestCancel(e.ItemId)
+                ? DesktopFileActionResult.Succeeded
+                : DesktopFileActionResult.Failed);
+    }
+
+    private void DownloadsWindow_ClearFinishedRequested(object? sender, EventArgs e)
+    {
+        _downloads.ClearFinished();
+        _downloadsWindow?.PresentActionResult(DesktopFileActionResult.Succeeded);
+    }
+
+    private void DownloadsWindow_OpenDownloadsFolderRequested(object? sender, EventArgs e)
+    {
+        _downloadsWindow?.PresentActionResult(_downloads.OpenDownloadsFolder());
+    }
+
+    private void RefreshDownloadsMenuItem()
+    {
+        var count = _downloads.Items.Count;
+        _downloadsItem.Text = count == 0 ? "Загрузки" : $"Загрузки ({count})";
+        _downloadsItem.AccessibleName = count == 0
+            ? "Открыть загрузки HUB Desktop"
+            : $"Открыть загрузки HUB Desktop, файлов: {count}";
+    }
+
+    private string ReadAutostartStatus()
+    {
+        try
+        {
+            return _autostart.IsEnabled ? "Включён" : "Выключен";
+        }
+        catch
+        {
+            return "Не удалось определить";
         }
     }
 
@@ -807,39 +2127,65 @@ public partial class MainWindow : Window
 
     private async void DeferUpdateButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_readyUpdate is null)
+        if (await DeferReadyUpdateFromUiAsync())
         {
-            return;
-        }
-
-        try
-        {
-            await _updates.DeferAsync(
-                _readyUpdate,
-                DateTimeOffset.UtcNow.AddHours(24));
             UpdateBanner.Visibility = Visibility.Collapsed;
             _webView?.Focus();
-            DesktopLog.Info("Desktop update deferred for 24 hours");
-        }
-        catch (Exception exception)
-        {
-            DesktopLog.Error("Desktop update defer failed", exception);
         }
     }
 
     private void InstallUpdateButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_readyUpdate is null)
+        _ = TryStartReadyUpdate();
+    }
+
+    private async Task<bool> DeferReadyUpdateFromUiAsync()
+    {
+        if (_updates.ReadyPackage is null)
         {
-            return;
+            return false;
         }
+
+        try
+        {
+            var deferralHours = _policy.ResolveUpdateDeferralHours(defaultHours: 24);
+            if (deferralHours == 0)
+            {
+                return false;
+            }
+
+            var deferred = await _updates.DeferReadyUpdateAsync(
+                DateTimeOffset.UtcNow.AddHours(deferralHours));
+            if (deferred)
+            {
+                DesktopLog.Info($"Desktop update deferred; hours={deferralHours}");
+            }
+
+            return deferred;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop update defer failed", exception);
+            return false;
+        }
+    }
+
+    private bool TryStartReadyUpdate()
+    {
+        var readyUpdate = _updates.ReadyPackage;
+        if (readyUpdate is null)
+        {
+            return false;
+        }
+
+        _readyUpdate = readyUpdate;
 
         InstallUpdateButton.IsEnabled = false;
         DeferUpdateButton.IsEnabled = false;
         InstallUpdateButton.Content = "Запускаем установку…";
         var applicationPath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(applicationPath)
-            || !_updates.TryLaunchInstaller(_readyUpdate, applicationPath))
+            || !_updates.TryInstallReadyUpdate(applicationPath))
         {
             InstallUpdateButton.Content = "Перезапустить и обновить";
             InstallUpdateButton.IsEnabled = true;
@@ -848,110 +2194,12 @@ public partial class MainWindow : Window
             AutomationProperties.SetName(
                 UpdateBanner,
                 "Не удалось запустить обновление HUB Desktop");
-            return;
+            return false;
         }
 
         PrepareForShutdown();
         Application.Current.Shutdown();
+        return true;
     }
 
-    private static class NativeWindowActivation
-    {
-        private const int RestoreWindow = 9;
-        private const uint NearestMonitor = 2;
-        public const int GetMinimumMaximumInfoMessage = 0x0024;
-
-        public static void RestoreAndForeground(nint windowHandle)
-        {
-            if (windowHandle == nint.Zero)
-            {
-                return;
-            }
-
-            ShowWindow(windowHandle, RestoreWindow);
-            SetForegroundWindow(windowHandle);
-        }
-
-        public static void ConstrainMaximizedBoundsToWorkArea(
-            nint windowHandle,
-            nint minimumMaximumInfoPointer)
-        {
-            var monitorHandle = MonitorFromWindow(windowHandle, NearestMonitor);
-            if (monitorHandle == nint.Zero)
-            {
-                return;
-            }
-
-            var monitorInfo = new MonitorInfo
-            {
-                Size = Marshal.SizeOf<MonitorInfo>(),
-            };
-            if (!GetMonitorInfo(monitorHandle, ref monitorInfo))
-            {
-                return;
-            }
-
-            var minimumMaximumInfo = Marshal.PtrToStructure<MinimumMaximumInfo>(
-                minimumMaximumInfoPointer);
-            minimumMaximumInfo.MaximumPosition.X =
-                monitorInfo.WorkArea.Left - monitorInfo.MonitorArea.Left;
-            minimumMaximumInfo.MaximumPosition.Y =
-                monitorInfo.WorkArea.Top - monitorInfo.MonitorArea.Top;
-            minimumMaximumInfo.MaximumSize.X =
-                monitorInfo.WorkArea.Right - monitorInfo.WorkArea.Left;
-            minimumMaximumInfo.MaximumSize.Y =
-                monitorInfo.WorkArea.Bottom - monitorInfo.WorkArea.Top;
-            Marshal.StructureToPtr(minimumMaximumInfo, minimumMaximumInfoPointer, false);
-        }
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool ShowWindow(nint windowHandle, int command);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SetForegroundWindow(nint windowHandle);
-
-        [DllImport("user32.dll")]
-        private static extern nint MonitorFromWindow(nint windowHandle, uint flags);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool GetMonitorInfo(nint monitorHandle, ref MonitorInfo monitorInfo);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct NativePoint
-        {
-            public int X;
-            public int Y;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct NativeRectangle
-        {
-            public int Left;
-            public int Top;
-            public int Right;
-            public int Bottom;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MinimumMaximumInfo
-        {
-            public NativePoint Reserved;
-            public NativePoint MaximumSize;
-            public NativePoint MaximumPosition;
-            public NativePoint MinimumTrackingSize;
-            public NativePoint MaximumTrackingSize;
-        }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct MonitorInfo
-        {
-            public int Size;
-            public NativeRectangle MonitorArea;
-            public NativeRectangle WorkArea;
-            public uint Flags;
-        }
-    }
 }

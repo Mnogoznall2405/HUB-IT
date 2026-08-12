@@ -22,8 +22,7 @@ import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../../theme/o
 import SectionCard from '../../shared/SectionCard';
 
 export function BrowserNotificationsSettingsCard() {
-  if (isNativeShellRuntime()) return null;
-
+  const nativeShell = isNativeShellRuntime();
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [notificationState, setNotificationState] = useState(() => getWindowsNotificationState());
@@ -82,7 +81,9 @@ export function BrowserNotificationsSettingsCard() {
   return (
     <SectionCard
       title="Windows-уведомления"
-      description="Системные уведомления браузера для hub-событий. Настройка хранится локально в текущем браузере на этой машине."
+      description={nativeShell
+        ? 'Системные уведомления HUB Desktop. Общий переключатель хранится только в текущем Desktop-профиле, а каналы берутся из настроек HUB ниже.'
+        : 'Системные уведомления браузера для hub-событий. Настройка хранится локально в текущем браузере на этой машине.'}
       action={(
         <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" justifyContent="flex-end">
           <Chip
@@ -117,17 +118,21 @@ export function BrowserNotificationsSettingsCard() {
             label={enabled ? 'Показывать Windows-уведомления для hub-событий' : 'Windows-уведомления отключены'}
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
-            Используется Browser Notification API. Уведомления работают, пока сайт открыт в браузере и для сайта выдано разрешение.
+            {nativeShell
+              ? 'Desktop продолжает доставку, когда окно открыто, свёрнуто или скрыто в tray. Серверные переключатели каналов остаются общими с web.'
+              : 'Используется Browser Notification API. Уведомления работают, пока сайт открыт в браузере и для сайта выдано разрешение.'}
           </Typography>
         </Paper>
 
         {!supported ? (
           <Alert severity="warning">
-            В этом браузере системные уведомления не поддерживаются. Внутренние web-toast уведомления продолжат работать как раньше.
+            {nativeShell
+              ? 'Desktop-канал сейчас недоступен. Внутренние web-toast уведомления продолжат работать в открытом окне.'
+              : 'В этом браузере системные уведомления не поддерживаются. Внутренние web-toast уведомления продолжат работать как раньше.'}
           </Alert>
         ) : null}
 
-        {supported && permission === 'default' ? (
+        {!nativeShell && supported && permission === 'default' ? (
           <Alert
             severity="info"
             action={(
@@ -145,13 +150,21 @@ export function BrowserNotificationsSettingsCard() {
           </Alert>
         ) : null}
 
-        {supported && permission === 'denied' ? (
+        {!nativeShell && supported && permission === 'denied' ? (
           <Alert severity="warning">
             Браузер сейчас блокирует системные уведомления для этого сайта. Разрешите уведомления в настройках браузера, после чего вернитесь на эту страницу.
           </Alert>
         ) : null}
 
-        {supported && permission === 'granted' ? (
+        {nativeShell && supported ? (
+          <Alert severity={enabled ? 'success' : 'info'}>
+            {enabled
+              ? 'Desktop-канал включён. Если обычный Windows toast недоступен, HUB показывает закреплённую плашку до открытия или закрытия пользователем.'
+              : 'Desktop-канал доступен, но общий локальный переключатель сейчас выключен.'}
+          </Alert>
+        ) : null}
+
+        {!nativeShell && supported && permission === 'granted' ? (
           <Alert severity={enabled ? 'success' : 'info'}>
             {enabled
               ? 'Системные уведомления разрешены и будут дублировать новые hub-события в Windows.'

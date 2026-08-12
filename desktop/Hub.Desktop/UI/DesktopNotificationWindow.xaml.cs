@@ -1,7 +1,9 @@
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Media;
 using Hub.Desktop.Interop;
+using Hub.Desktop.Notifications;
 
 namespace Hub.Desktop.UI;
 
@@ -22,6 +24,14 @@ public partial class DesktopNotificationWindow : Window
         _route = request.Route;
         NotificationTitle.Text = request.Title;
         NotificationBody.Text = request.Body;
+        var actionLabel = DesktopNotificationPresentation.GetPrimaryActionLabel(request.Route);
+        PrimaryActionButton.Content = actionLabel;
+        AutomationProperties.SetName(
+            PrimaryActionButton,
+            $"{actionLabel}: {request.Title}");
+        AutomationProperties.SetName(
+            NotificationSurface,
+            $"HUB Desktop. {request.Title}. {request.Body}. Действие: {actionLabel}");
 
         if (!IsVisible)
         {
@@ -43,6 +53,8 @@ public partial class DesktopNotificationWindow : Window
         SetColorResource("NotificationBodyBrush", isDark ? "#C8C6C4" : "#3B3A39");
         SetColorResource("NotificationMutedBrush", isDark ? "#A19F9D" : "#605E5C");
         SetColorResource("NotificationHoverBrush", isDark ? "#252A31" : "#F3F2F1");
+        SetColorResource("NotificationAccentBrush", isDark ? "#4CC2FF" : "#0067C0");
+        SetColorResource("NotificationActionHoverBrush", isDark ? "#1C3444" : "#E5F3FF");
     }
 
     private void PositionAtWorkAreaBottomRight()
@@ -54,12 +66,13 @@ public partial class DesktopNotificationWindow : Window
 
     private void NotificationSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        var route = _route;
-        Hide();
-        if (DesktopBridgeProtocol.IsValidInternalRoute(route))
-        {
-            OpenRequested?.Invoke(this, route);
-        }
+        OpenCurrentRoute();
+        e.Handled = true;
+    }
+
+    private void PrimaryActionButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenCurrentRoute();
         e.Handled = true;
     }
 
@@ -68,6 +81,16 @@ public partial class DesktopNotificationWindow : Window
         _route = null;
         Hide();
         e.Handled = true;
+    }
+
+    private void OpenCurrentRoute()
+    {
+        var route = _route;
+        Hide();
+        if (DesktopBridgeProtocol.IsValidInternalRoute(route))
+        {
+            OpenRequested?.Invoke(this, route);
+        }
     }
 
     private void SetColorResource(string key, string color)

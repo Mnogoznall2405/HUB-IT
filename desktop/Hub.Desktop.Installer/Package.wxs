@@ -73,6 +73,32 @@
                      Name="InstallerVersion"
                      Type="string"
                      Value="$(DesktopVersion)" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\HUB-IT\Desktop"
+                     Name="InstalledPath"
+                     Type="string"
+                     Value="[INSTALLFOLDER]HUB.Desktop.exe" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit"
+                     Type="string"
+                     Value="URL:HUB Desktop Protocol" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit"
+                     Name="URL Protocol"
+                     Type="string"
+                     Value="" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit\DefaultIcon"
+                     Type="string"
+                     Value="&quot;[#HubDesktopExecutable]&quot;,0" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit\shell\open\command"
+                     Type="string"
+                     Value="&quot;[#HubDesktopExecutable]&quot; &quot;%1&quot;" />
+      <RemoveRegistryKey Id="RemoveHubitProtocolRegistration"
+                         Root="HKLM"
+                         Key="Software\Classes\hubit"
+                         Action="removeOnUninstall" />
     </Component>
 
     <Feature Id="Complete" Title="HUB Desktop" Level="1">

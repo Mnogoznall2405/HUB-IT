@@ -4,14 +4,13 @@ using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
-using System.Text.Json;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
 using Hub.Desktop.UpdateCore;
 
 namespace Hub.Desktop.Updates;
 
-public sealed class DesktopUpdateService : IDisposable
+public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
 {
     private const long DownloadReserveBytes = 100L * 1024 * 1024;
     private const string RunnerFileName = "HUB.Desktop.UpdateRunner.exe";
@@ -23,10 +22,8 @@ public sealed class DesktopUpdateService : IDisposable
     private readonly string _updatesFolder;
     private readonly string _packagesFolder;
     private readonly string _runnersFolder;
+    private readonly DesktopSettingsStore _settings;
     private readonly Func<string, long> _getAvailableFreeSpace;
-    private readonly CancellationTokenSource _shutdown = new();
-    private Task? _loopTask;
-    private Version? _lastPublishedVersion;
 
     public DesktopUpdateService(
         DesktopUpdateOptions options,
@@ -38,7 +35,8 @@ public sealed class DesktopUpdateService : IDisposable
             httpClient,
             DesktopUpdateTrust.LoadCertificate(),
             DesktopPaths.UpdatesFolder,
-            null)
+            null,
+            new DesktopSettingsStore(DesktopPaths.SettingsFile))
     {
     }
 
@@ -48,7 +46,8 @@ public sealed class DesktopUpdateService : IDisposable
         HttpClient? httpClient,
         X509Certificate2 trustCertificate,
         string updatesFolder,
-        Func<string, long>? getAvailableFreeSpace = null)
+        Func<string, long>? getAvailableFreeSpace = null,
+        DesktopSettingsStore? settings = null)
     {
         _options = options;
         _currentVersion = currentVersion
@@ -60,24 +59,20 @@ public sealed class DesktopUpdateService : IDisposable
         _updatesFolder = Path.GetFullPath(updatesFolder);
         _packagesFolder = Path.Combine(_updatesFolder, "Packages");
         _runnersFolder = Path.Combine(_updatesFolder, "Runners");
+        _settings = settings ?? new DesktopSettingsStore(
+            Path.Combine(_updatesFolder, "settings.json"));
         _getAvailableFreeSpace = getAvailableFreeSpace ?? GetAvailableFreeSpace;
     }
 
-    public event EventHandler<DesktopUpdatePackage>? UpdateReady;
+    public event EventHandler<DesktopUpdateDownloadProgress>? DownloadProgress;
 
-    public void Start()
-    {
-        if (!_options.Enabled || _loopTask is not null)
-        {
-            return;
-        }
-
-        _loopTask = Task.Run(() => RunLoopAsync(_shutdown.Token));
-    }
+    public IReadOnlyList<string> InstalledReleaseNotes =>
+        _settings.GetInstalledReleaseNotes(_currentVersion);
 
     public async Task<DesktopUpdatePackage?> CheckOnceAsync(
         CancellationToken cancellationToken = default)
     {
+        CleanupOldFiles();
         using var request = new HttpRequestMessage(HttpMethod.Get, _options.ManifestUri);
         using var response = await _httpClient.SendAsync(
             request,
@@ -115,6 +110,16 @@ public sealed class DesktopUpdateService : IDisposable
 
         if (!DesktopUpdateManifestVerifier.IsNewerThan(manifest, _currentVersion))
         {
+            if (string.Equals(
+                    DesktopUpdateManifestVerifier.FormatVersion(manifest.Version),
+                    DesktopUpdateManifestVerifier.FormatVersion(_currentVersion),
+                    StringComparison.Ordinal))
+            {
+                _settings.SetInstalledReleaseNotes(
+                    manifest.Version,
+                    manifest.ReleaseNotes);
+            }
+
             return null;
         }
 
@@ -125,22 +130,14 @@ public sealed class DesktopUpdateService : IDisposable
         return package with { DeferredUntil = ReadDeferredUntil(manifest.Version) };
     }
 
-    public async Task DeferAsync(
+    public Task DeferAsync(
         DesktopUpdatePackage package,
         DateTimeOffset deferredUntil,
         CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(_updatesFolder);
-        var state = new DeferredUpdateState(
-            DesktopUpdateManifestVerifier.FormatVersion(package.Manifest.Version),
-            deferredUntil.UtcDateTime);
-        var temporaryPath = Path.Combine(_updatesFolder, "state.json.tmp");
-        var destinationPath = Path.Combine(_updatesFolder, "state.json");
-        await File.WriteAllTextAsync(
-            temporaryPath,
-            JsonSerializer.Serialize(state),
-            cancellationToken);
-        File.Move(temporaryPath, destinationPath, overwrite: true);
+        cancellationToken.ThrowIfCancellationRequested();
+        _settings.SetDeferredUpdate(package.Manifest.Version, deferredUntil);
+        return Task.CompletedTask;
     }
 
     public bool TryLaunchInstaller(
@@ -180,6 +177,9 @@ public sealed class DesktopUpdateService : IDisposable
 
             _ = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Update runner did not start.");
+            _settings.SetInstalledReleaseNotes(
+                package.Manifest.Version,
+                package.Manifest.ReleaseNotes);
             DesktopLog.Info(
                 $"Update runner started; version={DesktopUpdateManifestVerifier.FormatVersion(package.Manifest.Version)}");
             return true;
@@ -193,57 +193,12 @@ public sealed class DesktopUpdateService : IDisposable
 
     public void Dispose()
     {
-        _shutdown.Cancel();
-        _shutdown.Dispose();
         if (_ownsHttpClient)
         {
             _httpClient.Dispose();
         }
 
         _trustCertificate.Dispose();
-    }
-
-    private async Task RunLoopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            CleanupOldFiles();
-            var initialDelay = RandomDelay(
-                _options.InitialDelayMinimum,
-                _options.InitialDelayMaximum);
-            await Task.Delay(initialDelay, cancellationToken);
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var delay = _options.CheckInterval;
-                try
-                {
-                    var package = await CheckOnceAsync(cancellationToken);
-                    if (package is not null && package.Manifest.Version != _lastPublishedVersion)
-                    {
-                        _lastPublishedVersion = package.Manifest.Version;
-                        UpdateReady?.Invoke(this, package);
-                        DesktopLog.Info(
-                            $"Desktop update is ready; version={DesktopUpdateManifestVerifier.FormatVersion(package.Manifest.Version)}");
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception exception)
-                {
-                    delay = _options.RetryDelay;
-                    DesktopLog.Error("Desktop update check failed", exception);
-                }
-
-                await Task.Delay(delay, cancellationToken);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Normal shutdown.
-        }
     }
 
     private async Task<DesktopUpdatePackage> EnsurePackageAsync(
@@ -285,6 +240,9 @@ public sealed class DesktopUpdateService : IDisposable
 
         try
         {
+            DownloadProgress?.Invoke(
+                this,
+                new DesktopUpdateDownloadProgress(manifest.Version, 0, manifest.SizeBytes));
             using var request = new HttpRequestMessage(HttpMethod.Get, manifest.DownloadUri);
             using var response = await _httpClient.SendAsync(
                 request,
@@ -323,6 +281,12 @@ public sealed class DesktopUpdateService : IDisposable
                     }
 
                     await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    DownloadProgress?.Invoke(
+                        this,
+                        new DesktopUpdateDownloadProgress(
+                            manifest.Version,
+                            totalBytes,
+                            manifest.SizeBytes));
                 }
             }
 
@@ -406,28 +370,7 @@ public sealed class DesktopUpdateService : IDisposable
 
     private DateTimeOffset? ReadDeferredUntil(Version version)
     {
-        try
-        {
-            var path = Path.Combine(_updatesFolder, "state.json");
-            if (!File.Exists(path))
-            {
-                return null;
-            }
-
-            var state = JsonSerializer.Deserialize<DeferredUpdateState>(File.ReadAllText(path));
-            return state is not null
-                && string.Equals(
-                    state.Version,
-                    DesktopUpdateManifestVerifier.FormatVersion(version),
-                    StringComparison.Ordinal)
-                    ? new DateTimeOffset(
-                        DateTime.SpecifyKind(state.DeferredUntilUtc, DateTimeKind.Utc))
-                    : null;
-        }
-        catch
-        {
-            return null;
-        }
+        return _settings.GetDeferredUpdateUntil(version);
     }
 
     private void CleanupOldFiles()
@@ -515,14 +458,6 @@ public sealed class DesktopUpdateService : IDisposable
         }
     }
 
-    private static TimeSpan RandomDelay(TimeSpan minimum, TimeSpan maximum)
-    {
-        var range = maximum - minimum;
-        return range <= TimeSpan.Zero
-            ? minimum
-            : minimum + TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * range.TotalMilliseconds);
-    }
-
     private static HttpClient CreateHttpClient()
     {
         var handler = new HttpClientHandler
@@ -536,5 +471,4 @@ public sealed class DesktopUpdateService : IDisposable
         };
     }
 
-    private sealed record DeferredUpdateState(string Version, DateTime DeferredUntilUtc);
 }

@@ -6,6 +6,7 @@
 
 ### Архитектура и runtime
 
+- [HUB Desktop release runbook](./HUB_DESKTOP_RELEASE_RUNBOOK.md), [матрица совместимости](./HUB_DESKTOP_COMPATIBILITY_MATRIX.md) и [ротация ключа update manifest](./HUB_DESKTOP_UPDATE_KEY_ROTATION.md)
 - [PostgreSQL app/chat schema](./POSTGRES_APP_SCHEMA.md) и [DDL snapshot](./POSTGRES_APP_SCHEMA_DDL.md)
 - [Chat backend architecture](./CHAT_BACKEND_ARCHITECTURE.md)
 - [Support chat architecture](./SUPPORT_CHAT_ARCHITECTURE.md)
@@ -17,6 +18,7 @@
 ### Безопасность и интеграции
 
 - [Auth / 2FA / passkeys](./AUTH_SECURITY_STACK.md)
+- [HUB Desktop: постоянный Windows-вход](./WINDOWS_SSO_FUTURE.md) и [threat model](./WINDOWS_SSO_THREAT_MODEL.md)
 - [1С integration](./ONE_C_INTEGRATION.md) и [1С document flow](./DOCFLOW_1C_INTEGRATION.md)
 - [Mobile-hub checklist](./MOBILE_HUB_CHECKLIST.md)
 - [My Files security review](./MY_FILES_SECURITY_REVIEW.md)

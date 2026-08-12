@@ -65,6 +65,275 @@ describe('desktopBridge', () => {
     expect(isNativeShellRuntime()).toBe(true);
   });
 
+  it('publishes shell status only after the separate capability arrives', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      isDesktopCapabilityAvailable,
+      syncDesktopShellStatus,
+    } = await import('./desktopBridge');
+    const status = {
+      authenticated: true,
+      online: true,
+      unread_total: 7,
+      chat_unread: 4,
+      mail_unread: 2,
+      tasks_attention: 1,
+    };
+
+    const initialization = initializeDesktopBridge();
+    expect(syncDesktopShellStatus(status)).toBe(false);
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    expect(isDesktopCapabilityAvailable('shell-status')).toBe(false);
+    expect(transport.postMessage).toHaveBeenCalledTimes(1);
+
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['shell-status'],
+    });
+
+    expect(isDesktopCapabilityAvailable('shell-status')).toBe(true);
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'shell.status',
+      version: 1,
+      ...status,
+    });
+  });
+
+  it('sends only the semantic print command after print capability arrives', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, requestDesktopPrintCurrent } = await import('./desktopBridge');
+
+    expect(requestDesktopPrintCurrent()).toBe(false);
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    expect(requestDesktopPrintCurrent()).toBe(false);
+
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['print'],
+    });
+
+    expect(requestDesktopPrintCurrent()).toBe(true);
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'document.printCurrent',
+      version: 1,
+    });
+  });
+
+  it('dispatches palette requests and sends only closed Desktop action commands', async () => {
+    const transport = installTransport();
+    const openPalette = vi.fn();
+    window.addEventListener('itinvent:desktop-open-command-palette', openPalette);
+    const {
+      initializeDesktopBridge,
+      requestDesktopCheckForUpdates,
+      requestDesktopOpenCurrentInBrowser,
+      requestDesktopOpenDiagnostics,
+      requestDesktopOpenDownloads,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['command-palette', 'desktop-actions'],
+    });
+    transport.emit({ type: 'command.openPalette', version: 1 });
+
+    expect(openPalette).toHaveBeenCalledTimes(1);
+    expect(requestDesktopOpenDownloads()).toBe(true);
+    expect(requestDesktopOpenDiagnostics()).toBe(true);
+    expect(requestDesktopCheckForUpdates()).toBe(true);
+    expect(requestDesktopOpenCurrentInBrowser()).toBe(true);
+    expect(transport.postMessage.mock.calls.slice(-4).map(([message]) => message.type)).toEqual([
+      'desktop.openDownloads',
+      'desktop.openDiagnostics',
+      'desktop.checkForUpdates',
+      'desktop.openCurrentInBrowser',
+    ]);
+
+    window.removeEventListener('itinvent:desktop-open-command-palette', openPalette);
+  });
+
+  it('checks only VNC handler availability without sending an address or credentials', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      requestDesktopVncPreflight,
+    } = await import('./desktopBridge');
+
+    await expect(requestDesktopVncPreflight()).resolves.toEqual({
+      available: false,
+      status: 'unavailable',
+    });
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['vnc-preflight'],
+    });
+
+    const preflight = requestDesktopVncPreflight();
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'remote.vncPreflight',
+      version: 1,
+    });
+    transport.emit({
+      type: 'remote.vncPreflightResult',
+      version: 1,
+      status: 'available',
+    });
+    await expect(preflight).resolves.toEqual({ available: true, status: 'available' });
+  });
+
+  it('rejects expanded VNC preflight results', async () => {
+    vi.useFakeTimers();
+    const transport = installTransport();
+    const { initializeDesktopBridge, requestDesktopVncPreflight } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['vnc-preflight'],
+    });
+
+    const preflight = requestDesktopVncPreflight();
+    transport.emit({
+      type: 'remote.vncPreflightResult',
+      version: 1,
+      status: 'available',
+      uri: 'vnc://host?token=secret',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(preflight).resolves.toEqual({ available: false, status: 'unavailable' });
+  });
+
+  it('rejects malformed shell capabilities and status values', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      isDesktopCapabilityAvailable,
+      syncDesktopShellStatus,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['shell-status'],
+      command: 'open',
+    });
+    expect(isDesktopCapabilityAvailable('shell-status')).toBe(false);
+    expect(syncDesktopShellStatus({
+      authenticated: true,
+      online: true,
+      unread_total: -1,
+      chat_unread: 0,
+      mail_unread: 0,
+      tasks_attention: 0,
+    })).toBe(false);
+    expect(transport.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes only strict quick routes after capability negotiation', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, syncDesktopQuickRoutes } = await import('./desktopBridge');
+    const routes = [
+      { id: 'tasks', label: 'Задачи', route: '/tasks', badge: 3 },
+      { id: 'mail', label: 'Почта', route: '/mail', badge: 2 },
+    ];
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    expect(syncDesktopQuickRoutes(routes)).toBe(false);
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['quick-routes', 'shell-status'],
+    });
+
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'shell.quickRoutes',
+      version: 1,
+      routes,
+    });
+    expect(syncDesktopQuickRoutes(routes)).toBe(true);
+  });
+
+  it('rejects duplicate, unsafe, or oversized quick routes', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, syncDesktopQuickRoutes } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['quick-routes'],
+    });
+
+    expect(syncDesktopQuickRoutes([
+      { id: 'tasks', label: 'Задачи', route: '/tasks', badge: 1 },
+      { id: 'tasks', label: 'Подмена', route: '/mail', badge: 0 },
+    ])).toBe(false);
+    expect(syncDesktopQuickRoutes([
+      { id: 'bad route', label: 'Bad', route: 'https://evil.example', badge: -1 },
+    ])).toBe(false);
+    expect(syncDesktopQuickRoutes(Array.from({ length: 13 }, (_, index) => ({
+      id: `route-${index}`,
+      label: `Route ${index}`,
+      route: `/route-${index}`,
+      badge: 0,
+    })))).toBe(false);
+    expect(transport.postMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('syncs only supported themes after the desktop handshake', async () => {
     const transport = installTransport();
     const { initializeDesktopBridge, syncDesktopTheme } = await import('./desktopBridge');
@@ -155,7 +424,10 @@ describe('desktopBridge', () => {
     const transport = installTransport();
     const { initializeDesktopBridge, requestDesktopOpenDownloadedFile } = await import('./desktopBridge');
 
-    expect(requestDesktopOpenDownloadedFile()).toBe(false);
+    await expect(requestDesktopOpenDownloadedFile()).resolves.toEqual({
+      accepted: false,
+      status: 'unavailable',
+    });
     const initialization = initializeDesktopBridge();
     transport.emit({
       type: 'desktop.hostReady',
@@ -164,11 +436,101 @@ describe('desktopBridge', () => {
     });
     await initialization;
 
-    expect(requestDesktopOpenDownloadedFile()).toBe(true);
+    const request = requestDesktopOpenDownloadedFile();
     expect(transport.postMessage).toHaveBeenLastCalledWith({
       type: 'file.openDownloaded',
       version: 1,
     });
+    transport.emit({
+      type: 'file.openDownloadedResult',
+      version: 1,
+      status: 'accepted',
+    });
+    await expect(request).resolves.toEqual({ accepted: true, status: 'accepted' });
+  });
+
+  it('prepares strict native print, copy and save-as download actions', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      requestDesktopDownloadedFileAction,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['file-actions-v2'],
+    });
+
+    for (const action of ['print', 'copy', 'saveAs']) {
+      const request = requestDesktopDownloadedFileAction(action);
+      expect(transport.postMessage).toHaveBeenLastCalledWith({
+        type: 'file.prepareDownload',
+        version: 1,
+        action,
+      });
+      transport.emit({
+        type: 'file.prepareDownloadResult',
+        version: 1,
+        action,
+        status: 'accepted',
+      });
+      await expect(request).resolves.toEqual({ accepted: true, status: 'accepted' });
+    }
+
+    await expect(requestDesktopDownloadedFileAction('execute')).resolves.toEqual({
+      accepted: false,
+      status: 'unsupported',
+    });
+  });
+
+  it('returns a controlled busy result and allows only one pending open intent', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, requestDesktopOpenDownloadedFile } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    const firstRequest = requestDesktopOpenDownloadedFile();
+    await expect(requestDesktopOpenDownloadedFile()).resolves.toEqual({
+      accepted: false,
+      status: 'busy',
+    });
+    expect(transport.postMessage).toHaveBeenCalledTimes(2);
+
+    transport.emit({
+      type: 'file.openDownloadedResult',
+      version: 1,
+      status: 'busy',
+    });
+    await expect(firstRequest).resolves.toEqual({ accepted: false, status: 'busy' });
+  });
+
+  it('keeps compatibility with a legacy host that does not acknowledge the open intent', async () => {
+    vi.useFakeTimers();
+    const transport = installTransport();
+    const { initializeDesktopBridge, requestDesktopOpenDownloadedFile } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    const request = requestDesktopOpenDownloadedFile();
+    await vi.advanceTimersByTimeAsync(600);
+    await expect(request).resolves.toEqual({ accepted: true, status: 'legacy' });
   });
 
   it('rejects unsafe native notification input', async () => {

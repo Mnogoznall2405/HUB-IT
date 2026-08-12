@@ -1,21 +1,24 @@
-using Microsoft.Windows.ApplicationModel.DynamicDependency;
-
 namespace Hub.Desktop.Lifecycle;
 
 internal static class WindowsAppRuntime
 {
-    public static bool TryInitialize(out int hresult)
+    public static string DescribeStatus(
+        bool elevationKnown,
+        bool isElevated,
+        bool notificationsAvailable)
     {
-        var minimumVersion = new PackageVersion(Microsoft.WindowsAppSDK.Runtime.Version.UInt64);
-        return Bootstrap.TryInitialize(
-            Microsoft.WindowsAppSDK.Release.MajorMinor,
-            Microsoft.WindowsAppSDK.Release.VersionTag,
-            minimumVersion,
-            out hresult);
-    }
+        if (!elevationKnown)
+        {
+            return "Не проверен: не удалось определить права запуска";
+        }
 
-    public static void Shutdown()
-    {
-        Bootstrap.Shutdown();
+        if (isElevated)
+        {
+            return "Отключён: HUB запущен от администратора";
+        }
+
+        return notificationsAvailable
+            ? "Встроен; системные уведомления доступны"
+            : "Встроен; системные уведомления не поддерживаются";
     }
 }

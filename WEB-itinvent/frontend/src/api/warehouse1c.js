@@ -234,6 +234,29 @@ export const warehouse1cAPI = {
     return response;
   },
 
+  getMovementFilePreview: async (registrarRef, fileRef, { signal } = {}) => {
+    const { data } = await apiClient.get(
+      `/warehouse-1c/movements/files/${encodeURIComponent(normalize1cRef(fileRef))}/preview`,
+      {
+        params: { registrar_ref: normalize1cRef(registrarRef) },
+        signal,
+        timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+      },
+    );
+    return data;
+  },
+
+  downloadMovementFilePreviewPdf: (registrarRef, fileRef) => (
+    apiClient.get(
+      `/warehouse-1c/movements/files/${encodeURIComponent(normalize1cRef(fileRef))}/preview/pdf`,
+      {
+        params: { registrar_ref: normalize1cRef(registrarRef) },
+        responseType: 'blob',
+        timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+      },
+    )
+  ),
+
   getEmployeeWarehouse: async ({
     employeeName = '',
     warehouseRef = '',

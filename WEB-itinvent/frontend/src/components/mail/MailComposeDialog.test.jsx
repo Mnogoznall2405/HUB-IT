@@ -135,6 +135,21 @@ describe('MailComposeDialog', () => {
     expect(screen.getByTestId('mock-quill')).toHaveFocus();
   });
 
+  it('removes an editable attachment from its arrow menu', () => {
+    const props = buildProps({
+      composeFiles: [{ name: 'report.docx', size: 1024 }],
+      sumFilesSize: () => 1024,
+    });
+    renderWithTheme(<MailComposeDialog {...props} />);
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Действия для вложения report.docx',
+    }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить вложение' }));
+
+    expect(props.onRemoveComposeFile).toHaveBeenCalledWith(0);
+  });
+
   it('keeps focus in the subject field after typing instead of jumping back into the editor', () => {
     function StatefulComposeDialog() {
       const [subject, setSubject] = React.useState('');

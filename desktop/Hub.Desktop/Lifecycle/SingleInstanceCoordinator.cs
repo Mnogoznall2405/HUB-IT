@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
+using Hub.Desktop.DeepLinks;
 using Hub.Desktop.Diagnostics;
 
 namespace Hub.Desktop.Lifecycle;
@@ -10,6 +11,9 @@ public sealed class SingleInstanceCoordinator : IDisposable
 {
     private const string DefaultApplicationId = "HUBIT.Desktop";
     private const string ActivateCommand = "ACTIVATE";
+    private const string OpenDownloadsCommand = "OPEN_DOWNLOADS";
+    private const string RouteCommandPrefix = "ROUTE:";
+    private const int MaximumCommandLength = DesktopDeepLinkParser.MaximumInputLength + 16;
     private readonly CancellationTokenSource _listenerCancellation = new();
     private readonly Mutex _mutex;
     private readonly string _pipeName;
@@ -31,7 +35,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
         IsPrimary = createdNew;
     }
 
-    public event EventHandler? ActivationRequested;
+    public event EventHandler<DesktopLaunchRequestEventArgs>? ActivationRequested;
 
     public bool IsPrimary { get; }
 
@@ -47,9 +51,15 @@ public sealed class SingleInstanceCoordinator : IDisposable
         _listenerTask ??= ListenAsync(_listenerCancellation.Token);
     }
 
-    public async Task<bool> SignalPrimaryAsync(CancellationToken cancellationToken = default)
+    public Task<bool> SignalPrimaryAsync(CancellationToken cancellationToken = default) =>
+        SignalPrimaryAsync(DesktopLaunchRequest.Default, cancellationToken);
+
+    public async Task<bool> SignalPrimaryAsync(
+        DesktopLaunchRequest request,
+        CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(request);
 
         if (IsPrimary)
         {
@@ -70,7 +80,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 bufferSize: 256,
                 leaveOpen: false);
-            await writer.WriteLineAsync(ActivateCommand);
+            await writer.WriteLineAsync(CreateActivationCommand(request));
             await writer.FlushAsync(cancellationToken);
             return true;
         }
@@ -127,12 +137,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
                     detectEncodingFromByteOrderMarks: false,
                     bufferSize: 256,
                     leaveOpen: false);
-                var command = await reader.ReadLineAsync(cancellationToken);
+                var command = await ReadBoundedLineAsync(reader, cancellationToken);
 
-                if (string.Equals(command, ActivateCommand, StringComparison.Ordinal))
+                if (TryParseActivationCommand(command, out var request))
                 {
                     DesktopLog.Info("Activation request received from secondary instance");
-                    ActivationRequested?.Invoke(this, EventArgs.Empty);
+                    ActivationRequested?.Invoke(
+                        this,
+                        new DesktopLaunchRequestEventArgs(request));
                 }
                 else
                 {
@@ -150,6 +162,82 @@ public sealed class SingleInstanceCoordinator : IDisposable
         }
     }
 
+    internal static string CreateActivationCommand(DesktopLaunchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.StartInBackground)
+        {
+            return ActivateCommand;
+        }
+
+        if (request.OpenDownloads && request.Route is null)
+        {
+            return OpenDownloadsCommand;
+        }
+
+        if (!request.OpenDownloads
+            && DesktopDeepLinkParser.TryParseInternalRoute(request.Route, out var route))
+        {
+            return RouteCommandPrefix + route;
+        }
+
+        return ActivateCommand;
+    }
+
+    internal static bool TryParseActivationCommand(
+        string? command,
+        out DesktopLaunchRequest request)
+    {
+        request = DesktopLaunchRequest.Default;
+        if (string.Equals(command, ActivateCommand, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(command, OpenDownloadsCommand, StringComparison.Ordinal))
+        {
+            request = DesktopLaunchRequest.Default with { OpenDownloads = true };
+            return true;
+        }
+
+        if (command is null
+            || command.Length > MaximumCommandLength
+            || !command.StartsWith(RouteCommandPrefix, StringComparison.Ordinal)
+            || !DesktopDeepLinkParser.TryParseInternalRoute(
+                command[RouteCommandPrefix.Length..],
+                out var route))
+        {
+            return false;
+        }
+
+        request = DesktopLaunchRequest.Default with { Route = route };
+        return true;
+    }
+
+    private static async Task<string?> ReadBoundedLineAsync(
+        TextReader reader,
+        CancellationToken cancellationToken)
+    {
+        var result = new StringBuilder(capacity: 64);
+        var buffer = new char[1];
+        while (await reader.ReadAsync(buffer.AsMemory(), cancellationToken) > 0)
+        {
+            if (buffer[0] == '\n')
+            {
+                return result.ToString().TrimEnd('\r');
+            }
+
+            if (result.Length >= MaximumCommandLength)
+            {
+                return null;
+            }
+
+            result.Append(buffer[0]);
+        }
+
+        return result.Length == 0 ? null : result.ToString().TrimEnd('\r');
+    }
+
     private static string BuildInstanceName(string applicationId)
     {
         if (string.IsNullOrWhiteSpace(applicationId))
@@ -160,4 +248,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
         var userId = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;
         return $"{applicationId}.{userId}";
     }
+}
+
+public sealed class DesktopLaunchRequestEventArgs : EventArgs
+{
+    public DesktopLaunchRequestEventArgs(DesktopLaunchRequest request)
+    {
+        Request = request ?? throw new ArgumentNullException(nameof(request));
+    }
+
+    public DesktopLaunchRequest Request { get; }
 }

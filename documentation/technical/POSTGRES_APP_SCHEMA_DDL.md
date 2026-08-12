@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-11 13:30 UTC_  
+_Сгенерировано: 2026-08-12 07:52 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (127 tables)
+## Schema `app` (128 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -280,6 +280,24 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_departments_is_active`: (is_active)
   - `ix_app_departments_name`: (name)
+
+---
+
+### `app.desktop_presence`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `last_seen_at` | timestamptz | no | `now()` |
+| `expires_at` | timestamptz | no | `` |
+
+- **Primary key:** `session_id`
+- **Indexes:**
+  - `ix_app_desktop_presence_expires_at`: (expires_at)
+  - `ix_app_desktop_presence_user_expires`: (user_id, expires_at)
+  - `ix_app_desktop_presence_user_id`: (user_id)
 
 ---
 

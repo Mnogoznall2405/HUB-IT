@@ -11,17 +11,20 @@ public sealed class DesktopUpdateManifestVerifierTests
     private static readonly Uri HubBaseUri = new("https://hubit.zsgp.ru/");
 
     [Fact]
-    public void LoadsExpectedPinnedUpdateCertificateWithoutPrivateKey()
+    public void LoadsExpectedPinnedProductionTlsCertificateWithoutPrivateKey()
     {
         using var certificate = DesktopUpdateTrust.LoadCertificate();
         using var publicKey = certificate.GetRSAPublicKey();
 
+        Assert.Equal("hubit-zsgp-ru-tls-2026-04", DesktopUpdateTrust.KeyId);
         Assert.Equal(
-            "5BAFC4CB42DF2F612705786E689696283BFA592F",
+            "0A9CFEF49EB1E11819D81A351978BAFA05EF7CBE",
             certificate.Thumbprint);
+        Assert.Contains("CN=*.zsgp.ru", certificate.Subject, StringComparison.Ordinal);
+        Assert.Contains("GlobalSign RSA OV SSL CA 2018", certificate.Issuer, StringComparison.Ordinal);
         Assert.False(certificate.HasPrivateKey);
         Assert.NotNull(publicKey);
-        Assert.Equal(3072, publicKey.KeySize);
+        Assert.Equal(2048, publicKey.KeySize);
     }
 
     [Fact]
@@ -218,6 +221,6 @@ public sealed class DesktopUpdateManifestVerifierTests
             ["Автоматическое обновление"],
             new DesktopUpdateSignature(
                 DesktopUpdateManifestVerifier.SignatureAlgorithm,
-                "hub-desktop-update-2026-01",
+                DesktopUpdateTrust.KeyId,
                 "placeholder"));
 }

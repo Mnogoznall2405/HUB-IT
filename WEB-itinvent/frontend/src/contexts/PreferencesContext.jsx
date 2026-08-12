@@ -41,6 +41,16 @@ const FONT_MAP = {
 
 const DESKTOP_TOUCH_MEDIA = '@media (min-width:600px)';
 
+export function normalizeThemeMode(value) {
+  return ['light', 'dark', 'system'].includes(value) ? value : 'light';
+}
+
+export function resolveThemeMode(value, systemPrefersDark = false) {
+  const normalized = normalizeThemeMode(value);
+  if (normalized === 'system') return systemPrefersDark ? 'dark' : 'light';
+  return normalized;
+}
+
 export function normalizeDashboardMobileSections(value) {
   const source = Array.isArray(value) ? value : [];
   const result = [];
@@ -104,6 +114,7 @@ function normalizePreferencePayload(value = {}) {
   return {
     ...DEFAULT_PREFERENCES,
     ...value,
+    theme_mode: normalizeThemeMode(value?.theme_mode),
     dashboard_sections: dashboardSections,
     dashboard_mobile_sections: dashboardSectionsToLegacy(dashboardSections),
     mobile_bottom_nav_items: normalizeMobileBottomNavItems(value?.mobile_bottom_nav_items),
@@ -137,10 +148,25 @@ function syncSelectedDatabase(databaseId) {
 export function PreferencesProvider({ children }) {
   const [preferences, setPreferences] = useState(() => readCachedPreferences());
   const [loading, setLoading] = useState(false);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => (
+    typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches
+  ));
+  const resolvedThemeMode = resolveThemeMode(preferences.theme_mode, systemPrefersDark);
 
   useEffect(() => {
-    syncDesktopTheme(preferences.theme_mode === 'dark' ? 'dark' : 'light');
-  }, [preferences.theme_mode]);
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = (event) => setSystemPrefersDark(Boolean(event.matches));
+    setSystemPrefersDark(media.matches);
+    media.addEventListener?.('change', handleChange);
+    return () => media.removeEventListener?.('change', handleChange);
+  }, []);
+
+  useEffect(() => {
+    syncDesktopTheme(resolvedThemeMode);
+  }, [resolvedThemeMode]);
 
   const refreshFromServer = useCallback(async () => {
     const hasUser = !!localStorage.getItem('user');
@@ -212,6 +238,9 @@ export function PreferencesProvider({ children }) {
       ...(patch?.mobile_bottom_nav_items !== undefined
         ? { mobile_bottom_nav_items: normalizeMobileBottomNavItems(patch.mobile_bottom_nav_items, []) }
         : {}),
+      ...(patch?.theme_mode !== undefined
+        ? { theme_mode: normalizeThemeMode(patch.theme_mode) }
+        : {}),
     };
     const optimistic = { ...preferences, ...normalizedPatch };
     setPreferences(optimistic);
@@ -242,7 +271,7 @@ export function PreferencesProvider({ children }) {
   }, [preferences]);
 
   const theme = useMemo(() => {
-    const mode = preferences.theme_mode === 'dark' ? 'dark' : 'light';
+    const mode = resolvedThemeMode;
     const fontScale = Math.min(1.2, Math.max(0.9, Number(preferences.font_scale || 1)));
     const fontFamily = FONT_MAP[preferences.font_family] || FONT_MAP.Aptos;
     const isDark = mode === 'dark';
@@ -388,6 +417,20 @@ export function PreferencesProvider({ children }) {
             },
             '::selection': {
               backgroundColor: alpha('#0f6cbd', isDark ? 0.36 : 0.18),
+            },
+            '@media (prefers-reduced-motion: reduce)': {
+              '*, *::before, *::after': {
+                animationDuration: '0.01ms !important',
+                animationIterationCount: '1 !important',
+                scrollBehavior: 'auto !important',
+                transitionDuration: '0.01ms !important',
+              },
+            },
+            '@media (forced-colors: active)': {
+              '*:focus-visible': {
+                outline: '2px solid CanvasText',
+                outlineOffset: 2,
+              },
             },
             '*::-webkit-scrollbar': {
               width: 10,
@@ -874,7 +917,7 @@ export function PreferencesProvider({ children }) {
         },
       },
     });
-  }, [preferences.theme_mode, preferences.font_family, preferences.font_scale]);
+  }, [resolvedThemeMode, preferences.font_family, preferences.font_scale]);
 
   const value = useMemo(() => ({
     preferences,

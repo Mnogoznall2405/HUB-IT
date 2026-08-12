@@ -97,7 +97,7 @@ flowchart LR
 | `0.2.0` | Единая платформа системных уведомлений и проект дедупликации | Возможны минимальные endpoints presence после отдельного design review |
 | `0.2.1` | Полноценный download/file UX и безопасная Windows-интеграция | Нет |
 | `0.2.2` | Enterprise deployment: GPO/ADMX, политики, offline bundle | Нет |
-| `0.3.0` | Пилот подтверждённого Windows SSO | Да, только после ADR и threat model |
+| `0.3.0` | Пилот device-bound повторного входа; Kerberos SSO отложен | Да, только после ADR и threat model |
 | `1.0.0` | Массовая поддерживаемая версия | Только стабилизация утверждённых контрактов |
 
 ---
@@ -787,7 +787,22 @@ HKLM\Software\Policies\HUB-IT\Desktop
 
 ---
 
-# Версия 0.3.0 — Windows SSO, только после отдельного решения
+# Версия 0.3.0 — постоянный Desktop-вход; Kerberos SSO отложен
+
+## Уточнённые условия инфраструктуры
+
+- рабочие станции смешанные: домен `zsgp.corp` и недоменные ПК;
+- HUB-сервер не входит в домен, поэтому сам не может подтвердить Kerberos identity;
+- основной путь `0.3.0` — привязка существующего HUB-профиля после первого обычного входа к
+  неэкспортируемому ключу конкретного Windows-профиля;
+- после истечения обычной сессии клиент проходит одноразовый cryptographic challenge и получает
+  новую обычную отзывную HUB-сессию;
+- `Environment.UserName` и domain join используются только для eligibility/UX. Они не являются
+  доказательством личности и не передаются как доверенный login assertion;
+- настоящий Kerberos/Negotiate SSO остаётся будущим вариантом только через отдельный доменный
+  identity gateway.
+
+Подробности: `documentation/technical/WINDOWS_SSO_FUTURE.md`, threat model и ADR-0005.
 
 ## Что нельзя делать
 
@@ -797,43 +812,43 @@ HKLM\Software\Policies\HUB-IT\Desktop
 - ослаблять 2FA/session policy;
 - добавлять скрытый общий service account в клиент.
 
-## Предварительные документы
+## Утверждённые design-документы
 
 - `documentation/technical/WINDOWS_SSO_FUTURE.md`;
 - `documentation/technical/WINDOWS_SSO_THREAT_MODEL.md`;
-- ADR `docs/adr/00xx-windows-sso-boundary.md`.
+- ADR `docs/adr/0005-windows-sso-boundary.md`.
 
-## Варианты для исследования
+## Отложенные варианты настоящего SSO
 
 1. Kerberos/Negotiate через доменный reverse proxy или auth gateway.
 2. Отдельный доменный identity gateway, который выдаёт короткоживущий подписанный assertion для
    FastAPI.
 3. Entra ID/OIDC, если инфраструктура организации реально его использует.
-4. WebAuthn/Windows Hello как удобный вход в существующую HUB identity, не как доверие к локальному
-   username.
+4. WebAuthn/Windows Hello остаётся браузерным способом входа в существующую HUB identity.
 
-## Рекомендуемый поток
+## Утверждённый поток `0.3.0`
 
 ```text
-Windows identity
-→ доверенный domain/identity gateway
-→ короткоживущий одноразовый signed assertion
-→ FastAPI validation
+первый обычный HUB login + действующая 2FA policy
+→ регистрация public key текущего Windows-профиля
+→ CNG/TPM хранит неэкспортируемый private key
+→ короткоживущий одноразовый challenge после истечения сессии
+→ FastAPI проверяет signature и active device binding
 → обычная HUB session
 → существующие refresh/idle/absolute expiry/2FA rules
 ```
 
 ## Go/no-go условия
 
-Код SSO можно начинать только если:
+Код device-bound reauthentication можно начинать только если:
 
-- определён доверенный issuer;
-- есть защита от replay и audience mismatch;
-- сервер может проверить подпись без доверия к Desktop;
-- account mapping однозначен;
+- утверждены canonical payload, алгоритм и TTL challenge;
+- есть атомарная защита от replay и purpose/device/origin mismatch;
+- server-side binding создаётся только из текущего подтверждённого `user_id`;
+- совпадение Windows login и HUB username проверяется только как eligibility регистрации;
 - logout/revocation/session expiry остаются серверными;
 - есть fallback на текущий login;
-- проведён security review.
+- закрыты Critical/High угрозы из `WINDOWS_SSO_THREAT_MODEL.md`.
 
 ---
 
@@ -876,7 +891,8 @@ Windows identity
 
 ## MSIX decision
 
-До 1.0 подготовить только сравнительный ADR:
+Решение зафиксировано в ADR-0006: до и для 1.0 сохраняются WiX MSI + offline Burn Setup. Сравнение
+охватывает:
 
 - миграция существующего MSI install;
 - autostart;
@@ -887,8 +903,9 @@ Windows identity
 - WebView2 profile migration;
 - rollback/uninstall.
 
-Переходить на MSIX только при измеримом преимуществе и готовом migration plan. MSI/Setup не удалять
-«для чистоты архитектуры».
+Переходить на MSIX только при измеримом преимуществе, доверенном Code Signing и готовом migration
+plan. MSI/Setup не удалять «для чистоты архитектуры». Матрица приёмки 1.0 находится в
+`documentation/technical/HUB_DESKTOP_COMPATIBILITY_MATRIX.md`.
 
 ---
 

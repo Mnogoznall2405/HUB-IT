@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
@@ -530,6 +530,7 @@ app.include_router(equipment.router, prefix="/api/v1/equipment", tags=["Equipmen
 app.include_router(database.router, prefix="/api/v1/database", tags=["Database Management"])
 app.include_router(json_operations.router, prefix="/api/v1/json", tags=["JSON Operations"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["User Settings"])
+app.include_router(desktop_presence.router, prefix="/api/v1/desktop-presence", tags=["Desktop Presence"])
 app.include_router(networks.router, prefix="/api/v1/networks", tags=["Networks"])
 app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
 app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["Inventory"])

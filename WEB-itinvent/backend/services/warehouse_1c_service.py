@@ -36,6 +36,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from typing import Any, Callable
+from urllib.parse import quote
 
 from backend.json_db.manager import JSONDataManager
 from backend.services.one_c_catalog_search import (
@@ -529,6 +530,7 @@ def _guess_content_type(filename: str) -> str:
         "jpg": "image/jpeg",
         "jpeg": "image/jpeg",
         "gif": "image/gif",
+        "webp": "image/webp",
         "tif": "image/tiff",
         "tiff": "image/tiff",
         "bmp": "image/bmp",
@@ -536,7 +538,19 @@ def _guess_content_type(filename: str) -> str:
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xls": "application/vnd.ms-excel",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt": "application/vnd.ms-powerpoint",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt": "application/vnd.oasis.opendocument.text",
+        "ods": "application/vnd.oasis.opendocument.spreadsheet",
+        "odp": "application/vnd.oasis.opendocument.presentation",
         "txt": "text/plain; charset=utf-8",
+        "log": "text/plain; charset=utf-8",
+        "md": "text/markdown; charset=utf-8",
+        "csv": "text/csv; charset=utf-8",
+        "json": "application/json; charset=utf-8",
+        "xml": "application/xml; charset=utf-8",
+        "yaml": "application/yaml; charset=utf-8",
+        "yml": "application/yaml; charset=utf-8",
         "rtf": "application/rtf",
         "zip": "application/zip",
     }
@@ -3808,6 +3822,70 @@ class Warehouse1CService:
             self._get_attached_file_content_sync,
             registrar_ref=normalized_registrar,
             file_ref=normalized_file,
+        )
+
+    @staticmethod
+    def _movement_file_preview_url(registrar_ref: str, file_ref: str) -> str:
+        return (
+            "/api/v1/warehouse-1c/movements/files/"
+            f"{quote(normalize_text(file_ref), safe='')}/preview/pdf"
+            f"?registrar_ref={quote(normalize_text(registrar_ref), safe='')}"
+        )
+
+    def get_movement_file_preview_state(
+        self,
+        *,
+        user_id: int,
+        registrar_ref: str,
+        file_ref: str,
+    ) -> dict[str, Any]:
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_WAREHOUSE_1C,
+            document_preview_job_service,
+        )
+
+        normalized_registrar = normalize_text(registrar_ref)
+        normalized_file = normalize_text(file_ref)
+        if not normalized_registrar:
+            raise Warehouse1CValidationError("registrar_ref обязателен")
+        if not normalized_file:
+            raise Warehouse1CValidationError("file_ref обязателен")
+        return document_preview_job_service.get_state(
+            scope=PREVIEW_SCOPE_WAREHOUSE_1C,
+            owner_user_id=int(user_id),
+            source_payload={
+                "registrar_ref": normalized_registrar,
+                "file_ref": normalized_file,
+            },
+            preview_url=self._movement_file_preview_url(normalized_registrar, normalized_file),
+        )
+
+    def get_movement_file_preview_artifact(
+        self,
+        *,
+        user_id: int,
+        registrar_ref: str,
+        file_ref: str,
+    ) -> dict[str, Any]:
+        from backend.services.document_preview_job_service import (
+            PREVIEW_SCOPE_WAREHOUSE_1C,
+            document_preview_job_service,
+        )
+
+        normalized_registrar = normalize_text(registrar_ref)
+        normalized_file = normalize_text(file_ref)
+        if not normalized_registrar:
+            raise Warehouse1CValidationError("registrar_ref обязателен")
+        if not normalized_file:
+            raise Warehouse1CValidationError("file_ref обязателен")
+        return document_preview_job_service.get_ready_artifact(
+            scope=PREVIEW_SCOPE_WAREHOUSE_1C,
+            owner_user_id=int(user_id),
+            source_payload={
+                "registrar_ref": normalized_registrar,
+                "file_ref": normalized_file,
+            },
+            preview_url=self._movement_file_preview_url(normalized_registrar, normalized_file),
         )
 
 

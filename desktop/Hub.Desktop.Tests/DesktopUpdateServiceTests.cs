@@ -70,6 +70,7 @@ public sealed class DesktopUpdateServiceTests
 
             Assert.Null(await service.CheckOnceAsync());
             Assert.Equal(1, handler.RequestCount);
+            Assert.Equal(["Автоматическое обновление"], service.InstalledReleaseNotes);
         }
         finally
         {
@@ -210,6 +211,55 @@ public sealed class DesktopUpdateServiceTests
             Assert.NotNull(package);
             Assert.Equal(setupBytes, await File.ReadAllBytesAsync(package.SetupPath));
             Assert.Equal(4, handler.RequestCount);
+        }
+        finally
+        {
+            Directory.Delete(updateFolder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistsDeferralInSafeSettingsAndRestoresItOnNextCheck()
+    {
+        var updateFolder = CreateTemporaryDirectory();
+        try
+        {
+            using var rsa = RSA.Create(3072);
+            using var certificate = CreateCertificate(rsa);
+            var setupBytes = Encoding.UTF8.GetBytes("signed desktop setup");
+            var manifestBytes = CreateSignedManifest(rsa, setupBytes);
+            var deferredUntil = DateTimeOffset.UtcNow.AddHours(24);
+
+            using (var firstClient = new HttpClient(new QueueHttpMessageHandler(
+                       Response(HttpStatusCode.OK, manifestBytes, "application/json"),
+                       Response(HttpStatusCode.OK, setupBytes, "application/octet-stream"))))
+            using (var firstService = new DesktopUpdateService(
+                       CreateOptions(),
+                       new Version(0, 1, 6),
+                       firstClient,
+                       new X509Certificate2(certificate.RawData),
+                       updateFolder))
+            {
+                var package = await firstService.CheckOnceAsync();
+                Assert.NotNull(package);
+                await firstService.DeferAsync(package, deferredUntil);
+            }
+
+            using var secondClient = new HttpClient(new QueueHttpMessageHandler(
+                Response(HttpStatusCode.OK, manifestBytes, "application/json")));
+            using var secondService = new DesktopUpdateService(
+                CreateOptions(),
+                new Version(0, 1, 6),
+                secondClient,
+                new X509Certificate2(certificate.RawData),
+                updateFolder);
+
+            var restored = await secondService.CheckOnceAsync();
+
+            Assert.NotNull(restored);
+            Assert.Equal(deferredUntil, restored.DeferredUntil);
+            Assert.False(File.Exists(Path.Combine(updateFolder, "state.json")));
+            Assert.True(File.Exists(Path.Combine(updateFolder, "settings.json")));
         }
         finally
         {

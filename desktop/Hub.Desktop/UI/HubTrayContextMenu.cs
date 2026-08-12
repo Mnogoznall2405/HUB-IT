@@ -1,28 +1,41 @@
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using Hub.Desktop.Interop;
 
 namespace Hub.Desktop.UI;
+
+internal sealed record HubTrayPalette(
+    Color Surface,
+    Color Foreground,
+    Color Border,
+    Color Hover,
+    Color Accent,
+    Color Destructive);
 
 internal sealed class HubTrayContextMenu : ContextMenuStrip
 {
     private const int CornerRadius = 8;
-    private static readonly Color SurfaceColor = Color.FromArgb(255, 255, 255);
-    internal static readonly Color ExitColor = Color.FromArgb(180, 35, 24);
+    private readonly HashSet<ToolStripItem> _destructiveItems = [];
+    private DesktopThemeMode _themeMode = DesktopThemeMode.Dark;
+    private HubTrayPalette _palette = CreatePalette(DesktopThemeMode.Dark);
 
     public HubTrayContextMenu()
     {
         AutoSize = true;
-        BackColor = SurfaceColor;
-        ForeColor = Color.FromArgb(20, 35, 48);
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
         ImageScalingSize = new Size(18, 18);
         MinimumSize = new Size(224, 0);
         Padding = new Padding(4);
-        Renderer = new HubTrayMenuRenderer();
         ShowCheckMargin = false;
         ShowImageMargin = true;
+        ApplyTheme(DesktopThemeMode.Dark);
     }
+
+    internal DesktopThemeMode ThemeMode => _themeMode;
+
+    internal HubTrayPalette Palette => _palette;
 
     internal static Font CreateEmphasizedFont() =>
         new("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point);
@@ -32,13 +45,35 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
         Margin = new Padding(32, 2, 6, 2),
     };
 
-    internal static Image CreateExitIcon()
+    internal void RegisterDestructiveItem(ToolStripItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        _destructiveItems.Add(item);
+        item.ForeColor = _palette.Destructive;
+    }
+
+    internal void ApplyTheme(DesktopThemeMode mode)
+    {
+        var replaceRenderer = _themeMode != mode || Renderer is not HubTrayMenuRenderer;
+        _themeMode = mode;
+        _palette = CreatePalette(mode);
+        BackColor = _palette.Surface;
+        ForeColor = _palette.Foreground;
+        if (replaceRenderer)
+        {
+            Renderer = new HubTrayMenuRenderer(_palette);
+        }
+        ApplyItemTheme(Items);
+        Invalidate(true);
+    }
+
+    internal static Image CreateExitIcon(Color color)
     {
         var bitmap = new Bitmap(18, 18);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
 
-        using var pen = new Pen(ExitColor, 1.8F)
+        using var pen = new Pen(color, 1.8F)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
@@ -48,6 +83,21 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
         graphics.DrawArc(pen, 3.25F, 3.25F, 11.5F, 11.5F, -50F, 280F);
         graphics.DrawLine(pen, 9F, 1.75F, 9F, 8F);
         return bitmap;
+    }
+
+    internal static Rectangle GetAlignedImageBounds(
+        Rectangle slot,
+        Size imageSize) =>
+        new(
+            slot.Left + ((slot.Width - imageSize.Width) / 2),
+            slot.Top + ((slot.Height - imageSize.Height) / 2) - 1,
+            imageSize.Width,
+            imageSize.Height);
+
+    protected override void OnOpening(CancelEventArgs e)
+    {
+        ApplyTheme(_themeMode);
+        base.OnOpening(e);
     }
 
     protected override void OnSizeChanged(EventArgs e)
@@ -79,20 +129,59 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
         return path;
     }
 
-    private sealed class HubTrayMenuRenderer : ToolStripProfessionalRenderer
+    private void ApplyItemTheme(ToolStripItemCollection items)
     {
-        private static readonly Color BorderColor = Color.FromArgb(211, 225, 234);
-        private static readonly Color HoverColor = Color.FromArgb(232, 247, 253);
-        private static readonly Color AccentColor = Color.FromArgb(0, 169, 231);
-
-        public HubTrayMenuRenderer()
-            : base(new HubTrayColorTable())
+        foreach (ToolStripItem item in items)
         {
-            RoundedEdges = true;
+            item.BackColor = _palette.Surface;
+            item.ForeColor = _destructiveItems.Contains(item)
+                ? _palette.Destructive
+                : _palette.Foreground;
+            if (item is not ToolStripMenuItem menuItem)
+            {
+                continue;
+            }
+
+            menuItem.DropDown.BackColor = _palette.Surface;
+            menuItem.DropDown.ForeColor = _palette.Foreground;
+            menuItem.DropDown.Renderer = Renderer;
+            ApplyItemTheme(menuItem.DropDownItems);
+        }
+    }
+
+    private static HubTrayPalette CreatePalette(DesktopThemeMode mode) =>
+        mode == DesktopThemeMode.Light
+            ? new HubTrayPalette(
+                Color.FromArgb(255, 255, 255),
+                Color.FromArgb(20, 35, 48),
+                Color.FromArgb(211, 225, 234),
+                Color.FromArgb(232, 247, 253),
+                Color.FromArgb(0, 169, 231),
+                Color.FromArgb(180, 35, 24))
+            : new HubTrayPalette(
+                Color.FromArgb(22, 27, 34),
+                Color.FromArgb(243, 242, 241),
+                Color.FromArgb(48, 54, 61),
+                Color.FromArgb(37, 42, 49),
+                Color.FromArgb(56, 189, 248),
+                Color.FromArgb(255, 119, 119));
+
+    private sealed class HubTrayMenuRenderer(HubTrayPalette palette)
+        : ToolStripProfessionalRenderer(new HubTrayColorTable(palette))
+    {
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            using var brush = new SolidBrush(palette.Surface);
+            e.Graphics.FillRectangle(brush, e.AffectedBounds);
         }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
+            using (var surfaceBrush = new SolidBrush(palette.Surface))
+            {
+                e.Graphics.FillRectangle(surfaceBrush, e.Item.ContentRectangle);
+            }
+
             if (!e.Item.Selected || !e.Item.Enabled)
             {
                 return;
@@ -100,23 +189,24 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
 
             var bounds = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
             using var path = CreateRoundedRectangle(bounds, 6);
-            using var brush = new SolidBrush(HoverColor);
+            using var hoverBrush = new SolidBrush(palette.Hover);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.FillPath(brush, path);
+            e.Graphics.FillPath(hoverBrush, path);
         }
 
         protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
         {
             var size = 16;
-            var bounds = new Rectangle(
-                e.ImageRectangle.Left + ((e.ImageRectangle.Width - size) / 2),
-                e.ImageRectangle.Top + ((e.ImageRectangle.Height - size) / 2),
-                size,
-                size);
+            var slot = new Rectangle(
+                e.ImageRectangle.Left,
+                e.Item.ContentRectangle.Top,
+                e.ImageRectangle.Width,
+                e.Item.ContentRectangle.Height);
+            var bounds = GetAlignedImageBounds(slot, new Size(size, size));
 
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using var background = CreateRoundedRectangle(bounds, 4);
-            using var brush = new SolidBrush(AccentColor);
+            using var brush = new SolidBrush(palette.Accent);
             e.Graphics.FillPath(brush, background);
 
             using var checkPen = new Pen(Color.White, 2F)
@@ -133,9 +223,27 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
             ]);
         }
 
+        protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
+        {
+            if (e.Image is null)
+            {
+                return;
+            }
+
+            var slot = new Rectangle(
+                e.ImageRectangle.Left,
+                e.Item.ContentRectangle.Top,
+                e.ImageRectangle.Width,
+                e.Item.ContentRectangle.Height);
+            var bounds = GetAlignedImageBounds(slot, e.ImageRectangle.Size);
+            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            e.Graphics.DrawImage(e.Image, bounds);
+        }
+
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
-            using var pen = new Pen(BorderColor, 1F);
+            using var pen = new Pen(palette.Border, 1F);
             var y = e.Item.Height / 2F;
             e.Graphics.DrawLine(pen, 0, y, e.Item.Width, y);
         }
@@ -144,7 +252,7 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
         {
             var bounds = new Rectangle(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
             using var path = CreateRoundedRectangle(bounds, CornerRadius);
-            using var pen = new Pen(BorderColor, 1F);
+            using var pen = new Pen(palette.Border, 1F);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.DrawPath(pen, path);
         }
@@ -152,20 +260,20 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
 
     private sealed class HubTrayColorTable : ProfessionalColorTable
     {
-        private static readonly Color BorderColor = Color.FromArgb(211, 225, 234);
-        private static readonly Color HoverColor = Color.FromArgb(232, 247, 253);
+        private readonly HubTrayPalette _palette;
 
-        public HubTrayColorTable()
+        public HubTrayColorTable(HubTrayPalette palette)
         {
+            _palette = palette;
             UseSystemColors = false;
         }
 
-        public override Color ImageMarginGradientBegin => SurfaceColor;
-        public override Color ImageMarginGradientMiddle => SurfaceColor;
-        public override Color ImageMarginGradientEnd => SurfaceColor;
-        public override Color MenuBorder => BorderColor;
-        public override Color MenuItemBorder => HoverColor;
-        public override Color MenuItemSelected => HoverColor;
-        public override Color ToolStripDropDownBackground => SurfaceColor;
+        public override Color ImageMarginGradientBegin => _palette.Surface;
+        public override Color ImageMarginGradientMiddle => _palette.Surface;
+        public override Color ImageMarginGradientEnd => _palette.Surface;
+        public override Color MenuBorder => _palette.Border;
+        public override Color MenuItemBorder => _palette.Hover;
+        public override Color MenuItemSelected => _palette.Hover;
+        public override Color ToolStripDropDownBackground => _palette.Surface;
     }
 }

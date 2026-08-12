@@ -44,15 +44,16 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
-import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
+import MailAttachmentPreviewDialog from '../components/mail/MailAttachmentPreviewDialog';
+import {
+  createEmptyAttachmentPreview,
+  downloadBlobFile,
+  MAX_PREVIEW_FILE_BYTES,
+} from '../components/mail/mailMessageFileActions';
 import { useAuth } from '../contexts/AuthContext';
 import HubNomenclatureMatchDialog from './database/HubNomenclatureMatchDialog';
 import Warehouse1CReconcilePanel from './database/Warehouse1CReconcilePanel';
-import {
-  fileNameFromContentDisposition,
-  resolveDocumentPreviewKind,
-  sniffBlobKind,
-} from '../lib/documentPreviewKind';
+import { loadWarehouseMovementFilePreview } from './database/warehouse1cMovementFilePreview';
 import {
   isMeaningful1cRef,
   isWarehouse1cListIncomplete,
@@ -96,17 +97,6 @@ function downloadBlobResponse(response, fallbackName = 'file.bin') {
   link.remove();
   window.URL.revokeObjectURL(url);
 }
-
-const createEmptyFilePreviewState = () => ({
-  open: false,
-  loading: false,
-  error: '',
-  title: '',
-  subtitle: '',
-  kind: 'pdf',
-  objectUrl: '',
-  previewBlob: null,
-});
 
 function canOpenMovementDetail(row) {
   if (!row) return false;
@@ -880,8 +870,9 @@ function Warehouse1C() {
   const [movementDetailError, setMovementDetailError] = useState('');
   const [downloadingFileRef, setDownloadingFileRef] = useState('');
   const [previewingFileRef, setPreviewingFileRef] = useState('');
-  const [filePreview, setFilePreview] = useState(createEmptyFilePreviewState);
+  const [filePreview, setFilePreview] = useState(createEmptyAttachmentPreview);
   const filePreviewUrlRef = useRef('');
+  const filePreviewSequenceRef = useRef(0);
   const [cameFromBalances, setCameFromBalances] = useState(false);
   const [hubMatchOpen, setHubMatchOpen] = useState(false);
   const [hubMatchRow, setHubMatchRow] = useState(null);
@@ -1366,8 +1357,9 @@ function Warehouse1C() {
   }, []);
 
   const handleCloseFilePreview = useCallback(() => {
+    filePreviewSequenceRef.current += 1;
     revokeFilePreviewUrl();
-    setFilePreview(createEmptyFilePreviewState());
+    setFilePreview(createEmptyAttachmentPreview());
     setPreviewingFileRef('');
   }, [revokeFilePreviewUrl]);
 
@@ -1420,50 +1412,39 @@ function Warehouse1C() {
     const fileKey = fileRef || String(file?.name || '').trim();
     if (!registrarRef || !fileRef) return;
 
+    const sequence = filePreviewSequenceRef.current + 1;
+    filePreviewSequenceRef.current = sequence;
     setPreviewingFileRef(fileKey);
     revokeFilePreviewUrl();
     setFilePreview({
+      ...createEmptyAttachmentPreview(),
       open: true,
       loading: true,
-      error: '',
-      title: file?.name || 'Файл',
-      subtitle: movementDetailData?.document_title
-        || movementDetailRow?.registrar_name
-        || 'Склад 1С',
-      kind: 'pdf',
-      objectUrl: '',
-      previewBlob: null,
+      filename: file?.name || 'Файл',
+      contentType: file?.content_type || 'application/octet-stream',
+      downloadContext: { registrarRef, file },
     });
 
     try {
-      const response = await warehouse1cAPI.downloadMovementFile(registrarRef, fileRef);
-      const contentType = String(response?.headers?.['content-type'] || 'application/octet-stream');
-      const fileName = fileNameFromContentDisposition(
-        response?.headers?.['content-disposition'],
-        file?.name || 'file.bin',
-      );
-      const blob = response?.data instanceof Blob
-        ? response.data
-        : new Blob([response?.data], { type: contentType });
-      const sniff = await sniffBlobKind(blob);
-      const resolved = resolveDocumentPreviewKind({ contentType, fileName, sniff });
-      const objectUrl = typeof window !== 'undefined' && window.URL?.createObjectURL
-        ? window.URL.createObjectURL(blob)
-        : '';
-      filePreviewUrlRef.current = objectUrl;
-      setFilePreview({
-        open: true,
-        loading: false,
-        error: resolved.kind === 'pdf' ? '' : (resolved.error || 'Формат не поддерживается в предпросмотре.'),
-        title: fileName,
-        subtitle: movementDetailData?.document_title
-          || movementDetailRow?.registrar_name
-          || 'Склад 1С',
-        kind: resolved.kind === 'pdf' ? 'pdf' : 'unsupported',
-        objectUrl,
-        previewBlob: blob,
+      const nextPreview = await loadWarehouseMovementFilePreview({
+        registrarRef,
+        file,
+        api: warehouse1cAPI,
+        createObjectUrl: (blob) => {
+          const objectUrl = typeof window !== 'undefined' && window.URL?.createObjectURL
+            ? window.URL.createObjectURL(blob)
+            : '';
+          filePreviewUrlRef.current = objectUrl;
+          return objectUrl;
+        },
       });
+      if (filePreviewSequenceRef.current === sequence) {
+        setFilePreview(nextPreview);
+      } else if (nextPreview?.objectUrl && typeof window.URL?.revokeObjectURL === 'function') {
+        window.URL.revokeObjectURL(nextPreview.objectUrl);
+      }
     } catch (err) {
+      if (filePreviewSequenceRef.current !== sequence) return;
       console.error('Failed to preview movement file:', err);
       setFilePreview((prev) => ({
         ...prev,
@@ -1474,9 +1455,9 @@ function Warehouse1C() {
         previewBlob: null,
       }));
     } finally {
-      setPreviewingFileRef('');
+      if (filePreviewSequenceRef.current === sequence) setPreviewingFileRef('');
     }
-  }, [movementDetailData?.document_title, movementDetailRow?.registrar_name, revokeFilePreviewUrl]);
+  }, [revokeFilePreviewUrl]);
 
   const balancesResultLabel = useMemo(() => {
     if (!balancesSearched) return '';
@@ -1967,22 +1948,27 @@ function Warehouse1C() {
           fullScreen={isMobile}
         />
 
-        <DocumentPreviewDialog
-          open={Boolean(filePreview?.open)}
-          title={filePreview?.title || 'Файл'}
-          subtitle={filePreview?.subtitle || ''}
-          kind={filePreview?.kind || 'pdf'}
-          objectUrl={filePreview?.objectUrl || ''}
-          loading={Boolean(filePreview?.loading)}
-          error={filePreview?.error || ''}
+        <MailAttachmentPreviewDialog
+          attachmentPreview={filePreview}
           onClose={handleCloseFilePreview}
-          onDownloadOriginal={filePreview?.previewBlob && filePreview?.objectUrl ? () => {
-            const link = document.createElement('a');
-            link.href = filePreview.objectUrl;
-            link.download = filePreview.title || 'file.bin';
-            link.click();
-          } : undefined}
-          canDownloadOriginal={Boolean(filePreview?.previewBlob)}
+          onDownload={() => {
+            if (filePreview?.blob instanceof Blob) {
+              downloadBlobFile(filePreview.blob, filePreview.filename || 'file.bin', { preferOpenFallback: true });
+              return;
+            }
+            const context = filePreview?.downloadContext;
+            if (context) void handleDownloadMovementFile(context.registrarRef, context.file);
+          }}
+          onDownloadPreviewPdf={() => {
+            if (!(filePreview?.previewBlob instanceof Blob)) return;
+            downloadBlobFile(
+              filePreview.previewBlob,
+              filePreview.pdfFilename || 'preview.pdf',
+              { preferOpenFallback: true },
+            );
+          }}
+          formatFileSize={formatFileSize}
+          maxPreviewFileBytes={MAX_PREVIEW_FILE_BYTES}
         />
 
         <HubNomenclatureMatchDialog

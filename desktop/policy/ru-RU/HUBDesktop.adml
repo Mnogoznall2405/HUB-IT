@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources revision="1.0" schemaVersion="1.0">
+  <displayName>Политики HUB Desktop</displayName>
+  <description>Управляемые параметры Windows-клиента HUB.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_HUB_DESKTOP">HUB Desktop 0.2.2 и новее</string>
+      <string id="HUBDesktop_Category">HUB Desktop</string>
+      <string id="AutostartMode_Name">Режим автозапуска</string>
+      <string id="AutostartMode_Explain">Определяет, может ли пользователь выбирать автозапуск, либо принудительно включает или выключает его. Удаление политики возвращает сохранённый выбор пользователя.</string>
+      <string id="AutostartMode_UserChoice">Выбор пользователя</string>
+      <string id="AutostartMode_ForcedOn">Принудительно включён</string>
+      <string id="AutostartMode_ForcedOff">Принудительно выключен</string>
+      <string id="UpdatesEnabled_Name">Автоматические обновления</string>
+      <string id="UpdatesEnabled_Explain">Аварийно отключает или включает проверку подписанного stable update feed. Не меняет адрес HUB или адрес feed.</string>
+      <string id="UpdateDeferralHours_Name">Срок действия кнопки «Позже», часы</string>
+      <string id="UpdateDeferralHours_Explain">Допустимый диапазон: от 0 до 168 часов. Значение 0 скрывает возможность отложить готовое обновление.</string>
+      <string id="DiagnosticsExportEnabled_Name">Экспорт архива диагностики</string>
+      <string id="DiagnosticsExportEnabled_Explain">Разрешает или запрещает пользователю создавать очищенный ZIP-архив диагностики. Просмотр локального состояния приложения остаётся доступен.</string>
+      <string id="NotificationFallbackEnabled_Name">Закреплённое fallback-уведомление</string>
+      <string id="NotificationFallbackEnabled_Explain">Разрешает или запрещает тематическое уведомление HUB, используемое когда Windows App SDK toast недоступен. Системный toast не отключается.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="AutostartMode">
+        <dropdownList refId="AutostartModeValue" defaultItem="0">Режим</dropdownList>
+      </presentation>
+      <presentation id="UpdateDeferralHours">
+        <decimalTextBox refId="UpdateDeferralHoursValue" defaultValue="24">Часы</decimalTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

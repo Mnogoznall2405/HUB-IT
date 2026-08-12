@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-08-11 13:30 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-08-12 07:52 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **127** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **128** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **9** | — |
@@ -29,7 +29,7 @@ _Обновлено: 2026-08-11 13:30 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (127 таблиц)
+## Схема `app` (128 таблиц)
 
 ### Auth и пользователи
 
@@ -172,6 +172,7 @@ _Обновлено: 2026-08-11 13:30 UTC_ · инстанс `127.0.0.1:5432/hub
 |---------|------------|
 | `browser_probe_media` | — |
 | `browser_probe_visits` | — |
+| `desktop_presence` | — |
 | `docflow_audit_events` | — |
 | `docflow_commands` | — |
 | `docflow_credentials` | — |
@@ -333,7 +334,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-08-11:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 127, `chat` 4, `system` 8).
+- **2026-08-12:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 128, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

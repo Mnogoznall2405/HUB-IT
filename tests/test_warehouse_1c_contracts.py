@@ -15,9 +15,11 @@ if str(WEB_ROOT) not in sys.path:
 from backend.services.warehouse_1c_service import (  # noqa: E402
     Warehouse1CQueryError,
     Warehouse1CService,
+    _guess_content_type,
     warehouse_1c_service,
 )
 from backend.api.v1 import warehouse_1c as warehouse_1c_api  # noqa: E402
+from backend.models.auth import User  # noqa: E402
 from backend.models.warehouse_1c import Warehouse1CBalanceBatchRequest  # noqa: E402
 
 
@@ -153,6 +155,48 @@ def test_batch_route_reaches_the_batch_service(monkeypatch):
 
     assert payload == {"status": "ok", "items": []}
     assert captured["nomenclature_refs"] == ["nom-1"]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("scan.webp", "image/webp"),
+        ("act.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        ("rows.csv", "text/csv; charset=utf-8"),
+    ],
+)
+def test_attached_file_content_type_supports_previewable_extensions(filename, content_type):
+    assert _guess_content_type(filename) == content_type
+
+
+def test_movement_file_preview_route_uses_authenticated_user_scope(monkeypatch):
+    captured = {}
+
+    def fake_preview_state(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ready", "preview_kind": "office_pdf"}
+
+    monkeypatch.setattr(
+        warehouse_1c_api.warehouse_1c_service,
+        "get_movement_file_preview_state",
+        fake_preview_state,
+    )
+    current_user = User(id=42, username="preview-user")
+
+    payload = asyncio.run(
+        warehouse_1c_api.get_movement_file_preview(
+            file_ref="file-1",
+            registrar_ref="registrar-1",
+            current_user=current_user,
+        )
+    )
+
+    assert payload["status"] == "ready"
+    assert captured == {
+        "user_id": 42,
+        "registrar_ref": "registrar-1",
+        "file_ref": "file-1",
+    }
 
 
 def test_enabled_process_bridge_routes_typed_balance_read_without_local_com():

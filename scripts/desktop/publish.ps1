@@ -114,7 +114,9 @@ $requiredFiles = @(
     'HUB.Desktop.UpdateRunner.exe',
     'appsettings.json',
     'Microsoft.Web.WebView2.Core.dll',
-    'WebView2Loader.dll'
+    'WebView2Loader.dll',
+    'Microsoft.WindowsAppRuntime.dll',
+    'Microsoft.WindowsAppRuntime.pri'
 )
 foreach ($requiredFile in $requiredFiles) {
     $requiredPath = Join-Path $publishDirectory $requiredFile
@@ -145,6 +147,8 @@ try {
         "$packageName/HUB.Desktop.UpdateRunner.exe",
         "$packageName/appsettings.json",
         "$packageName/WebView2Loader.dll",
+        "$packageName/Microsoft.WindowsAppRuntime.dll",
+        "$packageName/Microsoft.WindowsAppRuntime.pri",
         "$packageName/README.txt"
     )
 

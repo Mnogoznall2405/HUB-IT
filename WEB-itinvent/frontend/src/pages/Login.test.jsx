@@ -476,7 +476,9 @@ describe('Login hybrid internal/external flow', () => {
     window.PublicKeyCredential = {
       isUserVerifyingPlatformAuthenticatorAvailable: vi.fn().mockResolvedValue(false),
     };
-    window.dispatchEvent(new Event('hubit:webauthn-ready'));
+    act(() => {
+      window.dispatchEvent(new Event('hubit:webauthn-ready'));
+    });
 
     await waitFor(() => {
       expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);

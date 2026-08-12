@@ -9,10 +9,12 @@ from backend.appdb.models import AppDocumentPreviewJob
 from backend.services.document_preview_job_service import (
     PREVIEW_SCOPE_DOCFLOW,
     PREVIEW_SCOPE_MAIL,
+    PREVIEW_SCOPE_WAREHOUSE_1C,
     PREVIEW_STATUS_FAILED,
     PREVIEW_STATUS_QUEUED,
     PREVIEW_STATUS_READY,
     DocumentPreviewJobService,
+    DocumentPreviewJob,
 )
 from backend.services.mail_attachment_preview_service import PreviewArtifact
 
@@ -143,3 +145,48 @@ def test_terminal_conversion_failure_is_reported(monkeypatch, preview_service):
     failed = preview_service.get_state(**context)
     assert failed["status"] == PREVIEW_STATUS_FAILED
     assert "conversion failed" in failed["error"]
+
+
+def test_warehouse_preview_worker_loads_the_attachment_from_its_registrar(monkeypatch, preview_service):
+    from backend.services.warehouse_1c_service import warehouse_1c_service
+
+    async def fake_get_movement_file(registrar_ref, file_ref):
+        assert registrar_ref == "registrar-1"
+        assert file_ref == "file-1"
+        return {
+            "name": "act.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "content": b"office-source",
+        }
+
+    monkeypatch.setattr(warehouse_1c_service, "get_movement_file", fake_get_movement_file)
+    job = DocumentPreviewJob(
+        id="preview-1",
+        scope=PREVIEW_SCOPE_WAREHOUSE_1C,
+        owner_user_id=11,
+        source_payload={"registrar_ref": "registrar-1", "file_ref": "file-1"},
+        attempt_count=1,
+        lease_owner="worker-1",
+    )
+
+    assert preview_service._load_source(job) == (
+        "act.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        b"office-source",
+    )
+
+
+def test_warehouse_preview_job_keeps_registrar_and_file_in_its_resource_key(preview_service):
+    context = {
+        "scope": PREVIEW_SCOPE_WAREHOUSE_1C,
+        "owner_user_id": 11,
+        "source_payload": {"registrar_ref": "registrar-1", "file_ref": "file-1"},
+        "preview_url": "/warehouse-preview.pdf",
+    }
+
+    assert preview_service.get_state(**context)["status"] == PREVIEW_STATUS_QUEUED
+    job = preview_service.claim_next_job(worker_id="preview-worker-1")
+
+    assert job is not None
+    assert job.scope == PREVIEW_SCOPE_WAREHOUSE_1C
+    assert job.source_payload == {"registrar_ref": "registrar-1", "file_ref": "file-1"}

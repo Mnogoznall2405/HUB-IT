@@ -25,11 +25,14 @@ logger = logging.getLogger("backend.document_preview.jobs")
 
 PREVIEW_SCOPE_MAIL = "mail"
 PREVIEW_SCOPE_DOCFLOW = "docflow"
+PREVIEW_SCOPE_WAREHOUSE_1C = "warehouse_1c"
 PREVIEW_STATUS_QUEUED = "queued"
 PREVIEW_STATUS_PROCESSING = "processing"
 PREVIEW_STATUS_READY = "ready"
 PREVIEW_STATUS_FAILED = "failed"
-_SUPPORTED_SCOPES = frozenset({PREVIEW_SCOPE_MAIL, PREVIEW_SCOPE_DOCFLOW})
+_SUPPORTED_SCOPES = frozenset(
+    {PREVIEW_SCOPE_MAIL, PREVIEW_SCOPE_DOCFLOW, PREVIEW_SCOPE_WAREHOUSE_1C}
+)
 
 
 def _utc_now() -> datetime:
@@ -153,6 +156,14 @@ class DocumentPreviewJobService:
             }
             if not normalized["message_id"] or not normalized["attachment_ref"]:
                 raise ValueError("Mail attachment preview context is incomplete")
+            return normalized
+        if scope == PREVIEW_SCOPE_WAREHOUSE_1C:
+            normalized = {
+                "registrar_ref": _normalize_text(payload.get("registrar_ref")),
+                "file_ref": _normalize_text(payload.get("file_ref")),
+            }
+            if not normalized["registrar_ref"] or not normalized["file_ref"]:
+                raise ValueError("Warehouse 1C preview context is incomplete")
             return normalized
         normalized = {
             "task_ref": _normalize_text(payload.get("task_ref")),
@@ -392,6 +403,21 @@ class DocumentPreviewJobService:
                 mailbox_id=_normalize_text(job.source_payload.get("mailbox_id")) or None,
                 message_id=_normalize_text(job.source_payload.get("message_id")),
                 attachment_ref=_normalize_text(job.source_payload.get("attachment_ref")),
+            )
+
+        if job.scope == PREVIEW_SCOPE_WAREHOUSE_1C:
+            from backend.services.warehouse_1c_service import warehouse_1c_service
+
+            payload = asyncio.run(
+                warehouse_1c_service.get_movement_file(
+                    _normalize_text(job.source_payload.get("registrar_ref")),
+                    _normalize_text(job.source_payload.get("file_ref")),
+                )
+            )
+            return (
+                _normalize_text(payload.get("name"), "document.bin"),
+                _normalize_text(payload.get("content_type"), "application/octet-stream"),
+                bytes(payload.get("content") or b""),
             )
 
         from backend.services.docflow_service import docflow_service

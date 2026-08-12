@@ -15,6 +15,7 @@
         Activated="Window_Activated"
         Deactivated="Window_Deactivated"
         StateChanged="Window_StateChanged"
+        PreviewKeyDown="Window_PreviewKeyDown"
         Closing="Window_Closing"
         Closed="Window_Closed"
         SnapsToDevicePixels="True"
@@ -271,22 +272,15 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Border Width="32"
-                        Height="32"
-                        Margin="0,0,11,0"
-                        VerticalAlignment="Center"
-                        Background="#163247"
-                        CornerRadius="9"
-                        IsHitTestVisible="False">
-                    <Path Width="17"
-                          Height="17"
-                          Data="M 14,4 A 6,6 0 1 0 15.5,10 M 14,4 L 14,8 L 10,8"
-                          Stroke="{DynamicResource UpdateBannerAccentBrush}"
-                          StrokeThickness="1.8"
-                          StrokeStartLineCap="Round"
-                          StrokeEndLineCap="Round"
-                          Stretch="Uniform" />
-                </Border>
+                <Image Width="28"
+                       Height="28"
+                       Margin="2,0,13,0"
+                       VerticalAlignment="Center"
+                       Source="Assets/hub-icon.png"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       Stretch="Uniform"
+                       IsHitTestVisible="False"
+                       AutomationProperties.Name="Логотип HUB" />
 
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock x:Name="UpdateTitle"
@@ -348,11 +342,27 @@
                            Text="Проверьте подключение к сети и повторите попытку."
                            TextAlignment="Center"
                            TextWrapping="Wrap" />
-                <Button Width="160"
-                        Height="40"
-                        HorizontalAlignment="Center"
-                        Click="RetryButton_Click"
-                        Content="Повторить" />
+                <WrapPanel HorizontalAlignment="Center">
+                    <Button x:Name="RetryButton"
+                            MinWidth="140"
+                            Height="40"
+                            Margin="5"
+                            Click="RetryButton_Click"
+                            Content="Повторить"
+                            AutomationProperties.Name="Повторить подключение к HUB" />
+                    <Button MinWidth="140"
+                            Height="40"
+                            Margin="5"
+                            Click="ErrorDiagnosticsButton_Click"
+                            Content="Диагностика"
+                            AutomationProperties.Name="Открыть диагностику HUB Desktop" />
+                    <Button MinWidth="170"
+                            Height="40"
+                            Margin="5"
+                            Click="ErrorBrowserButton_Click"
+                            Content="Открыть в браузере"
+                            AutomationProperties.Name="Открыть HUB в системном браузере" />
+                </WrapPanel>
             </StackPanel>
         </Border>
     </Grid>

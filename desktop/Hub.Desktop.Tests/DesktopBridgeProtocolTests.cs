@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
+using Hub.Desktop.Shell;
 using Xunit;
 
 namespace Hub.Desktop.Tests;
@@ -48,6 +50,65 @@ public sealed class DesktopBridgeProtocolTests
     }
 
     [Theory]
+    [InlineData("open", DesktopDownloadedFileAction.Open)]
+    [InlineData("print", DesktopDownloadedFileAction.Print)]
+    [InlineData("copy", DesktopDownloadedFileAction.Copy)]
+    [InlineData("saveAs", DesktopDownloadedFileAction.SaveAs)]
+    public void AcceptsStrictPreparedDownloadActions(
+        string action,
+        DesktopDownloadedFileAction expected)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            type = "file.prepareDownload",
+            version = 1,
+            action,
+        });
+
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(json, out var message));
+        Assert.Equal(DesktopInboundMessageType.PrepareDownloadedFile, message.Type);
+        Assert.Equal(expected, message.DownloadedFileAction);
+    }
+
+    [Fact]
+    public void AcceptsExactShellStatusMessage()
+    {
+        var parsed = DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"shell.status","version":1,"authenticated":true,"online":true,"unread_total":7,"chat_unread":4,"mail_unread":2,"tasks_attention":1}""",
+            out var message);
+
+        Assert.True(parsed);
+        Assert.Equal(DesktopInboundMessageType.UpdateShellStatus, message.Type);
+        Assert.Equal(
+            new DesktopShellStatus(
+                Authenticated: true,
+                Online: true,
+                UnreadTotal: 7,
+                ChatUnread: 4,
+                MailUnread: 2,
+                TasksAttention: 1),
+            message.ShellStatus);
+    }
+
+    [Fact]
+    public void AcceptsExactQuickRoutesMessage()
+    {
+        var parsed = DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"shell.quickRoutes","version":1,"routes":[{"id":"tasks","label":"Задачи","route":"/tasks","badge":3},{"id":"mail","label":"Почта","route":"/mail","badge":2}]}""",
+            out var message);
+
+        Assert.True(parsed);
+        Assert.Equal(DesktopInboundMessageType.UpdateQuickRoutes, message.Type);
+        Assert.Equal(
+            new[]
+            {
+                new DesktopQuickRoute("tasks", "Задачи", "/tasks", 3),
+                new DesktopQuickRoute("mail", "Почта", "/mail", 2),
+            },
+            message.QuickRoutes);
+    }
+
+    [Theory]
     [InlineData("light", DesktopThemeMode.Light)]
     [InlineData("dark", DesktopThemeMode.Dark)]
     public void AcceptsExactThemeMessage(string mode, DesktopThemeMode expected)
@@ -70,6 +131,16 @@ public sealed class DesktopBridgeProtocolTests
     [InlineData("{\"type\":\"appearance.theme\",\"version\":1,\"mode\":\"system\"}")]
     [InlineData("{\"type\":\"appearance.theme\",\"version\":1,\"mode\":\"dark\",\"command\":\"open\"}")]
     [InlineData("{\"type\":\"file.openDownloaded\",\"version\":1,\"path\":\"C:\\\\Windows\\\\System32\\\\cmd.exe\"}")]
+    [InlineData("{\"type\":\"file.prepareDownload\",\"version\":1,\"action\":\"execute\"}")]
+    [InlineData("{\"type\":\"file.prepareDownload\",\"version\":1,\"action\":\"open\",\"path\":\"C:\\\\Windows\\\\System32\\\\cmd.exe\"}")]
+    [InlineData("{\"type\":\"shell.status\",\"version\":1,\"authenticated\":true,\"online\":true,\"unread_total\":-1,\"chat_unread\":0,\"mail_unread\":0,\"tasks_attention\":0}")]
+    [InlineData("{\"type\":\"shell.status\",\"version\":1,\"authenticated\":true,\"online\":true,\"unread_total\":10000,\"chat_unread\":0,\"mail_unread\":0,\"tasks_attention\":0}")]
+    [InlineData("{\"type\":\"shell.status\",\"version\":1,\"authenticated\":true,\"online\":true,\"unread_total\":1.5,\"chat_unread\":0,\"mail_unread\":0,\"tasks_attention\":0}")]
+    [InlineData("{\"type\":\"shell.status\",\"version\":1,\"authenticated\":true,\"online\":true,\"unread_total\":1,\"chat_unread\":0,\"mail_unread\":0,\"tasks_attention\":0,\"command\":\"open\"}")]
+    [InlineData("{\"type\":\"shell.quickRoutes\",\"version\":1,\"routes\":[{\"id\":\"bad id\",\"label\":\"Bad\",\"route\":\"/tasks\",\"badge\":0}]}")]
+    [InlineData("{\"type\":\"shell.quickRoutes\",\"version\":1,\"routes\":[{\"id\":\"tasks\",\"label\":\"Tasks\",\"route\":\"https://evil.example\",\"badge\":0}]}")]
+    [InlineData("{\"type\":\"shell.quickRoutes\",\"version\":1,\"routes\":[{\"id\":\"tasks\",\"label\":\"Tasks\",\"route\":\"/tasks\",\"badge\":-1}]}")]
+    [InlineData("{\"type\":\"shell.quickRoutes\",\"version\":1,\"routes\":[{\"id\":\"tasks\",\"label\":\"Tasks\",\"route\":\"/tasks\",\"badge\":0},{\"id\":\"tasks\",\"label\":\"Duplicate\",\"route\":\"/mail\",\"badge\":0}]}")]
     [InlineData("{\"type\":\"notification.show\",\"version\":1,\"id\":\"chat:1\",\"title\":\"Title\",\"body\":\"Body\",\"route\":\"https://evil.example/chat\"}")]
     [InlineData("{\"type\":\"notification.show\",\"version\":1,\"id\":\"chat 1\",\"title\":\"Title\",\"body\":\"Body\",\"route\":\"/chat\"}")]
     [InlineData("{\"type\":\"notification.show\",\"version\":1,\"id\":\"chat:1\",\"title\":\"Title\",\"body\":\"\",\"route\":\"/chat\"}")]
@@ -115,6 +186,104 @@ public sealed class DesktopBridgeProtocolTests
     }
 
     [Fact]
+    public void CreatesSeparateStrictCapabilitiesMessage()
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateCapabilitiesMessage());
+        var root = document.RootElement;
+
+        Assert.Equal("desktop.capabilities", root.GetProperty("type").GetString());
+        Assert.Equal(DesktopBridgeProtocol.CurrentVersion, root.GetProperty("version").GetInt32());
+        Assert.Equal(
+            new[]
+            {
+                "command-palette",
+                "desktop-actions",
+                "file-actions-v2",
+                "print",
+                "quick-routes",
+                "shell-status",
+                "vnc-preflight",
+            },
+            root.GetProperty("capabilities")
+                .EnumerateArray()
+                .Select(item => item.GetString()!)
+                .ToArray());
+        Assert.Equal(3, root.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void ParsesExactPrintCurrentDocumentCommand()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"document.printCurrent","version":1}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.PrintCurrentDocument, message.Type);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"document.printCurrent\",\"version\":1,\"html\":\"<p>x</p>\"}")]
+    [InlineData("{\"type\":\"document.printCurrent\",\"version\":2}")]
+    public void RejectsExpandedOrUnsupportedPrintCommands(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Theory]
+    [InlineData("desktop.openDownloads", DesktopInboundMessageType.OpenDownloads)]
+    [InlineData("desktop.openDiagnostics", DesktopInboundMessageType.OpenDiagnostics)]
+    [InlineData("desktop.checkForUpdates", DesktopInboundMessageType.CheckForUpdates)]
+    [InlineData("desktop.openCurrentInBrowser", DesktopInboundMessageType.OpenCurrentInBrowser)]
+    public void ParsesOnlyExactDesktopCommands(
+        string type,
+        DesktopInboundMessageType expectedType)
+    {
+        var json = JsonSerializer.Serialize(new { type, version = 1 });
+
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(json, out var message));
+        Assert.Equal(expectedType, message.Type);
+    }
+
+    [Fact]
+    public void CreatesExactOpenCommandPaletteMessage()
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateOpenCommandPaletteMessage());
+        var root = document.RootElement;
+
+        Assert.Equal("command.openPalette", root.GetProperty("type").GetString());
+        Assert.Equal(1, root.GetProperty("version").GetInt32());
+        Assert.Equal(2, root.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void ParsesOnlyTheParameterlessVncPreflightCommand()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"remote.vncPreflight","version":1}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.VncPreflight, message.Type);
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"remote.vncPreflight","version":1,"uri":"vnc://host?token=secret"}""",
+            out _));
+    }
+
+    [Theory]
+    [InlineData(true, "available")]
+    [InlineData(false, "missing")]
+    public void CreatesStrictVncPreflightResult(bool available, string expectedStatus)
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateVncPreflightResultMessage(available));
+        var root = document.RootElement;
+
+        Assert.Equal("remote.vncPreflightResult", root.GetProperty("type").GetString());
+        Assert.Equal(1, root.GetProperty("version").GetInt32());
+        Assert.Equal(expectedStatus, root.GetProperty("status").GetString());
+        Assert.Equal(3, root.EnumerateObject().Count());
+    }
+
+    [Fact]
     public void CreatesStrictOpenNavigationMessage()
     {
         using var document = JsonDocument.Parse(
@@ -139,6 +308,21 @@ public sealed class DesktopBridgeProtocolTests
         Assert.Equal("desktop.windowState", root.GetProperty("type").GetString());
         Assert.Equal(DesktopBridgeProtocol.CurrentVersion, root.GetProperty("version").GetInt32());
         Assert.Equal(foreground, root.GetProperty("foreground").GetBoolean());
+        Assert.Equal(3, root.EnumerateObject().Count());
+    }
+
+    [Theory]
+    [InlineData(true, "accepted")]
+    [InlineData(false, "busy")]
+    public void CreatesStrictOpenDownloadedFileResultMessage(bool accepted, string expectedStatus)
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateOpenDownloadedFileResultMessage(accepted));
+        var root = document.RootElement;
+
+        Assert.Equal("file.openDownloadedResult", root.GetProperty("type").GetString());
+        Assert.Equal(DesktopBridgeProtocol.CurrentVersion, root.GetProperty("version").GetInt32());
+        Assert.Equal(expectedStatus, root.GetProperty("status").GetString());
         Assert.Equal(3, root.EnumerateObject().Count());
     }
 

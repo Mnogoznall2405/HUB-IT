@@ -2,12 +2,15 @@ import {
   Box,
   ButtonBase,
   Drawer,
+  IconButton,
   List,
+  ListItem,
   ListItemButton,
   ListItemIcon,
   ListItemText,
   Typography,
 } from '@mui/material';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
 import {
@@ -26,6 +29,8 @@ export default function MailAttachmentsSheet({
   formatFileSize,
   onOpen,
   onFileActions,
+  onMenuOpen,
+  activeAttachment = null,
   title = 'Все вложения',
   testId = 'mail-attachments-sheet',
 }) {
@@ -66,35 +71,51 @@ export default function MailAttachmentsSheet({
             const secondary = [visual.label, sizeLabel].filter(Boolean).join(' • ');
 
             return (
-              <ListItemButton
+              <ListItem
                 key={`${attachment?.id || attachment?.name || index}`}
-                data-testid={`mail-attachments-sheet-item-${index}`}
-                onClick={() => {
-                  onOpen?.(attachment);
-                  onClose?.();
-                }}
-                onContextMenu={(event) => onFileActions?.(event, attachment)}
-                onKeyDown={(event) => onFileActions?.(event, attachment)}
-                sx={{
-                  borderRadius: tokens.radiusSm,
-                  mb: 0.35,
-                }}
+                disablePadding
+                secondaryAction={(
+                  <IconButton
+                    edge="end"
+                    aria-label={`Действия для вложения ${name}`}
+                    aria-haspopup="menu"
+                    aria-expanded={activeAttachment === attachment ? 'true' : undefined}
+                    onClick={(event) => onMenuOpen?.(event, attachment)}
+                  >
+                    <KeyboardArrowDownRoundedIcon />
+                  </IconButton>
+                )}
               >
-                <ListItemIcon sx={{ minWidth: 42, color: visual.color }}>
-                  <IconComponent />
-                </ListItemIcon>
-                <ListItemText
-                  primary={name}
-                  secondary={secondary || visual.label}
-                  primaryTypographyProps={{
-                    fontWeight: 600,
-                    noWrap: true,
+                <ListItemButton
+                  data-testid={`mail-attachments-sheet-item-${index}`}
+                  onClick={() => {
+                    onOpen?.(attachment);
+                    onClose?.();
                   }}
-                  secondaryTypographyProps={{
-                    sx: getMailMetaTextSx(tokens),
+                  onContextMenu={(event) => onFileActions?.(event, attachment)}
+                  onKeyDown={(event) => onFileActions?.(event, attachment)}
+                  sx={{
+                    borderRadius: tokens.radiusSm,
+                    mb: 0.35,
+                    pr: 6,
                   }}
-                />
-              </ListItemButton>
+                >
+                  <ListItemIcon sx={{ minWidth: 42, color: visual.color }}>
+                    <IconComponent />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={name}
+                    secondary={secondary || visual.label}
+                    primaryTypographyProps={{
+                      fontWeight: 600,
+                      noWrap: true,
+                    }}
+                    secondaryTypographyProps={{
+                      sx: getMailMetaTextSx(tokens),
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
             );
           })}
         </List>

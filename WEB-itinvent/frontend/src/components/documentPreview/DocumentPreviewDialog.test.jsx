@@ -1,8 +1,23 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import DocumentPreviewDialog from './DocumentPreviewDialog';
+
+const desktopMocks = vi.hoisted(() => ({
+  native: false,
+  requestOpen: vi.fn(),
+  requestPrint: vi.fn(),
+}));
+
+vi.mock('../../lib/platform', () => ({
+  isNativeShellRuntime: () => desktopMocks.native,
+}));
+
+vi.mock('../../lib/desktopBridge', () => ({
+  requestDesktopOpenDownloadedFile: desktopMocks.requestOpen,
+  requestDesktopPrintCurrent: desktopMocks.requestPrint,
+}));
 
 vi.mock('../mail/MailPdfPreviewSurface', () => ({
   default: ({ rotation = 0 }) => <div data-testid="pdf-surface" data-rotation={rotation} />,
@@ -45,6 +60,12 @@ const renderDialog = () => render(
 
 describe('DocumentPreviewDialog', () => {
   afterEach(() => {
+    desktopMocks.native = false;
+    desktopMocks.requestOpen.mockReset();
+    desktopMocks.requestPrint.mockReset();
+  });
+
+  afterEach(() => {
     vi.restoreAllMocks();
   });
 
@@ -83,5 +104,89 @@ describe('DocumentPreviewDialog', () => {
     expect(screen.getByTestId('pdf-surface')).toHaveAttribute('data-rotation', '0');
     fireEvent.click(screen.getByRole('button', { name: 'Повернуть влево' }));
     expect(screen.getByTestId('pdf-surface')).toHaveAttribute('data-rotation', '270');
+  });
+
+  it('downloads the original only after Desktop accepts the open intent', async () => {
+    setMobileMedia(false);
+    desktopMocks.native = true;
+    desktopMocks.requestOpen.mockResolvedValue({ accepted: true, status: 'accepted' });
+    const onDownloadOriginal = vi.fn();
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          onClose={vi.fn()}
+          onDownloadOriginal={onDownloadOriginal}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть в приложении' }));
+    await waitFor(() => expect(onDownloadOriginal).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows a controlled message and does not download while another open intent is busy', async () => {
+    setMobileMedia(false);
+    desktopMocks.native = true;
+    desktopMocks.requestOpen.mockResolvedValue({ accepted: false, status: 'busy' });
+    const onDownloadOriginal = vi.fn();
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          onClose={vi.fn()}
+          onDownloadOriginal={onDownloadOriginal}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть в приложении' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Другая загрузка уже ожидает открытия');
+    expect(onDownloadOriginal).not.toHaveBeenCalled();
+  });
+
+  it('uses the semantic Desktop print command for a ready preview', async () => {
+    setMobileMedia(false);
+    desktopMocks.requestPrint.mockReturnValue(true);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          objectUrl="blob:report"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
+    expect(desktopMocks.requestPrint).toHaveBeenCalledTimes(1);
+    expect(browserPrint).not.toHaveBeenCalled();
+  });
+
+  it('falls back to browser print outside a capable Desktop host', async () => {
+    setMobileMedia(false);
+    desktopMocks.requestPrint.mockReturnValue(false);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          objectUrl="blob:report"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
+    expect(browserPrint).toHaveBeenCalledTimes(1);
   });
 });

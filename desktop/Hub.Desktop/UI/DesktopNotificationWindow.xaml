@@ -20,6 +20,50 @@
         <SolidColorBrush x:Key="NotificationBodyBrush" Color="#C8C6C4" />
         <SolidColorBrush x:Key="NotificationMutedBrush" Color="#A19F9D" />
         <SolidColorBrush x:Key="NotificationHoverBrush" Color="#252A31" />
+        <SolidColorBrush x:Key="NotificationAccentBrush" Color="#4CC2FF" />
+        <SolidColorBrush x:Key="NotificationActionHoverBrush" Color="#1C3444" />
+
+        <Style x:Key="NotificationActionButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="82" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="12,5" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NotificationAccentBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource NotificationAccentBrush}" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Surface"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Surface"
+                                        Property="Background"
+                                        Value="{DynamicResource NotificationActionHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Surface" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <Style x:Key="NotificationCloseButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="30" />
@@ -61,6 +105,7 @@
             BorderThickness="1"
             CornerRadius="12"
             Cursor="Hand"
+            AutomationProperties.LiveSetting="Polite"
             MouseLeftButtonUp="NotificationSurface_MouseLeftButtonUp">
         <Border.Effect>
             <DropShadowEffect BlurRadius="22"
@@ -108,6 +153,11 @@
                            Foreground="{DynamicResource NotificationBodyBrush}"
                            TextTrimming="CharacterEllipsis"
                            TextWrapping="Wrap" />
+                <Button x:Name="PrimaryActionButton"
+                        Margin="0,11,0,0"
+                        HorizontalAlignment="Left"
+                        Style="{StaticResource NotificationActionButtonStyle}"
+                        Click="PrimaryActionButton_Click" />
             </StackPanel>
 
             <Button Grid.Column="2"

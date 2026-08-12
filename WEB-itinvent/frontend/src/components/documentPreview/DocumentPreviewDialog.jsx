@@ -22,10 +22,14 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import RotateLeftRoundedIcon from '@mui/icons-material/RotateLeftRounded';
 import RotateRightRoundedIcon from '@mui/icons-material/RotateRightRounded';
-import { requestDesktopOpenDownloadedFile } from '../../lib/desktopBridge';
+import {
+  requestDesktopOpenDownloadedFile,
+  requestDesktopPrintCurrent,
+} from '../../lib/desktopBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
@@ -69,6 +73,8 @@ export default function DocumentPreviewDialog({
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
   const [mode, setMode] = useState(preferredMode);
   const [rotation, setRotation] = useState(0);
+  const [requestingDesktopOpen, setRequestingDesktopOpen] = useState(false);
+  const [desktopOpenMessage, setDesktopOpenMessage] = useState('');
 
   useEffect(() => {
     if (open) setMode(preferredMode);
@@ -78,12 +84,38 @@ export default function DocumentPreviewDialog({
     if (open) setRotation(0);
   }, [objectUrl, open]);
 
+  useEffect(() => {
+    setRequestingDesktopOpen(false);
+    setDesktopOpenMessage('');
+  }, [open, title]);
+
+  const openOriginalInDesktopApplication = useCallback(async () => {
+    setRequestingDesktopOpen(true);
+    setDesktopOpenMessage('');
+    const result = await requestDesktopOpenDownloadedFile();
+    setRequestingDesktopOpen(false);
+    if (!result.accepted) {
+      setDesktopOpenMessage(
+        result.status === 'busy'
+          ? 'Другая загрузка уже ожидает открытия'
+          : 'Не удалось передать открытие в HUB Desktop',
+      );
+      return;
+    }
+
+    onDownloadOriginal?.();
+  }, [onDownloadOriginal]);
+
   const rotateLeft = useCallback(() => {
     setRotation((current) => (current + 270) % 360);
   }, []);
 
   const rotateRight = useCallback(() => {
     setRotation((current) => (current + 90) % 360);
+  }, []);
+
+  const printPreview = useCallback(() => {
+    if (!requestDesktopPrintCurrent()) window.print();
   }, []);
 
   const showModeTabs = hasExcelTable && hasPdfPreview;
@@ -255,6 +287,13 @@ export default function DocumentPreviewDialog({
                 </span>
               </Tooltip>
             ) : null}
+            {(hasPdfPreview || hasExcelTable) && !loading ? (
+              <Tooltip title="Печать">
+                <IconButton onClick={printPreview} aria-label="Печать">
+                  <PrintRoundedIcon />
+                </IconButton>
+              </Tooltip>
+            ) : null}
             {onDownloadPdf && canDownloadPdf ? (
               <Tooltip title={pdfLabel}>
                 <span>
@@ -269,11 +308,8 @@ export default function DocumentPreviewDialog({
                 <Tooltip title="Открыть в приложении">
                   <span>
                     <IconButton
-                      onClick={() => {
-                        requestDesktopOpenDownloadedFile();
-                        onDownloadOriginal();
-                      }}
-                      disabled={loading}
+                      onClick={openOriginalInDesktopApplication}
+                      disabled={loading || requestingDesktopOpen}
                       aria-label="Открыть в приложении"
                     >
                       <OpenInNewRoundedIcon />
@@ -294,6 +330,17 @@ export default function DocumentPreviewDialog({
           </Stack>
         </Stack>
       </DialogTitle>
+
+      {desktopOpenMessage ? (
+        <Alert
+          severity="info"
+          role="status"
+          aria-live="polite"
+          sx={{ borderRadius: 0 }}
+        >
+          {desktopOpenMessage}
+        </Alert>
+      ) : null}
 
       {showModeTabs ? (
         <Tabs

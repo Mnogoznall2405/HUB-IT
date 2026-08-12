@@ -57,11 +57,16 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
 
         try
         {
+            var actionLabel = DesktopNotificationPresentation.GetPrimaryActionLabel(request.Route);
             var notification = new AppNotificationBuilder()
                 .AddArgument("eventId", request.Id)
                 .AddArgument("route", request.Route)
                 .AddText(request.Title)
                 .AddText(request.Body)
+                .AddButton(
+                    new AppNotificationButton(actionLabel)
+                        .AddArgument("action", "open")
+                        .AddArgument("route", request.Route))
                 .BuildNotification();
 
             _manager.Show(notification);

@@ -1,5 +1,6 @@
 using System.IO;
 using Microsoft.Win32;
+using Hub.Desktop.Configuration;
 
 namespace Hub.Desktop.Autostart;
 
@@ -13,13 +14,19 @@ public sealed class WindowsAutostartService : IAutostartService
     private const string PreferenceValueName = "AutostartEnabled";
     private readonly string _command;
     private readonly IAutostartRegistry _registry;
+    private readonly DesktopAutostartMode _policyMode;
 
-    public WindowsAutostartService(string executablePath)
-        : this(executablePath, new CurrentUserRunRegistry())
+    public WindowsAutostartService(
+        string executablePath,
+        DesktopAutostartMode policyMode = DesktopAutostartMode.UserChoice)
+        : this(executablePath, new CurrentUserRunRegistry(), policyMode)
     {
     }
 
-    internal WindowsAutostartService(string executablePath, IAutostartRegistry registry)
+    internal WindowsAutostartService(
+        string executablePath,
+        IAutostartRegistry registry,
+        DesktopAutostartMode policyMode = DesktopAutostartMode.UserChoice)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(registry);
@@ -37,12 +44,15 @@ public sealed class WindowsAutostartService : IAutostartService
         }
 
         _registry = registry;
+        _policyMode = policyMode;
     }
 
     public bool IsEnabled => string.Equals(
         _registry.Read(ValueName),
         _command,
         StringComparison.OrdinalIgnoreCase);
+
+    public bool CanUserChange => _policyMode == DesktopAutostartMode.UserChoice;
 
     internal string Command => _command;
 
@@ -56,6 +66,21 @@ public sealed class WindowsAutostartService : IAutostartService
 
     public void EnsureEnabledByDefault()
     {
+        if (_policyMode == DesktopAutostartMode.ForcedOn)
+        {
+            if (!IsEnabled)
+            {
+                _registry.Write(ValueName, _command);
+            }
+            return;
+        }
+
+        if (_policyMode == DesktopAutostartMode.ForcedOff)
+        {
+            _registry.Delete(ValueName);
+            return;
+        }
+
         var preference = _registry.ReadPreference(PreferenceValueName);
         if (preference is false)
         {
@@ -75,6 +100,11 @@ public sealed class WindowsAutostartService : IAutostartService
 
     public void SetEnabled(bool enabled)
     {
+        if (!CanUserChange)
+        {
+            throw new InvalidOperationException("Autostart is managed by an administrator policy.");
+        }
+
         if (enabled)
         {
             _registry.Write(ValueName, _command);

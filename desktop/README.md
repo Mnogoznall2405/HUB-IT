@@ -1,5 +1,11 @@
 # HUB Desktop
 
+Документы развития:
+
+- [`ROADMAP.md`](./ROADMAP.md) — техническая карта выпусков, updater, MSI/GPO, безопасность и 1.0;
+- [`FUNCTIONAL_ROADMAP.md`](./FUNCTIONAL_ROADMAP.md) — новая функциональная карта: Windows shell,
+  быстрые действия, deep links, печать, поиск и корпоративный повторный вход.
+
 Windows desktop-shell для корпоративного портала HUB. Клиент не содержит отдельной бизнес-логики и открывает существующий React/FastAPI портал в WPF WebView2.
 
 Полный план развития: [ROADMAP.md](./ROADMAP.md).
@@ -20,6 +26,11 @@ Windows desktop-shell для корпоративного портала HUB. К
 - компактное фирменное меню tray использует логотип HUB; левый клик по значку сразу открывает окно;
 - явный выход доступен из контекстного меню tray;
 - per-user autostart включается автоматически при первом запуске и переключается из tray без прав администратора;
+- отдельные Desktop-настройки управляют видимостью при входе в Windows, стартовой страницей,
+  одноразовым напоминанием при X и opt-in `Ctrl+Shift+H` с обнаружением конфликта;
+- `hubit://`, Jump List, permission-aware tray routes и `Ctrl+K` открывают только строгие внутренние маршруты;
+- окно загрузок поддерживает Cancel/Clear/Open folder, а taskbar показывает общий прогресс;
+- системный режим темы выбирается в настройках портала и следует Windows;
 - versioned React/C# handshake определяет desktop runtime до первого React render;
 - системные уведомления для новых сообщений чата: Windows App SDK toast с автоматическим fallback на tray balloon;
 - клик по уведомлению активирует HUB и открывает переданный внутренний маршрут чата через React Router без перезагрузки страницы.
@@ -30,8 +41,8 @@ Windows desktop-shell для корпоративного портала HUB. К
 
 - Windows 10/11;
 - .NET 8 SDK для сборки;
-- Microsoft Edge WebView2 Evergreen Runtime на компьютере пользователя;
-- Microsoft Windows App SDK Runtime 1.8 x64 (проект закреплён на servicing-версии `1.8.260710003`);
+- Microsoft Edge WebView2 Evergreen Runtime на компьютере пользователя (рекомендуемый Setup содержит автономный x64 installer);
+- Microsoft Windows App SDK 1.8 встроен в клиент (servicing-версия `1.8.260710003`); Setup устанавливает системный Singleton-компонент для app notifications;
 - Microsoft Visual C++ Redistributable x64 для unpackaged Windows App SDK runtime.
 
 Запускайте `HUB.Desktop.exe` без повышения прав. При случайном запуске от администратора
@@ -49,6 +60,7 @@ dotnet build desktop\Hub.Desktop.sln -c Release --no-restore
 dotnet publish desktop\Hub.Desktop\Hub.Desktop.csproj -p:PublishProfile=win-x64 --no-restore
 powershell -ExecutionPolicy Bypass -File scripts\desktop\publish.ps1 -NoRestore
 powershell -ExecutionPolicy Bypass -File scripts\desktop\build-installer.ps1 -NoRestore
+powershell -ExecutionPolicy Bypass -File scripts\desktop\validate-policy-templates.ps1
 ```
 
 Запуск Debug-сборки:
@@ -71,7 +83,7 @@ Release-сборка принимает из `appsettings.json` только з�
 Профиль `Properties/PublishProfiles/win-x64.pubxml` создаёт folder-based unpackaged публикацию:
 
 - .NET 8 — self-contained, отдельная установка .NET Runtime пользователю не требуется;
-- Windows App SDK — framework-dependent, поэтому на ПК требуется Runtime 1.8 x64;
+- Windows App SDK — self-contained; HUB не запускает DDLM/bootstrapper, а Setup добавляет только необходимый системный runtime-компонент для app notifications;
 - WebView2 — Evergreen Runtime устанавливается отдельно;
 - trimming, single-file и ReadyToRun отключены для предсказуемой совместимости WPF/WebView2;
 - отдельный self-contained `HUB.Desktop.UpdateRunner.exe` вкладывается в publish для установки обновлений после закрытия основного процесса;
@@ -91,7 +103,7 @@ desktop\Hub.Desktop\bin\Release\net8.0-windows10.0.17763.0\win-x64\publish\
 
 `scripts/desktop/build-installer.ps1` собирает два артефакта:
 
-- `HUB-Desktop-Setup-<version>-win-x64.exe` — рекомендуемый установщик с WebView2 Evergreen bootstrapper, Windows App SDK Runtime 1.8 x64 и Microsoft Visual C++ Redistributable x64;
+- `HUB-Desktop-Setup-<version>-win-x64.exe` — рекомендуемый полностью offline-установщик с WebView2 Evergreen Standalone x64, Windows App SDK Runtime 1.8 x64 и Microsoft Visual C++ Redistributable x64;
 - `HUB-Desktop-<version>-win-x64.msi` — только приложение, для компьютеров, где системные зависимости уже развёрнуты отдельно.
 
 Оба файла и их `.sha256` создаются в:
@@ -99,6 +111,11 @@ desktop\Hub.Desktop\bin\Release\net8.0-windows10.0.17763.0\win-x64\publish\
 ```text
 desktop\Hub.Desktop\bin\Release\net8.0-windows10.0.17763.0\win-x64\package\
 ```
+
+Release gate также создаёт детерминированный CycloneDX 1.5
+`HUB-Desktop-<version>-win-x64.cdx.json` и SHA-256 sidecar. SBOM включает production NuGet packages
+и встроенные Microsoft prerequisites; `scripts/desktop/test-dependencies.ps1` отдельно проверяет
+известные уязвимости через официальный NuGet audit source.
 
 Setup и MSI устанавливают клиент для всего компьютера в `C:\Program Files\HUB-IT\HUB Desktop\`, создают общий ярлык меню «Пуск», поддерживают обновление поверх предыдущей версии и закрывают запущенный клиент перед заменой файлов. WebView2-профиль и пользовательские настройки при обновлении и удалении не стираются.
 
@@ -135,12 +152,14 @@ powershell -ExecutionPolicy Bypass -File scripts\desktop\publish-update.ps1 `
   -ReleaseNotes 'Что изменилось в версии' -NoRestore
 ```
 
-Скрипт собирает Setup/MSI, считает SHA-256, подписывает строгий manifest ключом из хранилища
-сертификатов текущего пользователя и атомарно заменяет `stable/latest.json`. Приватный ключ не
-попадает в репозиторий и IIS-каталог. Скрипт подписи необходимо запускать на отдельной release-
-станции, а `IisUpdateRoot` передавать как защищённую publish-share сервера раздачи; сертификат с
-приватным ключом нельзя импортировать на IIS-сервер. Закреплённый сертификат подписи manifest:
-`5BAFC4CB42DF2F612705786E689696283BFA592F` (`hub-desktop-update-2026-01`).
+Скрипт собирает Setup/MSI, считает SHA-256, подписывает строгий manifest private key активного
+production TLS-сертификата из `Cert:\LocalMachine\My` и атомарно заменяет `stable/latest.json`.
+Приватный ключ не экспортируется и не попадает в репозиторий, артефакты или IIS content root.
+Закреплённый public certificate: `0A9CFEF49EB1E11819D81A351978BAFA05EF7CBE`, `key_id`
+`hubit-zsgp-ru-tls-2026-04`. Это принятое исключение объединяет риск HTTPS и updater; правила
+выпуска и ротации описаны в
+[`HUB_DESKTOP_RELEASE_RUNBOOK.md`](../documentation/technical/HUB_DESKTOP_RELEASE_RUNBOOK.md) и
+[`HUB_DESKTOP_UPDATE_KEY_ROTATION.md`](../documentation/technical/HUB_DESKTOP_UPDATE_KEY_ROTATION.md).
 
 IIS-каталог создаётся отдельно от публикации frontend:
 
@@ -159,6 +178,8 @@ powershell -ExecutionPolicy Bypass -File scripts\iis\setup_desktop_update_feed.p
 - повторный запуск `HUB.Desktop.exe` возвращает уже открытое окно;
 - пункт `Запускать вместе с Windows` включает или выключает autostart для текущего пользователя;
 - пункт `Выйти` завершает WebView и процесс приложения.
+- пункт `Настройки Desktop` выбирает открытый/скрытый запуск при входе, Главную/последнюю безопасную
+  страницу и глобальный `Ctrl+Shift+H`; занятое другой программой сочетание не регистрируется.
 
 ## Autostart
 
@@ -168,7 +189,7 @@ powershell -ExecutionPolicy Bypass -File scripts\iis\setup_desktop_update_feed.p
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
-Команда содержит полный путь к текущему `HUB.Desktop.exe` и аргумент `--background`. При входе в Windows клиент запускается скрытым в tray, но инициализирует WebView2 и сохраняет realtime-соединение. Машинный `HKLM`, Scheduled Task, GPO и права администратора не используются.
+Команда содержит полный путь к текущему `HUB.Desktop.exe` и аргумент `--background`. При входе в Windows клиент запускается скрытым в tray, но инициализирует WebView2 и сохраняет realtime-соединение. По умолчанию машинный `HKLM`, Scheduled Task и права администратора для autostart не используются. Необязательная GPO может только принудительно включить/выключить autostart, не перезаписывая сохранённый выбор пользователя; см. [`HUB_DESKTOP_GPO.md`](../documentation/technical/HUB_DESKTOP_GPO.md).
 
 При первом запуске autostart включается автоматически. Явный выбор пользователя хранится в `HKCU\Software\HUB-IT\Desktop\AutostartEnabled`: после отключения клиент не включает autostart повторно. При обновлении пути к EXE включённая команда автоматически исправляется.
 

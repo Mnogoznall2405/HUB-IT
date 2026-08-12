@@ -20,6 +20,7 @@ import {
 import { emitAgentDebugLog } from './lib/debugClientLog';
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import DesktopNavigationBootstrap from './components/layout/DesktopNavigationBootstrap';
+import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
 import { WINDOWS_NOTIFICATIONS_CHANGED_EVENT } from './lib/windowsNotifications';
@@ -492,6 +493,7 @@ function App() {
       <AuthProvider>
         <ScrollToTop />
         <DesktopNavigationBootstrap />
+        <DesktopPresenceBootstrap />
         <AppPushBootstrap />
         <ChatSocketBootstrap />
         <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>

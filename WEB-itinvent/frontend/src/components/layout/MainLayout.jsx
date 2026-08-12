@@ -47,6 +47,8 @@ import { databaseAPI } from '../../api/database';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
 import BrandedRouteLoader from './BrandedRouteLoader';
+import DesktopShellSync from './DesktopShellSync';
+import HubCommandPalette from '../search/HubCommandPalette';
 import {
   TOAST_ACTION_EXECUTE_EVENT,
   createNavigateToastAction,
@@ -94,10 +96,26 @@ import {
   syncActiveChatConversationToServiceWorker,
   syncChatPushSubscription,
 } from '../../lib/chatNotifications';
-import { DESKTOP_WINDOW_STATE_CHANGED_EVENT } from '../../lib/desktopBridge';
+import {
+  DESKTOP_CAPABILITIES_CHANGED_EVENT,
+  DESKTOP_OPEN_COMMAND_PALETTE_EVENT,
+  DESKTOP_WINDOW_STATE_CHANGED_EVENT,
+  isDesktopCapabilityAvailable,
+  requestDesktopCheckForUpdates,
+  requestDesktopOpenCurrentInBrowser,
+  requestDesktopOpenDiagnostics,
+  requestDesktopOpenDownloads,
+} from '../../lib/desktopBridge';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { hasAnyAppPushPermission } from '../../lib/appPushPermissions';
 import { syncAppBadge } from '../../lib/appBadge';
+import { buildDesktopQuickRoutes } from '../../lib/desktopQuickRoutes';
+import { buildHubCommands } from '../../lib/hubCommands';
+import {
+  isNotificationChannelEnabled,
+  normalizeNotificationPreferences,
+  NOTIFICATION_PREFERENCES_CHANGED_EVENT,
+} from '../../lib/notificationPreferences';
 import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { getMessagePreview } from '../chat/chatHelpers';
@@ -192,6 +210,10 @@ function MainLayout({
   const [dbLoading, setDbLoading] = useState(true);
   const [dbLocked, setDbLocked] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [desktopActionsAvailable, setDesktopActionsAvailable] = useState(
+    () => isDesktopCapabilityAvailable('desktop-actions'),
+  );
   const [notifications, setNotifications] = useState([]);
   const [mailNotifications, setMailNotifications] = useState([]);
   const [unreadCounts, setUnreadCounts] = useState({
@@ -251,7 +273,7 @@ function MainLayout({
   const mailUnreadBaselineReadyRef = useRef(false);
   const chatUnreadBaselineReadyRef = useRef(false);
   const ordinaryChatHubReadVisibleRef = useRef(true);
-  const mailChannelEnabledRef = useRef(true);
+  const notificationPreferencesRef = useRef(normalizeNotificationPreferences());
   const hasDashboardPermission = hasPermission('dashboard.read');
   const hasTasksPermission = hasPermission('tasks.read');
   const hasChatPermission = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
@@ -325,7 +347,56 @@ function MainLayout({
     [mailNotifications],
   );
   const unreadBellInboxCount = unreadHubNotificationCount + unreadMailNotificationCount;
-  const visibleNavigationItems = getVisibleNavigationItems({ user, hasPermission });
+  const visibleNavigationItems = useMemo(
+    () => getVisibleNavigationItems({ user, hasPermission }),
+    [hasPermission, user],
+  );
+  const hubCommands = useMemo(() => buildHubCommands({
+    visibleNavigationItems,
+    hasPermission,
+    includeDesktopActions: desktopActionsAvailable,
+  }), [desktopActionsAvailable, hasPermission, visibleNavigationItems]);
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && String(event.key).toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((current) => !current);
+      }
+    };
+    const handleDesktopOpen = () => setCommandPaletteOpen(true);
+    const handleDesktopCapabilities = () => {
+      setDesktopActionsAvailable(isDesktopCapabilityAvailable('desktop-actions'));
+    };
+    window.addEventListener('keydown', handleShortcut);
+    window.addEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
+    window.addEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+    return () => {
+      window.removeEventListener('keydown', handleShortcut);
+      window.removeEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
+      window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+    };
+  }, []);
+
+  const executeHubCommand = useCallback((command) => {
+    setCommandPaletteOpen(false);
+    if (typeof command?.route === 'string' && command.route.startsWith('/')) {
+      navigate(command.route);
+      return;
+    }
+
+    const accepted = command?.desktopAction === 'downloads'
+      ? requestDesktopOpenDownloads()
+      : command?.desktopAction === 'diagnostics'
+        ? requestDesktopOpenDiagnostics()
+        : command?.desktopAction === 'updates'
+          ? requestDesktopCheckForUpdates()
+          : command?.desktopAction === 'browser'
+            ? requestDesktopOpenCurrentInBrowser()
+            : false;
+    if (!accepted) {
+      notifyWarning('Команда HUB Desktop сейчас недоступна');
+    }
+  }, [navigate, notifyWarning]);
   const mainNavigationItems = useMemo(
     () => visibleNavigationItems.filter((item) => item.group === 'main'),
     [visibleNavigationItems],
@@ -359,6 +430,20 @@ function MainLayout({
     [mobileBottomNavTransitionMs, theme.transitions],
   );
   const showNotificationsButton = hasHubNotificationPermission || hasMailPermission;
+  const desktopQuickRoutes = useMemo(() => buildDesktopQuickRoutes({
+    visibleNavigationItems,
+    pinnedPaths: preferences.mobile_bottom_nav_items,
+    showNotifications: showNotificationsButton,
+    unreadCounts,
+    canCreateTasks: hasPermission('tasks.create') || hasPermission('tasks.write'),
+    canComposeMail: hasPermission('mail.access'),
+  }), [
+    hasPermission,
+    preferences.mobile_bottom_nav_items,
+    showNotificationsButton,
+    unreadCounts,
+    visibleNavigationItems,
+  ]);
   const notificationsBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
   const appBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
   const showNotificationPermissionBanner = Boolean(
@@ -671,7 +756,7 @@ function MainLayout({
       && currentPushNotificationState.pushSubscribed
       && currentPushNotificationState.backgroundCapable,
     );
-    if (!mailChannelEnabledRef.current) return;
+    if (!isNotificationChannelEnabled({ channel: 'mail' }, notificationPreferencesRef.current)) return;
     items.slice().reverse().forEach((item) => {
       const messageId = String(item?.id || '').trim();
       const notificationId = getMailSystemNotificationId(item);
@@ -840,6 +925,10 @@ function MainLayout({
       }
 
       const currentChatNotificationState = getChatNotificationState();
+      if (!isNotificationChannelEnabled({ channel: 'chat' }, notificationPreferencesRef.current)) {
+        setChatForegroundDiagnostic('notifications_disabled');
+        return;
+      }
       if (!currentChatNotificationState.enabled) {
         setChatForegroundDiagnostic('notifications_disabled');
         return;
@@ -1265,25 +1354,33 @@ useEffect(() => {
   }, [hasHubNotificationPermission, hasMailPermission]);
 
   useEffect(() => {
-    if (!hasMailPermission) return undefined;
+    if (!hasHubNotificationPermission && !hasMailPermission) return undefined;
     let cancelled = false;
-    const loadMailChannelPreference = async () => {
+    const applyPreferences = (value) => {
+      notificationPreferencesRef.current = normalizeNotificationPreferences(value);
+    };
+    const loadNotificationPreferences = async () => {
       try {
         const data = await settingsAPI.getNotificationPreferences();
         if (!cancelled) {
-          mailChannelEnabledRef.current = Boolean(data?.channels?.mail ?? true);
+          applyPreferences(data?.channels);
         }
       } catch {
         if (!cancelled) {
-          mailChannelEnabledRef.current = true;
+          applyPreferences();
         }
       }
     };
-    loadMailChannelPreference();
+    const handlePreferencesChanged = (event) => {
+      applyPreferences(event?.detail);
+    };
+    window.addEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, handlePreferencesChanged);
+    loadNotificationPreferences();
     return () => {
       cancelled = true;
+      window.removeEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, handlePreferencesChanged);
     };
-  }, [hasMailPermission]);
+  }, [hasHubNotificationPermission, hasMailPermission]);
 
   useEffect(() => {
     if (!hasMailPermission) return undefined;
@@ -1370,6 +1467,9 @@ useEffect(() => {
                 const id = String(item?.id || '').trim();
                 if (!id || hasSeenHubNotificationRef.current?.(id)) return;
                 const entityType = String(item?.entity_type || '').trim().toLowerCase();
+                if (!isNotificationChannelEnabled(item, notificationPreferencesRef.current)) {
+                  return;
+                }
                 // WS clients get chat toasts from the socket.
                 if (entityType === 'chat' && hasChatPermission && CHAT_WS_ENABLED) {
                   return;
@@ -1686,6 +1786,19 @@ useEffect(() => {
     window.addEventListener('hub-open-notifications', openNotifications);
     return () => window.removeEventListener('hub-open-notifications', openNotifications);
   }, [handleOpenNotifications]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    if (searchParams.get('desktop_action') !== 'notifications') return;
+
+    handleOpenNotifications();
+    searchParams.delete('desktop_action');
+    const nextSearch = searchParams.toString();
+    navigate({
+      pathname: location.pathname,
+      search: nextSearch ? `?${nextSearch}` : '',
+    }, { replace: true });
+  }, [handleOpenNotifications, location.pathname, location.search, navigate]);
 
   const handleDatabaseChange = async (event) => {
     if (dbLocked) return;
@@ -2039,6 +2152,21 @@ useEffect(() => {
 
   return (
     <MainLayoutShellContext.Provider value={shellValue}>
+      <DesktopShellSync
+        authenticated={Boolean(user)}
+        online={!isOffline}
+        unreadTotal={unreadCounts?.notifications_unread_total}
+        chatUnread={unreadCounts?.chat_messages_unread_total}
+        mailUnread={unreadCounts?.mail_unread}
+        tasksAttention={unreadCounts?.tasks_with_unread_comments}
+        quickRoutes={desktopQuickRoutes}
+      />
+      <HubCommandPalette
+        open={commandPaletteOpen}
+        commands={hubCommands}
+        onClose={() => setCommandPaletteOpen(false)}
+        onExecute={executeHubCommand}
+      />
       <Box
         data-testid="main-layout-shell"
         data-app-bar-height={appBarHeight}
