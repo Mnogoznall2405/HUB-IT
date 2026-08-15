@@ -71,6 +71,7 @@ _PROCESS_LABELS = {
     "DMBusinessProcessConsideration": "Ознакомление",
     "DMBusinessProcessPerformance": "Исполнение",
     "DMBusinessProcessOrder": "Исполнение",
+    "DMBusinessProcessInvitation": "Приглашение",
 }
 _ACTION_SPEC = {
     "approve": {
@@ -88,6 +89,20 @@ _ACTION_SPEC = {
         "object_id": "СогласованоСЗамечаниями",
         "name": "Согласовано с замечаниями",
     },
+    "accept_invitation": {
+        "task_types": {"DMBusinessProcessInvitationTaskInvitation"},
+        "field": "invitationResult",
+        "object_type": "DMInvitationResult",
+        "object_id": "Принято",
+        "name": "Принято",
+    },
+    "decline_invitation": {
+        "task_types": {"DMBusinessProcessInvitationTaskInvitation"},
+        "field": "invitationResult",
+        "object_type": "DMInvitationResult",
+        "object_id": "НеПринято",
+        "name": "Не принято",
+    },
     "reject": {
         "task_types": {
             "DMBusinessProcessApprovalTaskApproval",
@@ -97,7 +112,11 @@ _ACTION_SPEC = {
         "confirmation": ("confirmationResult", "DMConfirmationResult", "НеУтверждено", "Не утверждено"),
     },
     "acknowledge": {
-        "task_types": {"DMBusinessProcessConsiderationTaskAcquaint", "DMBusinessProcessTask"},
+        "task_types": {
+            "DMBusinessProcessApprovalTaskCheckup",
+            "DMBusinessProcessConsiderationTaskAcquaint",
+            "DMBusinessProcessTask",
+        },
     },
     "complete": {
         "task_types": {"DMBusinessProcessTask"},
@@ -859,7 +878,10 @@ class DocflowDMServiceClient:
         comment = _text(task, "executionComment", maximum=2000)
         approval = _child(task, "approvalResult")
         confirmation = _child(task, "confirmationResult")
+        invitation = _child(task, "invitationResult")
         result_node = approval if approval is not None else confirmation
+        if result_node is None and invitation is not None and _object_id(invitation):
+            result_node = invitation
         result_name = _object_presentation(result_node)
         compact = result_name.replace(" ", "").casefold()
         labels = {
@@ -868,6 +890,8 @@ class DocflowDMServiceClient:
             "несогласовано": "Не согласовано",
             "утверждено": "Утверждено",
             "неутверждено": "Не утверждено",
+            "принято": "Принято",
+            "непринято": "Не принято",
         }
         result = labels.get(compact, result_name)
         if result in {"Согласовано с замечаниями", "Не согласовано", "Не утверждено"} and comment:
@@ -1486,6 +1510,13 @@ class DocflowDMServiceClient:
         updated = copy.deepcopy(before_element)
         _normalize_xsi_type_prefixes(updated)
         self._replace_child(updated, "executed", value="true")
+        if (
+            normalized_action == "acknowledge"
+            and task_type == "DMBusinessProcessApprovalTaskCheckup"
+        ):
+            # This UI action means acknowledgement only. Never forward a stale
+            # XDTO flag that would restart the approval process in 1C.
+            self._replace_child(updated, "returned", value="false")
         if normalized_comment:
             self._replace_child(updated, "executionComment", value=normalized_comment)
         if normalized_action == "approve":
@@ -1503,7 +1534,11 @@ class DocflowDMServiceClient:
                     name,
                 ),
             )
-        elif normalized_action == "approve_with_comments":
+        elif normalized_action in {
+            "approve_with_comments",
+            "accept_invitation",
+            "decline_invitation",
+        }:
             field = str(spec["field"])
             if result_field and result_field != field:
                 raise Docflow1CMappingError("Поле результата не соответствует allowlist")

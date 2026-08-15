@@ -9,14 +9,32 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-DocflowActionCode = Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
-_ACTION_CODES = frozenset({"acknowledge", "approve", "approve_with_comments", "reject", "complete"})
+DocflowActionCode = Literal[
+    "acknowledge",
+    "approve",
+    "approve_with_comments",
+    "reject",
+    "complete",
+    "accept_invitation",
+    "decline_invitation",
+]
+_ACTION_CODES = frozenset({
+    "acknowledge",
+    "approve",
+    "approve_with_comments",
+    "reject",
+    "complete",
+    "accept_invitation",
+    "decline_invitation",
+})
 _DEFAULT_LABELS = {
     "acknowledge": "Ознакомиться",
     "approve": "Согласовать",
     "approve_with_comments": "Согласовать с замечаниями",
     "reject": "Отклонить",
     "complete": "Выполнить",
+    "accept_invitation": "Принять",
+    "decline_invitation": "Не принимать",
 }
 _DEFAULT_TONES = {
     "acknowledge": "primary",
@@ -24,6 +42,8 @@ _DEFAULT_TONES = {
     "approve_with_comments": "warning",
     "reject": "error",
     "complete": "primary",
+    "accept_invitation": "success",
+    "decline_invitation": "error",
 }
 _DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent / "resources" / "docflow_action_rules.v1.json"
 

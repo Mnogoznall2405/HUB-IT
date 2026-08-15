@@ -1165,15 +1165,42 @@ class DocflowService:
         return str(rule.result_value or "").replace("{comment}", str(comment or "").strip()).strip()[:2000]
 
     @classmethod
+    def _action_outcome_matches(
+        cls,
+        *,
+        action: str,
+        expected_result_hash: str,
+        detail: dict[str, Any],
+    ) -> bool:
+        if not bool(detail.get("completed")):
+            return False
+        # Acknowledgement tasks do not set an execution result. Approval
+        # checkups deliberately retain the process's existing approval result.
+        # DMService also omits a participant's invitationResult when a completed
+        # invitation task is retrieved, so completion is the stable post-write
+        # value for these allowlisted actions.
+        if str(action or "").strip().casefold() in {
+            "acknowledge",
+            "accept_invitation",
+            "decline_invitation",
+        }:
+            return True
+        return bool(expected_result_hash) and hmac.compare_digest(
+            expected_result_hash,
+            cls._result_hash(str(detail.get("result") or "")),
+        )
+
+    @classmethod
     def _state_matches_command(cls, row: AppDocflowCommand, detail: dict[str, Any]) -> bool:
         try:
             before = json.loads(str(row.remote_before_json or "{}"))
         except (TypeError, ValueError):
             before = {}
         expected_hash = str(before.get("expected_result_hash") or "")
-        return bool(detail.get("completed")) and bool(expected_hash) and hmac.compare_digest(
-            expected_hash,
-            cls._result_hash(str(detail.get("result") or "")),
+        return cls._action_outcome_matches(
+            action=str(row.action or ""),
+            expected_result_hash=expected_hash,
+            detail=detail,
         )
 
     @classmethod
@@ -2052,7 +2079,11 @@ class DocflowService:
             raise
 
         remote_task = dict(outcome.get("task") or {})
-        if not bool(remote_task.get("completed")) or self._result_hash(str(remote_task.get("result") or "")) != expected_result_hash:
+        if not self._action_outcome_matches(
+            action=normalized_action,
+            expected_result_hash=expected_result_hash,
+            detail=remote_task,
+        ):
             row = await asyncio.to_thread(
                 self._command_store.finish,
                 command_id=str(row.id),

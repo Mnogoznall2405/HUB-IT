@@ -57,6 +57,23 @@
     {
       "configuration": "docflow",
       "task_type": "ЗадачаИсполнителя",
+      "process_type": "Согласование",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessApprovalTaskCheckup",
+      "configuration_fingerprint": "5100a47c76e3ea74efc0d33b",
+      "evidence": "live DMService inventory 2026-08-15: approval checkup retains returned=false and completes without changing approvalResult",
+      "actions": {
+        "acknowledge": {
+          "label": "Ознакомиться",
+          "result_value": "",
+          "comment_mode": "optional",
+          "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
       "process_type": "Утверждение",
       "dm_version": "2.1.37.5.CORP",
       "xdto_task_type": "DMBusinessProcessConfirmationTaskConfirmation",
@@ -95,6 +112,33 @@
           "result_value": "{comment}",
           "comment_mode": "required",
           "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Приглашение",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessInvitationTaskInvitation",
+      "configuration_fingerprint": "fe84cb0545a3392705db2c3d",
+      "evidence": "live DMService inventory 2026-08-15: DMInvitationResult exposes Принято and НеПринято; six completed invitation tasks confirm completion state",
+      "actions": {
+        "accept_invitation": {
+          "label": "Принять",
+          "result_value": "Принято",
+          "result_field": "invitationResult",
+          "result_object_id": "Принято",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "decline_invitation": {
+          "label": "Не принимать",
+          "result_value": "Не принято",
+          "result_field": "invitationResult",
+          "result_object_id": "НеПринято",
+          "comment_mode": "optional",
+          "tone": "error"
         }
       }
     }

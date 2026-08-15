@@ -100,6 +100,51 @@ def _acquaintance_task(*, executed: bool = False, accepted: bool = True) -> str:
     </tns:object>'''
 
 
+def _approval_checkup_task(
+    *,
+    executed: bool = False,
+    accepted: bool = True,
+    returned: bool = False,
+) -> str:
+    end_date = "<tns:endDate>2026-08-15T12:00:00</tns:endDate>" if executed else ""
+    return f'''
+    <tns:object xsi:type="tns:DMBusinessProcessApprovalTaskCheckup">
+      <tns:name>Ознакомиться с результатом согласования</tns:name>
+      <tns:ObjectID><tns:id>68eb5751-9798-11f1-bf5b-5cba2c62ec78</tns:id><tns:type>DMBusinessProcessApprovalTaskCheckup</tns:type></tns:ObjectID>
+      <tns:executed>{str(executed).lower()}</tns:executed>
+      <tns:accepted>{str(accepted).lower()}</tns:accepted>
+      <tns:returned>{str(returned).lower()}</tns:returned>
+      <tns:beginDate>2026-08-15T10:00:00</tns:beginDate>
+      {end_date}
+      <tns:parentBusinessProcess xsi:type="tns:DMBusinessProcessApproval">
+       <tns:name>Согласование документа</tns:name>
+       <tns:ObjectID><tns:id>33333333-3333-3333-3333-333333333333</tns:id><tns:type>DMBusinessProcessApproval</tns:type></tns:ObjectID>
+      </tns:parentBusinessProcess>
+      <tns:approvalResult xsi:type="tns:DMApprovalResult">
+       <tns:name>Согласовано</tns:name>
+       <tns:ObjectID><tns:id>Согласовано</tns:id><tns:type>DMApprovalResult</tns:type></tns:ObjectID>
+      </tns:approvalResult>
+    </tns:object>'''
+
+
+def _invitation_task(*, executed: bool = False, accepted: bool = True) -> str:
+    end_date = "<tns:endDate>2026-08-15T16:00:00</tns:endDate>" if executed else ""
+    return f'''
+    <tns:object xsi:type="tns:DMBusinessProcessInvitationTaskInvitation">
+      <tns:name>Тест</tns:name>
+      <tns:ObjectID><tns:id>03649d11-97ac-11f1-8cfb-5cba2c62eea8</tns:id><tns:type>DMBusinessProcessInvitationTaskInvitation</tns:type></tns:ObjectID>
+      <tns:executed>{str(executed).lower()}</tns:executed>
+      <tns:accepted>{str(accepted).lower()}</tns:accepted>
+      <tns:beginDate>2026-08-15T14:00:00</tns:beginDate>
+      {end_date}
+      <tns:businessProcessStep>Пригласить</tns:businessProcessStep>
+      <tns:parentBusinessProcess xsi:type="tns:DMBusinessProcessInvitation">
+       <tns:name>Приглашение</tns:name>
+       <tns:ObjectID><tns:id>44444444-4444-4444-4444-444444444444</tns:id><tns:type>DMBusinessProcessInvitation</tns:type></tns:ObjectID>
+      </tns:parentBusinessProcess>
+    </tns:object>'''
+
+
 @pytest.mark.asyncio
 async def test_list_tasks_always_uses_personal_filters_and_applies_limit(monkeypatch):
     requests: list[bytes] = []
@@ -382,6 +427,146 @@ async def test_acknowledge_generic_acquaintance_task_completes_without_result_fi
     assert "confirmationResult" not in update_payloads[0]
     assert result["task"]["completed"] is True
     assert result["task"]["result"] is None
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_approval_checkup_preserves_process_result_and_return_flag():
+    accepted = False
+    completed = False
+    update_payloads: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal accepted, completed
+        request_type = _request_type(request)
+        if request_type == "DMGetVersionRequest":
+            return httpx.Response(
+                200,
+                content=_soap_response(
+                    "DMGetVersionResponse",
+                    "<tns:versionNumber>2.1.37.5.CORP</tns:versionNumber>",
+                ),
+            )
+        if request_type == "DMGetObjectListRequest":
+            return httpx.Response(
+                200,
+                content=_soap_response(
+                    "DMGetObjectListResponse",
+                    f"<tns:items>{_approval_checkup_task(executed=completed, accepted=accepted, returned=True)}</tns:items>"
+                    "<tns:tooManyObjects>false</tns:tooManyObjects>",
+                ),
+            )
+        if request_type == "DMRetrieveRequest":
+            task_xml = _approval_checkup_task(
+                executed=completed,
+                accepted=accepted,
+                returned=True,
+            ).replace("<tns:object", "<tns:objects", 1).replace(
+                "</tns:object>", "</tns:objects>", 1
+            )
+            return httpx.Response(200, content=_soap_response("DMRetrieveResponse", task_xml))
+        if request_type == "DMAcceptTasksRequest":
+            accepted = True
+            return httpx.Response(200, content=_soap_response("DMAcceptTasksResponse"))
+        if request_type == "DMUpdateRequest":
+            update_payloads.append(request.content.decode("utf-8"))
+            completed = True
+            return httpx.Response(200, content=_soap_response("DMUpdateResponse"))
+        raise AssertionError(request_type)
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.apply_task_action(
+            login="user",
+            password="secret",
+            task_ref="68eb5751-9798-11f1-bf5b-5cba2c62ec78",
+            action="acknowledge",
+        )
+    finally:
+        await client.aclose()
+
+    assert len(update_payloads) == 1
+    assert "<tns:executed>true</tns:executed>" in update_payloads[0]
+    assert "<tns:returned>false</tns:returned>" in update_payloads[0]
+    assert "<tns:approvalResult" in update_payloads[0]
+    assert result["task"]["completed"] is True
+    assert result["task"]["result"] == "Согласовано"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "result_id", "result_name"),
+    (
+        ("accept_invitation", "Принято", "Принято"),
+        ("decline_invitation", "НеПринято", "Не принято"),
+    ),
+)
+async def test_invitation_actions_write_allowlisted_invitation_result(action, result_id, result_name):
+    accepted = False
+    completed = False
+    update_payloads: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal accepted, completed
+        request_type = _request_type(request)
+        if request_type == "DMGetVersionRequest":
+            return httpx.Response(
+                200,
+                content=_soap_response(
+                    "DMGetVersionResponse",
+                    "<tns:versionNumber>2.1.37.5.CORP</tns:versionNumber>",
+                ),
+            )
+        if request_type == "DMGetObjectListRequest":
+            return httpx.Response(
+                200,
+                content=_soap_response(
+                    "DMGetObjectListResponse",
+                    f"<tns:items>{_invitation_task(executed=completed, accepted=accepted)}</tns:items>"
+                    "<tns:tooManyObjects>false</tns:tooManyObjects>",
+                ),
+            )
+        if request_type == "DMRetrieveRequest":
+            task_xml = _invitation_task(
+                executed=completed,
+                accepted=accepted,
+            ).replace("<tns:object", "<tns:objects", 1).replace(
+                "</tns:object>", "</tns:objects>", 1
+            )
+            return httpx.Response(200, content=_soap_response("DMRetrieveResponse", task_xml))
+        if request_type == "DMAcceptTasksRequest":
+            accepted = True
+            return httpx.Response(200, content=_soap_response("DMAcceptTasksResponse"))
+        if request_type == "DMUpdateRequest":
+            update_payloads.append(request.content.decode("utf-8"))
+            completed = True
+            return httpx.Response(200, content=_soap_response("DMUpdateResponse"))
+        raise AssertionError(request_type)
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.apply_task_action(
+            login="user",
+            password="secret",
+            task_ref="03649d11-97ac-11f1-8cfb-5cba2c62eea8",
+            action=action,
+        )
+    finally:
+        await client.aclose()
+
+    assert len(update_payloads) == 1
+    assert "<tns:executed>true</tns:executed>" in update_payloads[0]
+    assert '<tns:invitationResult xsi:type="tns:DMInvitationResult">' in update_payloads[0]
+    assert f"<tns:name>{result_name}</tns:name>" in update_payloads[0]
+    assert f"<tns:id>{result_id}</tns:id>" in update_payloads[0]
+    assert "<tns:type>DMInvitationResult</tns:type>" in update_payloads[0]
+    assert result["task"]["completed"] is True
+    assert result["task"]["process_type"] == "Приглашение"
 
 
 @pytest.mark.asyncio

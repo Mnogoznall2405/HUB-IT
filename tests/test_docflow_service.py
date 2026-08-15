@@ -24,6 +24,7 @@ from backend.api import deps  # noqa: E402
 from backend.api.v1 import docflow as docflow_api  # noqa: E402
 from backend.services import docflow_1c_client as docflow_1c_client_module  # noqa: E402
 from backend.models.auth import User  # noqa: E402
+from backend.models.docflow import DocflowTaskActionRequest  # noqa: E402
 from backend.services.docflow_1c_client import (  # noqa: E402
     Docflow1CComClient,
     Docflow1CConflictError,
@@ -336,9 +337,10 @@ def test_versioned_default_rules_cover_all_pilot_processes(monkeypatch):
 
     assert actions_by_process == {
         "Ознакомление": ["acknowledge"],
-        "Согласование": ["approve", "approve_with_comments", "reject"],
+        "Согласование": ["approve", "approve_with_comments", "reject", "acknowledge"],
         "Утверждение": ["approve", "reject"],
         "Исполнение": ["complete"],
+        "Приглашение": ["accept_invitation", "decline_invitation"],
     }
 
 
@@ -368,6 +370,149 @@ def test_default_acquaintance_rule_matches_live_dmservice_task_type(monkeypatch)
 
     assert [item["code"] for item in detail["available_actions"]] == ["acknowledge"]
     assert detail["state_token"]
+
+
+def test_default_approval_checkup_rule_is_actionable_and_keeps_process_result(monkeypatch):
+    class ApprovalCheckupAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.result = "Согласовано"
+
+        def task(self, task_ref: str) -> dict:
+            return {
+                "ref": task_ref,
+                "task_type": "ЗадачаИсполнителя",
+                "task_type_label": "Задание исполнителя",
+                "title": "Ознакомиться с результатом согласования",
+                "process_ref": "33333333-3333-3333-3333-333333333333",
+                "process_type": "Согласование",
+                "process_type_label": "Согласование",
+                "xdto_process_type": "DMBusinessProcessApproval",
+                "xdto_task_type": "DMBusinessProcessApprovalTaskCheckup",
+                "dm_version": "2.1.37.5.CORP",
+                "result": self.result,
+                "completed": self.completed,
+                "files": [],
+            }
+
+        async def call(self, operation: str, payload: dict):
+            self.calls.append((operation, dict(payload)))
+            if operation == "test_connection":
+                return {
+                    "connected": True,
+                    "configuration": "docflow",
+                    "verified_at": datetime.now(timezone.utc).isoformat(),
+                }
+            if operation in {"task_detail", "task_state"}:
+                return self.task(str(payload.get("task_ref") or ""))
+            if operation == "task_action":
+                self.completed = True
+                return {
+                    "before": {"ref": payload.get("task_ref"), "completed": False},
+                    "task": self.task(str(payload.get("task_ref") or "")),
+                }
+            return await super().call(operation, payload)
+
+    monkeypatch.setenv("DOCFLOW_CREDENTIALS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("DOCFLOW_TRANSPORT", "com")
+    monkeypatch.setenv("DOCFLOW_WRITE_CREDENTIAL_MIN_VERSION", "0")
+    monkeypatch.setenv("DOCFLOW_WRITE_ENABLED", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_ALL_USERS", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_TEST_ONLY", "0")
+    monkeypatch.setenv("DOCFLOW_ACTION_STATE_KEY", "test-state-key-that-is-longer-than-32-bytes")
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_JSON", raising=False)
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_FILE", raising=False)
+    _build_fernet.cache_clear()
+
+    adapter = ApprovalCheckupAdapter()
+    store = FakeStore()
+    service = DocflowService(adapter=adapter, store=store)
+    command_store = FakeCommandStore()
+    service._command_store = command_store
+    asyncio.run(service.save_credentials(
+        user_id=17,
+        login="owner.login",
+        password="temporary-test-password",
+        correlation_id="save",
+    ))
+    task_ref = "68eb5751-9798-11f1-bf5b-5cba2c62ec78"
+
+    detail = asyncio.run(service.get_task_detail(
+        user_id=17,
+        task_ref=task_ref,
+        correlation_id="detail",
+        can_act=True,
+    ))
+    assert [item["code"] for item in detail["available_actions"]] == ["acknowledge"]
+
+    result = asyncio.run(service.apply_task_action(
+        user_id=17,
+        task_ref=task_ref,
+        action="acknowledge",
+        comment="",
+        state_token=detail["state_token"],
+        idempotency_key="approval-checkup-1",
+        correlation_id="apply",
+    ))
+
+    assert result["status"] == "applied"
+    assert result["task"]["completed"] is True
+    assert result["task"]["result"] == "Согласовано"
+    assert [operation for operation, _ in adapter.calls].count("task_action") == 1
+
+
+def test_default_invitation_rule_exposes_both_results_and_verifies_completion(monkeypatch):
+    service, _adapter, _store = _service(monkeypatch)
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_JSON", raising=False)
+    monkeypatch.delenv("DOCFLOW_ACTION_RULES_FILE", raising=False)
+    monkeypatch.setenv("DOCFLOW_WRITE_ENABLED", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_ALL_USERS", "1")
+    monkeypatch.setenv("DOCFLOW_WRITE_TEST_ONLY", "0")
+    monkeypatch.setenv("DOCFLOW_ACTION_STATE_KEY", "test-state-key-that-is-longer-than-32-bytes")
+
+    detail = service._decorate_task_actions(
+        user_id=17,
+        detail={
+            "ref": "03649d11-97ac-11f1-8cfb-5cba2c62eea8",
+            "task_type": "ЗадачаИсполнителя",
+            "xdto_task_type": "DMBusinessProcessInvitationTaskInvitation",
+            "title": "Тест",
+            "process_type": "Приглашение",
+            "xdto_process_type": "DMBusinessProcessInvitation",
+            "dm_version": "2.1.37.5.CORP",
+            "completed": False,
+        },
+        can_act=True,
+    )
+
+    assert [item["code"] for item in detail["available_actions"]] == [
+        "accept_invitation",
+        "decline_invitation",
+    ]
+    assert [item["label"] for item in detail["available_actions"]] == [
+        "Принять",
+        "Не принимать",
+    ]
+    assert detail["state_token"]
+    assert service._action_outcome_matches(
+        action="accept_invitation",
+        expected_result_hash=service._result_hash("Принято"),
+        detail={
+            "completed": True,
+            "result": None,
+            "xdto_task_type": "DMBusinessProcessInvitationTaskInvitation",
+        },
+    )
+
+
+def test_invitation_action_codes_are_accepted_by_api_model():
+    for action in ("accept_invitation", "decline_invitation"):
+        request = DocflowTaskActionRequest(
+            action=action,
+            comment="",
+            state_token="signed-state-token",
+        )
+        assert request.action == action
 
 
 def test_http_dmservice_keeps_write_actions_fail_closed(monkeypatch):

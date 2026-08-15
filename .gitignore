@@ -166,6 +166,14 @@ bot.log*
 WEB-itinvent/uploads/
 /*.xlsx
 
+# Local deployment rollback snapshots
+/deploy_backups/
+
+# One-off local diagnostics
+/_timed.ps1*
+/testwrite.txt
+/scripts/_tmp*
+
 # HUB Desktop build artifacts
 /desktop/**/bin/
 /desktop/**/obj/

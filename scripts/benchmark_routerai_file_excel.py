@@ -628,6 +628,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--max-tokens", type=int, default=32000)
     parser.add_argument("--seed", type=int, default=20260815)
+    parser.add_argument("--reasoning-effort")
     args = parser.parse_args()
 
     dataset = _build_dataset()
@@ -662,6 +663,8 @@ def main() -> int:
             kwargs["seed"] = args.seed
         if "response_format" in supported:
             kwargs["response_format"] = {"type": "json_object"}
+        if args.reasoning_effort:
+            kwargs["reasoning_effort"] = args.reasoning_effort
 
         started = time.perf_counter()
         try:
@@ -686,6 +689,7 @@ def main() -> int:
         total_score = analysis_score + workbook_score
         return {
             "model": model,
+            "reasoning_effort": args.reasoning_effort,
             "ok": parsed is not None and usage is not None,
             "score": total_score,
             "max_score": 100,
@@ -731,6 +735,7 @@ def main() -> int:
     payload = {
         "generated_at": datetime.now().astimezone().isoformat(),
         "method": "large_multifile_csv_to_xlsx_ru",
+        "reasoning_effort": args.reasoning_effort,
         "dataset": {
             "prompt_chars": len(prompt),
             "file_chars": {name: len(content) for name, content in dataset["files"].items()},

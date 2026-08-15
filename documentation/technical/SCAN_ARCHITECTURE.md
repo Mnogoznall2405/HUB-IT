@@ -4,7 +4,7 @@
 
 ## OCR capacity and measurements
 
-- The worker runs up to 4 jobs and 4 OCR tasks concurrently in production and uses Windows `BelowNormal` priority.
+- The worker runs up to 6 jobs and 6 OCR tasks concurrently in production and uses Windows `BelowNormal` priority.
 - Ingest backpressure starts at 200 pending documents; agents persist deferred uploads in the local outbox.
 - Full-page rendering is capped at 20 million pixels. A3 remains at a true 300 DPI.
 - Large A2/A1/A0 sheets also get four direct PDF clip renders for header/footer corners at up to 400 DPI,

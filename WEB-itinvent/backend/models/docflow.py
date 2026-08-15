@@ -67,7 +67,15 @@ class DocflowTaskFileSummary(BaseModel):
 
 
 class DocflowAvailableAction(BaseModel):
-    code: Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
+    code: Literal[
+        "acknowledge",
+        "approve",
+        "approve_with_comments",
+        "reject",
+        "complete",
+        "accept_invitation",
+        "decline_invitation",
+    ]
     label: str
     tone: Literal["primary", "success", "error", "warning"] = "primary"
     comment_mode: Literal["optional", "required"] = "optional"
@@ -125,7 +133,15 @@ class DocflowMetadataResponse(BaseModel):
 class DocflowTaskActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    action: Literal["acknowledge", "approve", "approve_with_comments", "reject", "complete"]
+    action: Literal[
+        "acknowledge",
+        "approve",
+        "approve_with_comments",
+        "reject",
+        "complete",
+        "accept_invitation",
+        "decline_invitation",
+    ]
     comment: str = Field(default="", max_length=2000)
     state_token: str = Field(..., min_length=16, max_length=512)
 

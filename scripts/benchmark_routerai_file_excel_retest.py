@@ -89,6 +89,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--max-tokens", type=int, default=12000)
     parser.add_argument("--seed", type=int, default=20260816)
+    parser.add_argument("--reasoning-effort")
     args = parser.parse_args()
 
     prompt, expected = _focused_prompt()
@@ -112,6 +113,8 @@ def main() -> int:
             kwargs["seed"] = args.seed
         if "response_format" in supported:
             kwargs["response_format"] = {"type": "json_object"}
+        if args.reasoning_effort:
+            kwargs["reasoning_effort"] = args.reasoning_effort
         started = time.perf_counter()
         try:
             response = client.chat.completions.create(**kwargs)
@@ -125,6 +128,7 @@ def main() -> int:
         score, checks = _score(parsed, expected)
         return {
             "model": model,
+            "reasoning_effort": args.reasoning_effort,
             "score": score,
             "max_score": 100,
             "seconds": round(time.perf_counter() - started, 3),
@@ -154,6 +158,7 @@ def main() -> int:
             {
                 "generated_at": datetime.now().astimezone().isoformat(),
                 "method": "focused_latest_movement_retest_ru",
+                "reasoning_effort": args.reasoning_effort,
                 "prompt_chars": len(prompt),
                 "results": results,
             },
