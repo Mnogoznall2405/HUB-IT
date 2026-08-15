@@ -1,5 +1,13 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  waitForElementToBeRemoved,
+  within,
+} from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -90,6 +98,23 @@ const buildProps = (overrides = {}) => ({
 });
 
 describe('ChatSidebar', () => {
+  it('restores the controlled AI workspace after the sidebar remounts', () => {
+    renderWithTheme(buildProps({
+      activeConversationId: '',
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      aiBots: [{
+        id: 'bot-1',
+        name: 'AI assistant',
+        conversation_id: 'ai-conv-1',
+      }],
+    }));
+
+    expect(screen.getByRole('tab', { name: /ИИ/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /Чаты/i })).toHaveAttribute('aria-selected', 'false');
+  });
+
   it('keeps conversation row reorders off framer-motion layout animation', () => {
     expect(CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION).toBe(false);
   });
@@ -357,20 +382,22 @@ describe('ChatSidebar', () => {
     expect(onOpenAiBot).not.toHaveBeenCalled();
   });
 
-  it('shows generic create, fixed bots, and user history in the expected order', () => {
-    const onOpenAiBot = vi.fn();
+  it('keeps the sidebar clean and creates personal or bot chats from one picker', async () => {
     const onCreateAiBotConversation = vi.fn();
     const onCreateAiConversation = vi.fn();
 
     renderWithTheme(buildProps({
       activeFolderKey: 'personal',
       showAiSection: true,
-      aiAgents: [{ id: 'ai-2', title: 'Fresh Bot', slug: 'fresh-bot', description: 'Ready' }],
+      aiAgents: [
+        { id: 'ai-2', title: 'Fresh Bot', slug: 'fresh-bot', description: 'Ready' },
+        { id: 'retired', title: 'IT-помощник', slug: 'it-helper', description: 'Retired' },
+        { id: 'sandbox', title: 'OpenCode', slug: 'opencode', surface: 'sandbox', description: 'Later' },
+      ],
       aiBots: [
         { id: 'history', conversation_id: 'history-1', title: 'История AI', assistant_title: 'Документы' },
         { id: 'personal', conversation_id: 'personal-1', title: 'Личный разговор', assistant_title: 'Личный AI' },
       ],
-      onOpenAiBot,
       onCreateAiBotConversation,
       onCreateAiConversation,
     }));
@@ -378,20 +405,31 @@ describe('ChatSidebar', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
     const newChat = screen.getByRole('button', { name: 'Новый чат' });
     expect(within(newChat).getByTestId('AddRoundedIcon')).toBeInTheDocument();
-    const botsHeading = screen.getByText('Наши боты');
     const historyHeading = screen.getByText('Мои чаты');
-    expect(newChat.compareDocumentPosition(botsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(botsHeading.compareDocumentPosition(historyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(newChat.compareDocumentPosition(historyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('Наши боты')).not.toBeInTheDocument();
+    expect(screen.queryByText('Fresh Bot')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Помощник: Документы')).toBeInTheDocument();
     expect(screen.getByLabelText('Помощник: Личный AI')).toBeInTheDocument();
 
     fireEvent.click(newChat);
-    fireEvent.click(screen.getByRole('button', { name: 'Fresh Bot. Открыть последний чат' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Новый чат с Fresh Bot' }));
+    expect(screen.getByRole('dialog', { name: 'Новый AI-чат' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Личный AI/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Fresh Bot/i })).toBeInTheDocument();
+    expect(screen.queryByText('IT-помощник')).not.toBeInTheDocument();
+    expect(screen.queryByText('OpenCode')).not.toBeInTheDocument();
 
-    expect(onOpenAiBot).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' }));
-    expect(onCreateAiBotConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' }));
-    expect(onCreateAiConversation).toHaveBeenCalledTimes(1);
+    const botPicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
+    fireEvent.click(within(botPicker).getByRole('button', { name: /Fresh Bot/i }));
+    await waitFor(() => expect(onCreateAiBotConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' })));
+    await waitForElementToBeRemoved(botPicker);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
+    const personalPicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
+    fireEvent.click(within(personalPicker).getByRole('button', { name: /Личный AI/i }));
+    await waitFor(() => expect(onCreateAiConversation).toHaveBeenCalledTimes(1));
+
+    await waitForElementToBeRemoved(personalPicker);
   });
 
   it('keeps archived AI dialogs out of the main history and exposes an AI archive', () => {
@@ -427,10 +465,10 @@ describe('ChatSidebar', () => {
     expect(screen.getByText('ИИ · Архив')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Архивный AI-диалог/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Текущий AI-диалог/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Закреплённый бот. Открыть последний чат' })).toBeInTheDocument();
+    expect(screen.queryByText('Закреплённый бот')).not.toBeInTheDocument();
   });
 
-  it('shows AI sidebar loading and error states when AI chat is enabled', () => {
+  it('shows bot loading and error states inside the new-chat picker', () => {
     const { rerender } = renderWithTheme(buildProps({
       activeFolderKey: 'personal',
       showAiSection: true,
@@ -438,7 +476,8 @@ describe('ChatSidebar', () => {
     }));
 
     fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
-    expect(screen.getByText(/Загружаю помощников/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
+    expect(screen.getByText(/Загружаю корпоративных помощников/i)).toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>
@@ -452,7 +491,8 @@ describe('ChatSidebar', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByText(/Failed to load AI bots/i)).toBeInTheDocument();
+    expect(screen.getByText(/Корпоративные помощники временно недоступны/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Личный AI/i })).toBeInTheDocument();
   });
 
   it('shows read receipts and full date for own direct messages', () => {

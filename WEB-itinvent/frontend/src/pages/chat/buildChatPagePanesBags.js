@@ -21,6 +21,8 @@ export default function buildChatPagePanesBags(input) {
       openingPeerId: input.openingPeerId,
       handleOpenPeer: input.handleOpenPeer,
       activeConversationId: input.activeConversationId,
+      workspace: input.sidebarWorkspace,
+      onWorkspaceChange: input.setSidebarWorkspace,
       openConversation: input.openConversation,
       prefetchThreadBootstrap: input.prefetchThreadBootstrap,
       conversationsLoading: input.conversationsLoading,

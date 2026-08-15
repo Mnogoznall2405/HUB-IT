@@ -436,10 +436,11 @@ describe('Chat page AI helpers', () => {
     expect(buildConversationFilterCounts(conversations)).toEqual({
       all: 3,
       personal: 11,
+      groups: 0,
       tasks: 1,
       archived: 0,
     });
-    expect(filterSidebarConversations(conversations, 'all').map((item) => item.id)).toEqual(['direct-1', 'group-1', 'notes-1', 'task-1']);
+    expect(filterSidebarConversations(conversations, 'groups').map((item) => item.id)).toEqual(['group-1']);
     expect(filterSidebarConversations(conversations, 'personal').map((item) => item.id)).toEqual(['direct-1', 'notes-1']);
     expect(filterSidebarConversations(conversations, 'direct').map((item) => item.id)).toEqual(['direct-1', 'notes-1']);
     expect(filterSidebarConversations(conversations, 'tasks').map((item) => item.id)).toEqual(['task-1']);

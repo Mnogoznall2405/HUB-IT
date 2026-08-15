@@ -6,6 +6,7 @@ import {
   hasPersistedThreadMessageEquivalent,
   isSendingOptimisticThreadMessage,
   reconcileThreadMessages,
+  resolveActiveThreadRenderState,
   withPreservedThreadRenderKey,
 } from './chatThreadMessages';
 
@@ -18,6 +19,39 @@ const baseMessage = (overrides = {}) => ({
 });
 
 describe('chatThreadMessages', () => {
+  describe('resolveActiveThreadRenderState', () => {
+    it('does not expose messages from the previously hydrated conversation', () => {
+      const staleMessages = Array.from({ length: 500 }, (_, index) => baseMessage({
+        id: `msg-${index}`,
+        conversation_id: 'conv-1',
+      }));
+
+      const result = resolveActiveThreadRenderState({
+        activeConversationId: 'conv-2',
+        hydratedConversationId: 'conv-1',
+        messages: staleMessages,
+        messagesLoading: false,
+      });
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.loading).toBe(true);
+    });
+
+    it('keeps the message array reference once the active thread is hydrated', () => {
+      const messages = [baseMessage()];
+
+      const result = resolveActiveThreadRenderState({
+        activeConversationId: 'conv-1',
+        hydratedConversationId: 'conv-1',
+        messages,
+        messagesLoading: false,
+      });
+
+      expect(result.messages).toBe(messages);
+      expect(result.loading).toBe(false);
+    });
+  });
+
   describe('isSendingOptimisticThreadMessage', () => {
     it('returns true for sending optimistic messages in the active conversation', () => {
       expect(isSendingOptimisticThreadMessage({

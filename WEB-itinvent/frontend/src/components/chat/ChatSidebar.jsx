@@ -52,7 +52,6 @@ import {
   resolveDirectConversationId,
 } from './chatHelpers';
 import {
-  AiBotRow,
   AiConversationRow,
   ConversationRow,
   InfoCard,
@@ -124,6 +123,19 @@ const getSidebarRowStyle = (density, compactMobile = false) => {
   };
 };
 
+const RETIRED_AI_AGENT_SLUGS = new Set(['it-helper', 'opencode']);
+
+const isAiAgentAvailableForNewChat = (agent) => {
+  const slug = String(agent?.slug || '').trim().toLowerCase();
+  const surface = String(agent?.surface || '').trim().toLowerCase();
+  const placement = String(agent?.placement || '').trim().toLowerCase();
+  return Boolean(agent?.id)
+    && agent?.is_enabled !== false
+    && placement !== 'hidden'
+    && surface !== 'sandbox'
+    && !RETIRED_AI_AGENT_SLUGS.has(slug);
+};
+
 function ChatSidebar({
   theme,
   ui,
@@ -174,6 +186,8 @@ function ChatSidebar({
   onCreateAiConversation,
   onRenameAiConversation,
   openingAiBotId = '',
+  workspace: controlledWorkspace,
+  onWorkspaceChange,
 }) {
   const density = getDensity(ui);
   const { openDrawer, headerMode } = useMainLayoutShell();
@@ -185,8 +199,20 @@ function ChatSidebar({
   const [searchFocused, setSearchFocused] = useState(false);
   const [sidebarListScrollElement, setSidebarListScrollElement] = useState(null);
   const [completedTasksOpen, setCompletedTasksOpen] = useState(false);
-  const [workspace, setWorkspace] = useState('chats');
+  const [uncontrolledWorkspace, setUncontrolledWorkspace] = useState('chats');
+  const workspace = controlledWorkspace === 'ai' || controlledWorkspace === 'chats'
+    ? controlledWorkspace
+    : uncontrolledWorkspace;
+  const setWorkspace = useCallback((nextWorkspace) => {
+    const normalizedWorkspace = nextWorkspace === 'ai' ? 'ai' : 'chats';
+    if (typeof onWorkspaceChange === 'function') {
+      onWorkspaceChange(normalizedWorkspace);
+      return;
+    }
+    setUncontrolledWorkspace(normalizedWorkspace);
+  }, [onWorkspaceChange]);
   const [aiArchiveOpen, setAiArchiveOpen] = useState(false);
+  const [aiCreatePickerOpen, setAiCreatePickerOpen] = useState(false);
   const [renameConversation, setRenameConversation] = useState(null);
   const [renameTitle, setRenameTitle] = useState('');
   const searchInputRef = useRef(null);
@@ -198,6 +224,11 @@ function ChatSidebar({
   const folderMenuConversationKind = String(folderMenuConversation?.kind || '').trim();
   const isAiFolderMenuConversation = folderMenuConversationKind === 'ai';
   const creatingGeneralAiConversation = String(openingAiBotId || '').trim() === GENERAL_AI_OPENING_ID;
+  const aiCreatePending = Boolean(String(openingAiBotId || '').trim());
+  const availableAiAgents = useMemo(
+    () => aiAgents.filter(isAiAgentAvailableForNewChat),
+    [aiAgents],
+  );
   const selectedFolderIds = useMemo(
     () => new Set(getConversationFolderIds(folderMenuConversationId, conversationIdsByFolder)),
     [conversationIdsByFolder, folderMenuConversationId],
@@ -276,7 +307,7 @@ function ChatSidebar({
       setWorkspace('ai');
       setAiArchiveOpen(Boolean(activeAiConversation?.is_archived));
     }
-  }, [activeConversationId, aiBots]);
+  }, [activeConversationId, aiBots, setWorkspace]);
 
   const filteredAiRows = useMemo(() => {
     const query = String(sidebarQuery || '').trim().toLocaleLowerCase('ru-RU');
@@ -340,53 +371,34 @@ function ChatSidebar({
       setRenameTitle('');
     }
   };
+  const openAiCreatePicker = () => {
+    if (!chatUnavailable) setAiCreatePickerOpen(true);
+  };
+  const createPersonalAiConversation = async () => {
+    const created = await onCreateAiConversation?.();
+    if (created !== null) setAiCreatePickerOpen(false);
+  };
+  const createAgentConversation = async (agent) => {
+    const created = await onCreateAiBotConversation?.(agent);
+    if (created !== null) setAiCreatePickerOpen(false);
+  };
   const aiSection = showAiSection ? (
     <>
       <div className={compactMobile ? 'px-2 pb-2' : 'px-3 pb-2'}>
         <Button
           fullWidth
           variant="contained"
-          startIcon={creatingGeneralAiConversation ? <CircularProgress color="inherit" size={18} /> : <AddRoundedIcon />}
-          onClick={() => void onCreateAiConversation?.()}
-          disabled={chatUnavailable || creatingGeneralAiConversation}
+          startIcon={<AddRoundedIcon />}
+          onClick={openAiCreatePicker}
+          disabled={chatUnavailable}
           sx={{ minHeight: 44, borderRadius: 2.5, textTransform: 'none', fontWeight: 800 }}
         >
           Новый чат
         </Button>
       </div>
 
-      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Наши боты</SearchSectionHeader>
-      {aiBotsLoading && aiAgents.length === 0 ? (
-        <div className={joinClasses('flex items-center gap-2 px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
-          <CircularProgress size={16} />
-          <span>Загружаю помощников…</span>
-        </div>
-      ) : aiAgents.length > 0 ? (
-        <div>
-          {aiAgents.map((bot) => (
-            <AiBotRow
-              key={`ai-bot-${bot.id}`}
-              bot={bot}
-              openingAiBotId={openingAiBotId}
-              onOpenAiBot={onOpenAiBot}
-              onCreateAiBotConversation={onCreateAiBotConversation}
-              compactMobile={compactMobile}
-              ui={ui}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className={joinClasses('px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
-          Нет доступных корпоративных помощников.
-        </div>
-      )}
-
       <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Мои чаты</SearchSectionHeader>
-      {aiBotsError ? (
-        <div className={joinClasses('px-3 text-[13px] text-red-500', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1')}>
-          {aiBotsError}
-        </div>
-      ) : aiHistoryGroups.length > 0 ? (
+      {aiHistoryGroups.length > 0 ? (
         aiHistoryGroups.map((group) => (
           <div key={group.key}>
             <SearchSectionHeader ui={ui} compactMobile={compactMobile}>{group.label}</SearchSectionHeader>
@@ -415,7 +427,7 @@ function ChatSidebar({
             ? 'По вашему запросу AI-диалоги не найдены.'
             : (aiArchiveOpen
               ? 'В архиве пока нет AI-диалогов.'
-              : 'Создайте новый AI-чат или начните разговор с корпоративным помощником.')}
+              : 'Нажмите «Новый чат» и выберите помощника.')}
         </div>
       )}
     </>
@@ -542,8 +554,8 @@ function ChatSidebar({
 
             <SidebarActionButton
               title={workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
-              onClick={workspace === 'ai' ? () => void onCreateAiConversation?.() : onOpenGroup}
-              disabled={chatUnavailable || (workspace === 'ai' && creatingGeneralAiConversation)}
+              onClick={workspace === 'ai' ? openAiCreatePicker : onOpenGroup}
+              disabled={chatUnavailable}
               compactMobile={compactMobile}
               ui={ui}
             >
@@ -706,11 +718,11 @@ function ChatSidebar({
         >
           <MenuItem
             onClick={() => {
-              if (workspace === 'ai') void onCreateAiConversation?.();
+              if (workspace === 'ai') openAiCreatePicker();
               else onOpenGroup?.();
               setActionsAnchorEl(null);
             }}
-            disabled={chatUnavailable || (workspace === 'ai' && creatingGeneralAiConversation)}
+            disabled={chatUnavailable}
           >
             {workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
           </MenuItem>
@@ -1042,6 +1054,85 @@ function ChatSidebar({
         )}
         </div>
       </div>
+
+      <Dialog
+        open={aiCreatePickerOpen}
+        onClose={() => {
+          if (!aiCreatePending) setAiCreatePickerOpen(false);
+        }}
+        fullWidth
+        fullScreen={compactMobile}
+        maxWidth="xs"
+        aria-labelledby="ai-create-dialog-title"
+        aria-describedby="ai-create-dialog-description"
+      >
+        <DialogTitle id="ai-create-dialog-title">Новый AI-чат</DialogTitle>
+        <DialogContent>
+          <p id="ai-create-dialog-description" className="mb-4 text-[14px]" style={{ color: ui.textSecondary }}>
+            Выберите помощника. Для каждого нового чата создаётся отдельная история.
+          </p>
+          <div className="flex flex-col gap-2">
+            <Button
+              fullWidth
+              variant="outlined"
+              startIcon={creatingGeneralAiConversation ? <CircularProgress size={18} /> : <SmartToyOutlinedIcon />}
+              onClick={() => void createPersonalAiConversation()}
+              disabled={aiCreatePending}
+              sx={{ minHeight: 64, justifyContent: 'flex-start', borderRadius: 2, textAlign: 'left', textTransform: 'none' }}
+            >
+              <span className="min-w-0">
+                <span className="block text-[15px] font-bold">Личный AI</span>
+                <span className="block truncate text-[13px] font-normal opacity-75">Общение, база знаний, файлы и документы</span>
+              </span>
+            </Button>
+
+            {aiBotsLoading && availableAiAgents.length === 0 ? (
+              <div className="flex min-h-11 items-center gap-2 px-2 text-[13px]" style={{ color: ui.textSecondary }}>
+                <CircularProgress size={16} />
+                <span>Загружаю корпоративных помощников…</span>
+              </div>
+            ) : null}
+
+            {availableAiAgents.map((agent) => {
+              const isOpening = String(openingAiBotId || '').trim() === String(agent.id || '').trim();
+              return (
+                <Button
+                  key={`ai-create-agent-${agent.id}`}
+                  fullWidth
+                  variant="outlined"
+                  startIcon={isOpening ? <CircularProgress size={18} /> : <SmartToyOutlinedIcon />}
+                  onClick={() => void createAgentConversation(agent)}
+                  disabled={aiCreatePending}
+                  sx={{ minHeight: 64, justifyContent: 'flex-start', borderRadius: 2, textAlign: 'left', textTransform: 'none' }}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-[15px] font-bold">{agent.title}</span>
+                    <span className="block truncate text-[13px] font-normal opacity-75">
+                      {agent.description || 'Корпоративный помощник HUB'}
+                    </span>
+                  </span>
+                </Button>
+              );
+            })}
+
+            {aiBotsError ? (
+              <p role="alert" className="px-2 text-[13px] text-red-500">
+                Корпоративные помощники временно недоступны. Личный AI продолжает работать.
+              </p>
+            ) : null}
+            {!aiBotsLoading && !aiBotsError && availableAiAgents.length === 0 ? (
+              <p className="px-2 text-[13px]" style={{ color: ui.textSecondary }}>
+                Корпоративные помощники пока недоступны.
+              </p>
+            ) : null}
+          </div>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAiCreatePickerOpen(false)} disabled={aiCreatePending} sx={{ minHeight: 44 }}>
+            Отмена
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={Boolean(renameConversation)}

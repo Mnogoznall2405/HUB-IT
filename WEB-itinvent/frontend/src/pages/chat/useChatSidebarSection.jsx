@@ -20,6 +20,8 @@ export default function useChatSidebarSection(ctx) {
     openingPeerId,
     handleOpenPeer,
     activeConversationId,
+    workspace,
+    onWorkspaceChange,
     openConversation,
     prefetchThreadBootstrap,
     conversationsLoading,
@@ -74,6 +76,8 @@ export default function useChatSidebarSection(ctx) {
         openingPeerId={openingPeerId}
         onOpenPeer={handleOpenPeer}
         activeConversationId={activeConversationId}
+        workspace={workspace}
+        onWorkspaceChange={onWorkspaceChange}
         onOpenConversation={openConversation}
         onPrefetchConversation={prefetchThreadBootstrap}
         conversationsLoading={conversationsLoading}
@@ -157,6 +161,8 @@ export default function useChatSidebarSection(ctx) {
       updateConversationSettings,
       user,
       activeConversationId,
+      workspace,
+      onWorkspaceChange,
     ],
   );
 }

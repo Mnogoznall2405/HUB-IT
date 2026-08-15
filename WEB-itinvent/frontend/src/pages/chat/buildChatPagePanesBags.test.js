@@ -24,6 +24,8 @@ describe('buildChatPagePanesBags', () => {
       openingPeerId: '',
       handleOpenPeer: () => {},
       activeConversationId: 'c1',
+      sidebarWorkspace: 'ai',
+      setSidebarWorkspace: () => {},
       openConversation: () => {},
       prefetchThreadBootstrap: () => {},
       conversationsLoading: false,
@@ -162,6 +164,8 @@ describe('buildChatPagePanesBags', () => {
 
     expect(bags.shell.isMobile).toBe(true);
     expect(bags.sidebar.activeConversationId).toBe('c1');
+    expect(bags.sidebar.workspace).toBe('ai');
+    expect(bags.sidebar.onWorkspaceChange).toBe(input.setSidebarWorkspace);
     expect(bags.thread.activeConversationId).toBe('c1');
     expect(bags.thread.messages).toEqual([]);
     expect(bags.thread.handleSendSticker).toBe(handleSendSticker);

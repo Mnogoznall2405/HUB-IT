@@ -22,6 +22,8 @@ export function pickChatPageLayoutSections(input) {
       openingPeerId: input.openingPeerId,
       handleOpenPeer: input.handleOpenPeer,
       activeConversationId: input.activeConversationId,
+      sidebarWorkspace: input.sidebarWorkspace,
+      setSidebarWorkspace: input.setSidebarWorkspace,
       openConversation: input.openConversation,
       prefetchThreadBootstrap: input.prefetchThreadBootstrap,
       conversationsLoading: input.conversationsLoading,

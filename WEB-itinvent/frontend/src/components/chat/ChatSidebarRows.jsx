@@ -369,6 +369,10 @@ const ConversationRow = memo(function ConversationRow({
         type="button"
         onClick={() => onOpenConversation(item.id)}
         onContextMenu={handleOpenFolderMenu}
+        onPointerEnter={(event) => {
+          if (event.pointerType !== 'touch') onPrefetchConversation?.(item.id);
+        }}
+        onFocus={() => onPrefetchConversation?.(item.id)}
         onPointerDown={() => onPrefetchConversation?.(item.id)}
         onTouchStart={(event) => {
           onPrefetchConversation?.(item.id);
@@ -682,6 +686,14 @@ const AiConversationRow = memo(function AiConversationRow({
           void onOpenAiBot?.(bot);
         }}
         onPointerDown={() => {
+          if (conversationId) onPrefetchConversation?.(conversationId);
+        }}
+        onPointerEnter={(event) => {
+          if (conversationId && event.pointerType !== 'touch') {
+            onPrefetchConversation?.(conversationId);
+          }
+        }}
+        onFocus={() => {
           if (conversationId) onPrefetchConversation?.(conversationId);
         }}
         onContextMenu={(event) => {

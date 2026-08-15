@@ -75,6 +75,16 @@ export const buildAiLiveDataNotice = ({
 
 export const AI_QUEUED_STATUS_TEXT = 'Запрос принят. Ставлю задачу в очередь.';
 
+const RETIRED_AI_ASSISTANT_SLUGS = new Set(['it-helper']);
+const RETIRED_AI_ASSISTANT_TITLES = new Set(['it-помощник', 'it помощник']);
+
+const isRetiredAiConversation = (conversation, bot) => {
+  const slug = String(bot?.slug || '').trim().toLowerCase();
+  const title = String(conversation?.title || '').trim().toLocaleLowerCase('ru-RU');
+  return RETIRED_AI_ASSISTANT_SLUGS.has(slug)
+    || (!bot && RETIRED_AI_ASSISTANT_TITLES.has(title));
+};
+
 const AI_STATUS_FALLBACK_TEXTS = {
   queued: AI_QUEUED_STATUS_TEXT,
   analyzing_request: 'Анализирую ваш запрос.',
@@ -158,6 +168,7 @@ export const buildAiSidebarRows = ({
     .map((conversation) => {
       const conversationId = String(conversation.id).trim();
       const bot = agentByConversationId.get(conversationId) || null;
+      if (isRetiredAiConversation(conversation, bot)) return null;
       return {
         ...(bot || {}),
         bot_id: String(bot?.id || '').trim(),
@@ -174,5 +185,6 @@ export const buildAiSidebarRows = ({
         draft_preview: conversationId ? String(drafts[conversationId] || '').trim() : '',
         is_active: Boolean(conversationId && conversationId === normalizedActiveConversationId),
       };
-    });
+    })
+    .filter(Boolean);
 };

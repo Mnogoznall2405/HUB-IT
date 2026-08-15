@@ -1,5 +1,5 @@
 import React from 'react';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +29,34 @@ vi.mock('./ChatCommon', () => ({
 import { ConversationRow } from './ChatSidebarRows';
 
 describe('ConversationRow render isolation', () => {
+  it('prefetches a desktop thread before click on pointer hover', () => {
+    const theme = createTheme();
+    const onPrefetchConversation = vi.fn();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <ConversationRow
+          item={{ id: 'conv-1', kind: 'direct', title: 'Dialog', unread_count: 0 }}
+          theme={theme}
+          ui={{ density: {} }}
+          active={false}
+          onOpenConversation={vi.fn()}
+          onPrefetchConversation={onPrefetchConversation}
+          onOpenFolderMenu={vi.fn()}
+          draftPreview=""
+          compactMobile={false}
+          index={0}
+          reducedMotion
+          skipEnterAnimation={false}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.pointerEnter(screen.getByText('Dialog'));
+
+    expect(onPrefetchConversation).toHaveBeenCalledWith('conv-1');
+  });
+
   it('does not rerender an unchanged row when its parent rerenders', () => {
     const theme = createTheme();
     const ui = { density: {} };

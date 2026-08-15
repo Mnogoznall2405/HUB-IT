@@ -493,9 +493,7 @@ function ChatThread({
     ));
   const aiSuggestions = activeAiBot?.slug === 'document-converter'
     ? ['Проверь документ', 'Преобразуй в Word', 'Сделай PDF', 'Извлеки таблицу']
-    : activeAiBot?.slug === 'it-helper'
-      ? ['Не работает программа', 'Проверь журнал ошибок', 'Найди инструкцию', 'Подготовь обращение в IT']
-      : ['Найди оборудование сотрудника', 'Подготовь отчёт', 'Проверь документ', 'Создай черновик письма'];
+    : ['Найди оборудование сотрудника', 'Подготовь отчёт', 'Проверь документ', 'Создай черновик письма'];
   const applyAiSuggestion = useCallback((value) => {
     if (composerTextBridge?.setMessageText) composerTextBridge.setMessageText(value);
     else onMessageTextChange?.(value);

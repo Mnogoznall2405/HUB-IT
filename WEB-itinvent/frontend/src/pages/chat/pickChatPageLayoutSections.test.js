@@ -23,6 +23,8 @@ describe('pickChatPageLayoutSections', () => {
       openingPeerId: '',
       handleOpenPeer: () => {},
       activeConversationId: 'c1',
+      sidebarWorkspace: 'ai',
+      setSidebarWorkspace: () => {},
       openConversation: () => {},
       prefetchThreadBootstrap: () => {},
       conversationsLoading: false,
@@ -245,6 +247,8 @@ describe('pickChatPageLayoutSections', () => {
     const sections = pickChatPageLayoutSections(input);
     expect(sections.shell.theme).toBe(input.theme);
     expect(sections.sidebar.activeConversationId).toBe('c1');
+    expect(sections.sidebar.sidebarWorkspace).toBe('ai');
+    expect(sections.sidebar.setSidebarWorkspace).toBe(input.setSidebarWorkspace);
     expect(sections.thread.messageText).toBe('');
     expect(sections.dialogs.searchOpen).toBe(false);
     expect(sections.dialogs.sendMediaAsFiles).toBe(true);

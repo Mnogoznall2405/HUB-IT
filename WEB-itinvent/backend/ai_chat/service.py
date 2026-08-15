@@ -149,17 +149,7 @@ DOC_CONVERT_BOT_PROMPT = (
     "Отвечай кратко по-русски."
 )
 IT_HELPER_BOT_SLUG = "it-helper"
-IT_HELPER_BOT_SEED_SETTING_KEY = "ai_chat.it_helper_bot_seed_v1"
-IT_HELPER_BOT_TITLE = "IT-помощник"
-IT_HELPER_BOT_DESCRIPTION = "Инструкции, база знаний и безопасная диагностика типовых IT-проблем."
-IT_HELPER_BOT_PROMPT = (
-    "Ты IT-помощник внутренней службы поддержки. "
-    "Отвечай по-русски, сначала дай короткий вывод, затем понятные шаги диагностики. "
-    "Опирайся только на базу знаний HUB, контекст диалога и прикреплённые пользователем файлы. "
-    "Не выдумывай команды, адреса, учётные данные или факты об инфраструктуре. "
-    "Не предлагай отключать защиту и не выполняй изменяющих действий. "
-    "Если безопасной инструкции недостаточно, перечисли собранные симптомы и предложи обратиться в IT-поддержку."
-)
+RETIRED_IT_HELPER_BOT_TITLE = "IT-помощник"
 GENERAL_AI_BOT_SLUG = "general-ai"
 GENERAL_AI_BOT_SEED_SETTING_KEY = "ai_chat.general_ai_bot_seed_v1"
 GENERAL_AI_BOT_TITLE = "AI"
@@ -1822,9 +1812,9 @@ class AiChatService:
         except Exception as exc:
             logger.warning("Skipping document converter bot bootstrap: %s", exc)
         try:
-            self.ensure_it_helper_bot()
+            self.retire_it_helper_bot()
         except Exception as exc:
-            logger.warning("Skipping IT helper bot bootstrap: %s", exc)
+            logger.warning("Skipping IT helper bot retirement: %s", exc)
         try:
             # Imported lazily so the regular chat runtime does not require the
             # Linux-only sandbox worker dependencies when the feature is off.
@@ -1983,61 +1973,24 @@ class AiChatService:
 
         return run_with_transient_lock_retry(_ensure_bot)
 
-    def ensure_it_helper_bot(self) -> dict[str, Any]:
+    def retire_it_helper_bot(self) -> dict[str, Any] | None:
         ensure_app_schema_initialized()
 
-        def _ensure_bot() -> dict[str, Any]:
+        def _retire_bot() -> dict[str, Any] | None:
             with app_session() as session:
                 apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
-                seeded_once = self._read_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY)
                 bot = session.execute(
                     select(AppAiBot).where(AppAiBot.slug == IT_HELPER_BOT_SLUG)
                 ).scalar_one_or_none()
                 if bot is None:
-                    now = _utc_now()
-                    bot = AppAiBot(
-                        id=str(uuid4()),
-                        slug=IT_HELPER_BOT_SLUG,
-                        title=IT_HELPER_BOT_TITLE,
-                        description=IT_HELPER_BOT_DESCRIPTION,
-                        system_prompt=IT_HELPER_BOT_PROMPT,
-                        model=DEFAULT_BOT_MODEL,
-                        temperature=0.15,
-                        max_tokens=1600,
-                        allowed_kb_scope_json="[]",
-                        enabled_tools_json="[]",
-                        tool_settings_json=_json_dumps(_default_bot_tool_settings()),
-                        allow_file_input=True,
-                        allow_generated_artifacts=False,
-                        allow_kb_document_delivery=True,
-                        surface="corporate",
-                        placement="pinned",
-                        sort_order=30,
-                        required_permission=PERM_CHAT_AI_USE,
-                        use_personal_memory=True,
-                        is_enabled=True,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    session.add(bot)
-                    session.flush()
-                    self._write_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY, True)
-                else:
-                    bot.surface = "corporate"
-                    bot.placement = "pinned"
-                    bot.sort_order = 30
-                    bot.required_permission = PERM_CHAT_AI_USE
-                    bot.use_personal_memory = True
-                    if not seeded_once:
-                        bot.allow_file_input = True
-                        bot.allow_generated_artifacts = False
-                        bot.allow_kb_document_delivery = True
-                        bot.updated_at = _utc_now()
-                        self._write_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY, True)
-                self._ensure_bot_user(session=session, bot=bot)
+                    return None
+                if bool(bot.is_enabled) or _normalize_text(bot.placement) != "hidden":
+                    bot.is_enabled = False
+                    bot.placement = "hidden"
+                    bot.updated_at = _utc_now()
                 return self._serialize_bot(bot)
 
-        return run_with_transient_lock_retry(_ensure_bot)
+        return run_with_transient_lock_retry(_retire_bot)
 
     def ensure_general_ai_bot(self) -> dict[str, Any]:
         ensure_app_schema_initialized()
@@ -2160,7 +2113,13 @@ class AiChatService:
         def _load_admin_bots() -> list[dict[str, Any]]:
             with app_session() as session:
                 apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
-                rows = list(session.execute(select(AppAiBot).order_by(AppAiBot.title.asc())).scalars())
+                rows = list(
+                    session.execute(
+                        select(AppAiBot)
+                        .where(AppAiBot.slug != IT_HELPER_BOT_SLUG)
+                        .order_by(AppAiBot.title.asc())
+                    ).scalars()
+                )
                 latest_runs = self._latest_runs_by_bot(session)
                 return [
                     self._serialize_bot(
@@ -2840,7 +2799,7 @@ class AiChatService:
                 LEGACY_DEFAULT_BOT_TITLE,
                 DOC_CONVERT_BOT_TITLE,
                 LEGACY_DOC_CONVERT_BOT_TITLE,
-                IT_HELPER_BOT_TITLE,
+                RETIRED_IT_HELPER_BOT_TITLE,
                 GENERAL_AI_BOT_TITLE,
             )
             if _normalize_text(item)

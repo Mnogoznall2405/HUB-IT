@@ -151,6 +151,7 @@ export default function useChatPageInitialState() {
   const [aiBotsError, setAiBotsError] = useState('');
   const [openingAiBotId, setOpeningAiBotId] = useState('');
   const [aiStatusByConversation, setAiStatusByConversation] = useState({});
+  const [sidebarWorkspace, setSidebarWorkspace] = useState('chats');
   const [activeConversationId, setActiveConversationId] = useState(initialConversationId);
   const [mobileView, setMobileView] = useState(() => (
     isMobile && requestedConversationId
@@ -233,6 +234,8 @@ export default function useChatPageInitialState() {
     setOpeningAiBotId,
     aiStatusByConversation,
     setAiStatusByConversation,
+    sidebarWorkspace,
+    setSidebarWorkspace,
     activeConversationId,
     setActiveConversationId,
     mobileView,

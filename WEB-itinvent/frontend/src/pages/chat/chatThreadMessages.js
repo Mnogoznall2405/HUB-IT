@@ -1,4 +1,20 @@
 const isOptimisticThreadMessageId = (messageId) => String(messageId || '').trim().startsWith('optimistic:');
+const EMPTY_ACTIVE_THREAD_MESSAGES = Object.freeze([]);
+
+export const resolveActiveThreadRenderState = ({
+  activeConversationId,
+  hydratedConversationId,
+  messages,
+  messagesLoading = false,
+} = {}) => {
+  const normalizedActiveId = String(activeConversationId || '').trim();
+  const normalizedHydratedId = String(hydratedConversationId || '').trim();
+  const hydrated = Boolean(normalizedActiveId && normalizedActiveId === normalizedHydratedId);
+  return {
+    messages: hydrated && Array.isArray(messages) ? messages : EMPTY_ACTIVE_THREAD_MESSAGES,
+    loading: Boolean(normalizedActiveId && (!hydrated || messagesLoading)),
+  };
+};
 
 export const normalizeThreadMessageId = (message) => String(message?.id || '').trim();
 

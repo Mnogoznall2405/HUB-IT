@@ -85,6 +85,7 @@ import { pickChatPageLayoutSections } from './pickChatPageLayoutSections';
 import useChatMessageChromeController from './useChatMessageChromeController';
 import useChatPageRealtimeEffects from './useChatPageRealtimeEffects';
 import { syncChatPageCollectionRefs } from './syncChatPageCollectionRefs';
+import { resolveActiveThreadRenderState } from './chatThreadMessages';
 
 export function ChatPageContent() {
   const pageState = useChatPageInitialState();
@@ -152,6 +153,8 @@ export function ChatPageContent() {
     setOpeningAiBotId,
     aiStatusByConversation,
     setAiStatusByConversation,
+    sidebarWorkspace,
+    setSidebarWorkspace,
     activeConversationId,
     setActiveConversationId,
     mobileView,
@@ -335,6 +338,15 @@ export function ChatPageContent() {
     queueAutoScroll,
   } = core;
 
+  const activeThreadRenderState = resolveActiveThreadRenderState({
+    activeConversationId,
+    hydratedConversationId: hydratedThreadConversationIdRef.current,
+    messages,
+    messagesLoading,
+  });
+  const activeThreadMessages = activeThreadRenderState.messages;
+  const activeThreadMessagesLoading = activeThreadRenderState.loading;
+
   const overlays = useChatPageOverlayDialogs({
     isMobile,
     activeConversationId,
@@ -381,6 +393,11 @@ export function ChatPageContent() {
     userId: user?.id,
   });
 
+  useEffect(() => {
+    if (!String(activeConversationId || '').trim() || !String(activeConversation?.kind || '').trim()) return;
+    setSidebarWorkspace(String(activeConversation?.kind || '').trim() === 'ai' ? 'ai' : 'chats');
+  }, [activeConversation?.kind, activeConversationId, setSidebarWorkspace]);
+
   const {
     canCopySelectedMessages,
     canDeleteSelectedMessages,
@@ -389,7 +406,7 @@ export function ChatPageContent() {
     selectedVisibleMessageIds,
   } = useChatMessageSelection({
     conversationKind: activeConversation?.kind,
-    messages,
+    messages: activeThreadMessages,
     selectedMessageIds,
   });
 
@@ -538,7 +555,7 @@ export function ChatPageContent() {
     activeConversationId,
     conversationBootstrapComplete,
     activeConversation,
-    messagesLoading,
+    messagesLoading: activeThreadMessagesLoading,
     requestedConversationId,
   });
 
@@ -827,8 +844,8 @@ export function ChatPageContent() {
     getReadTargetRef,
   } = useReadReceipts({
     conversationId: activeConversationId,
-    messages,
-    enabled: Boolean(activeConversationId && !messagesLoading),
+    messages: activeThreadMessages,
+    enabled: Boolean(activeConversationId && !activeThreadMessagesLoading),
     scrollRootRef: threadScrollRef,
     viewerLastReadMessageId,
     markRead: markConversationReadLive,
@@ -930,7 +947,7 @@ export function ChatPageContent() {
     activeConversationKind: activeConversation?.kind,
     canUseAiChat,
     isMobile,
-    messages,
+    messages: activeThreadMessages,
     persistPinnedMessage,
     pinnedMessage,
     pinnedMessageStorageKey,
@@ -977,8 +994,8 @@ export function ChatPageContent() {
     closeAttachmentPreview,
     closeDocumentPreview,
     locationSearch: location.search,
-    messagesLength: messages.length,
-    messagesLoading,
+    messagesLength: activeThreadMessages.length,
+    messagesLoading: activeThreadMessagesLoading,
     navigate,
     requestedConversationId,
     requestedMessageId,
@@ -1333,7 +1350,7 @@ export function ChatPageContent() {
     cancelPendingInitialAnchor,
     isPhone,
     logChatDebug,
-    messages,
+    messages: activeThreadMessages,
     pendingInitialAnchorRef,
     scheduleMobileKeyboardBottomSettle,
     schedulePendingInitialAnchorRetry,
@@ -1352,7 +1369,7 @@ export function ChatPageContent() {
     conversationBootstrapComplete,
     infoOpen,
     isMobile,
-    messagesLoading,
+    messagesLoading: activeThreadMessagesLoading,
     mobileView,
     resolvedMobileView,
     setInfoOpen,
@@ -1391,10 +1408,10 @@ export function ChatPageContent() {
   const showOlderHistoryControl = useMemo(
     () => shouldShowOlderHistoryControl({
       messagesHasMore,
-      messageCount: messages.length,
+      messageCount: activeThreadMessages.length,
       olderHistoryUnavailable,
     }),
-    [messages.length, messagesHasMore, olderHistoryUnavailable],
+    [activeThreadMessages.length, messagesHasMore, olderHistoryUnavailable],
   );
 
   const mobileScreenVariants = useMemo(
@@ -1410,6 +1427,7 @@ export function ChatPageContent() {
         theme, ui, isMobile, isPhone, mobileMotionDisabled,
         health, user, unreadTotal, sidebarQuery, setSidebarQuery, sidebarSearchActive, searchingSidebar,
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
+        sidebarWorkspace, setSidebarWorkspace,
         openConversation, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, handleActiveFolderChange: core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
@@ -1417,7 +1435,8 @@ export function ChatPageContent() {
         conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
         handleCreateAiBotConversation, handleCreateAiConversation,
         renameAiConversation,
-        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx, messages, messagesLoading,
+        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx,
+        messages: activeThreadMessages, messagesLoading: activeThreadMessagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
         openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
@@ -1460,6 +1479,7 @@ export function ChatPageContent() {
         theme, ui, isMobile, isPhone, mobileMotionDisabled,
         health, user, unreadTotal, sidebarQuery, setSidebarQuery, sidebarSearchActive, searchingSidebar,
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
+        sidebarWorkspace, setSidebarWorkspace,
         openConversation, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
@@ -1467,7 +1487,8 @@ export function ChatPageContent() {
         conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
         handleCreateAiBotConversation, handleCreateAiConversation,
         renameAiConversation,
-        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx, messages, messagesLoading,
+        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx,
+        activeThreadMessages, activeThreadMessagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
         openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
