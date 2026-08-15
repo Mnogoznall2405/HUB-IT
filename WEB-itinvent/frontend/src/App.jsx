@@ -21,10 +21,17 @@ import { emitAgentDebugLog } from './lib/debugClientLog';
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import DesktopNavigationBootstrap from './components/layout/DesktopNavigationBootstrap';
 import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
+import DesktopMemoryPressureBootstrap from './components/layout/DesktopMemoryPressureBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
+import {
+  needsAboutOnboarding,
+  rememberPostAuthReturnPath,
+  resolvePostAuthenticationPath,
+} from './lib/aboutOnboarding';
 import { WINDOWS_NOTIFICATIONS_CHANGED_EVENT } from './lib/windowsNotifications';
 import {
+  loadAboutRoute,
   loadAddressBookRoute,
   loadCompanyStructureRoute,
   loadChatRoute,
@@ -57,6 +64,7 @@ import {
 
 // Pages
 const Login = lazy(loadLoginRoute);
+const About = lazy(loadAboutRoute);
 const Dashboard = lazy(loadDashboardRoute);
 const Feed = lazy(loadFeedRoute);
 const Tasks = lazy(loadTasksRoute);
@@ -134,12 +142,14 @@ const resolveFirstAccessiblePath = (hasPermission, user) => {
  */
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>Loading...</Box>;
   }
 
   if (!isAuthenticated()) {
+    rememberPostAuthReturnPath(`${location.pathname}${location.search}${location.hash}`);
     return <Navigate to="/login" replace />;
   }
 
@@ -149,6 +159,56 @@ const ProtectedRoute = ({ children }) => {
 const HomeRedirect = () => {
   const { hasPermission, user } = useAuth();
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+};
+
+const AboutOnboardingRoute = () => {
+  const { user } = useAuth();
+  const location = useLocation();
+
+  if (needsAboutOnboarding(user)) {
+    rememberPostAuthReturnPath(`${location.pathname}${location.search}${location.hash}`);
+    return <Navigate to="/about" replace />;
+  }
+
+  return <Outlet />;
+};
+
+const RootRoute = () => {
+  const { hasPermission, isAuthenticated, loading, user } = useAuth();
+
+  if (loading) {
+    return <PageFallback />;
+  }
+
+  if (isAuthenticated()) {
+    if (needsAboutOnboarding(user)) {
+      return <Navigate to="/about" replace />;
+    }
+    return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+  }
+
+  return <Navigate to="/login" replace />;
+};
+
+const LoginRoute = () => {
+  const { hasPermission, isAuthenticated, loading, user } = useAuth();
+
+  if (loading) {
+    return <PageFallback />;
+  }
+
+  if (!isAuthenticated()) {
+    return <Login />;
+  }
+
+  return (
+    <Navigate
+      to={needsAboutOnboarding(user)
+        ? '/about'
+        : resolvePostAuthenticationPath(user, resolveFirstAccessiblePath(hasPermission, user))}
+      replace
+    />
+  );
 };
 
 const LegacyNewsRedirect = () => {
@@ -478,33 +538,26 @@ class RouteErrorBoundary extends Component {
   }
 }
 
-function App() {
-  const rawBase = String(import.meta.env.BASE_URL || '/');
-  const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
-  const routerBase = normalizedBase.endsWith('/') && normalizedBase.length > 1
-    ? normalizedBase.slice(0, -1)
-    : normalizedBase;
-
+function AuthenticatedAppShell() {
   return (
-    <BrowserRouter
-      basename={routerBase === '/' ? undefined : routerBase}
-      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
-    >
-      <AuthProvider>
-        <ScrollToTop />
-        <DesktopNavigationBootstrap />
-        <DesktopPresenceBootstrap />
-        <AppPushBootstrap />
-        <ChatSocketBootstrap />
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
-          <RouteErrorBoundary>
+    <AuthProvider>
+      <ScrollToTop />
+      <DesktopNavigationBootstrap />
+      <DesktopPresenceBootstrap />
+      <DesktopMemoryPressureBootstrap />
+      <AppPushBootstrap />
+      <ChatSocketBootstrap />
+      <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
+        <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
             <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/shared-files/:token" element={<SharedFile />} />
+              <Route path="/" element={<RootRoute />} />
+              <Route path="/login" element={<LoginRoute />} />
 
               <Route element={<ProtectedRoute />}>
-                <Route path="/" element={<HomeRedirect />} />
+                <Route path="/about" element={<About mode="onboarding" />} />
+                <Route element={<AboutOnboardingRoute />}>
+                <Route path="/shared-files/:token" element={<SharedFile />} />
                 <Route
                   path="/dashboard"
                   element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}
@@ -615,14 +668,35 @@ function App() {
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/settings/:section?" element={<Settings />} />
                 <Route path="/admin/:section?" element={<AdminAreaRoute><Admin /></AdminAreaRoute>} />
+                </Route>
               </Route>
 
               <Route path="*" element={<HomeRedirect />} />
             </Routes>
           </Suspense>
-          </RouteErrorBoundary>
-        </Box>
-      </AuthProvider>
+        </RouteErrorBoundary>
+      </Box>
+    </AuthProvider>
+  );
+}
+
+function AppRouterContent() {
+  return <AuthenticatedAppShell />;
+}
+
+function App() {
+  const rawBase = String(import.meta.env.BASE_URL || '/');
+  const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
+  const routerBase = normalizedBase.endsWith('/') && normalizedBase.length > 1
+    ? normalizedBase.slice(0, -1)
+    : normalizedBase;
+
+  return (
+    <BrowserRouter
+      basename={routerBase === '/' ? undefined : routerBase}
+      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+    >
+      <AppRouterContent />
     </BrowserRouter>
   );
 }

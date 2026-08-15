@@ -8,6 +8,10 @@ import {
 } from './chatThreadHistory';
 
 describe('chatThreadHistory', () => {
+  it('keeps the initial thread payload small enough for fast conversation switches', () => {
+    expect(CHAT_THREAD_BOOTSTRAP_LIMIT).toBe(24);
+  });
+
   it('detects when the full thread fits in one bootstrap page', () => {
     expect(threadFitsSingleBootstrapPage(0)).toBe(false);
     expect(threadFitsSingleBootstrapPage(5)).toBe(true);

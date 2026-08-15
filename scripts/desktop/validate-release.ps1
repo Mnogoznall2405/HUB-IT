@@ -108,8 +108,8 @@ foreach ($prerequisite in $prerequisites) {
 }
 
 $setupInfo = Get-Item -LiteralPath $setupPath
-if ($setupInfo.Length -le 0 -or $setupInfo.Length -gt 500MB) {
-    throw "Desktop Setup size is outside the allowed range: $($setupInfo.Length)"
+if ($setupInfo.Length -le 0 -or $setupInfo.Length -gt 480MB) {
+    throw "Desktop Setup size is outside the release limit of 480 MiB: $($setupInfo.Length)"
 }
 
 $setupSha256 = Assert-Sha256Sidecar $setupPath

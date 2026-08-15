@@ -1,4 +1,4 @@
-import { startTransition, useEffect } from 'react';
+import { startTransition, useEffect, useRef } from 'react';
 
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
@@ -60,6 +60,8 @@ export default function useChatSocketEvents({
   upsertConversation,
   userId,
 }) {
+  const readSeqByConversationRef = useRef(new Map());
+
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
     // Room + inbox can both deliver the same message.created; apply sidebar preview once.
@@ -120,13 +122,31 @@ export default function useChatSocketEvents({
       const reason = String(payload?.reason || '').trim();
       if (!conversation?.id) return;
       const normalizedConversationId = String(conversation?.id || '').trim();
+      const incomingReadSeq = Math.max(0, Number(conversation?.viewer_last_read_seq || 0));
+      const rememberedReadSeq = Math.max(
+        0,
+        Number(readSeqByConversationRef.current.get(normalizedConversationId) || 0),
+      );
+      const effectiveReadSeq = Math.max(incomingReadSeq, rememberedReadSeq);
+      if (effectiveReadSeq > 0) {
+        readSeqByConversationRef.current.set(normalizedConversationId, effectiveReadSeq);
+      }
+      const lastMessageSeq = Math.max(0, Number(conversation?.last_message_seq || 0));
       const isActiveAndAtBottom = (
         normalizedConversationId
         && normalizedConversationId === activeConversationIdRef.current
         && threadNearBottomRef.current
       );
+      const isReadThroughLatest = lastMessageSeq > 0 && effectiveReadSeq >= lastMessageSeq;
+      const nextConversation = (isActiveAndAtBottom || isReadThroughLatest)
+        ? {
+          ...conversation,
+          viewer_last_read_seq: effectiveReadSeq,
+          unread_count: 0,
+        }
+        : conversation;
       upsertConversation(
-        isActiveAndAtBottom ? { ...conversation, unread_count: 0 } : conversation,
+        nextConversation,
         { promote: reason === 'message_created' || reason === 'created' },
       );
       if (
@@ -270,6 +290,14 @@ export default function useChatSocketEvents({
 
       const isActive = conversationId === activeConversationIdRef.current;
       const alreadyRendered = hasPersistedThreadMessageEquivalent(messagesRef.current, message);
+      const messageSeq = Math.max(0, Number(message?.conversation_seq || 0));
+      const tabIsVisibleAndFocused = (
+        typeof document !== 'undefined'
+        && document.visibilityState === 'visible'
+        && typeof document.hasFocus === 'function'
+        && document.hasFocus()
+      );
+      const shouldTreatAsRead = resolvedIsOwn || (isActive && tabIsVisibleAndFocused);
       // #region agent log
       emitAgentDebugLog({
         location: 'useChatSocketEvents.js:handleMessageCreated',
@@ -291,7 +319,7 @@ export default function useChatSocketEvents({
         messageId: String(message.id || '').trim(),
         at: Date.now(),
       };
-      if (String(activeConversation?.kind || '').trim() === 'ai' && !Boolean(message?.is_own)) {
+      if (String(activeConversation?.kind || '').trim() === 'ai' && !resolvedIsOwn) {
         const startedAt = Number(aiRunStartedAtByConversationRef.current?.[conversationId] || 0);
         if (Number.isFinite(startedAt) && startedAt > 0) {
           logChatDebugRef.current?.('aiRun:replyLatency', {
@@ -308,7 +336,13 @@ export default function useChatSocketEvents({
       if (!alreadyRendered) {
         mergeMessageIntoThread(message);
         startTransition(() => {
-          syncConversationPreview(conversationId, message, (resolvedIsOwn || isActive) ? { unread_count: 0 } : {});
+          syncConversationPreview(conversationId, message, shouldTreatAsRead ? {
+            unread_count: 0,
+            ...(messageSeq > 0 ? {
+              last_message_seq: messageSeq,
+              viewer_last_read_seq: messageSeq,
+            } : {}),
+          } : {});
           promoteConversationToTop(conversationId);
           if (!resolvedIsOwn && senderId > 0 && typeof updatePresenceInCollections === 'function') {
             updatePresenceInCollections(senderId, {
@@ -319,28 +353,47 @@ export default function useChatSocketEvents({
           }
         });
       }
-      if (message?.is_own) {
+      if (resolvedIsOwn) {
+        if (messageSeq > 0) {
+          readSeqByConversationRef.current.set(conversationId, Math.max(
+            messageSeq,
+            Number(readSeqByConversationRef.current.get(conversationId) || 0),
+          ));
+        }
         setViewerLastReadMessageId(String(message.id || '').trim());
         setViewerLastReadAt(String(message.created_at || '').trim());
       } else if (isActive) {
-        const tabIsVisibleAndFocused = (
-          typeof document !== 'undefined'
-          && document.visibilityState === 'visible'
-          && typeof document.hasFocus === 'function'
-          && document.hasFocus()
-        );
         if (tabIsVisibleAndFocused) {
+          if (messageSeq > 0) {
+            readSeqByConversationRef.current.set(conversationId, Math.max(
+              messageSeq,
+              Number(readSeqByConversationRef.current.get(conversationId) || 0),
+            ));
+          }
           setViewerLastReadMessageId(String(message.id || '').trim());
           setViewerLastReadAt(String(message.created_at || '').trim());
           void markConversationReadLiveRef?.current?.(conversationId, String(message.id || '').trim());
         }
+      }
+      if (alreadyRendered && messageSeq > 0 && (
+        resolvedIsOwn
+        || Number(readSeqByConversationRef.current.get(conversationId) || 0) >= messageSeq
+      )) {
+        startTransition(() => {
+          syncConversationPreview(conversationId, message, {
+            unread_count: 0,
+            last_message_seq: messageSeq,
+            viewer_last_read_seq: Number(readSeqByConversationRef.current.get(conversationId) || messageSeq),
+          });
+          promoteConversationToTop(conversationId);
+        });
       }
       if (!hasPendingInitialAnchorForConversation(conversationId)) {
         // Own messages always stick to the bottom. Incoming messages only
         // pull the viewport down when the reader is already near the bottom,
         // so reading older history is never interrupted by a forced jump.
         const shouldStickToBottom = !alreadyRendered && (
-          Boolean(message?.is_own)
+          resolvedIsOwn
           || (isActive && threadNearBottomRef.current)
         );
         queueAutoScroll(shouldStickToBottom ? 'bottom_instant' : false, 'socket:message_created');
@@ -471,7 +524,7 @@ export default function useChatSocketEvents({
           });
         }
       }
-      if ((status === 'completed' || status === 'failed') && botTitle) {
+      if ((status === 'completed' || status === 'failed' || status === 'cancelled') && botTitle) {
         setTypingUsers((current) => current.filter((item) => item !== botTitle));
         aiRunStartedAtByConversationRef.current = {
           ...aiRunStartedAtByConversationRef.current,
@@ -485,6 +538,7 @@ export default function useChatSocketEvents({
       const payload = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || payload?.conversation_id || '').trim();
       if (!conversationId) return;
+      readSeqByConversationRef.current.delete(conversationId);
       if (typeof onConversationRemoved === 'function') {
         onConversationRemoved(conversationId);
       }

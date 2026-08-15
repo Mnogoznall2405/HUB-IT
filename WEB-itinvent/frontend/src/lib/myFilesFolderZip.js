@@ -1,8 +1,7 @@
 /**
  * Client-side folder → ZIP for «Мой диск».
- * Uses fflate; preserves relative paths from webkitdirectory / folder drop.
+ * Loads fflate only while packing; preserves relative paths from webkitdirectory / folder drop.
  */
-import { zip } from 'fflate';
 
 export const sanitizeZipEntryPath = (value) => {
   const normalized = String(value || '')
@@ -178,15 +177,18 @@ const readFileAsUint8Array = async (file) => {
   });
 };
 
-const zipAsync = (entries, options = {}) => new Promise((resolve, reject) => {
-  zip(entries, { level: 6, ...options }, (error, data) => {
-    if (error) {
-      reject(error);
-      return;
-    }
-    resolve(data);
+const zipAsync = async (entries, options = {}) => {
+  const { zip } = await import('fflate');
+  return new Promise((resolve, reject) => {
+    zip(entries, { level: 6, ...options }, (error, data) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(data);
+    });
   });
-});
+};
 
 /**
  * Build a single ZIP File from a folder FileList (webkitRelativePath required).

@@ -8,6 +8,11 @@ export const authAccountSecurityAPI = {
     return response.data;
   },
 
+  completeAboutOnboarding: async () => {
+    const response = await apiClient.post('/auth/me/about-onboarding/complete');
+    return response.data;
+  },
+
   logout: async () => {
     const response = await apiClient.post('/auth/logout');
     return response.data;

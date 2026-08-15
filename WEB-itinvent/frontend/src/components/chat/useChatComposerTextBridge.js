@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { startTransition, useRef } from 'react';
 
 /**
  * Stable ref-backed store so ChatThread pane memo does not depend on messageText.
@@ -13,7 +13,13 @@ export default function useChatComposerTextBridge({
   const stateRef = useRef({ messageText: '', listeners: new Set() });
   const bridgeRef = useRef(null);
 
-  stateRef.current.messageText = messageText;
+  const hasExternalStore = typeof setMessageText?.subscribe === 'function'
+    && typeof setMessageText?.getSnapshot === 'function'
+    && typeof setMessageText?.deferred === 'function';
+
+  if (!hasExternalStore) {
+    stateRef.current.messageText = messageText;
+  }
 
   if (!bridgeRef.current) {
     bridgeRef.current = {
@@ -34,10 +40,23 @@ export default function useChatComposerTextBridge({
   }
 
   const bridge = bridgeRef.current;
+  bridge.subscribe = hasExternalStore
+    ? setMessageText.subscribe
+    : (listener) => {
+        stateRef.current.listeners.add(listener);
+        return () => stateRef.current.listeners.delete(listener);
+      };
+  bridge.getSnapshot = hasExternalStore
+    ? setMessageText.getSnapshot
+    : () => stateRef.current.messageText;
   bridge.setMessageText = (next) => {
+    if (hasExternalStore) {
+      setMessageText.deferred(next);
+      return;
+    }
     stateRef.current.messageText = next;
-    setMessageText(next);
     bridge.notify();
+    startTransition(() => setMessageText(next));
   };
   bridge.onComposerKeyDown = onComposerKeyDown;
   bridge.onComposerSelectionSync = onComposerSelectionSync;

@@ -257,7 +257,7 @@ class MailDraftArgs(BaseModel):
     mailbox_id: Optional[str] = Field(default=None, max_length=128)
     is_html: bool = True
     attachment_refs: list[dict[str, str]] = Field(default_factory=list, max_length=10)
-    generated_file_specs: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    generated_file_specs: list[dict[str, Any]] = Field(default_factory=list, max_length=5)
 
     @field_validator("to", "cc", "bcc", mode="before")
     @classmethod

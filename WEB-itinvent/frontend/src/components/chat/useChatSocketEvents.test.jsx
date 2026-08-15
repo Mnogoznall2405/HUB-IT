@@ -233,6 +233,57 @@ describe('useChatSocketEvents', () => {
     expect(queueAutoScroll).toHaveBeenCalledWith(false, 'socket:message_created');
   });
 
+  it('does not restore unread from an older conversation update after read state advanced', () => {
+    const upsertConversation = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-1"
+        threadNearBottom={false}
+        upsertConversation={upsertConversation}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-1',
+          payload: {
+            reason: 'read',
+            conversation: {
+              id: 'conv-1',
+              last_message_seq: 5,
+              viewer_last_read_seq: 5,
+              unread_count: 0,
+            },
+          },
+        },
+      }));
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-1',
+          payload: {
+            reason: 'message_created',
+            conversation: {
+              id: 'conv-1',
+              last_message_seq: 5,
+              viewer_last_read_seq: 4,
+              unread_count: 1,
+            },
+          },
+        },
+      }));
+    });
+
+    expect(upsertConversation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        id: 'conv-1',
+        viewer_last_read_seq: 5,
+        unread_count: 0,
+      }),
+      { promote: true },
+    );
+  });
+
     it('syncs inbox preview for inactive conversations on message.created', () => {
     const syncConversationPreview = vi.fn();
     const promoteConversationToTop = vi.fn();

@@ -107,7 +107,7 @@ describe('SharedFile page', () => {
     vi.restoreAllMocks();
   });
 
-  it('loads public file metadata without auth context', async () => {
+  it('loads shared file metadata inside the authenticated route', async () => {
     renderPublicPage();
 
     expect(await screen.findByText('public.txt')).toBeInTheDocument();

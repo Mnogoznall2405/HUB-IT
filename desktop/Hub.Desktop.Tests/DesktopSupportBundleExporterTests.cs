@@ -41,6 +41,8 @@ public sealed class DesktopSupportBundleExporterTests : IDisposable
         Assert.DoesNotContain("document-secret", contents);
         Assert.DoesNotContain("cookie-secret", contents);
         Assert.DoesNotContain("?", contents);
+        Assert.Contains("\"schema_version\": 2", contents);
+        Assert.Contains("\"memory\"", contents);
         Assert.False(File.Exists(destination + ".partial"));
     }
 
@@ -53,7 +55,7 @@ public sealed class DesktopSupportBundleExporterTests : IDisposable
     }
 
     private static DesktopDiagnosticsSnapshot CreateSnapshot() => new(
-        SchemaVersion: 1,
+        SchemaVersion: 2,
         GeneratedAtUtc: new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero),
         DesktopVersion: "0.1.9",
         InstallPath: "C:\\Program Files\\HUB-IT\\HUB Desktop\\HUB.Desktop.exe",
@@ -75,7 +77,31 @@ public sealed class DesktopSupportBundleExporterTests : IDisposable
         UpdateFreeSpaceBytes: 10_000_000_000,
         WebViewProfileBytes: 100_000_000,
         UpdateCacheBytes: 20_000_000,
-        LogsFolder: "C:\\Users\\user\\AppData\\Local\\HUB-IT\\Desktop\\Logs");
+        LogsFolder: "C:\\Users\\user\\AppData\\Local\\HUB-IT\\Desktop\\Logs",
+        Memory: new DesktopMemorySnapshot(
+            Current: CreateMemorySample(),
+            Active: new DesktopMemoryWindowSummary(2, 600, 610, 620, 700, 710, 720),
+            Background: null,
+            Routes: [new DesktopMemoryRouteSummary("/chat", false, 2, 610, 620)]));
+
+    private static DesktopMemorySample CreateMemorySample()
+    {
+        var host = new DesktopMemoryProcessTotals(100, 120);
+        var renderer = new DesktopMemoryProcessTotals(500, 580);
+        var zero = new DesktopMemoryProcessTotals(0, 0);
+        return new DesktopMemorySample(
+            new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero),
+            "/chat",
+            false,
+            2,
+            host,
+            zero,
+            renderer,
+            zero,
+            zero,
+            zero,
+            new DesktopMemoryProcessTotals(600, 700));
+    }
 
     private static string ReadEntry(ZipArchiveEntry entry)
     {

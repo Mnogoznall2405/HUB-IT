@@ -32,7 +32,7 @@ def _make_context(*, allow_generated_artifacts: bool = True):
 def test_generated_file_builder_supports_v1_formats():
     from backend.ai_chat.artifact_generator import build_generated_uploads
 
-    uploads = build_generated_uploads([
+    specs = [
         {"format": "xlsx", "file_name": "report.xlsx", "rows": [["name"], ["Ноутбук"]]},
         {"format": "csv", "file_name": "report.csv", "rows": [["name"], ["Ноутбук"]]},
         {"format": "docx", "file_name": "report.docx", "content": "Документ"},
@@ -40,7 +40,8 @@ def test_generated_file_builder_supports_v1_formats():
         {"format": "txt", "file_name": "report.txt", "content": "Текст"},
         {"format": "md", "file_name": "report.md", "content": "# Markdown"},
         {"format": "json", "file_name": "report.json", "content": {"name": "Ноутбук"}},
-    ])
+    ]
+    uploads = [build_generated_uploads([spec])[0] for spec in specs]
 
     assert [item.filename for item in uploads] == [
         "report.xlsx",
@@ -64,7 +65,7 @@ def test_generated_file_builder_rejects_file_and_row_limits():
     from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads
 
     with pytest.raises(GeneratedFileError):
-        build_generated_uploads([{"format": "txt", "file_name": f"{index}.txt", "content": "x"} for index in range(11)])
+        build_generated_uploads([{"format": "txt", "file_name": f"{index}.txt", "content": "x"} for index in range(6)])
 
     build_generated_uploads([{"format": "csv", "file_name": "now-allowed.csv", "rows": [["x"]] * 5001}])[0].file.close()
 
@@ -405,6 +406,24 @@ def test_ai_files_create_tool_returns_normalized_file_specs():
     ]
 
 
+def test_ai_files_create_accepts_five_results_and_rejects_six():
+    import pytest
+    from pydantic import ValidationError
+
+    from backend.ai_chat.tools.files import FilesCreateArgs, FilesCreateTool
+
+    five = [{"format": "txt", "file_name": f"file-{index}.txt", "content": "ok"} for index in range(5)]
+    result = FilesCreateTool().execute(
+        context=_make_context(),
+        args=FilesCreateArgs.model_validate({"files": five}),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["data"]["count"] == 5
+    with pytest.raises(ValidationError):
+        FilesCreateArgs.model_validate({"files": [*five, {"format": "txt", "file_name": "six.txt", "content": "no"}]})
+
+
 def test_runtime_file_specs_use_full_equipment_tool_result_when_llm_file_is_partial():
     service = __import__("backend.ai_chat.service", fromlist=["_extract_generated_file_specs_from_tool_results"])
     from backend.ai_chat.tools.files import FilesReportArgs, FilesReportTool
@@ -491,7 +510,7 @@ def test_runtime_file_specs_use_full_equipment_tool_result_when_llm_file_is_part
     assert specs[0]["sheets"][-1]["rows"] == rows
 
 
-def test_ai_files_create_tool_accepts_single_file_and_fallback_name():
+def test_ai_files_create_without_format_returns_bounded_format_choice_payload():
     from backend.ai_chat.tools.files import FilesCreateArgs, FilesCreateTool
 
     args = FilesCreateArgs.model_validate({
@@ -504,13 +523,36 @@ def test_ai_files_create_tool_accepts_single_file_and_fallback_name():
     result = FilesCreateTool().execute(context=_make_context(), args=args).to_payload()
 
     assert result["ok"] is True
-    spec = result["data"]["files"][0]
-    assert spec["format"] == "xlsx"
-    assert spec["file_name"] == "generated-file.xlsx"
-    assert spec["rows"] == [
+    assert result["data"]["files"] == []
+    assert result["data"]["count"] == 0
+    assert result["data"]["needs_format_choice"] is True
+    choice = result["data"]["format_choice_payloads"][0]
+    assert choice["file_name_base"] == "generated-file"
+    assert choice["source_file_spec"]["rows"] == [
         ["\u0418\u043d\u0432", "\u0421\u0435\u0440\u0438\u0439\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440", "\u041c\u043e\u0434\u0435\u043b\u044c"],
         ["101", "\u2014", "Dell"],
     ]
+
+
+def test_ai_files_report_without_format_returns_format_choice_payload():
+    from backend.ai_chat.tools.files import FilesReportArgs, FilesReportTool
+
+    result = FilesReportTool().execute(
+        context=_make_context(),
+        args=FilesReportArgs.model_validate(
+            {
+                "file_name": "weekly-report",
+                "title": "Weekly report",
+                "summary": "Prepared for the user.",
+                "tables": [{"title": "Items", "rows": [["Name"], ["Laptop"]]}],
+            }
+        ),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["data"]["files"] == []
+    assert result["data"]["needs_format_choice"] is True
+    assert result["data"]["format_choice_payloads"][0]["file_name_base"] == "weekly-report"
 
 
 def test_ai_files_create_tool_respects_generated_files_master_switch():
@@ -583,6 +625,7 @@ def test_ai_files_report_tool_accepts_top_level_rows_and_fallback_fields():
     result = FilesReportTool().execute(
         context=_make_context(),
         args=FilesReportArgs.model_validate({
+            "format": "xlsx",
             "file_name": "",
             "title": "",
             "rows": [["\u0418\u043d\u0432", "\u041c\u043e\u0434\u0435\u043b\u044c"], ["101", "Dell"]],

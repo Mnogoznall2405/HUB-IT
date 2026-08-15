@@ -8,6 +8,7 @@ import AdminPanelSettingsOutlinedIcon from '@mui/icons-material/AdminPanelSettin
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import SecurityOutlinedIcon from '@mui/icons-material/SecurityOutlined';
 import SettingsApplicationsOutlinedIcon from '@mui/icons-material/SettingsApplicationsOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
 export const ADMIN_AREA_PERMISSIONS = [
   'departments.manage',
@@ -40,8 +41,14 @@ export const PERSONAL_SETTINGS_SECTIONS = [
   {
     key: 'app',
     label: 'Приложение',
-    description: 'Установка PWA и обновления',
+    description: 'HUB Desktop, PWA и обновления',
     icon: <InstallMobileOutlinedIcon />,
+  },
+  {
+    key: 'about',
+    label: 'О HUB-IT',
+    description: 'Возможности веб-версии и приложения для Windows',
+    icon: <InfoOutlinedIcon />,
   },
 ];
 

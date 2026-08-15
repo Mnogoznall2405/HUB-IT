@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Avatar,
   Badge,
@@ -31,7 +31,6 @@ import ChatComposer from './ChatComposer';
 import ChatFileDropOverlay from './ChatFileDropOverlay';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
-import ChatEmojiPanel from './ChatEmojiPanel';
 import ChatThreadComposerBridge from './ChatThreadComposerBridge';
 import ChatThreadHeader, { AiRunStatusBanner } from './ChatThreadHeader';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
@@ -49,6 +48,8 @@ import {
   CHAT_DEFAULT_FONT_SIZES,
   CHAT_FONT_FAMILY,
 } from './chatUiTokens';
+
+const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 const DESKTOP_EMOJI_PANEL_WIDTH = 'clamp(300px, 36%, 384px)';
@@ -342,6 +343,7 @@ function ChatThread({
   compactMobile = false,
   mobileInteractionsEnabled = false,
   activeConversation,
+  activeAiBot,
   activeConversationId,
   navigate,
   threadWallpaperSx,
@@ -405,6 +407,7 @@ function ChatThread({
   onClearEditing,
   aiTypingStatus,
   aiStatus,
+  onStopAiRun,
   pinnedMessage,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
@@ -481,6 +484,23 @@ function ChatThread({
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
   const aiRunStatus = String(aiStatus?.status || '').trim();
+  const aiRunActive = aiRunStatus === 'queued' || aiRunStatus === 'running';
+  const isAiConversation = String(activeConversation?.kind || '').trim() === 'ai';
+  const showAiSuggestions = isAiConversation
+    && !messagesLoading
+    && !(Array.isArray(messages) ? messages : []).some((message) => (
+      String(message?.body || '').trim() || (Array.isArray(message?.attachments) && message.attachments.length > 0)
+    ));
+  const aiSuggestions = activeAiBot?.slug === 'document-converter'
+    ? ['Проверь документ', 'Преобразуй в Word', 'Сделай PDF', 'Извлеки таблицу']
+    : activeAiBot?.slug === 'it-helper'
+      ? ['Не работает программа', 'Проверь журнал ошибок', 'Найди инструкцию', 'Подготовь обращение в IT']
+      : ['Найди оборудование сотрудника', 'Подготовь отчёт', 'Проверь документ', 'Создай черновик письма'];
+  const applyAiSuggestion = useCallback((value) => {
+    if (composerTextBridge?.setMessageText) composerTextBridge.setMessageText(value);
+    else onMessageTextChange?.(value);
+    window.requestAnimationFrame(() => composerRef?.current?.focus?.());
+  }, [composerRef, composerTextBridge, onMessageTextChange]);
   const previousAiRunStatusRef = useRef('');
   const scrollBottomPadding = getChatThreadBottomPadding({
     compactMobile,
@@ -916,10 +936,14 @@ function ChatThread({
 
       const message = messageById.get(messageId);
       const signature = getMessageReactionSignature(message);
+      const previous = previousMetrics.get(messageId);
+      if (previous && previous.message === message && previous.signature === signature) {
+        nextMetrics.set(messageId, previous);
+        return;
+      }
       const rect = element.getBoundingClientRect?.();
       const height = Math.round(Number(rect?.height || element.offsetHeight || 0));
       const elementTop = Number(element.offsetTop || 0);
-      const previous = previousMetrics.get(messageId);
 
       if (previous && previous.signature !== signature && Number.isFinite(previous.height)) {
         const delta = height - Number(previous.height || 0);
@@ -928,7 +952,7 @@ function ChatThread({
         }
       }
 
-      nextMetrics.set(messageId, { height, signature });
+      nextMetrics.set(messageId, { height, signature, message });
     });
 
     messageReactionMetricsRef.current = nextMetrics;
@@ -1324,12 +1348,13 @@ function ChatThread({
       />
 
       <AnimatePresence initial={false}>
-        {aiRunStatus && aiRunStatus !== 'completed' ? (
+        {aiRunStatus ? (
           <AiRunStatusBanner
             aiStatus={aiStatus}
             theme={theme}
             ui={ui}
             compactMobile={compactMobile}
+            onStop={onStopAiRun}
           />
         ) : null}
       </AnimatePresence>
@@ -1474,6 +1499,34 @@ function ChatThread({
         </Box>
       ) : null}</AnimatePresence>
 
+      {showAiSuggestions && !selectionMode ? (
+        <Box
+          aria-label="Примеры запросов"
+          sx={{
+            px: compactMobile ? 1.25 : 2,
+            pb: 1,
+            display: 'flex',
+            gap: 1,
+            overflowX: 'auto',
+            flexShrink: 0,
+            scrollbarWidth: 'none',
+            '&::-webkit-scrollbar': { display: 'none' },
+          }}
+        >
+          {aiSuggestions.map((suggestion) => (
+            <Button
+              key={suggestion}
+              variant="outlined"
+              size="small"
+              onClick={() => applyAiSuggestion(suggestion)}
+              sx={{ minHeight: 44, flexShrink: 0, borderRadius: 999, textTransform: 'none' }}
+            >
+              {suggestion}
+            </Button>
+          ))}
+        </Box>
+      ) : null}
+
       {selectionMode ? (
         <ChatSelectionActionDock
           theme={theme}
@@ -1533,6 +1586,9 @@ function ChatThread({
             onStartVoiceRecording,
             onStopVoiceRecording,
             onCancelVoiceRecording,
+            isAiConversation,
+            isAiGenerating: aiRunActive,
+            onStopAiRun,
           }}
         />
       ) : (
@@ -1583,6 +1639,9 @@ function ChatThread({
           onStartVoiceRecording={onStartVoiceRecording}
           onStopVoiceRecording={onStopVoiceRecording}
           onCancelVoiceRecording={onCancelVoiceRecording}
+          isAiConversation={isAiConversation}
+          isAiGenerating={aiRunActive}
+          onStopAiRun={onStopAiRun}
         />
       )}
 
@@ -1604,17 +1663,19 @@ function ChatThread({
             boxShadow: `-14px 0 32px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.28 : 0.16)}`,
           }}
         >
-          <ChatEmojiPanel
-            open
-            desktopDocked
-            theme={theme}
-            ui={ui}
-            onInsertEmoji={onInsertEmoji}
-            onSendSticker={onSendSticker}
-            onSendGif={onSendGif}
-            currentUserId={currentUserId}
-            onClose={onCloseEmojiPicker}
-          />
+          <Suspense fallback={null}>
+            <LazyChatEmojiPanel
+              open
+              desktopDocked
+              theme={theme}
+              ui={ui}
+              onInsertEmoji={onInsertEmoji}
+              onSendSticker={onSendSticker}
+              onSendGif={onSendGif}
+              currentUserId={currentUserId}
+              onClose={onCloseEmojiPicker}
+            />
+          </Suspense>
         </Box>
       ) : null}
     </Box>

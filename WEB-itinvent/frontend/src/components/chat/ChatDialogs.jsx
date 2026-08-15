@@ -58,6 +58,8 @@ import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 
 import ChatContextPanel from './ChatContextPanel';
+import AiConversationContextPanel from './AiConversationContextPanel';
+import { GENERAL_AI_OPENING_ID } from './chatAiSidebarModel';
 import {
   DialogListSkeleton,
   GroupUserCheckboxRow,
@@ -116,6 +118,11 @@ export default function ChatDialogs({
   theme,
   ui,
   activeConversation,
+  activeAiBot,
+  activeAiStatus,
+  onCreateAiBotConversation,
+  onCreateAiConversation,
+  openingAiBotId,
   activeConversationId,
   currentUser,
   threadMenuAnchor,
@@ -1585,6 +1592,29 @@ export default function ChatDialogs({
         }}
       >
         <Box sx={{ height: '100%', minHeight: 0 }}>
+          {String(activeConversation?.kind || '').trim() === 'ai' ? (
+            <AiConversationContextPanel
+              activeConversation={activeConversation}
+              agent={activeAiBot}
+              messages={messages}
+              realtimeRevision={activeAiStatus?.updated_at || activeAiStatus?.status || ''}
+              mobileScreen
+              onClose={onCloseInfo}
+              onOpenSearch={onOpenSearch}
+              onOpenFilePicker={onOpenFilePicker}
+              onCreateNewConversation={() => (
+                activeAiBot?.id
+                  ? onCreateAiBotConversation?.(activeAiBot)
+                  : onCreateAiConversation?.()
+              )}
+              newConversationCreating={String(openingAiBotId || '').trim() === (
+                activeAiBot?.id ? String(activeAiBot.id).trim() : GENERAL_AI_OPENING_ID
+              )}
+              onUpdateConversationSettings={onUpdateConversationSettings}
+              settingsUpdating={settingsUpdating}
+              onOpenAttachmentPreview={onOpenAttachmentPreview}
+            />
+          ) : (
           <ChatContextPanel
             theme={theme}
             ui={ui}
@@ -1611,6 +1641,7 @@ export default function ChatDialogs({
             onOpenAttachmentPreview={onOpenAttachmentPreview}
             onOpenTask={onOpenTask}
           />
+          )}
         </Box>
       </Dialog>
     </>

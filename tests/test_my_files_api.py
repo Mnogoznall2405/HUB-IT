@@ -212,10 +212,29 @@ def _custom_permission_client(fake_service: FakeMyFilesService, permissions: lis
     return TestClient(app)
 
 
-def test_public_file_metadata_does_not_require_auth(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/my-files/public/share-token",
+        "/my-files/public/share-token/preview",
+        "/my-files/public/share-token/preview/content",
+        "/my-files/public/share-token/download",
+    ],
+)
+def test_shared_file_endpoints_require_active_auth(monkeypatch, tmp_path, path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
     client = _public_client(fake_service)
+
+    response = client.get(path)
+
+    assert response.status_code in {401, 403}
+
+
+def test_authenticated_user_can_read_shared_file_metadata(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
 
     response = client.get("/my-files/public/share-token")
 
@@ -228,7 +247,7 @@ def test_public_file_metadata_does_not_require_auth(monkeypatch, tmp_path):
 def test_public_download_returns_404_for_invalid_token(monkeypatch, tmp_path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
-    client = _public_client(fake_service)
+    client = _client(fake_service)
 
     response = client.get("/my-files/public/missing/download")
 
@@ -237,10 +256,10 @@ def test_public_download_returns_404_for_invalid_token(monkeypatch, tmp_path):
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
-def test_public_download_streams_file_without_auth(monkeypatch, tmp_path):
+def test_authenticated_user_can_download_shared_file(monkeypatch, tmp_path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
-    client = _public_client(fake_service)
+    client = _client(fake_service)
 
     response = client.get("/my-files/public/share-token/download")
 
@@ -398,7 +417,7 @@ def test_public_download_rate_limits_repeated_requests_for_same_token(
 ):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
-    client = _public_client(fake_service)
+    client = _client(fake_service)
 
     first = client.get("/my-files/public/share-token/download")
     second = client.get("/my-files/public/share-token/download")
@@ -415,7 +434,7 @@ def test_public_download_rate_limit_is_per_token_not_per_ip(
 ):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
-    client = _public_client(fake_service)
+    client = _client(fake_service)
 
     first_token = client.get("/my-files/public/share-token/download")
     second_token = client.get("/my-files/public/share-token-b/download")
@@ -435,7 +454,7 @@ def test_public_download_rate_limit_does_not_bypass_internal_requests(
         "backend.utils.rate_limit_guard.request_is_internal",
         lambda _request: True,
     )
-    client = _public_client(fake_service)
+    client = _client(fake_service)
 
     first = client.get("/my-files/public/share-token/download")
     second = client.get("/my-files/public/share-token/download")

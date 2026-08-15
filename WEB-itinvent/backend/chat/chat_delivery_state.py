@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage
+from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage, ChatMessageRead
 from backend.chat.utils import normalize_text as _normalize_text
 
 CHAT_MESSAGE_DELIVERY_STATE_EVENT = "chat.message.delivery_state"
@@ -53,6 +55,88 @@ def mark_sender_message_seen(
     state.unread_count = 0
     state.opened_at = seen_at
     state.updated_at = seen_at
+
+
+def advance_conversation_read_state(
+    *,
+    session,
+    conversation_id: str,
+    current_user_id: int,
+    message_id: str,
+    target_seq: int,
+    read_at: datetime,
+    opened_at: datetime,
+) -> bool:
+    """Advance one viewer's read cursor without allowing concurrent regression."""
+    normalized_target_seq = max(0, int(target_seq or 0))
+    current_seq = func.coalesce(ChatConversationUserState.last_read_seq, 0)
+    latest_seq = func.coalesce(
+        select(ChatConversation.last_message_seq)
+        .where(ChatConversation.id == conversation_id)
+        .scalar_subquery(),
+        normalized_target_seq,
+    )
+    unread_count = case(
+        (latest_seq > normalized_target_seq, latest_seq - normalized_target_seq),
+        else_=0,
+    )
+    result = session.execute(
+        update(ChatConversationUserState)
+        .where(
+            ChatConversationUserState.conversation_id == conversation_id,
+            ChatConversationUserState.user_id == int(current_user_id),
+            or_(
+                current_seq < normalized_target_seq,
+                and_(
+                    current_seq == normalized_target_seq,
+                    or_(
+                        ChatConversationUserState.last_read_message_id.is_(None),
+                        ChatConversationUserState.last_read_message_id != message_id,
+                    ),
+                ),
+            ),
+        )
+        .values(
+            last_read_message_id=message_id,
+            last_read_seq=normalized_target_seq,
+            last_read_at=read_at,
+            unread_count=unread_count,
+            opened_at=opened_at,
+            updated_at=opened_at,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return int(getattr(result, "rowcount", 0) or 0) > 0
+
+
+def insert_message_read_receipt_once(
+    *,
+    session,
+    conversation_id: str,
+    current_user_id: int,
+    message_id: str,
+    read_at: datetime,
+) -> bool:
+    """Insert an idempotent per-message receipt on SQLite and PostgreSQL."""
+    bind = session.get_bind()
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+    insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
+    statement = insert_fn(ChatMessageRead).values(
+        conversation_id=conversation_id,
+        user_id=int(current_user_id),
+        message_id=message_id,
+        read_at=read_at,
+    )
+    if dialect_name == "postgresql":
+        statement = statement.on_conflict_do_nothing(
+            constraint="uq_chat_message_reads_conversation_user_message"
+        )
+    else:
+        statement = statement.on_conflict_do_nothing(
+            index_elements=["conversation_id", "user_id", "message_id"]
+        )
+    result = session.execute(statement)
+    return int(getattr(result, "rowcount", 0) or 0) > 0
 
 
 def increment_unread_counters_for_recipients(

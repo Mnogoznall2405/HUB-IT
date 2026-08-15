@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 
 import { buildChatDraftKey } from '../../components/chat/chatHelpers';
 import {
@@ -38,6 +38,45 @@ export function buildDraftsByConversationMap({
     if (value) drafts[conversationId] = value;
   });
   return drafts;
+}
+
+export function buildStoredDraftsByConversationMap({
+  conversationIds,
+  userId,
+  readLocalStorageItem = typeof window !== 'undefined' && window.localStorage
+    ? window.localStorage.getItem.bind(window.localStorage)
+    : undefined,
+} = {}) {
+  const drafts = {};
+  (Array.isArray(conversationIds) ? conversationIds : []).forEach((conversationIdValue) => {
+    const conversationId = String(conversationIdValue || '').trim();
+    const storageKey = buildChatDraftKey(userId, conversationId);
+    if (!conversationId || !storageKey) return;
+    try {
+      const value = String(readLocalStorageItem?.(storageKey) || '').trim();
+      if (value) drafts[conversationId] = value;
+    } catch {
+      // Ignore browser storage failures for draft previews.
+    }
+  });
+  return drafts;
+}
+
+export function applyActiveConversationDraft({
+  drafts,
+  activeConversationId,
+  deferredMessageText,
+} = {}) {
+  const conversationId = String(activeConversationId || '').trim();
+  if (!conversationId) return drafts || {};
+  const currentDrafts = drafts || {};
+  const nextValue = String(deferredMessageText || '').trim();
+  const currentValue = String(currentDrafts[conversationId] || '').trim();
+  if (currentValue === nextValue) return currentDrafts;
+  const nextDrafts = { ...currentDrafts };
+  if (nextValue) nextDrafts[conversationId] = nextValue;
+  else delete nextDrafts[conversationId];
+  return nextDrafts;
 }
 
 export function collectWatchedPresenceUserIds({
@@ -90,6 +129,7 @@ export default function useChatSidebarDerivedState({
   searchPeople,
   userId,
 }) {
+  const draftCacheRef = useRef({ scopeKey: '', userId: '', drafts: {} });
   const unreadTotal = useMemo(
     () => sumConversationUnreadTotal(conversations),
     [conversations],
@@ -123,15 +163,48 @@ export default function useChatSidebarDerivedState({
     [watchedPresenceUserIds],
   );
 
-  const draftsByConversation = useMemo(
-    () => buildDraftsByConversationMap({
-      conversations,
-      activeConversationId,
-      deferredMessageText,
+  const conversationIdsKey = useMemo(
+    () => JSON.stringify((Array.isArray(conversations) ? conversations : [])
+      .map((item) => String(item?.id || '').trim())
+      .filter(Boolean)),
+    [conversations],
+  );
+  const normalizedDraftUserId = String(userId || 'guest').trim() || 'guest';
+  const draftScopeKey = `${normalizedDraftUserId}:${conversationIdsKey}`;
+  const storedDraftsByConversation = useMemo(
+    () => buildStoredDraftsByConversationMap({
+      conversationIds: JSON.parse(conversationIdsKey),
       userId,
     }),
-    [activeConversationId, conversations, deferredMessageText, userId],
+    [conversationIdsKey, userId],
   );
+
+  if (draftCacheRef.current.scopeKey !== draftScopeKey) {
+    const previousCache = draftCacheRef.current;
+    const nextDrafts = { ...storedDraftsByConversation };
+    if (previousCache.userId === normalizedDraftUserId) {
+      JSON.parse(conversationIdsKey).forEach((conversationId) => {
+        if (Object.prototype.hasOwnProperty.call(previousCache.drafts, conversationId)) {
+          nextDrafts[conversationId] = previousCache.drafts[conversationId];
+        }
+      });
+    }
+    draftCacheRef.current = {
+      scopeKey: draftScopeKey,
+      userId: normalizedDraftUserId,
+      drafts: nextDrafts,
+    };
+  }
+
+  const draftsByConversation = useMemo(() => {
+    const nextDrafts = applyActiveConversationDraft({
+      drafts: draftCacheRef.current.drafts,
+      activeConversationId,
+      deferredMessageText,
+    });
+    draftCacheRef.current.drafts = nextDrafts;
+    return nextDrafts;
+  }, [activeConversationId, deferredMessageText, draftScopeKey]);
 
   const aiSidebarRows = useMemo(
     () => buildAiSidebarRows({

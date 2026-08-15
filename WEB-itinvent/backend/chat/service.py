@@ -28,9 +28,11 @@ from backend.chat.attachment_media import ChatAttachmentMedia
 from backend.chat.chat_cache import ChatCache
 from backend.chat.chat_conversation_read_store import ChatConversationReadStore
 from backend.chat.chat_delivery_state import (
+    advance_conversation_read_state as _advance_conversation_read_state_impl,
     find_existing_client_message as _find_existing_client_message_impl,
     get_or_create_conversation_state as _get_or_create_conversation_state_impl,
     increment_unread_counters_for_recipients as _increment_unread_counters_for_recipients_impl,
+    insert_message_read_receipt_once as _insert_message_read_receipt_once_impl,
     mark_sender_message_seen as _mark_sender_message_seen_impl,
 )
 from backend.chat.chat_folder_service import ChatFolderService
@@ -1405,6 +1407,54 @@ class ChatService:
         )
         return deleted
 
+    def rename_ai_conversation(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        title: str,
+    ) -> dict[str, Any]:
+        self._ensure_available()
+        normalized_title = _normalize_text(title)
+        if not normalized_title:
+            raise ValueError("title is required")
+        if len(normalized_title) > 255:
+            raise ValueError("title is too long")
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=_normalize_text(conversation_id),
+                current_user_id=int(current_user_id),
+            )
+            if _normalize_text(conversation.kind).lower() != "ai":
+                raise ValueError("Conversation is not an AI chat")
+            conversation.title = normalized_title
+            conversation.updated_at = _utc_now()
+            session.flush()
+            payload = self._build_conversation_payload(session, conversation, int(current_user_id))
+        self._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations")
+        return payload
+
+    def delete_ai_conversation(self, *, current_user_id: int, conversation_id: str) -> dict[str, Any]:
+        self._ensure_available()
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("conversation_id is required")
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            if _normalize_text(conversation.kind).lower() != "ai":
+                raise ValueError("Conversation is not an AI chat")
+            deleted = self._delete_conversation_rows(session=session, conversation=conversation)
+        self._cleanup_deleted_conversation_storage(
+            conversation_id=deleted["conversation_id"],
+            member_user_ids=deleted["member_user_ids"],
+        )
+        return deleted
+
     def delete_task_conversation(self, *, task_id: str) -> Optional[dict[str, Any]]:
         self._ensure_available()
         normalized_task_id = _normalize_text(task_id)
@@ -1563,6 +1613,45 @@ class ChatService:
             current_user_id=int(current_user_id),
             message_id=message_id,
         )
+
+    def get_message_by_client_id(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        client_message_id: str,
+    ) -> dict | None:
+        """Resolve an idempotent send after an ambiguous local/HTTP failure."""
+
+        self._ensure_available()
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            message = self._find_existing_client_message(
+                session=session,
+                conversation_id=conversation.id,
+                current_user_id=int(current_user_id),
+                client_message_id=client_message_id,
+            )
+            if message is None:
+                return None
+            member_user_ids = self._conversation_member_ids(session, conversation.id)
+            attachments = list(
+                session.execute(
+                    select(ChatMessageAttachment).where(ChatMessageAttachment.message_id == message.id)
+                ).scalars()
+            )
+            return self._build_message_payload_for_members(
+                session=session,
+                conversation=conversation,
+                message=message,
+                current_user_id=int(current_user_id),
+                member_user_ids=member_user_ids,
+                attachments=attachments,
+            )
 
     def get_messages_for_users(
         self,
@@ -1798,11 +1887,12 @@ class ChatService:
         body: Optional[str] = None,
         uploads: list[UploadFile],
         files_meta: Optional[list[dict[str, Any]]] = None,
+        client_message_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         defer_push_notifications: bool = False,
     ) -> dict:
         self._ensure_available()
-        return self._upload_orchestrator.send_files(current_user_id=current_user_id, conversation_id=conversation_id, body=body, uploads=uploads, files_meta=files_meta, reply_to_message_id=reply_to_message_id, defer_push_notifications=defer_push_notifications)
+        return self._upload_orchestrator.send_files(current_user_id=current_user_id, conversation_id=conversation_id, body=body, uploads=uploads, files_meta=files_meta, client_message_id=client_message_id, reply_to_message_id=reply_to_message_id, defer_push_notifications=defer_push_notifications)
     def _postprocess_file_message(
         self,
         *,
@@ -2582,85 +2672,44 @@ class ChatService:
                     conversation_id=conversation.id,
                     current_user_id=int(current_user_id),
                 )
-                current_last_read_seq = int(getattr(state, "last_read_seq", 0) or 0)
                 last_message_seq = int(getattr(conversation, "last_message_seq", 0) or 0)
                 client_target_seq = int(getattr(message, "conversation_seq", 0) or 0)
                 effective_target_seq = (
                     min(client_target_seq, last_message_seq) if last_message_seq > 0 else client_target_seq
                 )
+                if getattr(state, "id", None) is None:
+                    session.flush()
                 stages_ms["load_ms"] = (time.perf_counter() - stage_started) * 1000.0
 
-                if effective_target_seq <= current_last_read_seq and state.last_read_message_id == message.id:
-                    payload = {
-                        "conversation_id": conversation.id,
-                        "message_id": message.id,
-                        "read_at": _iso(getattr(state, "last_read_at", None) or now),
-                        "changed": False,
-                        "clear_hub_notifications": False,
-                    }
-                else:
-                    stage_started = time.perf_counter()
-                    existing_read = None
-                    if effective_target_seq <= current_last_read_seq:
-                        existing_read = session.execute(
-                            select(ChatMessageRead).where(
-                                ChatMessageRead.conversation_id == conversation.id,
-                                ChatMessageRead.user_id == int(current_user_id),
-                                ChatMessageRead.message_id == message.id,
-                            )
-                        ).scalar_one_or_none()
-
-                    if existing_read is not None and effective_target_seq <= current_last_read_seq:
-                        stages_ms["update_ms"] = (time.perf_counter() - stage_started) * 1000.0
-                        payload = {
-                            "conversation_id": conversation.id,
-                            "message_id": message.id,
-                            "read_at": _iso(getattr(existing_read, "read_at", None) or now),
-                            "changed": False,
-                            "clear_hub_notifications": False,
-                        }
-                    else:
-                        next_last_read_seq = max(current_last_read_seq, effective_target_seq)
-                        if next_last_read_seq != current_last_read_seq:
-                            changed = True
-                        if effective_target_seq >= current_last_read_seq:
-                            if state.last_read_message_id != message.id:
-                                changed = True
-                            state.last_read_message_id = message.id
-                            state.last_read_at = message.created_at
-                        state.last_read_seq = next_last_read_seq
-                        state.unread_count = max(0, last_message_seq - next_last_read_seq)
-                        state.opened_at = now
-                        state.updated_at = now
-
-                        if changed:
-                            receipt = session.execute(
-                                select(ChatMessageRead).where(
-                                    ChatMessageRead.conversation_id == conversation.id,
-                                    ChatMessageRead.user_id == int(current_user_id),
-                                    ChatMessageRead.message_id == message.id,
-                                )
-                            ).scalar_one_or_none()
-                            if receipt is None:
-                                session.add(
-                                    ChatMessageRead(
-                                        conversation_id=conversation.id,
-                                        user_id=int(current_user_id),
-                                        message_id=message.id,
-                                        read_at=now,
-                                    )
-                                )
-                        stages_ms["update_ms"] = (time.perf_counter() - stage_started) * 1000.0
-                        stage_started = time.perf_counter()
-                        session.flush()
-                        stages_ms["flush_ms"] = (time.perf_counter() - stage_started) * 1000.0
-                        payload = {
-                            "conversation_id": conversation.id,
-                            "message_id": message.id,
-                            "read_at": _iso(now),
-                            "changed": bool(changed),
-                            "clear_hub_notifications": bool(changed),
-                        }
+                stage_started = time.perf_counter()
+                changed = _advance_conversation_read_state_impl(
+                    session=session,
+                    conversation_id=conversation.id,
+                    current_user_id=int(current_user_id),
+                    message_id=message.id,
+                    target_seq=effective_target_seq,
+                    read_at=message.created_at,
+                    opened_at=now,
+                )
+                if changed:
+                    _insert_message_read_receipt_once_impl(
+                        session=session,
+                        conversation_id=conversation.id,
+                        current_user_id=int(current_user_id),
+                        message_id=message.id,
+                        read_at=now,
+                    )
+                stages_ms["update_ms"] = (time.perf_counter() - stage_started) * 1000.0
+                stage_started = time.perf_counter()
+                session.flush()
+                stages_ms["flush_ms"] = (time.perf_counter() - stage_started) * 1000.0
+                payload = {
+                    "conversation_id": conversation.id,
+                    "message_id": message.id,
+                    "read_at": _iso(now),
+                    "changed": bool(changed),
+                    "clear_hub_notifications": bool(changed),
+                }
 
                 commit_started = time.perf_counter()
 

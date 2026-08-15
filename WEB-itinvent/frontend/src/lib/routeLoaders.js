@@ -48,6 +48,7 @@ const loadRouteWithReloadFallback = (loader) => (
 const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 
 export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
+export const loadAboutRoute = defineRouteLoader(() => import('../pages/About'));
 export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
 export const loadFeedRoute = defineRouteLoader(() => import('../pages/Feed'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
@@ -83,6 +84,7 @@ export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/Shar
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
+  ['/about', loadAboutRoute],
   ['/dashboard', loadDashboardRoute],
   ['/feed', loadFeedRoute],
   ['/dashboard/news', loadFeedRoute],

@@ -5,8 +5,8 @@ namespace Hub.Desktop.Workspace;
 
 public static class DesktopWindowPlacementPolicy
 {
-    public const int MinimumWidth = 960;
-    public const int MinimumHeight = 640;
+    public const int MinimumWidth = 640;
+    public const int MinimumHeight = 480;
     private const int MinimumVisibleWidth = 120;
     private const int MinimumVisibleHeight = 34;
 

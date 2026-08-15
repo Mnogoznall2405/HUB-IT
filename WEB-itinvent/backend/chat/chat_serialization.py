@@ -331,6 +331,8 @@ class ChatSerialization:
             "created_at": _iso(conversation.created_at) or "",
             "updated_at": _iso(conversation.updated_at) or "",
             "last_message_at": _iso(conversation.last_message_at),
+            "last_message_seq": max(0, int(getattr(conversation, "last_message_seq", 0) or 0)),
+            "viewer_last_read_seq": max(0, int(getattr(state, "last_read_seq", 0) or 0)),
             "last_message_preview": last_message_preview,
             "last_message_is_own": last_message_is_own,
             "last_message_delivery_status": last_message_delivery_status,
@@ -430,6 +432,7 @@ class ChatSerialization:
         return {
             "id": message.id,
             "conversation_id": message.conversation_id,
+            "conversation_seq": max(0, int(getattr(message, "conversation_seq", 0) or 0)),
             "kind": message_kind,
             "body_format": _normalize_text(getattr(message, "body_format", None), "plain") or "plain",
             "client_message_id": _normalize_text(getattr(message, "client_message_id", None)) or None,

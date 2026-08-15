@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircularProgress } from '@mui/material';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Button, CircularProgress } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
@@ -8,6 +8,7 @@ import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import SaveAltRoundedIcon from '@mui/icons-material/SaveAltRounded';
 
 import {
   avatarLabel,
@@ -23,13 +24,15 @@ import {
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
 import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+import { chatDirectoryAPI } from '../../api/chatDirectory';
 import ChatStickerMedia from './ChatStickerMedia';
-import ChatStickerPackDialog from './ChatStickerPackDialog';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
   isFileActionsKeyboardShortcut,
 } from '../fileActions/FileActionsContextMenu';
+
+const LazyChatStickerPackDialog = lazy(() => import('./ChatStickerPackDialog'));
 
 const FILE_EXTENSION_COLORS = {
   pdf: '#e53935',
@@ -1278,8 +1281,18 @@ export function FileAttachment({
   );
 }
 
-export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview, isOwn = false, isSending = false }) {
+export function AttachmentCard({
+  messageId,
+  attachment,
+  theme,
+  ui,
+  onOpenPreview,
+  isOwn = false,
+  isSending = false,
+  canSaveToMyFiles = false,
+}) {
   const [stickerPackDialogOpen, setStickerPackDialogOpen] = useState(false);
+  const [saveState, setSaveState] = useState('idle');
   const normalizedMessageId = String(messageId || '').trim();
   const attachmentId = String(attachment?.id || '').trim();
   const canBuildAttachmentUrl = Boolean(normalizedMessageId && attachmentId);
@@ -1313,6 +1326,16 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
       fileType: attachment?.kind || attachment?.media_kind || attachment?.file_type,
     }) === 'video'
     || isChatDocumentPreviewableAttachment(attachment);
+  const handleSaveToMyFiles = async () => {
+    if (!canSaveToMyFiles || !normalizedMessageId || !attachmentId || saveState === 'saving') return;
+    setSaveState('saving');
+    try {
+      await chatDirectoryAPI.saveAttachmentToMyFiles(normalizedMessageId, attachmentId);
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    }
+  };
   return (
     <>
       <FileAttachment
@@ -1341,14 +1364,30 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
         forcedAspectRatio={attachment?.forcedAspectRatio}
         fallbackFileUrls={fallbackFileUrls}
       />
+      {canSaveToMyFiles && normalizedMessageId && attachmentId ? (
+        <Button
+          size="small"
+          startIcon={saveState === 'saving' ? <CircularProgress size={16} color="inherit" /> : <SaveAltRoundedIcon />}
+          disabled={saveState === 'saving' || saveState === 'saved'}
+          color={saveState === 'error' ? 'error' : 'primary'}
+          onClick={() => void handleSaveToMyFiles()}
+          sx={{ minHeight: 44, mt: 0.5, justifyContent: 'flex-start', textTransform: 'none' }}
+        >
+          {saveState === 'saved'
+            ? 'Файл отправлен на проверку и сохранение в Мои файлы'
+            : (saveState === 'error' ? 'Повторить сохранение' : 'Сохранить в Мои файлы')}
+        </Button>
+      ) : null}
       {stickerPackDialogOpen ? (
-        <ChatStickerPackDialog
-          open
-          shortName={stickerPackShortName}
-          theme={theme}
-          ui={ui}
-          onClose={() => setStickerPackDialogOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <LazyChatStickerPackDialog
+            open
+            shortName={stickerPackShortName}
+            theme={theme}
+            ui={ui}
+            onClose={() => setStickerPackDialogOpen(false)}
+          />
+        </Suspense>
       ) : null}
     </>
   );

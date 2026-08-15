@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-12 07:52 UTC_  
+_Сгенерировано: 2026-08-15 15:32 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (128 tables)
+## Schema `app` (134 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -31,13 +31,18 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `conversation_id` | varchar(36) | no | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `rolling_summary` | text | no | `''::text` |
+| `summary_until_seq` | bigint | no | `'0'::bigint` |
+| `context_reset_seq` | bigint | no | `'0'::bigint` |
+| `use_personal_memory` | boolean | no | `true` |
+| `title_source` | varchar(24) | no | `'assistant'::character varying` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `ix_app_ai_bot_conversations_bot_id`: (bot_id)
   - `ix_app_ai_bot_conversations_conversation_id`: (conversation_id)
+  - `ix_app_ai_bot_conversations_user_bot_updated`: (user_id, bot_id, updated_at)
   - `ix_app_ai_bot_conversations_user_id`: (user_id)
-  - `uq_app_ai_bot_conversations_bot_user` UNIQUE: (bot_id, user_id)
   - `uq_app_ai_bot_conversations_conversation` UNIQUE: (conversation_id)
 
 ---
@@ -97,6 +102,11 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `allow_kb_document_delivery` | boolean | no | `false` |
 | `enabled_tools_json` | text | no | `'[]'::text` |
 | `tool_settings_json` | text | no | `'{}'::text` |
+| `surface` | varchar(32) | no | `'corporate'::character varying` |
+| `placement` | varchar(24) | no | `'pinned'::character varying` |
+| `sort_order` | integer | no | `100` |
+| `required_permission` | varchar(128) | no | `'chat.ai.use'::character varying` |
+| `use_personal_memory` | boolean | no | `true` |
 
 - **Primary key:** `id`
 - **Indexes:**
@@ -183,6 +193,193 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_ai_pending_actions_run_status`: (run_id, status)
   - `ix_app_ai_pending_actions_status`: (status)
   - `ix_app_ai_pending_actions_status_expires_at`: (status, expires_at)
+
+---
+
+### `app.ai_sandbox_files`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `session_id` | varchar(64) | no | `` |
+| `job_id` | varchar(64) | no | `` |
+| `conversation_id` | varchar(36) | no | `` |
+| `relative_path` | varchar(1024) | no | `` |
+| `file_name` | varchar(255) | no | `` |
+| `file_kind` | varchar(24) | no | `` |
+| `content_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `size_bytes` | bigint | no | `'0'::bigint` |
+| `sha256` | varchar(64) | no | `''::character varying` |
+| `is_changed` | boolean | no | `false` |
+| `diff_text` | text | no | `''::text` |
+| `source_message_id` | varchar(36) | yes | `` |
+| `source_attachment_id` | varchar(36) | yes | `` |
+| `chat_message_id` | varchar(36) | yes | `` |
+| `chat_attachment_id` | varchar(36) | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `job_id` → `app.ai_sandbox_jobs` (`id`)
+  - `session_id` → `app.ai_sandbox_sessions` (`id`)
+- **Indexes:**
+  - `ix_app_ai_sandbox_files_conversation_id`: (conversation_id)
+  - `ix_app_ai_sandbox_files_file_kind`: (file_kind)
+  - `ix_app_ai_sandbox_files_job_id`: (job_id)
+  - `ix_app_ai_sandbox_files_session_id`: (session_id)
+  - `ix_app_ai_sandbox_files_session_kind`: (session_id, file_kind, created_at)
+  - `uq_app_ai_sandbox_files_job_path` UNIQUE: (job_id, relative_path)
+
+---
+
+### `app.ai_sandbox_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `session_id` | varchar(64) | no | `` |
+| `conversation_id` | varchar(36) | no | `` |
+| `user_id` | integer | no | `` |
+| `prompt_message_id` | varchar(36) | no | `''::character varying` |
+| `job_type` | varchar(24) | no | `'prompt'::character varying` |
+| `target_file_id` | varchar(64) | yes | `` |
+| `status` | varchar(24) | no | `'preparing'::character varying` |
+| `attempt` | integer | no | `0` |
+| `claimed_by` | varchar(128) | yes | `` |
+| `claimed_at` | timestamptz | yes | `` |
+| `heartbeat_at` | timestamptz | yes | `` |
+| `deadline_at` | timestamptz | no | `` |
+| `result_json` | text | no | `'{}'::text` |
+| `error_code` | varchar(64) | no | `''::character varying` |
+| `started_at` | timestamptz | yes | `` |
+| `completed_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `session_id` → `app.ai_sandbox_sessions` (`id`)
+- **Indexes:**
+  - `ix_app_ai_sandbox_jobs_conversation_id`: (conversation_id)
+  - `ix_app_ai_sandbox_jobs_deadline_at`: (deadline_at)
+  - `ix_app_ai_sandbox_jobs_heartbeat`: (status, heartbeat_at)
+  - `ix_app_ai_sandbox_jobs_job_type`: (job_type)
+  - `ix_app_ai_sandbox_jobs_prompt_message_id`: (prompt_message_id)
+  - `ix_app_ai_sandbox_jobs_session_created`: (session_id, created_at)
+  - `ix_app_ai_sandbox_jobs_session_id`: (session_id)
+  - `ix_app_ai_sandbox_jobs_status`: (status)
+  - `ix_app_ai_sandbox_jobs_status_created`: (status, created_at)
+  - `ix_app_ai_sandbox_jobs_user_id`: (user_id)
+  - `uq_app_ai_sandbox_jobs_message_type` UNIQUE: (conversation_id, prompt_message_id, job_type)
+  - `uq_app_ai_sandbox_jobs_one_active_per_user` UNIQUE: (user_id)
+
+---
+
+### `app.ai_sandbox_permissions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `session_id` | varchar(64) | no | `` |
+| `job_id` | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `opencode_permission_id` | varchar(200) | no | `` |
+| `tool` | varchar(64) | no | `` |
+| `operation` | varchar(128) | no | `''::character varying` |
+| `arguments_preview_json` | text | no | `'{}'::text` |
+| `action_id` | varchar(64) | yes | `` |
+| `status` | varchar(24) | no | `'pending'::character varying` |
+| `grant_scope` | varchar(16) | yes | `` |
+| `responded_by_user_id` | integer | yes | `` |
+| `requested_at` | timestamptz | no | `` |
+| `responded_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `job_id` → `app.ai_sandbox_jobs` (`id`)
+  - `session_id` → `app.ai_sandbox_sessions` (`id`)
+- **Indexes:**
+  - `ix_app_ai_sandbox_permissions_action_id`: (action_id)
+  - `ix_app_ai_sandbox_permissions_job_id`: (job_id)
+  - `ix_app_ai_sandbox_permissions_session_id`: (session_id)
+  - `ix_app_ai_sandbox_permissions_status`: (status)
+  - `ix_app_ai_sandbox_permissions_user_id`: (user_id)
+  - `ix_app_ai_sandbox_permissions_user_status`: (user_id, status, requested_at)
+  - `uq_app_ai_sandbox_permissions_opencode` UNIQUE: (session_id, opencode_permission_id)
+
+---
+
+### `app.ai_sandbox_sessions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `conversation_id` | varchar(36) | no | `` |
+| `user_id` | integer | no | `` |
+| `workspace_key` | varchar(128) | no | `` |
+| `opencode_session_id` | varchar(200) | yes | `` |
+| `status` | varchar(24) | no | `'new'::character varying` |
+| `credential_ref` | varchar(255) | no | `''::character varying` |
+| `last_activity_at` | timestamptz | no | `` |
+| `expires_at` | timestamptz | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_ai_sandbox_sessions_conversation_id`: (conversation_id)
+  - `ix_app_ai_sandbox_sessions_expiry`: (status, expires_at)
+  - `ix_app_ai_sandbox_sessions_status`: (status)
+  - `ix_app_ai_sandbox_sessions_user_activity`: (user_id, last_activity_at)
+  - `ix_app_ai_sandbox_sessions_user_id`: (user_id)
+  - `uq_app_ai_sandbox_sessions_conversation` UNIQUE: (conversation_id)
+  - `uq_app_ai_sandbox_sessions_workspace_key` UNIQUE: (workspace_key)
+
+---
+
+### `app.ai_user_memories`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `category` | varchar(48) | no | `'preference'::character varying` |
+| `content` | text | no | `` |
+| `normalized_hash` | varchar(64) | no | `` |
+| `is_active` | boolean | no | `true` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_ai_user_memories_category`: (category)
+  - `ix_app_ai_user_memories_is_active`: (is_active)
+  - `ix_app_ai_user_memories_normalized_hash`: (normalized_hash)
+  - `ix_app_ai_user_memories_user_active_updated`: (user_id, is_active, updated_at)
+  - `ix_app_ai_user_memories_user_id`: (user_id)
+
+---
+
+### `app.ai_user_memory_sources`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.ai_user_memory_sources_id_seq'::regclass)` |
+| `memory_id` | varchar(64) | no | `` |
+| `conversation_id` | varchar(36) | no | `` |
+| `message_id` | varchar(36) | no | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_ai_user_memory_sources_conversation`: (conversation_id, created_at)
+  - `ix_app_ai_user_memory_sources_conversation_id`: (conversation_id)
+  - `ix_app_ai_user_memory_sources_memory_id`: (memory_id)
+  - `ix_app_ai_user_memory_sources_message_id`: (message_id)
+  - `uq_app_ai_user_memory_sources_memory_message` UNIQUE: (memory_id, message_id)
 
 ---
 
@@ -2877,6 +3074,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `dashboard_mobile_sections` | text | yes | `` |
 | `mobile_bottom_nav_items` | text | yes | `` |
 | `database_branch_filters` | text | yes | `` |
+| `ai_personal_memory_enabled` | boolean | no | `true` |
 
 - **Primary key:** `user_id`
 
@@ -2912,6 +3110,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `is_2fa_enabled` | boolean | no | `false` |
 | `twofa_enabled_at` | timestamptz | yes | `` |
 | `avatar_url` | varchar(512) | yes | `` |
+| `about_onboarding_completed_at` | timestamptz | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**

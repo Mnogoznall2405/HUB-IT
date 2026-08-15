@@ -73,6 +73,16 @@ import {
 
 const MailAttachmentPreviewDialog = lazy(() => import('../components/mail/MailAttachmentPreviewDialog'));
 
+const rememberDetail = (cache, key, value) => {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > 24) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+};
+
 
 const SCOPE_OPTIONS = [
   { value: 'inbox', label: 'Согласование' },
@@ -1316,7 +1326,7 @@ export default function Docflow() {
         }
         try {
           const detail = await docflowAPI.getTask(taskRef, { includeRelated: true });
-          detailCache.current.set(taskRef, detail);
+          rememberDetail(detailCache.current, taskRef, detail);
           if (selectedTaskRef.current === taskRef) {
             setSelectedTask(detail);
             setTaskDetailError(null);
@@ -1330,7 +1340,7 @@ export default function Docflow() {
           }
           return detail;
         } catch (enrichError) {
-          detailCache.current.set(taskRef, core);
+          rememberDetail(detailCache.current, taskRef, core);
           if (selectedTaskRef.current === taskRef) {
             setFileActionError(resolveDocflowError(
               enrichError,
@@ -1398,7 +1408,7 @@ export default function Docflow() {
       if (result?.status === 'applied' || result?.status === 'already_applied') {
         detailInFlight.current.delete(taskRef);
         const optimisticTask = buildCompletedTaskSnapshot(result.task || selectedTask, taskRef);
-        detailCache.current.set(taskRef, optimisticTask);
+        rememberDetail(detailCache.current, taskRef, optimisticTask);
         if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
         setTaskAction(null);
         setCommandState(null);
@@ -1407,7 +1417,7 @@ export default function Docflow() {
           const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
           if (selectedTaskRef.current === taskRef) {
             const merged = keepCompletedIfStale(refreshed, optimisticTask);
-            detailCache.current.set(taskRef, merged);
+            rememberDetail(detailCache.current, taskRef, merged);
             setSelectedTask(merged);
           }
         } catch {
@@ -1453,7 +1463,7 @@ export default function Docflow() {
           available_actions: [],
           action_unavailable_reason: 'Для этого задания требуется электронная подпись. Выполните действие в 1С.',
         };
-        detailCache.current.set(taskRef, nextTask);
+        rememberDetail(detailCache.current, taskRef, nextTask);
         if (selectedTaskRef.current === taskRef) setSelectedTask(nextTask);
         setTaskAction(null);
         setActionProgressLabel('');
@@ -1483,7 +1493,7 @@ export default function Docflow() {
             result.task || detailCache.current.get(taskRef),
             taskRef,
           );
-          detailCache.current.set(taskRef, optimisticTask);
+          rememberDetail(detailCache.current, taskRef, optimisticTask);
           if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
           setCommandState(null);
           setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
@@ -1491,7 +1501,7 @@ export default function Docflow() {
             const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
             if (selectedTaskRef.current === taskRef) {
               const merged = keepCompletedIfStale(refreshed, optimisticTask);
-              detailCache.current.set(taskRef, merged);
+              rememberDetail(detailCache.current, taskRef, merged);
               setSelectedTask(merged);
             }
           } catch {
@@ -1530,7 +1540,7 @@ export default function Docflow() {
       } else if (result?.status === 'rejected' && result?.error_code === 'DOCFLOW_ACTION_NOT_APPLIED') {
         const nextTask = result.task;
         if (nextTask?.ref) {
-          detailCache.current.set(nextTask.ref, nextTask);
+          rememberDetail(detailCache.current, nextTask.ref, nextTask);
           if (selectedTaskRef.current === nextTask.ref) setSelectedTask(nextTask);
         }
         setCommandState(null);

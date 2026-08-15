@@ -1,9 +1,25 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
-import { Checkbox, CircularProgress, Divider, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Button,
+  Checkbox,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  Menu,
+  MenuItem,
+  Skeleton,
+  TextField,
+  Tooltip,
+} from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import ExitToAppRoundedIcon from '@mui/icons-material/ExitToAppRounded';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
@@ -18,9 +34,10 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 
-import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatFolderTabs from './ChatFolderTabs';
-import { getConversationFolderIds, shouldShowAiChatSection } from './chatFolderUtils';
+import { getConversationFolderIds } from './chatFolderUtils';
+import { GENERAL_AI_OPENING_ID, groupAiSidebarRowsByDate } from './chatAiSidebarModel';
 import { useChatFolderSwipe } from './useChatFolderSwipe';
 import { useChatSidebarSearchCollapse } from './useChatSidebarSearchCollapse';
 import {
@@ -148,10 +165,14 @@ function ChatSidebar({
   conversationActionPendingId = '',
   draftsByConversation,
   aiBots = [],
+  aiAgents = [],
   aiBotsLoading = false,
   aiBotsError = '',
   showAiSection: showAiSectionEnabled = false,
   onOpenAiBot,
+  onCreateAiBotConversation,
+  onCreateAiConversation,
+  onRenameAiConversation,
   openingAiBotId = '',
 }) {
   const density = getDensity(ui);
@@ -164,14 +185,19 @@ function ChatSidebar({
   const [searchFocused, setSearchFocused] = useState(false);
   const [sidebarListScrollElement, setSidebarListScrollElement] = useState(null);
   const [completedTasksOpen, setCompletedTasksOpen] = useState(false);
+  const [workspace, setWorkspace] = useState('chats');
+  const [aiArchiveOpen, setAiArchiveOpen] = useState(false);
+  const [renameConversation, setRenameConversation] = useState(null);
+  const [renameTitle, setRenameTitle] = useState('');
   const searchInputRef = useRef(null);
   const showEmbeddedMenuButton = false;
   const chatUnavailable = health?.available === false;
-  const showAiSection = showAiSectionEnabled
-    && shouldShowAiChatSection(activeFolderKey)
-    && String(activeFolderKey || '') !== 'archived'
-    && !sidebarSearchActive;
+  const showAiSection = Boolean(showAiSectionEnabled);
+  const showPeopleSearch = sidebarSearchActive && workspace === 'chats';
   const folderMenuConversationId = String(folderMenuConversation?.id || '').trim();
+  const folderMenuConversationKind = String(folderMenuConversation?.kind || '').trim();
+  const isAiFolderMenuConversation = folderMenuConversationKind === 'ai';
+  const creatingGeneralAiConversation = String(openingAiBotId || '').trim() === GENERAL_AI_OPENING_ID;
   const selectedFolderIds = useMemo(
     () => new Set(getConversationFolderIds(folderMenuConversationId, conversationIdsByFolder)),
     [conversationIdsByFolder, folderMenuConversationId],
@@ -242,14 +268,40 @@ function ChatSidebar({
     };
   }, [activeFolderKey, conversations]);
 
-  const handleOpenFolderMenu = (conversation, event) => {
+  useEffect(() => {
+    const activeId = String(activeConversationId || '').trim();
+    if (!activeId) return;
+    const activeAiConversation = aiBots.find((item) => String(item?.conversation_id || '').trim() === activeId);
+    if (activeAiConversation) {
+      setWorkspace('ai');
+      setAiArchiveOpen(Boolean(activeAiConversation?.is_archived));
+    }
+  }, [activeConversationId, aiBots]);
+
+  const filteredAiRows = useMemo(() => {
+    const query = String(sidebarQuery || '').trim().toLocaleLowerCase('ru-RU');
+    return aiBots.filter((item) => (
+      Boolean(item?.is_archived) === aiArchiveOpen
+      && (!query || [
+      item?.title,
+      item?.last_message_preview,
+      item?.description,
+      ].some((value) => String(value || '').toLocaleLowerCase('ru-RU').includes(query)))
+    ));
+  }, [aiArchiveOpen, aiBots, sidebarQuery]);
+  const aiHistoryGroups = useMemo(
+    () => groupAiSidebarRowsByDate(filteredAiRows),
+    [filteredAiRows],
+  );
+
+  const handleOpenFolderMenu = useCallback((conversation, event) => {
     setFolderMenuConversation(conversation);
     const fallbackRect = event?.currentTarget?.getBoundingClientRect?.();
     setFolderMenuPosition({
       top: Math.round(Number(event?.clientY || fallbackRect?.bottom || 0)),
       left: Math.round(Number(event?.clientX || fallbackRect?.left || 0)),
     });
-  };
+  }, []);
 
   const handleCloseFolderMenu = () => {
     setFolderMenuPosition(null);
@@ -271,44 +323,101 @@ function ChatSidebar({
     handleCloseFolderMenu();
     if (conversation) onRequestLeaveConversation?.(conversation);
   };
+  const beginRenameAiConversation = () => {
+    const conversation = folderMenuConversation;
+    handleCloseFolderMenu();
+    if (!conversation?.id) return;
+    setRenameConversation(conversation);
+    setRenameTitle(String(conversation?.title || '').trim());
+  };
+  const submitAiRename = async () => {
+    const conversationId = String(renameConversation?.id || '').trim();
+    const title = String(renameTitle || '').trim();
+    if (!conversationId || !title) return;
+    const updated = await onRenameAiConversation?.(conversationId, title);
+    if (updated) {
+      setRenameConversation(null);
+      setRenameTitle('');
+    }
+  };
   const aiSection = showAiSection ? (
     <>
-      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>AI</SearchSectionHeader>
-      {aiBotsLoading ? (
+      <div className={compactMobile ? 'px-2 pb-2' : 'px-3 pb-2'}>
+        <Button
+          fullWidth
+          variant="contained"
+          startIcon={creatingGeneralAiConversation ? <CircularProgress color="inherit" size={18} /> : <AddRoundedIcon />}
+          onClick={() => void onCreateAiConversation?.()}
+          disabled={chatUnavailable || creatingGeneralAiConversation}
+          sx={{ minHeight: 44, borderRadius: 2.5, textTransform: 'none', fontWeight: 800 }}
+        >
+          Новый чат
+        </Button>
+      </div>
+
+      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Наши боты</SearchSectionHeader>
+      {aiBotsLoading && aiAgents.length === 0 ? (
         <div className={joinClasses('flex items-center gap-2 px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
           <CircularProgress size={16} />
-          <span>Loading AI bots…</span>
+          <span>Загружаю помощников…</span>
         </div>
-      ) : aiBotsError ? (
-        <div className={joinClasses('px-3 text-[13px] text-red-500', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1')}>
-          {aiBotsError}
-        </div>
-      ) : aiBots.length > 0 ? (
+      ) : aiAgents.length > 0 ? (
         <div>
-          {aiBots.map((bot, index) => (
-            <AiConversationRow
+          {aiAgents.map((bot) => (
+            <AiBotRow
               key={`ai-bot-${bot.id}`}
               bot={bot}
-              theme={theme}
-              ui={ui}
-              activeConversationId={activeConversationId}
-              onOpenConversation={handleOpenConversation}
-              onPrefetchConversation={onPrefetchConversation}
               openingAiBotId={openingAiBotId}
               onOpenAiBot={onOpenAiBot}
-              onOpenConversationMenu={handleOpenFolderMenu}
+              onCreateAiBotConversation={onCreateAiBotConversation}
               compactMobile={compactMobile}
-              index={index}
-              reducedMotion={reducedMotion}
+              ui={ui}
             />
           ))}
         </div>
       ) : (
         <div className={joinClasses('px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
-          AI bots will appear here after admin setup.
+          Нет доступных корпоративных помощников.
         </div>
       )}
-      {!compactMobile ? <div className="mx-3 mb-2 mt-2 border-b border-[color:var(--chat-sidebar-divider)]" /> : null}
+
+      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Мои чаты</SearchSectionHeader>
+      {aiBotsError ? (
+        <div className={joinClasses('px-3 text-[13px] text-red-500', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1')}>
+          {aiBotsError}
+        </div>
+      ) : aiHistoryGroups.length > 0 ? (
+        aiHistoryGroups.map((group) => (
+          <div key={group.key}>
+            <SearchSectionHeader ui={ui} compactMobile={compactMobile}>{group.label}</SearchSectionHeader>
+            {group.items.map((bot, index) => (
+              <AiConversationRow
+                key={`ai-conversation-${bot.conversation_id}`}
+                bot={bot}
+                theme={theme}
+                ui={ui}
+                active={String(bot?.conversation_id || '').trim() === String(activeConversationId || '').trim()}
+                onOpenConversation={handleOpenConversation}
+                onPrefetchConversation={onPrefetchConversation}
+                openingAiBotId={openingAiBotId}
+                onOpenAiBot={onOpenAiBot}
+                onOpenConversationMenu={handleOpenFolderMenu}
+                compactMobile={compactMobile}
+                index={index}
+                reducedMotion={reducedMotion}
+              />
+            ))}
+          </div>
+        ))
+      ) : (
+        <div className={joinClasses('px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
+          {String(sidebarQuery || '').trim()
+            ? 'По вашему запросу AI-диалоги не найдены.'
+            : (aiArchiveOpen
+              ? 'В архиве пока нет AI-диалогов.'
+              : 'Создайте новый AI-чат или начните разговор с корпоративным помощником.')}
+        </div>
+      )}
     </>
   ) : null;
 
@@ -388,7 +497,7 @@ function ChatSidebar({
                   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)',
                 }}
               >
-                <ForumOutlinedIcon fontSize="small" />
+                {workspace === 'ai' ? <SmartToyOutlinedIcon fontSize="small" /> : <ForumOutlinedIcon fontSize="small" />}
               </div>
             )}
 
@@ -398,17 +507,19 @@ function ChatSidebar({
                 compactMobile ? 'text-[17px] leading-5' : 'text-[17px] leading-5',
               )}
               >
-                Чаты
+                {workspace === 'ai' ? (aiArchiveOpen ? 'ИИ · Архив' : 'ИИ') : 'Чаты'}
               </p>
               <p className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[13px]' : 'text-[13px]')}>
-                {compactMobile ? mobileSubtitle : desktopSubtitle}
+                {workspace === 'ai'
+                  ? `${aiBots.length} ${aiBots.length === 1 ? 'диалог' : 'диалогов'}`
+                  : (compactMobile ? mobileSubtitle : desktopSubtitle)}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1">
             <AnimatePresence initial={false}>
-              {compactMobile && isSearchCollapsed && !sidebarSearchActive ? (
+              {compactMobile && isSearchCollapsed && !showPeopleSearch ? (
                 <motion.div
                   key="sidebar-header-search"
                   initial={reducedMotion ? false : { opacity: 0, scale: 0.92 }}
@@ -429,13 +540,53 @@ function ChatSidebar({
               ) : null}
             </AnimatePresence>
 
-            <SidebarActionButton title="Новый чат" onClick={onOpenGroup} disabled={chatUnavailable} compactMobile={compactMobile} ui={ui}>
-              {compactMobile ? <CreateRoundedIcon fontSize="small" /> : <GroupAddOutlinedIcon fontSize="small" />}
+            <SidebarActionButton
+              title={workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
+              onClick={workspace === 'ai' ? () => void onCreateAiConversation?.() : onOpenGroup}
+              disabled={chatUnavailable || (workspace === 'ai' && creatingGeneralAiConversation)}
+              compactMobile={compactMobile}
+              ui={ui}
+            >
+              {workspace === 'ai' || compactMobile ? <CreateRoundedIcon fontSize="small" /> : <GroupAddOutlinedIcon fontSize="small" />}
             </SidebarActionButton>
           </div>
         </div>
 
-        {!sidebarSearchActive ? (
+        {showAiSection ? (
+          <div
+            role="tablist"
+            aria-label="Раздел чата"
+            className="mb-3 grid grid-cols-2 gap-1 rounded-[14px] border border-[color:var(--chat-border-soft)] bg-[var(--chat-filter-strip-bg)] p-1"
+          >
+            {[
+              { key: 'chats', label: 'Чаты' },
+              { key: 'ai', label: 'ИИ' },
+            ].map((tab) => {
+              const selected = workspace === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => {
+                    setWorkspace(tab.key);
+                    if (tab.key === 'ai') setAiArchiveOpen(false);
+                  }}
+                  className="min-h-11 rounded-[11px] px-3 text-[14px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--chat-focus-ring)]"
+                  style={{
+                    backgroundColor: selected ? 'var(--chat-folder-tab-active-bg)' : 'transparent',
+                    color: selected ? 'var(--chat-folder-tab-active-text)' : 'var(--chat-text-secondary)',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {workspace === 'chats' && !showPeopleSearch ? (
           <div className={compactMobile ? 'mb-2' : 'mb-3'}>
             <ChatFolderTabs
               activeFolderKey={activeFolderKey}
@@ -478,7 +629,7 @@ function ChatSidebar({
               />
               <input
                 ref={searchInputRef}
-                placeholder="Поиск"
+                placeholder={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск'}
                 value={sidebarQuery}
                 onChange={(event) => onSidebarQueryChange(event.target.value)}
                 onFocus={() => setSearchFocused(true)}
@@ -519,7 +670,7 @@ function ChatSidebar({
               sx={{ color: searchFocused ? theme.palette.primary.light : ui.textSecondary }}
             />
             <input
-              placeholder="Поиск"
+              placeholder={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск'}
               value={sidebarQuery}
               onChange={(event) => onSidebarQueryChange(event.target.value)}
               onFocus={() => setSearchFocused(true)}
@@ -555,44 +706,50 @@ function ChatSidebar({
         >
           <MenuItem
             onClick={() => {
-              onOpenGroup?.();
+              if (workspace === 'ai') void onCreateAiConversation?.();
+              else onOpenGroup?.();
               setActionsAnchorEl(null);
             }}
-            disabled={chatUnavailable}
+            disabled={chatUnavailable || (workspace === 'ai' && creatingGeneralAiConversation)}
           >
-            Новый чат
+            {workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
           </MenuItem>
           <MenuItem
-            selected={String(activeFolderKey) === 'archived'}
+            selected={workspace === 'ai' ? aiArchiveOpen : String(activeFolderKey) === 'archived'}
             onClick={() => {
-              onOpenArchive?.();
+              if (workspace === 'ai') setAiArchiveOpen((current) => !current);
+              else onOpenArchive?.();
               setActionsAnchorEl(null);
             }}
           >
             <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
             Архив
-            {Number(folderUnreadCounts?.archived || 0) > 0
+            {workspace !== 'ai' && Number(folderUnreadCounts?.archived || 0) > 0
               ? ` (${Number(folderUnreadCounts.archived) > 99 ? '99+' : folderUnreadCounts.archived})`
               : ''}
           </MenuItem>
-          <MenuItem
-            onClick={() => {
-              onOpenFolderManager?.();
-              setActionsAnchorEl(null);
-            }}
-          >
-            <SettingsOutlinedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
-            Управление папками
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              onOpenFolderManager?.({ create: true });
-              setActionsAnchorEl(null);
-            }}
-          >
-            <CreateRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
-            Создать папку
-          </MenuItem>
+          {workspace === 'chats' ? (
+            <>
+              <MenuItem
+                onClick={() => {
+                  onOpenFolderManager?.();
+                  setActionsAnchorEl(null);
+                }}
+              >
+                <SettingsOutlinedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+                Управление папками
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  onOpenFolderManager?.({ create: true });
+                  setActionsAnchorEl(null);
+                }}
+              >
+                <CreateRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+                Создать папку
+              </MenuItem>
+            </>
+          ) : null}
         </Menu>
 
         <Menu
@@ -614,6 +771,15 @@ function ChatSidebar({
               {getConversationDisplayTitle(folderMenuConversation)}
             </span>
           </MenuItem>
+          {isAiFolderMenuConversation ? (
+            <MenuItem
+              onClick={beginRenameAiConversation}
+              disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+            >
+              <EditOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              Переименовать
+            </MenuItem>
+          ) : null}
           <MenuItem
             onClick={() => runConversationSetting({ is_pinned: !folderMenuConversation?.is_pinned })}
             disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
@@ -621,13 +787,15 @@ function ChatSidebar({
             <PushPinOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
             {folderMenuConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
           </MenuItem>
-          <MenuItem
-            onClick={() => runConversationSetting({ is_muted: !folderMenuConversation?.is_muted })}
-            disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
-          >
-            <NotificationsOffOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
-            {folderMenuConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
-          </MenuItem>
+          {!isAiFolderMenuConversation ? (
+            <MenuItem
+              onClick={() => runConversationSetting({ is_muted: !folderMenuConversation?.is_muted })}
+              disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+            >
+              <NotificationsOffOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              {folderMenuConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
+            </MenuItem>
+          ) : null}
           <MenuItem
             onClick={() => runConversationSetting({ is_archived: !folderMenuConversation?.is_archived })}
             disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
@@ -636,30 +804,33 @@ function ChatSidebar({
             {folderMenuConversation?.is_archived ? 'Вернуть из архива' : 'Переместить в архив'}
           </MenuItem>
 
-          <Divider />
-
-          <MenuItem disabled sx={{ opacity: 1, fontWeight: 700 }}>
-            <FolderOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
-            Добавить в папку
-          </MenuItem>
-          {(Array.isArray(customFolders) ? customFolders : []).length === 0 ? (
-            <MenuItem disabled>Нет пользовательских папок</MenuItem>
-          ) : null}
-          {(Array.isArray(customFolders) ? customFolders : []).map((folder) => {
-            const folderId = String(folder?.id || '');
-            const checked = selectedFolderIds.has(folderId);
-            return (
-              <MenuItem
-                key={folderId}
-                onClick={() => {
-                  void onToggleConversationInFolder?.(folderId, folderMenuConversationId, !checked);
-                }}
-              >
-                <Checkbox size="small" checked={checked} sx={{ mr: 1, p: 0.5 }} />
-                {folder?.name || 'Папка'}
+          {!isAiFolderMenuConversation ? (
+            <>
+              <Divider />
+              <MenuItem disabled sx={{ opacity: 1, fontWeight: 700 }}>
+                <FolderOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+                Добавить в папку
               </MenuItem>
-            );
-          })}
+              {(Array.isArray(customFolders) ? customFolders : []).length === 0 ? (
+                <MenuItem disabled>Нет пользовательских папок</MenuItem>
+              ) : null}
+              {(Array.isArray(customFolders) ? customFolders : []).map((folder) => {
+                const folderId = String(folder?.id || '');
+                const checked = selectedFolderIds.has(folderId);
+                return (
+                  <MenuItem
+                    key={folderId}
+                    onClick={() => {
+                      void onToggleConversationInFolder?.(folderId, folderMenuConversationId, !checked);
+                    }}
+                  >
+                    <Checkbox size="small" checked={checked} sx={{ mr: 1, p: 0.5 }} />
+                    {folder?.name || 'Папка'}
+                  </MenuItem>
+                );
+              })}
+            </>
+          ) : null}
 
           <Divider />
 
@@ -667,11 +838,6 @@ function ChatSidebar({
             <MenuItem disabled>
               <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
               Удаляется вместе с задачей
-            </MenuItem>
-          ) : String(folderMenuConversation?.kind || '').trim() === 'ai' ? (
-            <MenuItem disabled>
-              <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
-              AI-чат нельзя удалить
             </MenuItem>
           ) : (
             <MenuItem
@@ -712,7 +878,11 @@ function ChatSidebar({
             transition: folderSwipeOffset ? 'none' : 'transform 170ms ease-out',
           }}
         >
-        {sidebarSearchActive ? (
+        {workspace === 'ai' ? (
+          <div className={compactMobile ? 'pt-2' : 'pt-3'}>
+            {aiSection}
+          </div>
+        ) : showPeopleSearch ? (
           <>
             {searchingSidebar ? (
               <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
@@ -747,7 +917,7 @@ function ChatSidebar({
                       item={item}
                       theme={theme}
                       ui={ui}
-                      activeConversationId={activeConversationId}
+                      active={item.id === activeConversationId}
                       onOpenConversation={handleOpenConversation}
                       onPrefetchConversation={onPrefetchConversation}
                       onOpenFolderMenu={handleOpenFolderMenu}
@@ -782,7 +952,6 @@ function ChatSidebar({
                 key={`folder-empty-${activeFolderKey}`}
                 {...folderPanelMotion}
               >
-                {aiSection}
                 <InfoCard compactMobile={compactMobile}>
                   Чаты пока не найдены. Найдите человека через поиск или создайте новый групповой чат.
                 </InfoCard>
@@ -793,7 +962,6 @@ function ChatSidebar({
                 className={compactMobile ? '' : 'pt-2'}
                 {...folderPanelMotion}
               >
-                {aiSection}
                 {taskSections ? (
                   <>
                     <TaskSectionHeader
@@ -808,7 +976,7 @@ function ChatSidebar({
                         item={item}
                         theme={theme}
                         ui={ui}
-                        activeConversationId={activeConversationId}
+                        active={item.id === activeConversationId}
                         onOpenConversation={handleOpenConversation}
                         onPrefetchConversation={onPrefetchConversation}
                         onOpenFolderMenu={handleOpenFolderMenu}
@@ -839,7 +1007,7 @@ function ChatSidebar({
                         item={item}
                         theme={theme}
                         ui={ui}
-                        activeConversationId={activeConversationId}
+                        active={item.id === activeConversationId}
                         onOpenConversation={handleOpenConversation}
                         onPrefetchConversation={onPrefetchConversation}
                         onOpenFolderMenu={handleOpenFolderMenu}
@@ -857,7 +1025,7 @@ function ChatSidebar({
                     item={item}
                     theme={theme}
                     ui={ui}
-                    activeConversationId={activeConversationId}
+                    active={item.id === activeConversationId}
                     onOpenConversation={handleOpenConversation}
                     onPrefetchConversation={onPrefetchConversation}
                     onOpenFolderMenu={handleOpenFolderMenu}
@@ -874,6 +1042,43 @@ function ChatSidebar({
         )}
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(renameConversation)}
+        onClose={() => setRenameConversation(null)}
+        fullWidth
+        maxWidth="xs"
+        aria-labelledby="ai-rename-dialog-title"
+      >
+        <DialogTitle id="ai-rename-dialog-title">Переименовать AI-диалог</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            margin="dense"
+            label="Название диалога"
+            value={renameTitle}
+            onChange={(event) => setRenameTitle(event.target.value)}
+            inputProps={{ maxLength: 255 }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void submitAiRename();
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameConversation(null)}>Отмена</Button>
+          <Button
+            variant="contained"
+            onClick={() => void submitAiRename()}
+            disabled={!String(renameTitle || '').trim() || conversationActionPendingId === String(renameConversation?.id || '')}
+          >
+            Сохранить
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

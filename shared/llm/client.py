@@ -10,6 +10,7 @@ import random
 import re
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
@@ -508,6 +509,59 @@ class OpenRouterClient:
             raise _wrap_openrouter_error(exc)
         text = _extract_completion_text(completion)
         return text, _usage_dict(completion, model=resolved_model)
+
+    def stream_chat_completion(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str = "",
+        purpose: str = "chat",
+        temperature: float = 0.2,
+        max_tokens: int = 4000,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[Any]:
+        """Stream a validated OpenAI-compatible chat request through RouterAI.
+
+        Authentication and request-shape validation belong to the internal gateway;
+        this method deliberately exposes no provider URL, API key, or arbitrary body.
+        """
+        resolved_model = str(model or "").strip() or resolve_model(purpose)
+        request_messages = [dict(item) for item in list(messages or []) if isinstance(item, dict)]
+        if not request_messages:
+            raise OpenRouterClientError("At least one chat message is required.")
+        client = self._build_client(timeout=timeout)
+        request_kwargs: dict[str, Any] = {
+            "model": resolved_model,
+            "temperature": float(temperature),
+            "max_tokens": max(1, int(max_tokens)),
+            "messages": request_messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            request_kwargs["tools"] = [dict(item) for item in tools if isinstance(item, dict)]
+        if tool_choice is not None:
+            request_kwargs["tool_choice"] = tool_choice
+
+        try:
+            stream = self._with_transient_retry(
+                model=resolved_model,
+                call=lambda: client.chat.completions.create(**request_kwargs),
+            )
+        except Exception as exc:
+            logger.warning("RouterAI streaming completion failed: model=%s error=%s", resolved_model, exc)
+            raise _wrap_openrouter_error(exc)
+
+        def _iterate() -> Iterator[Any]:
+            try:
+                yield from stream
+            except Exception as exc:
+                logger.warning("RouterAI streaming response interrupted: model=%s error=%s", resolved_model, exc)
+                raise _wrap_openrouter_error(exc) from exc
+
+        return _iterate()
 
     def complete_json(
         self,

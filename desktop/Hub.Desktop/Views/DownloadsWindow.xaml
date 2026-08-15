@@ -240,10 +240,16 @@
                                                     </Style>
                                                 </ProgressBar.Style>
                                             </ProgressBar>
-                                            <TextBlock Margin="0,7,0,0"
-                                                       Text="{Binding StatusText}"
-                                                       Foreground="{DynamicResource MutedTextBrush}"
-                                                       AutomationProperties.LiveSetting="Polite" />
+                                            <DockPanel Margin="0,7,0,0" LastChildFill="True">
+                                                <TextBlock DockPanel.Dock="Right"
+                                                           Margin="12,0,0,0"
+                                                           Text="{Binding SourceWindowLabel}"
+                                                           Foreground="{DynamicResource MutedTextBrush}" />
+                                                <TextBlock Text="{Binding StatusText}"
+                                                           Foreground="{DynamicResource MutedTextBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           AutomationProperties.LiveSetting="Polite" />
+                                            </DockPanel>
                                         </StackPanel>
                                         <StackPanel Grid.Row="2"
                                                     Margin="0,12,0,0"

@@ -41,10 +41,14 @@ export default function useChatSidebarSection(ctx) {
     requestLeaveConversation,
     conversationActionPendingId,
     aiSidebarRows,
+    aiBots,
     aiBotsLoading,
     aiBotsError,
     canUseAiChat,
     handleOpenAiBot,
+    handleCreateAiBotConversation,
+    handleCreateAiConversation,
+    renameAiConversation,
     openingAiBotId,
     skipRowEnterAnimation,
   } = sidebar;
@@ -91,10 +95,14 @@ export default function useChatSidebarSection(ctx) {
         onRequestLeaveConversation={requestLeaveConversation}
         conversationActionPendingId={conversationActionPendingId}
         aiBots={aiSidebarRows}
+        aiAgents={aiBots}
         aiBotsLoading={aiBotsLoading}
         aiBotsError={aiBotsError}
         showAiSection={canUseAiChat}
         onOpenAiBot={handleOpenAiBot}
+        onCreateAiBotConversation={handleCreateAiBotConversation}
+        onCreateAiConversation={handleCreateAiConversation}
+        onRenameAiConversation={renameAiConversation}
         openingAiBotId={openingAiBotId}
         skipRowEnterAnimation={skipRowEnterAnimation}
       />
@@ -102,6 +110,7 @@ export default function useChatSidebarSection(ctx) {
     [
       aiBotsError,
       aiBotsLoading,
+      aiBots,
       aiSidebarRows,
       canUseAiChat,
       conversationActionPendingId,
@@ -114,6 +123,9 @@ export default function useChatSidebarSection(ctx) {
       filteredConversations,
       handleActiveFolderChange,
       handleOpenAiBot,
+      handleCreateAiBotConversation,
+      handleCreateAiConversation,
+      renameAiConversation,
       handleOpenArchiveFolder,
       handleOpenFolderManager,
       handleOpenPeer,

@@ -33,6 +33,7 @@
 - `AUTH_2FA_POLICY=external_only`
 - `AUTH_2FA_INTERNAL_CIDRS=10.0.0.0/8`
 - `AUTH_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128` for same-host IIS
+- `AUTH_CLOUDFLARE_PROXY_CIDRS=` stays empty until Cloudflare and the origin firewall are enabled; then use only official Cloudflare CIDRs
 - `TOTP_ISSUER=HUB-IT`
 - `AUTH_2FA_CHALLENGE_TTL_SEC=300`
 - `AUTH_BACKUP_CODES_COUNT=10`
@@ -102,6 +103,7 @@ Recommended baseline:
 - IIS terminates HTTPS for `https://hubit.zsgp.ru`.
 - Keep `AUTH_TRUSTED_PROXY_CIDRS` to loopback when IIS and backend are on the same host.
 - Add another proxy CIDR only if a separate trusted reverse proxy is introduced.
+- Trust `CF-Connecting-IP` only through `AUTH_CLOUDFLARE_PROXY_CIDRS`; see [HUB_CLOUDFLARE_EDGE.md](HUB_CLOUDFLARE_EDGE.md).
 
 ## IIS Dynamic IP Restrictions
 Recommended first-pass values:

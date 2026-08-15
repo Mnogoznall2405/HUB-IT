@@ -89,7 +89,11 @@ class ChatCache:
         if not normalized_conversation_id or reader_id <= 0:
             return
 
-        conversations_key = self._service._cache_key(user_id=reader_id, bucket="conversations")
+        conversations_key = self._service._cache_key(
+            user_id=reader_id,
+            bucket="conversations",
+            extra="50",
+        )
         unread_key = self._service._cache_key(user_id=reader_id, bucket="unread_summary")
         detail_key = self._service._cache_key(
             user_id=reader_id,
@@ -139,7 +143,7 @@ class ChatCache:
         # Exact Redis deletes for shared list buckets — avoid SCAN-per-user on every send.
         chat_read_cache_redis.delete_keys(
             [
-                self._service._cache_key(user_id=user_id, bucket="conversations")
+                self._service._cache_key(user_id=user_id, bucket="conversations", extra="50")
                 for user_id in target_user_ids
             ]
             + [

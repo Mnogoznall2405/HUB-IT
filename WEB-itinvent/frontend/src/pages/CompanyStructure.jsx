@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -35,7 +35,6 @@ import { useNotification } from '../contexts/NotificationContext';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 import CompanyStructureAdmin from './company-structure/CompanyStructureAdmin';
 import CompanyStructureFocus from './company-structure/CompanyStructureFocus';
-import CompanyStructureOverview from './company-structure/CompanyStructureOverview';
 import EmployeeDirectoryPanel from './company-structure/EmployeeDirectoryPanel';
 import {
   findNodeById,
@@ -43,6 +42,18 @@ import {
   getCompanyRootAndBlocks,
   nodeCardTitle,
 } from './company-structure/companyStructureModel';
+
+const CompanyStructureOverview = lazy(() => import('./company-structure/CompanyStructureOverview'));
+
+const rememberCacheValue = (cache, key, value, maxEntries = 24) => {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+};
 
 const viewToggleSx = {
   color: 'text.secondary',
@@ -202,7 +213,7 @@ const CompanyStructure = () => {
     const existingRequest = peopleRequestsRef.current.get(key);
     const request = existingRequest || companyStructureAPI.getNodePeople(selectedId).then((payload) => {
       const items = Array.isArray(payload?.items) ? payload.items : [];
-      peopleCacheRef.current.set(key, items);
+      rememberCacheValue(peopleCacheRef.current, key, items);
       return items;
     });
     if (!existingRequest) peopleRequestsRef.current.set(key, request);
@@ -442,14 +453,16 @@ const CompanyStructure = () => {
               <Box component="section" data-testid="company-structure-stage" sx={{ minHeight: 0, pt: 0.5 }}>
                 {selectedNode ? (
                   explorerView === 'overview' && !isMobile ? (
-                    <CompanyStructureOverview
-                      tree={tree}
-                      blockId={activeBlockId}
-                      selectedId={selectedId}
-                      onFocus={(nodeId) => selectNode(nodeId, null, { view: 'focus' })}
-                      onRoot={(nodeId) => selectNode(nodeId, null, { view: 'overview' })}
-                      onPeople={(nodeId) => openPeople(nodeId)}
-                    />
+                    <Suspense fallback={<Box role="status" sx={{ minHeight: 420, display: 'grid', placeItems: 'center' }}><CircularProgress size={28} /></Box>}>
+                      <CompanyStructureOverview
+                        tree={tree}
+                        blockId={activeBlockId}
+                        selectedId={selectedId}
+                        onFocus={(nodeId) => selectNode(nodeId, null, { view: 'focus' })}
+                        onRoot={(nodeId) => selectNode(nodeId, null, { view: 'overview' })}
+                        onPeople={(nodeId) => openPeople(nodeId)}
+                      />
+                    </Suspense>
                   ) : (
                     <CompanyStructureFocus
                       tree={tree}

@@ -44,7 +44,11 @@ if (-not $SkipFrontend) {
     try {
         $tests = @(
             'src/pages/Login.test.jsx',
+            'src/pages/About.test.jsx',
+            'src/pages/account/AccountWorkspace.test.jsx',
             'src/contexts/AuthContext.test.jsx',
+            'src/lib/desktopInstallerFeed.test.js',
+            'src/components/desktop/DesktopInstallerDownload.test.jsx',
             'src/lib/desktopBridge.test.js',
             'src/lib/chatSocket.test.js',
             'src/lib/chatNotifications.test.js',

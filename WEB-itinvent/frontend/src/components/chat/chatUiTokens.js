@@ -213,8 +213,8 @@ const COMPACT_DESKTOP_CHAT_DENSITY = {
   bubbleReactionBodyBottomPadding: 0.25,
   bubbleRowPt: 0.75,
   bubbleSenderRowPt: 0.28,
-  bubblePx: 0.78,
-  bubblePy: 0.5,
+  bubblePx: 1.18,
+  bubblePy: 0.82,
 };
 
 const MOBILE_CHAT_DENSITY = {

@@ -58,6 +58,7 @@ const rolePermissionFallback = {
     'chat.read',
     'chat.write',
     'chat.ai.use',
+    'chat.ai.sandbox',
     'database.read',
     'database.write',
     'mfu.read',
@@ -112,6 +113,13 @@ const isLoginRoute = () => {
   return pathname === '/login';
 };
 
+const SESSION_RECOVERY_RETRY_DELAYS_MS = [1000, 2000, 5000, 15000, 30000];
+
+const isDefinitiveSessionRejection = (requestError) => {
+  const status = Number(requestError?.response?.status || 0);
+  return status === 401 || status === 403;
+};
+
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -138,9 +146,11 @@ export const AuthProvider = ({ children }) => {
       }
       return currentUser || null;
     } catch (refreshError) {
-      setUser(null);
-      localStorage.removeItem('user');
-      clearAllMailRecentCache();
+      if (isDefinitiveSessionRejection(refreshError)) {
+        setUser(null);
+        localStorage.removeItem('user');
+        clearAllMailRecentCache();
+      }
       throw refreshError;
     }
   }, []);
@@ -163,27 +173,81 @@ export const AuthProvider = ({ children }) => {
       }
     }
 
-    if (!hasCachedUser && isLoginRoute()) {
-      setLoading(false);
-      return;
-    }
-
     if (hasCachedUser) {
       setLoading(false);
     }
 
-    const verifySession = async () => {
-      try {
-        await refreshSession({ suppressAuthRequired: true });
-      } catch {
-        setUser(null);
-        localStorage.removeItem('user');
-      } finally {
-        setLoading(false);
+    let cancelled = false;
+    let checkInFlight = false;
+    let retryTimer = null;
+    let retryAttempt = 0;
+    let definitiveRejection = false;
+
+    const clearRetryTimer = () => {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
       }
     };
 
-    verifySession();
+    const scheduleRetry = () => {
+      if (cancelled || definitiveRejection || retryTimer !== null) return;
+      const retryDelay = SESSION_RECOVERY_RETRY_DELAYS_MS[
+        Math.min(retryAttempt, SESSION_RECOVERY_RETRY_DELAYS_MS.length - 1)
+      ];
+      retryAttempt += 1;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void verifySession();
+      }, retryDelay);
+    };
+
+    const verifySession = async () => {
+      if (cancelled || definitiveRejection || checkInFlight) return;
+      checkInFlight = true;
+      try {
+        await refreshSession({ suppressAuthRequired: true });
+        if (!cancelled) {
+          retryAttempt = 0;
+          setLoading(false);
+        }
+      } catch (requestError) {
+        if (cancelled) return;
+        if (isDefinitiveSessionRejection(requestError)) {
+          definitiveRejection = true;
+          setLoading(false);
+        } else {
+          scheduleRetry();
+        }
+      } finally {
+        checkInFlight = false;
+      }
+    };
+
+    const retrySessionImmediately = () => {
+      if (cancelled || definitiveRejection) return;
+      clearRetryTimer();
+      void verifySession();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        retrySessionImmediately();
+      }
+    };
+
+    window.addEventListener('online', retrySessionImmediately);
+    window.addEventListener('focus', retrySessionImmediately);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    void verifySession();
+
+    return () => {
+      cancelled = true;
+      clearRetryTimer();
+      window.removeEventListener('online', retrySessionImmediately);
+      window.removeEventListener('focus', retrySessionImmediately);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [refreshSession]);
 
   useEffect(() => {
@@ -197,6 +261,61 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener('auth-required', onAuthRequired);
     return () => window.removeEventListener('auth-required', onAuthRequired);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer = null;
+
+    const clearRetryTimer = () => {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const verifySharedLogin = async (attempt = 0) => {
+      try {
+        await refreshSession({ suppressAuthRequired: true });
+        if (!cancelled) {
+          window.dispatchEvent(new Event('auth-changed'));
+        }
+      } catch (requestError) {
+        if (cancelled || isDefinitiveSessionRejection(requestError)) return;
+        const retryDelay = SESSION_RECOVERY_RETRY_DELAYS_MS[
+          Math.min(attempt, SESSION_RECOVERY_RETRY_DELAYS_MS.length - 1)
+        ];
+        retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          void verifySharedLogin(attempt + 1);
+        }, retryDelay);
+      }
+    };
+
+    const onSharedAuthChanged = (event) => {
+      if (event.key !== 'user' || (event.storageArea && event.storageArea !== localStorage)) {
+        return;
+      }
+
+      clearRetryTimer();
+      if (event.newValue === null) {
+        localStorage.removeItem('user');
+        clearAllMailRecentCache();
+        setUser(null);
+        setLoading(false);
+        window.dispatchEvent(new Event('auth-changed'));
+        return;
+      }
+
+      void verifySharedLogin();
+    };
+
+    window.addEventListener('storage', onSharedAuthChanged);
+    return () => {
+      cancelled = true;
+      clearRetryTimer();
+      window.removeEventListener('storage', onSharedAuthChanged);
+    };
+  }, [refreshSession]);
 
   // Silent refresh before access JWT expires (default 15m). Keeps cookies warm
   // even when the tab has no API traffic (chat WS alone used to miss idle touch).

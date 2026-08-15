@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
+import DesktopInstallerDownload from '../components/desktop/DesktopInstallerDownload';
 import { useAuth } from '../contexts/AuthContext';
 import {
   encodeCredential,
@@ -11,6 +12,7 @@ import {
 } from '../lib/passkeyWebAuthn';
 import { emitAgentDebugLog } from '../lib/debugClientLog';
 import { getDesktopWindowsUsername } from '../lib/desktopBridge';
+import { resolvePostAuthenticationPath } from '../lib/aboutOnboarding';
 import {
   auditLoginPageOverlays,
   resetLoginPagePresentation,
@@ -47,7 +49,6 @@ const CANONICAL_HOST = /^[a-z0-9.-]+$/.test(configuredCanonicalHost)
   ? configuredCanonicalHost
   : DEFAULT_CANONICAL_HOST;
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
-const DASHBOARD_PATH = '/dashboard';
 
 function isLocalDevelopmentHost(hostname) {
   const normalized = String(hostname || '').trim().toLowerCase();
@@ -952,12 +953,13 @@ function Login() {
     void attemptPasskeyLogin({ auto: true });
   }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
 
-  const redirectToDashboard = () => {
+  const redirectAfterAuthentication = (userPayload = authenticatedUserRef.current) => {
+    const destination = resolvePostAuthenticationPath(userPayload);
     if (shouldForceCanonicalHost()) {
-      window.location.assign(buildCanonicalUrl(DASHBOARD_PATH));
+      window.location.assign(buildCanonicalUrl(destination));
       return;
     }
-    window.location.assign(DASHBOARD_PATH);
+    window.location.assign(destination);
   };
 
   const closeRememberDevicePrompt = ({ redirect = true } = {}) => {
@@ -969,7 +971,7 @@ function Login() {
     setRememberDeviceMode('generic');
     setDeviceLabel('');
     if (redirect) {
-      redirectToDashboard();
+      redirectAfterAuthentication();
     }
   };
 
@@ -984,7 +986,7 @@ function Login() {
     const registrationMode = await resolveTrustedDeviceRegistrationMode();
     if (registrationMode.mode === 'unsupported') {
       if (!required) {
-        redirectToDashboard();
+        redirectAfterAuthentication();
         return false;
       }
       setRememberDeviceMode('unsupported');
@@ -1002,7 +1004,7 @@ function Login() {
     setRememberDeviceError('');
     setRememberDeviceRequired(false);
     if (!enabled) {
-      redirectToDashboard();
+      redirectAfterAuthentication();
       return;
     }
     const opened = await applyRememberDeviceRegistrationMode({ required: false });
@@ -1017,12 +1019,12 @@ function Login() {
     setRememberDeviceError('');
     setRememberDeviceRequired(Boolean(required));
     if (!enabled) {
-      redirectToDashboard();
+      redirectAfterAuthentication();
       return;
     }
     const opened = await applyRememberDeviceRegistrationMode({ required: Boolean(required) });
     if (!opened && !required) {
-      redirectToDashboard();
+      redirectAfterAuthentication();
     }
   };
 
@@ -1191,7 +1193,8 @@ function Login() {
         );
         return false;
       }
-      redirectToDashboard();
+      authenticatedUserRef.current = verifyResult.user || null;
+      redirectAfterAuthentication(verifyResult.user || null);
       return true;
     } catch (passkeyError) {
       clearPasskeyPresentationLock();
@@ -1252,7 +1255,7 @@ function Login() {
       await maybeOpenRememberDevicePrompt(true);
       return;
     }
-    redirectToDashboard();
+    redirectAfterAuthentication(userPayload);
   };
 
   const handlePasswordSubmit = async (event) => {
@@ -1460,7 +1463,8 @@ function Login() {
         reportLoginError(verifyResult.error);
         return;
       }
-      redirectToDashboard();
+      authenticatedUserRef.current = verifyResult.user || null;
+      redirectAfterAuthentication(verifyResult.user || null);
     } catch (authError) {
       setTrustedDeviceBusy(false);
       reportLoginError(extractWebAuthnErrorMessage(authError, 'Не удалось подтвердить доверенное устройство'));
@@ -2070,6 +2074,10 @@ function Login() {
               )}
             </div>
           </div>
+
+          {!isMobileMinimalStep ? (
+            <DesktopInstallerDownload variant="login" />
+          ) : null}
 
           {!isMobileMinimalStep ? (
             <div className="px-1 text-center text-xs leading-5 text-white/34 md:text-left">

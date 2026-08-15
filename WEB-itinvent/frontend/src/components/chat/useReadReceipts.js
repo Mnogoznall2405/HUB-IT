@@ -257,6 +257,7 @@ export default function useReadReceipts({
         }
         if (!node) {
           observedNodesRef.current.delete(normalizedMessageId);
+          callbackRefsRef.current.delete(normalizedMessageId);
           return;
         }
         observedNodesRef.current.set(normalizedMessageId, node);

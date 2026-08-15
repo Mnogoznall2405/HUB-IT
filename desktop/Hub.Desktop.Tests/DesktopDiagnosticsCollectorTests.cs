@@ -37,6 +37,7 @@ public sealed class DesktopDiagnosticsCollectorTests
 
         var snapshot = collector.Collect(context);
 
+        Assert.Equal(2, snapshot.SchemaVersion);
         Assert.Equal("https://hubit.zsgp.ru", snapshot.ConfiguredOrigin);
         Assert.Equal("Downloading (50%)", snapshot.UpdaterStatus);
         Assert.Equal(2, snapshot.WpfRenderTier);

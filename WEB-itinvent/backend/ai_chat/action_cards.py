@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.appdb.db import app_session
@@ -17,6 +17,7 @@ from backend.appdb.models import AppAiPendingAction
 from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
+    PERM_CHAT_AI_SANDBOX,
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
     PERM_TASKS_CREATE,
@@ -31,6 +32,7 @@ from backend.services.transfer_service import get_act_record
 
 
 ACTION_STATUS_PENDING = "pending"
+ACTION_STATUS_EXECUTING = "executing"
 ACTION_STATUS_CONFIRMED = "confirmed"
 ACTION_STATUS_CANCELLED = "cancelled"
 ACTION_STATUS_EXPIRED = "expired"
@@ -46,9 +48,10 @@ ACTION_OFFICE_TASK_COMMENT = "office.task.comment"
 ACTION_OFFICE_TASK_STATUS = "office.task.status"
 ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
 ACTION_DOC_CONVERT_FORMAT_CHOICE = "ai.doc.convert.format_choice"
+ACTION_SANDBOX_PERMISSION = "ai.sandbox.permission"
 
 DRAFT_EXPIRES_IN = timedelta(hours=1)
-REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv")
+REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv", "txt", "md", "json")
 DOC_CONVERT_FORMAT_CHOICES = ("docx", "txt", "md", "pdf", "xlsx")
 DOC_CONVERT_FORMAT_LABELS = {
     "docx": "Word",
@@ -261,7 +264,7 @@ def _normalize_mail_attachment_refs(value: Any) -> list[dict[str, str]]:
 
 def _normalize_mail_generated_file_specs(value: Any) -> list[dict[str, Any]]:
     try:
-        return normalize_generated_file_specs(list(value or []))[:10]
+        return normalize_generated_file_specs(list(value or []))[:5]
     except GeneratedFileError as exc:
         raise ValueError(f"Generated mail attachment is invalid: {exc}") from exc
 
@@ -451,6 +454,28 @@ def _report_table_row_count(tables: list[dict[str, Any]]) -> int:
     return count
 
 
+def _normalize_report_source_file_spec(value: Any) -> dict[str, Any] | None:
+    source = value if isinstance(value, dict) else None
+    if source is None:
+        return None
+    metadata = dict(source.get("metadata") or {}) if isinstance(source.get("metadata"), dict) else {}
+    metadata.pop("content_b64", None)
+    probe_source = {
+        "format": "txt",
+        "file_name": _normalize_text(source.get("file_name")) or "generated-file",
+        "title": _normalize_text(source.get("title")) or None,
+        "content": source.get("content"),
+        "rows": list(source.get("rows") or []) if isinstance(source.get("rows"), list) else [],
+        "columns": list(source.get("columns") or []) if isinstance(source.get("columns"), list) else [],
+        "sheets": list(source.get("sheets") or []) if isinstance(source.get("sheets"), list) else [],
+        "metadata": metadata,
+    }
+    normalized = normalize_generated_file_specs([probe_source])[0]
+    normalized.pop("format", None)
+    normalized.pop("size_bytes", None)
+    return normalized
+
+
 def _normalize_report_payload(payload: dict[str, Any], *, database_id: str | None = None) -> dict[str, Any]:
     source = payload if isinstance(payload, dict) else {}
     title = _normalize_text(source.get("title")) or "Report"
@@ -464,12 +489,19 @@ def _normalize_report_payload(payload: dict[str, Any], *, database_id: str | Non
         "tables": _normalize_report_tables(source.get("tables")),
         "file_name_base": file_name_base,
         "source_tool_results": list(source.get("source_tool_results") or [])[:20],
+        "source_file_spec": _normalize_report_source_file_spec(source.get("source_file_spec")),
         "database_id": normalized_database_id,
     }
 
 
 def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | None) -> dict[str, Any]:
     tables = _normalize_report_tables(payload.get("tables"))
+    source_file_spec = payload.get("source_file_spec") if isinstance(payload.get("source_file_spec"), dict) else {}
+    source_rows = list(source_file_spec.get("rows") or [])
+    source_sheets = list(source_file_spec.get("sheets") or [])
+    source_row_count = len(source_rows) + sum(
+        len(list(item.get("rows") or [])) for item in source_sheets if isinstance(item, dict)
+    )
     source_results = [item for item in list(payload.get("source_tool_results") or []) if isinstance(item, dict)]
     source_tool_ids = sorted({_normalize_text(item.get("tool_id")) for item in source_results if _normalize_text(item.get("tool_id"))})
     return {
@@ -481,8 +513,8 @@ def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | 
             "title": _normalize_text(payload.get("title")) or "Report",
             "summary": _normalize_text(payload.get("summary")) or None,
             "table_count": len(tables),
-            "row_count": _report_table_row_count(tables),
-            "source": ", ".join(source_tool_ids[:4]) or "ITinvent",
+            "row_count": _report_table_row_count(tables) or source_row_count,
+            "source": ", ".join(source_tool_ids[:4]) or ("User content" if source_file_spec else "ITinvent"),
             "formats": list(REPORT_FORMAT_CHOICES),
         },
     }
@@ -1116,6 +1148,21 @@ def _report_rows_for_table(table: dict[str, Any]) -> list[Any]:
 def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) -> dict[str, Any]:
     normalized = _normalize_report_payload(payload, database_id=_normalize_text(payload.get("database_id")) or None)
     title = _normalize_text(normalized.get("title")) or "Report"
+    source_file_spec = (
+        dict(normalized.get("source_file_spec") or {})
+        if isinstance(normalized.get("source_file_spec"), dict)
+        else {}
+    )
+    if source_file_spec:
+        source_file_spec["format"] = file_format
+        source_file_spec["file_name"] = _report_file_name(
+            _normalize_text(source_file_spec.get("file_name"))
+            or _normalize_text(normalized.get("file_name_base"))
+            or title,
+            file_format,
+        )
+        source_file_spec["title"] = _normalize_text(source_file_spec.get("title")) or title
+        return source_file_spec
     summary = _normalize_text(normalized.get("summary"))
     sections = _normalize_report_sections(normalized.get("sections"))
     tables = _normalize_report_tables(normalized.get("tables"))
@@ -1327,7 +1374,7 @@ def _resolve_office_mail_attachments(*, row: AppAiPendingAction, payload: dict[s
         attachments.append((_normalize_text(file_payload.get("file_name")) or file_path.name, file_path.read_bytes()))
     generated_specs = _normalize_mail_generated_file_specs(payload.get("generated_file_specs"))
     if generated_specs:
-        available_slots = max(0, 10 - len(attachments))
+        available_slots = max(0, 5 - len(attachments))
         uploads = build_generated_uploads(generated_specs[:available_slots])
         for upload in uploads:
             try:
@@ -1434,11 +1481,11 @@ def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -
 
 def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_action_id = _normalize_text(action_id)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
     with app_session() as session:
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
             raise LookupError("Action was not found")
-        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
         if int(row.requester_user_id or 0) != current_user_id:
             raise PermissionError("Only the action initiator can confirm it")
         if _set_expired_if_needed(row):
@@ -1446,20 +1493,39 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             return _action_to_card(row)
         if row.status != ACTION_STATUS_PENDING:
             return _action_to_card(row)
-        payload = _json_loads(row.payload_json, {}) or {}
-        database_id = _normalize_text(row.database_id)
-        if row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY} and not database_id:
-            raise ValueError("Action database is not resolved")
+        claimed = session.execute(
+            update(AppAiPendingAction)
+            .where(
+                AppAiPendingAction.id == normalized_action_id,
+                AppAiPendingAction.requester_user_id == current_user_id,
+                AppAiPendingAction.status == ACTION_STATUS_PENDING,
+            )
+            .values(
+                status=ACTION_STATUS_EXECUTING,
+                executed_by_user_id=current_user_id or None,
+                updated_at=_utc_now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if int(claimed.rowcount or 0) != 1:
+            session.expire_all()
+            current = session.get(AppAiPendingAction, normalized_action_id)
+            return _action_to_card(current or row)
+        session.expire_all()
+        row = session.get(AppAiPendingAction, normalized_action_id)
+
+    payload = _json_loads(row.payload_json, {}) or {}
+    database_id = _normalize_text(row.database_id)
+    if row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY} and not database_id:
+        error = ValueError("Action database is not resolved")
+        result = {"success": False, "message": str(error)}
+    else:
         try:
             if row.action_type == ACTION_TRANSFER:
                 _require_permission(current_user, PERM_DATABASE_WRITE)
                 result = _execute_transfer(payload=payload, database_id=database_id, current_user=current_user)
                 try:
-                    result["chat_act_delivery"] = _send_transfer_acts_to_chat(
-                        row=row,
-                        result=result,
-                        current_user=current_user,
-                    )
+                    result["chat_act_delivery"] = _send_transfer_acts_to_chat(row=row, result=result, current_user=current_user)
                 except Exception as exc:
                     result["chat_act_delivery"] = {
                         "sent_count": 0,
@@ -1481,17 +1547,11 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_office_mail(action_type=row.action_type, payload=payload, current_user=current_user, row=row)
             elif row.action_type == ACTION_REPORT_FORMAT_CHOICE:
                 result = _execute_report_format_choice(
-                    row=row,
-                    payload=payload,
-                    current_user=current_user,
-                    payload_overrides=payload_overrides,
+                    row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides
                 )
             elif row.action_type == ACTION_DOC_CONVERT_FORMAT_CHOICE:
                 result = _execute_doc_convert_format_choice(
-                    row=row,
-                    payload=payload,
-                    current_user=current_user,
-                    payload_overrides=payload_overrides,
+                    row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides
                 )
             elif row.action_type == ACTION_OFFICE_TASK_CREATE:
                 result = _execute_office_task_create(payload=payload, current_user=current_user)
@@ -1499,32 +1559,70 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_office_task_comment(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_OFFICE_TASK_STATUS:
                 result = _execute_office_task_status(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_SANDBOX_PERMISSION:
+                _require_permission(current_user, PERM_CHAT_AI_SANDBOX)
+                permission_id = _normalize_text(payload.get("permission_id"))
+                if not permission_id:
+                    raise ValueError("Sandbox permission id is missing")
+                requested_scope = _normalize_text(
+                    (payload_overrides or {}).get("scope") or payload.get("scope") or "once"
+                )
+                from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+                permission_result = ai_sandbox_app_service.respond_permission(
+                    permission_id=permission_id,
+                    current_user_id=current_user_id,
+                    decision="allow",
+                    scope=requested_scope,
+                )
+                result = {
+                    "success": permission_result.get("status") == "approved",
+                    "permission": permission_result,
+                }
             else:
                 raise ValueError(f"Unsupported action_type: {row.action_type}")
-            if bool(result.get("keep_pending")) and bool(result.get("success", True)):
-                row.status = ACTION_STATUS_PENDING
-                row.result_json = _json_dumps(result)
-                row.error_text = None
-            else:
-                row.status = ACTION_STATUS_CONFIRMED if bool(result.get("success", True)) else ACTION_STATUS_FAILED
-                row.result_json = _json_dumps(result)
-                row.error_text = None if row.status == ACTION_STATUS_CONFIRMED else _normalize_text(result.get("message")) or "Action failed"
-            row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
-            row.updated_at = _utc_now()
         except PermissionError:
+            with app_session() as session:
+                session.execute(
+                    update(AppAiPendingAction)
+                    .where(
+                        AppAiPendingAction.id == normalized_action_id,
+                        AppAiPendingAction.status == ACTION_STATUS_EXECUTING,
+                    )
+                    .values(status=ACTION_STATUS_PENDING, executed_by_user_id=None, updated_at=_utc_now())
+                )
             raise
         except Exception as exc:
-            row.status = ACTION_STATUS_FAILED
-            row.error_text = _normalize_text(exc) or "Action failed"
-            row.result_json = _json_dumps({"success": False, "message": row.error_text})
-            row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
-            row.updated_at = _utc_now()
+            result = {"success": False, "message": _normalize_text(exc) or "Action failed"}
+
+    with app_session() as session:
+        current = session.get(AppAiPendingAction, normalized_action_id)
+        if current is None:
+            raise LookupError("Action was not found")
+        if current.status != ACTION_STATUS_EXECUTING:
+            return _action_to_card(current)
+        current.payload_json = row.payload_json
+        current.preview_json = row.preview_json
+        if bool(result.get("keep_pending")) and bool(result.get("success", True)):
+            current.status = ACTION_STATUS_PENDING
+            current.error_text = None
+        else:
+            current.status = ACTION_STATUS_CONFIRMED if bool(result.get("success", True)) else ACTION_STATUS_FAILED
+            current.error_text = (
+                None
+                if current.status == ACTION_STATUS_CONFIRMED
+                else _normalize_text(result.get("message")) or "Action failed"
+            )
+        current.result_json = _json_dumps(result)
+        current.executed_by_user_id = current_user_id or None
+        current.updated_at = _utc_now()
         session.flush()
-        return _action_to_card(row)
+        return _action_to_card(current)
 
 
 def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
     normalized_action_id = _normalize_text(action_id)
+    sandbox_permission_id = ""
     with app_session() as session:
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
@@ -1534,8 +1632,33 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
             raise PermissionError("Only the action initiator can cancel it")
         _set_expired_if_needed(row)
         if row.status == ACTION_STATUS_PENDING:
-            row.status = ACTION_STATUS_CANCELLED
-            row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
-            row.updated_at = _utc_now()
+            if row.action_type == ACTION_SANDBOX_PERMISSION:
+                _require_permission(current_user, PERM_CHAT_AI_SANDBOX)
+                payload = _json_loads(row.payload_json, {}) or {}
+                sandbox_permission_id = _normalize_text(payload.get("permission_id"))
+                if not sandbox_permission_id:
+                    raise ValueError("Sandbox permission id is missing")
+            else:
+                row.status = ACTION_STATUS_CANCELLED
+                row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
+                row.updated_at = _utc_now()
         session.flush()
-        return _action_to_card(row)
+        if not sandbox_permission_id:
+            return _action_to_card(row)
+
+    # The permission row is the source of truth for both the in-message card
+    # and the right-panel control. Its locked transition finalizes the mirrored
+    # action card atomically in the same database transaction.
+    from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+    ai_sandbox_app_service.respond_permission(
+        permission_id=sandbox_permission_id,
+        current_user_id=current_user_id,
+        decision="reject",
+        scope="once",
+    )
+    with app_session() as session:
+        current = session.get(AppAiPendingAction, normalized_action_id)
+        if current is None:
+            raise LookupError("Action was not found")
+        return _action_to_card(current)

@@ -6,10 +6,10 @@
         Icon="Assets/hub-icon.ico"
         Width="1360"
         Height="860"
-        MinWidth="960"
-        MinHeight="640"
+        MinWidth="640"
+        MinHeight="480"
         WindowStyle="None"
-        ResizeMode="CanResize"
+        ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterScreen"
         Loaded="Window_Loaded"
         Activated="Window_Activated"
@@ -23,7 +23,7 @@
         Background="{DynamicResource AppBackgroundBrush}">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="34"
-                            ResizeBorderThickness="6"
+                            ResizeBorderThickness="10"
                             GlassFrameThickness="0"
                             CornerRadius="0"
                             UseAeroCaptionButtons="False" />
@@ -205,6 +205,22 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button x:Name="NewWindowButton"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            Click="NewWindowButton_Click"
+                            ToolTip="Открыть второе окно (Ctrl+Shift+N)"
+                            AutomationProperties.Name="Открыть второе окно HUB">
+                        <Grid Width="16" Height="14" IsHitTestVisible="False">
+                            <Path Data="M 1.5,4.5 L 10.5,4.5 L 10.5,12.5 L 1.5,12.5 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                            <Path Data="M 5.5,1.5 L 14.5,1.5 L 14.5,9.5"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                        </Grid>
+                    </Button>
                     <Button Style="{StaticResource TitleBarButtonStyle}"
                             Click="MinimizeButton_Click"
                             ToolTip="Свернуть"
@@ -255,15 +271,15 @@
             </Grid>
         </Border>
 
-        <Border x:Name="UpdateBanner"
-                Grid.Row="1"
-                Padding="14,10"
-                Background="{DynamicResource UpdateBannerBackgroundBrush}"
-                BorderBrush="{DynamicResource UpdateBannerBorderBrush}"
-                BorderThickness="0,0,0,1"
-                Visibility="Collapsed"
-                AutomationProperties.LiveSetting="Polite"
-                AutomationProperties.Name="Обновление HUB Desktop готово к установке">
+        <StackPanel Grid.Row="1">
+            <Border x:Name="UpdateBanner"
+                    Padding="14,10"
+                    Background="{DynamicResource UpdateBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource UpdateBannerBorderBrush}"
+                    BorderThickness="0,0,0,1"
+                    Visibility="Collapsed"
+                    AutomationProperties.LiveSetting="Polite"
+                    AutomationProperties.Name="Обновление HUB Desktop готово к установке">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -311,7 +327,65 @@
                         Content="Перезапустить и обновить"
                         AutomationProperties.Name="Перезапустить HUB Desktop и установить обновление" />
             </Grid>
-        </Border>
+            </Border>
+
+            <Border x:Name="TaskbarPinBanner"
+                    Padding="14,10"
+                    Background="{DynamicResource UpdateBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource UpdateBannerBorderBrush}"
+                    BorderThickness="0,0,0,1"
+                    Visibility="Collapsed"
+                    AutomationProperties.LiveSetting="Polite"
+                    AutomationProperties.Name="Закрепление HUB Desktop на панели задач">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Path Width="24"
+                      Height="24"
+                      Margin="4,0,15,0"
+                      VerticalAlignment="Center"
+                      Data="M 7,2 L 17,2 L 15,8 L 18,11 L 13,11 L 12,21 L 11,11 L 6,11 L 9,8 Z"
+                      Fill="{DynamicResource UpdateBannerAccentBrush}"
+                      Stretch="Uniform"
+                      IsHitTestVisible="False" />
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock x:Name="TaskbarPinTitle"
+                               Foreground="{DynamicResource TitleBarForegroundBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Text="HUB всегда под рукой" />
+                    <TextBlock x:Name="TaskbarPinDetails"
+                               Margin="0,2,12,0"
+                               Foreground="{DynamicResource SecondaryTextBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="12"
+                               Text="Закрепите приложение на панели задач для быстрого запуска."
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <Button x:Name="DismissTaskbarPinButton"
+                        Grid.Column="2"
+                        Style="{StaticResource UpdateSecondaryButtonStyle}"
+                        Click="DismissTaskbarPinButton_Click"
+                        Content="Не сейчас"
+                        AutomationProperties.Name="Больше не предлагать закрепление HUB Desktop" />
+                <Button x:Name="PinTaskbarButton"
+                        Grid.Column="3"
+                        Style="{StaticResource UpdatePrimaryButtonStyle}"
+                        MinWidth="112"
+                        Click="PinTaskbarButton_Click"
+                        Content="Закрепить"
+                        AutomationProperties.Name="Закрепить HUB Desktop на панели задач" />
+            </Grid>
+            </Border>
+        </StackPanel>
 
         <Grid x:Name="BrowserHost" Grid.Row="2" />
 

@@ -59,7 +59,7 @@ def test_viewer_role_does_not_get_tickets_access_by_default():
     assert PERM_MY_FILES_SHARE in permissions
     assert PERM_MY_FILES_AUDIT_READ not in permissions
     assert PERM_DOCFLOW_READ in permissions
-    assert PERM_DOCFLOW_ACT not in permissions
+    assert PERM_DOCFLOW_ACT in permissions
     assert PERM_DOCFLOW_CREATE not in permissions
     assert PERM_ADDRESS_BOOK_READ in permissions
     assert PERM_ADDRESS_BOOK_AGE_READ not in permissions

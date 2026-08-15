@@ -159,11 +159,34 @@ describe('apiClient auth response interceptor', () => {
     window.removeEventListener('auth-required', onAuthRequired);
   });
 
-  it('still requires auth when refresh fails for an initial scan service 401', async () => {
+  it('keeps the cached user when refresh fails because the network is unavailable', async () => {
     const onAuthRequired = vi.fn();
     window.addEventListener('auth-required', onAuthRequired);
     window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
-    apiClientMock.post.mockRejectedValueOnce(new Error('refresh failed'));
+    const refreshError = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' });
+    apiClientMock.post.mockRejectedValueOnce(refreshError);
+
+    const rejectedHandler = getRejectedHandler();
+    const error = {
+      response: { status: 401 },
+      config: { url: '/scan/patterns' },
+    };
+
+    await expect(rejectedHandler(error)).rejects.toBe(refreshError);
+
+    expect(window.localStorage.getItem('user')).toBe(JSON.stringify({ id: 1, username: 'user' }));
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    window.removeEventListener('auth-required', onAuthRequired);
+  });
+
+  it('requires auth when the refresh endpoint definitively rejects the session', async () => {
+    const onAuthRequired = vi.fn();
+    window.addEventListener('auth-required', onAuthRequired);
+    window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
+    apiClientMock.post.mockRejectedValueOnce({
+      response: { status: 401 },
+      config: { url: '/auth/refresh', suppressAuthRequired: true },
+    });
 
     const rejectedHandler = getRejectedHandler();
     const error = {
@@ -2881,12 +2904,18 @@ describe('chatDirectoryAPI contract', () => {
     'getUsers',
     'listAiBots',
     'openAiBotConversation',
+    'createAiBotConversation',
+    'renameAiConversation',
+    'deleteAiConversation',
+    'stopAiConversationRun',
   ];
 
   beforeEach(() => {
     apiClientMock.get.mockReset();
     apiClientMock.get.mockResolvedValue({ data: { ok: true } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { id: 'ai-conv-1' } });
+    apiClientMock.patch = vi.fn().mockResolvedValue({ data: { id: 'ai-conv-1', title: 'Renamed' } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { deleted: true } });
   });
 
   it('loads chat health, user directory, and AI bot directory through the dedicated module', async () => {
@@ -2920,6 +2949,23 @@ describe('chatDirectoryAPI contract', () => {
     });
 
     expect(apiClientMock.post).toHaveBeenCalledWith('/chat/ai/bots/bot%2F1%20A/open');
+  });
+
+  it('creates and manages isolated AI conversations through encoded endpoints', async () => {
+    const { chatDirectoryAPI } = await importChatDirectoryAPI();
+
+    await expect(chatDirectoryAPI.createAiBotConversation('bot/1 A')).resolves.toEqual({ id: 'ai-conv-1' });
+    await expect(chatDirectoryAPI.renameAiConversation('conv/1', 'Renamed')).resolves.toEqual({
+      id: 'ai-conv-1',
+      title: 'Renamed',
+    });
+    await expect(chatDirectoryAPI.stopAiConversationRun('conv/1')).resolves.toEqual({ id: 'ai-conv-1' });
+    await expect(chatDirectoryAPI.deleteAiConversation('conv/1')).resolves.toEqual({ deleted: true });
+
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/chat/ai/bots/bot%2F1%20A/conversations');
+    expect(apiClientMock.patch).toHaveBeenCalledWith('/chat/ai/conversations/conv%2F1', { title: 'Renamed' });
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/chat/ai/conversations/conv%2F1/stop');
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/ai/conversations/conv%2F1');
   });
 
   it('keeps client chat directory methods compatible with the dedicated module and re-export', async () => {
@@ -5374,6 +5420,19 @@ describe('authAccountSecurityAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/auth/logout');
   });
 
+  it('completes the authenticated HUB-IT introduction', async () => {
+    apiClientMock.post.mockResolvedValueOnce({
+      data: { id: 7, about_onboarding_completed_at: '2026-08-13T10:00:00Z' },
+    });
+    const { authAccountSecurityAPI } = await importAuthAccountSecurityAPI();
+
+    await expect(authAccountSecurityAPI.completeAboutOnboarding()).resolves.toEqual({
+      id: 7,
+      about_onboarding_completed_at: '2026-08-13T10:00:00Z',
+    });
+    expect(apiClientMock.post).toHaveBeenCalledWith('/auth/me/about-onboarding/complete');
+  });
+
   it('regenerates backup codes and resets own 2FA through self-service endpoints', async () => {
     apiClientMock.post
       .mockResolvedValueOnce({ data: { backup_codes: ['AAAA-BBBB'] } })
@@ -5396,6 +5455,7 @@ describe('authAccountSecurityAPI contract', () => {
 
     expect(clientAuthAccountSecurityAPI).toBe(authAccountSecurityAPI);
     expect(authAPI.getCurrentUser).toBe(authAccountSecurityAPI.getCurrentUser);
+    expect(authAPI.completeAboutOnboarding).toBe(authAccountSecurityAPI.completeAboutOnboarding);
     expect(authAPI.logout).toBe(authAccountSecurityAPI.logout);
     expect(authAPI.regenerateBackupCodes).toBe(authAccountSecurityAPI.regenerateBackupCodes);
     expect(authAPI.resetOwnTwoFactor).toBe(authAccountSecurityAPI.resetOwnTwoFactor);

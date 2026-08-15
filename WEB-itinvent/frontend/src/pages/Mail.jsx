@@ -60,7 +60,7 @@ import MailQuotaReport from '../components/mail/MailQuotaReport';
 import MailSectionTabs from '../components/mail/MailSectionTabs';
 import MailToolsMenu from '../components/mail/MailToolsMenu';
 import MailViewSettingsDialog from '../components/mail/MailViewSettingsDialog';
-import MailComposeHost, { loadMailComposeDialog } from '../components/mail/MailComposeHost';
+import MailComposeHost from '../components/mail/MailComposeHost';
 import MailItRequestDialog from '../components/mail/MailItRequestDialog';
 import useMailMobileShell from '../components/mail/useMailMobileShell';
 import useMailAdvancedSearch, { DEFAULT_ADVANCED_FILTERS } from '../components/mail/useMailAdvancedSearch';
@@ -194,8 +194,6 @@ const MAIL_SWR_STALE_TIME_MS = 45000;
 const MAIL_DETAIL_SWR_STALE_TIME_MS = 10 * 60 * 1000;
 const MAIL_FOLDER_SUMMARY_REFRESH_COOLDOWN_MS = 120000;
 const MAIL_AUTO_READ_GUARD_TTL_MS = 120000;
-const MAIL_DETAIL_PREFETCH_LIMIT = 2;
-const MAIL_DETAIL_PREFETCH_COOLDOWN_MS = 600000;
 const MAIL_RENDERED_CONTENT_LAYOUT_SX = {
   width: '100%',
   maxWidth: '100%',
@@ -319,7 +317,6 @@ const getMailRenderedContentSx = ({ ui, theme, variant = 'message', mine = false
 };
 const COMPOSE_DRAFT_STORAGE_KEY = 'mail_compose_draft_v2';
 const MAIL_BOOTSTRAP_LIMIT = 20;
-const MAIL_STANDARD_PREFETCH_FOLDERS = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
 const FOLDER_LABELS = {
   inbox: 'Входящие',
@@ -601,12 +598,8 @@ function Mail() {
   const mailboxesRef = useRef(mailboxes);
   const deepLinkKeyRef = useRef('');
   const localReadStateOverridesRef = useRef(new Map());
-  const detailPrefetchInFlightRef = useRef(new Set());
-  const detailPrefetchCompletedAtRef = useRef(new Map());
   const skipNextListRefreshRef = useRef(false);
   const lastListRefreshContextKeyRef = useRef('');
-  const prefetchedListContextsRef = useRef(new Set());
-  const prefetchedDetailListSignaturesRef = useRef(new Set());
   // Recent hydration should paint immediately, but the first live refresh for that context must still hit the network.
   const recentHydratedListContextsRef = useRef(new Set());
   const currentListKeyRef = useRef('');
@@ -632,34 +625,6 @@ function Mail() {
   const {
     run: runMailViewRefreshGate,
   } = useMailAsyncTaskGate({ cooldownMs: MAIL_VIEW_REFRESH_COOLDOWN_MS });
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId = null;
-    let idleId = null;
-
-    const preloadComposeDialog = () => {
-      if (cancelled) {
-        return;
-      }
-      loadMailComposeDialog().catch(() => {});
-    };
-
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(preloadComposeDialog, { timeout: 1500 });
-    } else if (typeof window !== 'undefined') {
-      timeoutId = window.setTimeout(preloadComposeDialog, 1200);
-    }
-
-    return () => {
-      cancelled = true;
-      if (idleId !== null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== null && typeof window !== 'undefined') {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, []);
   const composeDraftKey = useMemo(
     () => `${COMPOSE_DRAFT_STORAGE_KEY}:${activeMailboxId || 'default'}`,
     [activeMailboxId]
@@ -961,68 +926,6 @@ function Mail() {
       overrides,
     });
   }, [pruneReadStateOverridesRef]);
-  const prefetchMailDetail = useCallback((targetId, { mode = viewMode } = {}) => {
-    if (!mailAccessReady) return;
-    const normalizedId = String(targetId || '').trim();
-    const normalizedMode = normalizeMailViewMode(mode);
-    if (!normalizedId) return;
-    const folderScope = advancedFiltersApplied?.folder_scope || 'current';
-    const detailCacheKey = buildMailDetailCacheKey({
-      viewMode: normalizedMode,
-      scope: mailCacheScope,
-      selectedId: normalizedId,
-      folder,
-      folderScope,
-    });
-    const detailKey = JSON.stringify(detailCacheKey);
-    if (normalizedMode === 'messages') {
-      const recentDetail = getRecentMessageDetailSnapshot(normalizedId);
-      if (recentDetail) return;
-    }
-    const cachedDetail = peekSWRCache(detailCacheKey, { staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS });
-    if (cachedDetail?.data) return;
-    const now = Date.now();
-    const completedAt = Number(detailPrefetchCompletedAtRef.current.get(detailKey) || 0);
-    if (completedAt > 0 && (now - completedAt) < MAIL_DETAIL_PREFETCH_COOLDOWN_MS) return;
-    if (detailPrefetchInFlightRef.current.has(detailKey)) return;
-    detailPrefetchInFlightRef.current.add(detailKey);
-    const fetcher = () => (
-      normalizedMode === 'conversations'
-        ? mailAPI.getConversation(
-            normalizedId,
-            withActiveMailboxParams({ folder, folder_scope: folderScope })
-          )
-        : mailAPI.getMessage(normalizedId, { mailboxId: activeMailboxId })
-    );
-    return getOrFetchSWR(
-      detailCacheKey,
-      fetcher,
-      {
-        staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS,
-        revalidateStale: false,
-      }
-    ).then((result) => {
-      if (result?.data) {
-        if (normalizedMode === 'messages') {
-          persistRecentMessageDetailSnapshot(result.data);
-        }
-        detailPrefetchCompletedAtRef.current.set(detailKey, Date.now());
-      }
-    }).catch(() => {
-      detailPrefetchCompletedAtRef.current.delete(detailKey);
-    }).finally(() => {
-      detailPrefetchInFlightRef.current.delete(detailKey);
-    });
-  }, [
-    activeMailboxId,
-    advancedFiltersApplied?.folder_scope,
-    folder,
-    mailAccessReady,
-    mailCacheScope,
-    persistRecentMessageDetailSnapshot,
-    withActiveMailboxParams,
-    viewMode,
-  ]);
   const hasFreshSelectedMailDetail = useCallback(({
     detailId = selectedId,
     mode = viewMode,
@@ -1734,141 +1637,6 @@ function Mail() {
     // but omitting the list context entirely broke Sent/Drafts/etc. folder changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mailAccessReady, currentListContextKey]);
-
-  useEffect(() => {
-    const hasPrefetchBlockingFilters = Boolean(
-      debouncedSearch
-      || unreadOnly
-      || hasAttachmentsOnly
-      || filterDateFrom
-      || filterDateTo
-      || advancedFiltersApplied?.from_filter
-      || advancedFiltersApplied?.to_filter
-      || advancedFiltersApplied?.subject_filter
-      || advancedFiltersApplied?.body_filter
-      || advancedFiltersApplied?.importance
-      || (advancedFiltersApplied?.folder_scope && advancedFiltersApplied.folder_scope !== 'current')
-    );
-    if (!mailAccessReady || !mailCacheScope || hasPrefetchBlockingFilters || viewMode !== 'messages') return;
-    if (String(currentListKeyRef.current || '') !== currentListContextKey) return;
-    const prefetchKey = `${mailCacheScope}:${viewMode}`;
-    if (prefetchedListContextsRef.current.has(prefetchKey)) return;
-    prefetchedListContextsRef.current.add(prefetchKey);
-    let cancelled = false;
-    let timeoutId = null;
-    let idleId = null;
-    const runPrefetch = () => {
-      if (cancelled) return;
-      MAIL_STANDARD_PREFETCH_FOLDERS.forEach((folderId) => {
-        // Current folder is already loaded via bootstrap/list refresh.
-        if (String(folderId) === String(folder || 'inbox')) return;
-        const params = {
-          folder: folderId,
-          folder_scope: 'current',
-          limit: 50,
-          offset: 0,
-        };
-        const cacheKey = buildMailListCacheKey({
-          scope: mailCacheScope,
-          folder: folderId,
-          viewMode,
-          folderScope: 'current',
-          limit: 50,
-          offset: 0,
-        });
-        void getOrFetchSWR(
-          cacheKey,
-          () => mailAPI.getMessages(withActiveMailboxParams(params)),
-          {
-            staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-            revalidateStale: false,
-          }
-        ).then((result) => {
-          if (result?.data) {
-            persistRecentListSnapshot(JSON.stringify(cacheKey), result.data);
-          }
-        }).catch(() => {});
-      });
-    };
-    // Prefetch standard folders ASAP so Sent/Drafts open from cache on first click.
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(runPrefetch, { timeout: 250 });
-    } else if (typeof window !== 'undefined') {
-      timeoutId = window.setTimeout(runPrefetch, 50);
-    } else {
-      runPrefetch();
-    }
-    return () => {
-      cancelled = true;
-      if (idleId !== null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== null && typeof window !== 'undefined') {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [
-    advancedFiltersApplied,
-    currentListContextKey,
-    debouncedSearch,
-    filterDateFrom,
-    filterDateTo,
-    folder,
-    hasAttachmentsOnly,
-    mailAccessReady,
-    mailCacheScope,
-    persistRecentListSnapshot,
-    unreadOnly,
-    withActiveMailboxParams,
-    viewMode,
-  ]);
-
-  useEffect(() => {
-    if (
-      !mailAccessReady
-      || viewMode !== 'messages'
-      || isMobile
-      || selectedId
-      || MAIL_DETAIL_PREFETCH_LIMIT <= 0
-    ) return undefined;
-    const candidateIds = (Array.isArray(listData?.items) ? listData.items : [])
-      .slice(0, MAIL_DETAIL_PREFETCH_LIMIT)
-      .map((item) => String(item?.id || '').trim())
-      .filter(Boolean)
-      .filter((id) => id !== String(selectedId || '').trim());
-    if (candidateIds.length === 0) return undefined;
-    const prefetchSignature = `${currentListContextKey}:${candidateIds.join('|')}`;
-    if (prefetchedDetailListSignaturesRef.current.has(prefetchSignature)) return undefined;
-    prefetchedDetailListSignaturesRef.current.add(prefetchSignature);
-    let cancelled = false;
-    const runPrefetch = () => {
-      if (cancelled) return;
-      void (async () => {
-        for (const id of candidateIds) {
-          if (cancelled) return;
-          await prefetchMailDetail(id, { mode: 'messages' });
-        }
-      })();
-    };
-    let timeoutId = null;
-    let idleId = null;
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(runPrefetch, { timeout: 400 });
-    } else if (typeof window !== 'undefined') {
-      timeoutId = window.setTimeout(runPrefetch, 180);
-    } else {
-      runPrefetch();
-    }
-    return () => {
-      cancelled = true;
-      if (idleId !== null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== null && typeof window !== 'undefined') {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [currentListContextKey, isMobile, listData?.items, mailAccessReady, prefetchMailDetail, selectedId, viewMode]);
 
   useEffect(() => {
     if (!Array.isArray(folderTree) || folderTree.length === 0) return;

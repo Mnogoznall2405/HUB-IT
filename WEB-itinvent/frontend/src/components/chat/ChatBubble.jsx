@@ -246,15 +246,26 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const isDocConvertFormatChoice = actionType === 'ai.doc.convert.format_choice';
   const report = preview.report && typeof preview.report === 'object' ? preview.report : null;
   const docConvert = preview.doc_convert && typeof preview.doc_convert === 'object' ? preview.doc_convert : null;
-  const formatLabels = preview.format_labels && typeof preview.format_labels === 'object' ? preview.format_labels : {};
-  const reportFormats = (Array.isArray(preview.formats) ? preview.formats : ['xlsx', 'pdf', 'docx', 'csv'])
+  const supportedDocumentFormats = ['xlsx', 'csv', 'docx', 'pdf', 'txt', 'md', 'json'];
+  const formatLabels = {
+    xlsx: 'Excel (XLSX)',
+    csv: 'CSV',
+    docx: 'Word (DOCX)',
+    pdf: 'PDF',
+    txt: 'Текст (TXT)',
+    md: 'Markdown',
+    json: 'JSON',
+    ...(preview.format_labels && typeof preview.format_labels === 'object' ? preview.format_labels : {}),
+  };
+  const reportFormats = (Array.isArray(preview.formats) ? preview.formats : supportedDocumentFormats)
     .map((format) => String(format || '').trim().toLowerCase())
-    .filter((format) => ['xlsx', 'pdf', 'docx', 'csv'].includes(format));
-  const docConvertFormats = (Array.isArray(preview.formats) ? preview.formats : ['docx', 'txt', 'md', 'pdf', 'xlsx'])
+    .filter((format) => supportedDocumentFormats.includes(format));
+  const docConvertFormats = (Array.isArray(preview.formats) ? preview.formats : supportedDocumentFormats)
     .map((format) => String(format || '').trim().toLowerCase())
-    .filter((format) => ['docx', 'txt', 'md', 'pdf', 'xlsx'].includes(format));
+    .filter((format) => supportedDocumentFormats.includes(format));
   const statusLabel = {
     pending: 'Ожидает подтверждения',
+    executing: 'Выполняется',
     confirmed: 'Выполнено',
     cancelled: 'Отменено',
     expired: 'Истекло',
@@ -418,7 +429,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                   variant="contained"
                   onClick={() => runReportFormat(format)}
                   disabled={Boolean(busy)}
-                  sx={{ borderRadius: 1.2, textTransform: isDocConvertFormatChoice ? 'none' : 'uppercase', fontWeight: 800, minWidth: 68 }}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, minWidth: 68 }}
                 >
                   {busy === `format:${format}` ? '...' : (formatLabels[format] || format)}
                 </Button>
@@ -1215,6 +1226,7 @@ export function ChatBubble({
                         onOpenPreview={onOpenAttachmentPreview}
                         isOwn={Boolean(message?.is_own)}
                         isSending={isSending}
+                        canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
                       />
                       {galleryHiddenCount > 0 && index === (displayedGalleryAttachments.length - 1) ? (
                         <Box
@@ -1262,6 +1274,7 @@ export function ChatBubble({
                       onOpenPreview={onOpenAttachmentPreview}
                       isOwn={Boolean(message?.is_own)}
                       isSending={isSending}
+                      canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
                     />
                   ))}
                 </Stack>

@@ -25,6 +25,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "JWT_SECRET_KEYS",
         "JWT_PREVIOUS_SECRET_KEYS",
         "AUTH_COOKIE_SECURE",
+        "AUTH_CLOUDFLARE_PROXY_CIDRS",
         "AUTH_NEW_LOGIN_EMAIL_ENABLED",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -78,6 +79,18 @@ def test_new_login_email_notifications_require_explicit_enable(monkeypatch):
     loaded = Config.from_env()
 
     assert loaded.security.new_login_email_enabled is True
+
+
+def test_cloudflare_proxy_cidrs_are_empty_by_default_and_parse_explicit_ranges(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    assert Config.from_env().security.cloudflare_proxy_cidrs == []
+
+    monkeypatch.setenv("AUTH_CLOUDFLARE_PROXY_CIDRS", "173.245.48.0/20, 2400:cb00::/32")
+    assert Config.from_env().security.cloudflare_proxy_cidrs == [
+        "173.245.48.0/20",
+        "2400:cb00::/32",
+    ]
 
 
 def _runtime_module_for_test(monkeypatch):
@@ -157,3 +170,36 @@ def test_user_service_keeps_default_users_in_development(temp_dir, monkeypatch):
     service = user_module.UserService(file_path=Path(temp_dir) / "web_users.json")
 
     assert service.authenticate("admin", "admin")["username"] == "admin"
+
+
+def test_json_user_onboarding_backfills_existing_users_but_not_new_accounts(temp_dir, monkeypatch):
+    user_module = _user_service_module_for_test(monkeypatch)
+    monkeypatch.setattr(user_module.config.app, "environment", "development", raising=False)
+    monkeypatch.setattr(user_module, "is_app_database_configured", lambda: False)
+    file_path = Path(temp_dir) / "web_users.json"
+
+    service = user_module.UserService(file_path=file_path)
+    legacy_user = dict(service._load_users()[0])
+    legacy_user.pop("about_onboarding_completed_at", None)
+    service._save_users([legacy_user])
+
+    reloaded = user_module.UserService(file_path=file_path)
+    existing = reloaded.get_by_id(int(legacy_user["id"]))
+    created = reloaded.create_user(username="new-about-user", password="secret123", role="viewer")
+
+    assert existing["about_onboarding_completed_at"]
+    assert created["about_onboarding_completed_at"] is None
+
+
+def test_json_user_onboarding_completion_is_idempotent(temp_dir, monkeypatch):
+    user_module = _user_service_module_for_test(monkeypatch)
+    monkeypatch.setattr(user_module.config.app, "environment", "development", raising=False)
+    monkeypatch.setattr(user_module, "is_app_database_configured", lambda: False)
+    service = user_module.UserService(file_path=Path(temp_dir) / "web_users.json")
+    created = service.create_user(username="onboarding-user", password="secret123", role="viewer")
+
+    first = service.complete_about_onboarding(created["id"])
+    second = service.complete_about_onboarding(created["id"])
+
+    assert first["about_onboarding_completed_at"]
+    assert second["about_onboarding_completed_at"] == first["about_onboarding_completed_at"]

@@ -91,6 +91,7 @@ class FileMessagePersistenceResult:
     message_id: str
     member_user_ids: list[int]
     conversation_kind: str
+    dedup_hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -580,10 +581,12 @@ class ChatFileMessagePersistence:
         conversation_id: str,
         body: str,
         prepared: list[dict[str, Any]],
+        client_message_id: str | None = None,
         reply_to_message_id: str | None = None,
         forward_from_message_id: str | None = None,
     ) -> FileMessagePersistenceResult:
         normalized_body = _normalize_text(body)
+        normalized_client_message_id = _normalize_text(client_message_id) or None
         member_user_ids: list[int] = []
         message_id = ""
         attachment_payload: list[dict[str, Any]] = []
@@ -598,6 +601,37 @@ class ChatFileMessagePersistence:
             conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             conversation_kind = _normalize_text(getattr(conversation, "kind", ""))
             member_user_ids = self._conversation_member_ids(session, conversation.id)
+            if normalized_client_message_id:
+                existing_message = session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.conversation_id == conversation.id,
+                        ChatMessage.sender_user_id == int(current_user_id),
+                        ChatMessage.client_message_id == normalized_client_message_id,
+                    )
+                ).scalar_one_or_none()
+                if existing_message is not None:
+                    existing_attachments = list(
+                        session.execute(
+                            select(ChatMessageAttachment).where(
+                                ChatMessageAttachment.message_id == existing_message.id
+                            )
+                        ).scalars()
+                    )
+                    payload = self._build_message_payload_for_members(
+                        session=session,
+                        conversation=conversation,
+                        message=existing_message,
+                        current_user_id=int(current_user_id),
+                        member_user_ids=member_user_ids,
+                        attachments=existing_attachments,
+                    )
+                    return FileMessagePersistenceResult(
+                        payload=payload,
+                        message_id=existing_message.id,
+                        member_user_ids=member_user_ids,
+                        conversation_kind=conversation_kind,
+                        dedup_hit=True,
+                    )
             reply_to_message = self._resolve_reply_message(
                 session=session,
                 conversation_id=conversation.id,
@@ -612,6 +646,7 @@ class ChatFileMessagePersistence:
                 kind="file",
                 body=normalized_body,
                 conversation_seq=next_conversation_seq,
+                client_message_id=normalized_client_message_id,
                 reply_to_message_id=getattr(reply_to_message, "id", None),
                 forward_from_message_id=_normalize_text(forward_from_message_id) or None,
                 created_at=now,
@@ -708,6 +743,7 @@ class ChatFileMessagePersistence:
             message_id=message_id,
             member_user_ids=member_user_ids,
             conversation_kind=conversation_kind,
+            dedup_hit=False,
         )
 
 

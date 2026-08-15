@@ -17,6 +17,7 @@ export const CHAT_SOCKET_UNREAD_SUMMARY_EVENT = 'chat-ws-unread-summary';
 export const CHAT_SOCKET_PRESENCE_UPDATED_EVENT = 'chat-ws-presence-updated';
 export const CHAT_SOCKET_TYPING_EVENT = 'chat-ws-typing';
 export const CHAT_SOCKET_AI_RUN_UPDATED_EVENT = 'chat-ws-ai-run-updated';
+export const CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT = 'chat-ws-ai-sandbox-updated';
 export const CHAT_SOCKET_MESSAGE_REACTION_EVENT = 'chat-ws-message-reaction';
 
 const HEARTBEAT_MS = 25_000;
@@ -44,6 +45,24 @@ const normalizeConversationId = (value) => String(value || '').trim();
 // Survives Chat page unmount so sidebar can paint who just wrote after navigation.
 const inboxMessagePreviewByConversation = new Map();
 const INBOX_PREVIEW_TTL_MS = 10 * 60 * 1000;
+const INBOX_PREVIEW_MAX_ENTRIES = 200;
+
+export const pruneInboxMessagePreviews = ({
+  now = Date.now(),
+  maxEntries = INBOX_PREVIEW_MAX_ENTRIES,
+} = {}) => {
+  [...inboxMessagePreviewByConversation.entries()].forEach(([conversationId, entry]) => {
+    if ((now - Number(entry?.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+      inboxMessagePreviewByConversation.delete(conversationId);
+    }
+  });
+  const safeMaxEntries = Math.max(0, Number(maxEntries) || 0);
+  while (inboxMessagePreviewByConversation.size > safeMaxEntries) {
+    const oldestConversationId = inboxMessagePreviewByConversation.keys().next().value;
+    if (oldestConversationId === undefined) break;
+    inboxMessagePreviewByConversation.delete(oldestConversationId);
+  }
+};
 
 export const noteInboxMessagePreview = (envelope = {}) => {
   const payload = envelope?.payload || envelope || {};
@@ -52,10 +71,12 @@ export const noteInboxMessagePreview = (envelope = {}) => {
   );
   const messageId = String(payload?.id || '').trim();
   if (!conversationId || !messageId) return;
+  inboxMessagePreviewByConversation.delete(conversationId);
   inboxMessagePreviewByConversation.set(conversationId, {
     message: payload,
     at: Date.now(),
   });
+  pruneInboxMessagePreviews();
 };
 
 export const peekInboxMessagePreview = (conversationId) => {
@@ -90,6 +111,7 @@ const buildPreviewText = (message) => {
 
 export const mergeInboxPreviewsIntoConversations = (items = []) => {
   const list = Array.isArray(items) ? items : [];
+  pruneInboxMessagePreviews();
   if (list.length === 0 || inboxMessagePreviewByConversation.size === 0) return list;
   const now = Date.now();
   let changed = false;
@@ -591,6 +613,10 @@ class ChatSocketClient {
     }
     if (eventType === 'chat.ai.run.updated') {
       dispatchWindowEvent(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.ai.sandbox.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, envelope);
     }
   }
 

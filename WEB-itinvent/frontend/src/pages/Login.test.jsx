@@ -69,6 +69,15 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../lib/desktopBridge', () => ({
   getDesktopWindowsUsername: mockGetDesktopWindowsUsername,
+  isDesktopBridgeReady: () => false,
+}));
+
+vi.mock('../components/desktop/DesktopInstallerDownload', () => ({
+  default: ({ variant }) => (
+    <div data-testid="desktop-installer-download" data-variant={variant}>
+      Скачать HUB Desktop
+    </div>
+  ),
 }));
 
 vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
@@ -247,6 +256,38 @@ describe('Login hybrid internal/external flow', () => {
     expect(screen.queryByTestId('biometric-hero-button')).not.toBeInTheDocument();
     expect(mockGetLoginMode).toHaveBeenCalledTimes(1);
     expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+  });
+
+  it('shows the compact Desktop download entry under the browser login form', async () => {
+    render(<Login />);
+
+    await ensurePasswordFormVisible();
+    expect(screen.getByTestId('desktop-installer-download')).toHaveAttribute('data-variant', 'login');
+    expect(screen.queryByRole('link', { name: 'О HUB-IT' })).not.toBeInTheDocument();
+  });
+
+  it('opens onboarding after login for a new user and keeps the requested route', async () => {
+    sessionStorage.setItem('hubit.auth.return-to', '/tasks?filter=mine');
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 11,
+        username: 'new.user',
+        role: 'viewer',
+        permissions: [],
+        about_onboarding_completed_at: null,
+      },
+    });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    submitPasswordStep({ username: 'new.user', password: 'secret' });
+
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/about');
+    });
+    expect(sessionStorage.getItem('hubit.auth.return-to')).toBe('/tasks?filter=mine');
   });
 
   it('prefills the last successful username without storing a password', async () => {

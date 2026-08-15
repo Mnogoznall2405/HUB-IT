@@ -20,6 +20,7 @@ if str(WEB_ROOT) not in sys.path:
 
 from backend.api import deps
 from backend.api.v1 import auth
+from backend.config import config
 from backend.models.auth import User
 from backend.utils.request_network import build_request_network_context, classify_network_zone, is_twofa_required_for_zone
 
@@ -1116,8 +1117,21 @@ def test_refresh_grace_reuses_rotated_tokens(monkeypatch):
 
 
 def test_auth_me_returns_security_fields(monkeypatch):
-    current_user = User(**_sample_public_user(is_2fa_enabled=True, trusted_devices_count=2))
-    monkeypatch.setattr(auth.user_service, "get_by_id", lambda user_id: _sample_public_user(is_2fa_enabled=True, trusted_devices_count=2))
+    completed_at = "2026-08-13T09:30:00+00:00"
+    current_user = User(**_sample_public_user(
+        is_2fa_enabled=True,
+        trusted_devices_count=2,
+        about_onboarding_completed_at=completed_at,
+    ))
+    monkeypatch.setattr(
+        auth.user_service,
+        "get_by_id",
+        lambda user_id: _sample_public_user(
+            is_2fa_enabled=True,
+            trusted_devices_count=2,
+            about_onboarding_completed_at=completed_at,
+        ),
+    )
     monkeypatch.setattr(
         auth,
         "build_request_network_context",
@@ -1145,6 +1159,46 @@ def test_auth_me_returns_security_fields(monkeypatch):
     assert payload["network_zone"] == "internal"
     assert payload["twofa_policy"] == "external_only"
     assert payload["twofa_required_for_current_request"] is False
+    assert payload["about_onboarding_completed_at"] == completed_at
+
+
+def test_complete_about_onboarding_requires_auth_and_is_idempotent(monkeypatch):
+    current_user = User(**_sample_public_user(about_onboarding_completed_at=None))
+    completed_at = "2026-08-13T10:00:00+00:00"
+    stored_user = _sample_public_user(about_onboarding_completed_at=None)
+    completion_calls: list[int] = []
+
+    def _complete(user_id: int):
+        completion_calls.append(user_id)
+        stored_user["about_onboarding_completed_at"] = completed_at
+        return dict(stored_user)
+
+    monkeypatch.setattr(auth.user_service, "complete_about_onboarding", _complete)
+    monkeypatch.setattr(auth.user_service, "get_by_id", lambda user_id: dict(stored_user))
+    monkeypatch.setattr(
+        auth,
+        "build_request_network_context",
+        lambda request: SimpleNamespace(client_ip="10.12.13.14", network_zone="internal"),
+    )
+
+    guest_app = FastAPI()
+    guest_app.include_router(auth.router, prefix="/auth")
+    guest_response = TestClient(guest_app).post("/auth/me/about-onboarding/complete")
+    assert guest_response.status_code in {401, 403}
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
+    client = TestClient(app)
+
+    first = client.post("/auth/me/about-onboarding/complete")
+    second = client.post("/auth/me/about-onboarding/complete")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["about_onboarding_completed_at"] == completed_at
+    assert second.json()["about_onboarding_completed_at"] == completed_at
+    assert completion_calls == [7, 7]
 
 
 def test_network_zone_classification_treats_only_ten_net_as_internal():
@@ -1204,6 +1258,57 @@ def test_build_request_network_context_handles_invalid_forwarded_header_safely()
     assert context.network_zone == "external"
     assert context.trusted_proxy is True
     assert context.via_forwarded_header is False
+
+
+def test_build_request_network_context_uses_cloudflare_client_ip_only_for_known_edge(monkeypatch):
+    monkeypatch.setattr(config.security, "cloudflare_proxy_cidrs", ["173.245.48.0/20"])
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1:54321"),
+        headers={
+            "x-forwarded-for": "173.245.48.7",
+            "cf-connecting-ip": "95.24.10.1",
+        },
+    )
+
+    context = build_request_network_context(request)
+
+    assert context.client_ip == "95.24.10.1"
+    assert context.network_zone == "external"
+    assert context.trusted_proxy is True
+    assert context.via_cloudflare is True
+
+
+def test_build_request_network_context_ignores_spoofed_cloudflare_header(monkeypatch):
+    monkeypatch.setattr(config.security, "cloudflare_proxy_cidrs", ["173.245.48.0/20"])
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1:54321"),
+        headers={
+            "x-forwarded-for": "198.51.100.25",
+            "cf-connecting-ip": "10.105.0.42",
+        },
+    )
+
+    context = build_request_network_context(request)
+
+    assert context.client_ip == "198.51.100.25"
+    assert context.network_zone == "external"
+    assert context.via_cloudflare is False
+
+
+def test_build_request_network_context_falls_back_to_edge_ip_for_invalid_cloudflare_ip(monkeypatch):
+    monkeypatch.setattr(config.security, "cloudflare_proxy_cidrs", ["173.245.48.0/20"])
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1:54321"),
+        headers={
+            "x-forwarded-for": "173.245.48.7",
+            "cf-connecting-ip": "invalid-value",
+        },
+    )
+
+    context = build_request_network_context(request)
+
+    assert context.client_ip == "173.245.48.7"
+    assert context.via_cloudflare is True
 
 
 def test_admin_session_request_is_forbidden_from_disallowed_ip(monkeypatch):

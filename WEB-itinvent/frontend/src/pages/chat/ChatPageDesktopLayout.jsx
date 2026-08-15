@@ -10,6 +10,7 @@ export default function ChatPageDesktopLayout({
   sidebarPane,
   threadPane,
   desktopRightPanelContent,
+  desktopRightPanelWidth,
   taskSplitLayout = false,
   renderDesktopRightPanel = false,
   renderPersistentRightPanel = false,
@@ -27,11 +28,15 @@ export default function ChatPageDesktopLayout({
   gridTemplateColumns,
 }) {
   const showTaskSplitLayout = taskSplitLayout && renderDesktopRightPanel && showTaskPanel;
+  const resolvedDesktopRightPanelWidth = Number.isFinite(desktopRightPanelWidth)
+    && desktopRightPanelWidth > 0
+    ? desktopRightPanelWidth
+    : null;
   const resolvedGridTemplateColumns = gridTemplateColumns ?? (
     showTaskSplitLayout
       ? 'minmax(0, 1fr) minmax(320px, 420px)'
       : renderPersistentRightPanel
-      ? `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr) clamp(460px, 38vw, 620px)`
+      ? `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr) ${resolvedDesktopRightPanelWidth ? `${resolvedDesktopRightPanelWidth}px` : 'clamp(460px, 38vw, 620px)'}`
       : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`
   );
 
@@ -179,7 +184,7 @@ export default function ChatPageDesktopLayout({
                       top: 0,
                       right: 0,
                       bottom: 0,
-                      width: 'min(620px, calc(100% - 48px))',
+                      width: `min(${resolvedDesktopRightPanelWidth || 620}px, calc(100% - 48px))`,
                       zIndex: 7,
                       borderLeft: `1px solid ${ui.borderSoft}`,
                       boxShadow: ui.shadowStrong,

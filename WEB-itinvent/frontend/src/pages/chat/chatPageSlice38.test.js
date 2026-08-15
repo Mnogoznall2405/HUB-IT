@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildChatMobileScreenTransition,
   resolveChatMobileView,
+  shouldDisableChatMobileMotion,
 } from './chatMobilePresentation';
 import useChatPageAnchorScrollBridge from './useChatPageAnchorScrollBridge';
 import useChatMobileThreadAnimation from './useChatMobileThreadAnimation';
@@ -52,8 +53,23 @@ describe('chatMobilePresentation', () => {
   it('buildChatMobileScreenTransition uses tween timing when motion is enabled', () => {
     expect(buildChatMobileScreenTransition(false)).toMatchObject({
       type: 'tween',
-      duration: expect.any(Number),
+      duration: 0.15,
     });
+  });
+
+  it('disables repeated full-screen transitions in an installed mobile PWA', () => {
+    expect(shouldDisableChatMobileMotion({
+      isMobile: true,
+      pwaInstalled: true,
+    })).toBe(true);
+    expect(shouldDisableChatMobileMotion({
+      isMobile: true,
+      pwaInstalled: false,
+    })).toBe(false);
+    expect(shouldDisableChatMobileMotion({
+      isMobile: false,
+      pwaInstalled: true,
+    })).toBe(false);
   });
 });
 

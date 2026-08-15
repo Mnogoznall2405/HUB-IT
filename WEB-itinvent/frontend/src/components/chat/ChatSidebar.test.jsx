@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -80,6 +80,9 @@ const buildProps = (overrides = {}) => ({
     'conv-1': 'Незавершённый ответ',
   },
   showAiSection: false,
+  onOpenAiBot: vi.fn(),
+  onCreateAiBotConversation: vi.fn(),
+  onCreateAiConversation: vi.fn(),
   onUpdateConversationSettings: vi.fn(),
   onRequestDeleteConversation: vi.fn(),
   onRequestLeaveConversation: vi.fn(),
@@ -345,27 +348,86 @@ describe('ChatSidebar', () => {
       onOpenAiBot,
     }));
 
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
     fireEvent.click(screen.getByRole('button', { name: /Corp Assistant/i }));
 
-    expect(screen.getByText('AI')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'ИИ' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText(/Черновик: новый запрос/i)).toBeInTheDocument();
     expect(onOpenConversation).toHaveBeenCalledWith('ai-conv-1');
     expect(onOpenAiBot).not.toHaveBeenCalled();
   });
 
-  it('creates the AI chat only when the bot has no linked conversation yet', () => {
+  it('shows generic create, fixed bots, and user history in the expected order', () => {
     const onOpenAiBot = vi.fn();
+    const onCreateAiBotConversation = vi.fn();
+    const onCreateAiConversation = vi.fn();
 
     renderWithTheme(buildProps({
       activeFolderKey: 'personal',
       showAiSection: true,
-      aiBots: [{ id: 'ai-2', title: 'Fresh Bot', slug: 'fresh-bot', description: 'Ready' }],
+      aiAgents: [{ id: 'ai-2', title: 'Fresh Bot', slug: 'fresh-bot', description: 'Ready' }],
+      aiBots: [
+        { id: 'history', conversation_id: 'history-1', title: 'История AI', assistant_title: 'Документы' },
+        { id: 'personal', conversation_id: 'personal-1', title: 'Личный разговор', assistant_title: 'Личный AI' },
+      ],
       onOpenAiBot,
+      onCreateAiBotConversation,
+      onCreateAiConversation,
     }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Fresh Bot/i }));
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
+    const newChat = screen.getByRole('button', { name: 'Новый чат' });
+    expect(within(newChat).getByTestId('AddRoundedIcon')).toBeInTheDocument();
+    const botsHeading = screen.getByText('Наши боты');
+    const historyHeading = screen.getByText('Мои чаты');
+    expect(newChat.compareDocumentPosition(botsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(botsHeading.compareDocumentPosition(historyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText('Помощник: Документы')).toBeInTheDocument();
+    expect(screen.getByLabelText('Помощник: Личный AI')).toBeInTheDocument();
+
+    fireEvent.click(newChat);
+    fireEvent.click(screen.getByRole('button', { name: 'Fresh Bot. Открыть последний чат' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Новый чат с Fresh Bot' }));
 
     expect(onOpenAiBot).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' }));
+    expect(onCreateAiBotConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' }));
+    expect(onCreateAiConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps archived AI dialogs out of the main history and exposes an AI archive', () => {
+    renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
+      showAiSection: true,
+      aiAgents: [{ id: 'fixed-bot', title: 'Закреплённый бот' }],
+      aiBots: [
+        {
+          id: 'ai-main',
+          title: 'Текущий AI-диалог',
+          conversation_id: 'ai-main-conv',
+          updated_at: '2026-08-14T10:00:00Z',
+          is_archived: false,
+        },
+        {
+          id: 'ai-archive',
+          title: 'Архивный AI-диалог',
+          conversation_id: 'ai-archive-conv',
+          updated_at: '2026-08-13T10:00:00Z',
+          is_archived: true,
+        },
+      ],
+    }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
+    expect(screen.getByRole('button', { name: /Текущий AI-диалог/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Архивный AI-диалог/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Действия' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Архив' }));
+
+    expect(screen.getByText('ИИ · Архив')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Архивный AI-диалог/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Текущий AI-диалог/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Закреплённый бот. Открыть последний чат' })).toBeInTheDocument();
   });
 
   it('shows AI sidebar loading and error states when AI chat is enabled', () => {
@@ -375,7 +437,8 @@ describe('ChatSidebar', () => {
       aiBotsLoading: true,
     }));
 
-    expect(screen.getByText(/Loading AI bots/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
+    expect(screen.getByText(/Загружаю помощников/i)).toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>

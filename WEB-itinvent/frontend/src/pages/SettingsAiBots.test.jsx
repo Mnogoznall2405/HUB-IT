@@ -71,6 +71,7 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
 
     expect(flattened).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: 'chat.ai.use', label: 'Chat: AI access' }),
+      expect.objectContaining({ value: 'chat.ai.sandbox', label: 'Chat: OpenCode sandbox access' }),
       expect.objectContaining({ value: 'settings.ai.manage', label: 'Settings: AI bots manage' }),
     ]));
   });

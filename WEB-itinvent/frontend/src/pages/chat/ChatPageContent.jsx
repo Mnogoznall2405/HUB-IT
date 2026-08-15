@@ -1,5 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Stack } from '@mui/material';
+import { chatAPI } from '../../api/client';
 
 import useReadReceipts from '../../components/chat/useReadReceipts';
 import useChatSidebarSearch from '../../components/chat/useChatSidebarSearch';
@@ -394,6 +395,7 @@ export function ChatPageContent() {
 
   const {
     activeAiLiveDataNotice,
+    activeAiBot,
     activeAiStatus,
     activeAiStatusDisplay,
     aiTypingStatus,
@@ -405,6 +407,20 @@ export function ChatPageContent() {
     aiStatusByConversation,
     setAiStatusByConversation,
   });
+
+  const stopActiveAiRun = useCallback(async () => {
+    const conversationId = String(activeConversationId || '').trim();
+    if (!conversationId || String(activeConversation?.kind || '').trim() !== 'ai') return;
+    try {
+      const status = await chatAPI.stopAiConversationRun(conversationId);
+      setAiStatusByConversation((current) => ({
+        ...current,
+        [conversationId]: status,
+      }));
+    } catch (error) {
+      notifyApiError(error, 'Не удалось остановить ответ агента.');
+    }
+  }, [activeConversation?.kind, activeConversationId, notifyApiError, setAiStatusByConversation]);
 
   const {
     clearStoredConversationState,
@@ -883,6 +899,7 @@ export function ChatPageContent() {
     requestConversationRemoval,
     requestDeleteConversation,
     requestLeaveConversation,
+    renameAiConversation,
     settingsUpdating,
     updateConversationSettings,
   } = useChatConversationActionsController({
@@ -1023,6 +1040,8 @@ export function ChatPageContent() {
   });
 
   const {
+    handleCreateAiBotConversation,
+    handleCreateAiConversation,
     handleOpenAiBot,
     handleOpenArchiveFolder,
     handleOpenPeer,
@@ -1395,7 +1414,9 @@ export function ChatPageContent() {
         sidebarScrollRef, handleSidebarScroll, conversationFilter, handleActiveFolderChange: core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
-        conversationActionPendingId, aiSidebarRows, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
+        conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
+        handleCreateAiBotConversation, handleCreateAiConversation,
+        renameAiConversation,
         openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx, messages, messagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
@@ -1407,7 +1428,7 @@ export function ChatPageContent() {
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
@@ -1443,7 +1464,9 @@ export function ChatPageContent() {
         sidebarScrollRef, handleSidebarScroll, conversationFilter, core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
-        conversationActionPendingId, aiSidebarRows, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
+        conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
+        handleCreateAiBotConversation, handleCreateAiConversation,
+        renameAiConversation,
         openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx, messages, messagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
@@ -1455,7 +1478,7 @@ export function ChatPageContent() {
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
@@ -1527,6 +1550,7 @@ export function ChatPageContent() {
           sidebarPane={sidebarPane}
           threadPane={threadPane}
           desktopRightPanelContent={desktopRightPanelContent}
+          desktopRightPanelWidth={String(activeConversation?.kind || '').trim() === 'ai' ? 360 : undefined}
           taskSplitLayout={taskSplitLayout}
           renderDesktopRightPanel={renderDesktopRightPanel}
           renderPersistentRightPanel={renderPersistentRightPanel}

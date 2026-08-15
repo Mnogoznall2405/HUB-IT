@@ -136,7 +136,7 @@ public sealed class DesktopSupportBundleExporter
 
     private static object CreateSelfChecks(DesktopDiagnosticsSnapshot snapshot) => new
     {
-        schema_version = 1,
+        schema_version = snapshot.SchemaVersion,
         origin_uses_https = Uri.TryCreate(
             snapshot.ConfiguredOrigin,
             UriKind.Absolute,

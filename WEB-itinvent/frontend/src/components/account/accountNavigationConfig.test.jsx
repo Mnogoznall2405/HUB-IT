@@ -1,12 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PERSONAL_SETTINGS_SECTIONS,
   canAccessAdminArea,
   getAvailableAdminSections,
   resolveLegacySettingsTarget,
 } from './accountNavigationConfig';
 
 describe('account navigation configuration', () => {
+  it('keeps About HUB-IT as the fifth personal settings section', () => {
+    expect(PERSONAL_SETTINGS_SECTIONS.map((section) => section.key)).toEqual([
+      'appearance',
+      'notifications',
+      'security',
+      'app',
+      'about',
+    ]);
+    expect(PERSONAL_SETTINGS_SECTIONS[4].description).toBe(
+      'Возможности веб-версии и приложения для Windows',
+    );
+  });
+
   it('allows administration for admins or users with at least one admin permission', () => {
     expect(canAccessAdminArea({
       user: { role: 'admin' },

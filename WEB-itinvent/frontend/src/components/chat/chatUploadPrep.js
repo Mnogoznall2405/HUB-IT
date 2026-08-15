@@ -5,8 +5,6 @@
  * 1. Optional image compression for large photos.
  * 2. Optional transport gzip compression for upload payloads.
  */
-import { gzip } from 'fflate';
-import imageCompression from 'browser-image-compression';
 import imageCompressionWorkerUrl from 'browser-image-compression/dist/browser-image-compression.js?url';
 
 import { isArchiveFile } from './chatHelpers';
@@ -16,6 +14,23 @@ const CHAT_IMAGE_QUALITY = 0.8;
 const CHAT_PREPARE_ABOVE_BYTES_DEFAULT = 1 * 1024 * 1024;
 const CHAT_TRANSPORT_GZIP_LEVEL = 6;
 const CHAT_IMAGE_COMPRESSION_WORKER_URL = String(imageCompressionWorkerUrl || '').trim();
+let gzipModulePromise = null;
+let imageCompressionModulePromise = null;
+
+const loadGzip = () => {
+  if (!gzipModulePromise) {
+    gzipModulePromise = import('fflate').then((module) => module.gzip);
+  }
+  return gzipModulePromise;
+};
+
+const loadImageCompression = () => {
+  if (!imageCompressionModulePromise) {
+    imageCompressionModulePromise = import('browser-image-compression')
+      .then((module) => module.default);
+  }
+  return imageCompressionModulePromise;
+};
 
 const replaceFileExtension = (fileName, nextExtension) => {
   const normalized = String(fileName || '').trim() || 'image';
@@ -87,21 +102,24 @@ const detectAnimatedGif = async (file) => {
   }
 };
 
-const gzipBytesAsync = (payload, options = {}) => new Promise((resolve, reject) => {
-  gzip(
-    payload,
-    {
-      level: Math.max(0, Math.min(9, Number(options.level ?? CHAT_TRANSPORT_GZIP_LEVEL))),
-    },
-    (error, data) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(data);
-    },
-  );
-});
+const gzipBytesAsync = async (payload, options = {}) => {
+  const gzip = await loadGzip();
+  return new Promise((resolve, reject) => {
+    gzip(
+      payload,
+      {
+        level: Math.max(0, Math.min(9, Number(options.level ?? CHAT_TRANSPORT_GZIP_LEVEL))),
+      },
+      (error, data) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(data);
+      },
+    );
+  });
+};
 
 const readFileBytes = async (file) => {
   if (file && typeof file.arrayBuffer === 'function') {
@@ -173,6 +191,7 @@ export const prepareChatUploadFile = async (file, options = {}) => {
       const prepareAboveBytes = Math.max(0, Number(options.prepareAboveBytes ?? CHAT_PREPARE_ABOVE_BYTES_DEFAULT));
       if (options.forcePrepare || Number(file?.size || 0) > prepareAboveBytes) {
         try {
+          const imageCompression = await loadImageCompression();
           const compressedFile = await imageCompression(file, {
             maxSizeMB: (options.maxSizeMB ?? undefined),
             maxWidthOrHeight: options.maxDimension || CHAT_IMAGE_MAX_DIMENSION,

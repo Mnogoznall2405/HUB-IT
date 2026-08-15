@@ -3,9 +3,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../api/chatDirectory', () => ({
+  chatDirectoryAPI: {
+    saveAttachmentToMyFiles: vi.fn(),
+  },
+}));
+
 import { AttachmentCard, FileAttachment } from './ChatCommon';
 import { buildAttachmentUrl } from './chatHelpers';
 import { chatStickersAPI } from '../../api/chatStickers';
+import { chatDirectoryAPI } from '../../api/chatDirectory';
 
 const theme = createTheme();
 const ui = {
@@ -368,6 +375,25 @@ describe('FileAttachment', () => {
 });
 
 describe('AttachmentCard', () => {
+  it('saves an AI-generated attachment to My Files only after an explicit click', async () => {
+    chatDirectoryAPI.saveAttachmentToMyFiles.mockResolvedValue({ id: 'my-file-1' });
+    renderWithTheme(
+      <AttachmentCard
+        messageId="message-ai-1"
+        attachment={{ id: 'attachment-ai-1', file_name: 'report.xlsx', mime_type: 'application/octet-stream' }}
+        theme={theme}
+        ui={ui}
+        canSaveToMyFiles
+      />,
+    );
+
+    expect(chatDirectoryAPI.saveAttachmentToMyFiles).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить в Мои файлы' }));
+
+    await waitFor(() => expect(chatDirectoryAPI.saveAttachmentToMyFiles).toHaveBeenCalledWith('message-ai-1', 'attachment-ai-1'));
+    expect(await screen.findByRole('button', { name: 'Файл отправлен на проверку и сохранение в Мои файлы' })).toBeDisabled();
+  });
+
   it('maps chat attachment payloads to the telegram-style attachment component', () => {
     const onOpenPreview = vi.fn();
     const attachment = {

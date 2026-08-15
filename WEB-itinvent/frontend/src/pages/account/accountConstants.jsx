@@ -211,6 +211,7 @@ const AI_PERMISSION_GROUP = {
   group: 'AI',
   permissions: [
     { value: 'chat.ai.use', label: 'Chat: AI access' },
+    { value: 'chat.ai.sandbox', label: 'Chat: OpenCode sandbox access' },
     { value: 'settings.ai.manage', label: 'Settings: AI bots manage' },
   ],
 };

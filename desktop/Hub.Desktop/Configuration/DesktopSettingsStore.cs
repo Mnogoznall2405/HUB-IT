@@ -54,7 +54,8 @@ public sealed record DesktopSettings(
     DesktopCloseBehavior CloseBehavior = DesktopCloseBehavior.AlwaysHide,
     bool GlobalHotkeyEnabled = false,
     string? InstalledReleaseNotesVersion = null,
-    IReadOnlyList<string>? InstalledReleaseNotes = null)
+    IReadOnlyList<string>? InstalledReleaseNotes = null,
+    bool TaskbarPinPromptHandled = false)
 {
     public static DesktopSettings Default { get; } = new(
         DeferredUpdateVersion: null,
@@ -71,7 +72,8 @@ public sealed record DesktopSettings(
         CloseBehavior: DesktopCloseBehavior.AlwaysHide,
         GlobalHotkeyEnabled: false,
         InstalledReleaseNotesVersion: null,
-        InstalledReleaseNotes: null);
+        InstalledReleaseNotes: null,
+        TaskbarPinPromptHandled: false);
 }
 
 public sealed class DesktopSettingsStore
@@ -162,7 +164,8 @@ public sealed class DesktopSettingsStore
                 settings.CloseBehavior,
                 settings.GlobalHotkeyEnabled,
                 settings.InstalledReleaseNotesVersion,
-                settings.InstalledReleaseNotes);
+                settings.InstalledReleaseNotes,
+                settings.TaskbarPinPromptHandled);
             var json = JsonSerializer.Serialize(document, JsonOptions);
             File.WriteAllText(temporaryPath, json, new UTF8Encoding(false));
             File.Move(temporaryPath, SettingsPath, overwrite: true);
@@ -258,7 +261,8 @@ public sealed class DesktopSettingsStore
             document.CloseBehavior,
             document.GlobalHotkeyEnabled,
             document.InstalledReleaseNotesVersion,
-            document.InstalledReleaseNotes);
+            document.InstalledReleaseNotes,
+            document.TaskbarPinPromptHandled);
         try
         {
             Validate(candidate);
@@ -367,5 +371,6 @@ public sealed class DesktopSettingsStore
         DesktopCloseBehavior CloseBehavior = DesktopCloseBehavior.AlwaysHide,
         bool GlobalHotkeyEnabled = false,
         string? InstalledReleaseNotesVersion = null,
-        IReadOnlyList<string>? InstalledReleaseNotes = null);
+        IReadOnlyList<string>? InstalledReleaseNotes = null,
+        bool TaskbarPinPromptHandled = false);
 }

@@ -61,6 +61,7 @@ function ReadReceiptsHarness({
   markRead = vi.fn(),
   onOptimisticRead = vi.fn(),
   onReadSyncError = vi.fn(),
+  onTargetRef,
 }) {
   const scrollRootRef = useRef(null);
   const { effectiveLastReadMessageId, getReadTargetRef } = useReadReceipts({
@@ -77,15 +78,19 @@ function ReadReceiptsHarness({
   return (
     <div>
       <div ref={scrollRootRef}>
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            ref={getReadTargetRef(message.id)}
-            data-chat-message-id={message.id}
-          >
-            {message.body}
-          </div>
-        ))}
+        {messages.map((message) => {
+          const targetRef = getReadTargetRef(message.id);
+          onTargetRef?.(message.id, targetRef);
+          return (
+            <div
+              key={message.id}
+              ref={targetRef}
+              data-chat-message-id={message.id}
+            >
+              {message.body}
+            </div>
+          );
+        })}
       </div>
       <output data-testid="effective-read-id">{effectiveLastReadMessageId}</output>
     </div>
@@ -251,6 +256,47 @@ describe('useReadReceipts', () => {
       });
 
       expect(markRead).toHaveBeenCalledWith('conv-1', 'msg-c');
+    } finally {
+      intersectionObserver.restore();
+    }
+  });
+
+  it('releases callback refs when messages leave the rendered window', () => {
+    const intersectionObserver = installIntersectionObserverMock();
+    const refsByMessage = new Map();
+    const rememberTargetRef = (messageId, targetRef) => {
+      if (!targetRef) return;
+      const history = refsByMessage.get(messageId) || [];
+      history.push(targetRef);
+      refsByMessage.set(messageId, history);
+    };
+
+    try {
+      const { rerender } = render(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES}
+          onTargetRef={rememberTargetRef}
+        />,
+      );
+      const firstRef = refsByMessage.get('msg-b')?.at(-1);
+
+      rerender(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES.filter((message) => message.id !== 'msg-b')}
+          onTargetRef={rememberTargetRef}
+        />,
+      );
+      rerender(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES}
+          onTargetRef={rememberTargetRef}
+        />,
+      );
+
+      expect(refsByMessage.get('msg-b')?.at(-1)).not.toBe(firstRef);
     } finally {
       intersectionObserver.restore();
     }

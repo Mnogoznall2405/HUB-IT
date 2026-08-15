@@ -2,22 +2,93 @@
 from __future__ import annotations
 
 import re
+import shutil
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 
-from backend.api.deps import require_permission
+from backend.api.deps import ensure_user_permission, require_permission
 from backend.api.v1.chat._shim import chat_api
 from backend.chat.schemas import ChatMessageReadsResponse
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_CHAT_READ
+from backend.models.my_files import MyFileResponse
+from backend.services.authorization_service import PERM_CHAT_READ, PERM_MY_FILES_WRITE
+from backend.services.my_files_service import (
+    DEFAULT_RETENTION_DAYS,
+    MAX_FILE_SIZE_BYTES,
+    MyFilesRequestMeta,
+    my_files_service,
+)
+from backend.utils.request_network import build_request_network_context
 
 router = APIRouter()
 _IMMUTABLE_STICKER_CACHE_HEADERS = {
     "Cache-Control": "private, max-age=31536000, immutable",
 }
+
+
+def _save_attachment_to_my_files(
+    *,
+    attachment: dict,
+    current_user: User,
+    retention_days: int,
+    meta: MyFilesRequestMeta,
+) -> dict:
+    source_path = Path(str(attachment.get("path") or "")).resolve()
+    if not source_path.is_file():
+        raise LookupError("Attachment file not found")
+    file_size = int(source_path.stat().st_size)
+    if file_size <= 0:
+        raise ValueError("Attachment file is empty")
+    if file_size > MAX_FILE_SIZE_BYTES:
+        raise ValueError("Attachment exceeds My Files size limit")
+
+    file_name = str(attachment.get("file_name") or source_path.name or "attachment.bin")
+    mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+    spool_path = my_files_service.new_spool_path(file_name)
+    reserved_file_id = ""
+    try:
+        reserved = my_files_service.reserve_upload(
+            actor=current_user,
+            original_file_name=file_name,
+            mime_type=mime_type,
+            spool_path=spool_path,
+            expected_size_bytes=file_size,
+            retention_days=retention_days,
+            meta=meta,
+        )
+        reserved_file_id = str(reserved["id"])
+        spool_path.parent.mkdir(parents=True, exist_ok=True)
+        with source_path.open("rb") as source, spool_path.open("xb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+        actual_size = int(spool_path.stat().st_size)
+        if actual_size != file_size:
+            raise ValueError("Attachment changed while it was being saved")
+        return my_files_service.complete_upload(
+            file_id=reserved_file_id,
+            user_id=int(current_user.id),
+            actual_size_bytes=actual_size,
+            actor=current_user,
+            meta=meta,
+        )
+    except BaseException:
+        spool_path.unlink(missing_ok=True)
+        if reserved_file_id:
+            try:
+                my_files_service.abort_upload(
+                    file_id=reserved_file_id,
+                    user_id=int(current_user.id),
+                    error_text="Saving chat attachment was interrupted",
+                    actor=current_user,
+                    meta=meta,
+                )
+            except Exception:
+                pass
+        raise
 
 @router.get("/messages/{message_id}/attachments/{attachment_id}/file")
 async def download_chat_attachment(
@@ -49,6 +120,42 @@ async def download_chat_attachment(
         content_disposition_type="inline" if inline else "attachment",
         headers=headers,
     )
+
+
+@router.post(
+    "/messages/{message_id}/attachments/{attachment_id}/save-to-my-files",
+    response_model=MyFileResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_chat_attachment_to_my_files(
+    message_id: str,
+    attachment_id: str,
+    request: Request,
+    retention_days: int = Query(DEFAULT_RETENTION_DAYS),
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+) -> dict:
+    """Queue an authorized chat attachment through the regular My Files pipeline."""
+    ensure_user_permission(current_user, PERM_MY_FILES_WRITE)
+    try:
+        attachment = await chat_api()._run_chat_call(
+            chat_api().chat_service.get_attachment_for_download,
+            current_user_id=int(current_user.id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+        network_context = build_request_network_context(request)
+        return await run_in_threadpool(
+            _save_attachment_to_my_files,
+            attachment=attachment,
+            current_user=current_user,
+            retention_days=retention_days,
+            meta=MyFilesRequestMeta(
+                ip_address=network_context.client_ip,
+                user_agent=str(request.headers.get("user-agent") or ""),
+            ),
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
 
 
 def _build_chat_attachment_content_disposition(filename: str, disposition: str = "attachment") -> str:

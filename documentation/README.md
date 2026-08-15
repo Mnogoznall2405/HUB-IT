@@ -16,6 +16,7 @@
 
 - [Технический обзор](technical/README.md)
 - [Описание функций](technical/FEATURES.md)
+- [Cloudflare, защищённая загрузка HUB Desktop и закрытие origin](technical/HUB_CLOUDFLARE_EDGE.md)
 
 ## Что важно
 

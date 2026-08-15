@@ -62,6 +62,7 @@ class ChatReactionToggleResponse(BaseModel):
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
+    conversation_seq: int = 0
     kind: Literal["text", "task_share", "file", "system"] = "text"
     body_format: Literal["plain", "markdown"] = "plain"
     client_message_id: Optional[str] = None
@@ -98,6 +99,8 @@ class ChatConversationSummary(BaseModel):
     created_at: str
     updated_at: str
     last_message_at: Optional[str] = None
+    last_message_seq: int = 0
+    viewer_last_read_seq: int = 0
     last_message_preview: str = ""
     last_message_is_own: bool = False
     last_message_delivery_status: Optional[Literal["sent", "read"]] = None

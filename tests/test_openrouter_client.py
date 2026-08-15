@@ -174,6 +174,53 @@ def test_complete_text_and_multimodal_user_content(monkeypatch):
     assert isinstance(fake_client2.chat.completions.calls[0]["messages"][1]["content"], list)
 
 
+def test_stream_chat_completion_forwards_only_supported_openai_fields(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    chunks = [SimpleNamespace(id="chunk-1"), SimpleNamespace(id="chunk-2")]
+    fake_client = _FakeClient([iter(chunks)])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    result = list(
+        client.stream_chat_completion(
+            messages=[{"role": "user", "content": "Create a file"}],
+            model="openai/gpt-test",
+            temperature=0.1,
+            max_tokens=900,
+            tools=[{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}],
+            tool_choice="auto",
+        )
+    )
+
+    assert result == chunks
+    assert fake_client.chat.completions.calls == [
+        {
+            "model": "openai/gpt-test",
+            "temperature": 0.1,
+            "max_tokens": 900,
+            "messages": [{"role": "user", "content": "Create a file"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "tools": [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}],
+            "tool_choice": "auto",
+        }
+    ]
+
+
+def test_stream_chat_completion_rejects_empty_message_list(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient, OpenRouterClientError
+
+    fake_client = _FakeClient([])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    with pytest.raises(OpenRouterClientError, match="At least one chat message"):
+        client.stream_chat_completion(messages=[], model="openai/gpt-test")
+
+    assert fake_client.chat.completions.calls == []
+
+
 def test_resolve_model_purpose_chains(monkeypatch):
     from shared.llm import env as env_mod
     from shared.llm.models import resolve_model, resolve_model_candidates

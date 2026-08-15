@@ -170,6 +170,10 @@ _DIRECT_DESCRIPTIONS = {
     "AUTH_COOKIE_SECURE": ("Безопасность", "Разрешать cookie только по HTTPS."),
     "AUTH_COOKIE_SAMESITE": ("Безопасность", "Политика SameSite для auth-cookie."),
     "AUTH_COOKIE_DOMAIN": ("Безопасность", "Домен auth-cookie."),
+    "AUTH_CLOUDFLARE_PROXY_CIDRS": (
+        "Безопасность",
+        "Официальные CIDR Cloudflare, от которых разрешено доверять CF-Connecting-IP; пусто до закрытия origin.",
+    ),
     "SESSION_IDLE_TIMEOUT_MINUTES": ("Сессии", "Idle timeout веб-сессии в минутах."),
     "SESSION_IDLE_TIMEOUT_TRUSTED_DAYS": ("Сессии", "Idle timeout для сессий с доверенным устройством (passkey/WebAuthn), в днях."),
     "SESSION_IDLE_TIMEOUT_INTERNAL_DAYS": ("Сессии", "Idle timeout для сессий, созданных из локальной сети (AUTH_2FA_INTERNAL_CIDRS), в днях (минимум 7)."),

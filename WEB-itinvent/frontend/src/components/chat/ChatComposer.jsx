@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -18,7 +18,6 @@ import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import StopRoundedIcon from '@mui/icons-material/StopRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 
-import ChatEmojiPanel from './ChatEmojiPanel';
 import {
   CHAT_DEFAULT_FONT_SIZES,
   CHAT_FONT_FAMILY,
@@ -30,6 +29,8 @@ import {
   getPersonStatusLine,
   getSearchResultPreview,
 } from './chatHelpers';
+
+const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const formatVoiceDuration = (seconds) => {
@@ -316,6 +317,9 @@ const ChatComposer = memo(function ChatComposer({
   onStartVoiceRecording,
   onStopVoiceRecording,
   onCancelVoiceRecording,
+  isAiConversation = false,
+  isAiGenerating = false,
+  onStopAiRun,
 }) {
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
@@ -499,7 +503,9 @@ const ChatComposer = memo(function ChatComposer({
       sx={{
         px: { xs: compactMobile ? 0.8 : (density.composerDockPx || 1.1), md: density.composerDockPxMd || 1.6 },
         pt: compactMobile ? 0.55 : (density.composerDockPt || 0.95),
-        pb: compactMobile ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)' : (density.composerDockPb || 0.95),
+        pb: compactMobile
+          ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)'
+          : (density.composerDockPb || 0.95),
         bgcolor: composerBg,
         backdropFilter: 'blur(22px) saturate(1.08)',
         position: 'relative',
@@ -508,10 +514,14 @@ const ChatComposer = memo(function ChatComposer({
         transition: safeKeyboardInset > 0 ? 'transform 80ms ease-out' : 'transform 120ms ease-in',
         willChange: compactMobile ? 'transform' : 'auto',
         zIndex: 5,
-        borderTop: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
-        boxShadow: theme.palette.mode === 'dark'
-          ? '0 -1px 0 rgba(255,255,255,0.04)'
-          : `0 -1px 0 ${ui.borderSoft}, 0 -14px 26px rgba(80,104,128,0.08)`,
+        borderTop: compactMobile
+          ? 'none'
+          : theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
+        boxShadow: compactMobile
+          ? 'none'
+          : theme.palette.mode === 'dark'
+            ? '0 -1px 0 rgba(255,255,255,0.04)'
+            : `0 -1px 0 ${ui.borderSoft}, 0 -14px 26px rgba(80,104,128,0.08)`,
         fontFamily: CHAT_FONT_FAMILY,
       }}
     >
@@ -954,7 +964,7 @@ const ChatComposer = memo(function ChatComposer({
                     maxRows={6}
                     aria-label="Сообщение"
                     enterKeyHint={compactMobile ? 'enter' : 'send'}
-                    placeholder="Сообщение..."
+                    placeholder={isAiConversation ? 'Спросите ассистента…' : 'Сообщение...'}
                     value={messageText}
                     onChange={handleComposerChange}
                     onKeyDown={handleComposerKeyDown}
@@ -1020,7 +1030,31 @@ const ChatComposer = memo(function ChatComposer({
             )}
           </Box>
 
-          {canSendComposerMessage || voiceRecording ? (
+          {isAiGenerating ? (
+            <Tooltip title="Остановить">
+              <span>
+                <button
+                  type="button"
+                  aria-label="Остановить ответ агента"
+                  onClick={() => void onStopAiRun?.()}
+                  onMouseDown={preserveComposerKeyboard}
+                  onPointerDown={preserveComposerKeyboard}
+                  data-testid="chat-composer-stop-ai-button"
+                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
+                  style={{
+                    width: density.composerActionSize || 46,
+                    height: density.composerActionSize || 46,
+                    backgroundColor: composerActionBg,
+                    color: composerActionText,
+                    boxShadow: `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
+                    transform: compactMobile ? undefined : 'translateY(-2px)',
+                  }}
+                >
+                  <StopRoundedIcon sx={{ fontSize: density.composerActionIcon || 20 }} />
+                </button>
+              </span>
+            </Tooltip>
+          ) : canSendComposerMessage || voiceRecording ? (
             <Tooltip title={voiceRecording ? 'Отправить' : (editingMessage ? 'Сохранить' : 'Отправить')}>
               <span>
                 <button
@@ -1071,16 +1105,20 @@ const ChatComposer = memo(function ChatComposer({
 
       </Box>
 
-      <ChatEmojiPanel
-        open={mobileEmojiPickerOpen}
-        theme={theme}
-        ui={ui}
-        onInsertEmoji={onInsertEmoji}
-        onSendSticker={onSendSticker}
-        onSendGif={onSendGif}
-        currentUserId={currentUserId}
-        onClose={onCloseEmojiPicker}
-      />
+      {mobileEmojiPickerOpen ? (
+        <Suspense fallback={null}>
+          <LazyChatEmojiPanel
+            open
+            theme={theme}
+            ui={ui}
+            onInsertEmoji={onInsertEmoji}
+            onSendSticker={onSendSticker}
+            onSendGif={onSendGif}
+            currentUserId={currentUserId}
+            onClose={onCloseEmojiPicker}
+          />
+        </Suspense>
+      ) : null}
     </Box>
   );
 });

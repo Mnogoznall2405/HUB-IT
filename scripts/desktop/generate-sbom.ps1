@@ -33,16 +33,29 @@ if (-not (Test-Path -LiteralPath $prerequisiteInventoryPath -PathType Leaf)) {
     throw "Prerequisite inventory is missing; build the installer first: $prerequisiteInventoryPath"
 }
 
-$rawOutput = & $dotnet list $solution package --include-transitive --format json --output-version 1
-if ($LASTEXITCODE -ne 0) {
-    throw "NuGet package inventory failed with exit code $LASTEXITCODE"
+$productionProjectPaths = @(
+    Join-Path $repoRoot 'desktop\Hub.Desktop\Hub.Desktop.csproj'
+    Join-Path $repoRoot 'desktop\Hub.Desktop.UpdateCore\Hub.Desktop.UpdateCore.csproj'
+    Join-Path $repoRoot 'desktop\Hub.Desktop.UpdateRunner\Hub.Desktop.UpdateRunner.csproj'
+    Join-Path $repoRoot 'desktop\Hub.Desktop.UpdateVerifier\Hub.Desktop.UpdateVerifier.csproj'
+)
+$reportedProjects = [System.Collections.Generic.List[object]]::new()
+foreach ($productionProjectPath in $productionProjectPaths) {
+    $rawOutput = & $dotnet list $productionProjectPath package --include-transitive --format json --output-version 1
+    if ($LASTEXITCODE -ne 0) {
+        throw "NuGet package inventory failed for $productionProjectPath with exit code $LASTEXITCODE"
+    }
+    try {
+        $projectReport = ([string]::Join([Environment]::NewLine, @($rawOutput))) | ConvertFrom-Json
+    }
+    catch {
+        throw "NuGet package inventory returned invalid JSON for $productionProjectPath`: $($_.Exception.Message)"
+    }
+    foreach ($reportedProject in @($projectReport.projects)) {
+        $reportedProjects.Add($reportedProject)
+    }
 }
-try {
-    $packageReport = ([string]::Join([Environment]::NewLine, @($rawOutput))) | ConvertFrom-Json
-}
-catch {
-    throw "NuGet package inventory returned invalid JSON: $($_.Exception.Message)"
-}
+$packageReport = [pscustomobject]@{ projects = @($reportedProjects) }
 $prerequisites = Get-Content -LiteralPath $prerequisiteInventoryPath -Raw -Encoding utf8 |
     ConvertFrom-Json
 

@@ -24,11 +24,16 @@ vi.mock('../../lib/chatSocket', () => ({
   },
 }));
 
-function Harness({ applyOutgoingThreadMessage, setSocketStatus, initialText = 'hello' }) {
+function Harness({
+  applyOutgoingThreadMessage,
+  setSocketStatus,
+  initialText = 'hello',
+  latestText = initialText,
+}) {
   const [messageText, setMessageText] = useState(initialText);
   const activeConversationIdRef = useRef('conversation-1');
   const draftWriteTimeoutRef = useRef(null);
-  const latestMessageTextRef = useRef(initialText);
+  const latestMessageTextRef = useRef(latestText);
   const socketStatusRef = useRef('connected');
 
   const { handleComposerSend } = useChatComposerSending({
@@ -151,5 +156,35 @@ describe('useChatComposerSending', () => {
       expect.objectContaining({ scroll: true }),
     );
     expect(chatAPI.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends the latest composer ref value while the parent render is deferred', async () => {
+    const applyOutgoingThreadMessage = vi.fn();
+    const setSocketStatus = vi.fn();
+    chatSocket.sendMessage.mockResolvedValueOnce({
+      message: {
+        id: 'server-latest',
+        body: 'fresh text',
+        body_format: 'plain',
+      },
+    });
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        setSocketStatus={setSocketStatus}
+        initialText="stale text"
+        latestText="fresh text"
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(chatSocket.sendMessage).toHaveBeenCalledTimes(1));
+    expect(chatSocket.sendMessage).toHaveBeenCalledWith(
+      'conversation-1',
+      'fresh text',
+      expect.objectContaining({ body_format: 'plain' }),
+    );
   });
 });

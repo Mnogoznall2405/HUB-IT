@@ -307,6 +307,7 @@ class AuthSecurityConfig:
     twofa_policy: str = "all"
     twofa_internal_cidrs: List[str] = None
     trusted_proxy_cidrs: List[str] = None
+    cloudflare_proxy_cidrs: List[str] = None
     totp_issuer: str = "HUB-IT"
     twofa_challenge_ttl_sec: int = 300
     backup_codes_count: int = 10
@@ -323,6 +324,8 @@ class AuthSecurityConfig:
             self.twofa_internal_cidrs = ["10.0.0.0/8"]
         if self.trusted_proxy_cidrs is None:
             self.trusted_proxy_cidrs = ["127.0.0.1/32", "::1/128"]
+        if self.cloudflare_proxy_cidrs is None:
+            self.cloudflare_proxy_cidrs = []
 
 
 @dataclass
@@ -471,6 +474,11 @@ class Config:
                 trusted_proxy_cidrs=[
                     item.strip()
                     for item in str(os.getenv("AUTH_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128") or "").split(",")
+                    if item.strip()
+                ],
+                cloudflare_proxy_cidrs=[
+                    item.strip()
+                    for item in str(os.getenv("AUTH_CLOUDFLARE_PROXY_CIDRS", "") or "").split(",")
                     if item.strip()
                 ],
                 totp_issuer=(str(os.getenv("TOTP_ISSUER", "HUB-IT") or "").strip() or "HUB-IT"),

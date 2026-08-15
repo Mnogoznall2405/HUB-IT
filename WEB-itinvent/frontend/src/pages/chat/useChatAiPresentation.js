@@ -4,6 +4,7 @@ import {
   AI_QUEUED_STATUS_TEXT,
   buildAiLiveDataNotice,
   buildAiStatusDisplayModel,
+  resolveActiveAiBotRecord,
 } from './chatAiModel';
 
 export function resolveAiTypingStatus({
@@ -18,7 +19,7 @@ export function resolveAiTypingStatus({
   if (!visible) return null;
   return {
     visible: true,
-    botName: String(activeAiStatus?.bot_title || activeAiStatusDisplay?.primaryText || 'AI Ассистент').trim() || 'AI Ассистент',
+    botName: String(activeAiStatus?.bot_title || activeAiStatusDisplay?.primaryText || 'HUB Ассистент').trim() || 'HUB Ассистент',
   };
 }
 
@@ -37,6 +38,15 @@ export default function useChatAiPresentation({
   const activeAiStatusDisplay = useMemo(
     () => buildAiStatusDisplayModel(activeAiStatus),
     [activeAiStatus],
+  );
+
+  const activeAiBot = useMemo(
+    () => resolveActiveAiBotRecord({
+      aiBots,
+      activeConversationId,
+      aiStatus: activeAiStatus,
+    }),
+    [activeAiStatus, activeConversationId, aiBots],
   );
 
   const aiTypingStatus = useMemo(
@@ -77,6 +87,7 @@ export default function useChatAiPresentation({
 
   return {
     activeAiLiveDataNotice,
+    activeAiBot,
     activeAiStatus,
     activeAiStatusDisplay,
     aiTypingStatus,

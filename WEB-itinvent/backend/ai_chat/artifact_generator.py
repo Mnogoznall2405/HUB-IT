@@ -41,7 +41,7 @@ except Exception:  # pragma: no cover
 
 
 SUPPORTED_GENERATED_FILE_FORMATS = {"csv", "xlsx", "docx", "pdf", "txt", "md", "json"}
-MAX_GENERATED_FILES_PER_RUN = 10
+MAX_GENERATED_FILES_PER_RUN = 5
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 MAX_GENERATED_FILE_ROWS_PER_SHEET = 50000
 

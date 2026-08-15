@@ -960,6 +960,17 @@ async def get_current_user_info(
     return _build_current_user_payload(current_user, request)
 
 
+@router.post("/me/about-onboarding/complete", response_model=User)
+async def complete_about_onboarding(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    completed = await run_in_threadpool(user_service.complete_about_onboarding, int(current_user.id))
+    if completed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return _build_current_user_payload(current_user, request)
+
+
 @router.post("/change-password")
 async def change_password(
     request: ChangePasswordRequest,

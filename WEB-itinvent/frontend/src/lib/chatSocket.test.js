@@ -461,6 +461,36 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('dispatches OpenCode sandbox updates to the active UI seam', async () => {
+    const {
+      chatSocket,
+      CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT,
+    } = await loadChatSocket();
+    const handler = vi.fn();
+    window.addEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handler);
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.ai.sandbox.updated',
+        conversation_id: 'conv-opencode',
+        payload: { change: 'permission', permission_id: 'permission-1' },
+      }),
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].detail).toEqual(expect.objectContaining({
+      conversation_id: 'conv-opencode',
+      payload: expect.objectContaining({ permission_id: 'permission-1' }),
+    }));
+
+    window.removeEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handler);
+    release();
+    chatSocket.close(true);
+  });
+
   it('caps the offline message queue and drops the oldest queued message', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { chatSocket } = await loadChatSocket();
@@ -480,6 +510,28 @@ describe('chatSocket client lifecycle', () => {
     release();
     chatSocket.close(true);
     warnSpy.mockRestore();
+  });
+
+  it('caps inbox previews at 200 entries and removes expired previews', async () => {
+    const {
+      noteInboxMessagePreview,
+      peekInboxMessagePreview,
+      pruneInboxMessagePreviews,
+    } = await loadChatSocket();
+
+    for (let index = 0; index < 205; index += 1) {
+      noteInboxMessagePreview({
+        conversation_id: `conv-${index}`,
+        payload: { id: `msg-${index}`, body: `Message ${index}` },
+      });
+    }
+
+    expect(peekInboxMessagePreview('conv-4')).toBeNull();
+    expect(peekInboxMessagePreview('conv-5')?.id).toBe('msg-5');
+    expect(peekInboxMessagePreview('conv-204')?.id).toBe('msg-204');
+
+    pruneInboxMessagePreviews({ now: Date.now() + (10 * 60 * 1000) + 1 });
+    expect(peekInboxMessagePreview('conv-204')).toBeNull();
   });
 
   it('adds jitter to reconnect delays', async () => {

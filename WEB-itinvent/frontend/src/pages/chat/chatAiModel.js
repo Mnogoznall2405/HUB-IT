@@ -1,4 +1,5 @@
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
+export { groupAiSidebarRowsByDate } from '../../components/chat/chatAiSidebarModel';
 
 export const canUseAiChatPermission = (hasPermission) => (
   typeof hasPermission === 'function' ? Boolean(hasPermission('chat.ai.use')) : false
@@ -23,9 +24,22 @@ export const mergeAiStatusPayload = (current, payload, fallbackConversationId = 
     || ''
   ).trim();
   if (!conversationId) return nextCurrent;
+  const previous = nextCurrent[conversationId] && typeof nextCurrent[conversationId] === 'object'
+    ? nextCurrent[conversationId]
+    : {};
+  const stage = String(nextPayload?.stage || '').trim();
+  const completedStages = [
+    ...(Array.isArray(previous?.completed_stages) ? previous.completed_stages : []),
+    ...(stage && !['queued', 'completed', 'failed', 'cancelled'].includes(stage) ? [stage] : []),
+  ].filter((value, index, values) => values.indexOf(value) === index);
+  const hasStageHistory = completedStages.length > 0 || Array.isArray(previous?.completed_stages);
   return {
     ...nextCurrent,
-    [conversationId]: nextPayload,
+    [conversationId]: {
+      ...previous,
+      ...nextPayload,
+      ...(hasStageHistory ? { completed_stages: completedStages } : {}),
+    },
   };
 };
 
@@ -37,7 +51,11 @@ export const resolveActiveAiBotRecord = ({
   const items = Array.isArray(aiBots) ? aiBots : [];
   const normalizedConversationId = String(activeConversationId || '').trim();
   const normalizedBotId = String(aiStatus?.bot_id || '').trim();
-  return items.find((item) => String(item?.conversation_id || '').trim() === normalizedConversationId)
+  return items.find((item) => (
+    Array.isArray(item?.conversation_ids)
+    && item.conversation_ids.some((id) => String(id || '').trim() === normalizedConversationId)
+  ))
+    || items.find((item) => String(item?.conversation_id || '').trim() === normalizedConversationId)
     || items.find((item) => normalizedBotId && String(item?.id || '').trim() === normalizedBotId)
     || null;
 };
@@ -120,29 +138,41 @@ export const buildAiSidebarRows = ({
   draftsByConversation,
   activeConversationId,
 }) => {
-  const aiConversationById = new Map(
-    (Array.isArray(conversations) ? conversations : [])
-      .filter((item) => String(item?.kind || '').trim() === 'ai' && String(item?.id || '').trim())
-      .map((item) => [String(item.id).trim(), item]),
-  );
+  const agentByConversationId = new Map();
+  (Array.isArray(aiBots) ? aiBots : []).forEach((bot) => {
+    const conversationIds = [
+      ...(Array.isArray(bot?.conversation_ids) ? bot.conversation_ids : []),
+      bot?.conversation_id,
+    ];
+    conversationIds.forEach((value) => {
+      const conversationId = String(value || '').trim();
+      if (conversationId && !agentByConversationId.has(conversationId)) {
+        agentByConversationId.set(conversationId, bot);
+      }
+    });
+  });
   const normalizedActiveConversationId = String(activeConversationId || '').trim();
   const drafts = draftsByConversation && typeof draftsByConversation === 'object' ? draftsByConversation : {};
-  return (Array.isArray(aiBots) ? aiBots : []).map((bot) => {
-    const conversationId = String(bot?.conversation_id || '').trim();
-    const conversation = conversationId ? aiConversationById.get(conversationId) : null;
-    return {
-      ...bot,
-      conversation_id: conversationId || '',
-      title: String(conversation?.title || bot?.title || 'AI').trim() || 'AI',
-      last_message_preview: String(conversation?.last_message_preview || '').trim(),
-      last_message_at: conversation?.last_message_at || '',
-      updated_at: conversation?.updated_at || '',
-      unread_count: Number(conversation?.unread_count || 0),
-      is_pinned: Boolean(conversation?.is_pinned),
-      is_muted: Boolean(conversation?.is_muted),
-      is_archived: Boolean(conversation?.is_archived),
-      draft_preview: conversationId ? String(drafts[conversationId] || '').trim() : '',
-      is_active: Boolean(conversationId && conversationId === normalizedActiveConversationId),
-    };
-  });
+  return (Array.isArray(conversations) ? conversations : [])
+    .filter((item) => String(item?.kind || '').trim() === 'ai' && String(item?.id || '').trim())
+    .map((conversation) => {
+      const conversationId = String(conversation.id).trim();
+      const bot = agentByConversationId.get(conversationId) || null;
+      return {
+        ...(bot || {}),
+        bot_id: String(bot?.id || '').trim(),
+        conversation_id: conversationId,
+        title: String(conversation?.title || bot?.title || 'AI').trim() || 'AI',
+        assistant_title: String(bot?.title || '').trim() || 'Личный AI',
+        last_message_preview: String(conversation?.last_message_preview || '').trim(),
+        last_message_at: conversation?.last_message_at || '',
+        updated_at: conversation?.updated_at || '',
+        unread_count: Number(conversation?.unread_count || 0),
+        is_pinned: Boolean(conversation?.is_pinned),
+        is_muted: Boolean(conversation?.is_muted),
+        is_archived: Boolean(conversation?.is_archived),
+        draft_preview: conversationId ? String(drafts[conversationId] || '').trim() : '',
+        is_active: Boolean(conversationId && conversationId === normalizedActiveConversationId),
+      };
+    });
 };

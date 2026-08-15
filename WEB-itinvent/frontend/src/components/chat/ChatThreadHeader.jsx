@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import {
   Box,
+  Button,
   IconButton,
   Stack,
   Tooltip,
@@ -19,6 +20,19 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { ConversationAvatar } from './ChatCommon';
 import { getConversationDisplayTitle } from './chatHelpers';
 import { CHAT_DEFAULT_FONT_SIZES, CHAT_FONT_FAMILY } from './chatUiTokens';
+
+const AI_STAGE_LABELS = {
+  analyzing_request: 'Определяю задачу',
+  reading_files: 'Проверяю вложенные файлы',
+  retrieving_kb: 'Ищу в базе знаний',
+  checking_itinvent: 'Проверяю данные ITinvent',
+  checking_ad: 'Проверяю данные сотрудников',
+  searching_equipment: 'Ищу оборудование',
+  opening_equipment_card: 'Открываю карточку HUB',
+  generating_answer: 'Формирую ответ',
+  generating_files: 'Подготавливаю файлы',
+  converting_document: 'Преобразую документ',
+};
 
 function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false, density }) {
   if (hidden) return null;
@@ -63,14 +77,23 @@ function HeaderAction({ title, children, onClick, active = false, compactMobile 
   );
 }
 
-export function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }) {
+export function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false, onStop }) {
   const status = String(aiStatus?.status || '').trim();
-  if (!status || status === 'completed') return null;
+  if (!status) return null;
+  const completedStepCount = Array.isArray(aiStatus?.completed_stages) ? aiStatus.completed_stages.length : 0;
+  const safeStepCount = completedStepCount || 1;
+  const stepWord = safeStepCount % 10 === 1 && safeStepCount % 100 !== 11
+    ? 'шаг'
+    : ([2, 3, 4].includes(safeStepCount % 10) && ![12, 13, 14].includes(safeStepCount % 100) ? 'шага' : 'шагов');
   const label = status === 'queued'
     ? 'AI поставлен в очередь'
     : status === 'running'
       ? 'AI анализирует запрос и файлы'
-      : 'AI не смог обработать запрос';
+      : status === 'completed'
+        ? `Выполнено ${safeStepCount} ${stepWord}`
+      : status === 'cancelled'
+        ? 'Выполнение остановлено'
+        : 'AI не смог обработать запрос';
   const tone = status === 'failed'
     ? {
       bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
@@ -84,6 +107,9 @@ export function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }
     };
   return (
     <Box
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
       sx={{
         px: compactMobile ? 1.5 : 2,
         py: 1.1,
@@ -91,9 +117,54 @@ export function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }
         backgroundColor: tone.bg,
       }}
     >
-      <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-        {label}
-      </Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
+            {String(aiStatus?.status_text || '').trim() || label}
+          </Typography>
+          {(status === 'queued' || status === 'running') ? (
+            <>
+              {Array.isArray(aiStatus?.completed_stages) && aiStatus.completed_stages.length > 0 ? (
+                <Stack spacing={0.2} sx={{ mt: 0.55 }}>
+                  {aiStatus.completed_stages.slice(-3).map((stage, index, stages) => (
+                    <Typography key={stage} sx={{ fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+                      {index === stages.length - 1 ? '○' : '✓'} {AI_STAGE_LABELS[stage] || 'Выполняю разрешённый шаг'}
+                    </Typography>
+                  ))}
+                </Stack>
+              ) : null}
+              <Typography sx={{ mt: 0.35, fontSize: 11.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+                Внутренние рассуждения модели не показываются
+              </Typography>
+              {String(aiStatus?.partial_text || '').trim() ? (
+                <Typography
+                  data-testid="ai-partial-response"
+                  sx={{
+                    mt: 0.75,
+                    maxWidth: 760,
+                    whiteSpace: 'pre-wrap',
+                    color: 'text.primary',
+                    fontSize: compactMobile ? 13 : 13.5,
+                    lineHeight: 1.45,
+                    fontFamily: CHAT_FONT_FAMILY,
+                  }}
+                >
+                  {aiStatus.partial_text}
+                </Typography>
+              ) : null}
+            </>
+          ) : null}
+        </Box>
+        {(status === 'queued' || status === 'running') && onStop ? (
+          <Button
+            size="small"
+            onClick={onStop}
+            sx={{ minHeight: 36, flexShrink: 0, textTransform: 'none' }}
+          >
+            Остановить
+          </Button>
+        ) : null}
+      </Stack>
       {status === 'failed' && aiStatus?.error_text ? (
         <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
           {aiStatus.error_text}

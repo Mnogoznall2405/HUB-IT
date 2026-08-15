@@ -156,7 +156,7 @@ describe('CompanyStructure employee explorer', () => {
 
     expect(screen.getByRole('button', { name: 'Карта' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Автоматически' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Вертикальный обзор')).toBeInTheDocument();
+    expect(await screen.findByText('Вертикальный обзор')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Добавить из ЗУП' })).toBeInTheDocument();
   });
 

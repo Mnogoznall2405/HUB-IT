@@ -4,9 +4,11 @@ import {
   loadChatContextPanelModule,
   loadTaskWorkspacePanelModule,
 } from './useChatPanelsController';
+import { GENERAL_AI_OPENING_ID } from '../../components/chat/chatAiSidebarModel';
 
 const LazyChatContextPanel = lazy(loadChatContextPanelModule);
 const LazyTaskWorkspacePanel = lazy(loadTaskWorkspacePanelModule);
+const LazyAiConversationContextPanel = lazy(() => import('../../components/chat/AiConversationContextPanel'));
 
 export default function ChatPageRightPanelContent({
   showTaskPanel = false,
@@ -19,6 +21,8 @@ export default function ChatPageRightPanelContent({
   theme,
   ui,
   activeConversation,
+  activeAiBot,
+  activeAiStatus,
   conversationMetaSubtitle,
   socketStatus,
   user,
@@ -37,6 +41,9 @@ export default function ChatPageRightPanelContent({
   settingsUpdating,
   openMediaViewer,
   openTaskFromChat,
+  handleCreateAiBotConversation,
+  handleCreateAiConversation,
+  openingAiBotId,
 }) {
   if (showTaskPanel) {
     return (
@@ -54,6 +61,32 @@ export default function ChatPageRightPanelContent({
   }
 
   if (showContextPanel) {
+    if (String(activeConversation?.kind || '').trim() === 'ai') {
+      return (
+        <Suspense fallback={null}>
+          <LazyAiConversationContextPanel
+            activeConversation={activeConversation}
+            agent={activeAiBot}
+            messages={messages}
+            realtimeRevision={activeAiStatus?.updated_at || activeAiStatus?.status || ''}
+            onClose={onCloseContextPanel}
+            onOpenSearch={openSearchDialog}
+            onOpenFilePicker={openFilePicker}
+            onCreateNewConversation={() => (
+              activeAiBot?.id
+                ? handleCreateAiBotConversation?.(activeAiBot)
+                : handleCreateAiConversation?.()
+            )}
+            newConversationCreating={String(openingAiBotId || '').trim() === (
+              activeAiBot?.id ? String(activeAiBot.id).trim() : GENERAL_AI_OPENING_ID
+            )}
+            onUpdateConversationSettings={updateConversationSettings}
+            settingsUpdating={settingsUpdating}
+            onOpenAttachmentPreview={openMediaViewer}
+          />
+        </Suspense>
+      );
+    }
     return (
       <Suspense fallback={null}>
         <LazyChatContextPanel

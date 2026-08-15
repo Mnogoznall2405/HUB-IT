@@ -42,8 +42,8 @@ describe('chat UI density tokens', () => {
     expect(compact.composerFontSize).toBe(compact.bubbleBodyFontSize);
     expect(compact.bubbleBodyLineHeight).toBe(1.26);
     expect(compact.composerLineHeight).toBe(1.26);
-    expect(compact.bubblePx).toBeLessThan(spacious.bubblePx);
-    expect(compact.bubblePy).toBeLessThan(spacious.bubblePy);
+    expect(compact.bubblePx).toBe(1.18);
+    expect(compact.bubblePy).toBe(0.82);
     expect(compact.bubbleBodyBottomPadding).toBeLessThan(spacious.bubbleBodyBottomPadding);
   });
 

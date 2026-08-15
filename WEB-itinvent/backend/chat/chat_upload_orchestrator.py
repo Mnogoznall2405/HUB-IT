@@ -295,6 +295,7 @@ class ChatUploadOrchestrator:
         body: Optional[str] = None,
         uploads: list[UploadFile],
         files_meta: Optional[list[dict[str, Any]]] = None,
+        client_message_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         defer_push_notifications: bool = False,
     ) -> dict:
@@ -329,6 +330,7 @@ class ChatUploadOrchestrator:
                 conversation_id=normalized_conversation_id,
                 body=normalized_body,
                 prepared=prepared,
+                client_message_id=client_message_id,
                 reply_to_message_id=reply_to_message_id,
             )
             payload = persisted_file.payload
@@ -340,6 +342,16 @@ class ChatUploadOrchestrator:
                 except Exception:
                     pass
             raise
+
+        if persisted_file.dedup_hit:
+            # The deterministic message already owns its original attachment;
+            # remove this retry's freshly staged duplicate bytes.
+            for path in written_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return payload
 
         self._service._postprocess_file_message(
             current_user_id=int(current_user_id),

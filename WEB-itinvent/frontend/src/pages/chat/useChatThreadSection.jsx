@@ -71,6 +71,8 @@ export default function useChatThreadSection(ctx) {
     clearEditingMessage,
     aiTypingStatus,
     activeAiStatus,
+    activeAiBot,
+    stopActiveAiRun,
     pinnedMessage,
     handleOpenPinnedMessage,
     handleUnpinPinnedMessage,
@@ -121,6 +123,10 @@ export default function useChatThreadSection(ctx) {
     socketStatus,
     user,
     updateConversationSettings,
+    activeAiBot: rightPanelActiveAiBot,
+    handleCreateAiBotConversation,
+    handleCreateAiConversation,
+    openingAiBotId,
   } = rightPanel;
 
   const composerTextBridge = useChatComposerTextBridge({
@@ -139,6 +145,7 @@ export default function useChatThreadSection(ctx) {
         compactMobile={isPhone}
         mobileInteractionsEnabled={isMobile}
         activeConversation={activeConversation}
+        activeAiBot={activeAiBot}
         activeConversationId={activeConversationId}
         navigate={navigate}
         threadWallpaperSx={threadWallpaperSx}
@@ -199,6 +206,7 @@ export default function useChatThreadSection(ctx) {
         onClearEditing={clearEditingMessage}
         aiTypingStatus={aiTypingStatus}
         aiStatus={activeConversation?.kind === 'ai' ? activeAiStatus : null}
+        onStopAiRun={stopActiveAiRun}
         pinnedMessage={pinnedMessage}
         onOpenPinnedMessage={handleOpenPinnedMessage}
         onUnpinPinnedMessage={handleUnpinPinnedMessage}
@@ -234,7 +242,9 @@ export default function useChatThreadSection(ctx) {
     ),
     [
       activeAiStatus,
+      stopActiveAiRun,
       activeConversation,
+      activeAiBot,
       activeConversationId,
       aiAwareTypingLine,
       aiTypingStatus,
@@ -342,6 +352,8 @@ export default function useChatThreadSection(ctx) {
         theme={theme}
         ui={ui}
         activeConversation={activeConversation}
+        activeAiBot={rightPanelActiveAiBot || activeAiBot}
+        activeAiStatus={activeAiStatus}
         conversationMetaSubtitle={conversationMetaSubtitle}
         socketStatus={socketStatus}
         user={user}
@@ -360,13 +372,20 @@ export default function useChatThreadSection(ctx) {
         settingsUpdating={settingsUpdating}
         openMediaViewer={openMediaViewer}
         openTaskFromChat={openTaskFromChat}
+        handleCreateAiBotConversation={handleCreateAiBotConversation}
+        handleCreateAiConversation={handleCreateAiConversation}
+        openingAiBotId={openingAiBotId}
       />
     ),
     [
       activeConversation,
+      activeAiBot,
+      activeAiStatus,
       conversationMetaSubtitle,
       closeTaskPanel,
       handleAddGroupMembers,
+      handleCreateAiBotConversation,
+      handleCreateAiConversation,
       handleLeaveGroup,
       handleRemoveGroupMember,
       handleTaskPanelUpdated,
@@ -374,6 +393,7 @@ export default function useChatThreadSection(ctx) {
       handleUpdateGroupMemberRole,
       handleUpdateGroupProfile,
       messages,
+      openingAiBotId,
       navigate,
       openFilePicker,
       openMediaViewer,
@@ -391,6 +411,7 @@ export default function useChatThreadSection(ctx) {
       ui,
       updateConversationSettings,
       user,
+      rightPanelActiveAiBot,
     ],
   );
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { startTransition, useMemo, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -11,6 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { isChatComposePrefillRoute } from '../../lib/chatComposePrefill';
 import { isNativeShellRuntime } from '../../lib/platform';
+import { getPwaInstallState } from '../../lib/pwaInstall';
 import { mergeInboxPreviewsIntoConversations } from '../../lib/chatSocket';
 import { peekSWRCache } from '../../lib/swrCache';
 import { canUseAiChatPermission } from './chatAiModel';
@@ -22,11 +23,44 @@ import {
   buildChatThreadCacheKeyParts,
 } from './chatCacheKeys';
 import { CHAT_SWR_STALE_TIME_MS } from './chatPageConstants';
+import { shouldDisableChatMobileMotion } from './chatMobilePresentation';
 import {
   readSessionStorageValue,
   resolveRestoredMobileView,
 } from './chatSessionStorage';
 import useChatPageRefs from './useChatPageRefs';
+
+function useChatMessageTextState(latestMessageTextRef) {
+  const [messageText, setMessageTextState] = useState('');
+  const store = useMemo(() => {
+    const state = {
+      value: '',
+      listeners: new Set(),
+    };
+    const publish = (next, deferred) => {
+      const resolved = typeof next === 'function' ? next(state.value) : next;
+      state.value = String(resolved || '');
+      latestMessageTextRef.current = state.value;
+      state.listeners.forEach((listener) => listener());
+      const updateParent = () => setMessageTextState(state.value);
+      if (deferred) {
+        startTransition(updateParent);
+      } else {
+        updateParent();
+      }
+    };
+    const setMessageText = (next) => publish(next, false);
+    setMessageText.deferred = (next) => publish(next, true);
+    setMessageText.subscribe = (listener) => {
+      state.listeners.add(listener);
+      return () => state.listeners.delete(listener);
+    };
+    setMessageText.getSnapshot = () => state.value;
+    return { setMessageText };
+  }, [latestMessageTextRef]);
+
+  return [messageText, store.setMessageText];
+}
 
 export default function useChatPageInitialState() {
   const theme = useTheme();
@@ -43,7 +77,13 @@ export default function useChatPageInitialState() {
   );
   const prefersReducedMotion = useReducedMotion();
   const nativeShellRuntime = isNativeShellRuntime();
-  const mobileMotionDisabled = prefersReducedMotion || (nativeShellRuntime && isMobile);
+  const pwaInstalled = useMemo(() => Boolean(getPwaInstallState().installed), []);
+  const mobileMotionDisabled = shouldDisableChatMobileMotion({
+    isMobile,
+    nativeShellRuntime,
+    prefersReducedMotion,
+    pwaInstalled,
+  });
   const navigate = useNavigate();
   const location = useLocation();
   const { user, hasPermission } = useAuth();
@@ -119,7 +159,7 @@ export default function useChatPageInitialState() {
   ));
   const [mobileTransitionDirection, setMobileTransitionDirection] = useState(1);
   const [mobileBottomNavHidden, setMobileBottomNavHidden] = useState(false);
-  const [messageText, setMessageText] = useState('');
+  const [messageText, setMessageText] = useChatMessageTextState(refs.latestMessageTextRef);
   const [pinnedMessage, setPinnedMessage] = useState(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   refs.showJumpToLatestRef.current = showJumpToLatest;

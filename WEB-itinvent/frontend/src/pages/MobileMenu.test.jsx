@@ -12,11 +12,13 @@ const {
   mockLocation,
   mockLogout,
   mockUser,
+  mockPrefetchRouteByPath,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockHasPermission: vi.fn(() => true),
   mockLocation: { pathname: '/menu', search: '' },
   mockLogout: vi.fn(async () => {}),
+  mockPrefetchRouteByPath: vi.fn(async () => {}),
   mockUser: {
     id: 1,
     username: 'admin',
@@ -51,7 +53,7 @@ vi.mock('../components/layout/PageShell', () => ({
 }));
 
 vi.mock('../lib/routeLoaders', () => ({
-  prefetchRouteByPath: vi.fn(async () => {}),
+  prefetchRouteByPath: mockPrefetchRouteByPath,
 }));
 
 function renderMobileMenu(initialEntry = '/menu') {
@@ -69,6 +71,8 @@ function renderMobileMenu(initialEntry = '/menu') {
 describe('MobileMenu page', () => {
   beforeEach(() => {
     mockNavigate.mockReset();
+    mockPrefetchRouteByPath.mockReset();
+    mockPrefetchRouteByPath.mockResolvedValue(undefined);
     mockLogout.mockClear();
     mockHasPermission.mockReset();
     mockHasPermission.mockImplementation(() => true);
@@ -131,6 +135,17 @@ describe('MobileMenu page', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
     expect(mockNavigate).toHaveBeenCalledWith('/tasks');
+  });
+
+  it('does not preload an app on touch before it is selected', () => {
+    renderMobileMenu();
+
+    const dashboard = screen.getByTestId('mobile-menu-item-dashboard');
+    fireEvent.touchStart(dashboard);
+    expect(mockPrefetchRouteByPath).not.toHaveBeenCalled();
+
+    fireEvent.click(dashboard);
+    expect(mockPrefetchRouteByPath).toHaveBeenCalledWith('/dashboard');
   });
 
   it('logs out and redirects to login', async () => {

@@ -173,8 +173,8 @@ if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
 }
 
 $setup = Get-Item -LiteralPath $setupPath
-    if ($setup.Length -le 0 -or $setup.Length -gt 500MB) {
-        throw "Desktop Setup size is outside the allowed range: $($setup.Length)"
+    if ($setup.Length -le 0 -or $setup.Length -gt 480MB) {
+        throw "Desktop Setup size is outside the release limit of 480 MiB: $($setup.Length)"
     }
 
     $sha256 = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()

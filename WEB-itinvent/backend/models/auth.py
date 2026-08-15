@@ -49,6 +49,7 @@ class User(UserBase):
     twofa_policy: Literal["off", "all", "external_only"] = "off"
     twofa_required_for_current_request: bool = False
     avatar_url: Optional[str] = None
+    about_onboarding_completed_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     mail_updated_at: Optional[str] = None

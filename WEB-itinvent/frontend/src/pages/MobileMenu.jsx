@@ -117,7 +117,6 @@ export default function MobileMenu() {
                 key={item.path}
                 data-testid={`mobile-menu-item-${item.path.replace(/^\//, '')}`}
                 onClick={() => openItem(item)}
-                onTouchStart={() => { void prefetchRouteByPath(item.path).catch(() => {}); }}
                 sx={{
                   minWidth: 0,
                   minHeight: 82,

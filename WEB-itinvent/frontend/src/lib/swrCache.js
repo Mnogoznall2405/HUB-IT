@@ -2,6 +2,8 @@ const cacheStore = new Map();
 const inFlightStore = new Map();
 
 const DEFAULT_STALE_TIME_MS = 30_000;
+const DEFAULT_MAX_ENTRIES = 80;
+const DEFAULT_RETENTION_MS = 30 * 60 * 1000;
 
 const toCacheKey = (keyParts) =>
   Array.isArray(keyParts) ? JSON.stringify(keyParts) : String(keyParts || '');
@@ -30,6 +32,32 @@ export const clearSWRCache = () => {
   inFlightStore.clear();
 };
 
+const touchCacheEntry = (cacheKey, entry) => {
+  cacheStore.delete(cacheKey);
+  cacheStore.set(cacheKey, entry);
+  return entry;
+};
+
+export const trimSWRCache = ({
+  maxEntries = DEFAULT_MAX_ENTRIES,
+  maxAgeMs = DEFAULT_RETENTION_MS,
+} = {}) => {
+  const now = Date.now();
+  const safeMaxEntries = Math.max(0, Number(maxEntries) || 0);
+  const safeMaxAgeMs = Math.max(0, Number(maxAgeMs) || 0);
+
+  [...cacheStore.entries()].forEach(([key, entry]) => {
+    if ((now - Number(entry?.updatedAt || 0)) > safeMaxAgeMs) {
+      cacheStore.delete(key);
+    }
+  });
+  while (cacheStore.size > safeMaxEntries) {
+    const oldestKey = cacheStore.keys().next().value;
+    if (oldestKey === undefined) break;
+    cacheStore.delete(oldestKey);
+  }
+};
+
 export const invalidateSWRCacheByPrefix = (...prefixParts) => {
   const normalizedPrefixParts = normalizeKeyParts(prefixParts);
   [...cacheStore.keys()].forEach((key) => {
@@ -40,10 +68,11 @@ export const invalidateSWRCacheByPrefix = (...prefixParts) => {
 };
 
 const setCacheEntry = (cacheKey, data) => {
-  cacheStore.set(cacheKey, {
+  touchCacheEntry(cacheKey, {
     data,
     updatedAt: Date.now(),
   });
+  trimSWRCache();
 };
 
 export const setSWRCache = (keyParts, data) => {
@@ -60,9 +89,11 @@ export const peekSWRCache = (
     staleTimeMs = DEFAULT_STALE_TIME_MS,
   } = {}
 ) => {
+  trimSWRCache();
   const cacheKey = toCacheKey(keyParts);
   const entry = getCacheEntry(cacheKey);
   if (!entry) return null;
+  touchCacheEntry(cacheKey, entry);
   const age = Date.now() - Number(entry.updatedAt || 0);
   return {
     data: entry.data,
@@ -99,12 +130,14 @@ export const getOrFetchSWR = async (
     revalidateStale = true,
   } = {}
 ) => {
+  trimSWRCache();
   const cacheKey = toCacheKey(keyParts);
   const now = Date.now();
 
   if (!force) {
     const entry = getCacheEntry(cacheKey);
     if (entry) {
+      touchCacheEntry(cacheKey, entry);
       const age = now - Number(entry.updatedAt || 0);
       const isFresh = age <= staleTimeMs;
 

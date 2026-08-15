@@ -1,6 +1,7 @@
-import { useRef } from 'react';
+import { memo, useRef } from 'react';
 import { Checkbox, CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
@@ -292,11 +293,11 @@ function ConversationRowMeta({
   );
 }
 
-function ConversationRow({
+const ConversationRow = memo(function ConversationRow({
   item,
   theme,
   ui,
-  activeConversationId,
+  active = false,
   onOpenConversation,
   onPrefetchConversation,
   onOpenFolderMenu,
@@ -309,7 +310,6 @@ function ConversationRow({
   const density = getDensity(ui);
   const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
-  const active = item.id === activeConversationId;
   const unread = unreadCount > 0;
   const highlightUnread = unread && !active;
   const taskConversation = isTaskConversation(item);
@@ -525,7 +525,7 @@ function ConversationRow({
       </button>
     </motion.div>
   );
-}
+});
 
 function PersonSearchRow({
   person,
@@ -580,50 +580,71 @@ function PersonSearchRow({
   );
 }
 
-function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false, ui }) {
+function AiBotRow({
+  bot,
+  openingAiBotId,
+  onOpenAiBot,
+  onCreateAiBotConversation,
+  compactMobile = false,
+  ui,
+}) {
   const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
   const density = getDensity(ui);
+  const title = String(bot?.title || 'AI').trim() || 'AI';
   return (
-    <button
-      type="button"
-      onClick={() => void onOpenAiBot?.(bot)}
-      disabled={opening}
+    <div
       className={joinClasses(
-        'flex w-full items-center gap-3 text-left transition duration-100 active:opacity-90 disabled:opacity-60',
+        'flex w-full items-stretch text-left transition duration-100',
         compactMobile
-          ? 'border-b border-[color:var(--chat-sidebar-divider)] px-3 py-3'
-          : 'mx-2 my-1 rounded-[14px] border border-transparent px-3.5 py-3 hover:bg-[var(--chat-sidebar-row-hover)]',
+          ? 'border-b border-[color:var(--chat-sidebar-divider)] px-2 py-1'
+          : 'mx-2 my-1 rounded-[14px] border border-transparent hover:bg-[var(--chat-sidebar-row-hover)]',
       )}
       style={compactMobile ? undefined : {
         minHeight: density.sidebarRowMinHeight,
-        padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
       }}
     >
-      <AiConversationAvatar size={compactMobile ? 54 : density.sidebarAvatar} />
-      <div className="min-w-0 flex-1">
-        <p
-          className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}
-          style={compactMobile ? undefined : { fontSize: density.sidebarResultTitleFontSize }}
-        >
-          {bot?.title || 'AI'}
-        </p>
-        <p
-          className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}
-          style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
-        >
-          {String(bot?.description || '').trim() || 'Корпоративный AI-ассистент'}
-        </p>
-      </div>
-      {opening ? <CircularProgress size={18} /> : <SmartToyOutlinedIcon sx={{ color: 'var(--chat-text-secondary)' }} />}
-    </button>
+      <button
+        type="button"
+        onClick={() => void onOpenAiBot?.(bot)}
+        disabled={opening}
+        aria-label={`${title}. Открыть последний чат`}
+        className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-[12px] px-2 py-2 text-left active:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--chat-focus-ring)] disabled:opacity-60"
+      >
+        <AiConversationAvatar size={compactMobile ? 44 : Math.min(46, density.sidebarAvatar)} />
+        <span className="min-w-0 flex-1">
+          <span
+            className={joinClasses('block truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[15px]' : 'text-[15px]')}
+            style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
+          >
+            {title}
+          </span>
+          <span
+            className={joinClasses('block truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[13px]' : 'text-[12px]')}
+            style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
+          >
+            {String(bot?.description || '').trim() || 'Корпоративный AI-ассистент'}
+          </span>
+        </span>
+      </button>
+      <button
+        type="button"
+        title={`Новый чат с ${title}`}
+        aria-label={`Новый чат с ${title}`}
+        onClick={() => void onCreateAiBotConversation?.(bot)}
+        disabled={opening}
+        className="my-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[color:var(--chat-text-secondary)] transition-colors hover:bg-[var(--chat-accent-soft)] hover:text-[color:var(--chat-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--chat-focus-ring)] disabled:opacity-60"
+      >
+        {opening ? <CircularProgress size={18} /> : <AddRoundedIcon fontSize="small" />}
+      </button>
+    </div>
   );
 }
 
-function AiConversationRow({
+const AiConversationRow = memo(function AiConversationRow({
   bot,
   theme,
   ui,
-  activeConversationId,
+  active = false,
   onOpenConversation,
   onPrefetchConversation,
   openingAiBotId,
@@ -636,11 +657,11 @@ function AiConversationRow({
   const density = getDensity(ui);
   const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
   const conversationId = String(bot?.conversation_id || '').trim();
-  const active = Boolean(conversationId && conversationId === String(activeConversationId || '').trim());
   const unreadCount = Number(bot?.unread_count || 0);
   const unread = unreadCount > 0;
   const highlightUnread = unread && !active;
   const draftPreview = String(bot?.draft_preview || '').trim();
+  const assistantTitle = String(bot?.assistant_title || '').trim() || 'Личный AI';
   const previewText = draftPreview
     ? `Черновик: ${draftPreview}`
     : (String(bot?.last_message_preview || '').trim() || String(bot?.description || '').trim() || 'Корпоративный AI-ассистент');
@@ -742,6 +763,19 @@ function AiConversationRow({
             </div>
 
             <div className="mt-0.5 flex items-center gap-1.5">
+              <span
+                data-testid={`ai-assistant-title-${conversationId}`}
+                aria-label={`Помощник: ${assistantTitle}`}
+                title={assistantTitle}
+                className={joinClasses(
+                  'max-w-[42%] shrink-0 truncate font-semibold',
+                  compactMobile ? 'text-[12px] leading-[1.3]' : 'text-[11.5px] leading-[1.3]',
+                  active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-accent-text)]',
+                )}
+              >
+                {assistantTitle}
+              </span>
+              <span aria-hidden="true" className={active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'}>·</span>
               <p className={joinClasses(
                 'min-w-0 flex-1 truncate',
                 compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12.5px] leading-[1.3]',
@@ -786,7 +820,7 @@ function AiConversationRow({
       </button>
     </motion.div>
   );
-}
+});
 
 function InfoCard({ children, compactMobile = false }) {
   return (

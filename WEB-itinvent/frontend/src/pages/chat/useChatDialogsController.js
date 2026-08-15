@@ -50,7 +50,7 @@ export default function useChatDialogsController({
   searchOpen,
   isMobile,
   infoOpen,
-  preloadOnIdle = true,
+  preloadOnIdle = false,
 }) {
   const shouldRenderChatDialogs = useMemo(
     () => computeShouldRenderChatDialogs({

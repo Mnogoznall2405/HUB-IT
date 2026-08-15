@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -41,7 +41,6 @@ import SyncAltOutlinedIcon from '@mui/icons-material/SyncAltOutlined';
 import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import { companyStructureAPI } from '../../api/companyStructure';
 import CompanyStructureChart from './CompanyStructureChart';
-import CompanyStructureOverview from './CompanyStructureOverview';
 import {
   NODE_TYPE_OPTIONS,
   collectDescendantIds,
@@ -53,6 +52,8 @@ import {
   resolveNodeTitle,
   usesZupDepartmentBinding,
 } from './companyStructureModel';
+
+const CompanyStructureOverview = lazy(() => import('./CompanyStructureOverview'));
 
 const emptyDraft = () => ({
   title: '',
@@ -496,13 +497,15 @@ export default function CompanyStructureAdmin({
                 <ToggleButton value="free" sx={editorToggleSx}>Свободная расстановка</ToggleButton>
               </ToggleButtonGroup>
               {mapLayoutMode === 'automatic' ? (
-                <CompanyStructureOverview
-                  tree={tree}
-                  blockId={activeBlockId}
-                  selectedId={selectedId}
-                  onFocus={onSelect}
-                  onPeople={onSelect}
-                />
+                <Suspense fallback={<Box role="status" sx={{ minHeight: 420 }} />}>
+                  <CompanyStructureOverview
+                    tree={tree}
+                    blockId={activeBlockId}
+                    selectedId={selectedId}
+                    onFocus={onSelect}
+                    onPeople={onSelect}
+                  />
+                </Suspense>
               ) : (
                 <CompanyStructureChart
                   tree={tree}

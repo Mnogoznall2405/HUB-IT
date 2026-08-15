@@ -183,6 +183,16 @@ function effectiveSearchQuery(value) {
   return text;
 }
 
+const rememberHostOverviewFiles = (cache, key, files) => {
+  cache.delete(key);
+  cache.set(key, files);
+  while (cache.size > 24) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+};
+
 function normalizeSearchQuery(value) {
   const text = String(value ?? '');
   // Paste from Excel/shell often includes trailing CR/LF; strip those without
@@ -1538,7 +1548,7 @@ function ScanCenterPage() {
       files_per_host: 10,
     }).then((response) => {
       const files = Array.isArray(response?.items?.[0]?.files) ? response.items[0].files : [];
-      hostOverviewFilesCacheRef.current.set(cacheKey, files);
+      rememberHostOverviewFiles(hostOverviewFilesCacheRef.current, cacheKey, files);
     }).catch(() => {
       // Idle prefetch is best-effort.
     }).finally(() => {
@@ -1590,7 +1600,7 @@ function ScanCenterPage() {
       return;
     }
     if (Array.isArray(host.files) && host.files.length > 0) {
-      hostOverviewFilesCacheRef.current.set(cacheKey, host.files);
+      rememberHostOverviewFiles(hostOverviewFilesCacheRef.current, cacheKey, host.files);
       schedulePrefetchNextHostOverview(hostId, filters);
       return;
     }
@@ -1604,7 +1614,7 @@ function ScanCenterPage() {
       files_per_host: 10,
     }).then((response) => {
       const files = Array.isArray(response?.items?.[0]?.files) ? response.items[0].files : [];
-      hostOverviewFilesCacheRef.current.set(cacheKey, files);
+      rememberHostOverviewFiles(hostOverviewFilesCacheRef.current, cacheKey, files);
       applyHostOverviewFiles(hostId, files);
       schedulePrefetchNextHostOverview(hostId, filters);
     }).catch((error) => {

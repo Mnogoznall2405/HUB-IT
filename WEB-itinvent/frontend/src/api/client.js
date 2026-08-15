@@ -16,6 +16,7 @@ import { chatConversationsAPI } from './chatConversations';
 import { chatConversationDetailsAPI } from './chatConversationDetails';
 import { chatGroupsAPI } from './chatGroups';
 import { chatAiActionsAPI } from './chatAiActions';
+import { chatAiSandboxAPI } from './chatAiSandbox';
 import { chatThreadMessagesAPI } from './chatThreadMessages';
 import { chatMessageSendingAPI } from './chatMessageSending';
 import { chatAttachmentsAPI } from './chatAttachments';
@@ -182,6 +183,11 @@ const isScanApiRequestUrl = (value) => {
   );
 };
 
+const isDefinitiveAuthRejection = (requestError) => {
+  const status = Number(requestError?.response?.status || 0);
+  return status === 401 || status === 403;
+};
+
 /**
  * Create axios instance with default configuration
  */
@@ -329,7 +335,11 @@ apiClient.interceptors.response.use(
             detail: refreshDetail,
             path: requestUrl,
           });
-          // Fall through to auth-required handling below.
+          if (!isDefinitiveAuthRejection(refreshError)) {
+            return Promise.reject(refreshError);
+          }
+          // The refresh endpoint definitively rejected the session. Fall
+          // through to the existing auth-required handling below.
         } finally {
           refreshInFlight = null;
         }
@@ -443,6 +453,10 @@ export const authAPI = {
 
   get getCurrentUser() {
     return authAccountSecurityAPI.getCurrentUser;
+  },
+
+  get completeAboutOnboarding() {
+    return authAccountSecurityAPI.completeAboutOnboarding;
   },
 
   changePassword: async (oldPassword, newPassword) => {
@@ -585,6 +599,70 @@ export const chatAPI = {
 
   get openAiBotConversation() {
     return chatDirectoryAPI.openAiBotConversation;
+  },
+
+  get createAiConversation() {
+    return chatDirectoryAPI.createAiConversation;
+  },
+
+  get createAiBotConversation() {
+    return chatDirectoryAPI.createAiBotConversation;
+  },
+
+  get renameAiConversation() {
+    return chatDirectoryAPI.renameAiConversation;
+  },
+
+  get deleteAiConversation() {
+    return chatDirectoryAPI.deleteAiConversation;
+  },
+
+  get stopAiConversationRun() {
+    return chatDirectoryAPI.stopAiConversationRun;
+  },
+
+  get resetAiConversationContext() {
+    return chatDirectoryAPI.resetAiConversationContext;
+  },
+
+  get getAiMemory() {
+    return chatDirectoryAPI.getAiMemory;
+  },
+
+  get updateAiMemorySettings() {
+    return chatDirectoryAPI.updateAiMemorySettings;
+  },
+
+  get updateAiMemoryItem() {
+    return chatDirectoryAPI.updateAiMemoryItem;
+  },
+
+  get deleteAiMemoryItem() {
+    return chatDirectoryAPI.deleteAiMemoryItem;
+  },
+
+  get clearAiMemory() {
+    return chatDirectoryAPI.clearAiMemory;
+  },
+
+  get saveAttachmentToMyFiles() {
+    return chatDirectoryAPI.saveAttachmentToMyFiles;
+  },
+
+  get getAiSandboxConversation() {
+    return chatAiSandboxAPI.getConversation;
+  },
+
+  get respondAiSandboxPermission() {
+    return chatAiSandboxAPI.respondPermission;
+  },
+
+  get attachAiSandboxArchive() {
+    return chatAiSandboxAPI.attachArchive;
+  },
+
+  get attachAiSandboxFile() {
+    return chatAiSandboxAPI.attachFile;
   },
 
   get getConversations() {

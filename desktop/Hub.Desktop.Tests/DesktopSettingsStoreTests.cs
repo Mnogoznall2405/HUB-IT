@@ -38,7 +38,8 @@ public sealed class DesktopSettingsStoreTests : IDisposable
             HideNotificationContentWhenLocked: false,
             LaunchVisibility: DesktopLaunchVisibility.OpenWindow,
             CloseBehavior: DesktopCloseBehavior.AskOnce,
-            GlobalHotkeyEnabled: true);
+            GlobalHotkeyEnabled: true,
+            TaskbarPinPromptHandled: true);
 
         store.Save(expected);
         var actual = store.Load();
@@ -136,6 +137,17 @@ public sealed class DesktopSettingsStoreTests : IDisposable
         Assert.Equal(DesktopLaunchVisibility.Hidden, settings.LaunchVisibility);
         Assert.Equal(DesktopCloseBehavior.AlwaysHide, settings.CloseBehavior);
         Assert.False(settings.GlobalHotkeyEnabled);
+        Assert.False(settings.TaskbarPinPromptHandled);
+    }
+
+    [Fact]
+    public void PersistsTaskbarPinPromptChoice()
+    {
+        var store = CreateStore();
+
+        store.Update(settings => settings with { TaskbarPinPromptHandled = true });
+
+        Assert.True(store.Load().TaskbarPinPromptHandled);
     }
 
     [Fact]

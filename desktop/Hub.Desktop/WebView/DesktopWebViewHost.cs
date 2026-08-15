@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -8,32 +7,32 @@ namespace Hub.Desktop.WebView;
 public sealed class DesktopWebViewHost : IDisposable
 {
     private readonly Grid _container;
+    private readonly DesktopWebViewEnvironmentProvider _environmentProvider;
     private bool _disposed;
 
-    public DesktopWebViewHost(Grid container)
+    public DesktopWebViewHost(
+        Grid container,
+        DesktopWebViewEnvironmentProvider environmentProvider)
     {
         _container = container ?? throw new ArgumentNullException(nameof(container));
+        _environmentProvider = environmentProvider
+            ?? throw new ArgumentNullException(nameof(environmentProvider));
     }
 
     public WebView2? View { get; private set; }
 
     public async Task<CoreWebView2> RecreateAsync(
-        string userDataFolder,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         DisposeCurrent();
-        Directory.CreateDirectory(userDataFolder);
-
         var view = new WebView2();
         View = view;
         _container.Children.Add(view);
         try
         {
-            var environment = await CoreWebView2Environment.CreateAsync(
-                browserExecutableFolder: null,
-                userDataFolder: userDataFolder);
+            var environment = await _environmentProvider.GetAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             await view.EnsureCoreWebView2Async(environment);
             cancellationToken.ThrowIfCancellationRequested();

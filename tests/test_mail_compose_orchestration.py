@@ -81,6 +81,22 @@ def test_prepare_outgoing_body_places_html_signature_before_quote():
     assert 'data-mail-signature="true"' in result
 
 
+@pytest.mark.parametrize("signature", ["", "<p>Signature</p>"])
+def test_prepare_outgoing_body_preserves_leading_forward_quote(signature):
+    result = compose.prepare_outgoing_body(
+        body='<div class="quoted-mail"><blockquote><p>Old</p></blockquote></div>',
+        signature=signature,
+        is_html=True,
+        has_reply_or_forward=True,
+    )
+
+    assert '<div class="quoted-mail">' in result
+    assert '>class="quoted-mail">' not in result
+    assert '<div<div' not in result
+    if signature:
+        assert result.index("Signature") < result.index("Old")
+
+
 def test_build_reply_forward_reference_headers_deduplicates_headers():
     assert compose.build_reply_forward_reference_headers(
         reply_message_id="<reply@example>",

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/hub-sandbox",
+  "autoupdate": false,
+  "share": "disabled",
+  "server": {
+    "mdns": false,
+    "cors": []
+  },
+  "provider": {
+    "openai": {
+      "name": "HUB internal LLM gateway",
+      "options": {
+        "baseURL": "{env:HUB_LLM_GATEWAY_URL}",
+        "apiKey": "{env:HUB_LLM_GATEWAY_BEARER_TOKEN}",
+        "headers": {
+          "X-HUB-Sandbox-Job-ID": "{env:HUB_SANDBOX_JOB_ID}",
+          "X-HUB-Sandbox-Session-ID": "{env:HUB_SANDBOX_SESSION_ID}",
+          "X-HUB-Sandbox-User-ID": "{env:HUB_SANDBOX_USER_ID}"
+        }
+      },
+      "models": {
+        "hub-sandbox": {
+          "name": "HUB Sandbox"
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lsp": "allow",
+    "edit": "ask",
+      "bash": {
+        "*": "ask",
+        "env": "deny",
+        "env *": "deny",
+        "printenv": "deny",
+        "printenv *": "deny",
+        "set": "deny",
+        "cat /proc/*": "deny",
+        "cat /run/*": "deny",
+        "python *os.environ*": "deny",
+        "python3 *os.environ*": "deny",
+      "pip *": "deny",
+      "pip3 *": "deny",
+      "python -m pip *": "deny",
+      "python3 -m pip *": "deny",
+      "uv *": "deny",
+      "poetry *": "deny",
+      "npm install *": "deny",
+      "npm add *": "deny",
+      "npx *": "deny",
+      "pnpm *": "deny",
+      "yarn *": "deny",
+      "bun install *": "deny",
+      "apt *": "deny",
+      "apt-get *": "deny",
+      "apk *": "deny",
+      "dnf *": "deny",
+      "yum *": "deny",
+      "git clone *": "deny",
+      "git fetch *": "deny",
+      "git pull *": "deny",
+      "git push *": "deny",
+      "git remote *": "deny",
+      "git submodule *": "deny",
+      "curl *": "deny",
+      "wget *": "deny",
+      "ssh *": "deny",
+      "scp *": "deny"
+    },
+    "external_directory": "deny",
+    "webfetch": "deny",
+    "websearch": "deny"
+  },
+  "tools": {
+    "webfetch": false,
+    "websearch": false,
+    "codesearch": false
+  }
+}

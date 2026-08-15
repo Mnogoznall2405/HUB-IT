@@ -24,6 +24,46 @@ $webConfig = @'
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <system.webServer>
+    <directoryBrowse enabled="false" />
+    <security>
+      <requestFiltering>
+        <verbs allowUnlisted="false">
+          <add verb="GET" allowed="true" />
+          <add verb="HEAD" allowed="true" />
+        </verbs>
+      </requestFiltering>
+    </security>
+    <rewrite>
+      <rules>
+        <rule name="Reject desktop update query strings" stopProcessing="true">
+          <match url=".*" />
+          <conditions>
+            <add input="{QUERY_STRING}" pattern=".+" />
+          </conditions>
+          <action type="CustomResponse" statusCode="404" statusReason="Not Found" statusDescription="Not Found" />
+        </rule>
+      </rules>
+      <outboundRules>
+        <rule name="Immutable versioned Desktop Setup" preCondition="DesktopSetupResponse">
+          <match serverVariable="RESPONSE_Cache_Control" pattern=".*" />
+          <action type="Rewrite" value="public, max-age=31536000, immutable" />
+        </rule>
+        <rule name="Do not browser-cache latest Desktop manifest" preCondition="DesktopLatestResponse">
+          <match serverVariable="RESPONSE_Cache_Control" pattern=".*" />
+          <action type="Rewrite" value="public, max-age=0, s-maxage=60, must-revalidate" />
+        </rule>
+        <preConditions>
+          <preCondition name="DesktopSetupResponse">
+            <add input="{REQUEST_URI}" pattern="^/desktop-updates/stable/[0-9]+\.[0-9]+\.[0-9]+/HUB-Desktop-Setup-[0-9]+\.[0-9]+\.[0-9]+-win-x64\.exe$" />
+            <add input="{RESPONSE_STATUS}" pattern="^(200|206)$" />
+          </preCondition>
+          <preCondition name="DesktopLatestResponse">
+            <add input="{REQUEST_URI}" pattern="^/desktop-updates/stable/latest\.json$" />
+            <add input="{RESPONSE_STATUS}" pattern="^200$" />
+          </preCondition>
+        </preConditions>
+      </outboundRules>
+    </rewrite>
     <staticContent>
       <remove fileExtension=".json" />
       <mimeMap fileExtension=".json" mimeType="application/json" />
@@ -41,7 +81,7 @@ $webConfig = @'
   <location path="stable/latest.json">
     <system.webServer>
       <staticContent>
-        <clientCache cacheControlMode="DisableCache" />
+        <clientCache cacheControlMode="UseMaxAge" cacheControlMaxAge="00.00:00:00" />
       </staticContent>
     </system.webServer>
   </location>

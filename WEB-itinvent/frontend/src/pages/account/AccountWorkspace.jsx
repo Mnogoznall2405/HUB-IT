@@ -11,6 +11,8 @@ import {
 import MainLayout from '../../components/layout/MainLayout';
 import PageShell from '../../components/layout/PageShell';
 import AccountCategoryLayout from '../../components/account/AccountCategoryLayout';
+import DesktopInstallerDownload from '../../components/desktop/DesktopInstallerDownload';
+import About from '../About';
 import { PERSONAL_SETTINGS_SECTIONS } from '../../components/account/accountNavigationConfig';
 import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
@@ -195,7 +197,14 @@ function AccountWorkspace({ area = 'settings' }) {
     } else if (data.activeSection === 'security') {
       settingsContent = securityContent;
     } else if (data.activeSection === 'app') {
-      settingsContent = <HubItPwaSettingsCard />;
+      settingsContent = (
+        <Stack spacing={1.1}>
+          <DesktopInstallerDownload variant="settings" />
+          <HubItPwaSettingsCard />
+        </Stack>
+      );
+    } else if (data.activeSection === 'about') {
+      settingsContent = <About mode="embedded" />;
     }
 
     page = (

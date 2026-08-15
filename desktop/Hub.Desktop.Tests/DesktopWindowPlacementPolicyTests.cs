@@ -46,4 +46,30 @@ public sealed class DesktopWindowPlacementPolicyTests
 
         Assert.Equal(new DesktopWindowPlacement(0, 0, 1280, 720, false), normalized);
     }
+
+    [Fact]
+    public void PreservesAUserResizedCompactWindow()
+    {
+        var placement = new DesktopWindowPlacement(120, 80, 720, 520, false);
+
+        var normalized = DesktopWindowPlacementPolicy.Normalize(
+            placement,
+            [Primary],
+            Primary);
+
+        Assert.Equal(placement, normalized);
+    }
+
+    [Fact]
+    public void EnforcesOnlyTheCompactMinimumSize()
+    {
+        var placement = new DesktopWindowPlacement(120, 80, 320, 240, false);
+
+        var normalized = DesktopWindowPlacementPolicy.Normalize(
+            placement,
+            [Primary],
+            Primary);
+
+        Assert.Equal(new DesktopWindowPlacement(120, 80, 640, 480, false), normalized);
+    }
 }

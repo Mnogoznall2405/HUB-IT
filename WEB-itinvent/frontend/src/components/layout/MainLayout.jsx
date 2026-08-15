@@ -1925,12 +1925,6 @@ useEffect(() => {
         data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
         selected={selected}
         onClick={() => handleNavigation(item)}
-        onPointerEnter={() => {
-          if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
-        }}
-        onFocus={() => {
-          if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
-        }}
         sx={{
           minHeight: compact ? 46 : { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
           px: compact ? 0 : { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
@@ -2775,15 +2769,6 @@ useEffect(() => {
                   label={item.shortLabel || item.label}
                   icon={<Box className="mobile-bottom-nav-icon-shell">{icon}</Box>}
                   data-testid={`main-layout-mobile-bottom-nav-${item.path.replace(/^\//, '')}`}
-                  onPointerEnter={() => {
-                    if (item.path !== '/menu') void prefetchRouteByPath(item.path).catch(() => {});
-                  }}
-                  onFocus={() => {
-                    if (item.path !== '/menu') void prefetchRouteByPath(item.path).catch(() => {});
-                  }}
-                  onTouchStart={() => {
-                    void prefetchRouteByPath(item.path).catch(() => {});
-                  }}
                   sx={{
                     '&.Mui-selected .MuiBottomNavigationAction-label': {
                       color: theme.palette.text.primary,

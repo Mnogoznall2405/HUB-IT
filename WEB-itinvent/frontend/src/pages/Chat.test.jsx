@@ -273,6 +273,17 @@ describe('Chat page AI helpers', () => {
       },
     });
 
+    const withFirstStage = mergeAiStatusPayload(current, {
+      conversation_id: 'ai-conv-1',
+      status: 'running',
+      stage: 'checking_itinvent',
+    });
+    expect(mergeAiStatusPayload(withFirstStage, {
+      conversation_id: 'ai-conv-1',
+      status: 'running',
+      stage: 'generating_answer',
+    })['ai-conv-1'].completed_stages).toEqual(['checking_itinvent', 'generating_answer']);
+
     expect(mergeAiStatusPayload({}, {
       status: 'failed',
       error_text: 'Model unavailable',
@@ -455,6 +466,7 @@ describe('Chat page AI helpers', () => {
           slug: 'ai-assistant',
           description: 'KB bot',
           conversation_id: 'ai-conv-1',
+          conversation_ids: ['ai-conv-2', 'ai-conv-1'],
         },
         {
           id: 'bot-2',
@@ -475,6 +487,14 @@ describe('Chat page AI helpers', () => {
         is_pinned: false,
         is_muted: false,
         is_archived: false,
+      }, {
+        id: 'ai-conv-2',
+        kind: 'ai',
+        title: 'Department report',
+        last_message_preview: 'Ready',
+        last_message_at: '2026-04-22T12:45:00Z',
+        updated_at: '2026-04-22T12:45:00Z',
+        unread_count: 0,
       }],
       draftsByConversation: {
         'ai-conv-1': 'новый запрос',
@@ -484,6 +504,7 @@ describe('Chat page AI helpers', () => {
 
     expect(rows[0]).toEqual(expect.objectContaining({
       id: 'bot-1',
+      bot_id: 'bot-1',
       conversation_id: 'ai-conv-1',
       title: 'AI Assistant',
       last_message_preview: 'Последний ответ',
@@ -492,13 +513,15 @@ describe('Chat page AI helpers', () => {
       is_active: true,
     }));
     expect(rows[1]).toEqual(expect.objectContaining({
-      id: 'bot-2',
-      conversation_id: '',
-      title: 'Fresh Bot',
+      id: 'bot-1',
+      bot_id: 'bot-1',
+      conversation_id: 'ai-conv-2',
+      title: 'Department report',
       unread_count: 0,
       draft_preview: '',
       is_active: false,
     }));
+    expect(rows).toHaveLength(2);
   });
 
   it('does not show a live ITinvent access warning in active AI chats', () => {

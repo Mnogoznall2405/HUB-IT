@@ -86,6 +86,7 @@ class AppUser(AppBase):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False, default="")
     password_salt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    about_onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -396,6 +397,7 @@ class AppUserSetting(AppBase):
     dashboard_mobile_sections_json: Mapped[str | None] = mapped_column("dashboard_mobile_sections", Text, nullable=True)
     mobile_bottom_nav_items_json: Mapped[str | None] = mapped_column("mobile_bottom_nav_items", Text, nullable=True)
     database_branch_filters_json: Mapped[str | None] = mapped_column("database_branch_filters", Text, nullable=True)
+    ai_personal_memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
@@ -728,6 +730,11 @@ class AppAiBot(AppBase):
     allow_file_input: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     allow_generated_artifacts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     allow_kb_document_delivery: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    surface: Mapped[str] = mapped_column(String(32), nullable=False, default="corporate", index=True)
+    placement: Mapped[str] = mapped_column(String(24), nullable=False, default="pinned", index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    required_permission: Mapped[str] = mapped_column(String(128), nullable=False, default="chat.ai.use")
+    use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     bot_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -737,8 +744,8 @@ class AppAiBot(AppBase):
 class AppAiBotConversation(AppBase):
     __tablename__ = "ai_bot_conversations"
     __table_args__ = _table_args(
-        UniqueConstraint("bot_id", "user_id", name="uq_app_ai_bot_conversations_bot_user"),
         UniqueConstraint("conversation_id", name="uq_app_ai_bot_conversations_conversation"),
+        Index("ix_app_ai_bot_conversations_user_bot_updated", "user_id", "bot_id", "updated_at"),
         schema=APP_SCHEMA,
     )
 
@@ -746,8 +753,46 @@ class AppAiBotConversation(AppBase):
     bot_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    rolling_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    summary_until_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    context_reset_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    title_source: Mapped[str] = mapped_column(String(24), nullable=False, default="assistant")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiUserMemory(AppBase):
+    __tablename__ = "ai_user_memories"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "normalized_hash", name="uq_app_ai_user_memories_user_hash"),
+        Index("ix_app_ai_user_memories_user_active_updated", "user_id", "is_active", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(48), nullable=False, default="preference", index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiUserMemorySource(AppBase):
+    __tablename__ = "ai_user_memory_sources"
+    __table_args__ = _table_args(
+        UniqueConstraint("memory_id", "message_id", name="uq_app_ai_user_memory_sources_memory_message"),
+        Index("ix_app_ai_user_memory_sources_conversation", "conversation_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    memory_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    message_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppAiBotRun(AppBase):

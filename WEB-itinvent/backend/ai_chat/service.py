@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import io
 import json
 import logging
@@ -15,7 +16,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.ai_chat.document_extractors import extract_text_from_path
@@ -52,9 +53,13 @@ from backend.appdb.db import (
 from backend.appdb.models import (
     AppAiBot,
     AppAiBotConversation,
+    AppAiPendingAction,
     AppAiBotRun,
+    AppAiUserMemory,
+    AppAiUserMemorySource,
     AppGlobalSetting,
     AppUser,
+    AppUserSetting,
 )
 from backend.chat.db import chat_session
 from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMember, ChatMessage, ChatMessageAttachment
@@ -77,8 +82,10 @@ _AI_LAST_RUN_COMPLETED_AT: datetime | None = None
 ai_kb_retrieval_service = ai_kb_retrieval
 DEFAULT_BOT_SLUG = "corp-assistant"
 DEFAULT_BOT_MODEL = ""
-DEFAULT_BOT_TITLE = "AI Ассистент"
-DEFAULT_BOT_DESCRIPTION = "Корпоративный AI-чат с ответами по базе знаний и документам."
+LEGACY_DEFAULT_BOT_TITLE = "AI Ассистент"
+LEGACY_DEFAULT_BOT_DESCRIPTION = "Корпоративный AI-чат с ответами по базе знаний и документам."
+DEFAULT_BOT_TITLE = "HUB Ассистент"
+DEFAULT_BOT_DESCRIPTION = "Данные сотрудников, оборудования, задач, почты и внутренних систем HUB."
 DEFAULT_BOT_PROMPT = (
     "Ты корпоративный AI-ассистент IT-команды. "
     "Отвечай по-русски: чётко, структурированно, по делу. "
@@ -94,7 +101,7 @@ DEFAULT_BOT_PROMPT = (
     "Не показывай чувствительные поля (пароли, хеши, raw LDAP). "
     "Генерируй artifacts только когда пользователь явно просит создать файл (xlsx/pdf/docx/csv)."
 )
-AI_RUN_TERMINAL_STATUSES = {"completed", "failed"}
+AI_RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 AI_RUN_STAGE_QUEUED = "queued"
 AI_RUN_STAGE_ANALYZING_REQUEST = "analyzing_request"
 AI_RUN_STAGE_READING_FILES = "reading_files"
@@ -108,6 +115,7 @@ AI_RUN_STAGE_GENERATING_FILES = "generating_files"
 AI_RUN_STAGE_CONVERTING_DOCUMENT = "converting_document"
 AI_RUN_STAGE_COMPLETED = "completed"
 AI_RUN_STAGE_FAILED = "failed"
+AI_RUN_STAGE_CANCELLED = "cancelled"
 AI_RUN_STAGE_STATUS_TEXTS = {
     AI_RUN_STAGE_QUEUED: "Запрос принят. Ставлю задачу в очередь.",
     AI_RUN_STAGE_ANALYZING_REQUEST: "Анализирую ваш запрос.",
@@ -121,25 +129,61 @@ AI_RUN_STAGE_STATUS_TEXTS = {
     AI_RUN_STAGE_SEARCHING_EQUIPMENT: "Ищу оборудование.",
     AI_RUN_STAGE_OPENING_EQUIPMENT_CARD: "Открываю карточку устройства.",
     AI_RUN_STAGE_FAILED: "Не удалось обработать запрос.",
+    AI_RUN_STAGE_CANCELLED: "Выполнение остановлено.",
 }
+
+
+class AiRunCancelled(RuntimeError):
+    """Raised cooperatively when a user stops an active AI run."""
 DOC_CONVERT_BOT_SLUG = "document-converter"
 DOC_CONVERT_BOT_SEED_SETTING_KEY = "ai_chat.document_converter_bot_seed_v1"
-DOC_CONVERT_BOT_TITLE = "Конвертер документов"
-DOC_CONVERT_BOT_DESCRIPTION = "Конвертация фото и PDF в Word, Excel, Markdown, PDF и текст с сохранением структуры."
+LEGACY_DOC_CONVERT_BOT_TITLE = "Конвертер документов"
+DOC_CONVERT_BOT_TITLE = "Документы"
+DOC_CONVERT_BOT_DESCRIPTION = "Создание и преобразование Word, Excel, PDF и отчётов с сохранением структуры."
 DOC_CONVERT_BOT_PROMPT = (
-    "Ты бот-конвертер документов. "
-    "Когда пользователь прикрепляет фото или PDF, вызывай инструмент ai.files.convert_document. "
-    "Если формат не указан явно, не выдумывай файл — инструмент покажет кнопки выбора формата. "
-    "Если пользователь просит конкретный формат (Word/Excel/PDF/Markdown/текст), передай format в инструмент. "
-    "Не используй другие инструменты. Отвечай кратко по-русски."
+    "Ты помощник по документам. Для создания простого файла используй ai.files.create, "
+    "для структурированного отчёта — ai.files.report, для преобразования прикреплённого документа — "
+    "ai.files.convert_document. Если формат не указан явно, не выдумывай файл: покажи существующую "
+    "карточку выбора формата. Поддерживай DOCX, XLSX, PDF, CSV, TXT, Markdown и JSON там, где это "
+    "разрешено инструментом. Не обращайся к live-данным HUB и не выполняй изменяющих действий. "
+    "Отвечай кратко по-русски."
 )
-AI_CONTEXT_DB_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_DB_MESSAGE_WINDOW", "12"))
-AI_CONTEXT_RENDERED_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_RENDERED_MESSAGE_WINDOW", "10"))
+IT_HELPER_BOT_SLUG = "it-helper"
+IT_HELPER_BOT_SEED_SETTING_KEY = "ai_chat.it_helper_bot_seed_v1"
+IT_HELPER_BOT_TITLE = "IT-помощник"
+IT_HELPER_BOT_DESCRIPTION = "Инструкции, база знаний и безопасная диагностика типовых IT-проблем."
+IT_HELPER_BOT_PROMPT = (
+    "Ты IT-помощник внутренней службы поддержки. "
+    "Отвечай по-русски, сначала дай короткий вывод, затем понятные шаги диагностики. "
+    "Опирайся только на базу знаний HUB, контекст диалога и прикреплённые пользователем файлы. "
+    "Не выдумывай команды, адреса, учётные данные или факты об инфраструктуре. "
+    "Не предлагай отключать защиту и не выполняй изменяющих действий. "
+    "Если безопасной инструкции недостаточно, перечисли собранные симптомы и предложи обратиться в IT-поддержку."
+)
+GENERAL_AI_BOT_SLUG = "general-ai"
+GENERAL_AI_BOT_SEED_SETTING_KEY = "ai_chat.general_ai_bot_seed_v1"
+GENERAL_AI_BOT_TITLE = "AI"
+GENERAL_AI_BOT_DESCRIPTION = "Личный AI-чат для общения, базы знаний, анализа файлов и создания документов."
+GENERAL_AI_BOT_PROMPT = (
+    "Ты личный AI-помощник сотрудника HUB. Отвечай по-русски, сначала дай краткий вывод. "
+    "Используй только текущий диалог, разрешённую личную память, базу знаний и прикреплённые файлы. "
+    "Ты можешь создавать и преобразовывать документы, но не имеешь доступа к оборудованию, почте, задачам "
+    "и другим live-данным HUB. Не выдумывай такие данные и не выполняй изменяющих действий."
+)
+AI_CONTEXT_DB_MESSAGE_WINDOW = max(1, min(20, int(os.environ.get("AI_CONTEXT_DB_MESSAGE_WINDOW", "20"))))
+AI_CONTEXT_RENDERED_MESSAGE_WINDOW = max(1, min(20, int(os.environ.get("AI_CONTEXT_RENDERED_MESSAGE_WINDOW", "20"))))
 AI_CONTEXT_ATTACHMENT_NAME_LIMIT = int(os.environ.get("AI_CONTEXT_ATTACHMENT_NAME_LIMIT", "3"))
 AI_FILE_CONTEXT_TEXT_LIMIT = int(os.environ.get("AI_FILE_CONTEXT_TEXT_LIMIT", "9000"))
+AI_INPUT_BUDGET_TOKENS = max(4096, min(32000, int(os.environ.get("AI_INPUT_BUDGET_TOKENS", "32000"))))
+AI_ROLLING_SUMMARY_TOKENS = max(128, min(1500, int(os.environ.get("AI_ROLLING_SUMMARY_TOKENS", "1500"))))
+AI_MEMORY_MAX_FACTS = max(1, min(20, int(os.environ.get("AI_MEMORY_MAX_FACTS", "20"))))
+AI_MEMORY_MAX_TOKENS = max(128, min(4000, int(os.environ.get("AI_MEMORY_MAX_TOKENS", "4000"))))
+AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0") or "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
 AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
-AI_MODEL_CONTEXT_WINDOW = int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "128000"))
+AI_MODEL_CONTEXT_WINDOW = max(4096, min(32000, int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "32000"))))
 AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
 # When the LLM invokes a tool with invalid args, allow up to N self-correction passes
 # (the model is shown the validation error and asked to retry the same logical step).
@@ -1394,18 +1438,60 @@ def _build_report_choice_payload(
     }
 
 
+def _collect_file_format_choice_payloads(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for result in list(results or []):
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            continue
+        if _normalize_text(result.get("tool_id")) not in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT}:
+            continue
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if not bool(data.get("needs_format_choice")):
+            continue
+        for item in list(data.get("format_choice_payloads") or []):
+            if isinstance(item, dict):
+                payloads.append(item)
+            if len(payloads) >= 5:
+                return payloads
+    return payloads
+
+
+def _create_file_format_choice_actions(
+    *,
+    results: list[dict[str, Any]],
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+) -> list[dict[str, Any]]:
+    payloads = _collect_file_format_choice_payloads(results)
+    if not payloads:
+        return []
+    from backend.ai_chat.action_cards import build_report_format_choice
+
+    for payload in payloads:
+        build_report_format_choice(
+            conversation_id=_normalize_text(conversation_id),
+            run_id=_normalize_text(run_id),
+            requester_user_id=int(requester_user_id),
+            database_id=_normalize_text(payload.get("database_id")) or None,
+            payload=payload,
+        )
+    return payloads
+
+
 def _build_report_choice_answer(payload: dict[str, Any]) -> str:
     title = _normalize_text(payload.get("title")) or "ITinvent report"
     summary = _normalize_text(payload.get("summary"))
     database_id = _normalize_text(payload.get("database_id"))
+    is_user_content = isinstance(payload.get("source_file_spec"), dict)
     return "\n".join(
         [
             f"## {title}",
             "",
             summary or "Данные собраны. Выберите формат файла в карточке ниже.",
-            f"Источник: ITinvent / {database_id}" if database_id else "Источник: ITinvent",
+            "" if is_user_content else (f"Источник: ITinvent / {database_id}" if database_id else "Источник: ITinvent"),
             "",
-            "Выберите формат файла в карточке ниже: XLSX, PDF, DOCX или CSV.",
+            "Выберите формат файла в карточке ниже: XLSX, PDF, DOCX, CSV, TXT, Markdown или JSON.",
         ]
     )
 
@@ -1601,6 +1687,115 @@ def _user_has_permission(user_payload: dict[str, Any] | None, permission: str) -
     )
 
 
+_MEMORY_SENSITIVE_RE = re.compile(
+    r"(?:парол|password|passwd|token|токен|api[_ -]?key|секрет|secret|cookie|authorization|bearer|private[_ -]?key|ssh-rsa)",
+    flags=re.IGNORECASE,
+)
+_MEMORY_PREFERENCE_RE = re.compile(
+    r"(?:^|[.!?]\s+)(?:запомни(?:те)?[, :]*(?:что\s+)?|я\s+предпочитаю\s+|мне\s+удобнее\s+|"
+    r"отвечай(?:те)?\s+мне\s+|обычно\s+я\s+|я\s+работаю\s+|мой\s+отдел\s+|моя\s+должность\s+|"
+    r"for me[, :]\s*|i\s+prefer\s+)([^\n]{2,500})",
+    flags=re.IGNORECASE,
+)
+
+
+def _estimated_tokens(value: object) -> int:
+    return max(0, (len(str(value or "")) + 3) // 4)
+
+
+def _truncate_tokens(value: object, token_limit: int) -> str:
+    text = str(value or "").strip()
+    max_chars = max(0, int(token_limit or 0)) * 4
+    if not max_chars or len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0].rstrip() + "…"
+
+
+def _compact_head_tail(value: object, token_limit: int, *, head_ratio: float = 0.3) -> str:
+    text = str(value or "").strip()
+    max_chars = max(0, int(token_limit or 0)) * 4
+    if not max_chars or len(text) <= max_chars:
+        return text
+    marker = "\n… ранее свёрнуто …\n"
+    usable = max(0, max_chars - len(marker))
+    head_chars = max(0, min(usable, int(usable * max(0.0, min(head_ratio, 1.0)))))
+    tail_chars = max(0, usable - head_chars)
+    return f"{text[:head_chars].rstrip()}{marker}{text[-tail_chars:].lstrip()}" if tail_chars else text[:max_chars]
+
+
+def _fit_prompt_pair(system_prompt: str, user_prompt: str, *, token_limit: int = AI_INPUT_BUDGET_TOKENS) -> tuple[str, str]:
+    max_chars = max(1024, int(token_limit or AI_INPUT_BUDGET_TOKENS) * 4)
+    system_text = str(system_prompt or "")
+    user_text = str(user_prompt or "")
+    if len(system_text) + len(user_text) <= max_chars:
+        return system_text, user_text
+    system_budget = min(len(system_text), max_chars // 3)
+    bounded_system = _compact_head_tail(system_text, max(1, system_budget // 4), head_ratio=0.7)
+    user_budget = max(512, max_chars - len(bounded_system))
+    # Current request and file context are repeated at the tail by the caller.
+    bounded_user = _compact_head_tail(user_text, max(1, user_budget // 4), head_ratio=0.2)
+    overflow = len(bounded_system) + len(bounded_user) - max_chars
+    if overflow > 0:
+        bounded_user = bounded_user[:-overflow] if overflow < len(bounded_user) else ""
+    return bounded_system, bounded_user
+
+
+def _normalize_memory_content(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n-–—:;,.")[:1000]
+
+
+def _memory_hash(value: object) -> str:
+    normalized = _normalize_memory_content(value).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _memory_query_tokens(value: object) -> set[str]:
+    return {
+        item.casefold()
+        for item in re.findall(r"[A-Za-zА-Яа-яЁё0-9_-]{3,}", str(value or ""))
+    }
+
+
+def _is_safe_memory_content(value: object) -> bool:
+    text = _normalize_memory_content(value)
+    if len(text) < 3 or len(text) > 1000 or _MEMORY_SENSITIVE_RE.search(text):
+        return False
+    if "-----BEGIN" in text or re.search(r"\b[A-Za-z0-9_-]{32,}\b", text):
+        return False
+    if text.count("\n") > 1 or text.count("=") > 3:
+        return False
+    return True
+
+
+def _extract_safe_memory_candidates(value: object) -> list[tuple[str, str]]:
+    text = str(value or "").strip()
+    if not text or len(text) > 4000 or _MEMORY_SENSITIVE_RE.search(text):
+        return []
+    if re.search(r"(?:из|from)\s+(?:этого\s+)?(?:файла|документа|вложения|attachment|document)", text, re.IGNORECASE):
+        return []
+    result: list[tuple[str, str]] = []
+    for match in _MEMORY_PREFERENCE_RE.finditer(text):
+        candidate = _normalize_memory_content(match.group(0))
+        if not _is_safe_memory_content(candidate):
+            continue
+        category = "work_context" if re.search(r"(?:работаю|отдел|должност)", candidate, re.IGNORECASE) else "preference"
+        if all(_memory_hash(existing[1]) != _memory_hash(candidate) for existing in result):
+            result.append((category, candidate))
+        if len(result) >= 3:
+            break
+    return result
+
+
+def _conversation_title_from_prompt(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if len(text) <= 80:
+        return text
+    shortened = text[:80].rsplit(" ", 1)[0].strip()
+    return f"{shortened or text[:77]}…"
+
+
 @dataclass(slots=True)
 class AiConversationRuntime:
     bot: AppAiBot
@@ -1615,6 +1810,10 @@ class AiChatService:
     def initialize_runtime(self) -> None:
         ensure_app_schema_initialized()
         try:
+            self.ensure_general_ai_bot()
+        except Exception as exc:
+            logger.warning("Skipping general AI bootstrap: %s", exc)
+        try:
             self.ensure_default_bot()
         except Exception as exc:
             logger.warning("Skipping AI chat bootstrap: %s", exc)
@@ -1622,6 +1821,18 @@ class AiChatService:
             self.ensure_doc_convert_bot()
         except Exception as exc:
             logger.warning("Skipping document converter bot bootstrap: %s", exc)
+        try:
+            self.ensure_it_helper_bot()
+        except Exception as exc:
+            logger.warning("Skipping IT helper bot bootstrap: %s", exc)
+        try:
+            # Imported lazily so the regular chat runtime does not require the
+            # Linux-only sandbox worker dependencies when the feature is off.
+            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+            ai_sandbox_app_service.ensure_opencode_bot(ai_service=self)
+        except Exception as exc:
+            logger.warning("Skipping OpenCode sandbox bootstrap: %s", exc)
 
     def ensure_default_bot(self) -> dict[str, Any]:
         ensure_app_schema_initialized()
@@ -1651,6 +1862,11 @@ class AiChatService:
                         allow_file_input=True,
                         allow_generated_artifacts=True,
                         allow_kb_document_delivery=False,
+                        surface="corporate",
+                        placement="pinned",
+                        sort_order=10,
+                        required_permission=PERM_CHAT_AI_USE,
+                        use_personal_memory=True,
                         is_enabled=True,
                         created_at=now,
                         updated_at=now,
@@ -1659,6 +1875,17 @@ class AiChatService:
                     session.flush()
                     self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
                 else:
+                    bot.surface = "corporate"
+                    bot.placement = "pinned"
+                    bot.sort_order = 10
+                    bot.required_permission = PERM_CHAT_AI_USE
+                    bot.use_personal_memory = True
+                    if _normalize_text(bot.title) == LEGACY_DEFAULT_BOT_TITLE:
+                        bot.title = DEFAULT_BOT_TITLE
+                        bot.updated_at = _utc_now()
+                    if _normalize_text(bot.description) == LEGACY_DEFAULT_BOT_DESCRIPTION:
+                        bot.description = DEFAULT_BOT_DESCRIPTION
+                        bot.updated_at = _utc_now()
                     current_enabled_tools = normalize_enabled_tools(
                         _json_loads(getattr(bot, "enabled_tools_json", "[]"), [])
                     )
@@ -1701,6 +1928,7 @@ class AiChatService:
             with app_session() as session:
                 apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
                 seeded_once = self._read_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY)
+                document_tools = [AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AI_TOOL_FILES_CONVERT_DOCUMENT]
                 bot = session.execute(
                     select(AppAiBot).where(AppAiBot.slug == DOC_CONVERT_BOT_SLUG)
                 ).scalar_one_or_none()
@@ -1716,11 +1944,16 @@ class AiChatService:
                         temperature=0.1,
                         max_tokens=1200,
                         allowed_kb_scope_json="[]",
-                        enabled_tools_json=_json_dumps([AI_TOOL_FILES_CONVERT_DOCUMENT]),
+                        enabled_tools_json=_json_dumps(document_tools),
                         tool_settings_json=_json_dumps(_default_bot_tool_settings()),
                         allow_file_input=True,
                         allow_generated_artifacts=True,
                         allow_kb_document_delivery=False,
+                        surface="corporate",
+                        placement="pinned",
+                        sort_order=20,
+                        required_permission=PERM_CHAT_AI_USE,
+                        use_personal_memory=True,
                         is_enabled=True,
                         created_at=now,
                         updated_at=now,
@@ -1728,13 +1961,134 @@ class AiChatService:
                     session.add(bot)
                     session.flush()
                     self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
-                elif not seeded_once:
-                    bot.enabled_tools_json = _json_dumps([AI_TOOL_FILES_CONVERT_DOCUMENT])
+                else:
+                    bot.surface = "corporate"
+                    bot.placement = "pinned"
+                    bot.sort_order = 20
+                    bot.required_permission = PERM_CHAT_AI_USE
+                    bot.use_personal_memory = True
+                    bot.enabled_tools_json = _json_dumps(document_tools)
                     bot.allow_file_input = True
                     bot.allow_generated_artifacts = True
-                    bot.is_enabled = True
-                    bot.updated_at = _utc_now()
-                    self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
+                    if _normalize_text(bot.title) == LEGACY_DOC_CONVERT_BOT_TITLE:
+                        bot.title = DOC_CONVERT_BOT_TITLE
+                        bot.description = DOC_CONVERT_BOT_DESCRIPTION
+                        bot.updated_at = _utc_now()
+                    if not seeded_once:
+                        bot.is_enabled = True
+                        bot.updated_at = _utc_now()
+                        self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
+                self._ensure_bot_user(session=session, bot=bot)
+                return self._serialize_bot(bot)
+
+        return run_with_transient_lock_retry(_ensure_bot)
+
+    def ensure_it_helper_bot(self) -> dict[str, Any]:
+        ensure_app_schema_initialized()
+
+        def _ensure_bot() -> dict[str, Any]:
+            with app_session() as session:
+                apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                seeded_once = self._read_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY)
+                bot = session.execute(
+                    select(AppAiBot).where(AppAiBot.slug == IT_HELPER_BOT_SLUG)
+                ).scalar_one_or_none()
+                if bot is None:
+                    now = _utc_now()
+                    bot = AppAiBot(
+                        id=str(uuid4()),
+                        slug=IT_HELPER_BOT_SLUG,
+                        title=IT_HELPER_BOT_TITLE,
+                        description=IT_HELPER_BOT_DESCRIPTION,
+                        system_prompt=IT_HELPER_BOT_PROMPT,
+                        model=DEFAULT_BOT_MODEL,
+                        temperature=0.15,
+                        max_tokens=1600,
+                        allowed_kb_scope_json="[]",
+                        enabled_tools_json="[]",
+                        tool_settings_json=_json_dumps(_default_bot_tool_settings()),
+                        allow_file_input=True,
+                        allow_generated_artifacts=False,
+                        allow_kb_document_delivery=True,
+                        surface="corporate",
+                        placement="pinned",
+                        sort_order=30,
+                        required_permission=PERM_CHAT_AI_USE,
+                        use_personal_memory=True,
+                        is_enabled=True,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(bot)
+                    session.flush()
+                    self._write_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY, True)
+                else:
+                    bot.surface = "corporate"
+                    bot.placement = "pinned"
+                    bot.sort_order = 30
+                    bot.required_permission = PERM_CHAT_AI_USE
+                    bot.use_personal_memory = True
+                    if not seeded_once:
+                        bot.allow_file_input = True
+                        bot.allow_generated_artifacts = False
+                        bot.allow_kb_document_delivery = True
+                        bot.updated_at = _utc_now()
+                        self._write_bool_setting(session, IT_HELPER_BOT_SEED_SETTING_KEY, True)
+                self._ensure_bot_user(session=session, bot=bot)
+                return self._serialize_bot(bot)
+
+        return run_with_transient_lock_retry(_ensure_bot)
+
+    def ensure_general_ai_bot(self) -> dict[str, Any]:
+        ensure_app_schema_initialized()
+
+        def _ensure_bot() -> dict[str, Any]:
+            with app_session() as session:
+                apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                bot = session.execute(
+                    select(AppAiBot).where(AppAiBot.slug == GENERAL_AI_BOT_SLUG)
+                ).scalar_one_or_none()
+                now = _utc_now()
+                enabled_tools = [AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AI_TOOL_FILES_CONVERT_DOCUMENT]
+                if bot is None:
+                    bot = AppAiBot(
+                        id=str(uuid4()),
+                        slug=GENERAL_AI_BOT_SLUG,
+                        title=GENERAL_AI_BOT_TITLE,
+                        description=GENERAL_AI_BOT_DESCRIPTION,
+                        system_prompt=GENERAL_AI_BOT_PROMPT,
+                        model=DEFAULT_BOT_MODEL,
+                        temperature=0.2,
+                        max_tokens=2400,
+                        allowed_kb_scope_json="[]",
+                        enabled_tools_json=_json_dumps(enabled_tools),
+                        tool_settings_json=_json_dumps(_default_bot_tool_settings()),
+                        allow_file_input=True,
+                        allow_generated_artifacts=True,
+                        allow_kb_document_delivery=True,
+                        surface="general",
+                        placement="hidden",
+                        sort_order=0,
+                        required_permission=PERM_CHAT_AI_USE,
+                        use_personal_memory=True,
+                        is_enabled=True,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(bot)
+                    session.flush()
+                    self._write_bool_setting(session, GENERAL_AI_BOT_SEED_SETTING_KEY, True)
+                else:
+                    bot.surface = "general"
+                    bot.placement = "hidden"
+                    bot.sort_order = 0
+                    bot.required_permission = PERM_CHAT_AI_USE
+                    bot.use_personal_memory = True
+                    bot.enabled_tools_json = _json_dumps(enabled_tools)
+                    bot.allow_file_input = True
+                    bot.allow_generated_artifacts = True
+                    bot.allow_kb_document_delivery = True
+                    bot.updated_at = now
                 self._ensure_bot_user(session=session, bot=bot)
                 return self._serialize_bot(bot)
 
@@ -1745,29 +2099,44 @@ class AiChatService:
 
     def list_bots(self, *, current_user_id: int | None = None) -> dict[str, Any]:
         self.initialize_runtime()
-        def _load_rows() -> tuple[list[AppAiBot], dict[str, str]]:
+        def _load_rows() -> tuple[list[AppAiBot], dict[str, list[str]]]:
             with app_session() as session:
                 apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                user_payload = user_service.get_by_id(int(current_user_id)) if current_user_id else None
                 rows = list(
                     session.execute(
-                        select(AppAiBot).where(AppAiBot.is_enabled.is_(True)).order_by(AppAiBot.title.asc())
+                        select(AppAiBot)
+                        .where(
+                            AppAiBot.is_enabled.is_(True),
+                            AppAiBot.placement != "hidden",
+                            AppAiBot.surface != "general",
+                        )
+                        .order_by(AppAiBot.sort_order.asc(), AppAiBot.title.asc())
                     ).scalars()
                 )
-                conversation_ids_by_bot: dict[str, str] = {}
+                if user_payload:
+                    rows = [
+                        item
+                        for item in rows
+                        if not _normalize_text(getattr(item, "required_permission", None))
+                        or _user_has_permission(user_payload, _normalize_text(item.required_permission))
+                    ]
+                conversation_ids_by_bot: dict[str, list[str]] = {}
                 if current_user_id and rows:
                     mappings = list(
                         session.execute(
                             select(AppAiBotConversation).where(
                                 AppAiBotConversation.user_id == int(current_user_id),
                                 AppAiBotConversation.bot_id.in_([item.id for item in rows]),
-                            )
+                            ).order_by(AppAiBotConversation.updated_at.desc())
                         ).scalars()
                     )
-                    conversation_ids_by_bot = {
-                        item.bot_id: _normalize_text(item.conversation_id)
-                        for item in mappings
-                        if _normalize_text(item.bot_id) and _normalize_text(item.conversation_id)
-                    }
+                    for mapping in mappings:
+                        mapped_bot_id = _normalize_text(mapping.bot_id)
+                        mapped_conversation_id = _normalize_text(mapping.conversation_id)
+                        if not mapped_bot_id or not mapped_conversation_id:
+                            continue
+                        conversation_ids_by_bot.setdefault(mapped_bot_id, []).append(mapped_conversation_id)
                 return rows, conversation_ids_by_bot
 
         rows, conversation_ids_by_bot = run_with_transient_lock_retry(_load_rows)
@@ -1777,12 +2146,12 @@ class AiChatService:
                 self._serialize_bot(
                     item,
                     configured=status["configured"],
-                    conversation_id=conversation_ids_by_bot.get(item.id),
+                    conversation_id=(conversation_ids_by_bot.get(item.id) or [None])[0],
+                    conversation_ids=conversation_ids_by_bot.get(item.id, []),
                 )
                 for item in rows
             ],
             "configured": bool(status["configured"]),
-            "default_model": str(status.get("default_model") or ""),
         }
 
     def list_admin_bots(self) -> list[dict[str, Any]]:
@@ -1828,6 +2197,11 @@ class AiChatService:
                 allow_file_input=bool(payload.get("allow_file_input", True)),
                 allow_generated_artifacts=bool(payload.get("allow_generated_artifacts", True)),
                 allow_kb_document_delivery=bool(payload.get("allow_kb_document_delivery", False)),
+                surface=_normalize_text(payload.get("surface")) or "corporate",
+                placement=_normalize_text(payload.get("placement")) or "pinned",
+                sort_order=max(0, min(int(payload.get("sort_order", 100) or 0), 10000)),
+                required_permission=_normalize_text(payload.get("required_permission")) or PERM_CHAT_AI_USE,
+                use_personal_memory=bool(payload.get("use_personal_memory", True)),
                 is_enabled=bool(payload.get("is_enabled", True)),
                 created_at=_utc_now(),
                 updated_at=_utc_now(),
@@ -1867,6 +2241,16 @@ class AiChatService:
                 bot.allow_generated_artifacts = bool(payload.get("allow_generated_artifacts"))
             if "allow_kb_document_delivery" in payload and payload.get("allow_kb_document_delivery") is not None:
                 bot.allow_kb_document_delivery = bool(payload.get("allow_kb_document_delivery"))
+            if "surface" in payload and payload.get("surface") is not None:
+                bot.surface = _normalize_text(payload.get("surface")) or "corporate"
+            if "placement" in payload and payload.get("placement") is not None:
+                bot.placement = _normalize_text(payload.get("placement")) or "pinned"
+            if "sort_order" in payload and payload.get("sort_order") is not None:
+                bot.sort_order = max(0, min(int(payload.get("sort_order") or 0), 10000))
+            if "required_permission" in payload and payload.get("required_permission") is not None:
+                bot.required_permission = _normalize_text(payload.get("required_permission")) or PERM_CHAT_AI_USE
+            if "use_personal_memory" in payload and payload.get("use_personal_memory") is not None:
+                bot.use_personal_memory = bool(payload.get("use_personal_memory"))
             if "is_enabled" in payload and payload.get("is_enabled") is not None:
                 bot.is_enabled = bool(payload.get("is_enabled"))
             bot.updated_at = _utc_now()
@@ -1892,17 +2276,59 @@ class AiChatService:
             bot = session.get(AppAiBot, _normalize_text(bot_id))
             if bot is None or not bool(bot.is_enabled):
                 raise LookupError("AI bot not found")
-            mapping = session.execute(
+            self._require_bot_access(bot=bot, current_user_id=int(current_user_id), allow_hidden=False)
+            mappings = list(session.execute(
                 select(AppAiBotConversation).where(
                     AppAiBotConversation.bot_id == bot.id,
                     AppAiBotConversation.user_id == int(current_user_id),
-                )
-            ).scalar_one_or_none()
-            if mapping is not None:
-                return chat_service.get_conversation_summary(
-                    current_user_id=int(current_user_id),
-                    conversation_id=mapping.conversation_id,
-                )
+                ).order_by(AppAiBotConversation.updated_at.desc())
+            ).scalars())
+            for mapping in mappings:
+                try:
+                    summary = chat_service.get_conversation_summary(
+                        current_user_id=int(current_user_id),
+                        conversation_id=mapping.conversation_id,
+                    )
+                except (LookupError, PermissionError):
+                    continue
+                if not bool(summary.get("is_archived", False)):
+                    return summary
+
+        return self.create_bot_conversation(
+            bot_id=bot_id,
+            current_user_id=int(current_user_id),
+        )
+
+    def create_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:
+        self.initialize_runtime()
+        return self._create_bot_conversation(
+            bot_id=bot_id,
+            current_user_id=int(current_user_id),
+            allow_hidden=False,
+        )
+
+    def create_general_conversation(self, *, current_user_id: int) -> dict[str, Any]:
+        bot = self.ensure_general_ai_bot()
+        return self._create_bot_conversation(
+            bot_id=_normalize_text(bot.get("id")),
+            current_user_id=int(current_user_id),
+            allow_hidden=True,
+            initial_title="Новый чат",
+        )
+
+    def _create_bot_conversation(
+        self,
+        *,
+        bot_id: str,
+        current_user_id: int,
+        allow_hidden: bool,
+        initial_title: str | None = None,
+    ) -> dict[str, Any]:
+        with app_session() as session:
+            bot = session.get(AppAiBot, _normalize_text(bot_id))
+            if bot is None or not bool(bot.is_enabled):
+                raise LookupError("AI bot not found")
+            self._require_bot_access(bot=bot, current_user_id=int(current_user_id), allow_hidden=allow_hidden)
 
             bot_user_id = self._ensure_bot_user(session=session, bot=bot)
             now = _utc_now()
@@ -1911,7 +2337,7 @@ class AiChatService:
                 conversation = ChatConversation(
                     id=conversation_id,
                     kind="ai",
-                    title=_normalize_text(bot.title) or DEFAULT_BOT_TITLE,
+                    title=_normalize_text(initial_title) or _normalize_text(bot.title) or DEFAULT_BOT_TITLE,
                     direct_key=None,
                     created_by_user_id=int(current_user_id),
                     created_at=now,
@@ -1954,6 +2380,12 @@ class AiChatService:
                     bot_id=bot.id,
                     user_id=int(current_user_id),
                     conversation_id=conversation_id,
+                    rolling_summary="",
+                    summary_until_seq=0,
+                    context_reset_seq=0,
+                    use_personal_memory=bool(getattr(bot, "use_personal_memory", True))
+                    and _normalize_text(getattr(bot, "surface", None)) != "sandbox",
+                    title_source="assistant",
                     created_at=now,
                     updated_at=now,
                 )
@@ -1964,10 +2396,213 @@ class AiChatService:
             conversation_id=conversation_id,
         )
 
+    def _require_bot_access(self, *, bot: AppAiBot, current_user_id: int, allow_hidden: bool) -> None:
+        if not allow_hidden and (
+            _normalize_text(getattr(bot, "placement", None)) == "hidden"
+            or _normalize_text(getattr(bot, "surface", None)) == "general"
+        ):
+            raise LookupError("AI bot not found")
+        user_payload = user_service.get_by_id(int(current_user_id)) or {}
+        required_permission = _normalize_text(getattr(bot, "required_permission", None)) or PERM_CHAT_AI_USE
+        if not _user_has_permission(user_payload, required_permission):
+            raise PermissionError("AI bot is not available")
+
+    def rename_conversation(
+        self,
+        *,
+        conversation_id: str,
+        current_user_id: int,
+        title: str,
+    ) -> dict[str, Any]:
+        runtime = self._get_runtime_by_conversation(conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            raise LookupError("AI conversation not found")
+        with app_session() as session:
+            mapping = session.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == _normalize_text(conversation_id),
+                    AppAiBotConversation.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if mapping is not None:
+                mapping.title_source = "manual"
+                mapping.updated_at = _utc_now()
+        return chat_service.rename_ai_conversation(
+            current_user_id=int(current_user_id),
+            conversation_id=_normalize_text(conversation_id),
+            title=title,
+        )
+
+    def reset_conversation_context(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        runtime = self._get_runtime_by_conversation(normalized_conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            raise LookupError("AI conversation not found")
+        with chat_session() as session:
+            conversation = session.get(ChatConversation, normalized_conversation_id)
+            if conversation is None or _normalize_text(conversation.kind).lower() != "ai":
+                raise LookupError("AI conversation not found")
+            reset_seq = int(getattr(conversation, "last_message_seq", 0) or 0)
+        with app_session() as session:
+            mapping = session.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                raise LookupError("AI conversation not found")
+            mapping.context_reset_seq = reset_seq
+            mapping.summary_until_seq = reset_seq
+            mapping.rolling_summary = ""
+            mapping.updated_at = _utc_now()
+        return {"ok": True, "conversation_id": normalized_conversation_id, "context_reset_seq": reset_seq}
+
+    def list_personal_memory(self, *, current_user_id: int) -> dict[str, Any]:
+        with app_session() as session:
+            enabled = self._personal_memory_enabled(session=session, user_id=int(current_user_id))
+            rows = list(
+                session.execute(
+                    select(AppAiUserMemory)
+                    .where(
+                        AppAiUserMemory.user_id == int(current_user_id),
+                        AppAiUserMemory.is_active.is_(True),
+                    )
+                    .order_by(AppAiUserMemory.updated_at.desc())
+                    .limit(200)
+                ).scalars()
+            )
+        return {
+            "enabled": enabled,
+            "items": [self._serialize_memory(item) for item in rows],
+            "limits": {"max_facts": AI_MEMORY_MAX_FACTS, "max_tokens": AI_MEMORY_MAX_TOKENS},
+        }
+
+    def set_personal_memory_enabled(self, *, current_user_id: int, enabled: bool) -> dict[str, Any]:
+        effective_enabled = bool(enabled) and AI_PERSONAL_MEMORY_ENABLED
+        with app_session() as session:
+            row = session.get(AppUserSetting, int(current_user_id))
+            if row is None:
+                row = AppUserSetting(
+                    user_id=int(current_user_id),
+                    ai_personal_memory_enabled=effective_enabled,
+                    updated_at=_utc_now(),
+                )
+                session.add(row)
+            else:
+                row.ai_personal_memory_enabled = effective_enabled
+                row.updated_at = _utc_now()
+        return self.list_personal_memory(current_user_id=int(current_user_id))
+
+    def update_personal_memory(self, *, memory_id: str, current_user_id: int, content: str) -> dict[str, Any]:
+        normalized_content = _normalize_memory_content(content)
+        if not _is_safe_memory_content(normalized_content):
+            raise ValueError("Memory content is not allowed")
+        normalized_id = _normalize_text(memory_id)
+        with app_session() as session:
+            row = session.get(AppAiUserMemory, normalized_id)
+            if row is None or int(row.user_id) != int(current_user_id) or not bool(row.is_active):
+                raise LookupError("Memory item not found")
+            duplicate = session.execute(
+                select(AppAiUserMemory).where(
+                    AppAiUserMemory.user_id == int(current_user_id),
+                    AppAiUserMemory.normalized_hash == _memory_hash(normalized_content),
+                    AppAiUserMemory.id != normalized_id,
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                raise ValueError("Memory item already exists")
+            row.content = normalized_content
+            row.normalized_hash = _memory_hash(normalized_content)
+            row.updated_at = _utc_now()
+            session.flush()
+            return self._serialize_memory(row)
+
+    def delete_personal_memory(self, *, memory_id: str, current_user_id: int) -> dict[str, Any]:
+        normalized_id = _normalize_text(memory_id)
+        with app_session() as session:
+            row = session.get(AppAiUserMemory, normalized_id)
+            if row is None or int(row.user_id) != int(current_user_id):
+                raise LookupError("Memory item not found")
+            session.execute(delete(AppAiUserMemorySource).where(AppAiUserMemorySource.memory_id == normalized_id))
+            session.delete(row)
+        return {"ok": True, "id": normalized_id}
+
+    def clear_personal_memory(self, *, current_user_id: int) -> dict[str, Any]:
+        with app_session() as session:
+            memory_ids = list(
+                session.execute(
+                    select(AppAiUserMemory.id).where(AppAiUserMemory.user_id == int(current_user_id))
+                ).scalars()
+            )
+            if memory_ids:
+                session.execute(delete(AppAiUserMemorySource).where(AppAiUserMemorySource.memory_id.in_(memory_ids)))
+            session.execute(delete(AppAiUserMemory).where(AppAiUserMemory.user_id == int(current_user_id)))
+        return {"ok": True, "deleted_count": len(memory_ids)}
+
+    @staticmethod
+    def _serialize_memory(row: AppAiUserMemory) -> dict[str, Any]:
+        return {
+            "id": _normalize_text(row.id),
+            "content": _normalize_text(row.content),
+            "category": _normalize_text(row.category) or "preference",
+            "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at),
+        }
+
+    @staticmethod
+    def _personal_memory_enabled(*, session, user_id: int) -> bool:
+        if not AI_PERSONAL_MEMORY_ENABLED:
+            return False
+        row = session.get(AppUserSetting, int(user_id))
+        return True if row is None else bool(getattr(row, "ai_personal_memory_enabled", True))
+
+    def delete_conversation(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        runtime = self._get_runtime_by_conversation(normalized_conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            raise LookupError("AI conversation not found")
+        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+            ai_sandbox_app_service.retire_conversation(
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+
+        deleted = chat_service.delete_ai_conversation(
+            current_user_id=int(current_user_id),
+            conversation_id=normalized_conversation_id,
+        )
+        with app_session() as session:
+            run_ids = list(
+                session.execute(
+                    select(AppAiBotRun.id).where(AppAiBotRun.conversation_id == normalized_conversation_id)
+                ).scalars()
+            )
+            if run_ids:
+                session.execute(delete(AppAiPendingAction).where(AppAiPendingAction.run_id.in_(run_ids)))
+            session.execute(delete(AppAiBotRun).where(AppAiBotRun.conversation_id == normalized_conversation_id))
+            session.execute(
+                delete(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(current_user_id),
+                )
+            )
+        return deleted
+
     def get_conversation_status(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
         runtime = self._get_runtime_by_conversation(conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             raise LookupError("AI conversation not found")
+        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+            self._require_bot_access(bot=runtime.bot, current_user_id=int(current_user_id), allow_hidden=False)
+            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+            return ai_sandbox_app_service.get_status(
+                conversation_id=_normalize_text(conversation_id),
+                current_user_id=int(current_user_id),
+            )
         with app_session() as session:
             latest = session.execute(
                 select(AppAiBotRun)
@@ -1999,6 +2634,78 @@ class AiChatService:
             "updated_at": _iso(latest.updated_at),
         }
 
+    def cancel_active_run(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        runtime = self._get_runtime_by_conversation(normalized_conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            raise LookupError("AI conversation not found")
+        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+            self._require_bot_access(bot=runtime.bot, current_user_id=int(current_user_id), allow_hidden=False)
+            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+            return ai_sandbox_app_service.cancel_conversation(
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+
+        now = _utc_now()
+        run_id: str | None = None
+        status_text = ""
+        with app_session() as session:
+            row = session.execute(
+                select(AppAiBotRun)
+                .where(
+                    AppAiBotRun.conversation_id == normalized_conversation_id,
+                    AppAiBotRun.status.in_(["queued", "running"]),
+                )
+                .order_by(AppAiBotRun.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if row is not None:
+                row.status = "cancelled"
+                row.stage = AI_RUN_STAGE_CANCELLED
+                row.status_text = _resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED)
+                row.error_text = None
+                row.completed_at = now
+                row.updated_at = now
+                run_id = row.id
+                status_text = row.status_text
+
+        if run_id is None:
+            return self.get_conversation_status(
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+
+        self._publish_status_event(
+            conversation_id=normalized_conversation_id,
+            user_id=int(current_user_id),
+            bot=runtime.bot,
+            status="cancelled",
+            stage=AI_RUN_STAGE_CANCELLED,
+            status_text=status_text,
+            run_id=run_id,
+        )
+        return {
+            "conversation_id": normalized_conversation_id,
+            "bot_id": runtime.bot.id,
+            "bot_title": runtime.bot.title,
+            "status": "cancelled",
+            "stage": AI_RUN_STAGE_CANCELLED,
+            "status_text": status_text,
+            "run_id": run_id,
+            "error_text": None,
+            "updated_at": _iso(now),
+        }
+
+    def _raise_if_run_cancelled(self, run_id: str) -> None:
+        with app_session() as session:
+            status = session.execute(
+                select(AppAiBotRun.status).where(AppAiBotRun.id == _normalize_text(run_id))
+            ).scalar_one_or_none()
+        if _normalize_text(status) == "cancelled":
+            raise AiRunCancelled("AI run was cancelled")
+
     def queue_run_for_message(
         self,
         *,
@@ -2010,6 +2717,31 @@ class AiChatService:
         runtime = self._get_runtime_by_conversation(conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id) or not bool(runtime.bot.is_enabled):
             return None
+        is_general = (
+            _normalize_text(getattr(runtime.bot, "slug", None)) == GENERAL_AI_BOT_SLUG
+            and _normalize_text(getattr(runtime.bot, "surface", None)) == "general"
+        )
+        self._require_bot_access(
+            bot=runtime.bot,
+            current_user_id=int(current_user_id),
+            allow_hidden=is_general,
+        )
+        self._record_conversation_activity(
+            runtime=runtime,
+            conversation_id=_normalize_text(conversation_id),
+            message_id=_normalize_text(trigger_message_id),
+            current_user_id=int(current_user_id),
+        )
+        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+            # Sandbox jobs have a dedicated PostgreSQL queue and Linux worker;
+            # never create AppAiBotRun or let the regular LLM worker claim them.
+            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+            return ai_sandbox_app_service.enqueue_message(
+                conversation_id=_normalize_text(conversation_id),
+                trigger_message_id=_normalize_text(trigger_message_id),
+                current_user_id=int(current_user_id),
+            )
         user_payload = user_service.get_by_id(int(current_user_id)) or {}
         resolved_database_id = resolve_effective_database_id(
             user_payload=user_payload,
@@ -2059,6 +2791,222 @@ class AiChatService:
         )
         return payload
 
+    def _record_conversation_activity(
+        self,
+        *,
+        runtime: AiConversationRuntime,
+        conversation_id: str,
+        message_id: str,
+        current_user_id: int,
+    ) -> None:
+        message_body = ""
+        message_kind = ""
+        conversation_title = ""
+        is_first_user_prompt = False
+        with chat_session() as session:
+            message = session.get(ChatMessage, message_id)
+            if (
+                message is None
+                or _normalize_text(message.conversation_id) != conversation_id
+                or int(message.sender_user_id or 0) != int(current_user_id)
+            ):
+                raise LookupError("Trigger message does not belong to this AI conversation")
+            message_body = _normalize_text(message.body)
+            message_kind = _normalize_text(message.kind).lower()
+            conversation = session.get(ChatConversation, conversation_id)
+            if conversation is None or _normalize_text(conversation.kind).lower() != "ai":
+                raise LookupError("AI conversation not found")
+            conversation_title = _normalize_text(conversation.title)
+            prior_user_message_id = session.execute(
+                select(ChatMessage.id)
+                .where(
+                    ChatMessage.conversation_id == conversation_id,
+                    ChatMessage.sender_user_id == int(current_user_id),
+                    ChatMessage.id != message_id,
+                    ChatMessage.is_deleted.is_(False),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            is_first_user_prompt = prior_user_message_id is None
+
+        now = _utc_now()
+        auto_title = _conversation_title_from_prompt(message_body)
+        initial_titles = {
+            _normalize_text(item).casefold()
+            for item in (
+                "Новый чат",
+                getattr(runtime.bot, "title", None),
+                DEFAULT_BOT_TITLE,
+                LEGACY_DEFAULT_BOT_TITLE,
+                DOC_CONVERT_BOT_TITLE,
+                LEGACY_DOC_CONVERT_BOT_TITLE,
+                IT_HELPER_BOT_TITLE,
+                GENERAL_AI_BOT_TITLE,
+            )
+            if _normalize_text(item)
+        }
+        has_initial_title = not conversation_title or conversation_title.casefold() in initial_titles
+        should_apply_title = False
+        memory_allowed = False
+        with app_session() as session:
+            mapping = session.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == conversation_id,
+                    AppAiBotConversation.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                raise LookupError("AI conversation not found")
+            mapping.updated_at = now
+            if (
+                auto_title
+                and is_first_user_prompt
+                and has_initial_title
+                and _normalize_text(getattr(mapping, "title_source", None)) == "assistant"
+            ):
+                should_apply_title = True
+            memory_allowed = (
+                bool(getattr(mapping, "use_personal_memory", True))
+                and bool(getattr(runtime.bot, "use_personal_memory", True))
+                and _normalize_text(getattr(runtime.bot, "surface", None)) != "sandbox"
+                and self._personal_memory_enabled(session=session, user_id=int(current_user_id))
+            )
+
+        if should_apply_title:
+            chat_service.rename_ai_conversation(
+                current_user_id=int(current_user_id),
+                conversation_id=conversation_id,
+                title=auto_title,
+            )
+            with app_session() as session:
+                session.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == conversation_id,
+                        AppAiBotConversation.user_id == int(current_user_id),
+                        AppAiBotConversation.title_source == "assistant",
+                    )
+                    .values(title_source="auto", updated_at=_utc_now())
+                )
+        if memory_allowed and message_kind != "file" and message_body:
+            try:
+                self._capture_memory_candidates(
+                    user_id=int(current_user_id),
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    text=message_body,
+                )
+            except Exception:
+                logger.exception("AI personal memory extraction failed: conversation_id=%s", conversation_id)
+
+    def _touch_conversation_mapping(self, *, conversation_id: str) -> None:
+        with app_session() as session:
+            session.execute(
+                update(AppAiBotConversation)
+                .where(AppAiBotConversation.conversation_id == _normalize_text(conversation_id))
+                .values(updated_at=_utc_now())
+            )
+
+    def _capture_memory_candidates(
+        self,
+        *,
+        user_id: int,
+        conversation_id: str,
+        message_id: str,
+        text: str,
+    ) -> None:
+        if not AI_PERSONAL_MEMORY_ENABLED:
+            return
+        candidates = _extract_safe_memory_candidates(text)
+        if not candidates:
+            return
+        with app_session() as session:
+            dialect_name = str(getattr(getattr(session.get_bind(), "dialect", None), "name", "") or "").lower()
+            for category, content in candidates:
+                normalized_hash = _memory_hash(content)
+                now = _utc_now()
+                memory_id = str(uuid4())
+                values = {
+                    "id": memory_id,
+                    "user_id": int(user_id),
+                    "category": category,
+                    "content": content,
+                    "normalized_hash": normalized_hash,
+                    "is_active": True,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                if dialect_name == "postgresql":
+                    from sqlalchemy.dialects.postgresql import insert as dialect_insert
+
+                    statement = dialect_insert(AppAiUserMemory).values(**values).on_conflict_do_update(
+                        index_elements=[AppAiUserMemory.user_id, AppAiUserMemory.normalized_hash],
+                        set_={"is_active": True, "updated_at": now},
+                    )
+                    session.execute(statement)
+                elif dialect_name == "sqlite":
+                    from sqlalchemy.dialects.sqlite import insert as dialect_insert
+
+                    statement = dialect_insert(AppAiUserMemory).values(**values).on_conflict_do_update(
+                        index_elements=[AppAiUserMemory.user_id, AppAiUserMemory.normalized_hash],
+                        set_={"is_active": True, "updated_at": now},
+                    )
+                    session.execute(statement)
+                else:
+                    row = session.execute(
+                        select(AppAiUserMemory).where(
+                            AppAiUserMemory.user_id == int(user_id),
+                            AppAiUserMemory.normalized_hash == normalized_hash,
+                        )
+                    ).scalar_one_or_none()
+                    if row is None:
+                        session.add(AppAiUserMemory(**values))
+                    else:
+                        row.is_active = True
+                        row.updated_at = now
+                session.flush()
+                row = session.execute(
+                    select(AppAiUserMemory).where(
+                        AppAiUserMemory.user_id == int(user_id),
+                        AppAiUserMemory.normalized_hash == normalized_hash,
+                    )
+                ).scalar_one()
+                source_values = {
+                    "memory_id": row.id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "created_at": now,
+                }
+                if dialect_name == "postgresql":
+                    from sqlalchemy.dialects.postgresql import insert as source_insert
+
+                    session.execute(
+                        source_insert(AppAiUserMemorySource)
+                        .values(**source_values)
+                        .on_conflict_do_nothing(
+                            index_elements=[AppAiUserMemorySource.memory_id, AppAiUserMemorySource.message_id]
+                        )
+                    )
+                elif dialect_name == "sqlite":
+                    from sqlalchemy.dialects.sqlite import insert as source_insert
+
+                    session.execute(
+                        source_insert(AppAiUserMemorySource)
+                        .values(**source_values)
+                        .on_conflict_do_nothing(
+                            index_elements=[AppAiUserMemorySource.memory_id, AppAiUserMemorySource.message_id]
+                        )
+                    )
+                else:
+                    source_exists = session.execute(
+                        select(AppAiUserMemorySource.id).where(
+                            AppAiUserMemorySource.memory_id == row.id,
+                            AppAiUserMemorySource.message_id == message_id,
+                        )
+                    ).scalar_one_or_none()
+                    if source_exists is None:
+                        session.add(AppAiUserMemorySource(**source_values))
+
     def _set_run_progress(
         self,
         *,
@@ -2080,6 +3028,8 @@ class AiChatService:
             row = session.get(AppAiBotRun, _normalize_text(run_id))
             if row is None:
                 return payload
+            if _normalize_text(row.status) == "cancelled" and normalized_status != "cancelled":
+                return self._serialize_run(row)
             row.status = normalized_status
             row.stage = normalized_stage
             row.status_text = status_text or None
@@ -2178,6 +3128,7 @@ class AiChatService:
         self._enqueue_message_side_effects_after_send(
             conversation_id=conversation_id,
             message_id=_normalize_text(files_message.get("id")),
+            message=files_message,
         )
         return {
             "article_id": article_id,
@@ -2240,7 +3191,6 @@ class AiChatService:
             run.started_at = started_at
             run.updated_at = started_at
             session.flush()
-            bot_payload = self._serialize_bot(bot)
             request_context = _json_loads(getattr(run, "request_json", "{}"), {})
         run_payload = self._set_run_progress(
             run_id=run.id,
@@ -2259,6 +3209,7 @@ class AiChatService:
         )
         try:
             def report_stage(stage: str) -> None:
+                self._raise_if_run_cancelled(run.id)
                 self._set_run_progress(
                     run_id=run.id,
                     conversation_id=run.conversation_id,
@@ -2275,8 +3226,9 @@ class AiChatService:
                 request_context=request_context,
                 report_stage=report_stage,
             )
+            self._raise_if_run_cancelled(run.id)
             _log_ai_run_timing("execute", execute_started_at, run_id=run.id)
-            bot_user_id = int(bot_payload.get("bot_user_id") or 0)
+            bot_user_id = int(getattr(bot, "bot_user_id", 0) or 0)
             delivered_kb_attachment = None
             selected_template_candidate = self._resolve_kb_template_candidate_for_send(
                 extracted_context=extracted_context,
@@ -2288,6 +3240,15 @@ class AiChatService:
                     or f"Подходит шаблон: {_normalize_text(selected_template_candidate.get('title'))}."
                 )
             if answer_markdown:
+                self._raise_if_run_cancelled(run.id)
+                self._publish_response_preview(
+                    conversation_id=run.conversation_id,
+                    user_id=int(run.user_id),
+                    bot=bot,
+                    run_id=run.id,
+                    answer_markdown=answer_markdown,
+                )
+                self._raise_if_run_cancelled(run.id)
                 send_started_at = time.perf_counter()
                 reply_message = chat_service.send_message(
                     current_user_id=bot_user_id,
@@ -2308,6 +3269,7 @@ class AiChatService:
                 self._enqueue_message_side_effects_after_send(
                     conversation_id=run.conversation_id,
                     message_id=_normalize_text(reply_message.get("id")),
+                    message=reply_message,
                 )
                 _log_ai_run_timing("send_answer", send_started_at, run_id=run.id)
             if selected_template_candidate is not None:
@@ -2342,6 +3304,7 @@ class AiChatService:
                         self._enqueue_message_side_effects_after_send(
                             conversation_id=run.conversation_id,
                             message_id=_normalize_text(files_message.get("id")),
+                            message=files_message,
                         )
                         generated_files = _summarize_generated_files_message(files_message)
                 except GeneratedFileError as exc:
@@ -2375,64 +3338,76 @@ class AiChatService:
                 self._enqueue_message_side_effects_after_send(
                     conversation_id=run.conversation_id,
                     message_id=_normalize_text(error_message.get("id")),
+                    message=error_message,
                 )
+            self._touch_conversation_mapping(conversation_id=run.conversation_id)
             completed_at = _utc_now()
+            run_cancelled = False
             with app_session() as session:
                 row = session.get(AppAiBotRun, run.id)
                 if row is not None:
-                    row.status = "completed"
-                    row.stage = AI_RUN_STAGE_COMPLETED
-                    row.status_text = _resolve_run_status_text(status="completed", stage=AI_RUN_STAGE_COMPLETED) or None
-                    row.error_text = None
-                    row.result_json = json.dumps(
-                        {
-                            "answer_markdown": answer_markdown,
-                            "artifacts_count": len(list(artifacts or [])),
-                            "generated_files_count": len(generated_files),
-                            "generated_files": generated_files,
-                            "file_generation_errors": file_generation_errors,
-                            "kb_attachment_send": kb_attachment_send,
-                            "kb_attachment_delivered": delivered_kb_attachment,
-                            "tool_traces": tool_traces,
-                            "routed_groups": list(routed_groups or []),
-                        },
-                        ensure_ascii=False,
-                    )
-                    row.usage_json = json.dumps(usage or {}, ensure_ascii=False)
-                    row.completed_at = completed_at
-                    row.updated_at = completed_at
-            self._publish_status_event(
-                conversation_id=run.conversation_id,
-                user_id=int(run.user_id),
-                bot=bot,
-                status="completed",
-                stage=AI_RUN_STAGE_COMPLETED,
-                status_text="",
-                run_id=run.id,
-            )
+                    run_cancelled = _normalize_text(row.status) == "cancelled"
+                    if not run_cancelled:
+                        row.status = "completed"
+                        row.stage = AI_RUN_STAGE_COMPLETED
+                        row.status_text = _resolve_run_status_text(status="completed", stage=AI_RUN_STAGE_COMPLETED) or None
+                        row.error_text = None
+                        row.result_json = json.dumps(
+                            {
+                                "answer_markdown": answer_markdown,
+                                "artifacts_count": len(list(artifacts or [])),
+                                "generated_files_count": len(generated_files),
+                                "generated_files": generated_files,
+                                "file_generation_errors": file_generation_errors,
+                                "kb_attachment_send": kb_attachment_send,
+                                "kb_attachment_delivered": delivered_kb_attachment,
+                                "tool_traces": tool_traces,
+                                "routed_groups": list(routed_groups or []),
+                            },
+                            ensure_ascii=False,
+                        )
+                        row.usage_json = json.dumps(usage or {}, ensure_ascii=False)
+                        row.completed_at = completed_at
+                        row.updated_at = completed_at
+            if not run_cancelled:
+                self._publish_status_event(
+                    conversation_id=run.conversation_id,
+                    user_id=int(run.user_id),
+                    bot=bot,
+                    status="completed",
+                    stage=AI_RUN_STAGE_COMPLETED,
+                    status_text="",
+                    run_id=run.id,
+                )
+        except AiRunCancelled:
+            logger.info("AI run cancelled: run_id=%s", run.id)
         except Exception as exc:
             error_text = _truncate(exc, limit=500)
             logger.exception("AI run failed: run_id=%s", run.id)
             completed_at = _utc_now()
+            run_cancelled = False
             with app_session() as session:
                 row = session.get(AppAiBotRun, run.id)
                 if row is not None:
-                    row.status = "failed"
-                    row.stage = AI_RUN_STAGE_FAILED
-                    row.status_text = _resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED)
-                    row.error_text = error_text
-                    row.completed_at = completed_at
-                    row.updated_at = completed_at
-            self._publish_status_event(
-                conversation_id=run.conversation_id,
-                user_id=int(run.user_id),
-                bot=bot,
-                status="failed",
-                stage=AI_RUN_STAGE_FAILED,
-                status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
-                run_id=run.id,
-                error_text=error_text,
-            )
+                    run_cancelled = _normalize_text(row.status) == "cancelled"
+                    if not run_cancelled:
+                        row.status = "failed"
+                        row.stage = AI_RUN_STAGE_FAILED
+                        row.status_text = _resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED)
+                        row.error_text = error_text
+                        row.completed_at = completed_at
+                        row.updated_at = completed_at
+            if not run_cancelled:
+                self._publish_status_event(
+                    conversation_id=run.conversation_id,
+                    user_id=int(run.user_id),
+                    bot=bot,
+                    status="failed",
+                    stage=AI_RUN_STAGE_FAILED,
+                    status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
+                    run_id=run.id,
+                    error_text=error_text,
+                )
         finally:
             _AI_LAST_RUN_DURATION_MS = (time.perf_counter() - run_started_perf) * 1000.0
             _AI_LAST_RUN_COMPLETED_AT = _utc_now()
@@ -2673,7 +3648,7 @@ class AiChatService:
             message_id=_normalize_text(run_payload.get("trigger_message_id")),
         )
         if not sources:
-            if only_convert or is_convert_bot:
+            if only_convert:
                 return (
                     "Прикрепите PDF или фото документа — затем выберите формат кнопками.",
                     [],
@@ -2920,13 +3895,14 @@ class AiChatService:
             and not _is_network_tool_id((item or {}).get("tool_id"))
             and not _is_ad_tool_id((item or {}).get("tool_id"))
         ]
-        itinvent_tool_specs_text = _format_tool_results_for_prompt(itinvent_tool_specs)
-        file_tool_specs_text = _format_tool_results_for_prompt(file_tool_specs)
-        office_tool_specs_text = _format_tool_results_for_prompt(office_tool_specs)
-        mfu_tool_specs_text = _format_tool_results_for_prompt(mfu_tool_specs)
-        network_tool_specs_text = _format_tool_results_for_prompt(network_tool_specs)
-        ad_tool_specs_text = _format_tool_results_for_prompt(ad_tool_specs)
-        other_tool_specs_text = _format_tool_results_for_prompt(other_tool_specs)
+        # Tool descriptions share the same 32k input budget as dialogue and files.
+        itinvent_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(itinvent_tool_specs), 3500)
+        file_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(file_tool_specs), 1500)
+        office_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(office_tool_specs), 1500)
+        mfu_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(mfu_tool_specs), 400)
+        network_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(network_tool_specs), 400)
+        ad_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(ad_tool_specs), 400)
+        other_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(other_tool_specs), 300)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         current_database_meta = next(
             (
@@ -2977,7 +3953,9 @@ class AiChatService:
                 part
                 for part in [
                     f"Bot title: {bot.title}",
-                    f"Conversation summary:\n{extracted_context['conversation_text']}",
+                    f"Rolling summary of older messages:\n{extracted_context.get('rolling_summary') or 'No older summary.'}",
+                    f"Recent conversation (up to 20 messages):\n{extracted_context['conversation_text']}",
+                    f"Allowed personal memory:\n{extracted_context.get('personal_memory') or 'No personal memory.'}",
                     f"Current user request:\n{extracted_context['trigger_text']}",
                     f"Attached file context:\n{extracted_context['file_context'] or 'No extracted file context.'}",
                     f"Knowledge base context:\n{extracted_context['kb_context'] or 'No KB context.'}",
@@ -3094,6 +4072,12 @@ class AiChatService:
                         if file_tool_specs or "файл" in _normalize_text(extracted_context.get("trigger_text")).lower()
                         else ""
                     ),
+                    (
+                        "HIGHEST PRIORITY CURRENT REQUEST:\n"
+                        f"{extracted_context['trigger_text']}\n\n"
+                        "HIGHEST PRIORITY ATTACHED FILE CONTEXT:\n"
+                        f"{extracted_context['file_context'] or 'No extracted file context.'}"
+                    ),
                 ]
                 if part
             ]
@@ -3106,10 +4090,15 @@ class AiChatService:
             response_schema: dict[str, Any],
             schema_name: str,
         ) -> tuple[dict[str, Any], dict[str, Any]]:
+            bounded_system_prompt, bounded_user_prompt = _fit_prompt_pair(
+                current_system_prompt,
+                current_user_prompt,
+                token_limit=AI_INPUT_BUDGET_TOKENS,
+            )
             try:
                 payload, usage = openrouter_client.complete_json(
-                    system_prompt=current_system_prompt,
-                    user_prompt=current_user_prompt,
+                    system_prompt=bounded_system_prompt,
+                    user_prompt=bounded_user_prompt,
                     model=_normalize_text(bot.model),
                     purpose="chat",
                     temperature=float(bot.temperature or 0.2),
@@ -3488,11 +4477,24 @@ class AiChatService:
             generated_file_specs = []
             artifacts = []
             break
+        file_choice_payloads = _create_file_format_choice_actions(
+            results=accumulated_tool_results,
+            conversation_id=_normalize_text(run_payload.get("conversation_id")),
+            run_id=_normalize_text(run_payload.get("id")),
+            requester_user_id=int(run_payload.get("user_id") or 0),
+        )
+        file_format_choice_created = bool(file_choice_payloads)
+        if file_choice_payloads:
+            answer_markdown = _build_report_choice_answer(file_choice_payloads[0])
+            if len(file_choice_payloads) > 1:
+                answer_markdown += f"\n\nПодготовлено вариантов: {len(file_choice_payloads)}. Выберите формат в каждой карточке."
+            artifacts = []
         if (
             report_file_intent
             and requested_report_format is None
             and file_tools_available
             and accumulated_tool_results
+            and not file_format_choice_created
         ):
             report_choice_payload = _build_report_choice_payload(
                 trigger_text=trigger_text_for_routing,
@@ -3528,23 +4530,85 @@ class AiChatService:
         allow_kb_document_delivery: bool,
         report_stage=None,
     ) -> dict[str, Any]:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        with chat_session() as initial_chat_db:
+            initial_trigger = initial_chat_db.get(ChatMessage, _normalize_text(trigger_message_id))
+            if initial_trigger is None or _normalize_text(initial_trigger.conversation_id) != normalized_conversation_id:
+                raise LookupError("Trigger message not found")
+            memory_query = _normalize_text(initial_trigger.body)
+        with app_session() as app_db:
+            mapping = app_db.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(user_payload.get("id") or 0),
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                raise LookupError("AI conversation not found")
+            reset_seq = int(getattr(mapping, "context_reset_seq", 0) or 0)
+            summary_until_seq = max(reset_seq, int(getattr(mapping, "summary_until_seq", 0) or 0))
+            rolling_summary = _normalize_text(getattr(mapping, "rolling_summary", None))
+            memory_enabled = (
+                bool(getattr(mapping, "use_personal_memory", True))
+                and self._personal_memory_enabled(session=app_db, user_id=int(user_payload.get("id") or 0))
+            )
+            bot_row = app_db.get(AppAiBot, mapping.bot_id)
+            if bot_row is None or _normalize_text(getattr(bot_row, "surface", None)) == "sandbox":
+                memory_enabled = False
+            if bot_row is not None and not bool(getattr(bot_row, "use_personal_memory", True)):
+                memory_enabled = False
+            personal_memory = self._build_personal_memory_context(
+                session=app_db,
+                user_id=int(user_payload.get("id") or 0),
+                query=memory_query,
+            ) if memory_enabled else ""
+
+        summary_append_lines: list[str] = []
+        next_summary_until_seq = summary_until_seq
         with chat_session() as session:
-            normalized_conversation_id = _normalize_text(conversation_id)
             messages = list(
                 session.execute(
                     select(ChatMessage)
-                    .where(ChatMessage.conversation_id == normalized_conversation_id)
+                    .where(
+                        ChatMessage.conversation_id == normalized_conversation_id,
+                        ChatMessage.conversation_seq > reset_seq,
+                        ChatMessage.is_deleted.is_(False),
+                    )
                     .order_by(ChatMessage.conversation_seq.desc())
                     .limit(AI_CONTEXT_DB_MESSAGE_WINDOW)
                 ).scalars()
             )
             messages.reverse()
             trigger_message = session.get(ChatMessage, _normalize_text(trigger_message_id))
-            if trigger_message is None:
+            if trigger_message is None or _normalize_text(trigger_message.conversation_id) != normalized_conversation_id:
                 raise LookupError("Trigger message not found")
             reply_message = None
             if _normalize_text(getattr(trigger_message, "reply_to_message_id", None)):
                 reply_message = session.get(ChatMessage, _normalize_text(trigger_message.reply_to_message_id))
+                if reply_message is not None and _normalize_text(reply_message.conversation_id) != normalized_conversation_id:
+                    reply_message = None
+
+            first_recent_seq = int(getattr(messages[0], "conversation_seq", 0) or 0) if messages else 0
+            older_cutoff = first_recent_seq - 1 if first_recent_seq > 0 else 0
+            if older_cutoff > summary_until_seq:
+                older_messages = list(
+                    session.execute(
+                        select(ChatMessage)
+                        .where(
+                            ChatMessage.conversation_id == normalized_conversation_id,
+                            ChatMessage.conversation_seq > summary_until_seq,
+                            ChatMessage.conversation_seq <= older_cutoff,
+                            ChatMessage.is_deleted.is_(False),
+                        )
+                        .order_by(ChatMessage.conversation_seq.asc())
+                    ).scalars()
+                )
+                for item in older_messages:
+                    sender_label = bot_title if int(item.sender_user_id or 0) == int(bot_user_id or 0) else "Пользователь"
+                    body = _normalize_text(item.body)
+                    if body:
+                        summary_append_lines.append(f"{sender_label}: {_truncate_tokens(body, 300)}")
+                next_summary_until_seq = older_cutoff
             attachment_lookup_ids = {
                 _normalize_text(getattr(item, "id", None))
                 for item in [*messages, trigger_message, reply_message]
@@ -3624,14 +4688,73 @@ class AiChatService:
                         limit=5,
                         current_user=user_payload,
                     )
+        if summary_append_lines:
+            rolling_summary = _compact_head_tail(
+                "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
+                AI_ROLLING_SUMMARY_TOKENS,
+                head_ratio=0.25,
+            )
+            with app_session() as app_db:
+                app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.summary_until_seq < next_summary_until_seq,
+                    )
+                    .values(
+                        rolling_summary=rolling_summary,
+                        summary_until_seq=next_summary_until_seq,
+                        updated_at=_utc_now(),
+                    )
+                )
         return {
-            "conversation_text": "\n".join(conversation_lines[-AI_CONTEXT_RENDERED_MESSAGE_WINDOW:]),
-            "trigger_text": trigger_text,
-            "file_context": "\n\n".join(file_context_parts),
-            "kb_context": kb_context,
+            "conversation_text": _truncate_tokens(
+                "\n".join(conversation_lines[-AI_CONTEXT_RENDERED_MESSAGE_WINDOW:]),
+                4500,
+            ),
+            "rolling_summary": _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS),
+            "personal_memory": _truncate_tokens(personal_memory, AI_MEMORY_MAX_TOKENS),
+            "trigger_text": _truncate_tokens(trigger_text, 6000),
+            "file_context": _truncate_tokens("\n\n".join(file_context_parts), 6000),
+            "kb_context": _truncate_tokens(kb_context, 3000),
             "template_candidates": template_candidates,
             "template_delivery_allowed": _can_auto_send_template(template_candidates),
         }
+
+    def _build_personal_memory_context(self, *, session, user_id: int, query: str = "") -> str:
+        rows = list(
+            session.execute(
+                select(AppAiUserMemory)
+                .where(
+                    AppAiUserMemory.user_id == int(user_id),
+                    AppAiUserMemory.is_active.is_(True),
+                )
+                .order_by(AppAiUserMemory.updated_at.desc())
+                .limit(200)
+            ).scalars()
+        )
+        query_tokens = _memory_query_tokens(query)
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (
+                len(query_tokens & _memory_query_tokens(row.content)),
+                _iso(getattr(row, "updated_at", None)) or "",
+            ),
+            reverse=True,
+        )[:max(1, min(AI_MEMORY_MAX_FACTS, 20))]
+        lines: list[str] = []
+        used_tokens = 0
+        for row in ranked_rows:
+            content = _normalize_text(row.content)
+            if not content or not _is_safe_memory_content(content):
+                continue
+            line = f"- [{_normalize_text(row.category) or 'preference'}] {content}"
+            line_tokens = _estimated_tokens(line)
+            if used_tokens + line_tokens > AI_MEMORY_MAX_TOKENS:
+                break
+            lines.append(line)
+            used_tokens += line_tokens
+        return "\n".join(lines)
 
     def _ensure_bot_user(self, *, session, bot: AppAiBot) -> int:
         use_app_database = bool(getattr(user_service, "_use_app_database", False))
@@ -3753,6 +4876,7 @@ class AiChatService:
         *,
         configured: bool | None = None,
         conversation_id: str | None = None,
+        conversation_ids: list[str] | None = None,
         admin: bool = False,
         latest_run: AppAiBotRun | None = None,
     ) -> dict[str, Any]:
@@ -3764,24 +4888,34 @@ class AiChatService:
             "title": _normalize_text(bot.title),
             "description": _normalize_text(bot.description),
             "conversation_id": _normalize_text(conversation_id) or None,
-            "model": _normalize_text(bot.model),
+            "conversation_ids": [
+                normalized_id
+                for item in list(conversation_ids or [])
+                if (normalized_id := _normalize_text(item))
+            ],
+            "surface": _normalize_text(getattr(bot, "surface", None)) or "corporate",
+            "placement": _normalize_text(getattr(bot, "placement", None)) or "pinned",
+            "sort_order": int(getattr(bot, "sort_order", 100) or 0),
             "allow_file_input": bool(bot.allow_file_input),
             "allow_generated_artifacts": bool(bot.allow_generated_artifacts),
             "allow_kb_document_delivery": bool(getattr(bot, "allow_kb_document_delivery", False)),
             "is_enabled": bool(bot.is_enabled),
             "configured": bool(self.get_openrouter_status()["configured"] if configured is None else configured),
-            "bot_user_id": int(getattr(bot, "bot_user_id", 0) or 0) or None,
             "live_data_enabled": _is_live_data_enabled(enabled_tools),
         }
         if admin:
             payload.update(
                 {
+                    "model": _normalize_text(bot.model),
                     "system_prompt": _normalize_text(bot.system_prompt),
                     "temperature": float(bot.temperature or 0.2),
                     "max_tokens": int(bot.max_tokens or 2000),
                     "allowed_kb_scope": _json_loads(bot.allowed_kb_scope_json, []),
                     "enabled_tools": enabled_tools,
                     "tool_settings": tool_settings,
+                    "required_permission": _normalize_text(getattr(bot, "required_permission", None)) or PERM_CHAT_AI_USE,
+                    "use_personal_memory": bool(getattr(bot, "use_personal_memory", True)),
+                    "bot_user_id": int(getattr(bot, "bot_user_id", 0) or 0) or None,
                     "openrouter_configured": bool(payload["configured"]),
                     "updated_at": _iso(getattr(bot, "updated_at", None)),
                     "latest_run_status": _normalize_text(getattr(latest_run, "status", None)) or None,
@@ -3855,11 +4989,40 @@ class AiChatService:
 
         chat_event_outbox_service.enqueue_events(normalized_jobs)
 
-    def _enqueue_message_side_effects_after_send(self, *, conversation_id: str, message_id: str) -> None:
+    def _enqueue_message_side_effects_after_send(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        message: dict[str, Any] | None = None,
+    ) -> None:
         normalized_conversation_id = _normalize_text(conversation_id)
         normalized_message_id = _normalize_text(message_id)
         if not normalized_conversation_id or not normalized_message_id:
             return
+        deferred_notifications = (
+            dict(message.pop("_deferred_chat_notifications", None) or {})
+            if isinstance(message, dict)
+            else {}
+        )
+        if deferred_notifications:
+            try:
+                chat_service._create_chat_notifications(
+                    sender_user_id=int(deferred_notifications.get("sender_user_id") or 0),
+                    conversation_id=_normalize_text(deferred_notifications.get("conversation_id")),
+                    message_id=_normalize_text(deferred_notifications.get("message_id")),
+                    event_type=_normalize_text(deferred_notifications.get("event_type")) or "chat.message_received",
+                    title=_normalize_text(deferred_notifications.get("title")) or "Новое сообщение в чате",
+                    body=_normalize_text(deferred_notifications.get("body")),
+                    defer_push_notifications=True,
+                    mentioned_user_ids=list(deferred_notifications.get("mentioned_user_ids") or []),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue deferred AI chat notifications: conversation_id=%s message_id=%s",
+                    normalized_conversation_id,
+                    normalized_message_id,
+                )
         jobs = asyncio.run(
             build_message_created_event_jobs(
                 conversation_id=normalized_conversation_id,
@@ -3972,6 +5135,7 @@ class AiChatService:
         status_text: str | None = None,
         run_id: str,
         error_text: str | None = None,
+        partial_text: str | None = None,
     ) -> None:
         normalized_status = _normalize_text(status)
         normalized_stage = _normalize_text(stage) or normalized_status
@@ -3987,6 +5151,7 @@ class AiChatService:
             "status_text": resolved_status_text or None,
             "run_id": _normalize_text(run_id),
             "error_text": _normalize_text(error_text) or None,
+            "partial_text": _normalize_text(partial_text) or None,
             "updated_at": _iso(_utc_now()),
         }
         self._enqueue_realtime_jobs([
@@ -4000,6 +5165,47 @@ class AiChatService:
                 "dedupe_key": None,
             }
         ])
+
+    def _publish_response_preview(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        bot: AppAiBot,
+        run_id: str,
+        answer_markdown: str,
+    ) -> None:
+        """Publish bounded cumulative answer snapshots without exposing model reasoning."""
+        answer = _normalize_text(answer_markdown)
+        if not answer:
+            return
+        target_snapshot_size = max(240, (len(answer) + 11) // 12)
+        snapshots: list[str] = []
+        cursor = target_snapshot_size
+        previous_boundary = 0
+        while cursor < len(answer) and len(snapshots) < 11:
+            boundary = max(answer.rfind(" ", previous_boundary, cursor), answer.rfind("\n", previous_boundary, cursor))
+            if boundary <= previous_boundary:
+                boundary = cursor
+            snapshot = answer[:boundary].rstrip()
+            if snapshot:
+                snapshots.append(snapshot)
+            previous_boundary = boundary
+            cursor += target_snapshot_size
+        if not snapshots or snapshots[-1] != answer:
+            snapshots.append(answer)
+        for partial_text in snapshots[:12]:
+            self._raise_if_run_cancelled(run_id)
+            self._publish_status_event(
+                conversation_id=conversation_id,
+                user_id=int(user_id),
+                bot=bot,
+                status="running",
+                stage=AI_RUN_STAGE_GENERATING_ANSWER,
+                status_text=_resolve_run_status_text(status="running", stage=AI_RUN_STAGE_GENERATING_ANSWER),
+                run_id=run_id,
+                partial_text=partial_text,
+            )
 
     def _enqueue_typing_event(self, *, conversation_id: str, user_id: int, bot: AppAiBot, is_typing: bool) -> None:
         normalized_conversation_id = _normalize_text(conversation_id)

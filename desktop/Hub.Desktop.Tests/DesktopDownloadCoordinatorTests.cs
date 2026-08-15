@@ -7,6 +7,18 @@ namespace Hub.Desktop.Tests;
 public sealed class DesktopDownloadCoordinatorTests
 {
     [Fact]
+    public void RecordsWhichHubWindowStartedTheDownload()
+    {
+        var coordinator = CreateCoordinator();
+
+        var item = coordinator.BeginDownload(
+            "report.pdf",
+            sourceWindowLabel: "Окно 2");
+
+        Assert.Equal("Окно 2", item.SourceWindowLabel);
+    }
+
+    [Fact]
     public void AllowsExactlyOneOpenIntentUntilItsDownloadFinishes()
     {
         var now = new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);

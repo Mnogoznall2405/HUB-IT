@@ -63,7 +63,10 @@
                   Advertise="yes"
                   Icon="HubDesktop.ico"
                   IconIndex="0"
-                  WorkingDirectory="INSTALLFOLDER" />
+                  WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID"
+                            Value="HUB-IT.HUBDesktop" />
+        </Shortcut>
       </File>
       <RemoveFolder Id="RemoveProgramMenuFolder"
                     Directory="ProgramMenuDirectory"

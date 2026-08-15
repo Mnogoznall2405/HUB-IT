@@ -3,7 +3,7 @@ export const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
 export const CHAT_MOBILE_HISTORY_DRAWER_KEY = '__hubChatMobileShellDrawer';
 export const CHAT_MOBILE_HISTORY_INFO_KEY = '__hubChatMobileShellInfo';
 
-export const CHAT_MOBILE_SCREEN_TRANSITION_MS = 320;
+export const CHAT_MOBILE_SCREEN_TRANSITION_MS = 150;
 const CHAT_MOBILE_SCREEN_PARALLAX_RATIO = 0.12;
 export const CHAT_MOBILE_SCREEN_TRANSITION_EASE = [0.25, 0.1, 0.25, 1];
 

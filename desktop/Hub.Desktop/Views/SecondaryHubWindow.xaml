@@ -1,0 +1,281 @@
+<Window x:Class="Hub.Desktop.Views.SecondaryHubWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="HUB Desktop — окно 2"
+        Icon="../Assets/hub-icon.ico"
+        Width="1360"
+        Height="860"
+        MinWidth="640"
+        MinHeight="480"
+        WindowStyle="None"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="Manual"
+        Loaded="Window_Loaded"
+        Activated="Window_Activated"
+        Deactivated="Window_Deactivated"
+        StateChanged="Window_StateChanged"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        Closed="Window_Closed"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        Background="{DynamicResource AppBackgroundBrush}">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="34"
+                            ResizeBorderThickness="10"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0F1115" />
+        <SolidColorBrush x:Key="TitleBarBackgroundBrush" Color="#11151B" />
+        <SolidColorBrush x:Key="TitleBarForegroundBrush" Color="#F3F2F1" />
+        <SolidColorBrush x:Key="TitleBarBorderBrush" Color="#292D34" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#A19F9D" />
+        <SolidColorBrush x:Key="TitleButtonHoverBrush" Color="#252A31" />
+        <SolidColorBrush x:Key="TitleButtonPressedBrush" Color="#303640" />
+        <SolidColorBrush x:Key="TitleButtonFocusBrush" Color="#479EF5" />
+        <SolidColorBrush x:Key="CloseButtonHoverBrush" Color="#C42B1C" />
+        <SolidColorBrush x:Key="CloseButtonPressedBrush" Color="#A4262C" />
+
+        <Style x:Key="TitleBarKeyboardFocusStyle">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border Margin="2"
+                                BorderBrush="{DynamicResource TitleButtonFocusBrush}"
+                                BorderThickness="2"
+                                SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TitleBarButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource TitleBarForegroundBrush}" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="IsTabStop" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource TitleBarKeyboardFocusStyle}" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonPressedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CloseTitleBarButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource TitleBarButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource CloseButtonHoverBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource CloseButtonPressedBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="34" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="{DynamicResource TitleBarBackgroundBrush}"
+                BorderBrush="{DynamicResource TitleBarBorderBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Margin="10,0,0,0"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            IsHitTestVisible="False">
+                    <Image Width="22"
+                           Height="22"
+                           Margin="0,0,7,0"
+                           Source="../Assets/hub-icon.png"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           Stretch="Uniform" />
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource TitleBarForegroundBrush}"
+                               FontFamily="Segoe UI"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Text="HUB Desktop — окно 2" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button x:Name="NewWindowButton"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            Click="NewWindowButton_Click"
+                            ToolTip="Уже открыто два окна HUB"
+                            AutomationProperties.Name="Открыть второе окно HUB">
+                        <Grid Width="16" Height="14" IsHitTestVisible="False">
+                            <Path Data="M 1.5,4.5 L 10.5,4.5 L 10.5,12.5 L 1.5,12.5 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                            <Path Data="M 5.5,1.5 L 14.5,1.5 L 14.5,9.5"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource TitleBarButtonStyle}"
+                            Click="MinimizeButton_Click"
+                            ToolTip="Свернуть"
+                            AutomationProperties.Name="Свернуть второе окно HUB">
+                        <Path Width="12"
+                              Height="12"
+                              Data="M 1,7 L 11,7"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2"
+                              Stretch="None" />
+                    </Button>
+                    <Button x:Name="MaximizeRestoreButton"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            Click="MaximizeRestoreButton_Click"
+                            ToolTip="Развернуть"
+                            AutomationProperties.Name="Развернуть второе окно HUB">
+                        <Grid Width="12" Height="12">
+                            <Path x:Name="MaximizeGlyph"
+                                  Data="M 1.5,1.5 L 10.5,1.5 L 10.5,10.5 L 1.5,10.5 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.2"
+                                  Stretch="None" />
+                            <Grid x:Name="RestoreGlyph" Visibility="Collapsed">
+                                <Path Data="M 3.5,1.5 L 10.5,1.5 L 10.5,8.5"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.2"
+                                      Stretch="None" />
+                                <Path Data="M 1.5,3.5 L 8.5,3.5 L 8.5,10.5 L 1.5,10.5 Z"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      Fill="{DynamicResource TitleBarBackgroundBrush}"
+                                      StrokeThickness="1.2"
+                                      Stretch="None" />
+                            </Grid>
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource CloseTitleBarButtonStyle}"
+                            Click="CloseButton_Click"
+                            ToolTip="Закрыть это окно"
+                            AutomationProperties.Name="Закрыть второе окно HUB">
+                        <Path Width="12"
+                              Height="12"
+                              Data="M 1.5,1.5 L 10.5,10.5 M 10.5,1.5 L 1.5,10.5"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2"
+                              Stretch="None" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid x:Name="BrowserHost" Grid.Row="1" />
+
+        <ProgressBar x:Name="LoadingIndicator"
+                     Grid.Row="1"
+                     Height="3"
+                     VerticalAlignment="Top"
+                     IsIndeterminate="True"
+                     Visibility="Collapsed" />
+
+        <Border x:Name="ErrorOverlay"
+                Grid.Row="1"
+                Background="{DynamicResource AppBackgroundBrush}"
+                Visibility="Collapsed">
+            <StackPanel Width="480"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                <TextBlock x:Name="ErrorTitle"
+                           FontSize="24"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TitleBarForegroundBrush}"
+                           Text="Не удалось открыть HUB"
+                           TextAlignment="Center" />
+                <TextBlock x:Name="ErrorDetails"
+                           Margin="0,12,0,24"
+                           FontSize="14"
+                           Foreground="{DynamicResource SecondaryTextBrush}"
+                           Text="Проверьте подключение к сети и повторите попытку."
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+                <WrapPanel HorizontalAlignment="Center">
+                    <Button x:Name="RetryButton"
+                            MinWidth="140"
+                            Height="40"
+                            Margin="5"
+                            Click="RetryButton_Click"
+                            Content="Повторить"
+                            AutomationProperties.Name="Повторить подключение второго окна к HUB" />
+                    <Button MinWidth="140"
+                            Height="40"
+                            Margin="5"
+                            Click="ErrorDiagnosticsButton_Click"
+                            Content="Диагностика"
+                            AutomationProperties.Name="Открыть диагностику HUB Desktop" />
+                    <Button MinWidth="170"
+                            Height="40"
+                            Margin="5"
+                            Click="ErrorBrowserButton_Click"
+                            Content="Открыть в браузере"
+                            AutomationProperties.Name="Открыть HUB в системном браузере" />
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

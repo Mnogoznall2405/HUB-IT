@@ -537,6 +537,54 @@ describe('Database equipment row helpers', () => {
     expect(screen.queryByText('Загрузка данных...')).not.toBeInTheDocument();
   });
 
+  it('filters consumables by model from the consumables search field', async () => {
+    mockApi.equipmentAPI.getAllConsumablesGrouped.mockResolvedValue({
+      grouped: {
+        HQ: {
+          Stock: [
+            {
+              ID: 2,
+              INV_NO: '2001',
+              TYPE_NAME: 'Картридж',
+              MODEL_NAME: 'HP 85A',
+              QTY: 3,
+            },
+            {
+              ID: 3,
+              INV_NO: '2002',
+              TYPE_NAME: 'Картридж',
+              MODEL_NAME: 'Canon 725',
+              QTY: 4,
+            },
+          ],
+        },
+      },
+      total: 2,
+      pages: 1,
+    });
+
+    renderDatabase();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Расходники' }));
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalled();
+    });
+
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Stock'));
+    expect(await screen.findByText('HP 85A')).toBeInTheDocument();
+    expect(screen.getByText('Canon 725')).toBeInTheDocument();
+
+    const searchInput = screen.getByPlaceholderText('Поиск по ID, типу, модели...');
+    fireEvent.change(searchInput, { target: { value: 'Canon 725' } });
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(screen.queryByText('HP 85A')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Canon 725')).toBeInTheDocument();
+  });
+
   it('keeps the same branch filter when switching between equipment and consumables tabs', async () => {
     renderDatabase();
 

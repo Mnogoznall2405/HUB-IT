@@ -16,6 +16,7 @@ class RequestNetworkContext:
     network_zone: str
     via_forwarded_header: bool = False
     trusted_proxy: bool = False
+    via_cloudflare: bool = False
 
 
 def _parse_ip_literal(value: object):
@@ -124,10 +125,21 @@ def build_request_network_context(request: Request) -> RequestNetworkContext:
                 if normalized_item:
                     forwarded_candidate = normalized_item
                     break
-    client_ip = forwarded_candidate or normalized_remote_host
+    proxy_visible_ip = forwarded_candidate or normalized_remote_host
+    via_cloudflare = _is_ip_in_cidrs(
+        proxy_visible_ip,
+        config.security.cloudflare_proxy_cidrs,
+        default=[],
+    )
+    cloudflare_candidate = ""
+    if via_cloudflare:
+        cloudflare_candidate = normalize_ip_value(request.headers.get("cf-connecting-ip"))
+
+    client_ip = cloudflare_candidate or proxy_visible_ip
     return RequestNetworkContext(
         client_ip=str(client_ip or "").strip(),
         network_zone=classify_network_zone(client_ip),
         via_forwarded_header=bool(forwarded_candidate),
         trusted_proxy=trusted_proxy,
+        via_cloudflare=via_cloudflare,
     )

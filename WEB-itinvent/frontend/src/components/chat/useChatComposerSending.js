@@ -21,7 +21,6 @@ export default function useChatComposerSending({
   latestMessageTextRef,
   logChatDebug,
   mergeMessageIntoThread,
-  messageText,
   notifyApiError,
   readSelectedDatabaseId,
   removeThreadMessage,
@@ -36,7 +35,7 @@ export default function useChatComposerSending({
 }) {
   const sendMessage = useCallback(async () => {
     const conversationId = String(activeConversationId || '').trim();
-    const body = String(messageText || '').trim();
+    const body = String(latestMessageTextRef.current || '').trim();
     if (!conversationId || !body) return false;
     const bodyFormat = 'plain';
     const draftEditingMessage = editingMessage ? { ...editingMessage } : null;
@@ -186,7 +185,6 @@ export default function useChatComposerSending({
     latestMessageTextRef,
     logChatDebug,
     mergeMessageIntoThread,
-    messageText,
     notifyApiError,
     readSelectedDatabaseId,
     removeThreadMessage,

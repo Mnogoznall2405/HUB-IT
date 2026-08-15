@@ -48,18 +48,20 @@ def _normalize_list(value: object) -> list[Any]:
 
 
 class GeneratedFileArgs(BaseModel):
-    format: Literal["xlsx", "csv", "docx", "pdf", "txt", "md", "json", "excel"] = "xlsx"
+    format: Optional[Literal["xlsx", "csv", "docx", "pdf", "txt", "md", "json", "excel"]] = None
     file_name: str = Field(default="generated-file", min_length=1, max_length=180)
     title: Optional[str] = Field(default=None, max_length=255)
     content: Any = None
-    rows: Optional[list[Any]] = None
-    columns: Optional[list[Any]] = None
-    sheets: Optional[list[dict[str, Any]]] = None
+    rows: Optional[list[Any]] = Field(default=None, max_length=50000)
+    columns: Optional[list[Any]] = Field(default=None, max_length=100)
+    sheets: Optional[list[dict[str, Any]]] = Field(default=None, max_length=20)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("format", mode="before")
     @classmethod
     def _normalize_format_field(cls, value):
+        if value is None or value == "":
+            return None
         return _normalize_format(value)
 
     @field_validator("file_name", mode="before")
@@ -87,7 +89,7 @@ class GeneratedFileArgs(BaseModel):
 
 
 class FilesCreateArgs(BaseModel):
-    files: list[GeneratedFileArgs] = Field(..., min_length=1, max_length=10)
+    files: list[GeneratedFileArgs] = Field(..., min_length=1, max_length=5)
 
     @field_validator("files", mode="before")
     @classmethod
@@ -127,7 +129,7 @@ class ReportTableArgs(BaseModel):
 
 
 class FilesReportArgs(BaseModel):
-    format: Literal["xlsx", "csv", "docx", "pdf", "txt", "md", "json", "excel"] = "xlsx"
+    format: Optional[Literal["xlsx", "csv", "docx", "pdf", "txt", "md", "json", "excel"]] = None
     file_name: str = Field(default="report", min_length=1, max_length=180)
     title: str = Field(default="Report", min_length=1, max_length=255)
     summary: str = Field(default="", max_length=12000)
@@ -140,6 +142,8 @@ class FilesReportArgs(BaseModel):
     @field_validator("format", mode="before")
     @classmethod
     def _normalize_format_field(cls, value):
+        if value is None or value == "":
+            return None
         return _normalize_format(value)
 
     @field_validator("file_name", mode="before")
@@ -172,6 +176,7 @@ class FilesCreateTool(AiTool):
     tool_id = AI_TOOL_FILES_CREATE
     description = (
         "Create generated chat attachments requested by the user. Supports xlsx, csv, docx, pdf, txt, md and json. "
+        "Omit format when the user did not choose one; HUB will show a format-choice card before creating the file. "
         "Use after gathering any required live ITinvent data or attachment context. "
         "Rows must be an array of row arrays or row objects, never a flat list of cells. "
         "Optional columns fixes order/labels for row objects. "
@@ -187,8 +192,27 @@ class FilesCreateTool(AiTool):
                 ok=False,
                 error="Generated files are disabled for this bot.",
             )
+        source_files = [item.model_dump(mode="json") for item in args.files]
+        explicit_files = [item for item in source_files if _normalize_text(item.get("format"))]
+        format_choice_payloads: list[dict[str, Any]] = []
         try:
-            specs = normalize_generated_file_specs([item.model_dump(mode="json") for item in args.files])
+            specs = normalize_generated_file_specs(explicit_files)
+            for index, item in enumerate(source_files, start=1):
+                if _normalize_text(item.get("format")):
+                    continue
+                # Validate and normalize the cached source with the same 10 MiB/file
+                # and structural limits used by the final attachment generator.
+                probe = normalize_generated_file_specs([{**item, "format": "txt"}])[0]
+                probe.pop("format", None)
+                probe.pop("size_bytes", None)
+                format_choice_payloads.append(
+                    {
+                        "title": _normalize_text(item.get("title")) or f"Generated file {index}",
+                        "summary": "Choose the output format before HUB creates this file.",
+                        "file_name_base": _normalize_text(item.get("file_name")) or f"generated-file-{index}",
+                        "source_file_spec": probe,
+                    }
+                )
         except GeneratedFileError as exc:
             return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc), data={"diagnostic": exc.to_payload()})
         return AiToolResult(
@@ -197,6 +221,8 @@ class FilesCreateTool(AiTool):
             data={
                 "files": specs,
                 "count": len(specs),
+                "needs_format_choice": bool(format_choice_payloads),
+                "format_choice_payloads": format_choice_payloads,
                 "generated_files": [
                     {
                         "file_name": item.get("file_name"),
@@ -396,6 +422,7 @@ class FilesReportTool(AiTool):
     tool_id = AI_TOOL_FILES_REPORT
     description = (
         "Create a polished report file from structured title, summary, sections, sheets and tables. Supports xlsx, csv, docx, pdf, txt, md and json. "
+        "Omit format when the user did not choose one; HUB will show a format-choice card. "
         "Prefer this over ai.files.create for reports, inventory summaries and user-facing documents. "
         "Table rows must be row arrays or row objects, never a flat list of cells. Optional tables[].columns fixes order/labels. "
         "For inventory reports, pass the same table columns and order shown in markdown; include Serial number for equipment."
@@ -406,6 +433,36 @@ class FilesReportTool(AiTool):
     def execute(self, *, context: AiToolExecutionContext, args: FilesReportArgs) -> AiToolResult:
         if not bool(context.allow_generated_artifacts):
             return AiToolResult(tool_id=self.tool_id, ok=False, error="Generated files are disabled for this bot.")
+        if not _normalize_text(args.format):
+            tables = [item.model_dump(mode="json") for item in _report_tables(args)]
+            tables.extend(
+                {
+                    "title": _normalize_text(item.get("title")) or f"Sheet {index}",
+                    "columns": list(item.get("columns") or []),
+                    "rows": list(item.get("rows") or []),
+                }
+                for index, item in enumerate(list(args.sheets or []), start=1)
+                if isinstance(item, dict) and list(item.get("rows") or [])
+            )
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=True,
+                data={
+                    "files": [],
+                    "count": 0,
+                    "generated_files": [],
+                    "needs_format_choice": True,
+                    "format_choice_payloads": [
+                        {
+                            "title": args.title,
+                            "summary": args.summary or "Choose the report format before HUB creates the file.",
+                            "sections": [item.model_dump(mode="json") for item in args.sections],
+                            "tables": tables,
+                            "file_name_base": args.file_name,
+                        }
+                    ],
+                },
+            )
         try:
             specs = normalize_generated_file_specs([_report_file_spec_v2(args)])
         except GeneratedFileError as exc:
@@ -484,6 +541,7 @@ class FilesConvertDocumentTool(AiTool):
             converted = convert_attachments_to_markdown(
                 conversation_id=context.conversation_id,
                 message_id=trigger_message_id,
+                attachment_id=args.attachment_id,
             )
         except DocConvertError as exc:
             return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))

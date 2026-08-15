@@ -11,6 +11,7 @@ from backend.chat.service import chat_service
 
 from backend.api.v1.chat import (
     ai,
+    ai_sandbox,
     attachments,
     conversations,
     folders,
@@ -162,6 +163,7 @@ router.include_router(push.router)
 router.include_router(stickers.router)
 router.include_router(messages.router)
 router.include_router(ai.router)
+router.include_router(ai_sandbox.router)
 router.include_router(uploads.router)
 router.include_router(attachments.router)
 # Diagnostic surfaces: read = HTTP-only (no WebSocket); realtime/full keep WS.

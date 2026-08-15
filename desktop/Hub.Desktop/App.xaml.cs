@@ -4,6 +4,7 @@ using Hub.Desktop.Autostart;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
 using Hub.Desktop.DeepLinks;
+using Hub.Desktop.Downloads;
 using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Notifications;
 using Hub.Desktop.Security;
@@ -11,6 +12,8 @@ using Hub.Desktop.Shell;
 using Hub.Desktop.UpdateCore;
 using Hub.Desktop.Updates;
 using Hub.Desktop.ViewModels;
+using Hub.Desktop.Views;
+using Hub.Desktop.WebView;
 using Microsoft.Web.WebView2.Core;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
@@ -26,11 +29,13 @@ public partial class App : Application
     private string _windowsAppSdkStatus = "Не проверен";
     private DesktopUpdateService? _updateService;
     private DesktopUpdateCoordinator? _updates;
+    private DesktopWindowManager? _windowManager;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         DesktopLog.Initialize();
+        DesktopAppIdentity.TryApplyToCurrentProcess();
 
         try
         {
@@ -106,9 +111,10 @@ public partial class App : Application
 
             var notificationFallbackEnabled =
                 policy.ResolveNotificationFallbackEnabled(defaultEnabled: true);
-            _notifications = new FallbackDesktopNotificationService(
+            var notifications = new FallbackDesktopNotificationService(
                 primaryNotifications,
                 notificationFallbackEnabled);
+            _notifications = notifications;
 
             var options = DesktopOptions.Load();
             var updateOptions = options.Updates with
@@ -137,26 +143,47 @@ public partial class App : Application
             var startInBackground = launchRequest.StartInBackground
                 && desktopSettings.LaunchVisibility == DesktopLaunchVisibility.Hidden;
             _updateService = new DesktopUpdateService(updateOptions);
-            _updates = new DesktopUpdateCoordinator(_updateService, updateOptions);
+            var updates = new DesktopUpdateCoordinator(_updateService, updateOptions);
+            _updates = updates;
+            var downloads = new DesktopDownloadCoordinator();
+            var webViewEnvironmentProvider = new DesktopWebViewEnvironmentProvider(
+                DesktopPaths.UserDataFolder);
+            var windowManager = new DesktopWindowManager(options.BaseUri);
+            _windowManager = windowManager;
             var runtime = CreateRuntimeSnapshot(notificationFallbackEnabled);
             var window = new MainWindow(
                 options,
-                _notifications,
+                notifications,
                 autostart,
-                _updates,
+                updates,
                 runtime,
                 policy,
+                windowManager,
+                webViewEnvironmentProvider,
+                downloads,
                 startInBackground);
             MainWindow = window;
 
+            windowManager.RegisterPrimary(window);
+            windowManager.ConfigureSecondaryFactory(route =>
+                new SecondaryHubWindow(
+                    options,
+                    notifications,
+                    windowManager,
+                    window,
+                    downloads,
+                    webViewEnvironmentProvider,
+                    window.CreateSecondaryWindowPlacement(),
+                    route));
+
             _singleInstance.ActivationRequested += (_, eventArgs) =>
-                Dispatcher.BeginInvoke(() => window.HandleLaunchRequest(eventArgs.Request));
+                Dispatcher.BeginInvoke(() => HandleLaunchRequest(window, eventArgs.Request));
             _singleInstance.StartListening();
 
             window.Show();
             if (launchRequest.Route is not null || launchRequest.OpenDownloads)
             {
-                window.HandleLaunchRequest(launchRequest);
+                HandleLaunchRequest(window, launchRequest);
             }
 
             DesktopJumpListService.TryApply(this, executablePath);
@@ -202,11 +229,21 @@ public partial class App : Application
     {
         Dispatcher.BeginInvoke(() =>
         {
-            if (MainWindow is MainWindow window)
-            {
-                window.ShowAndNavigate(e.Route);
-            }
+            _windowManager?.ActivateLastOrPrimary(e.Route);
         });
+    }
+
+    private void HandleLaunchRequest(MainWindow mainWindow, DesktopLaunchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(mainWindow);
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.OpenDownloads)
+        {
+            mainWindow.ShowDownloads();
+            return;
+        }
+
+        _windowManager?.ActivateLastOrPrimary(request.Route);
     }
 
     private DesktopRuntimeSnapshot CreateRuntimeSnapshot(bool notificationFallbackEnabled)

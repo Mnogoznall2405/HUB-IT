@@ -367,6 +367,11 @@ class UserService:
             "password_hash": str(row.password_hash or ""),
             "password_salt": str(row.password_salt or ""),
             "avatar_url": row.avatar_url or None,
+            "about_onboarding_completed_at": (
+                row.about_onboarding_completed_at.isoformat()
+                if row.about_onboarding_completed_at
+                else None
+            ),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -396,6 +401,12 @@ class UserService:
         row.twofa_enabled_at = datetime.fromisoformat(twofa_enabled_at) if twofa_enabled_at else None
         row.password_hash = str(payload.get("password_hash") or "")
         row.password_salt = str(payload.get("password_salt") or "")
+        about_onboarding_completed_at = str(payload.get("about_onboarding_completed_at") or "").strip()
+        row.about_onboarding_completed_at = (
+            datetime.fromisoformat(about_onboarding_completed_at)
+            if about_onboarding_completed_at
+            else None
+        )
         mail_updated_at = str(payload.get("mail_updated_at") or "").strip()
         row.mail_updated_at = datetime.fromisoformat(mail_updated_at) if mail_updated_at else None
         created_at = str(payload.get("created_at") or "").strip()
@@ -454,6 +465,9 @@ class UserService:
             "discoverable_trusted_devices_count": int(user.get("discoverable_trusted_devices_count", 0) or 0),
             "twofa_enforced": bool(config.security.twofa_enforced),
             "avatar_url": (str(user.get("avatar_url") or "").strip() or None),
+            "about_onboarding_completed_at": (
+                str(user.get("about_onboarding_completed_at") or "").strip() or None
+            ),
         }
 
     def to_public_user(self, user: dict) -> dict:
@@ -610,6 +624,16 @@ class UserService:
             logging.getLogger(__name__).warning("Skipping user defaults bootstrap: %s", exc)
             return
         if users:
+            if not self._use_app_database:
+                completed_at = _utc_now_iso()
+                changed = False
+                for user in users:
+                    if "about_onboarding_completed_at" in user:
+                        continue
+                    user["about_onboarding_completed_at"] = completed_at
+                    changed = True
+                if changed:
+                    self._save_users(users)
             return
 
         if config.app.is_production:
@@ -637,6 +661,7 @@ class UserService:
                 "mailbox_password_enc": "",
                 "mail_signature_html": None,
                 "mail_updated_at": None,
+                "about_onboarding_completed_at": now,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -659,6 +684,7 @@ class UserService:
                 "mailbox_password_enc": "",
                 "mail_signature_html": None,
                 "mail_updated_at": None,
+                "about_onboarding_completed_at": now,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -1034,6 +1060,7 @@ class UserService:
             "mail_updated_at": now if (mailbox_email or mailbox_login or mailbox_password_enc or mail_signature_html) else None,
             "password_hash": password_hash,
             "password_salt": salt,
+            "about_onboarding_completed_at": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -1044,6 +1071,48 @@ class UserService:
             from .user_db_selection_service import user_db_selection_service
             user_db_selection_service.set_assigned_database(created.get("telegram_id"), created.get("assigned_database"))
         return self._sanitize_user(created)
+
+    def complete_about_onboarding(self, user_id: int) -> Optional[dict]:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return None
+
+        if self._use_app_database:
+            def _complete_in_app_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.get(AppUser, normalized_user_id)
+                    if row is None:
+                        return None
+                    if row.about_onboarding_completed_at is None:
+                        now = datetime.now(timezone.utc)
+                        row.about_onboarding_completed_at = now
+                        row.updated_at = now
+                        session.flush()
+                    return self._row_to_user_dict(row)
+
+            completed = run_with_transient_lock_retry(_complete_in_app_db)
+            self._invalidate_users_cache()
+            return self._sanitize_user(completed) if completed else None
+
+        users = self._load_users()
+        completed_user: Optional[dict] = None
+        changed = False
+        for user in users:
+            if int(user.get("id", 0) or 0) != normalized_user_id:
+                continue
+            if not str(user.get("about_onboarding_completed_at") or "").strip():
+                now = _utc_now_iso()
+                user["about_onboarding_completed_at"] = now
+                user["updated_at"] = now
+                changed = True
+            completed_user = user
+            break
+        if completed_user is None:
+            return None
+        if changed:
+            self._save_users(users)
+        return self._sanitize_user(completed_user)
 
     def update_user(
         self,

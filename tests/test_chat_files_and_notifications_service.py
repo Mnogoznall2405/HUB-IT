@@ -1032,6 +1032,47 @@ def test_send_message_client_message_id_is_idempotent_for_same_sender(chat_env):
     assert int(delivery_outbox_count) == 1
 
 
+def test_send_files_client_message_id_reconciles_without_duplicate_attachment(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sandbox-result.txt", b"one durable result", "text/plain")],
+        client_message_id="sandbox-output-delivery-1",
+        defer_push_notifications=True,
+    )
+    repeated = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sandbox-result.txt", b"one durable result", "text/plain")],
+        client_message_id="sandbox-output-delivery-1",
+        defer_push_notifications=True,
+    )
+
+    assert repeated["id"] == created["id"]
+    assert repeated["client_message_id"] == "sandbox-output-delivery-1"
+    assert [item["id"] for item in repeated["attachments"]] == [
+        item["id"] for item in created["attachments"]
+    ]
+    with chat_db_module.chat_session() as session:
+        message_count = session.scalar(
+            select(func.count()).select_from(chat_models_module.ChatMessage).where(
+                chat_models_module.ChatMessage.conversation_id == conversation["id"]
+            )
+        )
+        attachment_count = session.scalar(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"]
+            )
+        )
+    assert int(message_count) == 1
+    assert int(attachment_count) == 1
+    stored_files = [path for path in chat_env["attachments_root"].rglob("*") if path.is_file()]
+    assert len(stored_files) == 1
+
+
 def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]

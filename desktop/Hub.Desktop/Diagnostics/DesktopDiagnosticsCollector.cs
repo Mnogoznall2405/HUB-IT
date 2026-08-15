@@ -19,7 +19,8 @@ public sealed record DesktopDiagnosticsContext(
     DateTimeOffset? LastNavigationAtUtc,
     DateTimeOffset? LastBridgeHandshakeUtc,
     DesktopUpdateState UpdateState,
-    DesktopPerformanceSnapshot? Performance = null);
+    DesktopPerformanceSnapshot? Performance = null,
+    DesktopMemorySnapshot? Memory = null);
 
 public sealed record DesktopMachineInfo(
     string DesktopVersion,
@@ -61,11 +62,12 @@ public sealed record DesktopDiagnosticsSnapshot(
     long? ProcessStartToWebViewMilliseconds = null,
     long? WebViewToBridgeMilliseconds = null,
     long UiThreadStallCount = 0,
-    long WebViewProcessFailureCount = 0);
+    long WebViewProcessFailureCount = 0,
+    DesktopMemorySnapshot? Memory = null);
 
 public sealed class DesktopDiagnosticsCollector
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly Func<DesktopMachineInfo> _machineInfo;
 
@@ -118,7 +120,8 @@ public sealed class DesktopDiagnosticsCollector
             performance.ProcessStartToWebViewMilliseconds,
             performance.WebViewToBridgeMilliseconds,
             performance.UiThreadStallCount,
-            performance.WebViewProcessFailureCount);
+            performance.WebViewProcessFailureCount,
+            context.Memory);
     }
 
     private static DesktopMachineInfo CaptureMachineInfo()

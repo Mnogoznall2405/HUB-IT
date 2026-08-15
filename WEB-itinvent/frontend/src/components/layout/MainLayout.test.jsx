@@ -36,6 +36,7 @@ const {
   mockChatSocketUnsubscribeInbox,
   mockChatSocketGetConnectionState,
   mockPreferences,
+  mockPrefetchRouteByPath,
 } = vi.hoisted(() => ({
   mockHasPermission: vi.fn(() => true),
   mockNavigate: vi.fn(),
@@ -64,6 +65,7 @@ const {
   mockChatSocketSubscribeInbox: vi.fn(),
   mockChatSocketUnsubscribeInbox: vi.fn(),
   mockChatSocketGetConnectionState: vi.fn(() => 'disconnected'),
+  mockPrefetchRouteByPath: vi.fn(async () => {}),
   mockPreferences: {
     mobile_bottom_nav_items: ['/dashboard', '/tasks', '/chat', '/mail'],
   },
@@ -205,6 +207,10 @@ vi.mock('../chat/chatHelpers', () => ({
 vi.mock('../../lib/swrCache', () => ({
   getOrFetchSWR: vi.fn(async (_key, fetcher) => ({ data: await fetcher() })),
   buildCacheKey: (...parts) => parts.join(':'),
+}));
+
+vi.mock('../../lib/routeLoaders', () => ({
+  prefetchRouteByPath: mockPrefetchRouteByPath,
 }));
 
 vi.mock('./ToastHistoryList', () => ({
@@ -358,6 +364,8 @@ describe('MainLayout hub Windows notifications', () => {
     mockHasPermission.mockReset();
     mockHasPermission.mockImplementation(() => true);
     mockNavigate.mockReset();
+    mockPrefetchRouteByPath.mockReset();
+    mockPrefetchRouteByPath.mockResolvedValue(undefined);
     mockNotifyInfo.mockReset();
     mockNotifyWarning.mockReset();
     mockToastHistory.length = 0;
@@ -1876,6 +1884,8 @@ describe('MainLayout mobile bottom navigation', () => {
     mockHasPermission.mockReset();
     mockHasPermission.mockImplementation(() => true);
     mockNavigate.mockReset();
+    mockPrefetchRouteByPath.mockReset();
+    mockPrefetchRouteByPath.mockResolvedValue(undefined);
     mockApiGet.mockReset();
     mockGetChatUnreadSummary.mockReset();
     mockGetUnreadCount.mockReset();
@@ -2131,6 +2141,32 @@ describe('MainLayout desktop account navigation', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('loads a route only after click, not hover or keyboard focus', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const chat = screen.getByTestId('main-layout-sidebar-chat');
+      fireEvent.pointerEnter(chat);
+      fireEvent.focus(chat);
+      expect(mockPrefetchRouteByPath).not.toHaveBeenCalled();
+
+      fireEvent.click(chat);
+      expect(mockPrefetchRouteByPath).toHaveBeenCalledWith('/chat');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
   });
 
   it('persists the tools group state', async () => {

@@ -47,15 +47,32 @@ export default function useChatConversationActionsController({
       notifyInfo('Чат задачи удаляется только вместе с самой задачей.', { title: 'Чат задачи' });
       return;
     }
-    if (kind === 'ai') {
-      notifyInfo('Удаление AI-чата пока недоступно.', { title: 'AI-чат' });
-      return;
-    }
     setConversationActionTarget({
       mode: 'delete',
       conversation,
     });
   }, [notifyInfo]);
+
+  const renameAiConversation = useCallback(async (conversationId, title) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedTitle = String(title || '').trim();
+    if (!normalizedConversationId || !normalizedTitle) return null;
+    setConversationActionPendingId(normalizedConversationId);
+    try {
+      const updated = await chatAPI.renameAiConversation(normalizedConversationId, normalizedTitle);
+      setConversations((current) => {
+        const next = current.map((item) => (item.id === updated.id ? updated : item));
+        return sortSidebarConversations(next);
+      });
+      upsertSearchConversation(updated);
+      return updated;
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переименовать AI-диалог.');
+      return null;
+    } finally {
+      setConversationActionPendingId('');
+    }
+  }, [notifyApiError, setConversations, upsertSearchConversation]);
 
   const requestLeaveConversation = useCallback((conversation) => {
     const conversationId = String(conversation?.id || '').trim();
@@ -83,6 +100,8 @@ export default function useChatConversationActionsController({
     try {
       if (target.mode === 'leave') {
         await chatAPI.leaveGroup(conversationId);
+      } else if (String(conversation?.kind || '').trim() === 'ai') {
+        await chatAPI.deleteAiConversation(conversationId);
       } else {
         await chatAPI.deleteConversation(conversationId);
       }
@@ -125,6 +144,7 @@ export default function useChatConversationActionsController({
     requestConversationRemoval,
     requestDeleteConversation,
     requestLeaveConversation,
+    renameAiConversation,
     settingsUpdating,
     updateConversationSettings,
   };

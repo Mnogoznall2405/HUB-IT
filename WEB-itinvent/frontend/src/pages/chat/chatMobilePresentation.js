@@ -42,3 +42,13 @@ export function buildChatMobileScreenTransition(mobileMotionDisabled) {
     ease: CHAT_MOBILE_SCREEN_TRANSITION_EASE,
   };
 }
+
+export function shouldDisableChatMobileMotion({
+  isMobile = false,
+  nativeShellRuntime = false,
+  prefersReducedMotion = false,
+  pwaInstalled = false,
+} = {}) {
+  return Boolean(prefersReducedMotion)
+    || (Boolean(isMobile) && (Boolean(nativeShellRuntime) || Boolean(pwaInstalled)));
+}

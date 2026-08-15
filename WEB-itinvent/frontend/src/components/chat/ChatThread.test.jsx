@@ -150,6 +150,32 @@ const buildThreadProps = (overrides = {}) => ({
 });
 
 describe('ChatBubble', () => {
+  it('does not render an inline action strip under AI responses', () => {
+    const message = {
+      id: 'msg-ai-1',
+      kind: 'text',
+      body: 'Найдено 3 устройства.',
+      is_own: false,
+      sender: { id: 7, username: 'hub-assistant', full_name: 'HUB Ассистент' },
+      reactions: [],
+    };
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={message}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        currentUserId={1}
+      />,
+    );
+
+    expect(screen.queryByTestId('ai-response-actions')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Повторить ответ' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Открыть источники' })).not.toBeInTheDocument();
+  });
+
   it('highlights plain-text mentions in message bodies', () => {
     renderWithTheme(
       <ChatBubble
@@ -322,10 +348,10 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Header Person')).toHaveStyle({ fontSize: '15px' });
     expect(messageBody).toHaveStyle({ fontSize: '15px', lineHeight: '1.26' });
     expect(bubbleSurface).toHaveStyle({
-      paddingTop: '4px',
-      paddingRight: '6.24px',
-      paddingBottom: '4px',
-      paddingLeft: '6.24px',
+      paddingTop: '6.56px',
+      paddingRight: '9.44px',
+      paddingBottom: '6.56px',
+      paddingLeft: '9.44px',
     });
     expect(composerTextarea).toHaveStyle({ fontSize: '15px', lineHeight: '1.26' });
     expect(composerTextareaSlot).toHaveStyle({
@@ -476,6 +502,73 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Вложения: 2')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Редактировать'));
     expect(onEditAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers all supported document formats in a report format choice card', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={{
+          id: 'msg-format-choice',
+          kind: 'text',
+          body: 'Выберите формат документа',
+          is_own: false,
+          action_card: {
+            id: 'action-format-choice',
+            action_type: 'ai.report.format_choice',
+            status: 'pending',
+            preview: {
+              title: 'Формат документа',
+              formats: ['xlsx', 'csv', 'docx', 'pdf', 'txt', 'md', 'json', 'exe'],
+            },
+          },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onConfirmAction={vi.fn()}
+        onCancelAction={vi.fn()}
+      />,
+    );
+
+    ['Excel (XLSX)', 'CSV', 'Word (DOCX)', 'PDF', 'Текст (TXT)', 'Markdown', 'JSON'].forEach((label) => {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
+    });
+  });
+
+  it('shows an executing action as read-only while the backend owns execution', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={{
+          id: 'msg-action-executing',
+          kind: 'text',
+          body: 'Creating a document',
+          is_own: false,
+          action_card: {
+            id: 'action-executing-1',
+            action_type: 'ai.files.create',
+            status: 'executing',
+            preview: { title: 'Создание документа' },
+          },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onConfirmAction={vi.fn()}
+        onCancelAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Выполняется')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Подтвердить' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Отмена' })).not.toBeInTheDocument();
   });
 
   it('hides repeated sender name for grouped messages', () => {
@@ -1955,7 +2048,7 @@ describe('ChatBubble', () => {
 });
 
 describe('ChatThread composer', () => {
-  it('opens the emoji and sticker picker as a full-height desktop side panel', () => {
+  it('opens the deferred emoji and sticker picker as a full-height desktop side panel', async () => {
     const onCloseEmojiPicker = vi.fn();
 
     renderWithTheme(
@@ -1971,7 +2064,7 @@ describe('ChatThread composer', () => {
 
     const panel = screen.getByTestId('chat-desktop-emoji-panel');
     expect(panel).toHaveAttribute('role', 'dialog');
-    expect(within(panel).getByTestId('chat-emoji-panel')).toHaveAttribute(
+    expect(await within(panel).findByTestId('chat-emoji-panel')).toHaveAttribute(
       'data-layout',
       'desktop-docked',
     );
@@ -2557,7 +2650,79 @@ describe('ChatThread composer', () => {
     }
   });
 
+  it('measures layout only for messages whose rendered height can have changed', () => {
+    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    const measuredMessageIds = [];
+    Element.prototype.getBoundingClientRect = function getBoundingClientRectMock() {
+      const messageId = this.getAttribute?.('data-message-id');
+      if (messageId) {
+        measuredMessageIds.push(messageId);
+        return {
+          width: 320,
+          height: 64,
+          top: 0,
+          left: 0,
+          right: 320,
+          bottom: 64,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    const threadScrollRef = React.createRef();
+    const threadContentRef = React.createRef();
+    const baseMessages = Array.from({ length: 24 }, (_value, index) => ({
+      id: `msg-layout-${index}`,
+      conversation_id: 'conv-1',
+      kind: 'text',
+      body: `Message ${index}`,
+      created_at: `2026-03-21T10:${String(index).padStart(2, '0')}:00Z`,
+      is_own: index % 2 === 0,
+      sender: { id: index % 2 === 0 ? 1 : 2, username: 'user', full_name: 'User' },
+    }));
+
+    try {
+      const { rerender } = renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: baseMessages,
+            threadScrollRef,
+            threadContentRef,
+          })}
+        />,
+      );
+      expect(new Set(measuredMessageIds).size).toBe(baseMessages.length);
+      measuredMessageIds.length = 0;
+
+      const appendedMessage = {
+        ...baseMessages[0],
+        id: 'msg-layout-appended',
+        body: 'Appended message',
+        created_at: '2026-03-21T11:00:00Z',
+      };
+      rerender(
+        <ThemeProvider theme={theme}>
+          <ChatThread
+            {...buildThreadProps({
+              messages: [...baseMessages, appendedMessage],
+              threadScrollRef,
+              threadContentRef,
+            })}
+          />
+        </ThemeProvider>,
+      );
+
+      expect(measuredMessageIds).toEqual(['msg-layout-appended']);
+    } finally {
+      Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
   it('shows the AI run status banner for queued and failed AI conversations', () => {
+    const onStopAiRun = vi.fn();
     const { rerender } = renderWithTheme(
       <ChatThread
         {...buildThreadProps({
@@ -2573,12 +2738,64 @@ describe('ChatThread composer', () => {
             status: 'queued',
             bot_title: 'Corp Assistant',
           },
+          onStopAiRun,
         })}
       />,
     );
 
     expect(screen.getByText(/Corp Assistant/i)).toBeInTheDocument();
     expect(screen.getByText(/поставлен в очередь/i)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByText('Найди оборудование сотрудника')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Остановить' })[0]);
+    expect(onStopAiRun).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatThread
+          {...buildThreadProps({
+            activeConversation: {
+              id: 'conv-ai',
+              title: 'Corp Assistant',
+              kind: 'ai',
+              unread_count: 0,
+            },
+            activeConversationId: 'conv-ai',
+            aiStatus: {
+              conversation_id: 'conv-ai',
+              status: 'running',
+              stage: 'generating_answer',
+              partial_text: 'Найдено 3 устройства…',
+              bot_title: 'Corp Assistant',
+            },
+          })}
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('ai-partial-response')).toHaveTextContent('Найдено 3 устройства…');
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatThread
+          {...buildThreadProps({
+            activeConversation: {
+              id: 'conv-ai',
+              title: 'Corp Assistant',
+              kind: 'ai',
+              unread_count: 0,
+            },
+            activeConversationId: 'conv-ai',
+            aiStatus: {
+              conversation_id: 'conv-ai',
+              status: 'completed',
+              completed_stages: ['analyzing_request', 'retrieving_kb', 'generating_answer'],
+              bot_title: 'Corp Assistant',
+            },
+          })}
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getByText('Выполнено 3 шага')).toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>

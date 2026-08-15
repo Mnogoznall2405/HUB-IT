@@ -94,6 +94,9 @@ describe('ChatMessageList', () => {
     expect(screen.getByTestId('chat-thread-content')).toBeInTheDocument();
     expect(screen.getByTestId('bubble-msg-1')).toBeInTheDocument();
     expect(screen.getByTestId('bubble-msg-48')).toBeInTheDocument();
+    const firstMessageRow = screen.getByTestId('bubble-msg-1').parentElement;
+    expect(firstMessageRow.style.contentVisibility).toBe('');
+    expect(firstMessageRow.style.containIntrinsicSize).toBe('');
   });
 
   it('passes onOpenAttachmentPreview to bubbles and invokes it on click', () => {

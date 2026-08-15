@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.appdb.models import APP_SCHEMA, AppBase, SYSTEM_SCHEMA
 from backend.config import config
-from backend.db_migrations import upgrade_internal_database
 from backend.services.sql_observability import attach_slow_sql_logging
 
 
@@ -71,6 +70,11 @@ def _compact_create_all_allowed() -> bool:
 
 def _create_all_app_metadata(connection_or_engine) -> None:
     """create_all with optional exclusion of 1C compact search tables."""
+    # Sandbox ORM lives in its own module to keep the already-large core model
+    # file stable. Register extension tables before local/dev create_all; in
+    # production Alembic 0099 remains the only schema-change path.
+    from backend.ai_sandbox import models as _ai_sandbox_models  # noqa: F401
+
     if _compact_create_all_allowed():
         AppBase.metadata.create_all(bind=connection_or_engine)
         return
@@ -234,6 +238,12 @@ def _postgres_has_alembic_version(engine) -> bool:
 
 
 def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
+    # Keep Alembic out of lightweight consumers (for example the isolated
+    # sandbox LLM gateway). Schema-changing code is loaded only by the normal
+    # application initialization path; gateway queries fail closed when 0099
+    # has not been applied.
+    from backend.db_migrations import upgrade_internal_database
+
     engine = get_app_engine(database_url)
     if engine.dialect.name == "postgresql":
         if config.app.is_production:

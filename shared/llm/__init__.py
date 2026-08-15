@@ -17,6 +17,12 @@ from shared.llm.env import (
 )
 from shared.llm.errors import OpenRouterClientError
 from shared.llm.models import resolve_model, resolve_model_candidates
+from shared.llm.openai_gateway import (
+    OpenAiChatCompletionRequest,
+    OpenAiGatewayValidationError,
+    iter_openai_sse,
+    normalize_gateway_request,
+)
 
 __all__ = [
     "DEFAULT_AI_MODEL",
@@ -24,10 +30,14 @@ __all__ = [
     "DEFAULT_ROUTERAI_BASE_URL",
     "OpenRouterClient",
     "OpenRouterClientError",
+    "OpenAiChatCompletionRequest",
+    "OpenAiGatewayValidationError",
     "is_image_unsupported_error",
     "normalize_openrouter_base_url",
+    "normalize_gateway_request",
     "openrouter_client",
     "provider_error_text",
+    "iter_openai_sse",
     "read_env",
     "resolve_model",
     "resolve_model_candidates",

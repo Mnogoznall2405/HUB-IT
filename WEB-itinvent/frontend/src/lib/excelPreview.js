@@ -1,5 +1,3 @@
-import * as XLSX from 'xlsx';
-
 export const EXCEL_PREVIEW_TEASER_MAX_ROWS = 18;
 export const EXCEL_PREVIEW_TEASER_MAX_COLS = 10;
 export const EXCEL_PREVIEW_FULL_MAX_ROWS = 250;
@@ -54,6 +52,7 @@ export const parseExcelWorkbookFromBlob = async (blob) => {
     throw new Error('Excel preview blob is missing.');
   }
   const buffer = await readBlobArrayBuffer(blob);
+  const XLSX = await import('xlsx');
   const workbook = XLSX.read(buffer, {
     type: 'array',
     cellDates: true,

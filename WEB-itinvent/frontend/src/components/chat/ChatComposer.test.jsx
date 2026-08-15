@@ -4,13 +4,15 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 
 import ChatComposer from './ChatComposer';
 
+vi.mock('emoji-picker-react', () => ({ default: () => null }));
+
 const theme = createTheme();
 
-function renderComposer(overrides = {}) {
+function renderComposer(overrides = {}, composerTheme = theme) {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={composerTheme}>
       <ChatComposer
-        theme={theme}
+        theme={composerTheme}
         ui={{
           accentText: '#1976d2',
           textPrimary: '#111',
@@ -38,6 +40,31 @@ describe('ChatComposer', () => {
   it('renders composer surface without crashing', () => {
     renderComposer();
     expect(screen.getByTestId('chat-composer-dock')).toBeTruthy();
+    expect(screen.queryByTestId('chat-emoji-panel')).not.toBeInTheDocument();
+  });
+
+  it('mounts the deferred emoji panel only when it is opened on mobile', async () => {
+    renderComposer({
+      compactMobile: true,
+      mobileEmojiPickerOpen: true,
+      activeConversationId: 'conv-1',
+    });
+
+    expect(await screen.findByTestId('chat-emoji-panel')).toBeInTheDocument();
+  });
+
+  it('does not render a Retina separator above the mobile composer', () => {
+    const darkTheme = createTheme({ palette: { mode: 'dark' } });
+
+    renderComposer({
+      compactMobile: true,
+      activeConversationId: 'conv-1',
+    }, darkTheme);
+
+    expect(screen.getByTestId('chat-composer-dock')).toHaveStyle({
+      borderTop: 'none',
+      boxShadow: 'none',
+    });
   });
 
   it('enables emoji, attach and voice controls when conversation is active', () => {

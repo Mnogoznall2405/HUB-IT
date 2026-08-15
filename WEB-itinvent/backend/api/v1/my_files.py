@@ -242,7 +242,12 @@ async def upload_my_file(
 
 
 @router.get("/public/{token}", response_model=PublicMyFileResponse)
-async def get_public_my_file(token: str, request: Request, response: Response) -> dict:
+async def get_public_my_file(
+    token: str,
+    request: Request,
+    response: Response,
+    _: User = Depends(get_current_active_user),
+) -> dict:
     enforce_public_meta_limits(request, token)
     _set_public_response_headers(response)
     try:
@@ -272,7 +277,12 @@ async def download_my_file_by_grant(token: str, request: Request):
 
 
 @router.get("/public/{token}/preview", response_model=PublicMyFilePreviewResponse)
-async def get_public_my_file_preview(token: str, request: Request, response: Response) -> dict:
+async def get_public_my_file_preview(
+    token: str,
+    request: Request,
+    response: Response,
+    _: User = Depends(get_current_active_user),
+) -> dict:
     enforce_public_preview_limits(request, token)
     _set_public_response_headers(response)
     try:
@@ -285,7 +295,11 @@ async def get_public_my_file_preview(token: str, request: Request, response: Res
 
 
 @router.get("/public/{token}/preview/content")
-async def download_public_my_file_preview_content(token: str, request: Request):
+async def download_public_my_file_preview_content(
+    token: str,
+    request: Request,
+    _: User = Depends(get_current_active_user),
+):
     enforce_public_preview_content_limits(request, token)
     try:
         content, media_type, filename = await run_in_threadpool(
@@ -304,7 +318,11 @@ async def download_public_my_file_preview_content(token: str, request: Request):
 
 
 @router.get("/public/{token}/download")
-async def download_public_my_file(token: str, request: Request):
+async def download_public_my_file(
+    token: str,
+    request: Request,
+    _: User = Depends(get_current_active_user),
+):
     enforce_public_download_limits(request, token)
     try:
         payload = await run_in_threadpool(

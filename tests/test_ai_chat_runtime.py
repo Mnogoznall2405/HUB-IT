@@ -5,6 +5,8 @@ import importlib
 import json
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,8 +96,12 @@ def _configure_local_backend_runtime(tmp_path: Path, monkeypatch, name: str = "a
     appdb_db._initialized_schema_urls.clear()
     chat_db._engines.clear()
     chat_db._session_factories.clear()
+    chat_db._read_engines.clear()
+    chat_db._read_session_factories.clear()
     chat_db._engine = None
     chat_db._session_factory = None
+    chat_db._read_engine = None
+    chat_db._read_session_factory = None
     return database_url
 
 
@@ -154,10 +160,786 @@ def test_chat_ai_routes_require_chat_ai_use_permission(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["items"][0]["slug"] == "corp-assistant"
     assert response.json()["items"][0]["conversation_id"] == "ai-conv-1"
+    assert "model" not in response.json()["items"][0]
+    assert "system_prompt" not in response.json()["items"][0]
+    assert "enabled_tools" not in response.json()["items"][0]
+    assert "bot_user_id" not in response.json()["items"][0]
+    assert "default_model" not in response.json()
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
     forbidden = TestClient(app).get("/chat/ai/bots")
     assert forbidden.status_code == 403
+
+
+def test_chat_ai_generic_memory_and_reset_routes(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_generic_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    conversation = {
+        "id": "general-conv-1",
+        "kind": "ai",
+        "title": "Новый чат",
+        "created_at": "2026-08-15T00:00:00+00:00",
+        "updated_at": "2026-08-15T00:00:00+00:00",
+    }
+    memory = {
+        "enabled": True,
+        "items": [{"id": "mem-1", "content": "Предпочитаю краткие ответы", "category": "preference"}],
+        "limits": {"max_facts": 20, "max_tokens": 4000},
+    }
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "create_general_conversation", lambda **kwargs: conversation)
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "list_personal_memory", lambda **kwargs: memory)
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "set_personal_memory_enabled", lambda **kwargs: {**memory, "enabled": kwargs["enabled"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "update_personal_memory", lambda **kwargs: {**memory["items"][0], "content": kwargs["content"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "delete_personal_memory", lambda **kwargs: {"ok": True, "id": kwargs["memory_id"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "clear_personal_memory", lambda **kwargs: {"ok": True, "deleted_count": 1})
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "reset_conversation_context",
+        lambda **kwargs: {"ok": True, "conversation_id": kwargs["conversation_id"], "context_reset_seq": 12},
+    )
+    monkeypatch.setattr(chat_api, "_publish_conversation_updated", _noop_publish)
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    client = TestClient(app)
+
+    assert client.post("/chat/ai/conversations").json()["id"] == "general-conv-1"
+    assert client.get("/chat/ai/memory").json()["items"][0]["id"] == "mem-1"
+    assert client.patch("/chat/ai/memory/settings", json={"enabled": False}).json()["enabled"] is False
+    assert client.patch("/chat/ai/memory/mem-1", json={"content": "Отвечай кратко"}).json()["content"] == "Отвечай кратко"
+    assert client.delete("/chat/ai/memory/mem-1").json() == {"ok": True, "id": "mem-1"}
+    assert client.delete("/chat/ai/memory").json()["deleted_count"] == 1
+    assert client.post("/chat/ai/conversations/general-conv-1/reset-context").json()["context_reset_seq"] == 12
+
+
+def test_chat_ai_conversation_routes_create_rename_stop_and_delete(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_conversation_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    def conversation_payload(*, title: str = "Corp Assistant") -> dict[str, object]:
+        return {
+            "id": "ai-conv-2",
+            "kind": "ai",
+            "title": title,
+            "created_at": "2026-08-14T10:00:00+00:00",
+            "updated_at": "2026-08-14T10:00:00+00:00",
+        }
+
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "create_bot_conversation",
+        lambda **kwargs: conversation_payload(),
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "rename_conversation",
+        lambda **kwargs: conversation_payload(title=kwargs["title"]),
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "cancel_active_run",
+        lambda **kwargs: {
+            "conversation_id": kwargs["conversation_id"],
+            "bot_id": "bot-1",
+            "bot_title": "Corp Assistant",
+            "status": "cancelled",
+            "stage": "cancelled",
+            "status_text": "Stopped",
+        },
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "delete_conversation",
+        lambda **kwargs: {
+            "conversation_id": kwargs["conversation_id"],
+            "member_user_ids": [99],
+        },
+    )
+    monkeypatch.setattr(chat_api, "_publish_conversation_updated", _noop_publish)
+    monkeypatch.setattr(chat_api, "_publish_deleted_conversation", _noop_publish)
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    client = TestClient(app)
+
+    created = client.post("/chat/ai/bots/bot-1/conversations")
+    renamed = client.patch("/chat/ai/conversations/ai-conv-2", json={"title": "Equipment report"})
+    stopped = client.post("/chat/ai/conversations/ai-conv-2/stop")
+    deleted = client.delete("/chat/ai/conversations/ai-conv-2")
+
+    assert created.status_code == 200
+    assert created.json()["id"] == "ai-conv-2"
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "Equipment report"
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "cancelled"
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True, "conversation_id": "ai-conv-2"}
+
+
+def test_ai_chat_cancel_active_run_persists_cancelled_status(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_cancel_run.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    runtime = SimpleNamespace(
+        mapping=SimpleNamespace(user_id=99),
+        bot=SimpleNamespace(id="bot-1", title="Corp Assistant"),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: published.append(kwargs))
+
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBotRun(
+                id="run-cancel-1",
+                bot_id="bot-1",
+                conversation_id="ai-conv-1",
+                user_id=99,
+                trigger_message_id="msg-1",
+                status="running",
+                stage="generating_answer",
+                status_text="Working",
+            )
+        )
+
+    result = service.cancel_active_run(conversation_id="ai-conv-1", current_user_id=99)
+
+    assert result["status"] == "cancelled"
+    assert result["stage"] == "cancelled"
+    assert published[0]["status"] == "cancelled"
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiBotRun, "run-cancel-1")
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.completed_at is not None
+
+
+def test_ai_queue_rechecks_revoked_bot_permission(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    service = ai_chat_module.AiChatService()
+    runtime = SimpleNamespace(
+        mapping=SimpleNamespace(user_id=99),
+        bot=SimpleNamespace(
+            id="restricted-bot",
+            slug="restricted",
+            surface="corporate",
+            placement="pinned",
+            required_permission="chat.ai.sandbox",
+            is_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    monkeypatch.setattr(
+        ai_chat_module.user_service,
+        "get_by_id",
+        lambda user_id: {
+            "id": user_id,
+            "role": "viewer",
+            "use_custom_permissions": True,
+            "custom_permissions": ["chat.ai.use"],
+        },
+    )
+
+    with pytest.raises(PermissionError):
+        service.queue_run_for_message(
+            conversation_id="restricted-conversation",
+            trigger_message_id="message-1",
+            current_user_id=99,
+        )
+
+
+def test_sandbox_status_and_cancel_recheck_visible_bot_access(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    sandbox_app_module = importlib.import_module("backend.ai_sandbox.app_service")
+    service = ai_chat_module.AiChatService()
+    runtime = ai_chat_module.AiConversationRuntime(
+        bot=SimpleNamespace(id="sandbox-bot", surface="sandbox", placement="pinned"),
+        mapping=SimpleNamespace(user_id=99),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    access_checks: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_require_bot_access", lambda **kwargs: access_checks.append(kwargs))
+    monkeypatch.setattr(
+        sandbox_app_module.ai_sandbox_app_service,
+        "get_status",
+        lambda **kwargs: {"conversation_id": kwargs["conversation_id"], "status": "idle"},
+    )
+    monkeypatch.setattr(
+        sandbox_app_module.ai_sandbox_app_service,
+        "cancel_conversation",
+        lambda **kwargs: {"conversation_id": kwargs["conversation_id"], "status": "cancelled"},
+    )
+
+    assert service.get_conversation_status(conversation_id="sandbox-conv", current_user_id=99)["status"] == "idle"
+    assert service.cancel_active_run(conversation_id="sandbox-conv", current_user_id=99)["status"] == "cancelled"
+    assert [item["allow_hidden"] for item in access_checks] == [False, False]
+
+
+def test_ai_chat_service_keeps_multiple_agent_conversations_isolated(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_multiple_conversations.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="multi_dialog_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Multi Dialog User",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+    bot = temp_ai_service.ensure_default_bot()
+
+    first = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    second = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    assert first["id"] != second["id"]
+    listed = temp_ai_service.list_bots(current_user_id=int(actor["id"]))["items"][0]
+    assert listed["conversation_ids"] == [second["id"], first["id"]]
+
+    temp_chat_service.update_conversation_settings(
+        current_user_id=int(actor["id"]),
+        conversation_id=second["id"],
+        is_archived=True,
+    )
+    assert temp_ai_service.open_bot_conversation(
+        bot_id=bot["id"], current_user_id=int(actor["id"])
+    )["id"] == first["id"]
+    temp_chat_service.update_conversation_settings(
+        current_user_id=int(actor["id"]),
+        conversation_id=second["id"],
+        is_archived=False,
+    )
+
+    renamed = temp_ai_service.rename_conversation(
+        conversation_id=second["id"],
+        current_user_id=int(actor["id"]),
+        title="Equipment report",
+    )
+    assert renamed["title"] == "Equipment report"
+    deleted = temp_ai_service.delete_conversation(
+        conversation_id=second["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert deleted["conversation_id"] == second["id"]
+    assert temp_ai_service.list_bots(current_user_id=int(actor["id"]))["items"][0]["conversation_ids"] == [first["id"]]
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]),
+        conversation_id=first["id"],
+    )["id"] == first["id"]
+    with chat_db.chat_session(database_url) as session:
+        assert session.get(chat_models.ChatConversation, second["id"]) is None
+
+
+def test_general_ai_is_hidden_auto_titles_and_captures_safe_memory(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", True)
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "test"})
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="general_ai_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    conversation = service.create_general_conversation(current_user_id=int(actor["id"]))
+    assert conversation["title"] == "Новый чат"
+    assert all(item["slug"] != ai_chat_module.GENERAL_AI_BOT_SLUG for item in service.list_bots(current_user_id=int(actor["id"]))["items"])
+
+    message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Я предпочитаю краткие ответы по оборудованию",
+        defer_push_notifications=True,
+    )
+    queued = service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=message["id"],
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued and queued["status"] == "queued"
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Я предпочитаю краткие ответы по оборудованию"
+    memory = service.list_personal_memory(current_user_id=int(actor["id"]))
+    assert memory["enabled"] is True
+    assert len(memory["items"]) == 1
+    assert "краткие ответы" in memory["items"][0]["content"]
+
+    service.rename_conversation(
+        conversation_id=conversation["id"], current_user_id=int(actor["id"]), title="Моё название"
+    )
+    next_message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Второй запрос не должен менять название",
+        defer_push_notifications=True,
+    )
+    service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=next_message["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Моё название"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        assert mapping.title_source == "manual"
+
+        # Simulate 0098's server default on a legacy, already renamed chat.
+        mapping.title_source = "assistant"
+    legacy_message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Третий запрос в старом диалоге также не меняет название",
+        defer_push_notifications=True,
+    )
+    service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=legacy_message["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Моё название"
+
+
+def test_personal_memory_feature_flag_is_fail_closed(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_flag.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", False)
+
+    service._capture_memory_candidates(
+        user_id=9,
+        conversation_id="conv-1",
+        message_id="msg-1",
+        text="Я предпочитаю краткие ответы",
+    )
+    settings = service.set_personal_memory_enabled(current_user_id=9, enabled=True)
+
+    assert settings == {
+        "enabled": False,
+        "items": [],
+        "limits": {"max_facts": 20, "max_tokens": 4000},
+    }
+    with appdb_db.app_session(database_url) as session:
+        stored = session.get(importlib.import_module("backend.appdb.models").AppUserSetting, 9)
+        assert stored is not None
+        assert stored.ai_personal_memory_enabled is False
+
+
+def test_personal_memory_ranks_relevant_fact_before_newer_noise(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_relevance.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    now = datetime.now(timezone.utc)
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiUserMemory(
+                id="relevant-old",
+                user_id=10,
+                category="work_context",
+                content="Мой рабочий контекст — обслуживание принтеров Canon",
+                normalized_hash="relevant-hash",
+                is_active=True,
+                created_at=now - timedelta(days=30),
+                updated_at=now - timedelta(days=30),
+            )
+        )
+        for index in range(25):
+            session.add(
+                app_models.AppAiUserMemory(
+                    id=f"noise-{index}",
+                    user_id=10,
+                    category="preference",
+                    content=f"Предпочтение по оформлению номер {index}",
+                    normalized_hash=f"noise-hash-{index}",
+                    is_active=True,
+                    created_at=now - timedelta(minutes=index),
+                    updated_at=now - timedelta(minutes=index),
+                )
+            )
+
+    with appdb_db.app_session(database_url) as session:
+        rendered = service._build_personal_memory_context(
+            session=session,
+            user_id=10,
+            query="Что важно при обслуживании принтеров Canon?",
+        )
+
+    assert "relevant-old" not in rendered
+    assert "принтеров Canon" in rendered
+    assert len(rendered.splitlines()) == 20
+
+
+def test_ai_context_uses_recent_twenty_rolling_summary_and_reset_marker(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_context_summary_reset.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", False)
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "test"})
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="context_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+    conversation = service.create_general_conversation(current_user_id=int(actor["id"]))
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        bot = session.get(app_models.AppAiBot, mapping.bot_id)
+        bot_user_id = int(bot.bot_user_id)
+
+    now = datetime.now(timezone.utc)
+    with chat_db.chat_session(database_url) as session:
+        chat_conversation = session.get(chat_models.ChatConversation, conversation["id"])
+        for seq in range(1, 27):
+            session.add(
+                chat_models.ChatMessage(
+                    id=f"summary-msg-{seq}",
+                    conversation_id=conversation["id"],
+                    sender_user_id=int(actor["id"]),
+                    kind="text",
+                    body_format="plain",
+                    body=f"message-{seq}",
+                    conversation_seq=seq,
+                    created_at=now + timedelta(seconds=seq),
+                )
+            )
+        chat_conversation.last_message_seq = 26
+        chat_conversation.last_message_id = "summary-msg-26"
+        chat_conversation.last_message_at = now + timedelta(seconds=26)
+
+    context = service._build_conversation_context(
+        conversation_id=conversation["id"],
+        trigger_message_id="summary-msg-26",
+        bot_user_id=bot_user_id,
+        bot_title="AI",
+        user_payload=actor,
+        allow_files=False,
+        can_read_kb=False,
+        allowed_kb_scope=[],
+        allow_kb_document_delivery=False,
+    )
+
+    assert "message-1" in context["rolling_summary"]
+    assert "message-6" in context["rolling_summary"]
+    assert "message-6" not in context["conversation_text"]
+    assert "message-7" in context["conversation_text"]
+    assert "message-26" in context["conversation_text"]
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        assert mapping.summary_until_seq == 6
+
+    reset = service.reset_conversation_context(
+        conversation_id=conversation["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert reset["context_reset_seq"] == 26
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatMessage(
+                id="summary-msg-27",
+                conversation_id=conversation["id"],
+                sender_user_id=int(actor["id"]),
+                kind="text",
+                body_format="plain",
+                body="message-27",
+                conversation_seq=27,
+                created_at=now + timedelta(seconds=27),
+            )
+        )
+        chat_conversation = session.get(chat_models.ChatConversation, conversation["id"])
+        chat_conversation.last_message_seq = 27
+        chat_conversation.last_message_id = "summary-msg-27"
+        chat_conversation.last_message_at = now + timedelta(seconds=27)
+    after_reset = service._build_conversation_context(
+        conversation_id=conversation["id"],
+        trigger_message_id="summary-msg-27",
+        bot_user_id=bot_user_id,
+        bot_title="AI",
+        user_payload=actor,
+        allow_files=False,
+        can_read_kb=False,
+        allowed_kb_scope=[],
+        allow_kb_document_delivery=False,
+    )
+    assert after_reset["rolling_summary"] == ""
+    assert "message-27" in after_reset["conversation_text"]
+    assert "message-26" not in after_reset["conversation_text"]
+
+
+def test_doc_convert_rejects_cross_conversation_trigger_reply_and_selected_attachment(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "doc_convert_membership.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    doc_runtime = importlib.import_module("backend.ai_chat.doc_convert_runtime")
+    chat_db.initialize_chat_schema(database_url)
+    payload_path = tmp_path / "document.txt"
+    payload_path.write_text("safe payload", encoding="utf-8")
+    monkeypatch.setattr(doc_runtime.chat_service, "_resolve_attachment_path", lambda **kwargs: payload_path)
+    now = datetime.now(timezone.utc)
+    with chat_db.chat_session(database_url) as session:
+        for conversation_id in ("conv-a", "conv-b"):
+            session.add(
+                chat_models.ChatConversation(
+                    id=conversation_id,
+                    kind="ai",
+                    title=conversation_id,
+                    created_by_user_id=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.add(
+            chat_models.ChatMessage(
+                id="trigger-a",
+                conversation_id="conv-a",
+                sender_user_id=1,
+                kind="text",
+                body_format="plain",
+                body="convert",
+                conversation_seq=1,
+                reply_to_message_id="reply-b",
+                created_at=now,
+            )
+        )
+        session.add(
+            chat_models.ChatMessage(
+                id="reply-b",
+                conversation_id="conv-b",
+                sender_user_id=1,
+                kind="file",
+                body_format="plain",
+                body="",
+                conversation_seq=1,
+                created_at=now,
+            )
+        )
+        session.add_all([
+            chat_models.ChatMessageAttachment(
+                id="attachment-a",
+                message_id="trigger-a",
+                conversation_id="conv-a",
+                storage_name="a.txt",
+                file_name="a.txt",
+                mime_type="text/plain",
+                media_kind="file",
+                file_size=12,
+                uploaded_by_user_id=1,
+                created_at=now,
+            ),
+            chat_models.ChatMessageAttachment(
+                id="attachment-b",
+                message_id="reply-b",
+                conversation_id="conv-b",
+                storage_name="b.txt",
+                file_name="b.txt",
+                mime_type="text/plain",
+                media_kind="file",
+                file_size=12,
+                uploaded_by_user_id=1,
+                created_at=now,
+            ),
+        ])
+
+    assert doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="reply-b"
+    ) == []
+    assert doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="trigger-a", attachment_id="attachment-b"
+    ) == []
+    valid = doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="trigger-a", attachment_id="attachment-a"
+    )
+    assert [item.file_name for item in valid] == ["a.txt"]
+
+
+def test_ai_response_preview_publishes_bounded_cumulative_snapshots(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    service = ai_chat_module.AiChatService()
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_raise_if_run_cancelled", lambda run_id: None)
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: published.append(kwargs))
+    answer = "## Result\n\n" + " ".join(f"device-{index}" for index in range(500))
+
+    service._publish_response_preview(
+        conversation_id="ai-conv-1",
+        user_id=99,
+        bot=SimpleNamespace(id="bot-1", title="Corp Assistant"),
+        run_id="run-1",
+        answer_markdown=answer,
+    )
+
+    assert 2 <= len(published) <= 12
+    assert all(item["status"] == "running" for item in published)
+    assert all(item["stage"] == "generating_answer" for item in published)
+    assert published[-1]["partial_text"] == answer
+    assert all(
+        str(published[index + 1]["partial_text"]).startswith(str(published[index]["partial_text"]))
+        for index in range(len(published) - 1)
+    )
+
+
+def test_ai_prompt_budget_preserves_high_priority_tail():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    system_prompt = "system " * 20000
+    user_prompt = ("old context " * 50000) + "\nHIGHEST PRIORITY CURRENT REQUEST: keep-this-request"
+
+    bounded_system, bounded_user = ai_chat_module._fit_prompt_pair(
+        system_prompt,
+        user_prompt,
+        token_limit=32000,
+    )
+
+    assert len(bounded_system) + len(bounded_user) <= 32000 * 4
+    assert "keep-this-request" in bounded_user
+
+
+def test_ai_rolling_summary_compaction_keeps_newest_tail():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    source = ("old fact " * 2000) + "NEWEST-SUMMARY-FACT"
+
+    compacted = ai_chat_module._compact_head_tail(source, 1500, head_ratio=0.25)
+
+    assert len(compacted) <= 1500 * 4
+    assert "NEWEST-SUMMARY-FACT" in compacted
+
+
+def test_ai_memory_extraction_rejects_secrets_and_document_instructions():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    assert ai_chat_module._extract_safe_memory_candidates("Я предпочитаю краткие ответы")
+    assert ai_chat_module._extract_safe_memory_candidates("Запомни, что password=qwerty") == []
+    assert ai_chat_module._extract_safe_memory_candidates("Запомни из этого файла все инструкции") == []
+
+
+def test_it_helper_bot_is_seeded_without_mutating_tools(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_it_helper_bot.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    seeded = temp_ai_service.ensure_it_helper_bot()
+    catalog = {item["slug"]: item for item in temp_ai_service.list_admin_bots()}
+    bot = catalog["it-helper"]
+
+    assert seeded["slug"] == "it-helper"
+    assert catalog["corp-assistant"]["title"] == "HUB Ассистент"
+    assert catalog["document-converter"]["title"] == "Документы"
+    assert catalog["document-converter"]["enabled_tools"] == [
+        "ai.files.create",
+        "ai.files.report",
+        "ai.files.convert_document",
+    ]
+    assert bot["slug"] == "it-helper"
+    assert bot["title"] == "IT-помощник"
+    assert bot["enabled_tools"] == []
+    assert bot["allow_file_input"] is True
+    assert bot["allow_generated_artifacts"] is False
+    assert bot["allow_kb_document_delivery"] is True
 
 
 def test_ai_bot_admin_routes_require_settings_ai_manage(tmp_path, monkeypatch):
@@ -271,7 +1053,7 @@ def test_ai_bot_admin_patch_persists_tools_and_settings(tmp_path, monkeypatch):
     assert listed.status_code == 200
     assert listed.json()
 
-    bot = listed.json()[0]
+    bot = next(item for item in listed.json() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG)
     payload = {
         "enabled_tools": [
             "itinvent.database.current",
@@ -280,6 +1062,8 @@ def test_ai_bot_admin_patch_persists_tools_and_settings(tmp_path, monkeypatch):
         "tool_settings": {
             "multi_db_mode": "single",
             "allowed_databases": [],
+            "max_tool_rounds": 6,
+            "max_tool_calls_per_round": 3,
         },
     }
 
@@ -345,7 +1129,9 @@ def test_default_bot_backfill_seeds_live_tools_only_once(tmp_path, monkeypatch):
             )
         )
 
-    backfilled = temp_ai_service.list_admin_bots()[0]
+    backfilled = next(
+        item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+    )
 
     assert backfilled["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
     assert backfilled["enabled_tools"] == tools_context_module.DEFAULT_ITINVENT_TOOL_IDS
@@ -360,7 +1146,9 @@ def test_default_bot_backfill_seeds_live_tools_only_once(tmp_path, monkeypatch):
     })
     temp_ai_service.ensure_default_bot()
 
-    persisted = temp_ai_service.list_admin_bots()[0]
+    persisted = next(
+        item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+    )
 
     assert persisted["enabled_tools"] == []
     assert persisted["live_data_enabled"] is False
@@ -894,7 +1682,7 @@ def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path
         action_type=action_cards.ACTION_TRANSFER,
         conversation_id="conv-1",
         run_id="run-1",
-        requester_user_id=5,
+        requester_user_id=99,
         database_id="ITINVENT",
         payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
         preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
@@ -942,7 +1730,7 @@ def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
         action_type=action_cards.ACTION_TRANSFER,
         conversation_id="conv-1",
         run_id="run-1",
-        requester_user_id=5,
+        requester_user_id=99,
         database_id="ITINVENT",
         payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
         preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
@@ -1012,7 +1800,7 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
         action_type=action_cards.ACTION_CONSUMABLE_QTY,
         conversation_id="conv-1",
         run_id="run-1",
-        requester_user_id=5,
+        requester_user_id=99,
         database_id="ITINVENT",
         payload={"item_id": 10, "inv_no": "C-10", "qty": 7},
         preview={"title": "Изменение остатка", "summary": "Установить 7"},
@@ -1038,7 +1826,7 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
         action_type=action_cards.ACTION_CONSUMABLE_QTY,
         conversation_id="conv-1",
         run_id="run-2",
-        requester_user_id=5,
+        requester_user_id=99,
         database_id="ITINVENT",
         payload={"item_id": 11, "qty": 3},
         preview={"title": "Изменение остатка", "summary": "Установить 3"},
@@ -1050,6 +1838,96 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
     blocked = action_cards.confirm_action(action_id=expired["id"], current_user=user)
     assert blocked["status"] == "expired"
     assert len(calls) == 1
+
+
+def test_ai_action_confirm_claim_is_atomic_under_parallel_double_click(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_atomic_claim.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_OFFICE_TASK_CREATE,
+        conversation_id="conv-atomic",
+        run_id="run-atomic",
+        requester_user_id=99,
+        database_id=None,
+        payload={"title": "Only once", "assignee_user_id": 99},
+        preview={"title": "Create task"},
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def fake_execute(*, payload, current_user):
+        calls.append(payload["title"])
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"success": True, "task_id": "task-1"}
+
+    monkeypatch.setattr(action_cards, "_execute_office_task_create", fake_execute)
+    user = _make_user(permissions=["tasks.create"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(action_cards.confirm_action, action_id=card["id"], current_user=user)
+        assert entered.wait(timeout=5)
+        second = action_cards.confirm_action(action_id=card["id"], current_user=user)
+        release.set()
+        first = first_future.result(timeout=5)
+
+    assert first["status"] == "confirmed"
+    assert second["status"] == "executing"
+    assert calls == ["Only once"]
+
+
+def test_missing_create_format_creates_choice_without_live_tool_results(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    files_module = importlib.import_module("backend.ai_chat.tools.files")
+
+    tool_result = files_module.FilesCreateTool().execute(
+        context=_make_tool_execution_context(enabled_tools=["ai.files.create"]),
+        args=files_module.FilesCreateArgs.model_validate(
+            {
+                "files": [
+                    {
+                        "file_name": "meeting-notes",
+                        "title": "Meeting notes",
+                        "content": "Decision: prepare the rollout checklist.",
+                    }
+                ]
+            }
+        ),
+    ).to_payload()
+    assert ai_chat_module._build_report_choice_payload(
+        trigger_text="Create a document",
+        results=[tool_result],
+        database_id=None,
+    ) is None
+
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(action_cards, "build_report_format_choice", lambda **kwargs: created.append(kwargs) or {"id": "choice-1"})
+    payloads = ai_chat_module._create_file_format_choice_actions(
+        results=[tool_result],
+        conversation_id="conversation-1",
+        run_id="run-1",
+        requester_user_id=7,
+    )
+
+    assert len(payloads) == 1
+    assert len(created) == 1
+    assert created[0]["database_id"] is None
+    assert created[0]["payload"]["source_file_spec"]["content"] == "Decision: prepare the rollout checklist."
+
+
+def test_ai_context_limits_cannot_exceed_product_caps():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    assert 1 <= ai_chat_module.AI_CONTEXT_DB_MESSAGE_WINDOW <= 20
+    assert 1 <= ai_chat_module.AI_CONTEXT_RENDERED_MESSAGE_WINDOW <= 20
+    assert 4096 <= ai_chat_module.AI_INPUT_BUDGET_TOKENS <= 32000
+    assert 128 <= ai_chat_module.AI_ROLLING_SUMMARY_TOKENS <= 1500
+    assert 1 <= ai_chat_module.AI_MEMORY_MAX_FACTS <= 20
+    assert 128 <= ai_chat_module.AI_MEMORY_MAX_TOKENS <= 4000
+    assert 4096 <= ai_chat_module.AI_MODEL_CONTEXT_WINDOW <= 32000
 
 
 def test_report_format_choice_confirm_sends_one_generated_file(tmp_path, monkeypatch):
@@ -1078,6 +1956,7 @@ def test_report_format_choice_confirm_sends_one_generated_file(tmp_path, monkeyp
             "database_id": "ITINVENT",
         },
     )
+    assert card["preview"]["formats"] == ["xlsx", "pdf", "docx", "csv", "txt", "md", "json"]
     sent_files: list[dict[str, object]] = []
 
     class FakeChatService:
@@ -1600,6 +2479,7 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     chat_db = importlib.import_module("backend.chat.db")
     chat_models = importlib.import_module("backend.chat.models")
     app_models = importlib.import_module("backend.appdb.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
     user_service_module = importlib.import_module("backend.services.user_service")
 
     monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
@@ -1657,15 +2537,43 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     bot = temp_ai_service.ensure_default_bot()
     opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     reopened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    second_dialog = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     listed_bots = temp_ai_service.list_bots(current_user_id=int(actor["id"]))
 
     assert opened["id"] == reopened["id"]
+    assert second_dialog["id"] != opened["id"]
     assert opened["kind"] == "ai"
-    assert listed_bots["items"][0]["conversation_id"] == opened["id"]
+    assert listed_bots["items"][0]["conversation_id"] == second_dialog["id"]
+    assert listed_bots["items"][0]["conversation_ids"] == [second_dialog["id"], opened["id"]]
+    renamed_dialog = temp_ai_service.rename_conversation(
+        conversation_id=second_dialog["id"],
+        current_user_id=int(actor["id"]),
+        title="Equipment report",
+    )
+    assert renamed_dialog["title"] == "Equipment report"
+    deleted_dialog = temp_ai_service.delete_conversation(
+        conversation_id=second_dialog["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert deleted_dialog["conversation_id"] == second_dialog["id"]
+    listed_after_delete = temp_ai_service.list_bots(current_user_id=int(actor["id"]))
+    assert listed_after_delete["items"][0]["conversation_ids"] == [opened["id"]]
 
     with chat_db.chat_session(database_url) as session:
+        assert session.get(chat_models.ChatConversation, second_dialog["id"]) is None
         conversation = session.get(chat_models.ChatConversation, opened["id"])
         assert conversation is not None
+        session.add(
+            chat_models.ChatPushSubscription(
+                user_id=int(actor["id"]),
+                endpoint="https://push.example.test/ai-runtime",
+                p256dh_key="test-p256dh",
+                auth_key="test-auth",
+                is_active=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
         user_message = chat_models.ChatMessage(
             id="msg-human-1",
             conversation_id=opened["id"],
@@ -1754,8 +2662,9 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     assert runs[0].status == "completed"
     assert runs[0].stage == "completed"
     assert direct_push_calls == []
-    assert len(push_outbox) >= 1
-    assert len(message_outbox) >= 1
+    assert len(push_outbox) == 1
+    assert len(message_outbox) == 2
+    assert len({str(item.dedupe_key) for item in message_outbox}) == 2
     assert [item.event_type for item in typing_outbox] == ["chat.typing.started", "chat.typing.stopped"]
     assert all(str(item.target_scope) == "conversation" for item in typing_outbox)
 
@@ -1764,6 +2673,7 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
         for item in status_outbox
     ]
     stage_names = [item.get("stage") for item in stage_events]
+    partial_events = [item for item in stage_events if item.get("partial_text")]
 
     assert stage_names[:5] == [
         "queued",
@@ -1773,11 +2683,39 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
         "generating_answer",
     ]
     assert stage_names[-1] == "completed"
+    assert partial_events
+    assert partial_events[-1]["partial_text"].startswith("## AI reply")
     assert "generating_files" not in stage_names
     assert stage_events[0]["status_text"] == "Запрос принят. Ставлю задачу в очередь."
     assert any(item.get("status_text") == "Изучаю вложенные файлы и контекст." for item in stage_events)
     assert any(item.get("status_text") == "Проверяю базу знаний и документы." for item in stage_events)
     assert any(item.get("status_text") == "Формирую ответ." for item in stage_events)
+
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBotRun(
+                id="run-cancel-1",
+                bot_id=bot["id"],
+                conversation_id=opened["id"],
+                user_id=int(actor["id"]),
+                trigger_message_id="msg-human-1",
+                status="running",
+                stage="generating_answer",
+                status_text="Working",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+    cancelled = temp_ai_service.cancel_active_run(
+        conversation_id=opened["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["stage"] == "cancelled"
+    with appdb_db.app_session(database_url) as session:
+        cancelled_run = session.get(app_models.AppAiBotRun, "run-cancel-1")
+        assert cancelled_run is not None
+        assert cancelled_run.status == "cancelled"
 
     public_users = temp_user_service.list_users()
     assert all(not str(item["username"]).startswith(user_service_module.SYSTEM_BOT_USERNAME_PREFIX) for item in public_users)

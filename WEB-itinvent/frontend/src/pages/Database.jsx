@@ -372,7 +372,7 @@ function Database() {
     setSearchQuery,
     filteredData,
     setFilteredData,
-    equipmentSearchEnabled: !isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT,
+    equipmentSearchEnabled: isConsumablesMode || searchScope === SEARCH_SCOPE_EQUIPMENT,
   });
   const {
     actResults,
@@ -791,7 +791,13 @@ function Database() {
         if (!invNo) return;
         const prev = actEquipmentCacheRef.current.get(invNo) || {};
         const next = { ...prev, ...row };
+        actEquipmentCacheRef.current.delete(invNo);
         actEquipmentCacheRef.current.set(invNo, next);
+        while (actEquipmentCacheRef.current.size > 24) {
+          const oldestKey = actEquipmentCacheRef.current.keys().next().value;
+          if (oldestKey === undefined) break;
+          actEquipmentCacheRef.current.delete(oldestKey);
+        }
         mergedRows.push(next);
       });
 

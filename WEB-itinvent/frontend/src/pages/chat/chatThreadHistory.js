@@ -1,4 +1,4 @@
-export const CHAT_THREAD_BOOTSTRAP_LIMIT = 40;
+export const CHAT_THREAD_BOOTSTRAP_LIMIT = 24;
 
 export function threadFitsSingleBootstrapPage(messageCount, limit = CHAT_THREAD_BOOTSTRAP_LIMIT) {
   const normalizedCount = Number(messageCount || 0);

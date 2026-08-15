@@ -43,6 +43,7 @@ def load_convert_sources_for_message(
     conversation_id: str,
     message_id: str,
     include_reply: bool = True,
+    attachment_id: str | None = None,
 ) -> list[ConvertSource]:
     normalized_conversation_id = str(conversation_id or "").strip()
     normalized_message_id = str(message_id or "").strip()
@@ -52,18 +53,25 @@ def load_convert_sources_for_message(
     message_ids: list[str] = [normalized_message_id]
     with chat_session() as session:
         trigger = session.get(ChatMessage, normalized_message_id)
-        if trigger is None:
+        if trigger is None or str(getattr(trigger, "conversation_id", "") or "").strip() != normalized_conversation_id:
             return []
         if include_reply:
             reply_id = str(getattr(trigger, "reply_to_message_id", "") or "").strip()
             if reply_id:
-                message_ids.append(reply_id)
+                reply = session.get(ChatMessage, reply_id)
+                if reply is not None and str(getattr(reply, "conversation_id", "") or "").strip() == normalized_conversation_id:
+                    message_ids.append(reply_id)
+        query = (
+            select(ChatMessageAttachment)
+            .where(ChatMessageAttachment.conversation_id == normalized_conversation_id)
+            .where(ChatMessageAttachment.message_id.in_(message_ids))
+        )
+        normalized_attachment_id = str(attachment_id or "").strip()
+        if normalized_attachment_id:
+            query = query.where(ChatMessageAttachment.id == normalized_attachment_id)
         rows = list(
             session.execute(
-                select(ChatMessageAttachment)
-                .where(ChatMessageAttachment.conversation_id == normalized_conversation_id)
-                .where(ChatMessageAttachment.message_id.in_(message_ids))
-                .order_by(ChatMessageAttachment.created_at.asc())
+                query.order_by(ChatMessageAttachment.created_at.asc())
             ).scalars()
         )
 
@@ -93,6 +101,7 @@ def convert_attachments_to_markdown(
     conversation_id: str,
     message_id: str,
     include_reply: bool = True,
+    attachment_id: str | None = None,
     vision_fn=None,
     vision_json_fn=None,
 ) -> dict[str, Any]:
@@ -100,6 +109,7 @@ def convert_attachments_to_markdown(
         conversation_id=conversation_id,
         message_id=message_id,
         include_reply=include_reply,
+        attachment_id=attachment_id,
     )
     if not sources:
         raise DocConvertError("Прикрепите PDF или изображение для конвертации")

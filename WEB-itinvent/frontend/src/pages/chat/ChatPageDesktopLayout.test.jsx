@@ -94,6 +94,14 @@ describe('ChatPageDesktopLayout', () => {
     expect(screen.getByTestId('chat-right-panel-slot')).toBeInTheDocument();
   });
 
+  it('uses the requested desktop right panel width for the overlay', () => {
+    renderLayout({ renderDesktopRightPanel: true, desktopRightPanelWidth: 360 });
+
+    expect(screen.getByTestId('chat-desktop-right-panel-overlay')).toHaveStyle({
+      width: 'min(360px, calc(100% - 48px))',
+    });
+  });
+
   it('renders persistent right panel column on wide desktop', () => {
     renderLayout({ renderPersistentRightPanel: true, renderDesktopRightPanel: true });
 

@@ -373,8 +373,15 @@ def split_outgoing_html_for_signature(body_html: Any, *, prefer_blockquote_split
     split_indexes: list[int] = []
     for marker in OUTGOING_QUOTED_MARKERS:
         idx = lowered.find(marker.lower())
-        if idx > 0:
-            split_indexes.append(idx)
+        if idx < 0:
+            continue
+        if not marker.startswith("<"):
+            tag_start = lowered.rfind("<", 0, idx + 1)
+            tag_end = lowered.rfind(">", 0, idx + 1)
+            if tag_start <= tag_end:
+                continue
+            idx = tag_start
+        split_indexes.append(idx)
 
     if prefer_blockquote_split and not split_indexes:
         blockquote_idx = lowered.find("<blockquote")
