@@ -14,6 +14,30 @@ import re
 
 ATTACHMENT_TOKEN_PREFIX = "att2_"
 ATTACHMENT_TOKEN_PREFIX_LEGACY = "att1_"
+MESSAGE_TOKEN_V3_PREFIX = "v3::"
+ITEM_SCOPED_FOLDER = "@item"
+
+# Only well-known folder aliases are case-insensitive. Custom folder tokens are
+# urlsafe base64 from encode_folder_id and MUST keep their original case.
+_WELL_KNOWN_MESSAGE_FOLDERS = frozenset({
+    "inbox",
+    "sent",
+    "sentitems",
+    "drafts",
+    "trash",
+    "deleted",
+    "junk",
+    "spam",
+    "archive",
+})
+
+
+def normalize_message_folder_key(folder: str) -> str:
+    normalized = normalize_text(folder, "inbox")
+    lowered = normalized.lower()
+    if lowered in _WELL_KNOWN_MESSAGE_FOLDERS:
+        return lowered
+    return normalized
 
 
 class MailReferenceError(ValueError):
@@ -25,12 +49,26 @@ def normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
+def is_item_scoped_folder(folder: str) -> bool:
+    return normalize_text(folder) == ITEM_SCOPED_FOLDER
+
+
 def encode_message_id(folder: str, exchange_id: str, mailbox_id: str | None = None) -> str:
     normalized_mailbox_id = normalize_text(mailbox_id)
+    normalized_exchange_id = normalize_text(exchange_id)
+    normalized_folder = normalize_message_folder_key(folder)
+    # Custom folder tokens are already urlsafe base64. Nesting them inside another
+    # message token makes HTTP.sys reject the path segment before FastAPI (400 URL).
+    if normalized_folder not in _WELL_KNOWN_MESSAGE_FOLDERS:
+        if normalized_mailbox_id:
+            raw = f"{MESSAGE_TOKEN_V3_PREFIX}{normalized_mailbox_id}::{normalized_exchange_id}"
+        else:
+            raw = f"{MESSAGE_TOKEN_V3_PREFIX}{normalized_exchange_id}"
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8").rstrip("=")
     if normalized_mailbox_id:
-        raw = f"v2::{normalized_mailbox_id}::{normalize_text(folder, 'inbox')}::{normalize_text(exchange_id)}"
+        raw = f"v2::{normalized_mailbox_id}::{normalized_folder}::{normalized_exchange_id}"
     else:
-        raw = f"{normalize_text(folder, 'inbox')}::{normalize_text(exchange_id)}"
+        raw = f"{normalized_folder}::{normalized_exchange_id}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8").rstrip("=")
 
 
@@ -44,6 +82,15 @@ def decode_message_ref(token: str) -> tuple[str, str, str]:
     except Exception as exc:
         raise MailReferenceError("Invalid message id") from exc
     mailbox_id = ""
+    if raw.startswith(MESSAGE_TOKEN_V3_PREFIX):
+        payload = raw[len(MESSAGE_TOKEN_V3_PREFIX):]
+        if "::" in payload:
+            mailbox_id, exchange_id = payload.split("::", 1)
+        else:
+            exchange_id = payload
+        if not exchange_id:
+            raise MailReferenceError("Invalid message id payload")
+        return ITEM_SCOPED_FOLDER, exchange_id, normalize_text(mailbox_id)
     if raw.startswith("v2::"):
         parts = raw.split("::", 3)
         if len(parts) != 4:
@@ -55,7 +102,7 @@ def decode_message_ref(token: str) -> tuple[str, str, str]:
         folder, exchange_id = raw.split("::", 1)
     if not exchange_id:
         raise MailReferenceError("Invalid message id payload")
-    return normalize_text(folder, "inbox").lower(), exchange_id, normalize_text(mailbox_id)
+    return normalize_message_folder_key(folder), exchange_id, normalize_text(mailbox_id)
 
 
 def decode_message_id(token: str) -> tuple[str, str]:

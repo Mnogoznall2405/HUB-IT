@@ -8,6 +8,7 @@ from backend.services.mail_message_serializer import (
     draft_sender_person_fallback,
     item_recipient_people,
     item_sender,
+    mail_use_reply_to_enabled,
     normalize_subject_for_conversation,
 )
 
@@ -36,6 +37,7 @@ def test_mail_message_serializer_normalizes_sender_recipients_and_subject():
         {"name": "Other", "email": "other@example.com", "display": "Other"},
     ]
     assert normalize_subject_for_conversation("Re: FW: Quarterly Report") == "quarterly report"
+    assert normalize_subject_for_conversation("Отв: Переслано: Отчёт") == "отчёт"
 
 
 def test_mail_message_serializer_detail_preserves_inline_attachment_contract():
@@ -179,3 +181,68 @@ def test_mail_message_serializer_preview_falls_back_to_has_attachments_flag():
     )
 
     assert preview["attachments_count"] == 1
+
+
+def _compose_item(**overrides):
+    item = dict(
+        sender=_person("Boss@Example.COM", "Boss"),
+        to_recipients=[_person("User@Example.COM", "User")],
+        cc_recipients=[_person("Other@Example.COM", "Other")],
+        subject="Help",
+        body="<p>Hi</p>",
+        text_body="Hi",
+        datetime_received=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+    )
+    item.update(overrides)
+    return SimpleNamespace(**item)
+
+
+def test_mail_use_reply_to_enabled_defaults_and_rollback(monkeypatch):
+    monkeypatch.delenv("MAIL_USE_REPLY_TO", raising=False)
+    assert mail_use_reply_to_enabled() is True
+    assert mail_use_reply_to_enabled("") is True
+    assert mail_use_reply_to_enabled("  ") is True
+    assert mail_use_reply_to_enabled("0") is False
+    assert mail_use_reply_to_enabled("false") is False
+    assert mail_use_reply_to_enabled("1") is True
+    assert mail_use_reply_to_enabled("nope") is True
+
+
+def test_build_compose_context_uses_reply_to_for_reply_only(monkeypatch):
+    monkeypatch.delenv("MAIL_USE_REPLY_TO", raising=False)
+    item = _compose_item(reply_to=[_person("Tickets@Example.COM", "Tickets")])
+    ctx = _serializer().build_compose_context(item, "user@example.com", "mailbox-1")
+
+    assert ctx["reply"]["to"] == ["tickets@example.com"]
+    assert "tickets@example.com" not in ctx["reply_all"]["to"]
+    assert "tickets@example.com" not in ctx["reply_all"]["cc"]
+    assert ctx["reply_all"]["to"][0] == "boss@example.com"
+
+
+def test_build_compose_context_reply_falls_back_when_reply_to_absent(monkeypatch):
+    monkeypatch.delenv("MAIL_USE_REPLY_TO", raising=False)
+    ctx = _serializer().build_compose_context(_compose_item(), "user@example.com")
+    assert ctx["reply"]["to"] == ["boss@example.com"]
+
+
+def test_build_compose_context_reply_falls_back_when_reply_to_empty(monkeypatch):
+    monkeypatch.delenv("MAIL_USE_REPLY_TO", raising=False)
+    ctx = _serializer().build_compose_context(_compose_item(reply_to=[]), "user@example.com")
+    assert ctx["reply"]["to"] == ["boss@example.com"]
+
+
+def test_build_compose_context_reply_uses_sender_when_flag_off(monkeypatch):
+    monkeypatch.setenv("MAIL_USE_REPLY_TO", "0")
+    item = _compose_item(reply_to=[_person("tickets@example.com", "Tickets")])
+    ctx = _serializer().build_compose_context(item, "user@example.com")
+    assert ctx["reply"]["to"] == ["boss@example.com"]
+
+
+def test_build_compose_context_keeps_multiple_reply_to_addresses(monkeypatch):
+    monkeypatch.delenv("MAIL_USE_REPLY_TO", raising=False)
+    item = _compose_item(reply_to=[
+        _person("a@example.com", "A"),
+        _person("b@example.com", "B"),
+    ])
+    ctx = _serializer().build_compose_context(item, "user@example.com")
+    assert ctx["reply"]["to"] == ["a@example.com", "b@example.com"]

@@ -1876,6 +1876,30 @@ describe('MainLayout hub Windows notifications', () => {
       restoreDesktopMatchMedia();
     }
   });
+
+  it('renders headerInlineContent in the default AppBar and supports edge-to-edge desktop content', async () => {
+    mockLocation.pathname = '/mail';
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+
+    try {
+      render(
+        <MainLayout contentMode="edge-to-edge" headerInlineContent={<div data-testid="mail-header-slot">mailbox</div>}>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-header-inline')).toHaveTextContent('mailbox');
+      expect(screen.getByTestId('main-layout-content')).toHaveAttribute('data-content-mode', 'edge-to-edge');
+      expect(screen.getByTestId('main-layout-content')).toHaveAttribute('data-edge-to-edge-mobile', 'false');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
 });
 
 describe('MainLayout mobile bottom navigation', () => {

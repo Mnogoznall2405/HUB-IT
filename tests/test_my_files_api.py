@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.api.deps import get_current_active_user
 from backend.api.v1 import my_files as my_files_api
 from backend.config import MyFilesPublicRateLimitConfig, config
 from backend.models.auth import User
@@ -182,11 +183,29 @@ class FakeMyFilesService:
             download_size_bytes=11,
         )
 
+    def get_public_preview_meta(self, *, token: str):
+        if token not in {"share-token", "share-token-b"}:
+            raise MyFilesNotFoundError("File not found")
+        return {
+            "preview_kind": "text",
+            "source_kind": "text",
+            "source_filename": f"{token}.txt",
+            "pdf_filename": "",
+            "page_count": 1,
+            "sheets": [],
+            "preview_url": f"/api/v1/my-files/public/{token}/preview/content",
+        }
+
+    def get_public_preview_content(self, *, token: str):
+        if token not in {"share-token", "share-token-b"}:
+            raise MyFilesNotFoundError("File not found")
+        return b"hello world", "text/plain", f"{token}.txt"
+
 
 def _client(fake_service: FakeMyFilesService) -> TestClient:
     app = FastAPI()
     app.include_router(my_files_api.router, prefix="/my-files")
-    app.dependency_overrides[my_files_api.get_current_active_user] = _user
+    app.dependency_overrides[get_current_active_user] = _user
     return TestClient(app)
 
 
@@ -208,7 +227,7 @@ def _custom_permission_client(fake_service: FakeMyFilesService, permissions: lis
         use_custom_permissions=True,
         custom_permissions=permissions,
     )
-    app.dependency_overrides[my_files_api.get_current_active_user] = lambda: user
+    app.dependency_overrides[get_current_active_user] = lambda: user
     return TestClient(app)
 
 
@@ -221,14 +240,14 @@ def _custom_permission_client(fake_service: FakeMyFilesService, permissions: lis
         "/my-files/public/share-token/download",
     ],
 )
-def test_shared_file_endpoints_require_active_auth(monkeypatch, tmp_path, path):
+def test_shared_file_endpoints_are_public(monkeypatch, tmp_path, path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
     client = _public_client(fake_service)
 
     response = client.get(path)
 
-    assert response.status_code in {401, 403}
+    assert response.status_code == 200
 
 
 def test_authenticated_user_can_read_shared_file_metadata(monkeypatch, tmp_path):

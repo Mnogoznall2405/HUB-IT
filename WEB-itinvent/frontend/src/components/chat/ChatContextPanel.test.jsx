@@ -161,7 +161,7 @@ describe('ChatContextPanel', () => {
 
     fireEvent.click(screen.getByAltText('photo.png'));
     expect(onOpenAttachmentPreview).toHaveBeenCalledWith('msg-1', expect.objectContaining({ id: 'att-1' }));
-    expect(screen.getAllByText('Фото').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Фото/).length).toBeGreaterThan(0);
   });
 
   it('requests video attachments when the user opens the video section', async () => {
@@ -294,7 +294,7 @@ describe('ChatContextPanel', () => {
 
     await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-1'));
     expect(screen.getByText('Информация')).toBeInTheDocument();
-    expect(screen.getAllByText('Фото').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Фото/).length).toBeGreaterThan(0);
   });
 
   it('renders the mobile full-screen profile layout for chat info', async () => {
@@ -309,7 +309,7 @@ describe('ChatContextPanel', () => {
     expect(screen.getByLabelText('Закрыть информацию')).toBeInTheDocument();
     expect(screen.getByText('Информация')).toBeInTheDocument();
     expect(screen.getAllByText('Уведомления').length).toBeGreaterThan(0);
-    expect(screen.getByText('Фото')).toBeInTheDocument();
+    expect(screen.getByText(/Фото/)).toBeInTheDocument();
     expect(screen.getByText('Файлы')).toBeInTheDocument();
     expect(screen.getByText('Ссылки')).toBeInTheDocument();
     expect(screen.getByText('Задачи')).toBeInTheDocument();

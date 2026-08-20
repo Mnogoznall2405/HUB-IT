@@ -129,8 +129,10 @@ export default function TasksListLayout() {
           taskDiscussionChatEnabled={filters.taskDiscussionChatEnabled}
           activeTaskProjects={list.activeTaskProjects}
           canDeleteTask={detail.canDeleteTask}
+          getTaskActionMenuItems={detail.getTaskActionMenuItems}
           onOpenTask={detail.openTaskDetails}
           onDeleteTask={detail.handleDeleteTask}
+          onTaskMenuSelect={detail.handleTaskMenuAction}
           deadlineBuckets={list.deadlineBuckets}
           canCreateTasks={filters.canCreateTasks}
           onCreateWithPreset={create.openCreateTaskWithPreset}

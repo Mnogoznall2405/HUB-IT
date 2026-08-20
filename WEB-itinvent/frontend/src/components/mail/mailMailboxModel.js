@@ -146,3 +146,33 @@ export const resolveComposeMailboxId = ({
   if (normalizedActiveMailboxId) return normalizedActiveMailboxId;
   return getMailboxEntryId((Array.isArray(composeFromOptions) ? composeFromOptions : [])[0]);
 };
+
+export const getMailMailboxPrimaryDomain = (mailboxEmails) => {
+  const primary = Array.from(mailboxEmails || [])[0] || '';
+  return String(primary.split('@')[1] || '').trim().toLowerCase();
+};
+
+export const collectMailboxEmails = (mailboxInfo) => {
+  const values = [
+    mailboxInfo?.mailbox_email,
+    mailboxInfo?.mailbox_login,
+    mailboxInfo?.effective_mailbox_login,
+  ];
+  const set = new Set();
+  values.forEach((value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) set.add(normalized);
+  });
+  return set;
+};
+
+export const getActiveMailboxes = (mailboxes) => (
+  Array.isArray(mailboxes) ? mailboxes.filter((item) => item?.is_active !== false) : []
+);
+
+export const buildComposeFromOptions = ({ mailboxes, mailboxInfo } = {}) => {
+  const activeMailboxes = getActiveMailboxes(mailboxes);
+  if (activeMailboxes.length > 0) return activeMailboxes;
+  const fallback = buildFallbackMailboxEntry(mailboxInfo);
+  return fallback ? [fallback] : [];
+};

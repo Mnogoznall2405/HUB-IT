@@ -1,13 +1,14 @@
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import EmployeeEquipmentDialog from './EmployeeEquipmentDialog';
 
-const { getEmployeeEquipment, getEmployeeWarehouse } = vi.hoisted(() => ({
+const { getEmployeeEquipment, getEmployeeWarehouse, exportEmployeeEquipmentWorkbook } = vi.hoisted(() => ({
   getEmployeeEquipment: vi.fn(),
   getEmployeeWarehouse: vi.fn(),
+  exportEmployeeEquipmentWorkbook: vi.fn(),
 }));
 
 vi.mock('../../api/equipmentSearch', () => ({
@@ -16,6 +17,10 @@ vi.mock('../../api/equipmentSearch', () => ({
 
 vi.mock('../../api/warehouse1c', () => ({
   warehouse1cAPI: { getEmployeeWarehouse },
+}));
+
+vi.mock('./employeeEquipmentExcel', () => ({
+  exportEmployeeEquipmentWorkbook,
 }));
 
 vi.mock('./HubNomenclatureMatchDialog', () => ({
@@ -40,6 +45,8 @@ describe('EmployeeEquipmentDialog', () => {
     getEmployeeEquipment.mockReset();
     getEmployeeEquipment.mockResolvedValue({ equipment: [] });
     getEmployeeWarehouse.mockReset();
+    exportEmployeeEquipmentWorkbook.mockReset();
+    exportEmployeeEquipmentWorkbook.mockResolvedValue('оборудование.xlsx');
   });
 
   it('keeps a non-admin lookup within the current Hub database', async () => {
@@ -142,6 +149,48 @@ describe('EmployeeEquipmentDialog', () => {
       employeeName: 'Иванов И.И.',
       warehouseRef: 'wh-1',
       loadBalances: true,
+    });
+  });
+
+  it('exports both visible tables to Excel after they finish loading', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', SERIAL_NO: 'SN-1', PART_NO: 'PN-1' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Екатерина Юрьевна' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Екатерина Юрьевна' },
+        balances: [{ nomenclature_code: '10', nomenclature_name: 'Кабель', qty_balance: 2 }],
+      });
+
+    renderDialog(false, true);
+
+    const exportButton = await screen.findByRole('button', { name: 'Выгрузить в Excel' });
+    await waitFor(() => expect(exportButton).not.toBeDisabled());
+    expect(await screen.findByText('INV-1')).toBeInTheDocument();
+    expect(await screen.findByText('Кабель')).toBeInTheDocument();
+
+    fireEvent.click(exportButton);
+
+    await waitFor(() => {
+      expect(exportEmployeeEquipmentWorkbook).toHaveBeenCalledWith({
+        employeeName: 'Иванова Екатерина Юрьевна',
+        hubItems: [
+          { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', SERIAL_NO: 'SN-1', PART_NO: 'PN-1' },
+        ],
+        warehouseBalances: [
+          { nomenclature_code: '10', nomenclature_name: 'Кабель', qty_balance: 2 },
+        ],
+        warehouseName: 'Иванова Екатерина Юрьевна',
+        warehouseStatus: 'matched',
+        includeWarehouse: true,
+        filterText: '',
+      });
     });
   });
 });

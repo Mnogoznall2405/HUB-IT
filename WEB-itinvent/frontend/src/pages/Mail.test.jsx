@@ -37,6 +37,8 @@ const {
   mockMarkConversationAsUnread,
   mockGetUnreadCount,
   mockBulkMessageAction,
+  mockSaveDraftMultipart,
+  mockDeleteDraft,
   mockNotifySuccess,
   mockNotifyInfo,
   mockNotifyWarning,
@@ -72,6 +74,8 @@ const {
   mockMarkConversationAsUnread: vi.fn(),
   mockGetUnreadCount: vi.fn(),
   mockBulkMessageAction: vi.fn(),
+  mockSaveDraftMultipart: vi.fn(),
+  mockDeleteDraft: vi.fn(),
   mockNotifySuccess: vi.fn(),
   mockNotifyInfo: vi.fn(),
   mockNotifyWarning: vi.fn(),
@@ -93,9 +97,13 @@ vi.mock('../contexts/NotificationContext', () => ({
   }),
 }));
 
-function installMatchMedia({ mobile = false } = {}) {
+function installMatchMedia({ mobile = false, compactDesktop = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
-    matches: mobile ? query.includes('max-width:599.95px') : false,
+    matches: mobile
+      ? query.includes('max-width:599.95px')
+      : (compactDesktop
+        ? (query.includes('1099.95px') || query.includes('899.95px') || query.includes('max-width:1100px') || query.includes('max-width:900px'))
+        : false),
     media: query,
     onchange: null,
     addEventListener: () => {},
@@ -106,12 +114,25 @@ function installMatchMedia({ mobile = false } = {}) {
   }));
 }
 
+function expectCalledWithParams(mockFn, partial) {
+  expect(
+    mockFn.mock.calls.some(([params]) => (
+      Object.entries(partial).every(([key, value]) => Object.is(params?.[key], value))
+    )),
+  ).toBe(true);
+}
+
+function expectGetMessagesCalledWith(partial) {
+  expectCalledWithParams(mockGetMessages, partial);
+}
+
 vi.mock('../components/layout/MainLayout', () => ({
   default: ({
     children,
     headerMode = 'default',
     contentMode = 'default',
     mobileBottomNavMode = 'auto',
+    headerInlineContent = null,
   }) => (
     <div
       data-testid="layout"
@@ -119,6 +140,7 @@ vi.mock('../components/layout/MainLayout', () => ({
       data-content-mode={contentMode}
       data-mobile-bottom-nav-mode={mobileBottomNavMode}
     >
+      {headerInlineContent}
       {children}
     </div>
   ),
@@ -286,10 +308,14 @@ vi.mock('../components/mail/MailFolderRail', () => ({
     onDeleteFolderRequest,
     onToggleFavorite,
     onDropMessagesToFolder,
+    onCompose,
   }) => {
     mockRenderStats.folderRail += 1;
     return (
     <div data-testid="mail-folder-rail">
+      <button type="button" data-testid="mail-compose-button" aria-label="Написать письмо" onClick={() => onCompose?.()}>
+        Написать
+      </button>
       <button type="button" data-testid="switch-messages" onClick={() => onViewModeChange?.('messages')}>messages</button>
       <button type="button" data-testid="switch-conversations" onClick={() => onViewModeChange?.('conversations')}>conversations</button>
       <button type="button" data-testid="switch-sent" onClick={() => onFolderChange?.('sent')}>sent</button>
@@ -469,9 +495,8 @@ vi.mock('../components/mail/MailTemplatesDialog', () => ({
   ) : null),
 }));
 vi.mock('../components/mail/MailToolbar', () => ({
-  default: ({ mobile, currentFolderLabel, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch, onOpenToolsMenu }) => (
-    <div data-testid="mail-toolbar" data-mobile={mobile ? 'true' : 'false'}>
-      <span data-testid="toolbar-current-folder">{currentFolderLabel}</span>
+  default: ({ mobile, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch, onOpenToolsMenu, showNavigationButton }) => (
+    <div data-testid="mail-toolbar" data-mobile={mobile ? 'true' : 'false'} data-show-navigation={showNavigationButton ? 'true' : 'false'}>
       <button type="button" data-testid="mail-toolbar-open-mailboxes" onClick={() => onOpenMailboxList?.()}>
         open-mailboxes
       </button>
@@ -481,7 +506,7 @@ vi.mock('../components/mail/MailToolbar', () => ({
       <button type="button" data-testid="mail-toolbar-open-tools" onClick={(event) => onOpenToolsMenu?.(event)}>
         open-tools
       </button>
-      {mobile ? (
+      {(mobile || showNavigationButton) ? (
         <button type="button" data-testid="mail-list-open-navigation" onClick={() => onOpenNavigation?.()}>
           open-navigation
         </button>
@@ -575,7 +600,7 @@ vi.mock('../components/mail/MailPreviewHeader', () => ({
   default: ({ selectedMessage, selectedConversation, viewMode, onToggleReadState, showBackButton, onBackToList, onOpenComposeFromMessage }) => {
     if (!selectedMessage) return null;
     return (
-      <div data-testid="mail-preview-header">
+      <div data-testid="mail-preview-header" data-message-id={selectedMessage?.id || ''}>
         {showBackButton ? (
           <button type="button" data-testid="preview-back" onClick={onBackToList}>back</button>
         ) : null}
@@ -625,6 +650,8 @@ vi.mock('../api/client', () => ({
     markConversationAsUnread: mockMarkConversationAsUnread,
     getUnreadCount: mockGetUnreadCount,
     bulkMessageAction: mockBulkMessageAction,
+    saveDraftMultipart: mockSaveDraftMultipart,
+    deleteDraft: mockDeleteDraft,
     searchContacts: vi.fn(async () => []),
   },
 }));
@@ -679,6 +706,34 @@ function buildMessagePage(ids = [], overrides = {}) {
     search_limited: false,
     searched_window: 0,
   };
+}
+
+function installTwoInboxMessages() {
+  const first = buildMessage({ id: 'msg-42', subject: 'First inbox' });
+  const second = buildMessage({
+    id: 'msg-99',
+    subject: 'Second inbox',
+    sender: 'other@example.com',
+    sender_email: 'other@example.com',
+    sender_display: 'Other User',
+    is_read: true,
+  });
+  const messages = {
+    items: [first, second],
+    total: 2,
+    offset: 0,
+    limit: 50,
+    has_more: false,
+    next_offset: null,
+    search_limited: false,
+    searched_window: 0,
+  };
+  mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({ messages }));
+  mockGetMessages.mockResolvedValue(messages);
+  mockGetMessage.mockImplementation(async (id) => (
+    String(id) === 'msg-99' ? { ...second } : { ...first }
+  ));
+  return { first, second };
 }
 
 function createDeferred() {
@@ -807,6 +862,8 @@ describe('Mail read-state behavior', () => {
     mockMarkConversationAsUnread.mockReset();
     mockGetUnreadCount.mockReset();
     mockBulkMessageAction.mockReset();
+    mockSaveDraftMultipart.mockReset();
+    mockDeleteDraft.mockReset();
     mockNotifySuccess.mockReset();
     mockNotifyInfo.mockReset();
     mockNotifyWarning.mockReset();
@@ -892,7 +949,7 @@ describe('Mail read-state behavior', () => {
     mockDownloadAttachment.mockResolvedValue({
       data: new TextEncoder().encode('attachment body'),
       headers: {
-        'content-disposition': 'attachment; filename=\"report.txt\"',
+        'content-disposition': 'attachment; filename="report.txt"',
         'content-type': 'text/plain',
       },
     });
@@ -911,6 +968,8 @@ describe('Mail read-state behavior', () => {
     mockMarkConversationAsUnread.mockResolvedValue({ ok: true, changed: 2 });
     mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
     mockBulkMessageAction.mockResolvedValue({ ok: true });
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-saved', attachments: [], saved_at: '2026-08-20T00:00:00Z' });
+    mockDeleteDraft.mockResolvedValue({ ok: true });
     mockDeleteFolder.mockResolvedValue({ ok: true, folder_id: 'deleted-folder' });
     mockCreateFolder.mockResolvedValue({ ok: true, folder_id: 'created-folder' });
     mockRenameFolder.mockResolvedValue({ ok: true, folder_id: 'renamed-folder' });
@@ -944,6 +1003,27 @@ describe('Mail read-state behavior', () => {
     expect(shell.getAttribute('data-mail-mono-font')).toContain('Cascadia Mono');
     expect(shell.getAttribute('data-mail-radius-md')).toBe('10px');
     expect(shell.getAttribute('data-mail-radius-lg')).toBe('12px');
+  });
+
+  it('collapses the desktop folder pane around 1100px and keeps a navigation toggle', async () => {
+    installMatchMedia({ compactDesktop: true });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('mail-toolbar')).toHaveAttribute('data-show-navigation', 'true');
+    expect(screen.queryByTestId('mail-folder-pane-resizer')).toBeNull();
+    expect(screen.getByTestId('mail-compose-button')).toBeTruthy();
+    expect(screen.queryByTestId('mail-compose-fab')).toBeNull();
   });
 
   it('starts with a wider folder pane and persists pointer resizing for the current user', async () => {
@@ -1297,7 +1377,59 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.queryByTestId('mail-item-msg-inbox')).toBeNull();
-    expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({ folder: 'custom-empty' }));
+    expectGetMessagesCalledWith({ folder: 'custom-empty' });
+  });
+
+  it('clears inbox rows immediately when switching to conversations and restores messages from cache', async () => {
+    const conversationsDeferred = createDeferred();
+    mockGetConversations.mockImplementation(() => conversationsDeferred.promise);
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-42')).toBeTruthy();
+    });
+
+    fireEvent.click(within(screen.getByTestId('page-shell')).getByTestId('switch-conversations'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('mail-item-msg-42')).toBeNull();
+
+    await act(async () => {
+      conversationsDeferred.resolve({
+        items: [buildConversationSummary()],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        has_more: false,
+      });
+      await conversationsDeferred.promise;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-conv-1')).toBeTruthy();
+    });
+
+    fireEvent.click(within(screen.getByTestId('page-shell')).getByTestId('switch-messages'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('mail-item-msg-42')).toBeTruthy();
+    expect(screen.queryByTestId('mail-item-conv-1')).toBeNull();
   });
 
   it('shows animated first-load state only when bootstrap has no cached payload yet', async () => {
@@ -1346,7 +1478,7 @@ describe('Mail read-state behavior', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Входящие');
+      expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Входящие');
     });
     expect(screen.queryByTestId('mail-initial-loading')).toBeNull();
   });
@@ -1418,7 +1550,8 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
     });
 
-    expect(mockGetBootstrap).toHaveBeenCalledWith(expect.objectContaining({ limit: 20 }));
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge');
+    expectCalledWithParams(mockGetBootstrap, { limit: 20 });
   });
 
   it('loads unread counts lazily for deferred and stale non-active mailboxes when mailbox list opens', async () => {
@@ -1815,7 +1948,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-mobile-navigation-drawer')).not.toBeVisible();
     });
 
-    expect(screen.getByTestId('mail-list-current-folder').textContent).toBe('Отправленные');
+    expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Отправленные');
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
@@ -1925,7 +2058,7 @@ describe('Mail read-state behavior', () => {
     expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-count', '1');
     expect(screen.getByTestId('mail-bulk-action-bar-footer')).toHaveAttribute('data-count', '1');
     expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', '');
-    expect(screen.getByTestId('mail-compose-fab')).toHaveAttribute('data-mobile-bulk-offset', 'true');
+    expect(screen.queryByTestId('mail-compose-fab')).toBeNull();
 
     fireEvent.click(screen.getByTestId('mail-item-msg-2'));
 
@@ -2138,7 +2271,7 @@ describe('Mail read-state behavior', () => {
     mockGetMessage.mockResolvedValue(buildMessage({
       id: 'msg-42',
       is_read: true,
-      body_html: '<div data-mail-table-scroll=\"true\">Wide content</div>',
+      body_html: '<div data-mail-table-scroll="true">Wide content</div>',
       body_text: 'Wide content',
     }));
 
@@ -2233,6 +2366,8 @@ describe('Mail read-state behavior', () => {
     expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
+    expect(screen.getByTestId('mail-conversation-mobile-quick-reply')).toBeTruthy();
+    expect(screen.getByTestId('mail-quick-reply-bar')).toBeTruthy();
   });
 
   it('falls back to getMessages when inbox bootstrap does not include visible items', async () => {
@@ -2260,7 +2395,7 @@ describe('Mail read-state behavior', () => {
     );
 
     await waitFor(() => {
-      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({ folder: 'inbox' }));
+      expectGetMessagesCalledWith({ folder: 'inbox' });
     });
 
     await waitFor(() => {
@@ -2727,17 +2862,17 @@ describe('Mail read-state behavior', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Входящие');
+      expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Входящие');
     });
 
     fireEvent.click(within(screen.getByTestId('page-shell')).getByTestId('switch-sent'));
 
     await waitFor(() => {
-      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({ folder: 'sent' }));
+      expectGetMessagesCalledWith({ folder: 'sent' });
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Отправленные');
+      expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Отправленные');
       expect(screen.getByTestId('mail-item-msg-sent-1')).toBeTruthy();
     });
 
@@ -2755,12 +2890,12 @@ describe('Mail read-state behavior', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId('toolbar-current-folder').textContent).toBe('Отправленные');
+      expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Отправленные');
     });
 
     expect(screen.getByTestId('mail-item-msg-sent-1')).toBeTruthy();
     await waitFor(() => {
-      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({ folder: 'sent' }));
+      expectGetMessagesCalledWith({ folder: 'sent' });
     });
   });
 
@@ -2788,14 +2923,12 @@ describe('Mail read-state behavior', () => {
     );
 
     await waitFor(() => {
-      expect(mockGetBootstrap).toHaveBeenCalledWith(expect.objectContaining({
-        mailbox_id: 'shared',
-      }));
+      expectCalledWithParams(mockGetBootstrap, { mailbox_id: 'shared' });
     });
     expect(window.sessionStorage.getItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY)).toBe('shared');
   });
 
-  it('opens desktop compose inline in the preview pane from the floating action button', async () => {
+  it('opens desktop compose inline in the preview pane from the compose button', async () => {
     render(
       <MemoryRouter initialEntries={['/mail']}>
         <Routes>
@@ -2849,7 +2982,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByTestId('mail-compose-fab'));
+    fireEvent.click(screen.getByTestId('mail-compose-button'));
 
     await waitFor(() => {
       expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
@@ -2934,6 +3067,108 @@ describe('Mail read-state behavior', () => {
         expect(screen.getByTestId('mail-preview-header')).toBeTruthy();
       });
     }
+  });
+
+  it('closes an empty new compose and opens the clicked inbox message', async () => {
+    installTwoInboxMessages();
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-99')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByLabelText(/Написать письмо/i));
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-msg-99'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('mail-compose-inline-pane')).toBeNull();
+      expect(screen.getByTestId('mail-preview-header')).toHaveAttribute('data-message-id', 'msg-99');
+    });
+    expect(screen.queryByRole('dialog', { name: 'Сохранить письмо в черновики?' })).toBeNull();
+  });
+
+  it('autosaves a typed compose into drafts when another message is selected', async () => {
+    installTwoInboxMessages();
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-99')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByLabelText(/Написать письмо/i));
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('mail-compose-body-field'), {
+      target: { value: '<p>Draft body</p>' },
+    });
+    fireEvent.click(screen.getByTestId('mail-item-msg-99'));
+
+    await waitFor(() => {
+      expect(mockSaveDraftMultipart).toHaveBeenCalled();
+      expect(screen.queryByTestId('mail-compose-inline-pane')).toBeNull();
+      expect(screen.getByTestId('mail-preview-header')).toHaveAttribute('data-message-id', 'msg-99');
+    });
+    expect(screen.queryByRole('dialog', { name: 'Сохранить письмо в черновики?' })).toBeNull();
+    expect(mockNotifySuccess).toHaveBeenCalledWith(
+      'Письмо сохранено в черновики.',
+      expect.objectContaining({ source: 'mail' }),
+    );
+  });
+
+  it('keeps compose open when the user continues editing after the close button', async () => {
+    installTwoInboxMessages();
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-42')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-msg-42'));
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-preview-header')).toHaveAttribute('data-message-id', 'msg-42');
+    });
+
+    fireEvent.click(screen.getByLabelText(/Написать письмо/i));
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('mail-compose-subject-field'), {
+      target: { value: 'Keep this draft' },
+    });
+    fireEvent.click(screen.getByTestId('mail-compose-close-action'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Продолжить редактирование' }));
+
+    expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    expect(screen.queryByTestId('mail-preview-header')).toBeNull();
+    expect(mockSaveDraftMultipart).not.toHaveBeenCalled();
   });
 
   it('sends a quick reply from the preview and refreshes mail data', async () => {
@@ -3032,20 +3267,25 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(within(previewPanel).getByTestId('mail-quick-reply-send'));
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledWith({
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({
         from_mailbox_id: 'mb-reply',
         to: ['boss@example.com', 'team@example.com'],
         cc: ['copy@example.com'],
         bcc: [],
         subject: 'Re: Budget review',
-        body: '<p>Line &lt;one&gt;<br/>Line two &gt;</p>',
+        body: expect.stringContaining('<p>Line &lt;one&gt;<br/>Line two &gt;</p>'),
         is_html: true,
         reply_to_message_id: 'msg-reply',
-      });
+        idempotencyKey: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        ),
+      }));
+      expect(String(mockSendMessage.mock.calls[0][0].body)).toContain('quoted-mail');
+      expect(String(mockSendMessage.mock.calls[0][0].body)).toContain('Hello');
     });
     await waitFor(() => {
       expect(mockGetConversations).toHaveBeenCalled();
-      expect(mockGetFolderSummary).toHaveBeenCalledWith({ mailbox_id: 'mb-primary' });
+      expectCalledWithParams(mockGetFolderSummary, { mailbox_id: 'mb-primary' });
     });
     expect(within(previewPanel).getByTestId('mail-quick-reply-body').value).toBe('');
   });
@@ -3084,13 +3324,13 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('advanced-apply'));
 
     await waitFor(() => {
-      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({
+      expectGetMessagesCalledWith({
         q: 'quarterly',
         from_filter: 'sender@example.com',
         subject_filter: 'Budget',
         folder_scope: 'all',
         offset: 0,
-      }));
+      });
     });
 
     expect(JSON.parse(window.localStorage.getItem('mail_recent_searches_v1'))[0]).toMatchObject({
@@ -3133,12 +3373,12 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('advanced-recent-0'));
 
     await waitFor(() => {
-      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({
+      expectGetMessagesCalledWith({
         q: 'router',
         from_filter: 'ops@example.com',
         subject_filter: 'incident',
         folder_scope: 'all',
-      }));
+      });
     });
 
     fireEvent.click(screen.getByTestId('mail-toolbar-open-advanced-search'));
@@ -3344,7 +3584,7 @@ describe('Mail read-state behavior', () => {
       expect(mockDeleteFolder).toHaveBeenCalledWith('team', '');
     });
     await waitFor(() => {
-      expect(screen.getAllByTestId('toolbar-current-folder')[0].textContent).toBe('Inbox');
+      expect(screen.getByTestId('mail-list-current-folder').textContent).toContain('Inbox');
     });
 
     confirmSpy.mockRestore();
@@ -3451,7 +3691,7 @@ describe('Mail read-state behavior', () => {
         show_preview_snippets: false,
         show_favorites_first: false,
         folder_pane_width: 220,
-        message_list_width: 360,
+        message_list_width: 400,
         bottom_list_percent: 42,
       });
     });

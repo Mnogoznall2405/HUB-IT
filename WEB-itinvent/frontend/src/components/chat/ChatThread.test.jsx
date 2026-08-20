@@ -500,7 +500,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Кому: ivanov@example.com')).toBeInTheDocument();
     expect(screen.getByText('Тема: Subject')).toBeInTheDocument();
     expect(screen.getByText('Вложения: 2')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Редактировать'));
+    fireEvent.click(screen.getByText('Изменить'));
     expect(onEditAction).toHaveBeenCalledTimes(1);
   });
 
@@ -2795,7 +2795,7 @@ describe('ChatThread composer', () => {
         />
       </ThemeProvider>,
     );
-    expect(screen.getByText('Выполнено 3 шага')).toBeInTheDocument();
+    expect(screen.queryByText('Выполнено 3 шага')).not.toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>

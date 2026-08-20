@@ -631,4 +631,128 @@ describe('desktopBridge', () => {
     expect(transport.postMessage).toHaveBeenCalledTimes(1);
     expect(transport.addEventListener).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the last lifecycle event until a subscriber is ready', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-19T10:00:00Z'));
+    const transport = installTransport();
+    const { initializeDesktopBridge, subscribeDesktopLifecycle } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    transport.emit({
+      type: 'desktop.system.resume',
+      version: 1,
+      generation: 12,
+      occurredUtc: '2026-08-19T10:00:00Z',
+    });
+    transport.emit({
+      type: 'desktop.network.changed',
+      version: 1,
+      generation: 13,
+      available: true,
+      occurredUtc: '2026-08-19T10:00:02Z',
+    });
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeDesktopLifecycle(listener);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({
+      type: 'desktop.network.changed',
+      generation: 13,
+      occurredUtc: '2026-08-19T10:00:02Z',
+      available: true,
+      isRecoveryAttempt: true,
+    });
+
+    const lateSubscriber = vi.fn();
+    subscribeDesktopLifecycle(lateSubscriber);
+    expect(lateSubscriber).not.toHaveBeenCalled();
+
+    transport.emit({
+      type: 'desktop.system.resume',
+      version: 1,
+      generation: 14,
+      occurredUtc: '2026-08-19T10:00:04Z',
+    });
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    transport.emit({
+      type: 'desktop.system.resume',
+      version: 1,
+      generation: 15,
+      occurredUtc: '2026-08-19T10:00:05Z',
+    });
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects oversized or extra-field lifecycle payloads', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, subscribeDesktopLifecycle } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+    const listener = vi.fn();
+    subscribeDesktopLifecycle(listener);
+
+    transport.emit({
+      type: 'desktop.system.resume',
+      version: 1,
+      generation: 12,
+      occurredUtc: '2026-08-19T10:00:00Z',
+      ip: '10.0.0.1',
+    });
+    transport.emit({
+      type: 'desktop.network.changed',
+      version: 1,
+      generation: 13,
+      available: true,
+      occurredUtc: '2026-08-19T10:00:02Z',
+      ssid: 'office',
+    });
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('drops a pending lifecycle event after the freshness TTL', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-19T10:00:00Z'));
+    const transport = installTransport();
+    const { initializeDesktopBridge, subscribeDesktopLifecycle } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    transport.emit({
+      type: 'desktop.system.resume',
+      version: 1,
+      generation: 12,
+      occurredUtc: '2026-08-19T10:00:00Z',
+    });
+
+    vi.setSystemTime(new Date('2026-08-19T10:03:00Z'));
+    const listener = vi.fn();
+    subscribeDesktopLifecycle(listener);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('notifies a late bridge-ready waiter exactly once', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, subscribeDesktopBridgeReady } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    const waiter = vi.fn();
+    const unsubscribe = subscribeDesktopBridgeReady(waiter);
+    expect(waiter).not.toHaveBeenCalled();
+
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+    expect(waiter).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    const alreadyReady = vi.fn();
+    subscribeDesktopBridgeReady(alreadyReady);
+    expect(alreadyReady).toHaveBeenCalledTimes(1);
+  });
 });

@@ -104,37 +104,13 @@ function ThreadLoadingSkeleton({ compactMobile = false }) {
   );
 }
 
-function TimelineMarker({ label, tone, stickyOffset = 0, dataTestId, isDateMarker = false, compactMobile = false }) {
-  if (isDateMarker && compactMobile) {
-    return (
-      <div
-        data-testid={dataTestId}
-        data-date-marker
-        data-date-label={label}
-        className="flex justify-center py-1.5"
-      >
-        <div
-          className="rounded-full border px-2 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
-          style={{
-            backgroundColor: tone.bg,
-            color: tone.text,
-            boxShadow: tone.shadow,
-            borderColor: tone.border || 'transparent',
-            minWidth: '70px',
-            textAlign: 'center',
-          }}
-        >
-          {label}
-        </div>
-      </div>
-    );
-  }
-
+function TimelineMarker({ label, tone, dataTestId, isDateMarker = false }) {
   return (
     <div
       data-testid={dataTestId}
-      className="pointer-events-none sticky z-50 flex justify-center py-1.5"
-      style={{ top: stickyOffset }}
+      data-date-marker={isDateMarker ? true : undefined}
+      data-date-label={isDateMarker ? label : undefined}
+      className="flex justify-center py-1.5"
     >
       <div
         className="rounded-full border px-2 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
@@ -316,9 +292,7 @@ const ChatMessageList = memo(function ChatMessageList({
                 <TimelineMarker
                   key={item.key}
                   label={item.label}
-                  isDateMarker={isMobile}
-                  compactMobile={isMobile}
-                  stickyOffset={10}
+                  isDateMarker
                   tone={{
                     bg: servicePillBg,
                     text: servicePillText,

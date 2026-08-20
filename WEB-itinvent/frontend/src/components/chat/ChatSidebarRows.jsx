@@ -665,7 +665,7 @@ const AiConversationRow = memo(function AiConversationRow({
   const unread = unreadCount > 0;
   const highlightUnread = unread && !active;
   const draftPreview = String(bot?.draft_preview || '').trim();
-  const assistantTitle = String(bot?.assistant_title || '').trim() || 'Личный AI';
+  const assistantTitle = String(bot?.assistant_title || '').trim() || 'HUB Ассистент';
   const previewText = draftPreview
     ? `Черновик: ${draftPreview}`
     : (String(bot?.last_message_preview || '').trim() || String(bot?.description || '').trim() || 'Корпоративный AI-ассистент');

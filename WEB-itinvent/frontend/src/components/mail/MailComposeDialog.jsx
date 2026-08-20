@@ -207,6 +207,7 @@ function ComposerContent({
   onCancelComposeUpload,
   onOpenSignatureEditor,
   onSendCompose,
+  onRegisterFlushHandler,
   mobile,
   desktopInline,
 }) {
@@ -374,6 +375,32 @@ function ComposerContent({
   const sendComposeShortcutWithFlushedRecipients = () => {
     onSendComposeShortcut?.(commitAllRecipientInputs({ commitInvalid: true }));
   };
+
+  const flushPendingComposeState = () => {
+    const recipients = commitAllRecipientInputs({ commitInvalid: true });
+    let nextBody = composeBody;
+    try {
+      const html = quillRef.current?.getEditor?.()?.root?.innerHTML;
+      if (typeof html === 'string') {
+        nextBody = html;
+        onComposeBodyChange?.(html);
+      }
+    } catch {
+      // editor may already be unmounted
+    }
+    return {
+      ...recipients,
+      composeBody: nextBody,
+    };
+  };
+  const flushPendingComposeStateRef = useRef(flushPendingComposeState);
+  flushPendingComposeStateRef.current = flushPendingComposeState;
+
+  useEffect(() => {
+    if (!onRegisterFlushHandler) return undefined;
+    onRegisterFlushHandler(() => flushPendingComposeStateRef.current());
+    return () => onRegisterFlushHandler(null);
+  }, [onRegisterFlushHandler]);
 
   const inlineLabelSx = {
     width: { xs: 56, md: 72 },

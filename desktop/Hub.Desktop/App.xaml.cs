@@ -30,9 +30,11 @@ public partial class App : Application
     private DesktopUpdateService? _updateService;
     private DesktopUpdateCoordinator? _updates;
     private DesktopWindowManager? _windowManager;
+    private DesktopSystemLifecycleService? _systemLifecycle;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        DesktopPerfBench.MarkOnce("app_onstartup");
         base.OnStartup(e);
         DesktopLog.Initialize();
         DesktopAppIdentity.TryApplyToCurrentProcess();
@@ -45,7 +47,7 @@ public partial class App : Application
                 DesktopLog.Warning("Ignored invalid desktop launch arguments");
             }
 
-            _singleInstance = new SingleInstanceCoordinator();
+            _singleInstance = new SingleInstanceCoordinator(DesktopPerfBench.ApplicationId);
 
             if (!_singleInstance.IsPrimary)
             {
@@ -86,11 +88,13 @@ public partial class App : Application
             else
             {
                 DesktopLog.Info("Registering self-contained Windows app notifications");
+                DesktopPerfBench.MarkOnce("notifications_register_start");
                 try
                 {
                     _windowsNotifications = new WindowsAppNotificationService();
                     _windowsNotifications.Activated += Notifications_Activated;
                     _windowsAppNotificationsAvailable = _windowsNotifications.TryRegister();
+                    DesktopPerfBench.MarkOnce("notifications_register_end");
                     if (_windowsAppNotificationsAvailable)
                     {
                         primaryNotifications = _windowsNotifications;
@@ -128,7 +132,14 @@ public partial class App : Application
                 policy.AutostartMode);
             try
             {
-                autostart.EnsureEnabledByDefault();
+                if (DesktopPerfBench.IsEnabled)
+                {
+                    DesktopPerfBench.MarkOnce("autostart_skipped");
+                }
+                else
+                {
+                    autostart.EnsureEnabledByDefault();
+                }
                 DesktopLog.Info(
                     autostart.IsEnabled
                         ? "Autostart is enabled"
@@ -150,6 +161,22 @@ public partial class App : Application
                 DesktopPaths.UserDataFolder);
             var windowManager = new DesktopWindowManager(options.BaseUri);
             _windowManager = windowManager;
+            var lifecycleBroadcaster = new DesktopSystemLifecycleBroadcaster(windowManager);
+            windowManager.AttachLifecycleBroadcaster(lifecycleBroadcaster);
+            _systemLifecycle = new DesktopSystemLifecycleService(
+                new WindowsDesktopSystemEventSource(),
+                new DesktopSystemLifecycleCoalescer(new DispatcherDelayScheduler(Dispatcher)),
+                action =>
+                {
+                    if (Dispatcher.CheckAccess())
+                    {
+                        action();
+                        return;
+                    }
+
+                    _ = Dispatcher.BeginInvoke(action);
+                });
+            _systemLifecycle.Coalesced += SystemLifecycle_Coalesced;
             var runtime = CreateRuntimeSnapshot(notificationFallbackEnabled);
             var window = new MainWindow(
                 options,
@@ -181,13 +208,19 @@ public partial class App : Application
             _singleInstance.StartListening();
 
             window.Show();
+            DesktopPerfBench.MarkOnce("window_show_returned");
             if (launchRequest.Route is not null || launchRequest.OpenDownloads)
             {
                 HandleLaunchRequest(window, launchRequest);
             }
 
-            DesktopJumpListService.TryApply(this, executablePath);
-            _updates.Start();
+            if (!DesktopPerfBench.IsEnabled)
+            {
+                DesktopJumpListService.TryApply(this, executablePath);
+                _updates.Start();
+            }
+
+            DesktopPerfBench.MarkOnce("app_startup_complete");
         }
         catch (Exception exception)
         {
@@ -219,10 +252,28 @@ public partial class App : Application
             _windowsNotifications.Dispose();
         }
 
+        if (_systemLifecycle is not null)
+        {
+            _systemLifecycle.Coalesced -= SystemLifecycle_Coalesced;
+            _systemLifecycle.Dispose();
+            _systemLifecycle = null;
+        }
+
         _singleInstance?.Dispose();
         _updates?.Dispose();
         _updateService?.Dispose();
         base.OnExit(e);
+    }
+
+    private void SystemLifecycle_Coalesced(object? sender, DesktopSystemLifecycleMessage message)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => SystemLifecycle_Coalesced(sender, message));
+            return;
+        }
+
+        _windowManager?.PublishSystemLifecycle(message);
     }
 
     private void Notifications_Activated(object? sender, DesktopNotificationActivationEventArgs e)

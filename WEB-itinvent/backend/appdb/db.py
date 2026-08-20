@@ -72,7 +72,7 @@ def _create_all_app_metadata(connection_or_engine) -> None:
     """create_all with optional exclusion of 1C compact search tables."""
     # Sandbox ORM lives in its own module to keep the already-large core model
     # file stable. Register extension tables before local/dev create_all; in
-    # production Alembic 0099 remains the only schema-change path.
+    # production Alembic 0100 remains the only schema-change path.
     from backend.ai_sandbox import models as _ai_sandbox_models  # noqa: F401
 
     if _compact_create_all_allowed():

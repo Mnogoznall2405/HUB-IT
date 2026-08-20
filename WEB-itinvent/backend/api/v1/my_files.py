@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from backend.api.deps import get_current_active_user, require_permission
+from backend.api.deps import require_permission
 from backend.api.v1.my_files_download_grant_rate_limit import (
     enforce_download_grant_consume_limits,
     enforce_download_grant_mint_limits,
@@ -246,7 +246,6 @@ async def get_public_my_file(
     token: str,
     request: Request,
     response: Response,
-    _: User = Depends(get_current_active_user),
 ) -> dict:
     enforce_public_meta_limits(request, token)
     _set_public_response_headers(response)
@@ -281,7 +280,6 @@ async def get_public_my_file_preview(
     token: str,
     request: Request,
     response: Response,
-    _: User = Depends(get_current_active_user),
 ) -> dict:
     enforce_public_preview_limits(request, token)
     _set_public_response_headers(response)
@@ -298,7 +296,6 @@ async def get_public_my_file_preview(
 async def download_public_my_file_preview_content(
     token: str,
     request: Request,
-    _: User = Depends(get_current_active_user),
 ):
     enforce_public_preview_content_limits(request, token)
     try:
@@ -321,7 +318,6 @@ async def download_public_my_file_preview_content(
 async def download_public_my_file(
     token: str,
     request: Request,
-    _: User = Depends(get_current_active_user),
 ):
     enforce_public_download_limits(request, token)
     try:

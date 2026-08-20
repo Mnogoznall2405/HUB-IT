@@ -23,6 +23,7 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -31,12 +32,14 @@ import PrintIcon from '@mui/icons-material/Print';
 import BatteryChargingFullIcon from '@mui/icons-material/BatteryChargingFull';
 import MemoryIcon from '@mui/icons-material/Memory';
 import MainLayout from '../components/layout/MainLayout';
+import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
 import { jsonAPI } from '../api/json_client';
 import { useNotification } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
+import PcRemainingDialog from './statistics/PcRemainingDialog';
 
 const PERIOD_OPTIONS = [
   { value: 30, label: '30 дней' },
@@ -206,6 +209,8 @@ function Statistics() {
     notifySuccess: pushNotifySuccess,
   } = useNotification();
   const { hasPermission } = useAuth();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
   const canViewMfu = hasPermission('mfu.read');
   const statisticsToastAction = useMemo(() => createNavigateToastAction('/statistics', 'Открыть статистику'), []);
   const notifySuccess = useCallback((message, options = {}) => (
@@ -225,6 +230,7 @@ function Statistics() {
   const [mfuStats, setMfuStats] = useState(EMPTY_MFU_STATS);
   const [batteryStats, setBatteryStats] = useState(EMPTY_BATTERY_STATS);
   const [pcComponentsStats, setPcComponentsStats] = useState(EMPTY_PC_COMPONENTS_STATS);
+  const [remainingBranch, setRemainingBranch] = useState(null);
 
   const loadPcStats = useCallback(async () => {
     const response = await jsonAPI.getPcCleaningStatistics({ period_days: periodDays });
@@ -275,7 +281,27 @@ function Statistics() {
   }, [tab, canViewMfu]);
 
   useEffect(() => {
+    setRemainingBranch(null);
+  }, [periodDays, tab]);
+
+  useEffect(() => {
     loadActiveStats();
+  }, [loadActiveStats]);
+
+  useEffect(() => {
+    const onDatabaseChanged = () => {
+      setRemainingBranch(null);
+      loadActiveStats();
+    };
+    const onStorage = (event) => {
+      if (event.key === 'selected_database') onDatabaseChanged();
+    };
+    window.addEventListener('database-changed', onDatabaseChanged);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('database-changed', onDatabaseChanged);
+      window.removeEventListener('storage', onStorage);
+    };
   }, [loadActiveStats]);
 
   const handleExportExcel = async () => {
@@ -369,8 +395,9 @@ function Statistics() {
           : 'Статистика комплектующих ПК';
 
   return (
-    <MainLayout>
+    <MainLayout showDatabaseSelector>
       <PageShell>
+        {isMobile ? <MobileShellPageHeader title="Статистика" showDatabaseSelector /> : null}
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={2}
@@ -472,11 +499,24 @@ function Statistics() {
                     </TableRow>
                   )}
                   {filteredPcBranches.map((row) => (
-                    <TableRow key={row.branch} hover>
+                    <TableRow
+                      key={row.branch}
+                      hover
+                      onClick={() => setRemainingBranch(row)}
+                      sx={{ cursor: 'pointer' }}
+                    >
                       <TableCell>{row.branch}</TableCell>
                       <TableCell align="right">{row.total_pc}</TableCell>
                       <TableCell align="right">{row.cleaned_pc}</TableCell>
-                      <TableCell align="right">{row.remaining_pc}</TableCell>
+                      <TableCell align="right">
+                        <Chip
+                          size="small"
+                          color={row.remaining_pc > 0 ? 'error' : 'success'}
+                          variant={row.remaining_pc > 0 ? 'filled' : 'outlined'}
+                          clickable
+                          label={row.remaining_pc}
+                        />
+                      </TableCell>
                       <TableCell align="right">{row.cleanings_period}</TableCell>
                       <TableCell align="right">
                         <Chip size="small" color={getCoverageColor(row.coverage_percent)} label={`${row.coverage_percent}%`} />
@@ -486,6 +526,20 @@ function Statistics() {
                 </TableBody>
               </Table>
             </TableContainer>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Нажмите филиал, чтобы открыть список ПК, которые ещё не почищены за период.
+            </Typography>
+            <PcRemainingDialog
+              open={Boolean(remainingBranch)}
+              branchRow={remainingBranch}
+              periodDays={periodDays}
+              canWrite={hasPermission('database.write')}
+              isMobile={isMobile}
+              onClose={() => setRemainingBranch(null)}
+              onCleaningSaved={() => { loadPcStats().catch(() => {}); }}
+              onNotifySuccess={(message) => notifySuccess(message, { source: 'statistics' })}
+              onNotifyError={(requestError, fallbackMessage) => notifyApiError(requestError, fallbackMessage, { source: 'statistics' })}
+            />
           </>
         )}
 

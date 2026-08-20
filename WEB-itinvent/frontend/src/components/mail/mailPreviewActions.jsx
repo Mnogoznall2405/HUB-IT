@@ -124,16 +124,24 @@ export function buildMailPreviewActionItems({
   ];
 }
 
-export function buildMailPreviewMobileQuickActionIds(folder) {
+export function buildMailPreviewMobileQuickActionIds(folder, { defaultReplyMode = 'reply' } = {}) {
+  const replyId = folder === 'drafts'
+    ? 'open-draft'
+    : (defaultReplyMode === 'reply_all' ? 'reply-all' : 'reply');
   return new Set([
-    folder === 'drafts' ? 'open-draft' : 'reply',
+    replyId,
     'forward',
     'toggle-read',
     folder === 'trash' ? 'delete-forever' : 'delete',
   ]);
 }
 
-export function filterMailPreviewMobileSheetActions(actionItems, folder) {
-  const mobileQuickActionIds = buildMailPreviewMobileQuickActionIds(folder);
+export function filterMailPreviewMobileSheetActions(actionItems, folder, options = {}) {
+  const mobileQuickActionIds = buildMailPreviewMobileQuickActionIds(folder, options);
   return actionItems.filter((item) => !mobileQuickActionIds.has(item.id));
+}
+
+export function filterMailPreviewDesktopOverflowActions(actionItems, folder) {
+  const hiddenIds = new Set(folder === 'drafts' ? ['open-draft'] : ['reply', 'reply-all', 'forward']);
+  return actionItems.filter((item) => !hiddenIds.has(item.id));
 }

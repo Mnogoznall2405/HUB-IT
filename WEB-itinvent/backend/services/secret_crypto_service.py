@@ -13,6 +13,26 @@ class SecretCryptoError(RuntimeError):
     """Raised when crypto operations cannot be performed."""
 
 
+_PRODUCTION_PLACEHOLDER_KEYS = frozenset({
+    "change_me",
+    "changeme",
+    "change-me",
+    "placeholder",
+    "your_key_here",
+    "secret",
+    "password",
+    "mail_credentials_key",
+})
+
+
+def _reject_production_placeholder(raw_key: str, env_var: str) -> None:
+    app_env = str(os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+    if app_env not in {"production", "prod"}:
+        return
+    if str(raw_key or "").strip().lower() in _PRODUCTION_PLACEHOLDER_KEYS:
+        raise SecretCryptoError(f"{env_var} uses a placeholder value")
+
+
 def _as_fernet_key(raw_key: str, env_var: str) -> bytes:
     """
     Accept either:
@@ -22,6 +42,7 @@ def _as_fernet_key(raw_key: str, env_var: str) -> bytes:
     value = str(raw_key or "").strip()
     if not value:
         raise SecretCryptoError(f"{env_var} is not configured")
+    _reject_production_placeholder(value, env_var)
 
     try:
         decoded = base64.urlsafe_b64decode(value.encode("utf-8"))

@@ -7,6 +7,14 @@ import {
 } from './chatActiveConversationModel';
 
 describe('chatActiveConversationModel', () => {
+  it('resolveActiveConversationSummary matches string url ids to numeric list ids', () => {
+    expect(resolveActiveConversationSummary({
+      activeConversationId: '7',
+      conversations: [{ id: 7, title: 'Task chat' }],
+      searchChats: [],
+    })).toEqual({ id: 7, title: 'Task chat' });
+  });
+
   it('resolveActiveConversationSummary prefers conversations over searchChats', () => {
     const conversations = [{ id: 'c1', title: 'From list' }];
     const searchChats = [{ id: 'c1', title: 'From search' }];

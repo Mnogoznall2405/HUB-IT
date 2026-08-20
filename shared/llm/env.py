@@ -15,7 +15,7 @@ ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
 DEFAULT_ROUTERAI_BASE_URL = "https://routerai.ru/api/v1"
 # Backwards-compatible export for callers that still import the old name.
 DEFAULT_OPENROUTER_BASE_URL = DEFAULT_ROUTERAI_BASE_URL
-DEFAULT_AI_MODEL = "google/gemini-3.6-flash"
+DEFAULT_AI_MODEL = "google/gemini-3.7-flash"
 
 
 def read_env(name: str, default: Optional[str] = None) -> Optional[str]:

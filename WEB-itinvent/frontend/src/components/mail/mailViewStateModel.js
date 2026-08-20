@@ -137,3 +137,17 @@ export const writeStoredMailListViewState = (
     // Ignore session storage failures.
   }
 };
+
+export const updateMailListViewStateMap = (state, contextKey, updater) => {
+  const normalizedContextKey = String(contextKey || '').trim();
+  if (!normalizedContextKey) return state && typeof state === 'object' ? state : {};
+  const currentState = state && typeof state === 'object' ? state : {};
+  const prevEntry = normalizeMailListViewContextState(currentState[normalizedContextKey]);
+  const nextEntry = normalizeMailListViewContextState(
+    typeof updater === 'function' ? updater(prevEntry) : updater
+  );
+  return {
+    ...currentState,
+    [normalizedContextKey]: nextEntry,
+  };
+};

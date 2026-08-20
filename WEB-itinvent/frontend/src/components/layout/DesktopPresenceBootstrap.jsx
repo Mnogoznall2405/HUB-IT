@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 
 import { desktopPresenceAPI } from '../../api/desktopPresence';
 import { useAuth } from '../../contexts/AuthContext';
+import { DESKTOP_PRESENCE_HEARTBEAT_EVENT } from '../../lib/desktopLifecycle';
 import { isNativeShellRuntime } from '../../lib/platform';
 
 const HEARTBEAT_BASE_MS = 60_000;
@@ -21,6 +22,7 @@ const DesktopPresenceBootstrap = () => {
     let active = true;
     let timerId = null;
     let disconnectSent = false;
+    let heartbeatGeneration = 0;
 
     const clearTimer = () => {
       if (timerId != null) {
@@ -39,12 +41,14 @@ const DesktopPresenceBootstrap = () => {
 
     const runHeartbeat = async () => {
       if (!active) return;
+      const generation = heartbeatGeneration + 1;
+      heartbeatGeneration = generation;
       try {
         await desktopPresenceAPI.heartbeat();
       } catch {
         // Presence is best-effort and must never block HUB startup or notifications.
       } finally {
-        if (active) {
+        if (active && heartbeatGeneration === generation) {
           timerId = window.setTimeout(runHeartbeat, nextHeartbeatDelay());
         }
       }
@@ -63,15 +67,24 @@ const DesktopPresenceBootstrap = () => {
       void runHeartbeat();
     };
 
+    const handleDesktopLifecycleHeartbeat = () => {
+      if (!active) return;
+      clearTimer();
+      void runHeartbeat();
+    };
+
     window.addEventListener('pagehide', handlePageHide);
     window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener(DESKTOP_PRESENCE_HEARTBEAT_EVENT, handleDesktopLifecycleHeartbeat);
     void runHeartbeat();
 
     return () => {
       active = false;
+      heartbeatGeneration += 1;
       clearTimer();
       window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener(DESKTOP_PRESENCE_HEARTBEAT_EVENT, handleDesktopLifecycleHeartbeat);
       sendDisconnect();
     };
   }, [userId]);

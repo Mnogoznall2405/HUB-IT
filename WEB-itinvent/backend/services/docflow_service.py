@@ -2163,7 +2163,7 @@ class DocflowService:
             "command_id": str(row.id),
             "status": str(row.status),
             "task": detail,
-            "correlation_id": _correlation_id(correlation_id),
+            "correlation_id": str(row.correlation_id or _correlation_id(correlation_id)),
             "error_code": str(row.error_code or "") or None,
         }
 

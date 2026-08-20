@@ -1,34 +1,27 @@
 import apiClient from './client';
+import { withMailboxQuery } from './mailMailboxQuery';
 
-const normalizeMailboxId = (value) => {
-  const normalized = String(value || '').trim();
-  return normalized || '';
-};
-
-const withMailboxQuery = (params = {}, mailboxId) => {
-  const normalizedMailboxId = normalizeMailboxId(mailboxId ?? params?.mailbox_id ?? params?.mailboxId);
-  const nextParams = { ...(params || {}) };
-  delete nextParams.mailboxId;
-  if (normalizedMailboxId) {
-    nextParams.mailbox_id = normalizedMailboxId;
-  } else {
-    delete nextParams.mailbox_id;
-  }
-  return nextParams;
-};
+const withSignal = (config, signal) => (signal ? { ...config, signal } : config);
 
 export const mailMessageListAPI = {
-  getBootstrap: async (params = {}) => {
-    const response = await apiClient.get('/mail/bootstrap', { params: withMailboxQuery(params) });
+  getBootstrap: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/mail/bootstrap', withSignal({
+      params: withMailboxQuery(params),
+    }, options?.signal));
     return response.data;
   },
 
-  getMessages: async (params = {}) => {
-    const response = await apiClient.get('/mail/messages', { params: withMailboxQuery(params) });
+  getMessages: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/mail/messages', withSignal({
+      params: withMailboxQuery(params),
+    }, options?.signal));
     return response.data;
   },
 
-  getInbox: async (params = {}) => {
+  getInbox: async (params = {}, options = {}) => {
+    if (options?.signal) {
+      return mailMessageListAPI.getMessages(params, options);
+    }
     return mailMessageListAPI.getMessages(params);
   },
 };

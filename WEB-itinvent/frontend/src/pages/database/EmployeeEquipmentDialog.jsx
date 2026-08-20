@@ -31,6 +31,7 @@ import {
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import CloseIcon from '@mui/icons-material/Close';
+import DownloadIcon from '@mui/icons-material/Download';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -42,6 +43,7 @@ import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
 import HubNomenclatureMatchDialog from './HubNomenclatureMatchDialog';
+import { exportEmployeeEquipmentWorkbook } from './employeeEquipmentExcel';
 import {
   filterBalancesByText,
   formatWarehouseQty,
@@ -592,12 +594,21 @@ export default function EmployeeEquipmentDialog({
   const [hubMatchRow, setHubMatchRow] = useState(null);
   const [hubMatchWarehouse, setHubMatchWarehouse] = useState(null);
   const [sharedFilter, setSharedFilter] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const filterActive = Boolean(String(sharedFilter || '').trim());
   const visibleHubItems = useMemo(
     () => filterHubItemsByText(hubItems, sharedFilter),
     [hubItems, sharedFilter],
   );
+  const visibleWarehouseBalances = useMemo(
+    () => filterBalancesByText(sortBalancesByNomenclature(warehouseBalances), sharedFilter),
+    [warehouseBalances, sharedFilter],
+  );
+  const exportDisabled = exporting
+    || hubLoading
+    || (canViewWarehouse1C && (warehouseLoading || warehouseBalancesLoading));
 
   const resetWarehouseState = useCallback(() => {
     setWarehouseLoading(false);
@@ -826,6 +837,36 @@ export default function EmployeeEquipmentDialog({
     onOpenInvNo?.(invNo, meta);
   }, [onOpenInvNo]);
 
+  const handleExportExcel = useCallback(async () => {
+    setExportError('');
+    setExporting(true);
+    try {
+      await exportEmployeeEquipmentWorkbook({
+        employeeName,
+        hubItems: visibleHubItems,
+        warehouseBalances: visibleWarehouseBalances,
+        warehouseName: warehouseInfo?.name || '',
+        warehouseStatus: warehouseLoaded ? warehouseStatus : '',
+        includeWarehouse: canViewWarehouse1C,
+        filterText: sharedFilter,
+      });
+    } catch (err) {
+      console.error('Failed to export employee equipment Excel:', err);
+      setExportError('Не удалось выгрузить Excel. Попробуйте ещё раз.');
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    canViewWarehouse1C,
+    employeeName,
+    sharedFilter,
+    visibleHubItems,
+    visibleWarehouseBalances,
+    warehouseInfo?.name,
+    warehouseLoaded,
+    warehouseStatus,
+  ]);
+
   return (
     <>
     <Dialog
@@ -964,7 +1005,27 @@ export default function EmployeeEquipmentDialog({
           ) : null}
         </Stack>
       </DialogContent>
-      <DialogActions sx={{ flexShrink: 0, pb: isMobile ? 'calc(env(safe-area-inset-bottom) + 8px)' : undefined }}>
+      {exportError ? (
+        <Alert severity="error" sx={{ mx: 2, mb: 0 }}>{exportError}</Alert>
+      ) : null}
+      <DialogActions
+        sx={{
+          flexShrink: 0,
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 1,
+          pb: isMobile ? 'calc(env(safe-area-inset-bottom) + 8px)' : undefined,
+        }}
+      >
+        <Button
+          variant="outlined"
+          startIcon={exporting ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
+          onClick={handleExportExcel}
+          disabled={exportDisabled}
+          aria-label="Выгрузить в Excel"
+        >
+          {exporting ? 'Готовлю…' : 'Выгрузить в Excel'}
+        </Button>
         <Button onClick={onClose}>Закрыть</Button>
       </DialogActions>
     </Dialog>

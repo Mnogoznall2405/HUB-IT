@@ -64,8 +64,8 @@ describe('AiConversationContextPanel', () => {
 
     expect(screen.getByTestId('ai-conversation-context-panel')).toBeInTheDocument();
     expect(screen.getByText('HUB Ассистент')).toBeInTheDocument();
-    expect(screen.getByText('Данные HUB')).toBeInTheDocument();
-    expect(screen.getByText('В текущем чате учитываются последние 20 сообщений и краткое резюме более ранней части. Личная память может использоваться между AI-чатами.')).toBeInTheDocument();
+    expect(screen.getByText(/Данные HUB/)).toBeInTheDocument();
+    expect(screen.getByText(/Сохранённые предпочтения используются между диалогами/)).toBeInTheDocument();
     expect(screen.getByText('ITinvent — карточка сотрудника')).toBeInTheDocument();
     expect(screen.queryByText('hidden-model-id')).not.toBeInTheDocument();
     expect(screen.queryByText('internal.tool.identifier')).not.toBeInTheDocument();
@@ -99,9 +99,9 @@ describe('AiConversationContextPanel', () => {
     );
 
     expect(await screen.findByText('Сохранённых предпочтений и рабочих фактов пока нет.')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Личный AI' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'HUB Ассистент' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Подготовь квартальный отчёт' })).not.toBeInTheDocument();
-    expect(screen.getByText('Создание документов')).toBeInTheDocument();
+    expect(screen.getByText('Создание документов · Требует подтверждения')).toBeInTheDocument();
   });
 
   it('allows editing, deleting, and disabling personal memory', async () => {

@@ -53,6 +53,19 @@ def _invoke_login(payload, request, response: Response):
     return asyncio.run(handler(payload, request, response))
 
 
+def _advance_lockout_clock(clock: dict, seconds: int = 2) -> None:
+    clock["now"] = clock["now"] + timedelta(seconds=int(seconds))
+
+
+def _expect_login_status(payload, request, status_code: int, clock: dict | None = None, *, advance_seconds: int = 2):
+    with pytest.raises(HTTPException) as exc:
+        _invoke_login(payload, request, Response())
+    assert exc.value.status_code == status_code
+    if clock is not None and advance_seconds:
+        _advance_lockout_clock(clock, advance_seconds)
+    return exc.value
+
+
 def _sample_public_user(**overrides):
     payload = {
         "id": 7,
@@ -96,16 +109,36 @@ def test_login_lockout_bans_after_five_failed_attempts(monkeypatch):
 
     try:
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(payload, request, Response())
-            assert exc.value.status_code == 401
+            _expect_login_status(payload, request, 401, clock)
 
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(payload, request, Response())
+        exc = _expect_login_status(payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == "600"
+        assert "failed login attempts" in str(exc.detail).lower()
+    finally:
+        _clear_auth_runtime_store()
 
-        assert exc.value.status_code == 429
-        assert exc.value.headers["Retry-After"] == "600"
-        assert "failed login attempts" in str(exc.value.detail).lower()
+
+def test_login_lockout_ignores_duplicate_failure_within_one_second(monkeypatch):
+    _clear_auth_runtime_store()
+    monkeypatch.setattr(auth.auth_runtime_store_service, "_redis_client", None)
+    monkeypatch.setattr(auth.auth_runtime_store_service, "_backend", "memory")
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(auth.user_service, "authenticate", lambda username, password: None)
+    clock = {"now": datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr(auth, "_auth_lockout_now_utc", lambda: clock["now"])
+    payload = auth.LoginRequest(username="ivanov", password="bad-password")
+    request = _make_login_request("95.24.10.1")
+
+    try:
+        for _ in range(5):
+            _expect_login_status(payload, request, 401, clock, advance_seconds=0)
+
+        _advance_lockout_clock(clock, 2)
+        for _ in range(3):
+            _expect_login_status(payload, request, 401, clock)
+
+        exc = _expect_login_status(payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == "600"
     finally:
         _clear_auth_runtime_store()
 
@@ -129,19 +162,13 @@ def test_login_lockout_blocks_active_ban_before_authenticate(monkeypatch):
 
     try:
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(payload, request, Response())
-            assert exc.value.status_code == 401
+            _expect_login_status(payload, request, 401, clock)
 
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(payload, request, Response())
-        assert exc.value.status_code == 429
+        _expect_login_status(payload, request, 429, clock, advance_seconds=0)
         assert calls["count"] == 5
 
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(payload, request, Response())
-        assert exc.value.status_code == 429
-        assert exc.value.headers["Retry-After"] == "600"
+        exc = _expect_login_status(payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == "600"
         assert calls["count"] == 5
     finally:
         _clear_auth_runtime_store()
@@ -160,13 +187,9 @@ def test_login_lockout_escalates_to_hour_and_day(monkeypatch):
 
     def _run_failed_cycle(expected_retry_after: str) -> None:
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(payload, request, Response())
-            assert exc.value.status_code == 401
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(payload, request, Response())
-        assert exc.value.status_code == 429
-        assert exc.value.headers["Retry-After"] == expected_retry_after
+            _expect_login_status(payload, request, 401, clock)
+        exc = _expect_login_status(payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == expected_retry_after
 
     try:
         _run_failed_cycle("600")
@@ -191,13 +214,9 @@ def test_login_lockout_resets_after_day_without_failures(monkeypatch):
 
     def _run_failed_cycle(expected_retry_after: str) -> None:
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(payload, request, Response())
-            assert exc.value.status_code == 401
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(payload, request, Response())
-        assert exc.value.status_code == 429
-        assert exc.value.headers["Retry-After"] == expected_retry_after
+            _expect_login_status(payload, request, 401, clock)
+        exc = _expect_login_status(payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == expected_retry_after
 
     try:
         _run_failed_cycle("600")
@@ -240,23 +259,17 @@ def test_login_success_clears_failure_window_without_resetting_escalation(monkey
     try:
         bad_payload = auth.LoginRequest(username="ivanov", password="bad-password")
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(bad_payload, request, Response())
-            assert exc.value.status_code == 401
+            _expect_login_status(bad_payload, request, 401, clock)
 
         success_payload = auth.LoginRequest(username="ivanov", password="correct-password")
         result = _invoke_login(success_payload, request, Response())
         assert result.status == "2fa_required"
 
         for _ in range(4):
-            with pytest.raises(HTTPException) as exc:
-                _invoke_login(bad_payload, request, Response())
-            assert exc.value.status_code == 401
+            _expect_login_status(bad_payload, request, 401, clock)
 
-        with pytest.raises(HTTPException) as exc:
-            _invoke_login(bad_payload, request, Response())
-        assert exc.value.status_code == 429
-        assert exc.value.headers["Retry-After"] == "600"
+        exc = _expect_login_status(bad_payload, request, 429, clock, advance_seconds=0)
+        assert exc.headers["Retry-After"] == "600"
     finally:
         _clear_auth_runtime_store()
 

@@ -7,6 +7,7 @@ export default function MailOfficePreviewTeaser({
   onOpenFull,
   compact = true,
   alwaysShowAction = false,
+  actionLabel = 'Просмотреть',
 }) {
   const [hovered, setHovered] = useState(false);
   const actionVisible = alwaysShowAction || hovered;
@@ -61,7 +62,7 @@ export default function MailOfficePreviewTeaser({
             boxShadow: '0 12px 28px rgba(15, 23, 42, 0.24)',
           }}
         >
-          Просмотреть
+          {actionLabel}
         </Button>
       </Box>
     </Box>

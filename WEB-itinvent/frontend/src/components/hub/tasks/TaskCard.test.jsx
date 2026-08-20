@@ -36,29 +36,28 @@ describe('TaskCard', () => {
 
     const card = screen.getByTestId('mobile-task-card-task-1');
     expect(card).toBeInTheDocument();
-    expect(screen.getByTestId('mobile-task-card-description-task-1')).toHaveTextContent('Нужно загрузить');
+    expect(card).toHaveTextContent('Проверить акт');
     fireEvent.click(card);
     expect(onOpen).toHaveBeenCalledWith(baseTask);
   });
 
-  it('shows mobile overflow menu when edit is allowed', () => {
-    const onEdit = vi.fn();
+  it('shows close in the overflow menu when allowed', () => {
+    const onCloseTask = vi.fn();
     render(
       <ThemeProvider theme={theme}>
         <TaskCard
           task={baseTask}
           isMobile
           ui={ui}
-          canEdit
-          canDelete={false}
-          onEdit={onEdit}
+          canClose
+          onCloseTask={onCloseTask}
         />
       </ThemeProvider>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Действия карточки задачи/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /Редактировать/i }));
-    expect(onEdit).toHaveBeenCalledWith(baseTask);
+    fireEvent.click(screen.getByRole('menuitem', { name: /Закрыть/i }));
+    expect(onCloseTask).toHaveBeenCalledWith(baseTask);
   });
 
   it('renders desktop card with action buttons', () => {

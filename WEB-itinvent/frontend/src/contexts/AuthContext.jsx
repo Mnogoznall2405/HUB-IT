@@ -1,7 +1,7 @@
 ﻿/**
  * Authentication Context - manages user authentication state across the app.
  */
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { authAPI } from '../api/client';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
@@ -133,26 +133,38 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const sessionRefreshGateRef = useRef(null);
+
   const refreshSession = useCallback(async ({ suppressAuthRequired = false } = {}) => {
-    try {
-      const currentUser = normalizeUserWithPermissions(
-        await authAPI.getCurrentUser({ suppressAuthRequired })
-      );
-      setUser(currentUser || null);
-      if (currentUser && typeof currentUser === 'object') {
-        localStorage.setItem('user', JSON.stringify(currentUser));
-      } else {
-        localStorage.removeItem('user');
-      }
-      return currentUser || null;
-    } catch (refreshError) {
-      if (isDefinitiveSessionRejection(refreshError)) {
-        setUser(null);
-        localStorage.removeItem('user');
-        clearAllMailRecentCache();
-      }
-      throw refreshError;
+    if (sessionRefreshGateRef.current) {
+      return sessionRefreshGateRef.current;
     }
+
+    sessionRefreshGateRef.current = (async () => {
+      try {
+        const currentUser = normalizeUserWithPermissions(
+          await authAPI.getCurrentUser({ suppressAuthRequired })
+        );
+        setUser(currentUser || null);
+        if (currentUser && typeof currentUser === 'object') {
+          localStorage.setItem('user', JSON.stringify(currentUser));
+        } else {
+          localStorage.removeItem('user');
+        }
+        return currentUser || null;
+      } catch (refreshError) {
+        if (isDefinitiveSessionRejection(refreshError)) {
+          setUser(null);
+          localStorage.removeItem('user');
+          clearAllMailRecentCache();
+        }
+        throw refreshError;
+      } finally {
+        sessionRefreshGateRef.current = null;
+      }
+    })();
+
+    return sessionRefreshGateRef.current;
   }, []);
 
   // Restore cached user and validate active cookie session
@@ -386,8 +398,18 @@ export const AuthProvider = ({ children }) => {
       };
     } catch (err) {
       const message = err.response?.data?.detail || 'Ошибка входа';
+      const statusCode = Number(err.response?.status || 0) || 0;
+      const retryAfterHeader = err.response?.headers?.['retry-after'] ?? err.response?.headers?.['Retry-After'];
+      const retryAfterSeconds = Number(retryAfterHeader);
       setError(message);
-      return { success: false, error: message };
+      return {
+        success: false,
+        error: message,
+        statusCode,
+        retryAfterSeconds: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? retryAfterSeconds
+          : undefined,
+      };
     }
   }, [applyAuthenticatedPayload]);
 

@@ -202,6 +202,7 @@ class ChatSocketClient {
     this.maxMissedPongs = 3;
     this.stableConnectionTimer = null;
     this.authBlocked = false;
+    this.resumeRecoverInFlight = false;
   }
 
   hasActiveOrPendingSocket() {
@@ -365,6 +366,7 @@ class ChatSocketClient {
     this.setStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      this.resumeRecoverInFlight = false;
       this.missedPongs = 0;
       this.setStatus('connected');
       this.startHeartbeat();
@@ -393,10 +395,12 @@ class ChatSocketClient {
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
+      this.resumeRecoverInFlight = false;
       this.setStatus('disconnected');
     };
     socket.onclose = (event) => {
       if (this.socket !== socket) return;
+      this.resumeRecoverInFlight = false;
       this.socket = null;
       this.stopHeartbeat();
       const closeCode = Number(event?.code || 0);
@@ -439,6 +443,7 @@ class ChatSocketClient {
 
   close(manual = false) {
     this.manualClose = Boolean(manual);
+    this.resumeRecoverInFlight = false;
     if (manual) {
       this.authBlocked = false;
     }
@@ -710,6 +715,58 @@ class ChatSocketClient {
     // #endregion
     if (this.retainCount > 0) {
       this.connect();
+    }
+  }
+
+  recoverAfterSystemResume() {
+    if (this.resumeRecoverInFlight) {
+      return false;
+    }
+    if (this.retainCount <= 0) {
+      return false;
+    }
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) {
+      return false;
+    }
+
+    this.resumeRecoverInFlight = true;
+    try {
+      // Stale WS 401 from before sleep must not block reconnect after a live session refresh.
+      this.authBlocked = false;
+      this.stopHeartbeat();
+      if (this.reconnectTimer) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      const socket = this.socket;
+      this.socket = null;
+      this.manualClose = false;
+      this.reconnectAttempt = 0;
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+          if (
+            socket.readyState === WebSocket.OPEN
+            || socket.readyState === WebSocket.CONNECTING
+          ) {
+            socket.close();
+          }
+        } catch {
+          // Stale transport may already be gone after sleep.
+        }
+      }
+      this.setStatus('disconnected');
+      this.connect();
+      if (!this.hasActiveOrPendingSocket()) {
+        this.resumeRecoverInFlight = false;
+      }
+      return true;
+    } catch (error) {
+      this.resumeRecoverInFlight = false;
+      throw error;
     }
   }
 

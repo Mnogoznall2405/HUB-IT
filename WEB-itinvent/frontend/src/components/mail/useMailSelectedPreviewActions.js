@@ -1,13 +1,20 @@
 import { useCallback, useState } from 'react';
+import { confirmMailPermanentDelete } from './mailPermanentDeleteConfirm';
+import { extractTrashRestoreMessageId } from './mailTrashUndo';
 
 export default function useMailSelectedPreviewActions({
   afterListMutation,
   clearSelection,
+  confirmPermanentDelete = confirmMailPermanentDelete,
+  folder = 'inbox',
   getMailErrorDetail,
   handleMailCredentialsRequired,
   invalidateMailClientCache,
   mailAPI,
   moveTarget = '',
+  onRecoverableDelete,
+  onRecoverableMove,
+  getFolderLabel,
   performMailReadMutation,
   selectedConversation,
   selectedMessage,
@@ -24,14 +31,16 @@ export default function useMailSelectedPreviewActions({
   }, [getMailErrorDetail, handleMailCredentialsRequired, setError]);
 
   const runSelectedMessageMutation = useCallback(async (operation, errorMessage) => {
-    if (!selectedMessage?.id) return;
+    if (!selectedMessage?.id) return false;
     setMessageActionLoading(true);
     try {
       await operation(String(selectedMessage.id));
       clearSelection({ mode: viewMode });
       await afterListMutation();
+      return true;
     } catch (requestError) {
       await handleActionError(requestError, errorMessage);
+      return false;
     } finally {
       setMessageActionLoading(false);
     }
@@ -53,7 +62,7 @@ export default function useMailSelectedPreviewActions({
         await performMailReadMutation({
           mode: 'messages',
           targetId: String(selectedMessage?.id || ''),
-          nextIsRead: !Boolean(selectedMessage?.is_read),
+          nextIsRead: !selectedMessage?.is_read,
           currentUnreadCount: selectedMessage?.is_read ? 0 : 1,
           currentMessageCount: 1,
           errorMessage: 'Не удалось изменить статус письма.',
@@ -82,20 +91,57 @@ export default function useMailSelectedPreviewActions({
   }, [mailAPI, runSelectedMessageMutation, selectedMessage?.restore_hint_folder, withActiveMailboxPayload]);
 
   const handleDeleteSelectedMessage = useCallback(async (permanent) => {
-    await runSelectedMessageMutation(
-      (messageId) => mailAPI.deleteMessage(messageId, withActiveMailboxPayload({ permanent: Boolean(permanent) })),
+    if (permanent && !confirmPermanentDelete({ count: 1 })) return;
+    let restoreMessageId = '';
+    const ok = await runSelectedMessageMutation(
+      async (messageId) => {
+        const result = await mailAPI.deleteMessage(messageId, withActiveMailboxPayload({ permanent: Boolean(permanent) }));
+        restoreMessageId = extractTrashRestoreMessageId(result);
+      },
       'Не удалось удалить письмо.'
     );
-  }, [mailAPI, runSelectedMessageMutation, withActiveMailboxPayload]);
+    if (ok && !permanent) {
+      onRecoverableDelete?.({
+        messageIds: restoreMessageId ? [restoreMessageId] : [],
+        restoreFolder: folder,
+        count: 1,
+      });
+    }
+  }, [
+    confirmPermanentDelete,
+    folder,
+    mailAPI,
+    onRecoverableDelete,
+    runSelectedMessageMutation,
+    withActiveMailboxPayload,
+  ]);
 
   const handleMoveSelectedMessage = useCallback(async (targetOverride = '') => {
     const resolvedTarget = String(targetOverride || moveTarget || '');
     if (!resolvedTarget) return;
-    await runSelectedMessageMutation(
-      (messageId) => mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: resolvedTarget })),
+    const messageId = String(selectedMessage?.id || '').trim();
+    const ok = await runSelectedMessageMutation(
+      (id) => mailAPI.moveMessage(id, withActiveMailboxPayload({ target_folder: resolvedTarget })),
       'Не удалось переместить письмо.'
     );
-  }, [mailAPI, moveTarget, runSelectedMessageMutation, withActiveMailboxPayload]);
+    if (ok && messageId) {
+      onRecoverableMove?.({
+        messageIds: [messageId],
+        restoreFolder: folder,
+        folderLabel: getFolderLabel?.(resolvedTarget) || resolvedTarget,
+        count: 1,
+      });
+    }
+  }, [
+    folder,
+    getFolderLabel,
+    mailAPI,
+    moveTarget,
+    onRecoverableMove,
+    runSelectedMessageMutation,
+    selectedMessage?.id,
+    withActiveMailboxPayload,
+  ]);
 
   const handleToggleImportance = useCallback(async () => {
     if (!selectedMessage?.id || viewMode === 'conversations') return;

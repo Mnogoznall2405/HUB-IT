@@ -38,6 +38,7 @@ import {
   getChatInlineMetaReserveWidth,
   getEmojiOnlyCount,
   getReplyPreviewText,
+  resolveChatPreviewSenderName,
   hasChatMarkdownTable,
   isAudioAttachment,
   isImageAttachment,
@@ -174,7 +175,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
           letterSpacing: '-0.01em',
         }}
       >
-        {replyPreview.sender_name}
+        {resolveChatPreviewSenderName(replyPreview)}
       </p>
       <p
         className="truncate text-[12px]"
@@ -193,7 +194,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
 function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile = false }) {
   if (!forwardPreview) return null;
   const density = ui.density || {};
-  const senderName = String(forwardPreview?.sender_name || '').trim();
+  const senderName = resolveChatPreviewSenderName(forwardPreview);
   const previewSenderColor = isOwn
     ? (ui.bubbleOwnPreviewText || alpha('#fff', 0.92))
     : resolveGroupSenderColor(forwardPreview?.sender_id || forwardPreview?.sender_name, theme, ui);
@@ -242,6 +243,20 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
   const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
   const isOfficeMail = actionType.startsWith('office.mail.');
+  const isTaskAction = actionType.includes('task') || Boolean(preview.task);
+  const confirmLabel = isOfficeMail
+    ? 'Подтвердить и отправить'
+    : isTaskAction
+      ? 'Создать'
+      : 'Подтвердить';
+  const resultUrl = String(card.result_url || preview.open_url || preview.url || '').trim();
+  const openResult = () => {
+    if (resultUrl) {
+      window.open(resultUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (typeof onEditAction === 'function') onEditAction(card, message);
+  };
   const isReportFormatChoice = actionType === 'ai.report.format_choice';
   const isDocConvertFormatChoice = actionType === 'ai.doc.convert.format_choice';
   const report = preview.report && typeof preview.report === 'object' ? preview.report : null;
@@ -419,7 +434,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             {card.error_text}
           </Typography>
         ) : null}
-        {isPending ? (
+            {isPending ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
             {isReportFormatChoice || isDocConvertFormatChoice ? (
               (isDocConvertFormatChoice ? docConvertFormats : reportFormats).map((format) => (
@@ -435,27 +450,36 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                 </Button>
               ))
             ) : (
-            <Button
-              size="small"
-              variant="contained"
-              onClick={() => runAction('confirm')}
-              disabled={Boolean(busy)}
-              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
-            >
-              {busy === 'confirm' ? 'Выполняю...' : 'Подтвердить'}
-            </Button>
+              <>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => runAction('confirm')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm' ? 'Выполняю...' : confirmLabel}
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => onEditAction?.(card, message)}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  Изменить
+                </Button>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={openResult}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  Открыть
+                </Button>
+              </>
             )}
-            {isOfficeMail ? (
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => onEditAction?.(card, message)}
-                disabled={Boolean(busy)}
-                sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
-              >
-                Редактировать
-              </Button>
-            ) : null}
             <Button
               size="small"
               variant="text"
@@ -464,6 +488,17 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
               sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
             >
               {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
+            </Button>
+          </Stack>
+        ) : status === 'confirmed' ? (
+          <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={openResult}
+              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+            >
+              {isOfficeMail ? 'Открыть в почте' : isTaskAction ? 'Открыть задачу' : 'Открыть'}
             </Button>
           </Stack>
         ) : null}
@@ -865,8 +900,11 @@ export function ChatBubble({
     : mediaOnlyAttachments
       ? { width: 'fit-content', maxWidth: mediaPreviewMaxWidth }
       : { width: '100%', maxWidth: '100%' };
-  const bubbleMaxWidth = hasMarkdownTable
-    ? { xs: 'calc(100vw - 22px)', md: 'min(92%, 900px)' }
+  const isLongAiReply = conversationKind === 'ai'
+    && !message?.is_own
+    && (hasMarkdownTable || Boolean(message?.action_card) || String(body || '').length > 220);
+  const bubbleMaxWidth = hasMarkdownTable || isLongAiReply
+    ? { xs: 'calc(100vw - 22px)', md: 'min(92%, 760px)' }
     : { xs: emojiOnlyCount ? '100%' : '85vw', md: emojiOnlyCount ? '100%' : '65%' };
   const bubbleWidth = hasMarkdownTable ? { xs: 'calc(100vw - 22px)', md: 'auto' } : 'auto';
 
@@ -1386,6 +1424,23 @@ export function ChatBubble({
           onCancelAction={onCancelAction}
           onEditAction={onEditAction}
         />
+
+        {conversationKind === 'ai' && !message?.is_own ? (() => {
+          const sourceItems = [
+            ...(Array.isArray(message?.sources) ? message.sources : []),
+            ...(Array.isArray(message?.metadata?.sources) ? message.metadata.sources : []),
+            ...(Array.isArray(message?.ai_sources) ? message.ai_sources : []),
+          ].map((source) => (typeof source === 'string' ? source : (source?.title || source?.label || source?.name || '')))
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+          const uniqueSources = [...new Set(sourceItems)].slice(0, 6);
+          if (!uniqueSources.length) return null;
+          return (
+            <Typography sx={{ mt: 0.55, fontSize: compactMobile ? 12 : 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+              Источники: {uniqueSources.join(' · ')}
+            </Typography>
+          );
+        })() : null}
 
         {(() => {
           const reactionBar = (

@@ -790,11 +790,66 @@ describe('Docflow page', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
 
     expect(await screen.findByRole('button', { name: 'Проверить' })).toBeInTheDocument();
-    expect(screen.getByText(/Не нажимайте действие повторно/)).toBeInTheDocument();
+    expect(screen.getByText(/Подтверждаем выполнение в 1С/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Проверить' }));
 
     expect(await screen.findByText(/1С не применила действие/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
+    expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
+    expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirms an unknown command automatically and removes the completed task from inbox', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111198';
+    const title = 'HUB-IT TEST · Приглашение Козловскому';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{ ref: taskRef, title, completed: false }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const actionTask = {
+      ref: taskRef,
+      title,
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задание исполнителя',
+      process_type: 'Приглашение',
+      completed: false,
+      state_token: 'signed-state-token-invitation',
+      available_actions: [{
+        code: 'accept_invitation',
+        label: 'Принять',
+        tone: 'success',
+        comment_mode: 'optional',
+      }],
+      files: [],
+    };
+    docflowAPI.getTask.mockResolvedValue(actionTask);
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: 'dddddddddddddddddddddddddddddddd',
+      status: 'state_unknown',
+      correlation_id: 'stable-correlation',
+      task: null,
+      error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+    });
+    docflowAPI.getCommand.mockResolvedValue({
+      command_id: 'dddddddddddddddddddddddddddddddd',
+      status: 'applied',
+      correlation_id: 'stable-correlation',
+      task: { ...actionTask, completed: true, available_actions: [], state_token: null },
+      error_code: null,
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText(title)).closest('[role="button"]'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Принять' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Принять' }).at(-1));
+
+    expect(await screen.findByText('1С подтвердила выполнение задания.')).toBeInTheDocument();
+    expect(screen.getByText('Завершено')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(title)).toHaveLength(1));
     expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
     expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
   });

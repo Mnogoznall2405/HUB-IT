@@ -432,7 +432,7 @@ export default function MailQuotaReport({ isMobile = false }) {
             <Stack direction="row" spacing={0.65} alignItems="center">
               <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography sx={{ fontWeight: 800, fontSize: '0.92rem', lineHeight: 1.08 }}>
-                  Квоты почты
+                  Хранилище почты
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.68rem', lineHeight: 1.05 }} noWrap>
                   {rows.length} из {total || summary?.total || snapshot?.row_count || '—'}
@@ -561,7 +561,7 @@ export default function MailQuotaReport({ isMobile = false }) {
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.6} justifyContent="space-between" alignItems={{ md: 'center' }}>
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontWeight: 800, fontSize: { xs: '1rem', md: '1.05rem' }, lineHeight: 1.2 }}>
-                Квоты почтовых ящиков
+                Хранилище почтовых ящиков
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.78rem', md: '0.84rem' } }}>
                 {snapshot

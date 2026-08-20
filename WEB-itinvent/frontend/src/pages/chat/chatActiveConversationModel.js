@@ -1,10 +1,14 @@
+import { sameConversationId } from './chatConversationModel';
+
 export function resolveActiveConversationSummary({
   activeConversationId,
   conversations,
   searchChats,
 } = {}) {
-  return conversations.find((item) => item.id === activeConversationId)
-    || searchChats.find((item) => item.id === activeConversationId)
+  const list = Array.isArray(conversations) ? conversations : [];
+  const search = Array.isArray(searchChats) ? searchChats : [];
+  return list.find((item) => sameConversationId(item?.id, activeConversationId))
+    || search.find((item) => sameConversationId(item?.id, activeConversationId))
     || null;
 }
 

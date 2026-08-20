@@ -27,10 +27,11 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import RotateLeftRoundedIcon from '@mui/icons-material/RotateLeftRounded';
 import RotateRightRoundedIcon from '@mui/icons-material/RotateRightRounded';
 import {
-  requestDesktopOpenDownloadedFile,
+  requestDesktopDownloadedFileAction,
   requestDesktopPrintCurrent,
 } from '../../lib/desktopBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
+import { getDesktopOfficeOpenLabel, openOriginalWithDesktopApplication } from './desktopOfficeOpen';
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
 const MailExcelPreviewGrid = lazy(() => import('../mail/MailExcelPreviewGrid'));
@@ -70,6 +71,7 @@ export default function DocumentPreviewDialog({
   const hasExcelTable = Boolean(isExcel && excelWorkbook);
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
   const canOpenInDesktopApplication = Boolean(onDownloadOriginal && canDownloadOriginal && isNativeShellRuntime());
+  const desktopOpenLabel = getDesktopOfficeOpenLabel(sourceKind);
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
   const [mode, setMode] = useState(preferredMode);
   const [rotation, setRotation] = useState(0);
@@ -92,7 +94,10 @@ export default function DocumentPreviewDialog({
   const openOriginalInDesktopApplication = useCallback(async () => {
     setRequestingDesktopOpen(true);
     setDesktopOpenMessage('');
-    const result = await requestDesktopOpenDownloadedFile();
+    const result = await openOriginalWithDesktopApplication({
+      requestOpen: (action) => requestDesktopDownloadedFileAction(action),
+      onDownload: () => onDownloadOriginal?.(),
+    });
     setRequestingDesktopOpen(false);
     if (!result.accepted) {
       setDesktopOpenMessage(
@@ -100,10 +105,7 @@ export default function DocumentPreviewDialog({
           ? 'Другая загрузка уже ожидает открытия'
           : 'Не удалось передать открытие в HUB Desktop',
       );
-      return;
     }
-
-    onDownloadOriginal?.();
   }, [onDownloadOriginal]);
 
   const rotateLeft = useCallback(() => {
@@ -305,12 +307,12 @@ export default function DocumentPreviewDialog({
             ) : null}
             {onDownloadOriginal && canDownloadOriginal ? (
               canOpenInDesktopApplication ? (
-                <Tooltip title="Открыть в приложении">
+                <Tooltip title={desktopOpenLabel}>
                   <span>
                     <IconButton
                       onClick={openOriginalInDesktopApplication}
                       disabled={loading || requestingDesktopOpen}
-                      aria-label="Открыть в приложении"
+                      aria-label={desktopOpenLabel}
                     >
                       <OpenInNewRoundedIcon />
                     </IconButton>

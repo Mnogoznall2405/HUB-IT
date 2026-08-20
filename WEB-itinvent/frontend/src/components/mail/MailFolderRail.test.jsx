@@ -57,6 +57,10 @@ describe('MailFolderRail', () => {
 
     expect(onItRequest).toHaveBeenCalledTimes(1);
     expect(onTemplates).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('mail-view-mode-switcher')).toBeTruthy();
+    expect(screen.queryByText('Режим')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Письма' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Цепочки' })).toBeTruthy();
   });
 
   it('shows nested custom folders under their parent and lets the user collapse the branch', () => {
@@ -127,5 +131,77 @@ describe('MailFolderRail', () => {
     fireEvent.click(screen.getByTestId('mail-folder-menu-create-child'));
 
     expect(onCreateFolderRequest).toHaveBeenCalledWith('inbox');
+  });
+
+  it('renders the compose button above folders', () => {
+    const onCompose = vi.fn();
+    renderWithTheme(
+      <MailFolderRail
+        folder="inbox"
+        folderTreeItems={[
+          { id: 'inbox', label: 'Входящие', well_known_key: 'inbox', icon_key: 'inbox', unread: 0 },
+        ]}
+        onFolderChange={vi.fn()}
+        viewMode="messages"
+        onViewModeChange={vi.fn()}
+        unreadOnly={false}
+        onUnreadToggle={vi.fn()}
+        hasAttachmentsOnly={false}
+        onToggleHasAttachmentsOnly={vi.fn()}
+        filterDateFrom=""
+        filterDateTo=""
+        onToggleToday={vi.fn()}
+        onToggleLast7Days={vi.fn()}
+        onCreateFolderRequest={vi.fn()}
+        onRenameFolderRequest={vi.fn()}
+        onDeleteFolderRequest={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onDropMessagesToFolder={vi.fn()}
+        onCompose={onCompose}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('mail-compose-button'));
+    expect(onCompose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps unselected view-mode labels readable when action.active is a translucent accent', () => {
+    render(
+      <ThemeProvider
+        theme={createTheme({
+          palette: {
+            mode: 'dark',
+            text: { primary: '#f3f2f1' },
+            action: { active: 'rgba(15, 108, 189, 0.18)' },
+          },
+        })}
+      >
+        <MailFolderRail
+          folder="inbox"
+          folderTreeItems={[
+            { id: 'inbox', label: 'Входящие', well_known_key: 'inbox', icon_key: 'inbox', unread: 0 },
+          ]}
+          onFolderChange={vi.fn()}
+          viewMode="messages"
+          onViewModeChange={vi.fn()}
+          unreadOnly={false}
+          onUnreadToggle={vi.fn()}
+          hasAttachmentsOnly={false}
+          onToggleHasAttachmentsOnly={vi.fn()}
+          filterDateFrom=""
+          filterDateTo=""
+          onToggleToday={vi.fn()}
+          onToggleLast7Days={vi.fn()}
+          onCreateFolderRequest={vi.fn()}
+          onRenameFolderRequest={vi.fn()}
+          onDeleteFolderRequest={vi.fn()}
+          onToggleFavorite={vi.fn()}
+          onDropMessagesToFolder={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    const threads = screen.getByRole('button', { name: 'Цепочки' });
+    expect(getComputedStyle(threads).color).toBe('rgb(243, 242, 241)');
   });
 });

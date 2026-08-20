@@ -20,12 +20,28 @@ class FakeFolder:
     def __init__(self, *, key: str, items=None):
         self.key = key
         self.items = list(items or [])
+        self.last_only_fields = None
+
+    def all(self):
+        return FakeQuery(self)
 
     def get(self, *, id: str):
         for item in self.items:
             if item.id == id:
                 return item
         raise KeyError(id)
+
+
+class FakeQuery:
+    def __init__(self, folder: FakeFolder):
+        self.folder = folder
+
+    def only(self, *fields):
+        self.folder.last_only_fields = fields
+        return self
+
+    def get(self, *, id: str):
+        return self.folder.get(id=id)
 
 
 def _item(item_id: str, conversation_key: str, minute: int):
@@ -83,6 +99,7 @@ def test_conversation_finder_uses_direct_message_id_fallback():
     assert key == "derived-conv"
     assert [(item.id, folder_key) for item, folder_key in items] == [("msg-1", "inbox")]
     assert last_folder == "inbox"
+    assert inbox.last_only_fields == ("conversation_id",)
 
 
 def test_conversation_finder_respects_search_window_limit_then_fallbacks_to_direct_item():

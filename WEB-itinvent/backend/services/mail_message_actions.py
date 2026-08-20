@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
+from backend.services.mail_reference_codec import is_item_scoped_folder
+
 
 def _normalize_text(value: Any, default: str = "") -> str:
     if value is None:
@@ -39,14 +41,53 @@ class MailMessageActions:
         *,
         resolve_folder: Callable[[Any, str], tuple[Any, str]],
         encode_message_id: Callable[[str, str, str | None], str],
+        fetch_item_by_id: Callable[[Any, str], Any] | None = None,
+        folder_key_from_item: Callable[[Any, Any], str] | None = None,
     ) -> None:
         self.resolve_folder = resolve_folder
         self.encode_message_id = encode_message_id
+        self.fetch_item_by_id = fetch_item_by_id
+        self.folder_key_from_item = folder_key_from_item
 
-    def _message_item(self, *, account: Any, folder_key: str, exchange_id: str) -> tuple[Any, str, Any]:
+    def _message_item(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        only_fields: tuple[str, ...] | None = None,
+    ) -> tuple[Any, str, Any]:
+        if is_item_scoped_folder(folder_key):
+            if self.fetch_item_by_id is None:
+                raise MailMessageActionError(f"Message not found: {exchange_id}")
+            try:
+                if only_fields:
+                    try:
+                        item = self.fetch_item_by_id(account, exchange_id, only_fields=only_fields)
+                    except TypeError:
+                        item = self.fetch_item_by_id(account, exchange_id)
+                else:
+                    item = self.fetch_item_by_id(account, exchange_id)
+            except Exception as exc:
+                raise MailMessageActionError(f"Message not found: {exchange_id}") from exc
+            if item is None:
+                raise MailMessageActionError(f"Message not found: {exchange_id}")
+            resolved_folder_key = folder_key
+            if self.folder_key_from_item is not None:
+                try:
+                    resolved_folder_key = self.folder_key_from_item(account, item) or folder_key
+                except Exception:
+                    resolved_folder_key = folder_key
+            return getattr(item, "folder", None), resolved_folder_key, item
         folder_obj, resolved_folder_key = self.resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
+            if only_fields:
+                try:
+                    item = folder_obj.all().only(*only_fields).get(id=exchange_id)
+                except Exception:
+                    item = folder_obj.get(id=exchange_id)
+            else:
+                item = folder_obj.get(id=exchange_id)
         except Exception as exc:
             raise MailMessageActionError(f"Message not found: {exchange_id}") from exc
         return folder_obj, resolved_folder_key, item
@@ -56,6 +97,7 @@ class MailMessageActions:
             account=account,
             folder_key=folder_key,
             exchange_id=exchange_id,
+            only_fields=("is_read",),
         )
         try:
             current_read = getattr(item, "is_read", None)
@@ -83,6 +125,7 @@ class MailMessageActions:
             account=account,
             folder_key=folder_key,
             exchange_id=exchange_id,
+            only_fields=("importance",),
         )
         try:
             try:
@@ -126,7 +169,15 @@ class MailMessageActions:
         failed = 0
         for folder_obj, _folder_key in folder_targets:
             try:
-                unread_items = list(folder_obj.filter(is_read=False))
+                queryset = folder_obj.filter(is_read=False)
+            except Exception:
+                queryset = []
+            try:
+                queryset = queryset.only("is_read")
+            except Exception:
+                pass
+            try:
+                unread_items = list(queryset)
             except Exception:
                 unread_items = []
             result = self.set_items_read_state(items=unread_items, is_read=True)
@@ -147,6 +198,7 @@ class MailMessageActions:
             account=account,
             folder_key=folder_key,
             exchange_id=exchange_id,
+            only_fields=("subject",),
         )
         target_folder_obj, target_folder_key = self.resolve_folder(account, target_folder)
         try:
@@ -168,6 +220,7 @@ class MailMessageActions:
             account=account,
             folder_key=folder_key,
             exchange_id=exchange_id,
+            only_fields=("subject",),
         )
         try:
             item.delete()

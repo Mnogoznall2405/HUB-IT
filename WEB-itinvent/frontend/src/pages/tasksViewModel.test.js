@@ -98,8 +98,8 @@ describe('tasks view model', () => {
       canSubmit: true,
     })).toEqual(expect.objectContaining({
       key: 'submit',
-      stepLabel: 'Сдать результат',
-      actionLabel: 'Сдать',
+      stepLabel: 'Отправить результат',
+      actionLabel: 'Отправить на проверку',
     }));
 
     expect(buildMobileTaskActionState(makeTask({ id: 'review', status: 'review' }), {
@@ -107,7 +107,7 @@ describe('tasks view model', () => {
     })).toEqual(expect.objectContaining({
       key: 'review',
       stepLabel: 'Проверить результат',
-      actionLabel: 'Проверить',
+      actionLabel: 'Принять',
     }));
 
     expect(buildMobileTaskActionState(makeTask({ id: 'waiting-review', status: 'review' }), {
@@ -139,6 +139,20 @@ describe('tasks view model', () => {
       key: 'reopen',
       stepLabel: 'Вернуть в работу',
       actionLabel: 'Вернуть в работу',
+    }));
+
+    expect(buildMobileTaskActionState(makeTask({ id: 'creator-new', status: 'new' }), {
+      canClose: true,
+    })).toEqual(expect.objectContaining({
+      key: 'close',
+      stepLabel: 'Закрыть задачу',
+      actionLabel: 'Закрыть',
+    }));
+
+    expect(buildMobileTaskActionState(makeTask({ id: 'observer-new', status: 'new' }))).toEqual(expect.objectContaining({
+      key: 'waiting_assignee',
+      actionLabel: '',
+      passive: true,
     }));
   });
 

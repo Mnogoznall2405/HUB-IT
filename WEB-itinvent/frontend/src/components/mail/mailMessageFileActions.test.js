@@ -38,6 +38,23 @@ describe('mailMessageFileActions', () => {
     });
   });
 
+  it('keeps custom-folder message ids when opening an attachment chip', () => {
+    const customFolderMessageId = 'v2CustomFolderMessageIdWithCASE';
+    const context = buildAttachmentRequestContext({
+      messageOrId: {
+        id: customFolderMessageId,
+        mailbox_id: 'mailbox-1',
+        folder: 'bWFpbGJveDo6QWJjREVfMTIz',
+      },
+      attachment: { download_token: 'att2_ZGVtbw', id: 'att-id' },
+      resolveMailboxId: (message) => message?.mailbox_id || '',
+    });
+
+    expect(context.messageId).toBe(customFolderMessageId);
+    expect(context.attachmentRef).toBe('att2_ZGVtbw');
+    expect(context.mailboxId).toBe('mailbox-1');
+  });
+
   it('builds structured attachment context errors and stable download keys', () => {
     const error = buildAttachmentContextError({
       attachment: { name: 'broken.txt', size: 64 },

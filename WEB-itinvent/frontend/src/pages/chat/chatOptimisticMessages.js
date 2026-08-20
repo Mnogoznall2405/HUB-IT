@@ -7,7 +7,11 @@ export function buildReplyPreview(message) {
   const kind = message?.kind === 'task_share'
     ? 'task_share'
     : (message?.kind === 'file' || attachments.length > 0 ? 'file' : 'text');
-  const senderName = String(message?.sender?.full_name || message?.sender?.username || '').trim() || 'Сообщение';
+  const fullName = String(message?.sender?.full_name || '').trim();
+  const username = String(message?.sender?.username || '').trim();
+  const senderName = fullName
+    || (username && !/^user-\d+$/i.test(username) ? username : '')
+    || 'Участник';
   const body = String(message?.body || '').trim();
   const taskTitle = String(message?.task_preview?.title || '').trim();
   return {

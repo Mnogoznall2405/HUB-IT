@@ -17,6 +17,10 @@ const MAIL_PRESENTATION_ATTRS = [
   'data-mail-quoted-block',
   'data-mail-table-scroll',
   'data-mail-image-state',
+  'srcset',
+  'poster',
+  'target',
+  'rel',
 ];
 const RESPONSIVE_MAIL_MEDIA_STYLE = 'max-width:100% !important;height:auto !important;box-sizing:border-box;';
 const RESPONSIVE_MAIL_TABLE_STYLE = 'border-collapse:collapse;';
@@ -89,6 +93,72 @@ const getMailAttachmentIdentity = (attachment) => String(
 
 const isRemoteMailImageSrc = (value) => /^https?:\/\//i.test(String(value || '').trim());
 const isIntrinsicMailImageSrc = (value) => /^(data:|blob:)/i.test(String(value || '').trim());
+const REMOTE_CSS_URL_RE = /url\(\s*(['"]?)(https?:\/\/[^'"\s)]+)\1\s*\)/gi;
+
+const srcsetHasRemoteCandidate = (value) => String(value || '')
+  .split(',')
+  .some((part) => isRemoteMailImageSrc(part.trim().split(/\s+/)[0] || ''));
+
+const stripRemoteCssUrls = (styleValue) => {
+  const source = String(styleValue || '');
+  if (!/url\(/i.test(source)) {
+    return { style: source, blocked: false };
+  }
+  let blocked = false;
+  const style = source.replace(REMOTE_CSS_URL_RE, () => {
+    blocked = true;
+    return 'none';
+  });
+  return { style, blocked };
+};
+
+const applySafeBlankLinkRel = (documentNode) => {
+  documentNode.querySelectorAll('a[target]').forEach((node) => {
+    const target = String(node.getAttribute('target') || '').trim().toLowerCase();
+    if (target !== '_blank') return;
+    const relParts = String(node.getAttribute('rel') || '')
+      .split(/\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const relSet = new Set(relParts.map((part) => part.toLowerCase()));
+    relSet.add('noopener');
+    relSet.add('noreferrer');
+    node.setAttribute('rel', Array.from(relSet).join(' '));
+  });
+};
+
+const blockRemoteMailResources = (documentNode, { allowExternalImages = false } = {}) => {
+  let blockedRemote = false;
+  if (allowExternalImages) {
+    applySafeBlankLinkRel(documentNode);
+    return blockedRemote;
+  }
+
+  documentNode.querySelectorAll('[style]').forEach((node) => {
+    const { style, blocked } = stripRemoteCssUrls(node.getAttribute('style'));
+    if (!blocked) return;
+    blockedRemote = true;
+    node.setAttribute('style', style);
+  });
+
+  documentNode.querySelectorAll('img[srcset], source[srcset]').forEach((node) => {
+    if (!srcsetHasRemoteCandidate(node.getAttribute('srcset'))) return;
+    blockedRemote = true;
+    node.removeAttribute('srcset');
+    if (node.tagName === 'IMG' && !String(node.getAttribute('src') || '').trim()) {
+      node.replaceWith(createMailImagePlaceholder(documentNode, 'blocked'));
+    }
+  });
+
+  documentNode.querySelectorAll('[poster]').forEach((node) => {
+    if (!isRemoteMailImageSrc(node.getAttribute('poster'))) return;
+    blockedRemote = true;
+    node.removeAttribute('poster');
+  });
+
+  applySafeBlankLinkRel(documentNode);
+  return blockedRemote;
+};
 
 const createMailImagePlaceholder = (documentNode, kind) => {
   const placeholderNode = documentNode.createElement('div');
@@ -180,24 +250,6 @@ const getContrastRatio = (leftColor, rightColor) => {
   return (lighter + 0.05) / (darker + 0.05);
 };
 
-const getCssHue = ({ r, g, b }) => {
-  const red = r / 255;
-  const green = g / 255;
-  const blue = b / 255;
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const delta = max - min;
-  if (delta === 0) return 0;
-  if (max === red) return (60 * (((green - blue) / delta) % 6) + 360) % 360;
-  if (max === green) return 60 * (((blue - red) / delta) + 2);
-  return 60 * (((red - green) / delta) + 4);
-};
-
-const isBlueLikeColor = (color) => {
-  const hue = getCssHue(color);
-  return hue >= 185 && hue <= 255 && color.b >= color.r && color.b >= color.g;
-};
-
 const setNodeStyleProperty = (node, property, value) => {
   if (!node?.style || !value) return;
   const priority = node.style.getPropertyPriority(property);
@@ -242,7 +294,7 @@ const getDarkAdaptedTextColor = (rawColor, { link = false } = {}) => {
   if (!color || color.a <= 0.05) return '';
   const darkSurface = parseCssColor(MAIL_DARK_SURFACE_COLOR);
   const contrast = getContrastRatio(color, darkSurface);
-  if (link || isBlueLikeColor(color)) {
+  if (link) {
     return contrast < 5.2 ? MAIL_DARK_LINK_COLOR : '';
   }
   if (contrast < MAIL_DARK_MIN_TEXT_CONTRAST || getRelativeLuminance(color) < 0.34) {
@@ -408,6 +460,9 @@ export const buildRenderedMailHtml = (html, attachments = [], { allowExternalIma
       }
       imageNode.replaceWith(createMailImagePlaceholder(documentNode, 'missing'));
     });
+    if (blockRemoteMailResources(documentNode, { allowExternalImages })) {
+      hasBlockedExternalImages = true;
+    }
     normalizeRenderedMailLayout(documentNode);
     normalizeReadableMailTypography(documentNode);
     if (colorScheme === 'dark') {

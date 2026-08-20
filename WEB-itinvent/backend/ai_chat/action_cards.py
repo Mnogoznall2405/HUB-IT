@@ -494,6 +494,78 @@ def _normalize_report_payload(payload: dict[str, Any], *, database_id: str | Non
     }
 
 
+def _normalize_report_tool_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    columns: list[dict[str, str]] = []
+    columns_set: set[str] = set()
+    for row in list(rows or []):
+        for key in row.keys():
+            normalized = _normalize_text(key)
+            if normalized and normalized not in columns_set:
+                columns_set.add(normalized)
+                columns.append({"key": normalized, "label": normalized})
+            if len(columns) >= 20:
+                break
+        if len(columns) >= 20:
+            break
+    return columns
+
+
+def _generic_report_tool_tables_from_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_title = ""
+    best_rows: list[dict[str, Any]] = []
+    for result in list(results or []):
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            continue
+        tool_id = _normalize_text(result.get("tool_id"))
+        if not tool_id or tool_id.startswith("ai.files."):
+            continue
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        candidates: list[list[dict[str, Any]]] = []
+        for key in ("items", "rows", "results", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows = [item for item in list(value or []) if isinstance(item, dict)]
+                candidates.append(rows)
+        for candidate in candidates:
+            if len(candidate) > len(best_rows):
+                best_rows = candidate
+                best_title = _normalize_text(result.get("tool_id")) or "Data"
+    if not best_rows:
+        return []
+    return [
+        {
+            "title": best_title or "Data",
+            "columns": _normalize_report_tool_rows(best_rows),
+            "rows": best_rows,
+        }
+    ]
+
+
+def _is_report_source_file_spec_empty_for_format(spec: dict[str, Any] | None, file_format: str) -> bool:
+    normalized = spec or {}
+    rows = list(normalized.get("rows") or [])
+    sheets = list(normalized.get("sheets") or [])
+    if file_format == "xlsx":
+        return not rows and not sheets and not _normalize_text(normalized.get("content"))
+    if file_format == "csv":
+        return not rows
+    return not rows and not _normalize_text(normalized.get("content"))
+
+
+def _repair_report_file_spec_with_tool_results(spec: dict[str, Any], source_tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(spec, dict) or not source_tool_results:
+        return spec
+    try:
+        from backend.ai_chat import service as ai_chat_service
+
+        repaired = ai_chat_service._repair_generated_file_specs_with_tool_data([spec], source_tool_results)
+        if repaired and isinstance(repaired[0], dict):
+            return repaired[0]
+    except Exception:
+        return spec
+    return spec
+
+
 def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | None) -> dict[str, Any]:
     tables = _normalize_report_tables(payload.get("tables"))
     source_file_spec = payload.get("source_file_spec") if isinstance(payload.get("source_file_spec"), dict) else {}
@@ -1148,12 +1220,13 @@ def _report_rows_for_table(table: dict[str, Any]) -> list[Any]:
 def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) -> dict[str, Any]:
     normalized = _normalize_report_payload(payload, database_id=_normalize_text(payload.get("database_id")) or None)
     title = _normalize_text(normalized.get("title")) or "Report"
+    source_tool_results = list(normalized.get("source_tool_results") or [])
     source_file_spec = (
         dict(normalized.get("source_file_spec") or {})
         if isinstance(normalized.get("source_file_spec"), dict)
         else {}
     )
-    if source_file_spec:
+    if source_file_spec and not _is_report_source_file_spec_empty_for_format(source_file_spec, file_format):
         source_file_spec["format"] = file_format
         source_file_spec["file_name"] = _report_file_name(
             _normalize_text(source_file_spec.get("file_name"))
@@ -1162,10 +1235,13 @@ def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) ->
             file_format,
         )
         source_file_spec["title"] = _normalize_text(source_file_spec.get("title")) or title
-        return source_file_spec
+        return _repair_report_file_spec_with_tool_results(source_file_spec, source_tool_results)
+
     summary = _normalize_text(normalized.get("summary"))
     sections = _normalize_report_sections(normalized.get("sections"))
     tables = _normalize_report_tables(normalized.get("tables"))
+    if not tables:
+        tables = _generic_report_tool_tables_from_results(source_tool_results)
     report_tables = [
         {
             "title": _normalize_text(table.get("title")) or f"Table {index}",
@@ -1211,7 +1287,7 @@ def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) ->
         for section in sections:
             content_lines.extend(["", section.get("heading") or "Section", section.get("body") or ""])
         spec["content"] = "\n".join(content_lines)
-    return spec
+    return _repair_report_file_spec_with_tool_results(spec, source_tool_results)
 
 
 def _send_report_failure_to_chat(*, row: AppAiPendingAction, current_user: Any, error_text: str) -> None:

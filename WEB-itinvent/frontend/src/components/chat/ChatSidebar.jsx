@@ -51,6 +51,7 @@ import {
   isTaskConversation,
   resolveDirectConversationId,
 } from './chatHelpers';
+import { formatRuCount } from '../../lib/ruPlural';
 import {
   AiConversationRow,
   ConversationRow,
@@ -523,7 +524,7 @@ function ChatSidebar({
               </p>
               <p className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[13px]' : 'text-[13px]')}>
                 {workspace === 'ai'
-                  ? `${aiBots.length} ${aiBots.length === 1 ? 'диалог' : 'диалогов'}`
+                  ? formatRuCount(aiBots.length, 'диалог', 'диалога', 'диалогов')
                   : (compactMobile ? mobileSubtitle : desktopSubtitle)}
               </p>
             </div>
@@ -1081,7 +1082,7 @@ function ChatSidebar({
               sx={{ minHeight: 64, justifyContent: 'flex-start', borderRadius: 2, textAlign: 'left', textTransform: 'none' }}
             >
               <span className="min-w-0">
-                <span className="block text-[15px] font-bold">Личный AI</span>
+                <span className="block text-[15px] font-bold">HUB Ассистент</span>
                 <span className="block truncate text-[13px] font-normal opacity-75">Общение, база знаний, файлы и документы</span>
               </span>
             </Button>
@@ -1117,7 +1118,7 @@ function ChatSidebar({
 
             {aiBotsError ? (
               <p role="alert" className="px-2 text-[13px] text-red-500">
-                Корпоративные помощники временно недоступны. Личный AI продолжает работать.
+                Корпоративные помощники временно недоступны. HUB Ассистент продолжает работать.
               </p>
             ) : null}
             {!aiBotsLoading && !aiBotsError && availableAiAgents.length === 0 ? (

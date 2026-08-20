@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text.Json;
 using Hub.Desktop.Downloads;
+using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Shell;
 
 namespace Hub.Desktop.Interop;
@@ -42,6 +44,7 @@ public static class DesktopBridgeProtocol
 {
     public const int CurrentVersion = 1;
     public const int MaximumInboundMessageLength = 4096;
+    public const int MaximumSystemLifecycleMessageLength = 512;
     public const int MaximumNotificationIdLength = 128;
     public const int MaximumNotificationTitleLength = 128;
     public const int MaximumNotificationBodyLength = 512;
@@ -70,6 +73,8 @@ public static class DesktopBridgeProtocol
     private const string HostReadyMessageType = "desktop.hostReady";
     private const string OpenNavigationMessageType = "navigation.open";
     private const string WindowStateMessageType = "desktop.windowState";
+    private const string SystemResumeMessageType = "desktop.system.resume";
+    private const string SystemNetworkChangedMessageType = "desktop.network.changed";
     private const string CapabilitiesMessageType = "desktop.capabilities";
     private const string OpenCommandPaletteMessageType = "command.openPalette";
 
@@ -205,6 +210,45 @@ public static class DesktopBridgeProtocol
             version = CurrentVersion,
             foreground,
         });
+    }
+
+    public static string CreateSystemLifecycleMessage(DesktopSystemLifecycleMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Generation < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(message), "Generation must be a positive integer.");
+        }
+
+        var occurredUtc = message.OccurredUtc.ToUniversalTime()
+            .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        var json = message.Kind switch
+        {
+            DesktopSystemLifecycleKind.Resume => JsonSerializer.Serialize(new
+            {
+                type = SystemResumeMessageType,
+                version = CurrentVersion,
+                generation = message.Generation,
+                occurredUtc,
+            }),
+            DesktopSystemLifecycleKind.NetworkChanged when message.NetworkAvailable is bool available =>
+                JsonSerializer.Serialize(new
+                {
+                    type = SystemNetworkChangedMessageType,
+                    version = CurrentVersion,
+                    generation = message.Generation,
+                    available,
+                    occurredUtc,
+                }),
+            _ => throw new ArgumentOutOfRangeException(nameof(message), "Unsupported system lifecycle message."),
+        };
+
+        if (json.Length > MaximumSystemLifecycleMessageLength)
+        {
+            throw new InvalidOperationException("System lifecycle message exceeds the size limit.");
+        }
+
+        return json;
     }
 
     public static string CreateOpenDownloadedFileResultMessage(bool accepted)

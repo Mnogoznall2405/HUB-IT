@@ -30,3 +30,20 @@ def test_outgoing_html_module_keeps_mail_service_compatibility_aliases():
     assert 'data-mail-signature="true"' in direct
     assert direct.index("Signature") < direct.index("Old")
     assert "color:#000000;" in direct
+
+
+def test_extract_reply_new_body_html_drops_quoted_block():
+    body = outgoing_html.build_outgoing_html_body(
+        '<p>Согласен</p><div class="quoted-mail"><p>Старое письмо</p></div>',
+        "<p>Подпись</p>",
+        prefer_signature_before_quote=True,
+    )
+    new_body = outgoing_html.extract_reply_new_body_html(body)
+    assert "Согласен" in new_body
+    assert "Подпись" in new_body
+    assert "Старое письмо" not in new_body
+
+
+def test_extract_reply_new_body_html_keeps_plain_reply_without_quote():
+    body = outgoing_html.build_outgoing_html_body("<p>Только ответ</p>", "")
+    assert "Только ответ" in outgoing_html.extract_reply_new_body_html(body)

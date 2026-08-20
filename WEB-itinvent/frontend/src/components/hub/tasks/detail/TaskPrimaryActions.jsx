@@ -72,8 +72,10 @@ export function TaskPrimaryActions({
   canStartTask,
   canSubmitTask,
   canReviewTask,
+  canCloseTask = false,
   canReopenTask = false,
   reopening = false,
+  closing = false,
   canEditTask,
   canDeleteTask,
   onOpenTransferActReminder,
@@ -81,6 +83,7 @@ export function TaskPrimaryActions({
   onReopenTask,
   onOpenSubmitTask,
   onOpenReviewTask,
+  onOpenCloseTask,
   onOpenEditTask,
   onDeleteTask,
   onCopyLink,
@@ -88,133 +91,120 @@ export function TaskPrimaryActions({
   mobileRail = false,
 }) {
   const showSecondaryActions = !compactMobile && (canEditTask || canDeleteTask || onCopyLink);
+  const workflowButtons = [];
+
+  if (canOpenTransferActUpload) {
+    workflowButtons.push({
+      key: 'upload_act',
+      label: compactMobile ? 'Загрузить акт' : 'Загрузить подписанный акт',
+      variant: 'contained',
+      color: 'primary',
+      onClick: () => onOpenTransferActReminder(task),
+    });
+  }
+  if (canStartTask) {
+    workflowButtons.push({
+      key: 'start',
+      label: compactMobile ? 'Начать' : 'В работу',
+      variant: compactMobile ? 'outlined' : 'outlined',
+      color: 'primary',
+      onClick: () => onStartTask(task.id),
+    });
+  }
+  if (canSubmitTask) {
+    workflowButtons.push({
+      key: 'submit',
+      label: 'Отправить на проверку',
+      variant: 'contained',
+      color: 'primary',
+      onClick: () => onOpenSubmitTask(task),
+    });
+  }
+  if (canReviewTask) {
+    workflowButtons.push({
+      key: 'approve',
+      label: 'Принять',
+      variant: 'contained',
+      color: 'success',
+      onClick: () => onOpenReviewTask(task),
+    });
+    workflowButtons.push({
+      key: 'reject',
+      label: 'Вернуть на доработку',
+      variant: 'outlined',
+      color: 'warning',
+      onClick: () => onOpenReviewTask(task),
+    });
+  }
+  if (canCloseTask) {
+    workflowButtons.push({
+      key: 'close',
+      label: closing ? 'Закрытие...' : 'Закрыть',
+      variant: 'outlined',
+      color: 'primary',
+      onClick: () => onOpenCloseTask?.(task),
+      disabled: closing,
+    });
+  }
+  if (canReopenTask) {
+    workflowButtons.push({
+      key: 'reopen',
+      label: reopening ? 'Возврат...' : 'Вернуть в работу',
+      variant: 'outlined',
+      color: 'primary',
+      onClick: () => onReopenTask(task),
+      disabled: reopening,
+    });
+  }
 
   if (compactMobile) {
-    const primaryAction = (() => {
-      if (canOpenTransferActUpload) {
-        return {
-          label: 'Загрузить акт',
-          variant: 'contained',
-          color: 'primary',
-          onClick: () => onOpenTransferActReminder(task),
-        };
-      }
-      if (canStartTask) {
-        return {
-          label: 'Начать',
-          variant: 'outlined',
-          color: 'primary',
-          onClick: () => onStartTask(task.id),
-        };
-      }
-      if (canSubmitTask) {
-        return {
-          label: 'Сдать',
-          variant: 'contained',
-          color: 'primary',
-          onClick: () => onOpenSubmitTask(task),
-        };
-      }
-      if (canReviewTask) {
-        return {
-          label: 'Проверить',
-          variant: 'contained',
-          color: 'secondary',
-          onClick: () => onOpenReviewTask(task),
-        };
-      }
-      if (canReopenTask) {
-        return {
-          label: reopening ? 'Возврат...' : 'Вернуть в работу',
-          variant: 'outlined',
-          color: 'primary',
-          onClick: () => onReopenTask(task),
-          disabled: reopening,
-        };
-      }
-      return null;
-    })();
-
-    if (!primaryAction) return null;
+    if (workflowButtons.length === 0) return null;
 
     return (
-      <Button
-        fullWidth={!mobileRail}
-        variant={primaryAction.variant}
-        color={primaryAction.color}
-        onClick={primaryAction.onClick}
-        sx={{
-          textTransform: 'none',
-          fontWeight: 850,
-          borderRadius: mobileRail ? 999 : '10px',
-          boxShadow: 'none',
-          minHeight: mobileRail ? 40 : undefined,
-          px: mobileRail ? 1.7 : undefined,
-          fontSize: mobileRail ? '0.86rem' : undefined,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {primaryAction.label}
-      </Button>
+      <Stack direction="row" spacing={0.8} sx={{ flexWrap: 'nowrap' }}>
+        {workflowButtons.map((action) => (
+          <Button
+            key={action.key}
+            fullWidth={!mobileRail}
+            variant={action.variant}
+            color={action.color}
+            onClick={action.onClick}
+            disabled={action.disabled}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 850,
+              borderRadius: mobileRail ? 999 : '10px',
+              boxShadow: 'none',
+              minHeight: mobileRail ? 40 : undefined,
+              px: mobileRail ? 1.7 : undefined,
+              fontSize: mobileRail ? '0.86rem' : undefined,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {action.label}
+          </Button>
+        ))}
+      </Stack>
     );
   }
 
   return (
     <Stack spacing={0.8}>
-      {canOpenTransferActUpload && (
+      {workflowButtons.map((action) => (
         <Button
+          key={action.key}
           fullWidth
-          variant="contained"
-          onClick={() => onOpenTransferActReminder(task)}
-          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
+          variant={action.variant}
+          color={action.color}
+          onClick={action.onClick}
+          disabled={action.disabled}
+          sx={{ textTransform: 'none', fontWeight: action.variant === 'contained' ? 800 : 700, borderRadius: '10px', boxShadow: 'none' }}
         >
-          Загрузить подписанный акт
+          {action.label}
         </Button>
-      )}
-      {canStartTask && (
-        <Button
-          fullWidth
-          variant="outlined"
-          onClick={() => onStartTask(task.id)}
-          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
-        >
-          В работу
-        </Button>
-      )}
-      {canSubmitTask && (
-        <Button
-          fullWidth
-          variant="contained"
-          onClick={() => onOpenSubmitTask(task)}
-          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-        >
-          Сдать работу
-        </Button>
-      )}
-      {canReviewTask && (
-        <Button
-          fullWidth
-          variant="contained"
-          color="secondary"
-          onClick={() => onOpenReviewTask(task)}
-          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-        >
-          Проверить
-        </Button>
-      )}
-      {canReopenTask && (
-        <Button
-          fullWidth
-          variant="outlined"
-          onClick={() => onReopenTask(task)}
-          disabled={reopening}
-          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
-        >
-          {reopening ? 'Возврат...' : 'Вернуть в работу'}
-        </Button>
-      )}
+      ))}
 
-      {showSecondaryActions && <Divider />}
+      {showSecondaryActions && workflowButtons.length > 0 && <Divider />}
 
       {!compactMobile && canEditTask && (
         <Button

@@ -28,7 +28,7 @@ export default function MailSummarizeButton({
         lineHeight: 1.2,
       }}
     >
-      {loading ? '…' : 'Пересказать'}
+      {loading ? '…' : 'Сводка'}
     </Button>
   );
 }

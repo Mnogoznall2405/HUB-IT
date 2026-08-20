@@ -18,6 +18,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined';
+import ReplyAllRoundedIcon from '@mui/icons-material/ReplyAllRounded';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
 import SubjectRoundedIcon from '@mui/icons-material/SubjectRounded';
 import {
@@ -25,6 +26,8 @@ import {
   buildMailPreviewReadState,
   filterMailPreviewMobileSheetActions,
 } from './mailPreviewActions';
+import { filterMailMoveTargets } from './mailMoveTargets';
+import { getDefaultMailReplyMode } from './mailReplyIntent';
 import MailMobileBottomActionButton from './MailMobileBottomActionButton';
 import {
   buildMailUiTokens,
@@ -70,6 +73,7 @@ export default function MailPreviewMobileActionBar({
   onOpenHeaders,
   onDownloadSource,
   onPrintSelectedMessage,
+  mailboxEmails,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
@@ -79,14 +83,19 @@ export default function MailPreviewMobileActionBar({
   if (!selectedMessage) return null;
 
   const canArchive = folder !== 'archive' && folder !== 'trash';
-  const availableMoveTargets = Array.isArray(moveTargets)
-    ? moveTargets.filter((option) => option.value !== folder)
-    : [];
+  const availableMoveTargets = filterMailMoveTargets(moveTargets, folder);
   const { effectiveIsRead, readActionIcon, readActionLabel } = buildMailPreviewReadState(
     selectedMessage,
     selectedConversation,
     viewMode,
   );
+  const defaultReplyMode = getDefaultMailReplyMode({
+    message: selectedMessage,
+    mailboxEmails,
+    conversationParticipants: viewMode === 'conversations' && Array.isArray(selectedConversation?.participant_people)
+      ? selectedConversation.participant_people
+      : [],
+  });
   const actionItems = buildMailPreviewActionItems({
     folder,
     readActionIcon,
@@ -101,15 +110,22 @@ export default function MailPreviewMobileActionBar({
     onArchiveSelectedMessage,
     canArchive,
   });
-  const mobileSheetActionItems = filterMailPreviewMobileSheetActions(actionItems, folder);
+  const mobileSheetActionItems = filterMailPreviewMobileSheetActions(actionItems, folder, {
+    defaultReplyMode,
+  });
   const mobileForwardDisabled = folder === 'drafts' || messageActionLoading;
   const mobileReadActionLabel = effectiveIsRead ? 'Не проч.' : 'Прочитано';
   const primaryActionIcon = folder === 'drafts'
     ? <DraftsRoundedIcon fontSize="small" />
-    : <ReplyRoundedIcon fontSize="small" />;
+    : (defaultReplyMode === 'reply_all'
+      ? <ReplyAllRoundedIcon fontSize="small" />
+      : <ReplyRoundedIcon fontSize="small" />);
   const primaryActionHandler = folder === 'drafts'
     ? () => onOpenComposeFromDraft?.()
-    : () => onOpenComposeFromMessage?.('reply');
+    : () => onOpenComposeFromMessage?.(defaultReplyMode);
+  const primaryActionLabel = folder === 'drafts'
+    ? 'Открыть'
+    : (defaultReplyMode === 'reply_all' ? 'Всем' : 'Ответить');
 
   const handleAction = (callback) => () => {
     setMobileSheetOpen(false);
@@ -140,7 +156,7 @@ export default function MailPreviewMobileActionBar({
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 0.35 }}>
           <MailMobileBottomActionButton
             icon={primaryActionIcon}
-            label={folder === 'drafts' ? 'Открыть' : 'Ответить'}
+            label={primaryActionLabel}
             disabled={messageActionLoading}
             onClick={primaryActionHandler}
             tokens={tokens}

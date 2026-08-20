@@ -1,4 +1,6 @@
 import { useCallback } from 'react';
+import { confirmMailPermanentDelete } from './mailPermanentDeleteConfirm';
+import { extractTrashRestoreMessageId } from './mailTrashUndo';
 
 const hasLoadedMessageBody = (detail) => Boolean(
   detail
@@ -24,6 +26,10 @@ export default function useMailListItemActions({
   resolveItemMailboxId,
   withActiveMailboxPayload,
   setError,
+  confirmPermanentDelete = confirmMailPermanentDelete,
+  onRecoverableDelete,
+  onRecoverableMove,
+  getFolderLabel,
 } = {}) {
   const handleActionError = useCallback(async (requestError, fallbackMessage) => {
     if (await handleMailCredentialsRequired(requestError, fallbackMessage)) return;
@@ -78,7 +84,7 @@ export default function useMailListItemActions({
     await performMailReadMutation({
       mode: 'messages',
       targetId: String(item?.id || ''),
-      nextIsRead: !Boolean(item?.is_read),
+      nextIsRead: !item?.is_read,
       currentUnreadCount: item?.is_read ? 0 : 1,
       currentMessageCount: 1,
       errorMessage: 'Не удалось изменить статус письма.',
@@ -90,19 +96,30 @@ export default function useMailListItemActions({
     const permanent = typeof options?.permanent === 'boolean'
       ? options.permanent
       : folder === 'trash';
+    if (permanent && !confirmPermanentDelete({ count: 1 })) return;
     try {
-      await mailAPI.deleteMessage(item.id, withActiveMailboxPayload({ permanent }));
+      const result = await mailAPI.deleteMessage(item.id, withActiveMailboxPayload({ permanent }));
       clearIfSelected(item.id);
       await afterListMutation();
+      if (!permanent) {
+        const restoreMessageId = extractTrashRestoreMessageId(result);
+        onRecoverableDelete?.({
+          messageIds: restoreMessageId ? [restoreMessageId] : [],
+          restoreFolder: folder,
+          count: 1,
+        });
+      }
     } catch (requestError) {
       await handleActionError(requestError, 'Не удалось удалить письмо.');
     }
   }, [
     afterListMutation,
     clearIfSelected,
+    confirmPermanentDelete,
     folder,
     handleActionError,
     mailAPI,
+    onRecoverableDelete,
     viewMode,
     withActiveMailboxPayload,
   ]);
@@ -140,10 +157,16 @@ export default function useMailListItemActions({
       await mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: targetFolder }));
       clearIfSelected(messageId);
       await afterListMutation();
+      onRecoverableMove?.({
+        messageIds: [messageId],
+        restoreFolder: folder,
+        folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
+        count: 1,
+      });
     } catch (requestError) {
       await handleActionError(requestError, 'Не удалось переместить письмо.');
     }
-  }, [afterListMutation, clearIfSelected, handleActionError, mailAPI, viewMode, withActiveMailboxPayload]);
+  }, [afterListMutation, clearIfSelected, folder, getFolderLabel, handleActionError, mailAPI, onRecoverableMove, viewMode, withActiveMailboxPayload]);
 
   return {
     getMessageDetailForListAction,

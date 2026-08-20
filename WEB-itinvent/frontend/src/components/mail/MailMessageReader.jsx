@@ -1,5 +1,6 @@
 import { Alert, Box, Button } from '@mui/material';
 import MailAttachmentHero from './MailAttachmentHero';
+import MailHtmlBody from './MailHtmlBody';
 
 export default function MailMessageReader({
   message,
@@ -84,15 +85,25 @@ export default function MailMessageReader({
           {showQuotedHistory ? 'Скрыть историю переписки' : 'Показать историю переписки'}
         </Button>
       ) : null}
-      <Box
+      <MailHtmlBody
         className={!quotedHtml && usesQuoteFallback && !showQuotedHistory ? 'mail-quote-collapsed' : ''}
         sx={getContentSx({ ui })}
-        dangerouslySetInnerHTML={{ __html: messageHtml || '<p style="color:#999">Нет содержимого</p>' }}
+        html={messageHtml}
+        title="Содержимое письма"
+        colorScheme={ui?.isDark ? 'dark' : 'light'}
+        color={ui?.textPrimary}
+        fontSize="0.9375rem"
+        lineHeight={1.5}
+        linkColor={ui?.isDark ? '#8cc8ff' : undefined}
+        collapseQuotes={!quotedHtml && usesQuoteFallback && !showQuotedHistory}
       />
       {quotedHtml && showQuotedHistory ? (
-        <Box
+        <MailHtmlBody
           sx={getContentSx({ ui, quoted: true })}
-          dangerouslySetInnerHTML={{ __html: quotedHtml }}
+          html={quotedHtml}
+          title="История переписки"
+          colorScheme={ui?.isDark ? 'dark' : 'light'}
+          color={ui?.textSecondary || ui?.textPrimary}
         />
       ) : null}
     </Box>

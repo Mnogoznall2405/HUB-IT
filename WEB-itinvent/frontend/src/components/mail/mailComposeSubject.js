@@ -1,5 +1,5 @@
-const RE_PREFIX_RE = /^re:\s*/i;
-const FWD_PREFIX_RE = /^(fw|fwd):\s*/i;
+const RE_PREFIX_RE = /^(?:re|aw|sv|odp|resp|отв|ответ)\s*:/i;
+const FWD_PREFIX_RE = /^(?:fw|fwd|wg|vs|tr|пересл(?:ано)?)\s*:/i;
 
 export const EMPTY_REPLY_SUBJECT = '(без темы)';
 

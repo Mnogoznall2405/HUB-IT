@@ -108,4 +108,17 @@ describe('DesktopPresenceBootstrap', () => {
 
     expect(mocks.disconnect).toHaveBeenCalledOnce();
   });
+
+  it('sends an immediate heartbeat on the desktop lifecycle event', async () => {
+    const { DESKTOP_PRESENCE_HEARTBEAT_EVENT } = await import('../../lib/desktopLifecycle');
+    render(<DesktopPresenceBootstrap />);
+    await act(async () => Promise.resolve());
+    expect(mocks.heartbeat).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_PRESENCE_HEARTBEAT_EVENT));
+      await Promise.resolve();
+    });
+    expect(mocks.heartbeat).toHaveBeenCalledTimes(2);
+  });
 });

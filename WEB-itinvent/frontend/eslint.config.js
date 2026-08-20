@@ -42,4 +42,30 @@ export default [
       'import/no-unresolved': 'off',
     },
   },
+  {
+    files: [
+      'src/pages/Mail.jsx',
+      'src/pages/Mail.test.jsx',
+      'src/components/mail/**/*.{js,jsx}',
+      'src/api/mail*.js',
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.browser,
+      },
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: {
+      'react-hooks': reactHooks,
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'react-hooks/rules-of-hooks': 'error',
+    },
+  },
 ];

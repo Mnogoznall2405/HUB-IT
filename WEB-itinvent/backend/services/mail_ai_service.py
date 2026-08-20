@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
-from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client, resolve_model
+_MONOREPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+from shared.llm import OpenRouterClientError, openrouter_client, resolve_model
+
+from backend.services.mail_ai_privacy import (
+    UNTRUSTED_EMAIL_SYSTEM_RULE,
+    MailAiDisabledError,
+    MailAiRateLimitedError,
+    consume_mail_ai_rate_limit,
+    record_mail_ai_call,
+    redact_mail_ai_text,
+    require_mail_ai_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +53,20 @@ SMART_REPLIES_SCHEMA = {
 
 
 class MailAiServiceError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str = "MAIL_AI_ERROR", status_code: int = 400) -> None:
+        super().__init__(message)
+        self.code = str(code or "MAIL_AI_ERROR")
+        self.status_code = int(status_code or 400)
+
+
+def require_mail_ai_access(*, user_id: int) -> None:
+    try:
+        require_mail_ai_enabled()
+        consume_mail_ai_rate_limit(int(user_id))
+    except MailAiDisabledError as exc:
+        raise MailAiServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
+    except MailAiRateLimitedError as exc:
+        raise MailAiServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
 
 def _normalize_text(value: Any, default: str = "") -> str:
@@ -60,18 +89,20 @@ def _resolve_mail_model() -> str:
 
 
 def _build_message_prompt(message: dict[str, Any]) -> tuple[str, str]:
-    subject = _normalize_text(message.get("subject"), "(без темы)")[:MAX_SUBJECT_CHARS]
+    subject = redact_mail_ai_text(_normalize_text(message.get("subject"), "(без темы)"))[:MAX_SUBJECT_CHARS]
     body_text = _normalize_text(message.get("body_text"))
     if not body_text:
         body_text = _strip_html(_normalize_text(message.get("body_html") or message.get("body")))
-    body_text = body_text[:MAX_BODY_CHARS]
+    body_text = redact_mail_ai_text(body_text)[:MAX_BODY_CHARS]
     sender_person = message.get("sender_person") if isinstance(message.get("sender_person"), dict) else {}
-    sender = _normalize_text(
-        sender_person.get("display")
-        or message.get("sender_display")
-        or message.get("sender_email")
-        or message.get("sender"),
-        "-",
+    sender = redact_mail_ai_text(
+        _normalize_text(
+            sender_person.get("display")
+            or message.get("sender_display")
+            or message.get("sender_email")
+            or message.get("sender"),
+            "-",
+        )
     )
     user_prompt = (
         f"Subject: {subject}\n"
@@ -126,12 +157,14 @@ class MailAiService:
         if not openrouter_client.is_configured():
             raise MailAiServiceError("AI не настроен: проверьте ROUTERAI_API_KEY в .env и перезапустите backend.")
         _subject, user_prompt = _build_message_prompt(message)
+        record_mail_ai_call(chars=len(user_prompt))
         try:
             payload = self._complete_json(
                 system_prompt=(
                     "You summarize business emails in Russian. "
                     "Return JSON only: {\"summary\": \"...\"}. "
-                    "Keep the summary concise (2-4 sentences), factual, no markdown."
+                    "Keep the summary concise (2-4 sentences), factual, no markdown. "
+                    + UNTRUSTED_EMAIL_SYSTEM_RULE
                 ),
                 user_prompt=user_prompt,
                 temperature=0.2,
@@ -151,12 +184,15 @@ class MailAiService:
         if not openrouter_client.is_configured():
             raise MailAiServiceError("AI не настроен: проверьте ROUTERAI_API_KEY в .env и перезапустите backend.")
         _subject, user_prompt = _build_message_prompt(message)
+        record_mail_ai_call(chars=len(user_prompt))
         try:
             payload = self._complete_json(
                 system_prompt=(
                     "You generate short Russian email quick replies. "
                     "Return JSON only: {\"suggestions\": [\"...\", \"...\"]}. "
-                    "Each suggestion must be one short sentence suitable to send as-is."
+                    "Each suggestion must be one short sentence suitable as a draft the user can edit. "
+                    "Do not assume the draft will be sent immediately. "
+                    + UNTRUSTED_EMAIL_SYSTEM_RULE
                 ),
                 user_prompt=user_prompt,
                 temperature=0.4,

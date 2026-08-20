@@ -472,6 +472,18 @@ export const getReplyPreviewText = (replyPreview) => {
   return normalizeTrimmedChatText(replyPreview.body);
 };
 
+const SYNTHETIC_CHAT_USERNAME_RE = /^user-\d+$/i;
+
+export const isSyntheticChatUsername = (value) => (
+  SYNTHETIC_CHAT_USERNAME_RE.test(String(value || '').trim())
+);
+
+export const resolveChatPreviewSenderName = (preview, fallback = 'Участник') => {
+  const name = String(preview?.sender_name || '').trim();
+  if (name && !isSyntheticChatUsername(name)) return name;
+  return String(fallback || 'Участник').trim() || 'Участник';
+};
+
 export const getSearchResultPreview = (message) => {
   if (!message) return 'Сообщение';
   if (message?.is_deleted) return 'Сообщение удалено';
@@ -621,8 +633,20 @@ export const resolveDirectConversationId = (peerUserId, sources = {}) => {
   return '';
 };
 
-export const getConversationHeaderSubtitle = (conversation) => {
+export const HUB_ASSISTANT_TITLE = 'HUB Ассистент';
+
+export const getAiConversationStatusLine = (conversation, aiStatus) => {
+  const status = String(aiStatus?.status || conversation?.ai_status || '').trim().toLowerCase();
+  if (status === 'queued' || status === 'running') return `${HUB_ASSISTANT_TITLE} • выполняет действие`;
+  if (status === 'failed') return `${HUB_ASSISTANT_TITLE} • требуется разрешение`;
+  return `${HUB_ASSISTANT_TITLE} • готов к работе`;
+};
+
+export const getConversationHeaderSubtitle = (conversation, aiStatus) => {
   if (!conversation) return '';
+  if (conversation.kind === 'ai') {
+    return getAiConversationStatusLine(conversation, aiStatus);
+  }
   if (conversation.kind === 'notes') {
     return 'Личные заметки';
   }

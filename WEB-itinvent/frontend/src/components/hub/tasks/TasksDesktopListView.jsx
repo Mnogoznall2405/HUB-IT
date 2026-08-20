@@ -40,8 +40,10 @@ function TaskListRow({
   taskDiscussionChatEnabled,
   projectLabel,
   canDeleteTask,
+  menuItems,
   onOpenTask,
   onDeleteTask,
+  onMenuSelect,
 }) {
   const handleOpen = useCallback(() => {
     onOpenTask?.(task);
@@ -55,8 +57,10 @@ function TaskListRow({
       taskDiscussionChatEnabled={taskDiscussionChatEnabled}
       projectLabel={projectLabel}
       canDelete={canDeleteTask?.(task) === true}
+      menuItems={menuItems}
       onOpen={handleOpen}
       onDelete={onDeleteTask}
+      onMenuSelect={onMenuSelect}
     />
   );
 }
@@ -74,8 +78,10 @@ export default function TasksDesktopListView({
   taskDiscussionChatEnabled = false,
   activeTaskProjects = [],
   canDeleteTask,
+  getTaskActionMenuItems,
   onOpenTask,
   onDeleteTask,
+  onTaskMenuSelect,
   hasMoreTasks = false,
   onLoadMore,
   tasksTotal = 0,
@@ -187,8 +193,10 @@ export default function TasksDesktopListView({
                       taskDiscussionChatEnabled={taskDiscussionChatEnabled}
                       projectLabel={resolveProjectLabel(task)}
                       canDeleteTask={canDeleteTask}
+                      menuItems={getTaskActionMenuItems?.(task) || []}
                       onOpenTask={onOpenTask}
                       onDeleteTask={onDeleteTask}
+                      onMenuSelect={onTaskMenuSelect}
                     />
                   ))
                 ) : (
@@ -221,8 +229,10 @@ export default function TasksDesktopListView({
                         taskDiscussionChatEnabled={taskDiscussionChatEnabled}
                         projectLabel={resolveProjectLabel(task)}
                         canDeleteTask={canDeleteTask}
+                        menuItems={getTaskActionMenuItems?.(task) || []}
                         onOpenTask={onOpenTask}
                         onDeleteTask={onDeleteTask}
+                        onMenuSelect={onTaskMenuSelect}
                       />
                     ))
                   ) : (

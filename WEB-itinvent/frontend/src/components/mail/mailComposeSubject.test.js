@@ -17,4 +17,9 @@ describe('normalizeComposeSubject', () => {
   it('uses fallback label for empty reply subject', () => {
     expect(normalizeComposeSubject('reply', '')).toBe('Re: (без темы)');
   });
+
+  it('does not duplicate localized reply and forward prefixes', () => {
+    expect(normalizeComposeSubject('reply', 'Отв: Тема')).toBe('Отв: Тема');
+    expect(normalizeComposeSubject('forward', 'Переслано: Тема')).toBe('Переслано: Тема');
+  });
 });

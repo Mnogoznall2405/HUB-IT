@@ -38,6 +38,13 @@ class MailConversationFinder:
         self.search_batch_size = max(1, int(search_batch_size))
         self.search_window_limit = search_window_limit
 
+    def _item_by_id(self, folder_obj: Any, exchange_id: str) -> Any:
+        # Fallback path only needs conversation_id; hydrate later loads detail fields.
+        try:
+            return folder_obj.all().only("conversation_id").get(id=exchange_id)
+        except Exception:
+            return folder_obj.get(id=exchange_id)
+
     def _scan_targets(
         self,
         *,
@@ -103,7 +110,7 @@ class MailConversationFinder:
             try:
                 folder_key_from_message, exchange_id = self.decode_message_id(conversation_key)
                 folder_obj, last_folder_key = self.resolve_folder(account, folder_key_from_message)
-                direct_item = folder_obj.get(id=exchange_id)
+                direct_item = self._item_by_id(folder_obj, exchange_id)
             except Exception:
                 direct_item = None
             if direct_item is not None:
@@ -111,7 +118,7 @@ class MailConversationFinder:
             try:
                 if direct_item is None:
                     folder_obj, last_folder_key = self.resolve_folder(account, normalized_folder)
-                    direct_item = folder_obj.get(id=conversation_key)
+                    direct_item = self._item_by_id(folder_obj, conversation_key)
             except Exception:
                 direct_item = None
 

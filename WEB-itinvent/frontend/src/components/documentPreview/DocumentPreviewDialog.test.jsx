@@ -15,6 +15,7 @@ vi.mock('../../lib/platform', () => ({
 }));
 
 vi.mock('../../lib/desktopBridge', () => ({
+  requestDesktopDownloadedFileAction: desktopMocks.requestOpen,
   requestDesktopOpenDownloadedFile: desktopMocks.requestOpen,
   requestDesktopPrintCurrent: desktopMocks.requestPrint,
 }));
@@ -125,6 +126,26 @@ describe('DocumentPreviewDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Открыть в приложении' }));
     await waitFor(() => expect(onDownloadOriginal).toHaveBeenCalledTimes(1));
+    expect(desktopMocks.requestOpen).toHaveBeenCalledWith('open');
+  });
+
+  it('labels the Desktop action as Word or Excel for Office files', () => {
+    setMobileMedia(false);
+    desktopMocks.native = true;
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.xlsx"
+          kind="office_excel"
+          sourceKind="excel"
+          onClose={vi.fn()}
+          onDownloadOriginal={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Открыть в Excel' })).toBeTruthy();
   });
 
   it('shows a controlled message and does not download while another open intent is busy', async () => {

@@ -48,9 +48,9 @@ function buildProps(overrides = {}) {
       radiusXs: '4px',
       selectedBorder: '#1976d2',
     },
-    quickReplyBody: '',
+    quickReplyDraftKey: message.id,
+    quickReplyDraftEpoch: 0,
     quickReplySending: false,
-    onQuickReplyBodyChange: vi.fn(),
     onSendQuickReply: vi.fn(),
     onOpenComposeFromMessage: vi.fn(),
     onSelectMessage: vi.fn(),
@@ -109,26 +109,50 @@ describe('MailConversationReader', () => {
 
     renderWithTheme(<MailConversationReader {...props} />);
 
-    fireEvent.click(screen.getByRole('button'));
+    fireEvent.click(screen.getByRole('button', { name: 'Показать изображения' }));
 
     expect(props.onRevealRemoteImages).toHaveBeenCalledTimes(1);
     expect(props.onRevealRemoteImages).toHaveBeenCalledWith('msg-remote');
     expect(props.onSelectMessage).not.toHaveBeenCalled();
   });
 
-  it('calls quick reply body and send callbacks', () => {
-    const props = buildProps({ quickReplyBody: 'Ready to send' });
+  it('calls onSendQuickReply with typed body and does not lift keystrokes', () => {
+    const props = buildProps();
 
     renderWithTheme(<MailConversationReader {...props} />);
 
     fireEvent.change(screen.getByTestId('mail-quick-reply-body'), {
       target: { value: 'Updated quick reply' },
     });
+    expect(props.onSendQuickReply).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByTestId('mail-quick-reply-send'));
 
-    expect(props.onQuickReplyBodyChange).toHaveBeenCalledTimes(1);
-    expect(props.onQuickReplyBodyChange).toHaveBeenCalledWith('Updated quick reply');
     expect(props.onSendQuickReply).toHaveBeenCalledTimes(1);
+    expect(props.onSendQuickReply).toHaveBeenCalledWith('Updated quick reply');
+  });
+
+  it('does not re-render conversation reader on quick reply keystrokes', () => {
+    const renderCount = { value: 0 };
+    const baseProps = buildProps();
+
+    function ReaderProbe(props) {
+      renderCount.value += 1;
+      return <MailConversationReader {...props} />;
+    }
+
+    renderWithTheme(<ReaderProbe {...baseProps} />);
+    const afterMount = renderCount.value;
+
+    fireEvent.change(screen.getByTestId('mail-quick-reply-body'), {
+      target: { value: 'A' },
+    });
+    fireEvent.change(screen.getByTestId('mail-quick-reply-body'), {
+      target: { value: 'AB' },
+    });
+
+    expect(renderCount.value).toBe(afterMount);
+    expect(screen.getByText('Conversation body text')).toBeVisible();
   });
 
   it('opens and downloads attachments with message and attachment context', () => {
@@ -162,5 +186,52 @@ describe('MailConversationReader', () => {
 
     expect(props.onDownloadAttachment).toHaveBeenCalledTimes(1);
     expect(props.onDownloadAttachment).toHaveBeenCalledWith(message, attachment);
+  });
+
+  it('shows quick reply and smart reply chips on mobile without desktop compose row', () => {
+    const props = buildProps({
+      isMobile: true,
+      smartReplySuggestions: ['Sounds good', 'Will review'],
+    });
+
+    renderWithTheme(<MailConversationReader {...props} />);
+
+    expect(screen.getByTestId('mail-conversation-mobile-quick-reply')).toBeVisible();
+    expect(screen.getByTestId('mail-quick-reply-bar')).toBeVisible();
+    expect(screen.getByTestId('mail-smart-reply-chips')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Ответить' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Всем' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Переслать' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('mail-smart-reply-chip-0'));
+    expect(props.onSendQuickReply).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mail-quick-reply-input')).toHaveValue('Sounds good');
+
+    fireEvent.click(screen.getByTestId('mail-quick-reply-send'));
+    expect(props.onSendQuickReply).toHaveBeenCalledTimes(1);
+    expect(props.onSendQuickReply).toHaveBeenCalledWith('Sounds good');
+  });
+
+  it('does not re-render conversation reader on mobile quick reply keystrokes', () => {
+    const renderCount = { value: 0 };
+    const baseProps = buildProps({ isMobile: true });
+
+    function ReaderProbe(props) {
+      renderCount.value += 1;
+      return <MailConversationReader {...props} />;
+    }
+
+    renderWithTheme(<ReaderProbe {...baseProps} />);
+    const afterMount = renderCount.value;
+
+    fireEvent.change(screen.getByTestId('mail-quick-reply-input'), {
+      target: { value: 'A' },
+    });
+    fireEvent.change(screen.getByTestId('mail-quick-reply-input'), {
+      target: { value: 'AB' },
+    });
+
+    expect(renderCount.value).toBe(afterMount);
+    expect(screen.getByText('Conversation body text')).toBeVisible();
   });
 });

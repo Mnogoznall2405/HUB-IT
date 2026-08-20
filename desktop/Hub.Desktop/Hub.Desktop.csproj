@@ -21,7 +21,14 @@
     <WebView2EnableCsWinRTProjection>false</WebView2EnableCsWinRTProjection>
     <AssemblyName>HUB.Desktop</AssemblyName>
     <RootNamespace>Hub.Desktop</RootNamespace>
-    <Version>0.1.15</Version>
+    <Version>0.1.17</Version>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">
+    <DefineConstants>$(DefineConstants);PERF_BENCH</DefineConstants>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>

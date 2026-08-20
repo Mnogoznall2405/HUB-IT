@@ -18,6 +18,10 @@
     <WebView2EnableCsWinRTProjection>false</WebView2EnableCsWinRTProjection>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">
+    <DefineConstants>$(DefineConstants);PERF_BENCH</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

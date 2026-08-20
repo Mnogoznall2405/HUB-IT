@@ -533,9 +533,9 @@ function TaskActionBar({ task, working, progressLabel, commandState, onAction, o
                   {resolvedProgressLabel}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" display="block">
-                  {working
-                    ? (waitingCommand ? 'Проверяем результат в 1С…' : 'Отправляем в 1С и ждём ответ…')
-                    : 'Ждём подтверждение от 1С. Не нажимайте действие повторно.'}
+                  {waitingCommand
+                    ? 'Подтверждаем выполнение в 1С. Обычно это занимает несколько секунд.'
+                    : 'Отправляем в 1С и ждём ответ…'}
                 </Typography>
                 {commandState?.correlation_id ? (
                   <Typography variant="caption" color="text.secondary" display="block">

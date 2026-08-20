@@ -138,7 +138,7 @@ export default function useMailFolderMutations({
   const handleToggleFavoriteFolder = useCallback(async (item) => {
     if (!item?.id) return;
     try {
-      await mailAPI?.setFolderFavorite?.(item.id, !Boolean(item?.is_favorite), activeMailboxId);
+      await mailAPI?.setFolderFavorite?.(item.id, !item?.is_favorite, activeMailboxId);
       invalidateMailClientCache?.(['bootstrap', 'folder-tree']);
       await refreshFolderTree?.({ force: true });
     } catch (requestError) {

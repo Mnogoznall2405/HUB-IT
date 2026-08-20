@@ -116,6 +116,33 @@ def test_conversation_payloads_filters_unread_query_attachments_and_search_limit
     assert [item["conversation_id"] for item in result.payload["items"]] == ["conv-keep"]
 
 
+def test_conversation_payloads_uses_has_attachments_flag_without_iterating_attachments():
+    class BoomAttachments:
+        def __iter__(self):
+            raise AssertionError("attachments collection must not be loaded")
+
+        def __len__(self):
+            raise AssertionError("attachments collection must not be loaded")
+
+    item = _item(
+        "flagged",
+        "conv-flag",
+        subject="Flag",
+        sender="a@example.com",
+        recipients=[],
+        minute=4,
+        is_read=True,
+    )
+    item.attachments = BoomAttachments()
+    item.has_attachments = True
+    payloads = _build_payloads(folders={"inbox": [item]})
+
+    result = payloads.list_conversations(account=object(), folder="inbox", limit=10, offset=0)
+
+    assert result.payload["items"][0]["has_attachments"] is True
+    assert result.payload["items"][0]["attachments_count"] == 1
+
+
 def test_conversation_payloads_builds_detail_payload_with_deduped_people():
     payloads = _build_payloads(folders={"inbox": []})
     items = [

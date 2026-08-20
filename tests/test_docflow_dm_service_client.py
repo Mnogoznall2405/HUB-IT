@@ -570,6 +570,60 @@ async def test_invitation_actions_write_allowlisted_invitation_result(action, re
 
 
 @pytest.mark.asyncio
+async def test_task_state_bypasses_stale_task_xml_cache():
+    task_ref = "03649d11-97ac-11f1-8cfb-5cba2c62eea8"
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        request_type = _request_type(request)
+        if request_type == "DMGetVersionRequest":
+            return httpx.Response(
+                200,
+                content=_soap_response(
+                    "DMGetVersionResponse",
+                    "<tns:version>1.1.2.1</tns:version>",
+                ),
+            )
+        assert request_type == "DMRetrieveRequest"
+        requests += 1
+        task_xml = _invitation_task(executed=True, accepted=True).replace(
+            "<tns:object", "<tns:objects", 1
+        ).replace("</tns:object>", "</tns:objects>", 1)
+        return httpx.Response(200, content=_soap_response("DMRetrieveResponse", task_xml))
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    stale_xml = _invitation_task(executed=False, accepted=True).replace(
+        "<tns:object ",
+        '<tns:object xmlns:tns="http://www.1c.ru/dm" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ',
+        1,
+    )
+    stale = etree.fromstring(stale_xml.encode("utf-8"))
+    client._merge_visible_type_cache(
+        "user",
+        {task_ref: "DMBusinessProcessInvitationTaskInvitation"},
+        False,
+    )
+    client._set_task_xml_cache("user", task_ref, etree.tostring(stale, encoding="utf-8"))
+    try:
+        state = await client.get_task_state(
+            login="user",
+            password="secret",
+            task_ref=task_ref,
+        )
+    finally:
+        await client.aclose()
+
+    assert requests == 1
+    assert state["completed"] is True
+    assert state["completed_at"] == "2026-08-15T16:00:00"
+
+
+@pytest.mark.asyncio
 async def test_approve_normalizes_inherited_xsi_type_prefix_before_write():
     accepted = False
     completed = False

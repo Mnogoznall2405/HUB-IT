@@ -93,6 +93,35 @@ public sealed class DesktopWindowManagerTests
     }
 
     [Fact]
+    public void ReloadsTheLastVisibleWindowWithoutCache()
+    {
+        var primary = new FakeHubWindow();
+        var secondary = new FakeHubWindow();
+        var manager = new DesktopWindowManager(BaseUri);
+        manager.RegisterPrimary(primary);
+        manager.ConfigureSecondaryFactory(_ => secondary);
+        manager.OpenSecondaryFrom(primary);
+        secondary.RaiseActivated();
+
+        manager.ReloadLastOrPrimaryWithoutCache();
+
+        Assert.Equal(1, secondary.ReloadWithoutCacheCount);
+        Assert.Equal(0, primary.ReloadWithoutCacheCount);
+    }
+
+    [Fact]
+    public void ReloadsThePrimaryWindowWhenItIsTheOnlyTarget()
+    {
+        var primary = new FakeHubWindow();
+        var manager = new DesktopWindowManager(BaseUri);
+        manager.RegisterPrimary(primary);
+
+        manager.ReloadLastOrPrimaryWithoutCache();
+
+        Assert.Equal(1, primary.ReloadWithoutCacheCount);
+    }
+
+    [Fact]
     public void AggregatesSharedShellCountersWithoutAddingDuplicates()
     {
         var primary = new FakeHubWindow();
@@ -124,6 +153,8 @@ public sealed class DesktopWindowManagerTests
 
         public int ActivationCount { get; private set; }
 
+        public int ReloadWithoutCacheCount { get; private set; }
+
         public event EventHandler? Activated;
 
         public event EventHandler? Closed;
@@ -139,6 +170,24 @@ public sealed class DesktopWindowManagerTests
         {
             LastRoute = route;
             ShowAndActivate();
+        }
+
+        public void ReloadWithoutCache() => ReloadWithoutCacheCount++;
+
+        public bool BridgeReady { get; set; }
+
+        public List<DesktopSystemLifecycleMessage> LifecycleMessages { get; } = [];
+
+        public bool TryDeliverSystemLifecycle(DesktopSystemLifecycleMessage message)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+            if (!BridgeReady)
+            {
+                return false;
+            }
+
+            LifecycleMessages.Add(message);
+            return true;
         }
 
         public void RaiseActivated()

@@ -1810,9 +1810,15 @@ function Networks() {
       form.append('excel_file', file);
       const result = await networksAPI.importEquipment(branchIdNum, form);
       const s = result?.summary || {};
+      const sheetsTotal = Number(s.sheets_total || 0);
+      const sheetsImported = Number(s.sheets_imported || 0);
+      const sheetsSkipped = Number(s.sheets_skipped || 0);
       notifySuccess(
-        `Импорт завершён: устройств создано ${s.devices_created || 0}, обновлено ${s.devices_updated || 0}; портов ${s.ports_created || 0}`,
+        `Импорт завершён: листов ${sheetsImported}${sheetsTotal ? `/${sheetsTotal}` : ''}, устройств создано ${s.devices_created || 0}, обновлено ${s.devices_updated || 0}; портов ${s.ports_created || 0}`,
       );
+      if (sheetsSkipped > 0) {
+        notifyWarning(`Пропущено листов без колонки Port: ${sheetsSkipped}`);
+      }
       // Invalidate all caches so fresh data is loaded
       invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
       invalidateSWRCacheByPrefix('networks', 'branch-ports-all', branchIdNum);
@@ -2825,13 +2831,18 @@ function Networks() {
     </Stack>
   );
 
+  // Вкладка «Карта»: без fullHeight, иначе overflow:hidden обрезает панель и убирает scroll страницы.
+  const mapsPageScroll = tab === 'maps';
+
   return (
     <MainLayout showDatabaseSelector>
       <PageShell
-        fullHeight={!isMobile}
+        fullHeight={!isMobile && !mapsPageScroll}
         sx={isMobile
           ? { pb: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' }
-          : { display: 'flex', flexDirection: 'column' }}
+          : mapsPageScroll
+            ? { pb: 3 }
+            : { display: 'flex', flexDirection: 'column' }}
       >
         {isMobile ? <MobileShellPageHeader title="Сети" showDatabaseSelector /> : null}
         {!isMobile && (
@@ -2890,7 +2901,9 @@ function Networks() {
         {branchIdNum && (
           <Paper elevation={0} sx={getOfficePanelSx(ui, isMobile
             ? { p: 1 }
-            : { p: 2, display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }
+            : mapsPageScroll
+              ? { p: 2 }
+              : { p: 2, display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }
           )}>
             {isMobile ? (
               <Box sx={{ mb: 1, flexShrink: 0 }}>
@@ -3129,11 +3142,12 @@ function Networks() {
                         sx={{
                           position: 'sticky',
                           top: 12,
-                          maxHeight: 'calc(100dvh - 240px)',
+                          maxHeight: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 96px)',
                           overflowY: 'auto',
                           overflowX: 'hidden',
                           scrollbarGutter: 'stable both-edges',
-                          scrollPaddingBottom: 16,
+                          scrollPaddingBottom: 24,
+                          pb: 1,
                           pr: 0.25,
                         }}
                       >
@@ -3578,6 +3592,22 @@ function Networks() {
           branchDeleteName={branchDeleteName}
           branchDeleteSaving={branchDeleteSaving}
           confirmDeleteBranch={confirmDeleteBranch}
+        />
+
+        <MapDialog
+          open={mapDialogOpen}
+          onClose={() => setMapDialogOpen(false)}
+          mapEditId={mapEditId}
+          mapFile={mapFile}
+          setMapFile={setMapFile}
+          mapTitle={mapTitle}
+          setMapTitle={setMapTitle}
+          mapFloor={mapFloor}
+          setMapFloor={setMapFloor}
+          mapSiteCode={mapSiteCode}
+          setMapSiteCode={setMapSiteCode}
+          saveMap={saveMap}
+          sites={availableSites}
         />
 
         {loading && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Загрузка...</Typography>}

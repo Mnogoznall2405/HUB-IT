@@ -23,16 +23,21 @@ const chatFeatureFlags = vi.hoisted(() => ({
 }));
 
 function installMatchMedia({ mobile = false } = {}) {
-  window.matchMedia = vi.fn().mockImplementation((query) => ({
-    matches: mobile ? query.includes('max-width:599.95px') : false,
-    media: query,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  }));
+  window.matchMedia = vi.fn().mockImplementation((query) => {
+    const q = String(query || '');
+    const isSmDown = q.includes('max-width:599.95px');
+    const isMdUp = q.includes('min-width:900px');
+    return {
+      matches: mobile ? isSmDown : isMdUp,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    };
+  });
 }
 
 vi.mock('../api/hubTasks', () => ({
@@ -46,6 +51,7 @@ vi.mock('../api/hubTasks', () => ({
     submitTask: vi.fn(),
     reviewTask: vi.fn(),
     reopenTask: vi.fn(),
+    completeTask: vi.fn(),
   },
 }));
 
@@ -1237,7 +1243,7 @@ describe('Tasks page detail workspace', () => {
 
     const taskCard = await screen.findByTestId('mobile-task-card-task-1');
     expect(taskCard).toBeInTheDocument();
-    expect(within(taskCard).getByTestId('mobile-task-card-description-task-1')).toHaveTextContent('Нужно загрузить');
+    expect(taskCard).toHaveTextContent('Проверить акт перемещения');
     expect(within(taskCard).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
 
     expect(screen.queryByTestId('tasks-mobile-bottom-nav')).not.toBeInTheDocument();
@@ -1271,7 +1277,7 @@ describe('Tasks page detail workspace', () => {
     expect(mobileContent.compareDocumentPosition(mobileActionRail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByTestId('task-mobile-checklist-summary')).toHaveTextContent('1/2 выполнено');
     expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 2');
-    expect(mobileActionRail).toHaveTextContent('Сдать');
+    expect(mobileActionRail).toHaveTextContent('Отправить на проверку');
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
     fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
@@ -1616,12 +1622,15 @@ describe('Tasks page detail workspace', () => {
     expect(within(card).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
     fireEvent.click(card);
     const actionRail = await screen.findByTestId('task-mobile-action-rail');
-    fireEvent.click(within(actionRail).getByRole('button', { name: 'Сдать' }));
+    expect(within(actionRail).getByRole('button', { name: 'Отправить на проверку' })).toBeInTheDocument();
+    expect(within(actionRail).getByRole('button', { name: 'Закрыть' })).toBeInTheDocument();
+    fireEvent.click(within(actionRail).getByRole('button', { name: 'Отправить на проверку' }));
 
-    expect(await screen.findByText('Сдать работу')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 4000 });
+    expect(dialog).toHaveTextContent('Отправить на проверку');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }));
     await waitFor(() => {
-      expect(screen.queryByText('Сдать работу')).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
   });
 

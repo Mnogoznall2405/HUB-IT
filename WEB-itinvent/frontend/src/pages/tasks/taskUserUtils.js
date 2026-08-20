@@ -1,7 +1,10 @@
+import { formatHubPersonDisplay } from '../../components/hub/taskWorkspaceActions';
+
 export const getTaskUserLabel = (user) => {
   const fullName = String(user?.full_name || '').trim();
   const username = String(user?.username || '').trim();
-  return fullName || username || 'Пользователь';
+  const display = formatHubPersonDisplay(fullName, username);
+  return display.label === '-' ? 'Пользователь' : display.label;
 };
 
 export const getDepartmentLabel = (department) => String(department?.name || department?.department_name || department?.id || '').trim();

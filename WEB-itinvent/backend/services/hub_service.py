@@ -35,6 +35,7 @@ from backend.services.access_policy_service import (
     can_create_task_for_department,
     can_review_task,
     can_view_task,
+    user_can_close_task,
     normalize_visibility_scope,
     user_can_manage_tasks_all,
     user_is_department_manager,
@@ -8060,6 +8061,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         task_id: str,
         actor: dict[str, Any],
         comment: str = "",
+        enforce_permission: bool = False,
     ) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
@@ -8076,7 +8078,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 return None
             task = dict(row)
             old_status = _normalize_text(task.get("status")).lower()
-            if old_status == "done":
+            if enforce_permission:
+                if not user_can_close_task(actor, task):
+                    if _normalize_text(task.get("integration_kind")).lower() == "transfer_act_upload":
+                        raise PermissionError("Transfer-act tasks cannot be closed manually")
+                    raise PermissionError("Only task creator, department manager, or admin can close this task")
+                if old_status == "done":
+                    return self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
+            elif old_status == "done":
                 return self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
 
             self._conditional_status_update(
@@ -8134,7 +8143,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 recipient_user_ids=self._task_participant_user_ids(task, include_delegates=True),
                 skip_user_ids={actor_id},
                 event_type="task.reviewed",
-                title="Задача закрыта автоматически",
+                title="Задача закрыта" if enforce_permission else "Задача закрыта автоматически",
                 body=title_text,
                 task_id=normalized_id,
             )

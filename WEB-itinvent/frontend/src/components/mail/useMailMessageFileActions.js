@@ -15,6 +15,7 @@ import {
   isOfficePreviewableAttachment,
 } from './mailMessageFileActions';
 import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
+import { openOriginalWithDesktopApplication } from '../documentPreview/desktopOfficeOpen';
 import { formatMailPersonWithEmail } from './mailPeople';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
 
@@ -36,6 +37,7 @@ export default function useMailMessageFileActions({
   formatFullDate,
   downloadBlobFileImpl = downloadBlobFile,
   openWindow = (...args) => window.open(...args),
+  openOfficeWithDesktopApplication = openOriginalWithDesktopApplication,
 } = {}) {
   const [headersOpen, setHeadersOpen] = useState(false);
   const [headersLoading, setHeadersLoading] = useState(false);
@@ -195,6 +197,33 @@ export default function useMailMessageFileActions({
     return mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
   }, [mailAPI, resolveAttachmentRequestContext]);
 
+  const downloadAttachmentFile = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
+    const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(messageOrId, attachment, fallbackMessage);
+    if (!messageId || !attachmentRef) {
+      const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
+      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn('Mail attachment download skipped because request context is incomplete', contextError.attachment);
+      }
+      reportError(contextError.message);
+      return;
+    }
+    const downloadKey = buildAttachmentDownloadKey({ messageId, attachmentRef, mailboxId });
+    if (attachmentDownloadInFlightRef.current.has(downloadKey)) return;
+    attachmentDownloadInFlightRef.current.add(downloadKey);
+    try {
+      const response = await mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
+      const { blob, filename } = buildAttachmentBlobPayload({ response, attachment });
+      downloadBlobFileImpl(blob, filename, { preferOpenFallback: true });
+    } catch (requestError) {
+      const errorDetail = await getMailErrorDetailAsync?.(requestError, '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043a\u0430\u0447\u0430\u0442\u044c \u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435.');
+      if (!(await maybeHandleCredentials(requestError, errorDetail))) {
+        reportError(errorDetail);
+      }
+    } finally {
+      attachmentDownloadInFlightRef.current.delete(downloadKey);
+    }
+  }, [downloadBlobFileImpl, getMailErrorDetailAsync, mailAPI, maybeHandleCredentials, reportError, resolveAttachmentRequestContext]);
+
   const openAttachmentPreview = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
     const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(
       messageOrId,
@@ -211,6 +240,11 @@ export default function useMailMessageFileActions({
         reportError(contextError.message);
         return;
       }
+      const desktopOpen = await openOfficeWithDesktopApplication({
+        onDownload: () => downloadAttachmentFile(messageOrId, attachment, fallbackMessage),
+      });
+      if (desktopOpen.accepted) return;
+
       const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
       setAttachmentPreview({
         ...createEmptyAttachmentPreview(),
@@ -277,40 +311,15 @@ export default function useMailMessageFileActions({
       }
     }
   }, [
+    downloadAttachmentFile,
     fetchAttachmentBlob,
     getMailErrorDetailAsync,
     mailAPI,
     maybeHandleCredentials,
+    openOfficeWithDesktopApplication,
     reportError,
     resolveAttachmentRequestContext,
   ]);
-
-  const downloadAttachmentFile = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
-    const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(messageOrId, attachment, fallbackMessage);
-    if (!messageId || !attachmentRef) {
-      const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
-      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-        console.warn('Mail attachment download skipped because request context is incomplete', contextError.attachment);
-      }
-      reportError(contextError.message);
-      return;
-    }
-    const downloadKey = buildAttachmentDownloadKey({ messageId, attachmentRef, mailboxId });
-    if (attachmentDownloadInFlightRef.current.has(downloadKey)) return;
-    attachmentDownloadInFlightRef.current.add(downloadKey);
-    try {
-      const response = await mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
-      const { blob, filename } = buildAttachmentBlobPayload({ response, attachment });
-      downloadBlobFileImpl(blob, filename, { preferOpenFallback: true });
-    } catch (requestError) {
-      const errorDetail = await getMailErrorDetailAsync?.(requestError, '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043a\u0430\u0447\u0430\u0442\u044c \u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435.');
-      if (!(await maybeHandleCredentials(requestError, errorDetail))) {
-        reportError(errorDetail);
-      }
-    } finally {
-      attachmentDownloadInFlightRef.current.delete(downloadKey);
-    }
-  }, [downloadBlobFileImpl, getMailErrorDetailAsync, mailAPI, maybeHandleCredentials, reportError, resolveAttachmentRequestContext]);
 
   const closeAttachmentPreview = useCallback(() => {
     setAttachmentPreview(createEmptyAttachmentPreview());

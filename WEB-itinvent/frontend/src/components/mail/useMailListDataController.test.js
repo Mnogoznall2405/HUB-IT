@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearSWRCache, setSWRCache } from '../../lib/swrCache';
 import {
@@ -113,6 +113,7 @@ const renderController = (options = {}) => {
     const [selectedByMode, setSelectedByMode] = useState(initialState.selectedByMode);
     const [selectedId, setSelectedId] = useState(initialState.selectedId);
     const [selectedMailboxId, setSelectedMailboxId] = useState(initialState.selectedMailboxId);
+    const [cacheScope, setCacheScope] = useState(scope);
 
     const currentListKeyRef = useRef(options.initialCurrentListKey || '');
     const folderSummaryRef = useRef(folderSummary);
@@ -134,6 +135,7 @@ const renderController = (options = {}) => {
 
     const controller = useMailListDataController({
       ...props,
+      mailCacheScope: cacheScope,
       listData,
       loadingMore,
       refs: {
@@ -193,6 +195,7 @@ const renderController = (options = {}) => {
         selectedMailboxId,
       },
       props,
+      setCacheScope,
     };
   });
 };
@@ -515,6 +518,8 @@ describe('useMailListDataController', () => {
       limit: 50,
       mailbox_id: 'mailbox-1',
       offset: 50,
+    }), expect.objectContaining({
+      signal: expect.any(AbortSignal),
     }));
     expect(result.current.state.listData.items).toEqual([
       createMessage('msg-1'),
@@ -785,5 +790,155 @@ describe('useMailListDataController', () => {
     });
 
     expect(result.current.state.listData.items.map((item) => item.id)).toEqual(['sent-1']);
+  });
+
+  it('aborts an in-flight list request after the list context changes', async () => {
+    let firstSignal;
+    let listCalls = 0;
+    const mailAPI = createMailAPI({
+      getMessages: vi.fn((_params, options) => {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return new Promise((_resolve, reject) => {
+            firstSignal = options?.signal;
+            const fail = () => reject(Object.assign(new Error('canceled'), {
+              code: 'ERR_CANCELED',
+              name: 'CanceledError',
+            }));
+            if (firstSignal?.aborted) {
+              fail();
+              return;
+            }
+            firstSignal?.addEventListener?.('abort', fail);
+          });
+        }
+        return Promise.resolve({
+          items: [createMessage('sent-1')],
+          total: 1,
+          limit: 50,
+        });
+      }),
+    });
+    const { result } = renderController({ mailAPI });
+    const sentContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'sent',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+
+    let firstRefresh;
+    await act(async () => {
+      firstRefresh = result.current.controller.refreshList({ force: true });
+    });
+    await waitFor(() => {
+      expect(listCalls).toBe(1);
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshList({
+        force: true,
+        listParams: sentContext.params,
+        listCacheKey: sentContext.cacheKey,
+        listContextKey: sentContext.contextKey,
+      });
+    });
+    await act(async () => {
+      await firstRefresh;
+    });
+
+    expect(firstSignal?.aborted).toBe(true);
+    expect(result.current.props.setError).not.toHaveBeenCalled();
+    expect(result.current.state.listData.items.map((item) => item.id)).toEqual(['sent-1']);
+  });
+
+  it('fetches conversations when refreshList overrides viewMode while the hook is still on messages', async () => {
+    const mailAPI = createMailAPI({
+      getConversations: vi.fn(async () => ({
+        items: [{ conversation_id: 'conv-1', subject: 'Thread' }],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        has_more: false,
+      })),
+    });
+    const { result } = renderController({ mailAPI, viewMode: 'messages' });
+    const conversationsContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'inbox',
+      viewMode: 'conversations',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshList({
+        force: true,
+        listParams: conversationsContext.params,
+        listCacheKey: conversationsContext.cacheKey,
+        listContextKey: conversationsContext.contextKey,
+        viewMode: 'conversations',
+      });
+    });
+
+    expect(mailAPI.getConversations).toHaveBeenCalledTimes(1);
+    expect(mailAPI.getMessages).not.toHaveBeenCalled();
+    expect(result.current.state.listData.items[0]?.conversation_id).toBe('conv-1');
+  });
+
+  it('aborts in-flight bootstrap after the mailbox scope changes', async () => {
+    let firstSignal;
+    let bootstrapCalls = 0;
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn((_params, options) => {
+        bootstrapCalls += 1;
+        if (bootstrapCalls === 1) {
+          return new Promise((_resolve, reject) => {
+            firstSignal = options?.signal;
+            const fail = () => reject(Object.assign(new Error('canceled'), {
+              code: 'ERR_CANCELED',
+              name: 'CanceledError',
+            }));
+            if (firstSignal?.aborted) {
+              fail();
+              return;
+            }
+            firstSignal?.addEventListener?.('abort', fail);
+          });
+        }
+        return Promise.resolve({
+          selected_mailbox: { id: 'mailbox-2', mailbox_email: 'second@example.com' },
+          mailboxes: [{ id: 'mailbox-2', label: 'Second' }],
+          folder_summary: {},
+          folder_tree: { items: [] },
+          messages: createEmptyListData(),
+        });
+      }),
+    });
+    const { result } = renderController({ mailAPI });
+
+    let firstRefresh;
+    await act(async () => {
+      firstRefresh = result.current.controller.refreshBootstrap({ force: true });
+    });
+    await waitFor(() => {
+      expect(bootstrapCalls).toBe(1);
+    });
+
+    await act(async () => {
+      result.current.setCacheScope('mailbox-2');
+    });
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+    await act(async () => {
+      await firstRefresh;
+    });
+
+    expect(firstSignal?.aborted).toBe(true);
+    expect(result.current.props.setError).not.toHaveBeenCalled();
   });
 });

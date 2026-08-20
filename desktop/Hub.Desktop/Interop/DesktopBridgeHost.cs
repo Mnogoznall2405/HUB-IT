@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Diagnostics;
+using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Notifications;
 using Hub.Desktop.Security;
 using Hub.Desktop.Shell;
@@ -100,6 +101,26 @@ public sealed class DesktopBridgeHost : IDisposable
         catch (Exception exception)
         {
             DesktopLog.Error("Desktop window state update failed", exception);
+            return false;
+        }
+    }
+
+    public bool TryPostSystemLifecycle(DesktopSystemLifecycleMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateSystemLifecycleMessage(message));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop system lifecycle update failed", exception);
             return false;
         }
     }

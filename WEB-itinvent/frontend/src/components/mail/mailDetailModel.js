@@ -25,8 +25,12 @@ export const createSelectedMessagePreviewShell = (item, folder = 'inbox') => {
     sender_name: item?.sender_name || '',
     sender_email: item?.sender_email || '',
     sender_display: item?.sender_display || '',
-    to: [],
-    to_people: [],
+    to: Array.isArray(item?.to) && item.to.length > 0
+      ? item.to
+      : (Array.isArray(item?.recipients) ? item.recipients : []),
+    to_people: Array.isArray(item?.to_people) && item.to_people.length > 0
+      ? item.to_people
+      : (Array.isArray(item?.recipient_people) ? item.recipient_people : []),
     cc: [],
     cc_people: [],
     bcc: [],
@@ -97,6 +101,31 @@ export const buildMailDetailCacheKey = ({
     scope,
     messageId: selectedId,
   });
+};
+
+export const hasFreshMailDetailCache = ({
+  mailAccessReady,
+  detailId,
+  viewMode,
+  folderScope = 'current',
+  mailCacheScope,
+  folder,
+  peekCache,
+  staleTimeMs,
+} = {}) => {
+  if (!mailAccessReady) return false;
+  const normalizedId = String(detailId || '').trim();
+  if (!normalizedId) return false;
+  const normalizedMode = normalizeMailDetailMode(viewMode);
+  const detailCacheKey = buildMailDetailCacheKey({
+    viewMode: normalizedMode,
+    scope: mailCacheScope,
+    selectedId: normalizedId,
+    folder,
+    folderScope: folderScope || 'current',
+  });
+  const cachedDetail = peekCache?.(detailCacheKey, { staleTimeMs });
+  return Boolean(cachedDetail?.data && cachedDetail?.isFresh);
 };
 
 export const shouldPreferRecentMailMessageDetail = ({

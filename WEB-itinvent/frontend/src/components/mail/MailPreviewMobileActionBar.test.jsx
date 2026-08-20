@@ -47,6 +47,7 @@ function buildProps(overrides = {}) {
     onOpenHeaders: vi.fn(),
     onDownloadSource: vi.fn(),
     onPrintSelectedMessage: vi.fn(),
+    mailboxEmails: ['user@example.com'],
     ...overrides,
   };
 }

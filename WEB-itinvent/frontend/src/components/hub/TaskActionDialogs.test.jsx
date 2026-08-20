@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 
-import { TaskReviewDialog, TaskSubmitDialog } from './TaskActionDialogs';
+import { TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 
 const theme = createTheme();
@@ -36,7 +36,7 @@ describe('TaskReviewDialog', () => {
     fireEvent.change(screen.getByLabelText('Комментарий проверки'), {
       target: { value: 'Нужна правка' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Вернуть' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть на доработку' }));
 
     expect(onSubmit).toHaveBeenCalledWith('reject', 'Нужна правка');
   });
@@ -89,13 +89,13 @@ describe('TaskSubmitDialog', () => {
       />,
     );
 
-    expect(screen.getByText('Сдать работу')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отправить на проверку' })).toBeInTheDocument();
     expect(screen.getByText('Проверить отчёт')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Комментарий к сдаче'), {
+    fireEvent.change(screen.getByLabelText('Комментарий к проверке'), {
       target: { value: 'Готово' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Сдать' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить на проверку' }));
 
     expect(onSubmit).toHaveBeenCalledWith({ comment: 'Готово', file: null });
   });
@@ -113,5 +113,28 @@ describe('TaskSubmitDialog', () => {
     );
 
     expect(screen.getByRole('button', { name: 'Отправка...' })).toBeDisabled();
+  });
+});
+
+describe('TaskCloseDialog', () => {
+  it('closes a task with an optional comment', () => {
+    const onSubmit = vi.fn();
+    renderWithTheme(
+      <TaskCloseDialog
+        open
+        task={task}
+        saving={false}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+        ui={ui}
+      />,
+    );
+
+    expect(screen.getByText('Закрыть задачу')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Комментарий (необязательно)'), {
+      target: { value: 'Больше не актуально' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    expect(onSubmit).toHaveBeenCalledWith({ comment: 'Больше не актуально' });
   });
 });

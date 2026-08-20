@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildFallbackMailboxEntry,
+  buildComposeFromOptions,
+  collectMailboxEmails,
+  getActiveMailboxes,
   getMailboxEntryId,
+  getMailMailboxPrimaryDomain,
   MAIL_SELECTED_MAILBOX_STORAGE_KEY,
   mergeMailboxEntries,
   normalizeMailboxId,
@@ -220,5 +224,36 @@ describe('mailMailboxModel', () => {
       activeMailboxId: 'active-mb',
       composeFromOptions: [{ id: 'option-mb' }],
     })).toBe('from-object');
+  });
+
+  it('takes the primary mailbox domain from the first listed address', () => {
+    expect(getMailMailboxPrimaryDomain(new Set(['User@Corp.Example', 'other@mail.test']))).toBe('corp.example');
+    expect(getMailMailboxPrimaryDomain(['  a@Zsgp.ru  '])).toBe('zsgp.ru');
+    expect(getMailMailboxPrimaryDomain([])).toBe('');
+    expect(getMailMailboxPrimaryDomain(null)).toBe('');
+    expect(getMailMailboxPrimaryDomain(['no-domain'])).toBe('');
+  });
+
+  it('collects unique lowercase mailbox emails from profile fields', () => {
+    expect(collectMailboxEmails({
+      mailbox_email: ' User@Corp.Example ',
+      mailbox_login: 'user@corp.example',
+      effective_mailbox_login: 'alias@zsgp.ru',
+    })).toEqual(new Set(['user@corp.example', 'alias@zsgp.ru']));
+    expect(collectMailboxEmails(null)).toEqual(new Set());
+    expect(collectMailboxEmails({ mailbox_email: '  ', mailbox_login: null })).toEqual(new Set());
+  });
+
+  it('builds compose-from options from active mailboxes or a mailbox-info fallback', () => {
+    const active = { id: 'mb-1', is_active: true, mailbox_email: 'a@x.y' };
+    const inactive = { id: 'mb-2', is_active: false, mailbox_email: 'b@x.y' };
+    expect(getActiveMailboxes([active, inactive, null])).toEqual([active, null]);
+    expect(getActiveMailboxes([active, inactive])).toEqual([active]);
+    expect(buildComposeFromOptions({ mailboxes: [inactive, active] })).toEqual([active]);
+    expect(buildComposeFromOptions({
+      mailboxes: [inactive],
+      mailboxInfo: { id: 'mb-info', mailbox_email: 'info@x.y' },
+    })).toEqual([buildFallbackMailboxEntry({ id: 'mb-info', mailbox_email: 'info@x.y' })]);
+    expect(buildComposeFromOptions({ mailboxes: null, mailboxInfo: null })).toEqual([]);
   });
 });

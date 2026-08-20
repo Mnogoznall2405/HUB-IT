@@ -10,6 +10,9 @@ from typing import Optional
 from backend.chat.chat_constants import CHAT_GROUP_ROLES
 from backend.chat.utils import normalize_text as _normalize_text
 
+_SYNTHETIC_CHAT_USERNAME_RE = re.compile(r"^user-\d+$", re.IGNORECASE)
+CHAT_UNKNOWN_SENDER_NAME = "Участник"
+
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
@@ -27,12 +30,23 @@ def _normalize_member_role(value: object) -> str:
     return normalized if normalized in CHAT_GROUP_ROLES else "member"
 
 
+def is_synthetic_chat_username(value: object) -> bool:
+    return bool(_SYNTHETIC_CHAT_USERNAME_RE.fullmatch(_normalize_text(value)))
+
+
+def usable_chat_username(value: object) -> str:
+    text = _normalize_text(value)
+    if not text or is_synthetic_chat_username(text):
+        return ""
+    return text
+
+
 def _display_user_name(user: Optional[dict]) -> str:
     payload = user or {}
     return (
         _normalize_text(payload.get("full_name"))
-        or _normalize_text(payload.get("username"))
-        or f"user-{int(payload.get('id', 0) or 0)}"
+        or usable_chat_username(payload.get("username"))
+        or CHAT_UNKNOWN_SENDER_NAME
     )
 
 

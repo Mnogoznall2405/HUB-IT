@@ -1,3 +1,17 @@
+export const sameConversationId = (left, right) => {
+  const normalizedLeft = String(left ?? '').trim();
+  const normalizedRight = String(right ?? '').trim();
+  return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
+};
+
+export const conversationExistsInList = (conversations, conversationId) => {
+  const wanted = String(conversationId ?? '').trim();
+  if (!wanted) return false;
+  return (Array.isArray(conversations) ? conversations : []).some((item) => (
+    sameConversationId(item?.id, wanted)
+  ));
+};
+
 export const shouldDeferChatUrlSyncForRequestedConversation = ({
   applyingRequestedConversationId,
   activeConversationId,

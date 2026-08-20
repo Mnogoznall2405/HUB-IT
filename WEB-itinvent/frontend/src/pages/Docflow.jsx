@@ -136,6 +136,20 @@ function keepCompletedIfStale(refreshed, fallback) {
   return buildCompletedTaskSnapshot({ ...(refreshed || {}), ...(fallback || {}) }, fallback?.ref || refreshed?.ref);
 }
 
+function updateTaskListAfterCompletion(items, completedTask, scope) {
+  const list = Array.isArray(items) ? items : [];
+  const completedRef = String(completedTask?.ref || '').trim().toLowerCase();
+  if (!completedRef) return list;
+  const withoutCompleted = list.filter(
+    (item) => String(item?.ref || '').trim().toLowerCase() !== completedRef,
+  );
+  if (scope === 'inbox') return withoutCompleted;
+  if (scope === 'completed') return [completedTask, ...withoutCompleted];
+  return list.map((item) => (
+    String(item?.ref || '').trim().toLowerCase() === completedRef ? completedTask : item
+  ));
+}
+
 export function resolveDocflowError(error, fallback = 'Не удалось выполнить запрос к 1С.') {
   const status = Number(error?.response?.status || 0);
   const detail = error?.response?.data?.detail;
@@ -1184,6 +1198,7 @@ export default function Docflow() {
   const selectedTaskRef = useRef('');
   const detailCache = useRef(new Map());
   const detailInFlight = useRef(new Map());
+  const commandCheckInFlight = useRef(false);
   const previewSequence = useRef(0);
   const previewObjectUrl = useRef('');
   tasksLengthRef.current = tasks.length;
@@ -1413,6 +1428,11 @@ export default function Docflow() {
         setTaskAction(null);
         setCommandState(null);
         setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
+        const login = String(profile?.login || '').trim();
+        patchDocflowTasksCacheAfterCompletion({ login, task: optimisticTask, search });
+        // Move the task before the enrichment refresh. That refresh is optional
+        // and can take several seconds while 1C loads related objects.
+        setTasks((prev) => updateTaskListAfterCompletion(prev, optimisticTask, scope));
         try {
           const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
           if (selectedTaskRef.current === taskRef) {
@@ -1423,26 +1443,9 @@ export default function Docflow() {
         } catch {
           // Keep optimistic completed state if force refresh fails.
         }
-        const login = String(profile?.login || '').trim();
-        patchDocflowTasksCacheAfterCompletion({ login, task: optimisticTask, search });
         // #region agent log
         fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:applySelectedTaskAction',message:'after_action_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope),taskRef:taskRef.slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
-        if (isHeavyDocflowTasksScope(scope)) {
-          // Do not pull withExecuted=true history after every action.
-          setTasks((prev) => {
-            const list = Array.isArray(prev) ? prev : [];
-            if (scope === 'completed') {
-              const without = list.filter((item) => String(item?.ref || '').toLowerCase() !== taskRef.toLowerCase());
-              return [optimisticTask, ...without];
-            }
-            return list.map((item) => (
-              String(item?.ref || '').toLowerCase() === taskRef.toLowerCase() ? optimisticTask : item
-            ));
-          });
-        } else {
-          await loadTasks({ force: true });
-        }
         setActionProgressLabel('');
       } else {
         setTaskAction(null);
@@ -1474,14 +1477,15 @@ export default function Docflow() {
     } finally {
       setTaskActionWorking(false);
     }
-  }, [loadTaskDetail, loadTasks, profile?.login, scope, search, selectedTask, taskAction]);
+  }, [loadTaskDetail, profile?.login, scope, search, selectedTask, taskAction]);
 
-  const checkTaskCommand = useCallback(async () => {
-    const commandId = String(commandState?.command_id || '').trim();
-    if (!commandId || taskActionWorking) return;
+  const checkTaskCommand = useCallback(async (requestedCommandId) => {
+    const commandId = String(requestedCommandId || '').trim();
+    if (!commandId || commandCheckInFlight.current) return;
+    commandCheckInFlight.current = true;
     setTaskActionWorking(true);
     setTaskActionNotice(null);
-    if (!actionProgressLabel) setActionProgressLabel('Проверка в 1С');
+    setActionProgressLabel((current) => current || 'Проверка в 1С');
     try {
       const result = await docflowAPI.getCommand(commandId);
       setCommandState(result);
@@ -1497,6 +1501,9 @@ export default function Docflow() {
           if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
           setCommandState(null);
           setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
+          const login = String(profile?.login || '').trim();
+          patchDocflowTasksCacheAfterCompletion({ login, task: optimisticTask, search });
+          setTasks((prev) => updateTaskListAfterCompletion(prev, optimisticTask, scope));
           try {
             const refreshed = await loadTaskDetail({ ref: taskRef }, { force: true });
             if (selectedTaskRef.current === taskRef) {
@@ -1511,31 +1518,9 @@ export default function Docflow() {
           setCommandState(null);
           setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
         }
-        const login = String(profile?.login || '').trim();
-        const completedTask = taskRef
-          ? (detailCache.current.get(taskRef) || result.task)
-          : result.task;
-        if (completedTask?.ref) {
-          patchDocflowTasksCacheAfterCompletion({ login, task: completedTask, search });
-        }
         // #region agent log
         fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:checkTaskCommand',message:'after_command_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope)},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
-        if (isHeavyDocflowTasksScope(scope) && completedTask?.ref) {
-          const doneRef = String(completedTask.ref).toLowerCase();
-          setTasks((prev) => {
-            const list = Array.isArray(prev) ? prev : [];
-            if (scope === 'completed') {
-              const without = list.filter((item) => String(item?.ref || '').toLowerCase() !== doneRef);
-              return [completedTask, ...without];
-            }
-            return list.map((item) => (
-              String(item?.ref || '').toLowerCase() === doneRef ? completedTask : item
-            ));
-          });
-        } else {
-          await loadTasks({ force: true });
-        }
         setActionProgressLabel('');
       } else if (result?.status === 'rejected' && result?.error_code === 'DOCFLOW_ACTION_NOT_APPLIED') {
         const nextTask = result.task;
@@ -1554,9 +1539,10 @@ export default function Docflow() {
       const resolved = resolveDocflowError(error, 'Не удалось проверить состояние команды в 1С.');
       setTaskActionNotice({ severity: 'error', message: resolved.message });
     } finally {
+      commandCheckInFlight.current = false;
       setTaskActionWorking(false);
     }
-  }, [actionProgressLabel, commandState, loadTaskDetail, loadTasks, profile?.login, scope, search, taskActionWorking]);
+  }, [loadTaskDetail, profile?.login, scope, search]);
 
   useEffect(() => {
     const status = String(commandState?.status || '');
@@ -1567,18 +1553,18 @@ export default function Docflow() {
     // #endregion
     let cancelled = false;
     const tick = () => {
-      if (cancelled || taskActionWorking) return;
-      void checkTaskCommand();
+      if (cancelled || commandCheckInFlight.current) return;
+      void checkTaskCommand(commandId);
     };
-    // First check ASAP after 202; then every 3s while still unknown.
+    // Give the original request time to settle, then poll at a stable cadence.
     const timer = window.setInterval(tick, 3000);
-    const first = window.setTimeout(tick, 50);
+    const first = window.setTimeout(tick, 750);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       window.clearTimeout(first);
     };
-  }, [checkTaskCommand, commandState?.command_id, commandState?.status, taskActionWorking]);
+  }, [checkTaskCommand, commandState?.command_id, commandState?.status]);
 
   const revokePreviewObjectUrl = useCallback(() => {
     if (previewObjectUrl.current && typeof window.URL?.revokeObjectURL === 'function') {
@@ -2300,7 +2286,7 @@ export default function Docflow() {
           setActionProgressLabel(String(action?.label || '').trim());
           setTaskAction({ ...action, idempotencyKey: createIdempotencyKey() });
         }}
-        onCheckCommand={() => void checkTaskCommand()}
+        onCheckCommand={() => void checkTaskCommand(commandState?.command_id)}
         onClose={closeTask}
       />
       <TaskActionDialog

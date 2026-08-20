@@ -55,15 +55,11 @@ function InteractiveMapCanvas({
   const clusteredPoints = useMemo(() => {
     if (!points || !points.length) return [];
 
-    // Если точка перетаскивается, она всегда сама по себе и использует displayXRatio/displayYRatio
     const clusters = [];
 
     points.forEach((p) => {
-      // Проверяем, перетаскивается ли точка индивидуально (не должно быть для кластеров, но на всякий)
       const isIndividuallyDragged = draggedPoint && draggedPoint.id === p.id;
-      // Проверяем, перетаскивается ли весь кластер, где сидит эта точка
       const isDraggingCluster = draggedPoint && draggedPoint.clusterId && draggedPoint.ids?.includes(p.id);
-
       const isBeingDragged = isIndividuallyDragged || isDraggingCluster;
 
       let x = Number(p.x_ratio || 0);
@@ -77,11 +73,9 @@ function InteractiveMapCanvas({
       const pWithCoords = { ...p, displayXRatio: x, displayYRatio: y, isBeingDragged };
 
       let foundCluster = false;
-      // Ищем подходящий кластер, если точка не перетаскивается индивидуально
       if (!isIndividuallyDragged) {
         for (let i = 0; i < clusters.length; i++) {
           const c = clusters[i];
-          // Если в кластере есть индивидуально перетаскиваемая точка, не объединяемся с ним
           if (c.points.some(cp => cp.isBeingDragged && !draggedPoint?.clusterId)) continue;
 
           const dx = c.centerX - x;
@@ -89,7 +83,6 @@ function InteractiveMapCanvas({
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < CLUSTER_THRESHOLD) {
             c.points.push(pWithCoords);
-            // Пересчитываем центр масс
             c.centerX = c.points.reduce((sum, curr) => sum + curr.displayXRatio, 0) / c.points.length;
             c.centerY = c.points.reduce((sum, curr) => sum + curr.displayYRatio, 0) / c.points.length;
             foundCluster = true;

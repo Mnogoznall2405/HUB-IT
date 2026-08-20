@@ -28,6 +28,12 @@ describe('chatOptimisticMessages helpers', () => {
       attachments_count: 0,
     });
     expect(buildReplyPreview({ id: '', body: 'x' })).toBeNull();
+    expect(buildReplyPreview({
+      id: 'm-stub',
+      kind: 'text',
+      body: 'а это нихуа',
+      sender: { id: 64, username: 'user-64', full_name: null },
+    })?.sender_name).toBe('Участник');
   });
 
   it('buildReplyPreview treats file attachments as file kind', () => {

@@ -214,6 +214,11 @@ async def lifespan(app: FastAPI):
         f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
         f" announcement_publish={announcement_publish_background_enabled()}"
     )
+    if not MAIL_MODULE_ENABLED:
+        print(
+            "MAIL_MODULE_ENABLED=0: mail notification worker is off; "
+            "/api/v1/mail stays mounted (flag is not a full mail kill switch)."
+        )
     print(f"AnyIO thread tokens: {thread_tokens}")
     print(
         "Auth security:"

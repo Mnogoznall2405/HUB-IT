@@ -15,6 +15,7 @@ const TasksCreateMobileSheet = lazy(() => import('../../components/hub/tasks/Tas
 const TasksEditDialog = lazy(() => import('../../components/hub/tasks/TasksEditDialog'));
 const TaskReviewDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReviewDialog })));
 const TaskReopenDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReopenDialog })));
+const TaskCloseDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskCloseDialog })));
 const TaskSubmitDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskSubmitDialog })));
 
 export default function TasksDialogsLayer() {
@@ -289,6 +290,15 @@ export default function TasksDialogsLayer() {
           saving={Boolean(create.reopeningTaskId)}
           onClose={() => { if (!create.reopeningTaskId) create.setReopenTargetTask(null); }}
           onSubmit={(payload) => void create.handleConfirmReopenTask(payload)}
+          ui={ui.ui}
+        />
+
+        <TaskCloseDialog
+          open={Boolean(create.closeTask)}
+          task={create.closeTask}
+          saving={create.closeSaving}
+          onClose={() => { if (!create.closeSaving) create.setCloseTask(null); }}
+          onSubmit={(payload) => void create.handleCloseTask(payload)}
           ui={ui.ui}
         />
 

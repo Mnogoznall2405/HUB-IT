@@ -73,6 +73,69 @@ def resolve_exchange_http_adapter(*, verify_tls: bool, ca_bundle: str) -> tuple[
     return ("no_verify",), adapter_cls
 
 
+def protocol_cache_key(config) -> tuple[Any, ...]:
+    """Return exchangelib CachingProtocol key. Do not log or export the key (credentials)."""
+    from exchangelib.protocol import CachingProtocol
+
+    return CachingProtocol._cache_key(config)
+
+
+def inspect_protocol_cache(config) -> dict[str, Any]:
+    """Lookup Protocol cache without creating Account or opening NTLM.
+
+    Hit means a live Protocol object is already cached for this endpoint+credentials.
+    A cached TransportError is counted as errored, not a hit. Never returns the key.
+    """
+    try:
+        from exchangelib.protocol import CachingProtocol
+    except Exception:
+        return {"available": False, "hit": False, "size": 0, "errored": False}
+
+    cache = getattr(CachingProtocol, "_protocol_cache", None)
+    if cache is None:
+        return {"available": False, "hit": False, "size": 0, "errored": False}
+
+    size = len(cache)
+    if not getattr(config, "service_endpoint", None) or getattr(config, "credentials", None) is None:
+        return {"available": True, "hit": False, "size": size, "errored": False}
+
+    try:
+        entry = cache.get(protocol_cache_key(config))
+    except Exception:
+        return {"available": True, "hit": False, "size": size, "errored": False}
+
+    if entry is None:
+        return {"available": True, "hit": False, "size": size, "errored": False}
+
+    protocol = entry[0] if isinstance(entry, (tuple, list)) and entry else entry
+    if isinstance(protocol, Exception):
+        return {"available": True, "hit": False, "size": size, "errored": True}
+    return {"available": True, "hit": True, "size": size, "errored": False}
+
+
+def _record_protocol_cache_probe(config) -> None:
+    try:
+        from backend.services.mail_observability import (
+            mail_metrics_export_enabled,
+            record_mail_protocol_cache,
+        )
+    except Exception:
+        return
+    if not mail_metrics_export_enabled():
+        return
+    try:
+        stats = inspect_protocol_cache(config)
+    except Exception:
+        return
+    if not stats.get("available"):
+        return
+    record_mail_protocol_cache(
+        hit=bool(stats.get("hit")),
+        errored=bool(stats.get("errored")),
+        size=int(stats.get("size") or 0),
+    )
+
+
 def create_exchange_account(
     *,
     email: str,
@@ -98,6 +161,9 @@ def create_exchange_account(
 
     with protocol_context:
         cfg = Configuration(**config_kwargs)
+        # Probe cache *before* Account() so miss/hit reflects prior Protocol reuse,
+        # not the object we are about to construct. No Account pool is created here.
+        _record_protocol_cache_probe(cfg)
         return Account(
             primary_smtp_address=email,
             config=cfg,

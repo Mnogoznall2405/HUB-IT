@@ -17,6 +17,22 @@ class MailDraftLifecycleError(Exception):
     pass
 
 
+DRAFT_MUTATION_FIELDS = ("attachments",)
+DRAFT_DELETE_FIELDS = ("subject",)
+
+
+def _get_folder_item(folder_obj: Any, exchange_id: str, *, only_fields: tuple[str, ...] | None = None):
+    if only_fields:
+        try:
+            return folder_obj.all().only(*only_fields).get(id=exchange_id)
+        except Exception:
+            pass
+    try:
+        return folder_obj.all().get(id=exchange_id)
+    except Exception:
+        return folder_obj.get(id=exchange_id)
+
+
 def _default_exchange_classes() -> tuple[Any, Any, Any, Any]:
     try:
         from exchangelib import HTMLBody, Mailbox, Message
@@ -42,7 +58,11 @@ class MailDraftLifecycle:
         if not _normalize_text(draft_exchange_id):
             return None
         try:
-            return account.drafts.get(id=draft_exchange_id)
+            return _get_folder_item(
+                account.drafts,
+                draft_exchange_id,
+                only_fields=DRAFT_MUTATION_FIELDS,
+            )
         except Exception:
             return None
 
@@ -104,7 +124,11 @@ class MailDraftLifecycle:
     @staticmethod
     def delete_draft(*, account: Any, draft_exchange_id: str) -> None:
         try:
-            item = account.drafts.get(id=draft_exchange_id)
+            item = _get_folder_item(
+                account.drafts,
+                draft_exchange_id,
+                only_fields=DRAFT_DELETE_FIELDS,
+            )
             item.delete()
         except Exception as exc:
             raise MailDraftLifecycleError(str(exc)) from exc

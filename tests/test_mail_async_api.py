@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -121,7 +122,58 @@ def test_bootstrap_auto_uses_only_fresh_shared_snapshot(monkeypatch):
     assert response.json()["messages"]["items"] == [{"id": "snapshot-msg"}]
 
 
-def test_bootstrap_auto_refreshes_stale_shared_snapshot(monkeypatch):
+def test_bootstrap_serves_stale_shared_snapshot_immediately(monkeypatch):
+    """Current runtime (Variant B-like): return snapshot now, refresh in background.
+
+    MAIL-AUDIT-029 D1 is still required: do not treat this as the chosen product contract.
+    Variant A would wait for live Exchange before responding.
+    """
+    client = _build_client()
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kwargs: {
+            "state": "stale",
+            "source": "app_snapshot",
+            "payload": {"mailboxes": [], "messages": {"items": [{"id": "old-msg"}]}},
+            "as_of": "2026-07-14T08:00:00+00:00",
+            "last_error": "",
+        },
+    )
+
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kwargs: {
+            "state": "stale",
+            "source": "app_snapshot",
+            "payload": {"mailboxes": [], "messages": {"items": [{"id": "old-msg"}]}},
+            "as_of": "2026-07-14T08:00:00+00:00",
+            "last_error": "",
+        },
+    )
+
+    async def _fake_run_mail_call_with_metrics(func, /, *args, **kwargs):
+        return {
+            "mailboxes": [],
+            "messages": {"items": [{"id": "fresh-msg"}]},
+        }, {"cache_hit": False}
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call_with_metrics", _fake_run_mail_call_with_metrics)
+
+    response = client.get("/mail/bootstrap", params={"limit": 20, "mailbox_id": "mbox-1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "ok"
+    assert payload["source"] == "app_snapshot"
+    assert payload["messages"]["items"] == [{"id": "old-msg"}]
+
+
+@pytest.mark.skip(reason="MAIL-AUDIT-029 D1 Variant A: wait for live Exchange before responding")
+def test_bootstrap_variant_a_waits_for_live_exchange_before_responding(monkeypatch):
     client = _build_client()
     helper_calls = []
     snapshot_writes = []
@@ -373,6 +425,56 @@ def test_send_message_route_uses_async_boundary(monkeypatch):
     assert helper_calls[0]["kwargs"]["subject"] == "Hello"
 
 
+def test_send_message_route_passes_idempotency_key(monkeypatch):
+    client = _build_client()
+    helper_calls = []
+
+    async def _fake_run_mail_call(func, /, *args, **kwargs):
+        helper_calls.append({"kwargs": kwargs})
+        return {"ok": True, "message_id": "sent-1"}
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call", _fake_run_mail_call)
+
+    response = client.post(
+        "/mail/messages/send",
+        json={
+            "from_mailbox_id": "mbox-3",
+            "to": ["user@example.com"],
+            "subject": "Hello",
+            "body": "<p>Body</p>",
+        },
+        headers={"Idempotency-Key": "compose-key-123456"},
+    )
+
+    assert response.status_code == 200
+    assert helper_calls[0]["kwargs"]["idempotency_key"] == "compose-key-123456"
+
+
+def test_send_message_route_wait_for_timeout_returns_maybe_sent(monkeypatch):
+    monkeypatch.setenv("MAIL_SEND_WAIT_FOR_SEC", "0.05")
+    client = _build_client()
+
+    def _slow_send(**kwargs):
+        time.sleep(0.4)
+        return {"ok": True, "message_id": "late"}
+
+    monkeypatch.setattr(mail_api_module.mail_service, "send_message", _slow_send)
+
+    response = client.post(
+        "/mail/messages/send",
+        json={
+            "from_mailbox_id": "mbox-3",
+            "to": ["user@example.com"],
+            "subject": "Hello",
+            "body": "<p>Body</p>",
+        },
+    )
+
+    assert response.status_code == 504
+    assert response.headers.get("x-mail-error-code") == "MAIL_SEND_TIMEOUT"
+    assert "могло быть отправлено" in str(response.json().get("detail") or "")
+
+
 def test_mail_async_boundary_limits_parallel_thread_calls(monkeypatch):
     monkeypatch.setenv("MAIL_EXCHANGE_MAX_CONCURRENCY", "2")
     mail_api_module._MAIL_CALL_LIMITER = None
@@ -405,3 +507,60 @@ def test_mail_async_boundary_limits_parallel_thread_calls(monkeypatch):
         mail_api_module._MAIL_CALL_LIMITER = None
         mail_api_module._MAIL_CALL_LIMITER_LIMIT = 0
         mail_api_module._MAIL_CALL_LIMITER_LOOP = None
+
+
+def test_summarize_returns_403_when_mail_ai_disabled(monkeypatch):
+    from backend.services.mail_ai_privacy import reset_mail_ai_privacy_state
+
+    reset_mail_ai_privacy_state()
+    monkeypatch.setenv("MAIL_AI_ENABLED", "0")
+    client = _build_client()
+
+    def _get_message(**kwargs):
+        raise AssertionError("must not load message body when AI is disabled")
+
+    async def _fake_run_mail_call(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(mail_api_module.mail_service, "get_message", _get_message)
+    monkeypatch.setattr(mail_api_module, "_run_mail_call", _fake_run_mail_call)
+
+    response = client.post("/mail/messages/msg-1/summarize")
+
+    assert response.status_code == 403
+    assert response.headers.get("x-mail-error-code") == "MAIL_AI_DISABLED"
+    assert "выключен" in str(response.json().get("detail") or "")
+
+
+def test_smart_replies_returns_429_when_mail_ai_rate_limited(monkeypatch):
+    from backend.services.mail_ai_privacy import reset_mail_ai_privacy_state
+
+    reset_mail_ai_privacy_state()
+    monkeypatch.setenv("MAIL_AI_ENABLED", "1")
+    monkeypatch.setenv("MAIL_AI_RATE_LIMIT", "1")
+    monkeypatch.setenv("MAIL_AI_RATE_WINDOW_SEC", "60")
+    client = _build_client()
+    get_message_calls = []
+
+    def _get_message(**kwargs):
+        get_message_calls.append(kwargs)
+        return {"subject": "Status", "body_text": "Please review."}
+
+    async def _fake_run_mail_call(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(mail_api_module.mail_service, "get_message", _get_message)
+    monkeypatch.setattr(
+        "backend.services.mail_ai_service.MailAiService.smart_replies",
+        lambda self, detail: {"suggestions": ["Принято."]},
+    )
+    monkeypatch.setattr(mail_api_module, "_run_mail_call", _fake_run_mail_call)
+
+    first = client.post("/mail/messages/msg-1/smart-replies")
+    second = client.post("/mail/messages/msg-1/smart-replies")
+
+    assert first.status_code == 200
+    assert first.json() == {"suggestions": ["Принято."]}
+    assert second.status_code == 429
+    assert second.headers.get("x-mail-error-code") == "MAIL_AI_RATE_LIMITED"
+    assert len(get_message_calls) == 1

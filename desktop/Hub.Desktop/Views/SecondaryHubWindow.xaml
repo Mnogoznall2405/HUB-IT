@@ -159,6 +159,19 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button x:Name="ReloadButton"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            Click="ReloadButton_Click"
+                            ToolTip="Обновить без кэша (Ctrl+F5)"
+                            AutomationProperties.Name="Обновить второе окно HUB без кэша">
+                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                   FontSize="14"
+                                   Text="&#xE72C;"
+                                   IsHitTestVisible="False"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
                     <Button x:Name="NewWindowButton"
                             Style="{StaticResource TitleBarButtonStyle}"
                             Click="NewWindowButton_Click"

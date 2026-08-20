@@ -7,8 +7,11 @@ import {
   getComposeDialogTitle,
   isValidEmailRecipient,
   normalizeMailRecipient,
+  parseComposeDraftSavedAtMs,
   readStoredComposeState,
+  shouldOverwriteStoredComposeDraft,
   toRecipientEmails,
+  writeStoredComposeState,
 } from './mailComposeState';
 
 const makeStorage = (entries) => ({
@@ -147,5 +150,54 @@ describe('mailComposeState', () => {
       composeDraftKey: 'bad',
       storage: makeStorage({ bad: '{bad json' }),
     })).toBeNull();
+  });
+
+  it('parses compose draft timestamps and keeps last-write-wins for dirty local edits', () => {
+    expect(parseComposeDraftSavedAtMs('2026-08-19T10:00:00.000Z')).toBe(Date.parse('2026-08-19T10:00:00.000Z'));
+    expect(parseComposeDraftSavedAtMs('not-a-date')).toBe(0);
+    expect(shouldOverwriteStoredComposeDraft({
+      existingRaw: JSON.stringify({ saved_at: '2026-08-19T12:00:00.000Z' }),
+      lastWrittenSavedAt: '2026-08-19T11:00:00.000Z',
+      localDirty: false,
+    })).toBe(false);
+    expect(shouldOverwriteStoredComposeDraft({
+      existingRaw: JSON.stringify({ saved_at: '2026-08-19T12:00:00.000Z' }),
+      lastWrittenSavedAt: '2026-08-19T11:00:00.000Z',
+      localDirty: true,
+    })).toBe(true);
+  });
+
+  it('does not clobber a newer draft from another tab when this tab is clean', () => {
+    const entries = {
+      draft: JSON.stringify({
+        subject: 'From other tab',
+        saved_at: '2026-08-19T12:00:00.000Z',
+      }),
+    };
+    const storage = {
+      getItem: (key) => entries[key] ?? null,
+      setItem: (key, value) => { entries[key] = value; },
+    };
+
+    const skipped = writeStoredComposeState({
+      composeDraftKey: 'draft',
+      payload: { subject: 'Stale tab' },
+      storage,
+      lastWrittenSavedAt: '2026-08-19T11:00:00.000Z',
+      localDirty: false,
+    });
+    expect(skipped.wrote).toBe(false);
+    expect(JSON.parse(entries.draft).subject).toBe('From other tab');
+
+    const written = writeStoredComposeState({
+      composeDraftKey: 'draft',
+      payload: { subject: 'Local edit' },
+      storage,
+      lastWrittenSavedAt: '2026-08-19T11:00:00.000Z',
+      localDirty: true,
+    });
+    expect(written.wrote).toBe(true);
+    expect(JSON.parse(entries.draft).subject).toBe('Local edit');
+    expect(written.savedAt).toBeTruthy();
   });
 });

@@ -28,6 +28,45 @@ def test_reference_codec_round_trips_v1_and_v2_message_ids():
     assert codec.decode_message_ref(v2) == ("sent", "exchange-2", "mbox-1")
 
 
+def test_reference_codec_encodes_custom_folder_messages_without_nested_folder_token():
+    folder_token = codec.encode_folder_id("mailbox", "AAMkAGI2MixedCASEFolderId")
+    assert folder_token != folder_token.lower()
+
+    v1 = codec.encode_message_id(folder_token, "exchange-1")
+    v2 = codec.encode_message_id(folder_token, "exchange-2", mailbox_id="mbox-1")
+
+    assert codec.decode_message_ref(v1) == (codec.ITEM_SCOPED_FOLDER, "exchange-1", "")
+    assert codec.decode_message_id(v1) == (codec.ITEM_SCOPED_FOLDER, "exchange-1")
+    assert codec.decode_message_ref(v2) == (codec.ITEM_SCOPED_FOLDER, "exchange-2", "mbox-1")
+    assert codec.is_item_scoped_folder(codec.decode_message_ref(v2)[0])
+
+
+def test_reference_codec_keeps_legacy_nested_custom_folder_message_ids_decodable():
+    folder_token = codec.encode_folder_id("mailbox", "AAMkAGI2MixedCASEFolderId")
+    nested = base64.urlsafe_b64encode(
+        f"v2::mbox-1::{folder_token}::exchange-2".encode("utf-8")
+    ).decode("utf-8").rstrip("=")
+
+    assert codec.decode_message_ref(nested) == (folder_token, "exchange-2", "mbox-1")
+    assert codec.decode_folder_id(codec.decode_message_ref(nested)[0]) == ("mailbox", "AAMkAGI2MixedCASEFolderId")
+
+
+def test_reference_codec_custom_folder_message_ids_fit_httpsys_path_segment():
+    folder_id = (
+        "AAMkAGQzZDJlMTBmLWQxYzYtNDU5NS1hZjdkLWRhNzFmNGVjMTY2ZgAuAAAAAACt4ffKj88tT7NgeOnX59VIAQAwhdB8lD"
+        "/IS62/QBW0lpoiAABWYcrPAAA="
+    )
+    message_id = (
+        "AAMkAGQzZDJlMTBmLWQxYzYtNDU5NS1hZjdkLWRhNzFmNGVjMTY2ZgBGAAAAAACt4ffKj88tT7NgeOnX59VIBwAwhdB8lD"
+        "/IS62/QBW0lpoiAABWYcrQAAAwhdB8lD/IS62/QBW0lpoiAABWYdKfAAA="
+    )
+    folder_token = codec.encode_folder_id("mailbox", folder_id)
+    token = codec.encode_message_id(folder_token, message_id, mailbox_id="legacy-38")
+
+    assert len(token) < 260
+    assert codec.decode_message_ref(token) == (codec.ITEM_SCOPED_FOLDER, message_id, "legacy-38")
+
+
 def test_reference_codec_round_trips_folder_ids():
     token = codec.encode_folder_id("Archive", "folder-1")
 

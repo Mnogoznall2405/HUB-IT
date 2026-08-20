@@ -31,6 +31,7 @@ import {
 } from './taskUserUtils';
 import { TASKS_MOBILE_COPY } from './tasksMobileCopy';
 import TaskCard from '../../components/hub/tasks/TaskCard';
+import { buildTaskActionMenuItems } from './taskCardModel';
 import {
   createTaskObserverAutocompleteTagsRenderer,
   createTaskUserAutocompleteOptionRenderer,
@@ -50,6 +51,7 @@ import useTaskCreate from './hooks/useTaskCreate.jsx';
 export default function useTasksPageController() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isChatDesktopViewport = useMediaQuery(theme.breakpoints.up('md'));
   const isAnalyticsMobile = isMobile;
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const renderTaskUserOption = useMemo(
@@ -82,6 +84,7 @@ export default function useTasksPageController() {
   const canWriteTasks = hasPermission('tasks.write');
   const canReviewTasks = hasPermission('tasks.review');
   const taskDiscussionChatEnabled = CHAT_FEATURE_ENABLED && TASK_DISCUSSION_CHAT_ENABLED;
+  const openTaskInChat = taskDiscussionChatEnabled && isChatDesktopViewport;
   const canUseControllerTab = canReviewTasks;
 
   const [error, setError] = useState('');
@@ -240,6 +243,7 @@ export default function useTasksPageController() {
     canManageAllTasks,
     canReviewTasks,
     taskDiscussionChatEnabled,
+    openTaskInChat,
     isMobile,
     ui,
     setError,
@@ -374,23 +378,24 @@ export default function useTasksPageController() {
   }, [navigate]);
 
   const onOpenTaskDetails = useCallback((task) => {
-    if (!isMobile && taskDiscussionChatEnabled) {
+    if (openTaskInChat) {
       void details.handleOpenTaskDiscussion(task, { split: true });
       return;
     }
     details.openTaskDetails(task);
-  }, [details.handleOpenTaskDiscussion, details.openTaskDetails, isMobile, taskDiscussionChatEnabled]);
+  }, [details.handleOpenTaskDiscussion, details.openTaskDetails, openTaskInChat]);
 
   useEffect(() => {
     const taskId = String(details.selectedTaskId || '').trim();
-    if (isMobile || !taskDiscussionChatEnabled || !taskId) {
+    if (!taskId) {
       desktopDiscussionTaskIdRef.current = '';
       return;
     }
+    if (!openTaskInChat) return;
     if (desktopDiscussionTaskIdRef.current === taskId) return;
     desktopDiscussionTaskIdRef.current = taskId;
     void details.handleOpenTaskDiscussion({ id: taskId }, { replace: true, split: true });
-  }, [details.handleOpenTaskDiscussion, details.selectedTaskId, isMobile, taskDiscussionChatEnabled]);
+  }, [details.handleOpenTaskDiscussion, details.selectedTaskId, openTaskInChat]);
 
   const onOpenEditTask = useCallback((task) => {
     create.openEditTask(task);
@@ -404,6 +409,73 @@ export default function useTasksPageController() {
     void details.handleCopyTaskLink(item.id);
   }, [details.handleCopyTaskLink]);
 
+  const handleTaskMenuAction = useCallback((task, key) => {
+    if (key === 'upload_act') {
+      openTransferActReminder(task);
+      return;
+    }
+    if (key === 'start') {
+      void create.handleStartTask(task?.id);
+      return;
+    }
+    if (key === 'submit') {
+      create.setSubmitTask(task);
+      return;
+    }
+    if (key === 'review') {
+      create.setReviewTask(task);
+      return;
+    }
+    if (key === 'close') {
+      create.setCloseTask(task);
+      return;
+    }
+    if (key === 'reopen') {
+      create.handleOpenReopenTask(task);
+      return;
+    }
+    if (key === 'edit') {
+      create.openEditTask(task);
+      return;
+    }
+    if (key === 'delete') {
+      void create.handleDeleteTask(task);
+      return;
+    }
+    if (key === 'copy') {
+      void details.handleCopyTaskLink(task?.id);
+    }
+  }, [
+    create.handleDeleteTask,
+    create.handleOpenReopenTask,
+    create.handleStartTask,
+    create.openEditTask,
+    create.setCloseTask,
+    create.setReviewTask,
+    create.setSubmitTask,
+    details.handleCopyTaskLink,
+    openTransferActReminder,
+  ]);
+
+  const getTaskActionMenuItems = useCallback((task) => buildTaskActionMenuItems({
+    canUploadAct: canOpenTransferActUpload(task),
+    canStart: details.canStartTask(task),
+    canSubmit: details.canSubmitTask(task),
+    canReview: details.canReviewTask(task),
+    canClose: details.canCloseTask(task),
+    canReopen: details.canReopenTask(task),
+    canEdit: details.canEditTask(task),
+    canDelete: details.canDeleteTask(task),
+  }), [
+    details.canCloseTask,
+    details.canDeleteTask,
+    details.canEditTask,
+    details.canReopenTask,
+    details.canReviewTask,
+    details.canStartTask,
+    details.canSubmitTask,
+  ]);
+
   const renderTaskCard = useCallback((task, column) => (
     <TaskCard
         task={task}
@@ -412,15 +484,31 @@ export default function useTasksPageController() {
         ui={ui}
       canEdit={details.canEditTask(task)}
       canDelete={details.canDeleteTask(task)}
+      canStart={details.canStartTask(task)}
+      canSubmit={details.canSubmitTask(task)}
+      canReview={details.canReviewTask(task)}
+      canClose={details.canCloseTask(task)}
+      canReopen={details.canReopenTask(task)}
       onOpen={onOpenTaskDetails}
       onEdit={onOpenEditTask}
       onDelete={onDeleteTask}
       onCopyLink={onCopyTaskLink}
       onOpenTransferAct={openTransferActReminder}
+      onStart={(item) => handleTaskMenuAction(item, 'start')}
+      onSubmit={(item) => handleTaskMenuAction(item, 'submit')}
+      onReview={(item) => handleTaskMenuAction(item, 'review')}
+      onCloseTask={(item) => handleTaskMenuAction(item, 'close')}
+      onReopen={(item) => handleTaskMenuAction(item, 'reopen')}
     />
   ), [
-    details.canEditTask,
+    details.canCloseTask,
     details.canDeleteTask,
+    details.canEditTask,
+    details.canReopenTask,
+    details.canReviewTask,
+    details.canStartTask,
+    details.canSubmitTask,
+    handleTaskMenuAction,
     isMobile,
     onCopyTaskLink,
     onDeleteTask,
@@ -440,6 +528,7 @@ export default function useTasksPageController() {
         if (editOpen) { setEditOpen(false); resetTaskUserSearchInputs(); return; }
         if (createOpen) { setCreateOpen(false); return; }
         if (create.reviewTask) { create.setReviewTask(null); return; }
+        if (create.closeTask) { create.setCloseTask(null); return; }
         if (create.reopenTargetTask && !create.reopeningTaskId) { create.setReopenTargetTask(null); return; }
         if (create.submitTask) { create.setSubmitTask(null); return; }
         if (details.detailsOpen) details.closeTaskDetails();
@@ -624,6 +713,7 @@ export default function useTasksPageController() {
     canStartTask: details.canStartTask,
     canSubmitTask: details.canSubmitTask,
     canReviewTask: details.canReviewTask,
+    canCloseTask: details.canCloseTask,
     canReopenTask: details.canReopenTask,
     closeTaskDetails: details.closeTaskDetails,
     closeMobileTaskChecklist: details.closeMobileTaskChecklist,
@@ -645,6 +735,8 @@ export default function useTasksPageController() {
     handleOpenReopenTask: create.handleOpenReopenTask,
     setSubmitTask: create.setSubmitTask,
     setReviewTask: create.setReviewTask,
+    getTaskActionMenuItems,
+    handleTaskMenuAction,
     renderTaskChecklist: details.renderTaskChecklist,
     mobileTasksCopy,
     mobileModeLabel,
@@ -831,6 +923,10 @@ export default function useTasksPageController() {
     reviewTask: create.reviewTask,
     reviewSaving: create.reviewSaving,
     handleReviewTask: create.handleReviewTask,
+    closeTask: create.closeTask,
+    closeSaving: create.closeSaving,
+    handleCloseTask: create.handleCloseTask,
+    setCloseTask: create.setCloseTask,
     reopenTargetTask: create.reopenTargetTask,
     setReopenTargetTask: create.setReopenTargetTask,
     handleConfirmReopenTask: create.handleConfirmReopenTask,

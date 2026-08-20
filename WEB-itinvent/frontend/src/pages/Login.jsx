@@ -84,6 +84,21 @@ function isCompleteBackupInput(value) {
   return trimmed.length >= 6;
 }
 
+const PASSWORD_SUBMIT_LOCKOUT_COOLDOWN_MS = 2000;
+
+function waitMs(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+function resolvePasswordLoginError(result) {
+  if (Number(result?.statusCode) === 429) {
+    return 'Слишком много попыток входа. Подождите немного и попробуйте снова.';
+  }
+  return String(result?.error || '').trim() || 'Ошибка входа';
+}
+
 function FaceIdGlyph({ className = '' }) {
   return (
     <svg viewBox="0 0 80 80" fill="none" aria-hidden="true" className={className}>
@@ -522,6 +537,7 @@ function Login() {
   const [isCompactViewport, setIsCompactViewport] = useState(readCompactViewport);
 
   const usernameInputRef = useRef(null);
+  const passwordSubmitLockRef = useRef(false);
   const passkeyAttemptedRef = useRef(false);
   const authenticatedUserRef = useRef(null);
   const lastAutoSetupCodeRef = useRef('');
@@ -1260,6 +1276,10 @@ function Login() {
 
   const handlePasswordSubmit = async (event) => {
     event.preventDefault();
+    if (passwordSubmitLockRef.current) {
+      return;
+    }
+    passwordSubmitLockRef.current = true;
     const formData = new FormData(event.currentTarget);
     const submittedUsername = String(formData.get('username') || username).trim();
     const submittedPassword = String(formData.get('password') || password);
@@ -1267,13 +1287,28 @@ function Login() {
     setPassword(submittedPassword);
     dismissLoginNotice();
     setLoading(true);
-    const result = await login(submittedUsername, submittedPassword);
-    setLoading(false);
-
-    if (!result.success) {
-      reportLoginError(result.error);
+    let result;
+    try {
+      result = await login(submittedUsername, submittedPassword);
+    } catch {
+      reportLoginError('Ошибка входа');
+      passwordSubmitLockRef.current = false;
+      setLoading(false);
       return;
     }
+
+    if (!result.success) {
+      reportLoginError(resolvePasswordLoginError(result));
+      if (Number(result.statusCode) === 429) {
+        await waitMs(PASSWORD_SUBMIT_LOCKOUT_COOLDOWN_MS);
+      }
+      passwordSubmitLockRef.current = false;
+      setLoading(false);
+      return;
+    }
+
+    passwordSubmitLockRef.current = false;
+    setLoading(false);
 
     writeLastLoginUsername(submittedUsername);
 

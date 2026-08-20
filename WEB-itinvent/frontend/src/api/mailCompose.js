@@ -1,21 +1,7 @@
 import apiClient from './client';
-
-const normalizeMailboxId = (value) => {
-  const normalized = String(value || '').trim();
-  return normalized || '';
-};
-
-const withMailboxQuery = (params = {}, mailboxId) => {
-  const normalizedMailboxId = normalizeMailboxId(mailboxId ?? params?.mailbox_id ?? params?.mailboxId);
-  const nextParams = { ...(params || {}) };
-  delete nextParams.mailboxId;
-  if (normalizedMailboxId) {
-    nextParams.mailbox_id = normalizedMailboxId;
-  } else {
-    delete nextParams.mailbox_id;
-  }
-  return nextParams;
-};
+import { takeMailSendIdempotencyKey, withMailSendIdempotencyHeaders } from '../components/mail/mailSendIdempotency';
+import { withMailSendTimeout } from '../components/mail/mailSendOutcome';
+import { normalizeMailboxId, withMailboxQuery } from './mailMailboxQuery';
 
 export const mailComposeAPI = {
   searchContacts: async (q, options = {}) => {
@@ -78,8 +64,12 @@ export const mailComposeAPI = {
     return response.data;
   },
 
-  sendMessage: async (payload) => {
-    const response = await apiClient.post('/mail/messages/send', payload);
+  sendMessage: async (payload, options = {}) => {
+    const { key, body } = takeMailSendIdempotencyKey(payload, options);
+    const headers = withMailSendIdempotencyHeaders({}, key);
+    const response = Object.keys(headers).length > 0
+      ? await apiClient.post('/mail/messages/send', body, withMailSendTimeout({ headers }))
+      : await apiClient.post('/mail/messages/send', body, withMailSendTimeout());
     return response.data;
   },
 
@@ -96,6 +86,7 @@ export const mailComposeAPI = {
     replyToMessageId,
     forwardMessageId,
     draftId,
+    idempotencyKey,
     onUploadProgress,
     signal,
   }) => {
@@ -116,13 +107,15 @@ export const mailComposeAPI = {
         formData.append('files', file);
       });
     }
-    const response = await apiClient.post('/mail/messages/send-multipart', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+    const headers = withMailSendIdempotencyHeaders(
+      { 'Content-Type': 'multipart/form-data' },
+      idempotencyKey,
+    );
+    const response = await apiClient.post('/mail/messages/send-multipart', formData, withMailSendTimeout({
+      headers,
       onUploadProgress,
       signal,
-    });
+    }));
     return response.data;
   },
 };

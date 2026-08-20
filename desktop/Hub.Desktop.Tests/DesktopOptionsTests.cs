@@ -25,11 +25,11 @@ public sealed class DesktopOptionsTests
     }
 
     [Fact]
-    public void AllowsHttpLoopbackOnlyWhenExplicitlyEnabled()
+    public void AllowsHttpLoopbackIpv4WhenExplicitlyEnabled()
     {
-        var options = DesktopOptions.FromBaseUrl("http://localhost:5173/", allowHttpLoopback: true);
+        var options = DesktopOptions.FromBaseUrl("http://127.0.0.1:4173/", allowHttpLoopback: true);
 
-        Assert.Equal("http://localhost:5173/", options.BaseUri.AbsoluteUri);
+        Assert.Equal("http://127.0.0.1:4173/", options.BaseUri.AbsoluteUri);
     }
 
     [Fact]

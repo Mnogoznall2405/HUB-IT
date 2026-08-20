@@ -1,4 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { confirmMailPermanentDelete } from './mailPermanentDeleteConfirm';
+import { extractBulkTrashRestoreIds } from './mailTrashUndo';
 
 export const normalizeSelectedMessageIds = (items = []) => (
   Array.from(new Set((Array.isArray(items) ? items : [])
@@ -24,6 +26,10 @@ export default function useMailBulkActions({
   getMailErrorDetail,
   onError,
   onMessage,
+  confirmPermanentDelete = confirmMailPermanentDelete,
+  onRecoverableDelete,
+  onRecoverableMove,
+  getFolderLabel,
 } = {}) {
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
   const dragMessageIdsRef = useRef([]);
@@ -59,9 +65,12 @@ export default function useMailBulkActions({
     successMessage = '',
   }) => {
     if (selectedMessageIds.length === 0) return;
+    if (action === 'delete' && permanent && !confirmPermanentDelete({ count: selectedMessageIds.length })) {
+      return;
+    }
     setBulkActionLoading(true);
     try {
-      await mailAPI?.bulkMessageAction?.({
+      const result = await mailAPI?.bulkMessageAction?.({
         mailbox_id: activeMailboxId || undefined,
         message_ids: selectedMessageIds,
         action,
@@ -72,7 +81,23 @@ export default function useMailBulkActions({
         clearSelection?.({ mode: viewMode });
       }
       await afterListMutation();
-      if (successMessage) onMessage?.(successMessage);
+      if (action === 'delete' && !permanent) {
+        const restoreIds = extractBulkTrashRestoreIds(result);
+        onRecoverableDelete?.({
+          messageIds: restoreIds,
+          restoreFolder: folder,
+          count: restoreIds.length || selectedMessageIds.length,
+        });
+      } else if (action === 'move') {
+        onRecoverableMove?.({
+          messageIds: selectedMessageIds,
+          restoreFolder: folder,
+          folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
+          count: selectedMessageIds.length,
+        });
+      } else if (successMessage) {
+        onMessage?.(successMessage);
+      }
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired?.(requestError, 'Не удалось выполнить массовое действие.'))) {
         const detail = getMailErrorDetail
@@ -87,11 +112,16 @@ export default function useMailBulkActions({
     activeMailboxId,
     afterListMutation,
     clearSelection,
+    confirmPermanentDelete,
+    folder,
     getMailErrorDetail,
     handleMailCredentialsRequired,
     mailAPI,
     onError,
     onMessage,
+    onRecoverableDelete,
+    onRecoverableMove,
+    getFolderLabel,
     selectedMessage,
     selectedMessageIds,
     viewMode,
@@ -126,6 +156,12 @@ export default function useMailBulkActions({
         clearSelection?.({ mode: viewMode });
       }
       await afterListMutation();
+      onRecoverableMove?.({
+        messageIds: ids,
+        restoreFolder: folder,
+        folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
+        count: ids.length,
+      });
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired?.(requestError, 'Не удалось переместить письма.'))) {
         const detail = getMailErrorDetail
@@ -143,6 +179,8 @@ export default function useMailBulkActions({
     handleMailCredentialsRequired,
     mailAPI,
     onError,
+    onRecoverableMove,
+    getFolderLabel,
     selectedMessage,
     selectedMessageIds,
     viewMode,

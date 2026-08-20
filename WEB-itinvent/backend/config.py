@@ -295,6 +295,8 @@ class MyFilesSecurityConfig:
     antivirus_enabled: bool = False
     antivirus_fail_closed: bool = True
     antivirus_timeout_sec: int = 300
+    antivirus_provider: str = "auto"
+    kaspersky_path: str = ""
     defender_path: str = ""
     inline_worker_enabled: bool = False
 
@@ -531,6 +533,8 @@ class Config:
                 antivirus_enabled=_bool_env("MY_FILES_ANTIVIRUS_ENABLED", environment == "production"),
                 antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
                 antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),
+                antivirus_provider=str(os.getenv("MY_FILES_ANTIVIRUS_PROVIDER", "auto") or "auto").strip().lower(),
+                kaspersky_path=str(os.getenv("MY_FILES_KASPERSKY_PATH", "") or "").strip(),
                 defender_path=str(os.getenv("MY_FILES_DEFENDER_PATH", "") or "").strip(),
                 inline_worker_enabled=_bool_env("MY_FILES_INLINE_WORKER_ENABLED", environment != "production"),
             ),

@@ -39,9 +39,9 @@ describe('routeChunkRecovery', () => {
     });
 
     expect(buildChunkReloadFingerprint('Failed to fetch .../Chat-aaa.js'))
-      .toBe('/chat?conversation=7');
+      .toBe('/chat');
     expect(buildChunkReloadFingerprint('Failed to fetch .../Chat-bbb.js'))
-      .toBe('/chat?conversation=7');
+      .toBe('/chat');
     vi.unstubAllGlobals();
   });
 
@@ -64,6 +64,10 @@ describe('routeChunkRecovery', () => {
     expect(tryRecoverChunkLoad('Failed to fetch .../Chat-aaa.js')).toBe(true);
     expect(reload).toHaveBeenCalledTimes(1);
     expect(tryRecoverChunkLoad('Failed to fetch .../Chat-bbb.js')).toBe(false);
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    window.location.search = '?conversation=8&task_layout=split';
+    expect(tryRecoverChunkLoad('Failed to fetch .../Chat-ccc.js')).toBe(false);
     expect(reload).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });

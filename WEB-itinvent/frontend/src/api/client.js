@@ -183,6 +183,16 @@ const isScanApiRequestUrl = (value) => {
   );
 };
 
+const isMyFilesPublicRequestUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const path = raw.replace(/^https?:\/\/[^/]+/i, '');
+  return (
+    path.includes('/my-files/public/')
+    || path.includes('/my-files/public?')
+  );
+};
+
 const isDefinitiveAuthRejection = (requestError) => {
   const status = Number(requestError?.response?.status || 0);
   return status === 401 || status === 403;
@@ -297,6 +307,9 @@ apiClient.interceptors.response.use(
     }
     if (error.response?.status === 401) {
       const requestUrl = String(error.config?.url || '');
+      if (isMyFilesPublicRequestUrl(requestUrl)) {
+        return Promise.reject(error);
+      }
       const suppressAuthRequired = Boolean(error.config?.suppressAuthRequired);
       const isLoginRequest = requestUrl.includes('/auth/login');
       const isRefreshRequest = requestUrl.includes('/auth/refresh');
@@ -1011,6 +1024,10 @@ export const hubAPI = {
 
   get reviewTask() {
     return hubTasksAPI.reviewTask;
+  },
+
+  get completeTask() {
+    return hubTasksAPI.completeTask;
   },
 
   get reopenTask() {

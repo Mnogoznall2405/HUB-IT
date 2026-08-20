@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildMailDetailCacheKey,
   buildMailDetailContextKey,
   createSelectedMessagePreviewShell,
+  hasFreshMailDetailCache,
   hasMailDetailBodyContent,
   mergeMessageDetailPreservingBody,
   resolveMailDetailLoadErrorAction,
@@ -41,6 +42,48 @@ describe('mailDetailModel', () => {
       folder: 'inbox',
       folderScope: 'all',
     })).toEqual(['mail', 'mailbox-a', 'conversation-detail', 'conv-1', 'inbox', 'all']);
+  });
+
+  it('reports a fresh selected detail only when access is ready and the cache is fresh', () => {
+    const peekCache = vi.fn(() => ({ data: { id: 'msg-1' }, isFresh: true }));
+    expect(hasFreshMailDetailCache({
+      mailAccessReady: false,
+      detailId: 'msg-1',
+      viewMode: 'messages',
+      mailCacheScope: 'mailbox-a',
+      folder: 'inbox',
+      peekCache,
+      staleTimeMs: 1000,
+    })).toBe(false);
+    expect(hasFreshMailDetailCache({
+      mailAccessReady: true,
+      detailId: '  ',
+      viewMode: 'messages',
+      mailCacheScope: 'mailbox-a',
+      folder: 'inbox',
+      peekCache,
+    })).toBe(false);
+    expect(hasFreshMailDetailCache({
+      mailAccessReady: true,
+      detailId: 'msg-1',
+      viewMode: 'messages',
+      mailCacheScope: 'mailbox-a',
+      folder: 'inbox',
+      peekCache,
+      staleTimeMs: 1000,
+    })).toBe(true);
+    expect(peekCache).toHaveBeenCalledWith(
+      ['mail', 'mailbox-a', 'message-detail', 'msg-1'],
+      { staleTimeMs: 1000 },
+    );
+    expect(hasFreshMailDetailCache({
+      mailAccessReady: true,
+      detailId: 'msg-1',
+      viewMode: 'messages',
+      mailCacheScope: 'mailbox-a',
+      folder: 'inbox',
+      peekCache: () => ({ data: { id: 'msg-1' }, isFresh: false }),
+    })).toBe(false);
   });
 
   it('prefers recent message detail only when it has body content missing from cache', () => {
@@ -96,7 +139,13 @@ describe('mailDetailModel', () => {
       can_archive: true,
       __previewOnly: true,
     });
-    expect(createSelectedMessagePreviewShell({ id: '' })).toBeNull();
+    expect(createSelectedMessagePreviewShell({
+      id: 'msg-sent',
+      folder: 'sent',
+      sender_display: 'Me',
+      recipient_people: [{ display: 'Иванов Сергей', email: 'ivanov@company.ru' }],
+      recipients: ['ivanov@company.ru'],
+    }).to_people).toEqual([{ display: 'Иванов Сергей', email: 'ivanov@company.ru' }]);
   });
 
   it('preserves a loaded message body when a live detail response arrives without body content', () => {

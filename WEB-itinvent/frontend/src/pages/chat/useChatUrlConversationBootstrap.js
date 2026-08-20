@@ -1,6 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
-import { shouldDeferChatUrlSyncForRequestedConversation } from './chatConversationModel';
+import {
+  conversationExistsInList,
+  shouldDeferChatUrlSyncForRequestedConversation,
+} from './chatConversationModel';
 
 function applyRequestedConversation({
   conversationId,
@@ -84,10 +87,14 @@ export default function useChatUrlConversationBootstrap({
   setMobileView,
   writeMobileHistoryState,
 }) {
+  const requestedConversationRetryInFlightRef = useRef('');
+
   useEffect(() => {
     if (conversationsLoading) return;
-    const requestedExists = requestedConversationId && conversations.some((item) => item.id === requestedConversationId);
-    const restoredExists = restoredConversationId && conversations.some((item) => item.id === restoredConversationId);
+    const requestedExists = conversationExistsInList(conversations, requestedConversationId);
+    const restoredExists = conversationExistsInList(conversations, restoredConversationId);
+    const requestedRetryInFlight = requestedConversationRetryInFlightRef.current
+      && String(requestedConversationRetryInFlightRef.current) === String(requestedConversationId || '').trim();
 
     if (!conversationBootstrapComplete) {
       if (composePrefillRequested) {
@@ -114,9 +121,17 @@ export default function useChatUrlConversationBootstrap({
           });
           return;
         }
+        if (requestedRetryInFlight) return;
         if (requestedConversationRetryRef.current !== requestedConversationId) {
           requestedConversationRetryRef.current = requestedConversationId;
-          void loadConversations({ silent: true, force: true }).catch(() => {});
+          requestedConversationRetryInFlightRef.current = requestedConversationId;
+          void loadConversations({ silent: false, force: true })
+            .catch(() => {})
+            .finally(() => {
+              if (requestedConversationRetryInFlightRef.current === requestedConversationId) {
+                requestedConversationRetryInFlightRef.current = '';
+              }
+            });
           return;
         }
         handleMissingRequestedConversation({
@@ -172,9 +187,17 @@ export default function useChatUrlConversationBootstrap({
         });
         return;
       }
+      if (requestedRetryInFlight) return;
       if (requestedConversationRetryRef.current !== requestedConversationId) {
         requestedConversationRetryRef.current = requestedConversationId;
-        void loadConversations({ silent: true, force: true }).catch(() => {});
+        requestedConversationRetryInFlightRef.current = requestedConversationId;
+        void loadConversations({ silent: false, force: true })
+          .catch(() => {})
+          .finally(() => {
+            if (requestedConversationRetryInFlightRef.current === requestedConversationId) {
+              requestedConversationRetryInFlightRef.current = '';
+            }
+          });
         return;
       }
       handleMissingRequestedConversation({
@@ -198,7 +221,7 @@ export default function useChatUrlConversationBootstrap({
       requestedConversationHandledRef.current = '';
       applyingRequestedConversationRef.current = '';
     }
-    if (activeConversationId && conversations.some((item) => item.id === activeConversationId)) return;
+    if (activeConversationId && conversationExistsInList(conversations, activeConversationId)) return;
     if (activeConversationId) {
       clearStoredConversationState({ conversationId: activeConversationId, invalidateThread: true });
     }

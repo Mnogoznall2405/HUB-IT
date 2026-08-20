@@ -5,11 +5,12 @@ import { getConversationHeaderSubtitle } from '../../components/chat/chatHelpers
 export function resolveConversationHeaderSubtitle({
   typingUsers,
   activeConversation,
+  aiStatus,
 } = {}) {
   if (Array.isArray(typingUsers) && typingUsers.length > 0) {
     return `${typingUsers.join(', ')} печатает...`;
   }
-  return getConversationHeaderSubtitle(activeConversation);
+  return getConversationHeaderSubtitle(activeConversation, aiStatus);
 }
 
 export function resolveAiAwareTypingLine({
@@ -25,18 +26,19 @@ export function resolveAiAwareTypingLine({
 
 export default function useChatThreadHeaderPresentation({
   activeConversation,
+  activeAiStatus,
   activeAiStatusDisplay,
   typingLine,
   typingUsers,
 }) {
   const conversationHeaderSubtitle = useMemo(
-    () => resolveConversationHeaderSubtitle({ typingUsers, activeConversation }),
-    [activeConversation, typingUsers],
+    () => resolveConversationHeaderSubtitle({ typingUsers, activeConversation, aiStatus: activeAiStatus }),
+    [activeAiStatus, activeConversation, typingUsers],
   );
 
   const conversationMetaSubtitle = useMemo(
-    () => getConversationHeaderSubtitle(activeConversation),
-    [activeConversation],
+    () => getConversationHeaderSubtitle(activeConversation, activeAiStatus),
+    [activeAiStatus, activeConversation],
   );
 
   const aiAwareTypingLine = useMemo(

@@ -25,6 +25,8 @@ const createProps = (overrides = {}) => ({
   resolveItemMailboxId: vi.fn((item) => item?.mailbox_id || 'mailbox-1'),
   withActiveMailboxPayload: vi.fn((payload) => ({ mailbox_id: 'mailbox-1', ...payload })),
   setError: vi.fn(),
+  confirmPermanentDelete: vi.fn(() => true),
+  onRecoverableDelete: vi.fn(),
   ...overrides,
 });
 
@@ -129,12 +131,14 @@ describe('useMailListItemActions', () => {
     });
 
     expect(mailAPI.deleteMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', permanent: true });
+    expect(props.confirmPermanentDelete).toHaveBeenCalledWith({ count: 1 });
     expect(mailAPI.restoreMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', target_folder: 'sent' });
     expect(mailAPI.moveMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', target_folder: 'archive' });
     expect(mailAPI.moveMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', target_folder: 'custom-folder' });
     expect(props.clearSelection).toHaveBeenCalledTimes(4);
     expect(props.clearSelection).toHaveBeenCalledWith({ mode: 'messages' });
     expect(props.afterListMutation).toHaveBeenCalledTimes(4);
+    expect(props.onRecoverableDelete).not.toHaveBeenCalled();
   });
 
   it('delegates credentials-required errors without setting a generic error', async () => {
@@ -157,5 +161,59 @@ describe('useMailListItemActions', () => {
     expect(props.setError).not.toHaveBeenCalled();
     expect(props.clearSelection).not.toHaveBeenCalled();
     expect(props.afterListMutation).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm recoverable inbox swipe delete', async () => {
+    const mailAPI = createMailAPI();
+    const props = createProps({ mailAPI, folder: 'inbox' });
+    const { result } = renderHook(() => useMailListItemActions(props));
+
+    await act(async () => {
+      await result.current.handleSwipeDelete({ id: 'msg-1' });
+    });
+
+    expect(props.confirmPermanentDelete).not.toHaveBeenCalled();
+    expect(mailAPI.deleteMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', permanent: false });
+    expect(props.onRecoverableDelete).toHaveBeenCalledWith({
+      messageIds: [],
+      restoreFolder: 'inbox',
+      count: 1,
+    });
+  });
+
+  it('skips swipe delete when permanent confirm is cancelled', async () => {
+    const mailAPI = createMailAPI();
+    const props = createProps({
+      mailAPI,
+      folder: 'trash',
+      confirmPermanentDelete: vi.fn(() => false),
+    });
+    const { result } = renderHook(() => useMailListItemActions(props));
+
+    await act(async () => {
+      await result.current.handleSwipeDelete({ id: 'msg-1' });
+    });
+
+    expect(mailAPI.deleteMessage).not.toHaveBeenCalled();
+    expect(props.clearSelection).not.toHaveBeenCalled();
+    expect(props.afterListMutation).not.toHaveBeenCalled();
+  });
+
+  it('offers trash undo after a recoverable swipe delete', async () => {
+    const mailAPI = createMailAPI({
+      deleteMessage: vi.fn(async () => ({ message_id: 'trash-msg-1', folder: 'trash' })),
+    });
+    const props = createProps({ mailAPI, folder: 'inbox' });
+    const { result } = renderHook(() => useMailListItemActions(props));
+
+    await act(async () => {
+      await result.current.handleSwipeDelete({ id: 'msg-1' });
+    });
+
+    expect(props.onRecoverableDelete).toHaveBeenCalledWith({
+      messageIds: ['trash-msg-1'],
+      restoreFolder: 'inbox',
+      count: 1,
+    });
   });
 });

@@ -1,6 +1,49 @@
+import { useRef } from 'react';
 import { Box, Paper } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
+
+import {
+  CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
+  clampChatRightPanelWidth,
+  resolveChatDesktopGridTemplateColumns,
+} from './chatRightPanelLayout';
+
+function RightPanelResizeHandle({ currentWidth, onWidthChange }) {
+  const dragRef = useRef(null);
+  if (typeof onWidthChange !== 'function') return null;
+  return (
+    <Box
+      data-testid="chat-right-panel-resize-handle"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        dragRef.current = { startX: event.clientX, startWidth: currentWidth };
+      }}
+      onPointerMove={(event) => {
+        if (!dragRef.current) return;
+        const next = dragRef.current.startWidth + (dragRef.current.startX - event.clientX);
+        onWidthChange(next);
+      }}
+      onPointerUp={() => {
+        dragRef.current = null;
+      }}
+      onPointerCancel={() => {
+        dragRef.current = null;
+      }}
+      sx={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 8,
+        cursor: 'col-resize',
+        zIndex: 3,
+        '&:hover': { bgcolor: alpha('#1976d2', 0.12) },
+      }}
+    />
+  );
+}
 
 export default function ChatPageDesktopLayout({
   isMobile,
@@ -11,6 +54,7 @@ export default function ChatPageDesktopLayout({
   threadPane,
   desktopRightPanelContent,
   desktopRightPanelWidth,
+  onDesktopRightPanelWidthChange,
   taskSplitLayout = false,
   renderDesktopRightPanel = false,
   renderPersistentRightPanel = false,
@@ -28,16 +72,19 @@ export default function ChatPageDesktopLayout({
   gridTemplateColumns,
 }) {
   const showTaskSplitLayout = taskSplitLayout && renderDesktopRightPanel && showTaskPanel;
-  const resolvedDesktopRightPanelWidth = Number.isFinite(desktopRightPanelWidth)
-    && desktopRightPanelWidth > 0
-    ? desktopRightPanelWidth
-    : null;
+  const resolvedDesktopRightPanelWidth = clampChatRightPanelWidth(
+    desktopRightPanelWidth,
+    CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
+  );
   const resolvedGridTemplateColumns = gridTemplateColumns ?? (
     showTaskSplitLayout
-      ? 'minmax(0, 1fr) minmax(320px, 420px)'
-      : renderPersistentRightPanel
-      ? `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr) ${resolvedDesktopRightPanelWidth ? `${resolvedDesktopRightPanelWidth}px` : 'clamp(460px, 38vw, 620px)'}`
-      : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`
+      ? 'minmax(0, 1fr) minmax(320px, 400px)'
+      : resolveChatDesktopGridTemplateColumns({
+        sidebarMin: ui.density.sidebarColumnMin,
+        sidebarMax: ui.density.sidebarColumnMax,
+        rightPanelWidth: resolvedDesktopRightPanelWidth,
+        persistent: renderPersistentRightPanel,
+      })
   );
 
   return (
@@ -184,7 +231,7 @@ export default function ChatPageDesktopLayout({
                       top: 0,
                       right: 0,
                       bottom: 0,
-                      width: `min(${resolvedDesktopRightPanelWidth || 620}px, calc(100% - 48px))`,
+                      width: `min(${resolvedDesktopRightPanelWidth}px, calc(100% - 48px))`,
                       zIndex: 7,
                       borderLeft: `1px solid ${ui.borderSoft}`,
                       boxShadow: ui.shadowStrong,
@@ -195,6 +242,10 @@ export default function ChatPageDesktopLayout({
                       willChange: 'transform, opacity',
                     }}
                   >
+                    <RightPanelResizeHandle
+                      currentWidth={resolvedDesktopRightPanelWidth}
+                      onWidthChange={onDesktopRightPanelWidthChange}
+                    />
                     {desktopRightPanelContent}
                   </Box>
                 </>
@@ -204,6 +255,7 @@ export default function ChatPageDesktopLayout({
               <Box
                 data-testid="chat-desktop-right-panel-persistent"
                 sx={{
+                  position: 'relative',
                   minWidth: 0,
                   minHeight: 0,
                   overflow: 'hidden',
@@ -211,6 +263,10 @@ export default function ChatPageDesktopLayout({
                   bgcolor: ui.panelSolid,
                 }}
               >
+                <RightPanelResizeHandle
+                  currentWidth={resolvedDesktopRightPanelWidth}
+                  onWidthChange={onDesktopRightPanelWidthChange}
+                />
                 {desktopRightPanelContent}
               </Box>
             ) : null}

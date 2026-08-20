@@ -26,9 +26,12 @@ export function buildChunkReloadFingerprint(reason = '') {
   if (typeof window === 'undefined') return '';
   // Fingerprint by route only. Including the full error reason caused reload
   // loops on mobile: each failed chunk URL produced a new fingerprint.
-  const route = `${window.location.pathname}${window.location.search}`;
+  // Pathname only. Search params on /tasks and /chat change during bootstrap
+  // (task_view, conversation, task_layout) and would otherwise allow another
+  // reload after every query rewrite.
+  const route = String(window.location.pathname || '').trim() || '/';
   void reason;
-  return route || '/';
+  return route;
 }
 
 export function tryRecoverChunkLoad(reason = '') {

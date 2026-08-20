@@ -8,8 +8,13 @@ import {
   getComposeCombinedBody,
   getComposeDialogTitle,
   isValidEmailRecipient,
+  parseComposeDraftSavedAtMs,
+  readStoredComposeState,
   toRecipientEmails,
+  writeStoredComposeState,
 } from './mailComposeState';
+import { createMailSendIdempotencyKey } from './mailSendIdempotency';
+import { getMailSendErrorMessage } from './mailSendOutcome';
 
 export const loadMailComposeDialog = () => import('./MailComposeDialog');
 const MailComposeDialog = lazy(loadMailComposeDialog);
@@ -37,6 +42,7 @@ export default function MailComposeHost({
   onCloseSession,
   onRegisterCloseHandler,
   onSendSuccess,
+  onDraftSaved,
   onComposeWarning,
   handleMailCredentialsRequired,
   getMailErrorDetail,
@@ -48,11 +54,18 @@ export default function MailComposeHost({
   const [closeDraftPromptOpen, setCloseDraftPromptOpen] = useState(false);
   const composeStateRef = useRef(composeState);
   const composeUploadAbortRef = useRef(null);
+  const composeSendLockRef = useRef(false);
+  const composeIdempotencyKeyRef = useRef('');
   const draftSaveInFlightRef = useRef(null);
   const draftSaveQueuedRef = useRef(false);
   const draftSaveIncludeFilesRef = useRef(false);
   const notifiedComposeWarningsRef = useRef(new Set());
   const mountedRef = useRef(true);
+  const lastWrittenSavedAtRef = useRef('');
+  const localDraftDirtyRef = useRef(false);
+  const pendingAfterCloseRef = useRef(null);
+  const composeFlushHandlerRef = useRef(null);
+  const closeFlowLockRef = useRef(false);
   const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
 
   useEffect(() => {
@@ -77,17 +90,23 @@ export default function MailComposeHost({
     }
     setComposeState(nextState);
     setComposeToSearch('');
+    composeIdempotencyKeyRef.current = '';
     setComposeToOptions([]);
     setComposeToLoading(false);
     setCloseDraftPromptOpen(false);
+    pendingAfterCloseRef.current = null;
+    closeFlowLockRef.current = false;
     notifiedComposeWarningsRef.current = new Set();
+    lastWrittenSavedAtRef.current = String(nextState.draftSavedAt || '');
+    localDraftDirtyRef.current = false;
   }, [session?.id]);
 
-  const patchComposeState = useCallback((updater) => {
+  const patchComposeState = useCallback((updater, { markDirty = true } = {}) => {
     if (!mountedRef.current) return;
     setComposeState((prev) => {
       const patch = typeof updater === 'function' ? updater(prev) : updater;
       if (!patch || typeof patch !== 'object') return prev;
+      if (markDirty) localDraftDirtyRef.current = true;
       return { ...prev, ...patch };
     });
   }, []);
@@ -297,6 +316,8 @@ export default function MailComposeHost({
     } catch {
       // ignore local storage issues
     }
+    lastWrittenSavedAtRef.current = '';
+    localDraftDirtyRef.current = false;
   }, [composeDraftKey]);
 
   const persistLocalComposeDraft = useCallback((stateOverride = composeStateRef.current) => {
@@ -317,14 +338,49 @@ export default function MailComposeHost({
       forward_message_id: String(state.composeForwardMessageId || ''),
       draft_attachments: Array.isArray(state.composeDraftAttachments) ? state.composeDraftAttachments : [],
       local_attachment_names: (Array.isArray(state.composeFiles) ? state.composeFiles : []).map((file) => String(file?.name || '')).filter(Boolean),
-      saved_at: new Date().toISOString(),
     };
-    try {
-      window.localStorage.setItem(composeDraftKey, JSON.stringify(payload));
-    } catch {
-      // ignore local storage issues
+    const result = writeStoredComposeState({
+      composeDraftKey,
+      payload,
+      lastWrittenSavedAt: lastWrittenSavedAtRef.current,
+      localDirty: localDraftDirtyRef.current,
+    });
+    if (result.wrote) {
+      lastWrittenSavedAtRef.current = result.savedAt;
+      localDraftDirtyRef.current = false;
+      return;
     }
-  }, [composeDraftKey, resolveComposeMailboxId]);
+    if (!result.adoptedRaw) return;
+    const adopted = readStoredComposeState({
+      composeDraftKey,
+      resolveComposeMailboxId,
+    });
+    if (!adopted) return;
+    lastWrittenSavedAtRef.current = adopted.draftSavedAt;
+    localDraftDirtyRef.current = false;
+    patchComposeState(adopted, { markDirty: false });
+  }, [composeDraftKey, patchComposeState, resolveComposeMailboxId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onStorage = (event) => {
+      if (event.key !== composeDraftKey) return;
+      if (event.storageArea && event.storageArea !== window.localStorage) return;
+      if (localDraftDirtyRef.current) return;
+      const adopted = readStoredComposeState({
+        composeDraftKey,
+        resolveComposeMailboxId,
+      });
+      if (!adopted) return;
+      const remoteMs = parseComposeDraftSavedAtMs(adopted.draftSavedAt);
+      const lastMs = parseComposeDraftSavedAtMs(lastWrittenSavedAtRef.current);
+      if (remoteMs <= lastMs) return;
+      lastWrittenSavedAtRef.current = adopted.draftSavedAt;
+      patchComposeState(adopted, { markDirty: false });
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [composeDraftKey, patchComposeState, resolveComposeMailboxId]);
 
   const flushComposeDraft = useCallback(({ includeFiles = false } = {}) => {
     draftSaveQueuedRef.current = true;
@@ -405,45 +461,121 @@ export default function MailComposeHost({
     return () => clearTimeout(timer);
   }, [composeAutosaveKey, composeState.composeSending, flushComposeDraft, hasComposeContent]);
 
-  const handleCloseCompose = useCallback(async () => {
+  const finishCloseCompose = useCallback(() => {
+    const afterClose = pendingAfterCloseRef.current;
+    pendingAfterCloseRef.current = null;
+    setCloseDraftPromptOpen(false);
+    onCloseSession?.();
+    if (typeof afterClose === 'function') {
+      afterClose();
+    }
+  }, [onCloseSession]);
+
+  const handleKeepEditingCompose = useCallback(() => {
+    pendingAfterCloseRef.current = null;
+    setCloseDraftPromptOpen(false);
+  }, []);
+
+  const flushPendingComposeState = useCallback(() => {
+    const flushed = composeFlushHandlerRef.current?.();
+    if (!flushed || typeof flushed !== 'object') return;
+    composeStateRef.current = {
+      ...composeStateRef.current,
+      ...flushed,
+    };
+    patchComposeState(flushed);
+  }, [patchComposeState]);
+
+  const notifyDraftSaved = useCallback(async () => {
+    try {
+      await onDraftSaved?.();
+    } catch {
+      // cache refresh is best-effort after a successful Exchange save
+    }
+  }, [onDraftSaved]);
+
+  const handleCloseCompose = useCallback(async (options) => {
+    if (composeStateRef.current.composeSending) return;
+    const switchingAway = Boolean(
+      options && typeof options === 'object' && typeof options.afterClose === 'function',
+    );
+    if (switchingAway) {
+      pendingAfterCloseRef.current = options.afterClose;
+    }
+    if (closeFlowLockRef.current) return;
+
+    flushPendingComposeState();
     const state = composeStateRef.current;
-    if (state.composeSending) return;
     if (!composeStateHasContent(state) && state.composeDraftId) {
       await discardComposeDraft(state);
-      onCloseSession?.();
+      finishCloseCompose();
       return;
     }
-    if (composeStateHasContent(state) || state.composeDraftId) {
-      setCloseDraftPromptOpen(true);
+    if (!composeStateHasContent(state)) {
+      finishCloseCompose();
       return;
     }
-    onCloseSession?.();
-  }, [discardComposeDraft, onCloseSession]);
+    if (switchingAway) {
+      closeFlowLockRef.current = true;
+      try {
+        await flushComposeDraft({ includeFiles: true });
+        await notifyDraftSaved();
+        finishCloseCompose();
+      } catch (requestError) {
+        pendingAfterCloseRef.current = null;
+        onComposeWarning?.({
+          id: 'draft_save_failed',
+          severity: 'warning',
+          title: 'Черновик не сохранён',
+          message: getMailErrorDetail?.(
+            requestError,
+            'Не удалось сохранить письмо в черновики. Композер оставлен открытым.',
+          ) || 'Не удалось сохранить письмо в черновики. Композер оставлен открытым.',
+        });
+      } finally {
+        closeFlowLockRef.current = false;
+      }
+      return;
+    }
+    setCloseDraftPromptOpen(true);
+  }, [
+    discardComposeDraft,
+    finishCloseCompose,
+    flushComposeDraft,
+    flushPendingComposeState,
+    getMailErrorDetail,
+    notifyDraftSaved,
+    onComposeWarning,
+  ]);
 
   const handleSaveAndCloseCompose = useCallback(async () => {
     setCloseDraftPromptOpen(false);
     try {
       await flushComposeDraft({ includeFiles: true });
+      await notifyDraftSaved();
     } catch {
-      // fallback draft already persisted locally
+      onComposeWarning?.({
+        id: 'draft_local_only',
+        severity: 'info',
+        title: 'Черновик',
+        message: 'Черновик сохранён локально. В папке «Черновики» его может не быть, пока нет связи с почтой.',
+      });
     }
-    onCloseSession?.();
-  }, [flushComposeDraft, onCloseSession]);
+    finishCloseCompose();
+  }, [finishCloseCompose, flushComposeDraft, notifyDraftSaved, onComposeWarning]);
 
   const handleDiscardAndCloseCompose = useCallback(async () => {
     setCloseDraftPromptOpen(false);
     await discardComposeDraft(composeStateRef.current);
-    onCloseSession?.();
-  }, [discardComposeDraft, onCloseSession]);
+    finishCloseCompose();
+  }, [discardComposeDraft, finishCloseCompose]);
 
   const handleCloseComposeRef = useRef(handleCloseCompose);
   handleCloseComposeRef.current = handleCloseCompose;
 
   useEffect(() => {
     if (!onRegisterCloseHandler) return undefined;
-    onRegisterCloseHandler(() => {
-      void handleCloseComposeRef.current();
-    });
+    onRegisterCloseHandler((options) => handleCloseComposeRef.current(options));
     return () => onRegisterCloseHandler(null);
   }, [onRegisterCloseHandler]);
 
@@ -486,6 +618,12 @@ export default function MailComposeHost({
         message: 'Тема письма пустая. Письмо будет отправлено без темы.',
       });
     }
+    if (composeSendLockRef.current) return;
+    composeSendLockRef.current = true;
+    if (!composeIdempotencyKeyRef.current) {
+      composeIdempotencyKeyRef.current = createMailSendIdempotencyKey();
+    }
+    const idempotencyKey = composeIdempotencyKeyRef.current;
     patchComposeState({
       composeFieldErrors: {},
       composeError: '',
@@ -509,6 +647,7 @@ export default function MailComposeHost({
           draftId: state.composeDraftId,
           retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
           files: state.composeFiles,
+          idempotencyKey,
           signal: controller.signal,
           onUploadProgress: (event) => {
             const total = Number(event?.total || 0);
@@ -535,17 +674,22 @@ export default function MailComposeHost({
           forward_message_id: state.composeForwardMessageId,
           draft_id: state.composeDraftId,
           retain_existing_attachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
+          idempotencyKey,
         });
       }
+      composeIdempotencyKeyRef.current = '';
       clearStoredComposeDraft();
       await onSendSuccess?.();
     } catch (requestError) {
       if (await handleMailCredentialsRequired(requestError, 'Не удалось отправить письмо.')) {
         patchComposeState({ composeError: '' });
       } else {
-        patchComposeState({ composeError: getMailErrorDetail(requestError, 'Не удалось отправить письмо.') });
+        patchComposeState({
+          composeError: getMailSendErrorMessage(requestError, 'Не удалось отправить письмо.'),
+        });
       }
     } finally {
+      composeSendLockRef.current = false;
       composeUploadAbortRef.current = null;
       patchComposeState({
         composeUploadProgress: 0,
@@ -554,7 +698,6 @@ export default function MailComposeHost({
     }
   }, [
     clearStoredComposeDraft,
-    getMailErrorDetail,
     handleMailCredentialsRequired,
     notifyComposeWarning,
     onSendSuccess,
@@ -647,9 +790,10 @@ export default function MailComposeHost({
         }}
         onOpenSignatureEditor={() => onOpenSignatureEditor?.(composeState.composeFromMailboxId)}
         onSendCompose={handleSendCompose}
+        onRegisterFlushHandler={(handler) => { composeFlushHandlerRef.current = handler; }}
         layoutMode={layoutMode}
       />
-      <Dialog open={closeDraftPromptOpen} onClose={() => setCloseDraftPromptOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog open={closeDraftPromptOpen} onClose={handleKeepEditingCompose} maxWidth="xs" fullWidth>
         <DialogTitle>Сохранить письмо в черновики?</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary">
@@ -657,7 +801,7 @@ export default function MailComposeHost({
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCloseDraftPromptOpen(false)} sx={{ textTransform: 'none' }}>
+          <Button onClick={handleKeepEditingCompose} sx={{ textTransform: 'none' }}>
             Продолжить редактирование
           </Button>
           <Button color="error" onClick={handleDiscardAndCloseCompose} sx={{ textTransform: 'none' }}>

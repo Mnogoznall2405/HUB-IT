@@ -99,8 +99,9 @@ def main() -> None:
 
     settings = config.my_files_security
     logger.info(
-        "My-files worker started: antivirus=%s fail_closed=%s zstd_threads=%s max_processing=%s",
+        "My-files worker started: antivirus=%s provider=%s fail_closed=%s zstd_threads=%s max_processing=%s",
         settings.antivirus_enabled,
+        settings.antivirus_provider,
         settings.antivirus_fail_closed,
         settings.zstd_threads,
         settings.max_processing_global,

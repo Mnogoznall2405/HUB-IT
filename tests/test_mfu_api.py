@@ -44,3 +44,37 @@ def test_resolve_device_hostname_prefers_inventory_name() -> None:
     )
 
     assert hostname == "PRINTER-INVENTORY-01"
+
+
+def _device(type_name: str, model_name: str, manufacturer: str = "HP", ip_address: str = "172.16.179.11") -> dict:
+    return mfu_api._normalize_device_row(
+        {
+            "ID": 1,
+            "INV_NO": "102550",
+            "TYPE_NAME": type_name,
+            "MODEL_NAME": model_name,
+            "MANUFACTURER": manufacturer,
+            "IP_ADDRESS": ip_address,
+        },
+        "SPB-ITINVENT",
+    )
+
+
+def test_mfu_page_excludes_hpe_switch_with_ip() -> None:
+    device = _device("Коммутатор", "HPE 1950-48G-2SFP+ 2XGT JG961A", manufacturer="HPE")
+    assert mfu_api._is_mfu_device(device) is False
+
+
+def test_mfu_page_excludes_hp_probook_laptop_with_ip() -> None:
+    device = _device("Ноутбук", "HP ProBook 450 G8", manufacturer="HP", ip_address="10.105.5.10")
+    assert mfu_api._is_mfu_device(device) is False
+
+
+def test_mfu_page_keeps_xerox_mfu() -> None:
+    device = _device("МФУ", "Xerox VersaLink C7020 MFP", manufacturer="Xerox")
+    assert mfu_api._is_mfu_device(device) is True
+
+
+def test_mfu_page_keeps_hp_designjet_plotter() -> None:
+    device = _device("Плоттер", "HP DesignJet T525 24-in Printer", manufacturer="HP")
+    assert mfu_api._is_mfu_device(device) is True

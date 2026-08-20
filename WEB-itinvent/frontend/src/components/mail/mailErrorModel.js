@@ -132,6 +132,12 @@ export const getMailErrorCode = (requestError) => {
   return '';
 };
 
+export const isCanceledMailRequestError = (requestError) => {
+  const errorCode = String(requestError?.code || '').trim().toUpperCase();
+  const errorName = String(requestError?.name || '').trim();
+  return errorCode === 'ERR_CANCELED' || errorName === 'CanceledError' || errorName === 'AbortError';
+};
+
 export const isTransientMailRequestError = (requestError) => {
   const statusCode = Number(requestError?.response?.status || 0);
   if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;

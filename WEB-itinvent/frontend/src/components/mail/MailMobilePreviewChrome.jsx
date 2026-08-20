@@ -38,6 +38,8 @@ export default function MailMobilePreviewChrome({
   summarizeText = '',
   onSummarize,
   onCopySummary,
+  aiEnabled = true,
+  onRequestAiEnable,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
@@ -139,7 +141,7 @@ export default function MailMobilePreviewChrome({
               <MailSummarizeButton
                 tokens={tokens}
                 loading={summarizeLoading}
-                onClick={openSummary}
+                onClick={aiEnabled ? openSummary : () => onRequestAiEnable?.()}
                 testId="mail-mobile-preview-summarize"
               />
             ) : null}

@@ -20,7 +20,7 @@ export default function MailSectionTabs({ value, onChange }) {
       }}
     >
       <ToggleButton value="inbox">Почта</ToggleButton>
-      <ToggleButton value="quotas" data-testid="mail-shell-quotas-tab">Квоты</ToggleButton>
+      <ToggleButton value="quotas" data-testid="mail-shell-quotas-tab">Хранилище</ToggleButton>
     </ToggleButtonGroup>
   );
 }

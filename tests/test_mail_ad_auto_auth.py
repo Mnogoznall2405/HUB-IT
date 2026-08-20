@@ -472,3 +472,83 @@ def test_mail_test_connection_blocks_foreign_ldap_user_without_session_secret(mo
 
     assert response.status_code == 403
     assert "current user session" in response.json()["detail"]
+
+
+def test_save_my_credentials_syncs_session_password_for_ldap_user(temp_dir, monkeypatch):
+    service = _build_service(temp_dir, monkeypatch)
+    user_payload = {
+        "id": 33,
+        "username": "kirova_ka",
+        "auth_source": "ldap",
+        "email": "kirova.ka@zsgp.ru",
+        "mailbox_email": "kirova.ka@zsgp.ru",
+        "mailbox_login": "kirova_ka@zsgp.corp",
+        "mailbox_password_enc": "",
+        "mail_signature_html": "",
+    }
+    stored_sessions: list[dict] = []
+
+    def _get_by_id(_user_id):
+        return dict(user_payload)
+
+    def _update_user(_user_id, **changes):
+        if "mailbox_password" in changes:
+            raw_password = str(changes["mailbox_password"] or "").strip()
+            user_payload["mailbox_password_enc"] = (
+                secret_crypto_module.encrypt_secret(raw_password)
+                if raw_password
+                else ""
+            )
+        if "mailbox_login" in changes:
+            user_payload["mailbox_login"] = changes["mailbox_login"]
+        if "mailbox_email" in changes and changes["mailbox_email"] is not None:
+            user_payload["mailbox_email"] = changes["mailbox_email"]
+        return dict(user_payload)
+
+    monkeypatch.setattr(mail_module.user_service, "get_by_id", _get_by_id)
+    monkeypatch.setattr(mail_module.user_service, "update_user", _update_user)
+    monkeypatch.setattr(mail_module, "get_request_session_id", lambda: "sess-kirova")
+    monkeypatch.setattr(
+        mail_module.session_auth_context_service,
+        "get_session_context",
+        lambda session_id, user_id=None: None,
+    )
+    monkeypatch.setattr(
+        mail_module.session_auth_context_service,
+        "resolve_session_password",
+        lambda session_id, user_id=None: "",
+    )
+    monkeypatch.setattr(
+        mail_module.session_auth_context_service,
+        "store_session_context",
+        lambda **kwargs: stored_sessions.append(kwargs) or dict(kwargs),
+    )
+    monkeypatch.setattr(
+        mail_module.MailService,
+        "verify_mailbox_credentials",
+        lambda self, *, mailbox_email, mailbox_login, mailbox_password: {
+            "mailbox_email": mailbox_email,
+            "effective_mailbox_login": mailbox_login,
+        },
+    )
+
+    import backend.services.session_service as session_service_module
+
+    monkeypatch.setattr(
+        session_service_module.session_service,
+        "get_session",
+        lambda session_id: {"session_id": session_id, "expires_at": "2099-01-01T00:00:00+00:00"},
+    )
+
+    service.save_my_credentials(
+        user_id=33,
+        mailbox_email="kirova.ka@zsgp.ru",
+        mailbox_login="kirova_ka@zsgp.corp",
+        mailbox_password="NewPassword123!",
+    )
+
+    assert len(stored_sessions) == 1
+    assert stored_sessions[0]["session_id"] == "sess-kirova"
+    assert stored_sessions[0]["user_id"] == 33
+    assert stored_sessions[0]["password"] == "NewPassword123!"
+    assert stored_sessions[0]["exchange_login"] == "kirova_ka@zsgp.corp"

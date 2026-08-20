@@ -163,6 +163,26 @@ describe('AuthProvider startup', () => {
     });
   });
 
+  it('single-flights overlapping refreshSession and online recovery', async () => {
+    let resolveUser;
+    getCurrentUserMock.mockImplementation(() => new Promise((resolve) => {
+      resolveUser = resolve;
+    }));
+    localStorage.setItem('user', JSON.stringify({ id: 7, username: 'cached', role: 'operator' }));
+    renderAuth('/dashboard');
+
+    await waitFor(() => expect(getCurrentUserMock).toHaveBeenCalledTimes(1));
+    fireEvent(window, new Event('online'));
+    fireEvent(window, new Event('focus'));
+    expect(getCurrentUserMock).toHaveBeenCalledTimes(1);
+
+    resolveUser({ id: 7, username: 'fresh', role: 'operator' });
+    await waitFor(() => {
+      expect(screen.getByTestId('username')).toHaveTextContent('fresh');
+    });
+    expect(getCurrentUserMock).toHaveBeenCalledTimes(1);
+  });
+
   it('applies logout from another HUB window immediately', async () => {
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'shared', role: 'operator' }));
     getCurrentUserMock.mockResolvedValue({ id: 7, username: 'shared', role: 'operator' });

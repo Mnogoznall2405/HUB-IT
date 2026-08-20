@@ -412,8 +412,15 @@ export function PreferencesProvider({ children }) {
               '--app-skeleton-base': isDark ? 'rgba(255,255,255,0.05)' : 'rgba(32,31,30,0.05)',
               '--app-skeleton-highlight': isDark ? 'rgba(255,255,255,0.10)' : 'rgba(32,31,30,0.09)',
             },
+            html: {
+              backgroundColor: customAdmin.pageBg,
+            },
             body: {
               backgroundImage: 'none',
+              backgroundColor: customAdmin.pageBg,
+            },
+            '#root': {
+              backgroundColor: customAdmin.pageBg,
             },
             '::selection': {
               backgroundColor: alpha('#0f6cbd', isDark ? 0.36 : 0.18),
@@ -571,6 +578,21 @@ export function PreferencesProvider({ children }) {
               }),
               '&:hover': {
                 backgroundColor: theme.customAdmin.actionHover,
+              },
+            }),
+          },
+        },
+        MuiToggleButton: {
+          styleOverrides: {
+            root: ({ theme }) => ({
+              color: theme.palette.text.primary,
+              borderColor: theme.customAdmin.borderSoft,
+              '&.Mui-selected': {
+                color: theme.palette.text.primary,
+                backgroundColor: theme.palette.action.selected,
+                '&:hover': {
+                  backgroundColor: theme.customAdmin.hover,
+                },
               },
             }),
           },

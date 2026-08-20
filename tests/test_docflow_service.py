@@ -1087,6 +1087,7 @@ def test_explicit_command_check_releases_action_when_1c_state_is_unchanged(monke
     ))
 
     assert checked["status"] == "rejected"
+    assert checked["correlation_id"] == "unknown"
     assert checked["error_code"] == "DOCFLOW_ACTION_NOT_APPLIED"
     assert checked["task"]["completed"] is False
     assert [item["code"] for item in checked["task"]["available_actions"]] == ["approve", "reject"]

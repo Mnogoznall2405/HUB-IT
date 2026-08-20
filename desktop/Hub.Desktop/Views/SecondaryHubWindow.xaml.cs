@@ -50,6 +50,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private bool _initializing;
     private bool _requiresReset;
     private bool _recoveryInProgress;
+    private bool _hardReloadInProgress;
 
     public SecondaryHubWindow(
         DesktopOptions options,
@@ -117,6 +118,28 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         }
 
         _pendingInternalRoute = route;
+    }
+
+    public void ReloadWithoutCache()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(ReloadWithoutCache);
+            return;
+        }
+
+        _ = ReloadWithoutCacheAsync();
+    }
+
+    public bool TryDeliverSystemLifecycle(DesktopSystemLifecycleMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!Dispatcher.CheckAccess())
+        {
+            return Dispatcher.Invoke(() => TryDeliverSystemLifecycle(message));
+        }
+
+        return _desktopBridge?.TryPostSystemLifecycle(message) == true;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -360,6 +383,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private void DesktopBridge_Ready(object? sender, EventArgs e)
     {
         SendDesktopWindowForegroundState();
+        _windowManager.NotifyBridgeReady(this);
         if (!DesktopBridgeProtocol.IsValidInternalRoute(_pendingInternalRoute)
             || _desktopBridge?.TryOpenInternalRoute(_pendingInternalRoute) != true)
         {
@@ -529,6 +553,13 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         {
             e.Handled = _windowManager.OpenSecondaryFrom(this)
                 is not DesktopSecondaryWindowOpenResult.Unavailable;
+            return;
+        }
+
+        if (e.Key == Key.F5 && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            ReloadWithoutCache();
             return;
         }
 
@@ -830,6 +861,46 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         timeout.Cancel();
         timeout.Dispose();
     }
+
+    private async Task ReloadWithoutCacheAsync()
+    {
+        if (_hardReloadInProgress || _recoveryInProgress || _initializing)
+        {
+            return;
+        }
+
+        _hardReloadInProgress = true;
+        ReloadButton.IsEnabled = false;
+        try
+        {
+            if (_requiresReset || _webView?.CoreWebView2 is null)
+            {
+                await CreateWebViewAsync();
+                return;
+            }
+
+            HideError();
+            ShowLoading();
+            var reloaded = await DesktopWebViewHardReload.TryReloadIgnoringCacheAsync(
+                _webView.CoreWebView2,
+                _shutdown.Token);
+            if (!reloaded)
+            {
+                LoadingIndicator.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Secondary window is shutting down.
+        }
+        finally
+        {
+            _hardReloadInProgress = false;
+            ReloadButton.IsEnabled = true;
+        }
+    }
+
+    private void ReloadButton_Click(object sender, RoutedEventArgs e) => ReloadWithoutCache();
 
     private async void RetryButton_Click(object sender, RoutedEventArgs e)
     {

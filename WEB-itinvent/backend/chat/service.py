@@ -26,6 +26,7 @@ from sqlalchemy.orm import aliased
 
 from backend.chat.attachment_media import ChatAttachmentMedia
 from backend.chat.chat_cache import ChatCache
+from backend.chat.chat_formatting import CHAT_UNKNOWN_SENDER_NAME, usable_chat_username
 from backend.chat.chat_conversation_read_store import ChatConversationReadStore
 from backend.chat.chat_delivery_state import (
     advance_conversation_read_state as _advance_conversation_read_state_impl,
@@ -125,8 +126,8 @@ def _display_user_name(user: Optional[dict]) -> str:
     payload = user or {}
     return (
         _normalize_text(payload.get("full_name"))
-        or _normalize_text(payload.get("username"))
-        or f"user-{int(payload.get('id', 0) or 0)}"
+        or usable_chat_username(payload.get("username"))
+        or CHAT_UNKNOWN_SENDER_NAME
     )
 
 
@@ -2934,7 +2935,7 @@ class ChatService:
         sender_fallback: dict,
     ) -> dict:
         sender = users_by_id.get(int(message.sender_user_id)) or sender_fallback
-        sender_name = self._get_short_user_name(sender) or f"user-{message.sender_user_id}"
+        sender_name = self._get_short_user_name(sender) or CHAT_UNKNOWN_SENDER_NAME
         message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
         is_deleted = bool(getattr(message, "is_deleted", False))
         body = (
@@ -3005,7 +3006,7 @@ class ChatService:
         full_name = _normalize_text((user_payload or {}).get("full_name"))
         if full_name:
             return full_name.split()[0]
-        return _normalize_text((user_payload or {}).get("username"))
+        return usable_chat_username((user_payload or {}).get("username"))
 
     def _count_unread_messages(self, *, session, conversation_id: str, current_user_id: int, last_read_at: Optional[datetime]) -> int:
         query = select(func.count(ChatMessage.id)).where(

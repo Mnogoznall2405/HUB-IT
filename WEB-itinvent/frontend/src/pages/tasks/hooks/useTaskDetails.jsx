@@ -19,6 +19,7 @@ export default function useTaskDetails({
   canManageAllTasks,
   canReviewTasks,
   taskDiscussionChatEnabled,
+  openTaskInChat = false,
   isMobile,
   ui,
   setError,
@@ -61,7 +62,7 @@ export default function useTaskDetails({
     return String(params.get('task_mobile_view') || '').trim() === 'checklist' ? 'checklist' : 'details';
   }, [location.search]);
 
-  const detailsOpen = Boolean(selectedTaskId) && (isMobile || !taskDiscussionChatEnabled);
+  const detailsOpen = Boolean(selectedTaskId) && !openTaskInChat;
 
   const updateSearch = useCallback((mutate, { replace = true } = {}) => {
     const params = new URLSearchParams(location.search || '');
@@ -403,6 +404,17 @@ export default function useTaskDetails({
       || (canReviewTasks && Number(task?.controller_user_id) === Number(user?.id));
   }, [canManageAllTasks, canReviewTasks, currentUserManagedDepartmentIds, user?.id]);
 
+  const canCloseTask = useCallback((task) => {
+    if (typeof task?.capabilities?.can_close === 'boolean') return task.capabilities.can_close;
+    if (isTransferActUploadTask(task)) return false;
+    if (!task?.id) return false;
+    const status = String(task?.status || '').toLowerCase();
+    if (!['new', 'in_progress', 'review'].includes(status)) return false;
+    if (canManageAllTasks) return true;
+    if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
+    return Number(task?.created_by_user_id) === Number(user?.id);
+  }, [canManageAllTasks, currentUserManagedDepartmentIds, user?.id]);
+
   const canStartTask = useCallback((task) => (
     !isTransferActUploadTask(task)
     && Number(task?.assignee_user_id) === Number(user?.id)
@@ -537,6 +549,7 @@ export default function useTaskDetails({
     canDeleteTask,
     canEditTask,
     canReviewTask,
+    canCloseTask,
     canStartTask,
     canSubmitTask,
     canReopenTask,

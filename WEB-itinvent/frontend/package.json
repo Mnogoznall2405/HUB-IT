@@ -10,8 +10,10 @@
     "test:chat:gate": "vitest run src/pages/chat/ChatPageContent.smoke.test.jsx src/pages/chat/chatPageSlice38.test.js src/pages/chat/buildChatPagePanesBags.test.js src/pages/chat/useChatPageDialogsLayerProps.test.js src/pages/chat/useChatPageCoreBridge.test.js src/pages/chat/useChatAiController.test.js src/pages/chat/useChatDraftsAndPinned.test.js src/components/chat/useChatComposerTextBridge.test.js src/pages/chat/pickChatPageLayoutSections.test.js src/lib/chat/chatThreadScrollModel.test.js src/pages/chat/useChatThreadController.test.js src/pages/chat/useChatScrollController.test.js src/pages/chat/useChatSocketController.test.js src/pages/Chat.test.jsx src/pages/chat/useChatSidebarSection.test.jsx src/pages/chat/useChatThreadSection.test.jsx src/components/chat/ChatComposer.test.jsx",
     "test:chat:premerge": "npm run lint:chat-imports && npm run test:chat:gate && npm run build",
     "lint": "eslint src/pages/chat src/components/chat",
+    "lint:mail": "eslint src/pages/Mail.jsx src/pages/Mail.test.jsx src/components/mail src/api/mail*.js",
     "lint:chat-imports": "node scripts/check-chat-page-imports.mjs",
     "build": "vite build",
+    "check:startup-bundle": "node scripts/check-startup-bundle.mjs",
     "generate:icons": "python scripts/generate-pwa-icons.py",
     "preview": "vite preview"
   },

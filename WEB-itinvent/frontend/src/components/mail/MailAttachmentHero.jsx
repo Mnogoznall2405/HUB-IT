@@ -1,12 +1,17 @@
 import { Box, ButtonBase, IconButton, Stack, Typography } from '@mui/material';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useMemo, useState } from 'react';
 import MailAttachmentCompactCard from './MailAttachmentCompactCard';
-import MailAttachmentsSheet, { MailAttachmentSummaryRow } from './MailAttachmentsSheet';
-import { shouldUseCompactAttachmentLayout } from './mailAttachmentLayout';
+import MailAttachmentsSheet from './MailAttachmentsSheet';
+import { shouldUseCompactAttachmentLayout, buildAttachmentFilesLabel } from './mailAttachmentLayout';
 import { buildMailUiTokens, getMailAttachmentStripSx } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
+import {
+  readMailAttachmentsExpandedPreference,
+  writeMailAttachmentsExpandedPreference,
+} from './mailAttachmentExpandState';
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
   isFileActionsKeyboardShortcut,
@@ -34,6 +39,8 @@ function MailAttachmentHeroCard({
       onContextMenu={(event) => onFileActions?.(event, attachment)}
       sx={{
         width: '100%',
+        minHeight: 52,
+        maxHeight: 60,
         display: 'flex',
         alignItems: 'stretch',
         textAlign: 'left',
@@ -58,16 +65,16 @@ function MailAttachmentHeroCard({
       >
         <Box
           sx={{
-            width: 56,
+        width: 40,
             flexShrink: 0,
             display: 'grid',
             placeItems: 'center',
             bgcolor: tokens.isDark ? alpha('#ffffff', 0.04) : alpha(visual.color, 0.08),
           }}
         >
-          <IconComponent sx={{ color: visual.color, fontSize: 28 }} />
+          <IconComponent sx={{ color: visual.color, fontSize: 22 }} />
         </Box>
-        <Box sx={{ minWidth: 0, flex: 1, px: 1.2, py: 1.05 }}>
+        <Box sx={{ minWidth: 0, flex: 1, px: 1.1, py: 0.55, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', noWrap: true, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {name}
           </Typography>
@@ -107,6 +114,10 @@ export default function MailAttachmentHero({
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const compactPreferred = shouldUseCompactAttachmentLayout(attachments.length);
+  const [expanded, setExpanded] = useState(() => (
+    readMailAttachmentsExpandedPreference(!compactPreferred)
+  ));
   const [fileActionsMenu, setFileActionsMenu] = useState({
     attachment: null,
     anchorEl: null,
@@ -115,7 +126,8 @@ export default function MailAttachmentHero({
 
   if (!attachments.length) return null;
 
-  const compact = shouldUseCompactAttachmentLayout(attachments.length);
+  const filesLabel = buildAttachmentFilesLabel(attachments.length);
+  const headerParts = ['Вложения', filesLabel, attachmentTotalSize].filter(Boolean);
   const openSheet = () => setSheetOpen(true);
   const openFileActionsMenu = (event, attachment) => {
     if (event.type === 'keydown' && !isFileActionsKeyboardShortcut(event)) return;
@@ -142,36 +154,71 @@ export default function MailAttachmentHero({
 
   return (
     <>
-      <Stack data-testid="mail-attachment-hero" spacing={compact ? 0.65 : 0.85} sx={{ mb: 1.25 }}>
-        {compact ? (
-          <>
-            <Box
-              data-testid="mail-attachment-compact-strip"
-              sx={getMailAttachmentStripSx(tokens)}
+      <Stack data-testid="mail-attachment-hero" spacing={0.65} sx={{ mb: 1.1 }}>
+        <Box
+          data-testid="mail-attachment-hero-header"
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1,
+            minHeight: 28,
+          }}
+        >
+          <Typography
+            data-testid="mail-attachment-summary-row"
+            noWrap
+            sx={{ fontWeight: 700, fontSize: '0.82rem', color: tokens.textPrimary, minWidth: 0 }}
+          >
+            {headerParts.join(' · ')}
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+            {attachments.length > 3 ? (
+              <ButtonBase
+                data-testid="mail-attachment-show-all"
+                onClick={openSheet}
+                sx={{
+                  px: 0.75,
+                  py: 0.25,
+                  borderRadius: tokens.radiusSm,
+                  color: 'primary.main',
+                  fontWeight: 700,
+                  fontSize: '0.78rem',
+                }}
+              >
+                Все
+              </ButtonBase>
+            ) : null}
+            <ButtonBase
+              data-testid="mail-attachment-hero-toggle"
+              onClick={() => {
+                setExpanded((prev) => {
+                  const next = !prev;
+                  writeMailAttachmentsExpandedPreference(next);
+                  return next;
+                });
+              }}
+              sx={{
+                px: 0.75,
+                py: 0.25,
+                borderRadius: tokens.radiusSm,
+                color: 'primary.main',
+                fontWeight: 700,
+                fontSize: '0.78rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0.25,
+              }}
             >
-              {attachments.map((attachment, index) => (
-                <MailAttachmentCompactCard
-                  key={`${attachment?.id || attachment?.name || index}`}
-                  attachment={attachment}
-                  index={index}
-                  formatFileSize={formatFileSize}
-                  onOpen={onOpen}
-                  onFileActions={openFileActionsMenu}
-                  onMenuOpen={openAnchoredFileActionsMenu}
-                  menuOpen={isMenuOpenFor(attachment)}
-                  tokens={tokens}
-                />
-              ))}
-            </Box>
-            <MailAttachmentSummaryRow
-              count={attachments.length}
-              totalSizeLabel={attachmentTotalSize}
-              onShowAll={attachments.length > 3 ? openSheet : undefined}
-              tokens={tokens}
-              placement="below"
-            />
-          </>
-        ) : (
+              {expanded ? 'Свернуть' : 'Показать'}
+              {expanded
+                ? <KeyboardArrowUpRoundedIcon sx={{ fontSize: 18 }} />
+                : <KeyboardArrowDownRoundedIcon sx={{ fontSize: 18 }} />}
+            </ButtonBase>
+          </Box>
+        </Box>
+
+        {expanded ? (
           attachments.map((attachment, index) => (
             <MailAttachmentHeroCard
               key={`${attachment?.id || attachment?.name || index}`}
@@ -185,6 +232,25 @@ export default function MailAttachmentHero({
               tokens={tokens}
             />
           ))
+        ) : (
+          <Box
+            data-testid="mail-attachment-compact-strip"
+            sx={getMailAttachmentStripSx(tokens)}
+          >
+            {attachments.map((attachment, index) => (
+              <MailAttachmentCompactCard
+                key={`${attachment?.id || attachment?.name || index}`}
+                attachment={attachment}
+                index={index}
+                formatFileSize={formatFileSize}
+                onOpen={onOpen}
+                onFileActions={openFileActionsMenu}
+                onMenuOpen={openAnchoredFileActionsMenu}
+                menuOpen={isMenuOpenFor(attachment)}
+                tokens={tokens}
+              />
+            ))}
+          </Box>
         )}
       </Stack>
 

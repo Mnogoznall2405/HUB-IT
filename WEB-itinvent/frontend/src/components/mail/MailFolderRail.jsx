@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Box,
+  Button,
   Divider,
   IconButton,
   List,
@@ -10,9 +11,13 @@ import {
   Menu,
   MenuItem,
   Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
+import { alpha, useTheme } from '@mui/material/styles';
+import CreateOutlinedIcon from '@mui/icons-material/CreateOutlined';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import AttachFileOutlinedIcon from '@mui/icons-material/AttachFileOutlined';
@@ -32,7 +37,6 @@ import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
 import SettingsSuggestOutlinedIcon from '@mui/icons-material/SettingsSuggestOutlined';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import TodayOutlinedIcon from '@mui/icons-material/TodayOutlined';
-import ViewAgendaOutlinedIcon from '@mui/icons-material/ViewAgendaOutlined';
 import { buildMailUiTokens, getMailMenuPaperSx } from './mailUiTokens';
 
 const FOLDER_ICON_MAP = {
@@ -54,8 +58,8 @@ function SectionTitle({ children }) {
         px: 1.2,
         pb: 0.5,
         fontSize: '0.74rem',
-        fontWeight: 800,
-        letterSpacing: 0,
+        fontWeight: 600,
+        letterSpacing: '0.04em',
         textTransform: 'uppercase',
         color: 'text.secondary',
       }}
@@ -94,9 +98,11 @@ function RailRow({
   leading = null,
   label,
   active = false,
+  dropActive = false,
   trailing = null,
   onClick,
   onDragOver,
+  onDragLeave,
   onDrop,
   sx = {},
   testId,
@@ -105,19 +111,28 @@ function RailRow({
   return (
     <ListItemButton
       data-testid={testId}
+      data-active={active ? 'true' : 'false'}
+      data-drop-active={dropActive ? 'true' : 'false'}
       onClick={onClick}
       onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
       onDrop={onDrop}
       sx={{
-        minHeight: 42,
+        minHeight: 36,
         px: 1,
-        py: 0.35,
+        py: 0.2,
         borderRadius: tokens?.radiusSm || 0,
-        color: active ? 'primary.main' : 'inherit',
-        bgcolor: active ? tokens?.selectedBg || 'action.selected' : 'transparent',
+        color: active || dropActive ? 'primary.main' : 'inherit',
+        bgcolor: dropActive
+          ? alpha(tokens?.selectedBorder || '#1976d2', 0.16)
+          : active ? tokens?.selectedBg || 'action.selected' : 'transparent',
+        outline: dropActive ? '1px solid' : 'none',
+        outlineColor: dropActive ? 'primary.main' : 'transparent',
         transition: tokens?.transition,
         '&:hover': {
-          bgcolor: active ? tokens?.selectedHover || 'action.selected' : tokens?.surfaceHover || 'action.hover',
+          bgcolor: dropActive
+            ? alpha(tokens?.selectedBorder || '#1976d2', 0.2)
+            : active ? tokens?.selectedHover || 'action.selected' : tokens?.surfaceHover || 'action.hover',
         },
         '&.Mui-focusVisible': {
           boxShadow: tokens?.focusRing,
@@ -137,8 +152,8 @@ function RailRow({
         primary={label}
         primaryTypographyProps={{
           noWrap: true,
-          fontWeight: active ? 700 : 600,
-          fontSize: '0.9rem',
+          fontWeight: active ? 600 : 500,
+          fontSize: '0.86rem',
         }}
       />
       {trailing}
@@ -153,6 +168,8 @@ function FolderRow({
   onFolderChange,
   onOpenMenu,
   onDropMessagesToFolder,
+  dropTargetId = '',
+  onDropTargetChange,
   hasChildren = false,
   expanded = false,
   onToggleExpand,
@@ -197,13 +214,20 @@ function FolderRow({
       icon={iconNode}
       label={item.label || item.name}
       active={active}
+      dropActive={dropTargetId === item.id}
       onClick={() => onFolderChange?.(item.id)}
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
+        onDropTargetChange?.(item.id);
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        onDropTargetChange?.('');
       }}
       onDrop={(event) => {
         event.preventDefault();
+        onDropTargetChange?.('');
         onDropMessagesToFolder?.(item.id);
       }}
       tokens={tokens}
@@ -214,21 +238,30 @@ function FolderRow({
         <Stack direction="row" spacing={0.35} alignItems="center" sx={{ ml: 0.6 }}>
           {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: '#f59e0b' }} /> : null}
           <UnreadBadge unread={unread} />
-          <IconButton
-            size="small"
-            data-testid={`mail-folder-menu-${String(item.id)}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenMenu?.(event, item);
-            }}
-            sx={{
-              width: 26,
-              height: 26,
-              color: tokens.textSecondary,
-            }}
-          >
-            <MoreHorizRoundedIcon fontSize="inherit" />
-          </IconButton>
+          <Tooltip title="Действия с папкой">
+            <IconButton
+              size="small"
+              data-testid={`mail-folder-menu-${String(item.id)}`}
+              aria-label={`Действия с папкой ${item.label || item.name || ''}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenMenu?.(event, item);
+              }}
+              sx={{
+                width: 26,
+                height: 26,
+                color: tokens.textSecondary,
+                opacity: 0,
+                flexShrink: 0,
+                '.MuiListItemButton-root:hover &, .MuiListItemButton-root:focus-within &, .MuiListItemButton-root[data-active="true"] &': {
+                  opacity: 1,
+                },
+                ...(active ? { opacity: 1 } : {}),
+              }}
+            >
+              <MoreHorizRoundedIcon fontSize="inherit" />
+            </IconButton>
+          </Tooltip>
         </Stack>
       )}
     />
@@ -278,6 +311,7 @@ export default function MailFolderRail({
   onDeleteFolderRequest,
   onToggleFavorite,
   onDropMessagesToFolder,
+  onCompose,
   showFavoritesFirst = true,
   utilityItems = [],
 }) {
@@ -286,6 +320,7 @@ export default function MailFolderRail({
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [menuFolder, setMenuFolder] = useState(null);
   const [expandedFolders, setExpandedFolders] = useState({});
+  const [dropTargetId, setDropTargetId] = useState('');
 
   const items = useMemo(() => (Array.isArray(folderTreeItems) ? folderTreeItems : []), [folderTreeItems]);
 
@@ -383,6 +418,8 @@ export default function MailFolderRail({
           setMenuFolder(targetItem);
         }}
         onDropMessagesToFolder={onDropMessagesToFolder}
+        dropTargetId={dropTargetId}
+        onDropTargetChange={setDropTargetId}
         hasChildren={hasChildren}
         expanded={expanded}
         onToggleExpand={() => toggleFolderExpanded(item.id)}
@@ -400,13 +437,16 @@ export default function MailFolderRail({
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ pr: 1 }}>
           <SectionTitle>{title}</SectionTitle>
           {actionScope ? (
-            <IconButton
-              size="small"
-              onClick={() => onCreateFolderRequest?.(actionScope)}
-          sx={{ width: 28, height: 28, color: tokens.textSecondary }}
-            >
-              <CreateNewFolderOutlinedIcon fontSize="inherit" />
-            </IconButton>
+            <Tooltip title="Создать папку">
+              <IconButton
+                size="small"
+                aria-label="Создать папку"
+                onClick={() => onCreateFolderRequest?.(actionScope)}
+                sx={{ width: 28, height: 28, color: tokens.textSecondary, opacity: 0.7 }}
+              >
+                <CreateNewFolderOutlinedIcon fontSize="inherit" />
+              </IconButton>
+            </Tooltip>
           ) : null}
         </Stack>
         <List disablePadding dense>
@@ -427,37 +467,92 @@ export default function MailFolderRail({
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column',
-        py: 1.1,
-        bgcolor: 'transparent',
+        py: 0.85,
+        bgcolor: tokens.panelBg,
       }}
     >
+      {onCompose ? (
+        <Box sx={{ px: 1, pb: 1 }}>
+          <Button
+            fullWidth
+            variant="contained"
+            startIcon={<CreateOutlinedIcon />}
+            onClick={onCompose}
+            data-testid="mail-compose-button"
+            aria-label="Написать письмо"
+            sx={{
+              minHeight: 40,
+              textTransform: 'none',
+              fontWeight: 700,
+              borderRadius: tokens.radiusSm,
+              boxShadow: 'none',
+            }}
+          >
+            Написать
+          </Button>
+        </Box>
+      ) : null}
+
       {showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
       {renderSection('Папки', standardItems, 'mailbox')}
       {renderSection('Мои папки', rootCustomMailbox, 'mailbox')}
       {renderSection('Архивные папки', rootCustomArchive, 'archive')}
       {!showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
 
-      <Divider sx={{ mx: 1.5, my: 1.3, borderColor: tokens.panelBorder }} />
+      <Divider sx={{ mx: 1.5, my: 0.9, borderColor: tokens.panelBorder }} />
 
-      <SectionTitle>Режим</SectionTitle>
-      <List disablePadding dense>
-        <FilterRow
-          icon={<ViewAgendaOutlinedIcon fontSize="small" />}
-          label="Письма"
-          active={viewMode === 'messages'}
-          tokens={tokens}
-          onClick={() => onViewModeChange?.('messages')}
-        />
-        <FilterRow
-          icon={<ForumOutlinedIcon fontSize="small" />}
-          label="Диалоги"
-          active={viewMode === 'conversations'}
-          tokens={tokens}
-          onClick={() => onViewModeChange?.('conversations')}
-        />
-      </List>
+      <ToggleButtonGroup
+        data-testid="mail-view-mode-switcher"
+        exclusive
+        fullWidth
+        size="small"
+        value={viewMode === 'conversations' ? 'conversations' : 'messages'}
+        onChange={(_event, value) => {
+          if (!value) return;
+          onViewModeChange?.(value);
+        }}
+        sx={{
+          px: 1,
+          pb: 0.6,
+          '& .MuiToggleButton-root': {
+            minHeight: 30,
+            py: 0.25,
+            px: 0.8,
+            textTransform: 'none',
+            fontWeight: 700,
+            fontSize: '0.75rem',
+            borderRadius: `${tokens.radiusSm} !important`,
+          },
+          '& .MuiToggleButton-root.MuiToggleButton-root': {
+            color: tokens.textPrimary,
+            borderColor: tokens.panelBorder,
+          },
+          '& .MuiToggleButton-root.Mui-selected': {
+            color: tokens.textPrimary,
+            bgcolor: tokens.selectedBg,
+            '&:hover': {
+              bgcolor: tokens.selectedHover,
+            },
+          },
+        }}
+      >
+        <ToggleButton
+          value="messages"
+          aria-label="Письма"
+          style={{ color: tokens.textPrimary }}
+        >
+          Письма
+        </ToggleButton>
+        <ToggleButton
+          value="conversations"
+          aria-label="Цепочки"
+          style={{ color: tokens.textPrimary }}
+        >
+          Цепочки
+        </ToggleButton>
+      </ToggleButtonGroup>
 
-      <Divider sx={{ mx: 1.5, my: 1.3, borderColor: tokens.panelBorder }} />
+      <Divider sx={{ mx: 1.5, my: 0.9, borderColor: tokens.panelBorder }} />
 
       <SectionTitle>Фильтры</SectionTitle>
       <List disablePadding dense>

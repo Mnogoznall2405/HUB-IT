@@ -1,6 +1,6 @@
 export const MAIL_PANE_DEFAULTS = Object.freeze({
   folder_pane_width: 220,
-  message_list_width: 360,
+  message_list_width: 400,
   bottom_list_percent: 42,
 });
 
@@ -8,6 +8,12 @@ export const MAIL_PANE_LIMITS = Object.freeze({
   folder_pane_width: Object.freeze({ min: 180, max: 360, step: 10, unit: 'px' }),
   message_list_width: Object.freeze({ min: 280, max: 720, step: 10, unit: 'px' }),
   bottom_list_percent: Object.freeze({ min: 25, max: 75, step: 2, unit: '%' }),
+});
+
+export const MAIL_PANE_CSS_VARIABLES = Object.freeze({
+  folder_pane_width: '--mail-folder-pane-width',
+  message_list_width: '--mail-message-list-width',
+  bottom_list_percent: '--mail-bottom-list-percent',
 });
 
 export const clampMailPaneSize = (key, value) => {

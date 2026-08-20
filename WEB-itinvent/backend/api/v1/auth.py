@@ -91,6 +91,7 @@ _CLIENT_TELEMETRY_EVENTS = {
 
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 600
+_LOGIN_FAILURE_DEDUP_SECONDS = 1
 _LOGIN_BAN_SEQUENCE_SECONDS = [600, 3600, 86400]
 _LOGIN_ESCALATION_RESET_SECONDS = 86400
 _LOGIN_FAILURE_STATE_NAMESPACE = "auth_login_failures"
@@ -267,6 +268,9 @@ def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: 
         for item in list(attempts_payload.get("attempts") or [])
         if int(item or 0) > now_ts - _LOGIN_FAILURE_WINDOW_SECONDS
     ]
+    last_attempt_at = max(attempts) if attempts else 0
+    if last_attempt_at and (now_ts - last_attempt_at) < _LOGIN_FAILURE_DEDUP_SECONDS:
+        return {"banned": False, "attempts": len(attempts), "deduped": True}
     attempts.append(now_ts)
     if len(attempts) < _LOGIN_FAILURE_LIMIT:
         _auth_store_set_dict(

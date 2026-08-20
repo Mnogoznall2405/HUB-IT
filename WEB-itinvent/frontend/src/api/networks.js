@@ -1,5 +1,7 @@
 import apiClient from './client';
 
+export const NETWORK_EQUIPMENT_IMPORT_TIMEOUT_MS = 180000;
+
 export const networksAPI = {
   getBranches: async (city = 'tmn') => {
     const response = await apiClient.get('/networks/branches', { params: { city } });
@@ -72,7 +74,9 @@ export const networksAPI = {
   },
 
   importEquipment: async (branchId, formData) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/equipment/import`, formData);
+    const response = await apiClient.post(`/networks/branches/${branchId}/equipment/import`, formData, {
+      timeout: NETWORK_EQUIPMENT_IMPORT_TIMEOUT_MS,
+    });
     return response.data;
   },
 

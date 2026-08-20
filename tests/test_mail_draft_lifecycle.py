@@ -160,3 +160,70 @@ def test_draft_lifecycle_delete_draft_wraps_exchange_errors():
 
     with pytest.raises(MailDraftLifecycleError):
         MailDraftLifecycle.delete_draft(account=account, draft_exchange_id="missing")
+
+
+class _DraftQuery:
+    def __init__(self, folder):
+        self.folder = folder
+
+    def only(self, *fields):
+        self.folder.last_only_fields = fields
+        return self
+
+    def get(self, *, id: str):
+        self.folder.only_get_ids.append(id)
+        if id not in self.folder.items:
+            raise KeyError(id)
+        return self.folder.items[id]
+
+
+class _DraftFolder:
+    def __init__(self, items):
+        self.items = dict(items)
+        self.last_only_fields = None
+        self.only_get_ids = []
+        self.full_get_ids = []
+
+    def all(self):
+        return _DraftQuery(self)
+
+    def get(self, *, id: str):
+        self.full_get_ids.append(id)
+        raise AssertionError("full folder get should not run when only() works")
+
+
+def test_draft_lifecycle_loads_existing_draft_attachments_only():
+    existing = SimpleNamespace(
+        id="draft-existing",
+        attachments=[],
+        attach=lambda attachment: existing.attachments.append(attachment),
+        save=lambda update_fields=None: setattr(existing, "saved_update_fields", update_fields),
+    )
+    folder = _DraftFolder({"draft-existing": existing})
+    account = SimpleNamespace(drafts=folder)
+    lifecycle = MailDraftLifecycle(exchange_classes_factory=_factory)
+
+    draft = lifecycle.upsert_draft(
+        account=account,
+        draft_plan=_plan(),
+        attachments=[],
+        draft_exchange_id="draft-existing",
+    )
+
+    assert draft is existing
+    assert folder.last_only_fields == ("attachments",)
+    assert folder.only_get_ids == ["draft-existing"]
+    assert folder.full_get_ids == []
+
+
+def test_draft_lifecycle_delete_loads_subject_only():
+    deleted = {"called": False}
+    existing = SimpleNamespace(delete=lambda: deleted.__setitem__("called", True))
+    folder = _DraftFolder({"draft-existing": existing})
+
+    MailDraftLifecycle.delete_draft(account=SimpleNamespace(drafts=folder), draft_exchange_id="draft-existing")
+
+    assert deleted["called"] is True
+    assert folder.last_only_fields == ("subject",)
+    assert folder.only_get_ids == ["draft-existing"]
+    assert folder.full_get_ids == []

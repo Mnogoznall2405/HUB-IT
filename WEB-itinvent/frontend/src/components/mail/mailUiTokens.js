@@ -68,6 +68,13 @@ export function buildMailUiTokens(theme) {
     bulkSelectedBg: neutralBulkSelectedBg,
     bulkSelectedHover: neutralBulkSelectedHover,
     bulkSelectedBorder: alpha(primaryBase, office.isDark ? 0.28 : 0.16),
+    unreadBg: office.isDark
+      ? alpha(primaryBase, 0.14)
+      : alpha(primaryBase, 0.08),
+    unreadHover: office.isDark
+      ? alpha(primaryBase, 0.2)
+      : alpha(primaryBase, 0.13),
+    unreadAccent: primaryBase,
     textPrimary: theme.palette.text.primary,
     textSecondary: office.mutedText,
     iconColor: office.iconPrimary,
@@ -86,11 +93,11 @@ export function buildMailUiTokens(theme) {
     menuRadius: MAIL_UI_RADII.lg,
     dialogRadius: MAIL_UI_RADII.lg,
     sheetRadius: MAIL_UI_RADII.sheet,
-    chipRadius: MAIL_UI_RADII.xs,
-    badgeRadius: MAIL_UI_RADII.xs,
-    rowMinHeight: 54,
-    rowCompactMinHeight: 46,
-    toolbarHeight: 44,
+    chipRadius: MAIL_UI_RADII.sm,
+    badgeRadius: MAIL_UI_RADII.round,
+    rowMinHeight: 72,
+    rowCompactMinHeight: 70,
+    toolbarHeight: 52,
     mobileToolbarHeight: 46,
     bulkBarHeight: 68,
     bulkBottomBarBg: office.isDark
@@ -100,14 +107,14 @@ export function buildMailUiTokens(theme) {
     sheetHandleColor: office.isDark
       ? alpha(theme.palette.common.white, 0.24)
       : alpha(theme.palette.common.black, 0.18),
-    fontSizeMeta: '0.8rem',
+    fontSizeMeta: '0.8125rem',
     fontSizeFine: '0.78rem',
     fontSizeLabel: '0.82rem',
     mobilePreviewSubjectFontSize: '1.28rem',
     mobilePreviewSenderFontSize: '0.95rem',
     mobilePreviewMetaColor: office.mutedText,
     metadataEmailLinkColor: office.isDark ? '#e7c66a' : '#b45309',
-    lineHeightMeta: 1.35,
+    lineHeightMeta: 1.45,
     uiFontFamily: MAIL_UI_FONT_FAMILY,
     messageFontFamily: MAIL_MESSAGE_FONT_FAMILY,
     monoFontFamily: MAIL_MONO_FONT_FAMILY,
@@ -152,8 +159,8 @@ export function getMailMetaTextSx(tokens, overrides = {}) {
 
 export function getMailIconButtonSx(tokens, overrides = {}) {
   return {
-    width: 38,
-    height: 38,
+    width: 36,
+    height: 36,
     borderRadius: tokens.iconButtonRadius || MAIL_UI_RADII.md,
     color: tokens.textPrimary,
     bgcolor: tokens.surfaceBg,
@@ -177,14 +184,14 @@ export function getMailIconButtonSx(tokens, overrides = {}) {
 
 export function getMailSurfaceButtonSx(tokens, overrides = {}) {
   return {
-    minHeight: 38,
+    minHeight: 36,
     borderRadius: tokens.controlRadius || MAIL_UI_RADII.md,
     textTransform: 'none',
     color: tokens.textPrimary,
     bgcolor: tokens.surfaceBg,
     border: '1px solid',
     borderColor: tokens.surfaceBorder,
-    fontWeight: 700,
+    fontWeight: 600,
     transition: tokens.transition,
     '&:hover': {
       bgcolor: tokens.surfaceHover,
@@ -400,11 +407,12 @@ export function getMailQuickReplyBarSx(tokens, overrides = {}) {
     alignItems: 'center',
     gap: 0.75,
     px: 1.25,
-    py: embedded ? 0.85 : 0.65,
+    py: embedded ? 0.7 : 0.45,
+    minHeight: 46,
     bgcolor: embedded ? 'transparent' : (tokens.isDark ? alpha(tokens.panelBg, 0.92) : alpha(tokens.panelBg, 0.98)),
     borderTop: embedded ? '1px solid' : '1px solid',
     borderColor: tokens.panelBorder,
-    mt: embedded ? 1.5 : 0,
+    mt: embedded ? 0 : 0,
     ...restOverrides,
   };
 }
@@ -417,8 +425,8 @@ export function getMailQuickReplyInputSx(tokens, overrides = {}) {
     alignItems: 'center',
     gap: 0.75,
     px: 1.35,
-    py: 0.75,
-    borderRadius: tokens.chipRadius || MAIL_UI_RADII.round,
+    py: 0.55,
+    borderRadius: tokens.radiusSm || MAIL_UI_RADII.sm,
     bgcolor: tokens.isDark ? alpha('#ffffff', 0.06) : alpha('#000000', 0.04),
     border: '1px solid',
     borderColor: tokens.isDark ? alpha('#ffffff', 0.08) : alpha('#000000', 0.08),

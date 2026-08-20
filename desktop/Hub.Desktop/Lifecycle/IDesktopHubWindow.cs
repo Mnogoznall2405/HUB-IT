@@ -15,4 +15,8 @@ public interface IDesktopHubWindow
     void ShowAndActivate();
 
     void ShowAndNavigate(string? route);
+
+    void ReloadWithoutCache();
+
+    bool TryDeliverSystemLifecycle(DesktopSystemLifecycleMessage message);
 }

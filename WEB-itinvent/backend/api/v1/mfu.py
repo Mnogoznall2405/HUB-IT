@@ -31,6 +31,8 @@ _MFU_DEVICES_CACHE_TTL_SEC = max(15, int(os.getenv("MFU_DEVICES_CACHE_TTL_SEC", 
 MFU_FALLBACK_KEYWORDS = (
     "принтер",
     "мфу",
+    "плоттер",
+    "плотер",
     "printer",
     "mfp",
     "mfc",
@@ -47,21 +49,24 @@ MFU_FALLBACK_KEYWORDS = (
     "plotwave",
     "surecolor",
 )
-MFU_VENDOR_HINTS = (
-    "xerox",
-    "canon",
-    "hp",
-    "kyocera",
-    "ricoh",
-    "brother",
-    "epson",
-    "lexmark",
-    "oki",
-    "sharp",
-    "pantum",
-    "toshiba",
-    "konica",
-    "minolta",
+MFU_EXCLUDED_TYPE_KEYWORDS = (
+    "коммутатор",
+    "switch",
+    "ноутбук",
+    "notebook",
+    "laptop",
+    "лэптоп",
+    "монитор",
+    "ибп",
+    "сервер",
+    "server",
+    "телефон",
+    "камера",
+    "роутер",
+    "router",
+    "точка доступа",
+    "системный блок",
+    "тонкий клиент",
 )
 
 
@@ -111,6 +116,10 @@ def _is_snmp_recent(last_success_at: Any, now_utc: datetime, ttl_sec: int) -> bo
 
 
 def _is_mfu_device(device: Dict[str, Any]) -> bool:
+    type_name = _normalize_text(device.get("type_name")).lower()
+    if any(keyword in type_name for keyword in MFU_EXCLUDED_TYPE_KEYWORDS):
+        return False
+
     payload = {
         "type_name": device.get("type_name"),
         "model_name": device.get("model_name"),
@@ -121,20 +130,10 @@ def _is_mfu_device(device: Dict[str, Any]) -> bool:
     if works_manager._is_pc_record(payload):  # noqa: SLF001
         return False
 
-    type_name = _normalize_text(device.get("type_name")).lower()
-    
-    if "сервер" in type_name or "server" in type_name:
-        return False
     model_name = _normalize_text(device.get("model_name")).lower()
     manufacturer = _normalize_text(device.get("manufacturer")).lower()
     full_text = f"{type_name} {model_name} {manufacturer}".strip()
-    if any(keyword in full_text for keyword in MFU_FALLBACK_KEYWORDS):
-        return True
-
-    has_network_identity = bool(_normalize_text(device.get("ip_address")) or _normalize_text(device.get("mac_address")))
-    if has_network_identity and any(hint in manufacturer for hint in MFU_VENDOR_HINTS):
-        return True
-    return False
+    return any(keyword in full_text for keyword in MFU_FALLBACK_KEYWORDS)
 
 
 def _normalize_identifier(value: Any) -> str:

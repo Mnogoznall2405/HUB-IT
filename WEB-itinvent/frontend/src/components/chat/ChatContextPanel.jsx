@@ -15,7 +15,6 @@ import {
   Paper,
   Skeleton,
   Stack,
-  Switch,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -29,6 +28,7 @@ import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded';
+import FiberManualRecordRoundedIcon from '@mui/icons-material/FiberManualRecordRounded';
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
@@ -43,6 +43,8 @@ import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import CakeRoundedIcon from '@mui/icons-material/CakeRounded';
 
+import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
+import ChatRightPanelHeader from './ChatRightPanelHeader';
 import { chatAPI } from '../../api/client';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
@@ -387,6 +389,92 @@ function InfoRow({ label, value }) {
   );
 }
 
+function InfoNavRow({ icon, label, value, onClick }) {
+  return (
+    <Box
+      component="button"
+      type="button"
+      onClick={onClick}
+      sx={{
+        appearance: 'none',
+        WebkitAppearance: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.25,
+        width: '100%',
+        px: 2.5,
+        py: 1.4,
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        cursor: 'pointer',
+        textAlign: 'left',
+        minHeight: 44,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-accent-soft)' },
+      }}
+    >
+      <Box sx={{ display: 'inline-flex', color: 'var(--chat-sheet-panel-icon)' }}>{icon}</Box>
+      <Typography sx={{ flex: 1, fontWeight: 700, fontSize: '0.95rem' }}>{label}</Typography>
+      <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontWeight: 800 }}>{value}</Typography>
+      <KeyboardArrowRightRoundedIcon sx={{ color: 'var(--chat-sheet-panel-muted)' }} />
+    </Box>
+  );
+}
+
+function MediaKindTabs({ imageCount, videoCount, value, onChange }) {
+  return (
+    <Stack direction="row" spacing={0.75} sx={{ px: 1.25, py: 1 }}>
+      {[
+        { key: 'image', label: 'Фото', count: imageCount },
+        { key: 'video', label: 'Видео', count: videoCount },
+      ].map((tab) => (
+        <Button
+          key={tab.key}
+          size="small"
+          variant={value === tab.key ? 'contained' : 'text'}
+          onClick={() => onChange(tab.key)}
+          sx={{ textTransform: 'none', fontWeight: 800, minHeight: 36, boxShadow: 'none' }}
+        >
+          {tab.label}{tab.count ? ` ${tab.count}` : ''}
+        </Button>
+      ))}
+    </Stack>
+  );
+}
+
+function ConversationMediaThumb({ item, onOpen }) {
+  const src = normalizeChatAttachmentUrl(item?.variant_urls?.thumb || item?.variant_urls?.preview || item?.variant_urls?.poster)
+    || buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
+  const downloadUrl = buildAttachmentUrl(item.message_id || item.messageId, item.id);
+  return (
+    <Box
+      onClick={() => onOpen?.(item.message_id || item.messageId, item)}
+      sx={{
+        position: 'relative',
+        aspectRatio: '1',
+        overflow: 'hidden',
+        cursor: 'pointer',
+        bgcolor: 'var(--chat-sheet-panel-cell, rgba(148,163,184,0.16))',
+      }}
+    >
+      <ChatBrokenMediaThumb
+        src={src}
+        alt={item.file_name || ''}
+        fileName={item.file_name}
+        fileSize={item.file_size}
+        onOpen={() => onOpen?.(item.message_id || item.messageId, item)}
+        onDownload={() => window.open(downloadUrl, '_blank', 'noopener,noreferrer')}
+      />
+      {isVideoAttachment(item) ? (
+        <Box sx={{ position: 'absolute', bottom: 4, right: 4, bgcolor: 'var(--chat-sheet-panel-overlay, rgba(15,23,42,0.72))', px: 0.5, py: 0.25, borderRadius: 0.5 }}>
+          <Typography sx={{ color: '#fff', fontSize: '0.65rem', fontWeight: 700 }}>Видео</Typography>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
 function InfoRowTelegram({ icon, label, value }) {
   return (
     <Stack
@@ -440,15 +528,25 @@ function MobileProfileActionButton({ children, onClick, disabled = false, ariaLa
   );
 }
 
-function MobileProfileInfoRow({ icon, label, value, trailing = null }) {
+function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = null }) {
   return (
     <Box
+      component={onClick ? 'button' : 'div'}
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
       sx={{
         display: 'flex',
         alignItems: 'center',
         gap: 2.1,
         px: 2.8,
         py: 1.65,
+        width: '100%',
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        cursor: onClick ? 'pointer' : 'default',
+        textAlign: 'left',
+        minHeight: 44,
         borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
       }}
     >
@@ -1084,7 +1182,9 @@ export default function ChatContextPanel({
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
-  const [assetKind, setAssetKind] = useState('image');
+  const [assetKind, setAssetKind] = useState('media');
+  const [mediaSubKind, setMediaSubKind] = useState('image');
+  const [notifyMenuAnchor, setNotifyMenuAnchor] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
   const [attachmentsLoadingMore, setAttachmentsLoadingMore] = useState(false);
@@ -1214,31 +1314,31 @@ export default function ChatContextPanel({
   const mobileTabOptions = useMemo(() => (
     (isDirect || isNotes)
       ? [
-          { key: 'image', label: 'Фото', count: assetCounts.image },
+          { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
-          { key: 'video', label: 'Видео', count: assetCounts.video },
           { key: 'link', label: 'Ссылки', count: assetCounts.link },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
         ]
       : [
-          { key: 'image', label: 'Фото', count: assetCounts.image },
+          { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
-          { key: 'video', label: 'Видео', count: assetCounts.video },
-          { key: 'member', label: 'Участники', count: assetCounts.member },
+          { key: 'link', label: 'Ссылки', count: assetCounts.link },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
+          { key: 'member', label: 'Участники', count: assetCounts.member },
         ]
   ), [assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
 
   const attachmentItems = useMemo(() => {
     const items = Array.isArray(attachments) ? attachments : [];
-    if (assetKind === 'video') {
-      return items.filter((item) => isVideoAttachment(item));
-    }
-    if (assetKind === 'image') {
+    if (assetKind === 'media' || assetKind === 'image' || assetKind === 'video') {
+      const subKind = assetKind === 'media' ? mediaSubKind : assetKind;
+      if (subKind === 'video') {
+        return items.filter((item) => isVideoAttachment(item));
+      }
       return items.filter((item) => isImageAttachment(item) && !isVideoAttachment(item));
     }
     return items;
-  }, [assetKind, attachments]);
+  }, [assetKind, attachments, mediaSubKind]);
 
   const mobileTabKeys = useMemo(
     () => mobileTabOptions.map((tab) => tab.key),
@@ -1312,16 +1412,17 @@ export default function ChatContextPanel({
 
   useEffect(() => {
     if (!conversationId) {
-      setAssetKind('image');
+      setAssetKind('media');
+      setMediaSubKind('image');
       return;
     }
 
     if (!mobileScreen) {
-      if ((isDirect || isNotes) && assetKind === 'member') setAssetKind('image');
+      if ((isDirect || isNotes) && assetKind === 'member') setAssetKind('media');
       return;
     }
     if (mobileTabKeys.includes(assetKind)) return;
-    setAssetKind(mobileTabKeys[0] || 'image');
+    setAssetKind(mobileTabKeys[0] || 'media');
   }, [assetKind, conversationId, isDirect, isNotes, mobileScreen, mobileTabKeys]);
 
   useEffect(() => {
@@ -1438,9 +1539,9 @@ export default function ChatContextPanel({
   const handleLeaveGroup = useCallback(() => {
     if (!isGroup || currentMemberRole === 'owner' || typeof window === 'undefined') return;
     setInfoMenuAnchorEl(null);
-    if (!window.confirm('Выйти из группы?')) return;
+    if (!window.confirm(`Покинуть беседу «${String(activeConversation?.title || 'группу').trim()}»?\nПосле выхода вы перестанете получать новые сообщения.`)) return;
     void runGroupAction(() => onLeaveGroup?.());
-  }, [currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
+  }, [activeConversation?.title, currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
 
   const handleOpenMemberActions = useCallback((event, member) => {
     event?.stopPropagation?.();
@@ -1450,7 +1551,7 @@ export default function ChatContextPanel({
 
   const loadAttachments = useCallback(async ({ append = false, beforeAttachmentId } = {}) => {
     if (!conversationId || assetKind === 'task' || assetKind === 'link' || assetKind === 'member') return;
-    const requestKind = assetKind;
+    const requestKind = assetKind === 'media' ? mediaSubKind : assetKind;
 
     const requestSeq = attachmentRequestSeqRef.current + 1;
     attachmentRequestSeqRef.current = requestSeq;
@@ -1487,7 +1588,7 @@ export default function ChatContextPanel({
         setAttachmentsLoadingMore(false);
       }
     }
-  }, [assetKind, conversationId]);
+  }, [assetKind, conversationId, mediaSubKind]);
 
   useEffect(() => {
     if (!conversationId) {
@@ -1665,13 +1766,6 @@ export default function ChatContextPanel({
             borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
           }}
         >
-          <MobileProfileActionButton
-            ariaLabel="Закрыть информацию"
-            onClick={embedded ? onClose : onToggleOpen}
-          >
-            <CloseRoundedIcon sx={{ fontSize: 30 }} />
-          </MobileProfileActionButton>
-
           <Typography
             sx={{
               flex: 1,
@@ -1700,6 +1794,12 @@ export default function ChatContextPanel({
             >
               <MoreVertRoundedIcon sx={{ fontSize: 26 }} />
             </MobileProfileActionButton>
+            <MobileProfileActionButton
+              ariaLabel="Закрыть информацию"
+              onClick={embedded ? onClose : onToggleOpen}
+            >
+              <CloseRoundedIcon sx={{ fontSize: 30 }} />
+            </MobileProfileActionButton>
           </Stack>
         </Box>
 
@@ -1720,8 +1820,8 @@ export default function ChatContextPanel({
           <Box
             sx={{
               px: 2.5,
-              pt: 4.25,
-              pb: 3.4,
+              pt: 2.25,
+              pb: 2,
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -1731,7 +1831,7 @@ export default function ChatContextPanel({
             <ConversationAvatar
               conversation={activeConversation}
               online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
-              size={152}
+              size={80}
             />
             <Typography
               sx={{
@@ -1795,11 +1895,13 @@ export default function ChatContextPanel({
                   icon={<PersonOutlineRoundedIcon sx={{ fontSize: 22 }} />}
                   label="Участники"
                   value={String(Number(activeConversation?.member_count || participants.length || 0))}
+                  onClick={() => setAssetKind('member')}
                 />
                 <MobileProfileInfoRow
-                  icon={<NotificationsOutlinedIcon sx={{ fontSize: 22 }} />}
-                  label="В сети"
+                  icon={<FiberManualRecordRoundedIcon sx={{ fontSize: 14, color: '#22c55e' }} />}
+                  label="Сейчас в сети"
                   value={String(onlineCount)}
+                  onClick={() => setAssetKind('member')}
                 />
               </>
             )}
@@ -1807,28 +1909,8 @@ export default function ChatContextPanel({
             <MobileProfileInfoRow
               icon={<NotificationsOutlinedIcon sx={{ fontSize: 22 }} />}
               label="Уведомления"
-              value="Уведомления"
-              trailing={(
-                <Switch
-                  checked={!activeConversation?.is_muted}
-                  onChange={(event) => onUpdateConversationSettings?.({ is_muted: !event.target.checked })}
-                  disabled={settingsUpdating}
-                  sx={{
-                    mr: -0.5,
-                    '& .MuiSwitch-switchBase.Mui-checked': {
-                      color: 'var(--chat-sheet-panel-accent)',
-                    },
-                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                      bgcolor: 'var(--chat-sheet-panel-accent)',
-                      opacity: 1,
-                    },
-                    '& .MuiSwitch-track': {
-                      bgcolor: 'var(--chat-sheet-panel-soft)',
-                      opacity: 1,
-                    },
-                  }}
-                />
-              )}
+              value={activeConversation?.is_muted ? 'Отключены' : 'Все сообщения'}
+              onClick={(event) => setNotifyMenuAnchor(event.currentTarget)}
             />
           </Box>
 
@@ -1867,78 +1949,34 @@ export default function ChatContextPanel({
             onTouchEnd={handleMobileTabTouchEnd}
             sx={{ minHeight: 220, bgcolor: 'var(--chat-sheet-panel-bg)' }}
           >
-            {attachmentsLoading && (assetKind === 'image' || assetKind === 'file') ? (
-              assetKind === 'image' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
+            {attachmentsLoading && (assetKind === 'media' || assetKind === 'file') ? (
+              assetKind === 'media' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
             ) : null}
 
-            {!attachmentsLoading && assetKind === 'image' ? (
-              attachmentItems.length === 0 ? (
-                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                  Нет фото
-                </Typography>
-              ) : (
-                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
-                  {attachmentItems.map((item) => {
-                    const fileUrl = normalizeChatAttachmentUrl(item?.variant_urls?.thumb || item?.variant_urls?.preview)
-                      || buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
-                    const isVideo = isVideoAttachment(item);
-                    return (
-                      <Box
+            {!attachmentsLoading && assetKind === 'media' ? (
+              <>
+                <MediaKindTabs
+                  imageCount={assetCounts.image}
+                  videoCount={assetCounts.video}
+                  value={mediaSubKind}
+                  onChange={setMediaSubKind}
+                />
+                {attachmentItems.length === 0 ? (
+                  <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                    {mediaSubKind === 'video' ? 'Нет видео' : 'Нет фото'}
+                  </Typography>
+                ) : (
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+                    {attachmentItems.map((item) => (
+                      <ConversationMediaThumb
                         key={item.id}
-                        component="button"
-                        type="button"
-                        onClick={() => onOpenAttachmentPreview?.(item.message_id || item.messageId, item)}
-                        sx={{
-                          position: 'relative',
-                          aspectRatio: '1 / 1',
-                          p: 0,
-                          border: 'none',
-                          overflow: 'hidden',
-                          bgcolor: 'var(--chat-sheet-panel-cell)',
-                          cursor: 'pointer',
-                          '&:active': { opacity: 0.78 },
-                        }}
-                      >
-                        {isVideo ? (
-                          <Box
-                            component="video"
-                            src={fileUrl}
-                            muted
-                            playsInline
-                            preload="metadata"
-                            sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
-                        ) : (
-                          <Box
-                            component="img"
-                            src={fileUrl}
-                            alt={item.file_name || ''}
-                            sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
-                        )}
-                        {isVideo ? (
-                          <Box
-                            sx={{
-                              position: 'absolute',
-                              top: 8,
-                              right: 8,
-                              px: 0.7,
-                              py: 0.3,
-                              borderRadius: 1,
-                              bgcolor: 'var(--chat-sheet-panel-overlay)',
-                              color: 'var(--chat-sheet-panel-text)',
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                            }}
-                          >
-                            Видео
-                          </Box>
-                        ) : null}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              )
+                        item={item}
+                        onOpen={onOpenAttachmentPreview}
+                      />
+                    ))}
+                  </Box>
+                )}
+              </>
             ) : null}
 
             {!attachmentsLoading && assetKind === 'file' ? (
@@ -2223,9 +2261,21 @@ export default function ChatContextPanel({
           ) : null}
           {isGroup && currentMemberRole !== 'owner' ? (
             <MenuItem onClick={handleLeaveGroup} sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}>
-              Выйти из группы
+              Покинуть беседу
             </MenuItem>
           ) : null}
+        </Menu>
+        <Menu
+          anchorEl={notifyMenuAnchor}
+          open={Boolean(notifyMenuAnchor)}
+          onClose={() => setNotifyMenuAnchor(null)}
+        >
+          <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: false }); }}>
+            Все сообщения
+          </MenuItem>
+          <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: true }); }}>
+            Отключить
+          </MenuItem>
         </Menu>
         {memberActionsMenu}
       </Box>
@@ -2248,20 +2298,23 @@ export default function ChatContextPanel({
       }}
     >
       {/* Шапка */}
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.5, borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
-        <IconButton onClick={embedded ? onClose : onToggleOpen} sx={{ color: 'var(--chat-sheet-panel-text)' }}>
-          {embedded ? <CloseRoundedIcon /> : <ChevronRightRoundedIcon />}
-        </IconButton>
-        <Typography sx={{ fontWeight: 700 }}>Информация</Typography>
-        <Box sx={{ width: 36 }} />
-      </Box>
+      <ChatRightPanelHeader
+        title="Информация"
+        onClose={embedded ? onClose : onToggleOpen}
+        closeLabel="Закрыть информацию"
+        actions={(
+          <IconButton aria-label="Ещё" onClick={(event) => setInfoMenuAnchorEl(event.currentTarget)} sx={{ width: 44, height: 44 }}>
+            <MoreVertRoundedIcon />
+          </IconButton>
+        )}
+      />
 
       {/* Профиль */}
-      <Box sx={{ px: 2, py: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5, borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+      <Box sx={{ px: 2, py: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
         <ConversationAvatar
           conversation={activeConversation}
           online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
-          size={120}
+          size={80}
         />
         <Typography sx={{ fontWeight: 700, fontSize: '1.2rem' }}>
           {activeConversation?.title || 'Без имени'}
@@ -2296,16 +2349,15 @@ export default function ChatContextPanel({
                 Переименовать
               </Button>
             ) : null}
-            {currentMemberRole !== 'owner' ? (
+            {canManageMembers ? (
               <Button
                 size="small"
                 variant="outlined"
-                color="error"
-                onClick={handleLeaveGroup}
+                onClick={() => setAddMembersOpen(true)}
                 disabled={groupActionBusy}
                 sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
               >
-                Выйти
+                Добавить
               </Button>
             ) : null}
           </Stack>
@@ -2353,27 +2405,38 @@ export default function ChatContextPanel({
           </>
         ) : (
           <>
-            <InfoRowTelegram
-              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+            <InfoNavRow
+              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20 }} />}
               label="Участники"
-              value={String(Number(activeConversation?.member_count || participants.length || 0))}
+              value={Number(activeConversation?.member_count || participants.length || 0)}
+              onClick={() => setAssetKind('member')}
             />
-            <InfoRowTelegram
-              icon={<NotificationsOutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
-              label="В сети"
-              value={String(onlineCount)}
+            <InfoNavRow
+              icon={<FiberManualRecordRoundedIcon sx={{ fontSize: 14, color: '#22c55e' }} />}
+              label="Сейчас в сети"
+              value={onlineCount}
+              onClick={() => setAssetKind('member')}
             />
           </>
         )}
 
         {/* Уведомления */}
         <Box
+          component="button"
+          type="button"
+          onClick={(event) => setNotifyMenuAnchor(event.currentTarget)}
           sx={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            width: '100%',
             px: 3,
             py: 2,
+            border: 0,
+            bgcolor: 'transparent',
+            color: 'inherit',
+            cursor: 'pointer',
+            minHeight: 44,
             borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
           }}
         >
@@ -2383,27 +2446,17 @@ export default function ChatContextPanel({
               Уведомления
             </Typography>
           </Stack>
-          <Switch
-            checked={!activeConversation?.is_muted}
-            onChange={(e) => onUpdateConversationSettings?.({ is_muted: !e.target.checked })}
-            sx={{
-              '& .MuiSwitch-switchBase.Mui-checked': { color: 'var(--chat-sheet-panel-accent)' },
-              '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: 'var(--chat-sheet-panel-accent)' },
-              '& .MuiSwitch-track': {
-                bgcolor: 'var(--chat-sheet-panel-soft)',
-                opacity: 1,
-              },
-            }}
-          />
+          <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontWeight: 700 }}>
+            {activeConversation?.is_muted ? 'Отключены' : 'Все сообщения'}
+          </Typography>
         </Box>
 
         {/* Медиа и содержимое — табы как в Telegram */}
         <Box sx={{ borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
           {/* Табы */}
-          <Box sx={{ display: 'flex', borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)', overflowX: 'auto' }}>
+          <Box sx={{ display: 'flex', borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)', overflowX: 'hidden' }}>
             {[
-              { key: 'image', label: 'Фото', count: assetCounts.image },
-              { key: 'video', label: 'Видео', count: assetCounts.video },
+              { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
               { key: 'file', label: 'Файлы', count: assetCounts.file },
               { key: 'link', label: 'Ссылки', count: linkItems.length },
               { key: 'task', label: 'Задачи', count: assetCounts.task },
@@ -2453,59 +2506,33 @@ export default function ChatContextPanel({
 
           {/* Сетка медиа / список ссылок и задач */}
           <Box sx={{ px: 1, py: 1, minHeight: 120 }}>
-            {assetKind === 'image' || assetKind === 'video' ? (
-              /* Сетка фото/видео */
-              attachmentItems.length === 0 ? (
-                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                  {assetKind === 'image' ? 'Нет фото' : 'Нет видео'}
-                </Typography>
-              ) : (
-                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0.5 }}>
-                  {attachmentItems
-                    .filter((item) => {
-                      if (assetKind === 'video') return isVideoAttachment(item);
-                      return isImageAttachment(item);
-                    })
-                    .map((item) => (
-                      <Box
+            {assetKind === 'media' || assetKind === 'image' || assetKind === 'video' ? (
+              <>
+                <MediaKindTabs
+                  imageCount={assetCounts.image}
+                  videoCount={assetCounts.video}
+                  value={assetKind === 'media' ? mediaSubKind : assetKind}
+                  onChange={(next) => {
+                    if (assetKind !== 'media') setAssetKind('media');
+                    setMediaSubKind(next);
+                  }}
+                />
+                {attachmentItems.length === 0 ? (
+                  <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                    {mediaSubKind === 'video' ? 'Нет видео' : 'Нет фото'}
+                  </Typography>
+                ) : (
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0.5 }}>
+                    {attachmentItems.map((item) => (
+                      <ConversationMediaThumb
                         key={item.id}
-                        onClick={() => onOpenAttachmentPreview?.(item.message_id, item)}
-                        sx={{
-                          position: 'relative',
-                          aspectRatio: '1',
-                          borderRadius: 0.5,
-                          overflow: 'hidden',
-                          cursor: 'pointer',
-                          bgcolor: 'var(--chat-sheet-panel-card)',
-                          '&:active': { opacity: 0.8 },
-                        }}
-                      >
-                        {isImageAttachment(item) || isVideoAttachment(item) ? (
-                          <Box
-                            component="img"
-                            src={normalizeChatAttachmentUrl(item?.variant_urls?.thumb || item?.variant_urls?.preview)
-                              || buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true })}
-                            alt={item.file_name || ''}
-                            sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
-                        ) : (
-                          <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', px: 1 }}>
-                            <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontWeight: 700, fontSize: '0.7rem' }}>
-                              {getFileExtension(item.file_name)}
-                            </Typography>
-                          </Stack>
-                        )}
-                        {isVideoAttachment(item) && (
-                          <Box sx={{ position: 'absolute', bottom: 4, right: 4 }}>
-                            <Box sx={{ bgcolor: 'var(--chat-sheet-panel-overlay)', px: 0.5, py: 0.25, borderRadius: 0.5 }}>
-                              <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.65rem', fontWeight: 600 }}>0:06</Typography>
-                            </Box>
-                          </Box>
-                        )}
-                      </Box>
+                        item={item}
+                        onOpen={onOpenAttachmentPreview}
+                      />
                     ))}
-                </Box>
-              )
+                  </Box>
+                )}
+              </>
             ) : assetKind === 'file' ? (
               /* Список файлов */
               attachmentItems.length === 0 ? (
@@ -2714,6 +2741,21 @@ export default function ChatContextPanel({
         </Box>
       </Box>
 
+      {isGroup && currentMemberRole !== 'owner' ? (
+        <Box sx={{ px: 1.5, py: 1.25, borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+          <Button
+            fullWidth
+            color="error"
+            variant="text"
+            onClick={handleLeaveGroup}
+            disabled={groupActionBusy}
+            sx={{ textTransform: 'none', fontWeight: 800, minHeight: 44 }}
+          >
+            Покинуть беседу
+          </Button>
+        </Box>
+      ) : null}
+
       {/* Диалог добавления участников */}
       <Dialog
         open={addMembersOpen}
@@ -2870,6 +2912,18 @@ export default function ChatContextPanel({
       </Dialog>
 
       {memberActionsMenu}
+      <Menu
+        anchorEl={notifyMenuAnchor}
+        open={Boolean(notifyMenuAnchor)}
+        onClose={() => setNotifyMenuAnchor(null)}
+      >
+        <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: false }); }}>
+          Все сообщения
+        </MenuItem>
+        <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: true }); }}>
+          Отключить
+        </MenuItem>
+      </Menu>
     </Box>
   );
 }

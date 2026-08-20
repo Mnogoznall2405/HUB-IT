@@ -6,7 +6,8 @@ import os
 import re
 import sqlite3
 import threading
-from dataclasses import dataclass
+from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -42,6 +43,99 @@ def _s(v: Any) -> str:
 def _h(v: Any) -> str:
     raw = _s(v).lower().replace("-", " ").replace("_", " ").replace("/", " ")
     return re.sub(r"\s+", " ", raw).strip()
+
+
+_EQUIPMENT_HEADER_SCAN_ROWS = 15
+_EQUIPMENT_SWITCH_SCAN_ROWS = 200
+_EQUIPMENT_EMPTY_PORT_STOP = 80
+_EQUIPMENT_MAX_HEADER_COLS = 80
+
+
+def _is_tabular_worksheet(ws: Any) -> bool:
+    return hasattr(ws, "cell") and getattr(ws, "max_column", None) is not None
+
+
+def _header_map_for_row(ws: Any, row_no: int) -> dict[str, int]:
+    last_col = min(int(ws.max_column or 1), _EQUIPMENT_MAX_HEADER_COLS)
+    headers: dict[str, int] = {}
+    for column in range(1, last_col + 1):
+        key = _h(ws.cell(row_no, column).value)
+        if key and key not in headers:
+            headers[key] = column
+    return headers
+
+
+def _equipment_port_column(headers: dict[str, int]) -> Optional[int]:
+    return headers.get("port") or headers.get("port name")
+
+
+def _find_equipment_headers(ws: Any) -> tuple[dict[str, int], int]:
+    max_row = max(1, int(ws.max_row or 1))
+    scan_to = min(_EQUIPMENT_HEADER_SCAN_ROWS, max_row)
+    for row_no in range(1, scan_to + 1):
+        headers = _header_map_for_row(ws, row_no)
+        if _equipment_port_column(headers) is not None:
+            return headers, row_no
+    return _header_map_for_row(ws, 1), 1
+
+
+def _first_nonempty_cell(ws: Any, column: int, start_row: int, *, scan_rows: int) -> str:
+    max_row = int(ws.max_row or start_row)
+    last_row = min(max_row, start_row + max(1, scan_rows) - 1)
+    for row_no in range(start_row, last_row + 1):
+        value = _s(ws.cell(row_no, column).value)
+        if value:
+            return value
+    return ""
+
+
+def _equipment_switch_column(headers: dict[str, int]) -> Optional[int]:
+    col = headers.get("swich") or headers.get("switch") or headers.get("asw")
+    return int(col) if col else None
+
+
+def _read_equipment_data_rows(
+    ws: Any,
+    headers: dict[str, int],
+    header_row: int,
+    col_port: int,
+    col_switch: Optional[int],
+) -> list[dict[str, Any]]:
+    col_name = headers.get("name")
+    col_ip = headers.get("ip address") or headers.get("ip")
+    col_mac = headers.get("mac address") or headers.get("mac")
+    col_vlan = headers.get("vlan")
+    col_pp = headers.get("port p p")
+    col_loc = headers.get("location")
+    last_switch = ""
+    empty_streak = 0
+    rows: list[dict[str, Any]] = []
+    max_row = int(ws.max_row or header_row)
+    for row_no in range(header_row + 1, max_row + 1):
+        port_name = _s(ws.cell(row_no, col_port).value)
+        switch_raw = _s(ws.cell(row_no, int(col_switch)).value) if col_switch else ""
+        if switch_raw:
+            last_switch = switch_raw
+        if not port_name:
+            empty_streak += 1
+            if empty_streak >= _EQUIPMENT_EMPTY_PORT_STOP:
+                break
+            continue
+        empty_streak = 0
+        rows.append(
+            {
+                "row_no": int(row_no),
+                "port_name": port_name,
+                "switch_value": last_switch,
+                "name_raw": _s(ws.cell(row_no, col_name).value) if col_name else "",
+                "ip_raw": _s(ws.cell(row_no, col_ip).value) if col_ip else "",
+                "mac_raw": _s(ws.cell(row_no, col_mac).value) if col_mac else "",
+                "vlan_raw": _s(ws.cell(row_no, col_vlan).value) if col_vlan else "",
+                "pp_raw": _s(ws.cell(row_no, col_pp).value) if col_pp else "",
+                "loc_raw": _s(ws.cell(row_no, col_loc).value) if col_loc else "",
+            }
+        )
+    return rows
 
 
 
@@ -473,6 +567,8 @@ class NetworkSchemaConfigurationError(RuntimeError):
 @dataclass
 class ImportSummary:
     sheets_total: int = 0
+    sheets_imported: int = 0
+    sheets_skipped: int = 0
     devices_created: int = 0
     devices_updated: int = 0
     ports_total: int = 0
@@ -480,10 +576,13 @@ class ImportSummary:
     ports_updated: int = 0
     maps_created: int = 0
     maps_updated: int = 0
+    skipped_sheets: list[str] = field(default_factory=list)
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "sheets_total": self.sheets_total,
+            "sheets_imported": self.sheets_imported,
+            "sheets_skipped": self.sheets_skipped,
             "devices_created": self.devices_created,
             "devices_updated": self.devices_updated,
             "ports_total": self.ports_total,
@@ -491,6 +590,7 @@ class ImportSummary:
             "ports_updated": self.ports_updated,
             "maps_created": self.maps_created,
             "maps_updated": self.maps_updated,
+            "skipped_sheets": list(self.skipped_sheets),
         }
 
 
@@ -1371,9 +1471,14 @@ class NetworkService:
         now = _now()
         mac_raw = _normalize_mac_multiline(row["endpoint_mac_raw"])
         existing = conn.execute(
-            "SELECT id FROM network_sockets WHERE branch_id=? AND socket_code=?",
+            "SELECT id, device_id FROM network_sockets WHERE branch_id=? AND socket_code=?",
             (int(row["branch_id"]), socket_code),
         ).fetchone()
+        if existing is not None:
+            existing_device_id = existing["device_id"]
+            if existing_device_id is not None and int(existing_device_id) != int(row["device_id"]):
+                # Same PORT P/P on another switch must not steal the wall socket or map point.
+                return None
 
         if existing is None:
             conn.execute(
@@ -1502,7 +1607,7 @@ class NetworkService:
                         (int(socket_id), _now(), point_id),
                     )
                     self._sync_map_points_by_socket_ids_in_conn(conn, socket_ids=[int(socket_id)])
-                    continue
+                continue
             socket_code = self._canonical_socket_code(point["patch_panel_port"])
             if not socket_code:
                 continue
@@ -2088,6 +2193,8 @@ class NetworkService:
                 device_col = headers.get("asw") or headers.get("device") or headers.get("device code") or headers.get("switch") or headers.get("swich")
                 port_col = headers.get("port") or headers.get("port name")
 
+                last_device = ""
+                sheet_title = _s(getattr(worksheet, "title", "") or "")
                 for row_no in range(2, worksheet.max_row + 1):
                     socket_raw = _s(worksheet.cell(row_no, socket_col).value)
                     socket_code = self._canonical_socket_code(socket_raw)
@@ -2098,7 +2205,10 @@ class NetworkService:
                     mac_candidates = _extract_mac_candidates(mac_raw_text)
                     mac_address = mac_raw_text or (mac_candidates[0] if mac_candidates else "")
                     fio = _s(worksheet.cell(row_no, fio_col).value) if fio_col else ""
-                    device_code = _s(worksheet.cell(row_no, device_col).value) if device_col else ""
+                    device_raw = _s(worksheet.cell(row_no, device_col).value) if device_col else ""
+                    if device_raw:
+                        last_device = device_raw
+                    device_code = device_raw or last_device or sheet_title
                     port_name = _s(worksheet.cell(row_no, port_col).value) if port_col else ""
 
                     port_row = None
@@ -2114,10 +2224,21 @@ class NetworkService:
                             (int(branch_id), device_code, port_name),
                         ).fetchone()
 
+                    bind_port_id = int(port_row["id"]) if port_row is not None else None
+                    bind_device_id = int(port_row["device_id"]) if port_row is not None else None
                     existing = conn.execute(
                         "SELECT * FROM network_sockets WHERE branch_id=? AND socket_code=?",
                         (int(branch_id), socket_code),
                     ).fetchone()
+                    if existing is not None:
+                        existing_device_id = existing["device_id"]
+                        if (
+                            existing_device_id is not None
+                            and bind_device_id is not None
+                            and int(existing_device_id) != int(bind_device_id)
+                        ):
+                            bind_port_id = None
+                            bind_device_id = None
                     if existing is None:
                         conn.execute(
                             """
@@ -2131,8 +2252,8 @@ class NetworkService:
                                 socket_code,
                                 panel_no,
                                 port_no,
-                                int(port_row["id"]) if port_row is not None else None,
-                                int(port_row["device_id"]) if port_row is not None else None,
+                                bind_port_id,
+                                bind_device_id,
                                 (mac_address or (_s(port_row["endpoint_mac_raw"]) if port_row is not None else "")) or None,
                                 fio or None,
                                 "template" if fio else None,
@@ -2162,8 +2283,8 @@ class NetworkService:
                             (
                                 panel_no,
                                 port_no,
-                                int(port_row["id"]) if port_row is not None else None,
-                                int(port_row["device_id"]) if port_row is not None else None,
+                                bind_port_id,
+                                bind_device_id,
                                 mac_address or (_s(port_row["endpoint_mac_raw"]) if port_row is not None else None),
                                 fio or None,
                                 fio or None,
@@ -2177,11 +2298,11 @@ class NetworkService:
                         )
                         updated += 1
 
-                    if port_row is not None:
+                    if bind_port_id is not None:
                         linked_ports += 1
                         conn.execute(
                             "UPDATE network_map_points SET socket_id=?, updated_at=? WHERE port_id=? AND socket_id IS NULL",
-                            (socket_id, _now(), int(port_row["id"])),
+                            (socket_id, _now(), bind_port_id),
                         )
 
             self._sync_all_sockets_in_conn(conn, branch_id=int(branch_id))
@@ -4198,8 +4319,9 @@ class NetworkService:
         actor_role: Optional[str],
     ) -> dict[str, Any]:
         """Import devices and ports from a multi-sheet Excel file into an existing branch.
-        Each sheet represents a network device (switch). Rows are ports.
-        The 'Port P/P' column links ports to existing sockets."""
+        Each sheet is a table of ports. Rows with different Switch/ASW values become
+        separate devices (Aruba 1, Aruba 2, …). Colliding names across sheets stay
+        disambiguated by sheet title. Port P/P links ports to sockets."""
         if openpyxl is None:
             raise RuntimeError("openpyxl is not available")
         if not file_bytes:
@@ -4208,6 +4330,7 @@ class NetworkService:
         summary = ImportSummary()
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         summary.sheets_total = len(wb.sheetnames)
+        sheet_units = self._expand_equipment_import_units(self._plan_equipment_sheets(wb))
 
         with self._lock, self._connect() as conn:
             branch = conn.execute("SELECT * FROM network_branches WHERE id=?", (int(branch_id),)).fetchone()
@@ -4216,115 +4339,113 @@ class NetworkService:
 
             now = _now()
 
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                headers = {_h(ws.cell(1, c).value): c for c in range(1, ws.max_column + 1)}
-
-                col_port = headers.get("port")
-                if col_port is None:
-                    # Sheet has no "Port" column — skip
+            for unit in sheet_units:
+                sheet_name = str(unit["sheet_name"])
+                if unit.get("skip_reason"):
+                    summary.sheets_skipped += 1
+                    summary.skipped_sheets.append(sheet_name)
                     continue
 
-                col_name = headers.get("name")
-                col_ip = headers.get("ip address") or headers.get("ip")
-                col_mac = headers.get("mac address") or headers.get("mac")
-                col_vlan = headers.get("vlan")
-                col_pp = headers.get("port p p")
-                col_loc = headers.get("location")
-                col_switch = headers.get("swich") or headers.get("switch") or headers.get("asw")
+                for group in unit.get("groups") or []:
+                    device_code = _s(group["device_code"]) or _s(sheet_name)
+                    model = _s(group.get("model")) or None
+                    sheet_group_count = int(group.get("sheet_group_count") or 1)
 
-                # Determine device_code: prefer "Swich" column value from first data row, fallback to sheet_name
-                device_code = _s(sheet_name)
-                if col_switch:
-                    for rn in range(2, ws.max_row + 1):
-                        val = _s(ws.cell(rn, col_switch).value)
-                        if val:
-                            device_code = val
-                            break
-
-                existing_device = conn.execute(
-                    "SELECT id FROM network_devices WHERE branch_id=? AND device_code=?",
-                    (branch_id, device_code),
-                ).fetchone()
-                if existing_device is None:
-                    conn.execute(
-                        """
-                        INSERT INTO network_devices(branch_id, device_code, device_type, sheet_name, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (branch_id, device_code, "switch", _s(sheet_name), now, now),
-                    )
-                    device_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-                    summary.devices_created += 1
-                else:
-                    device_id = int(existing_device["id"])
-                    conn.execute(
-                        "UPDATE network_devices SET sheet_name=?, updated_at=? WHERE id=?",
-                        (_s(sheet_name), now, device_id),
-                    )
-                    summary.devices_updated += 1
-
-                for row_no in range(2, ws.max_row + 1):
-                    port_name = _s(ws.cell(row_no, col_port).value)
-                    if not port_name:
-                        continue
-
-                    name_raw = _s(ws.cell(row_no, col_name).value) if col_name else ""
-                    ip_raw = _s(ws.cell(row_no, col_ip).value) if col_ip else ""
-                    mac_raw = _s(ws.cell(row_no, col_mac).value) if col_mac else ""
-                    vlan_raw = _s(ws.cell(row_no, col_vlan).value) if col_vlan else ""
-                    pp_raw = _s(ws.cell(row_no, col_pp).value) if col_pp else ""
-                    loc_raw = _s(ws.cell(row_no, col_loc).value) if col_loc else ""
-
-                    cnt, occ = _occupied(name_raw, ip_raw, mac_raw)
-                    row_hash = hashlib.sha1(
-                        f"{sheet_name}|{row_no}|{port_name}|{name_raw}|{ip_raw}|{mac_raw}|{vlan_raw}|{pp_raw}|{loc_raw}".encode("utf-8", errors="ignore")
-                    ).hexdigest()
-
-                    ex_port = conn.execute(
-                        "SELECT id FROM network_ports WHERE device_id=? AND port_name=?",
-                        (device_id, port_name),
+                    existing_device = conn.execute(
+                        "SELECT id FROM network_devices WHERE branch_id=? AND device_code=?",
+                        (branch_id, device_code),
                     ).fetchone()
-
-                    if ex_port is None:
+                    if existing_device is None and sheet_group_count == 1:
+                        existing_device = conn.execute(
+                            "SELECT id FROM network_devices WHERE branch_id=? AND sheet_name=?",
+                            (branch_id, _s(sheet_name)),
+                        ).fetchone()
+                    if existing_device is None:
                         conn.execute(
                             """
-                            INSERT INTO network_ports(
-                                device_id, port_name, patch_panel_port, location_code,
-                                vlan_raw, vlan_normalized_json,
-                                endpoint_name_raw, endpoint_ip_raw, endpoint_mac_raw,
-                                endpoint_count, is_occupied, row_source_hash, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO network_devices(
+                                branch_id, device_code, device_type, model, sheet_name, created_at, updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (
-                                device_id, port_name, pp_raw or None, loc_raw or None,
-                                vlan_raw or None,
-                                json.dumps(_vlans(vlan_raw), ensure_ascii=False),
-                                name_raw or None, ip_raw or None, mac_raw or None,
-                                cnt, occ, row_hash, now, now,
-                            ),
+                            (branch_id, device_code, "switch", model, _s(sheet_name), now, now),
                         )
-                        summary.ports_created += 1
+                        device_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                        summary.devices_created += 1
                     else:
+                        device_id = int(existing_device["id"])
                         conn.execute(
                             """
-                            UPDATE network_ports SET
-                                patch_panel_port=?, location_code=?, vlan_raw=?, vlan_normalized_json=?,
-                                endpoint_name_raw=?, endpoint_ip_raw=?, endpoint_mac_raw=?,
-                                endpoint_count=?, is_occupied=?, row_source_hash=?, updated_at=?
-                            WHERE device_id=? AND port_name=?
+                            UPDATE network_devices
+                            SET sheet_name=?, device_code=?, model=COALESCE(?, model), updated_at=?
+                            WHERE id=?
                             """,
-                            (
-                                pp_raw or None, loc_raw or None,
-                                vlan_raw or None,
-                                json.dumps(_vlans(vlan_raw), ensure_ascii=False),
-                                name_raw or None, ip_raw or None, mac_raw or None,
-                                cnt, occ, row_hash, now,
-                                device_id, port_name,
-                            ),
+                            (_s(sheet_name), device_code, model, now, device_id),
                         )
-                        summary.ports_updated += 1
-                    summary.ports_total += 1
+                        summary.devices_updated += 1
+
+                    for row in group.get("rows") or []:
+                        port_name = _s(row.get("port_name"))
+                        if not port_name:
+                            continue
+                        name_raw = _s(row.get("name_raw"))
+                        ip_raw = _s(row.get("ip_raw"))
+                        mac_raw = _s(row.get("mac_raw"))
+                        vlan_raw = _s(row.get("vlan_raw"))
+                        pp_raw = _s(row.get("pp_raw"))
+                        loc_raw = _s(row.get("loc_raw"))
+                        row_no = int(row.get("row_no") or 0)
+                        cnt, occ = _occupied(name_raw, ip_raw, mac_raw)
+                        row_hash = hashlib.sha1(
+                            f"{sheet_name}|{row_no}|{port_name}|{name_raw}|{ip_raw}|{mac_raw}|{vlan_raw}|{pp_raw}|{loc_raw}".encode("utf-8", errors="ignore")
+                        ).hexdigest()
+
+                        ex_port = conn.execute(
+                            "SELECT id FROM network_ports WHERE device_id=? AND port_name=?",
+                            (device_id, port_name),
+                        ).fetchone()
+
+                        if ex_port is None:
+                            conn.execute(
+                                """
+                                INSERT INTO network_ports(
+                                    device_id, port_name, patch_panel_port, location_code,
+                                    vlan_raw, vlan_normalized_json,
+                                    endpoint_name_raw, endpoint_ip_raw, endpoint_mac_raw,
+                                    endpoint_count, is_occupied, row_source_hash, created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    device_id, port_name, pp_raw or None, loc_raw or None,
+                                    vlan_raw or None,
+                                    json.dumps(_vlans(vlan_raw), ensure_ascii=False),
+                                    name_raw or None, ip_raw or None, mac_raw or None,
+                                    cnt, occ, row_hash, now, now,
+                                ),
+                            )
+                            summary.ports_created += 1
+                        else:
+                            conn.execute(
+                                """
+                                UPDATE network_ports SET
+                                    patch_panel_port=?, location_code=?, vlan_raw=?, vlan_normalized_json=?,
+                                    endpoint_name_raw=?, endpoint_ip_raw=?, endpoint_mac_raw=?,
+                                    endpoint_count=?, is_occupied=?, row_source_hash=?, updated_at=?
+                                WHERE device_id=? AND port_name=?
+                                """,
+                                (
+                                    pp_raw or None, loc_raw or None,
+                                    vlan_raw or None,
+                                    json.dumps(_vlans(vlan_raw), ensure_ascii=False),
+                                    name_raw or None, ip_raw or None, mac_raw or None,
+                                    cnt, occ, row_hash, now,
+                                    device_id, port_name,
+                                ),
+                            )
+                            summary.ports_updated += 1
+                        summary.ports_total += 1
+
+                summary.sheets_imported += 1
 
             # After importing all devices/ports, sync sockets ↔ ports via patch_panel_port
             self._sync_all_sockets_in_conn(conn, branch_id=branch_id)
@@ -4347,6 +4468,96 @@ class NetworkService:
             "file_name": _s(file_name),
             "summary": summary.as_dict(),
         }
+
+    @staticmethod
+    def _plan_equipment_sheets(workbook: Any) -> list[dict[str, Any]]:
+        plans: list[dict[str, Any]] = []
+        for sheet_name in list(getattr(workbook, "sheetnames", []) or []):
+            worksheet = workbook[sheet_name]
+            if not _is_tabular_worksheet(worksheet):
+                plans.append({"sheet_name": _s(sheet_name), "skip_reason": "not_worksheet"})
+                continue
+            headers, header_row = _find_equipment_headers(worksheet)
+            col_port = _equipment_port_column(headers)
+            if col_port is None:
+                plans.append({"sheet_name": _s(sheet_name), "skip_reason": "no_port_column"})
+                continue
+            col_switch = _equipment_switch_column(headers)
+            switch_value = (
+                _first_nonempty_cell(
+                    worksheet,
+                    int(col_switch),
+                    header_row + 1,
+                    scan_rows=_EQUIPMENT_SWITCH_SCAN_ROWS,
+                )
+                if col_switch
+                else ""
+            )
+            sheet_title = _s(sheet_name)
+            plans.append(
+                {
+                    "sheet_name": sheet_title,
+                    "worksheet": worksheet,
+                    "headers": headers,
+                    "header_row": header_row,
+                    "col_port": int(col_port),
+                    "candidate_code": switch_value or sheet_title,
+                    "model": switch_value or None,
+                    "skip_reason": None,
+                }
+            )
+        return plans
+
+    @staticmethod
+    def _expand_equipment_import_units(sheet_plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        units: list[dict[str, Any]] = []
+        for plan in sheet_plans:
+            sheet_name = _s(plan.get("sheet_name"))
+            if plan.get("skip_reason"):
+                units.append({"sheet_name": sheet_name, "skip_reason": plan.get("skip_reason"), "groups": []})
+                continue
+            rows = _read_equipment_data_rows(
+                plan["worksheet"],
+                plan["headers"],
+                int(plan["header_row"]),
+                int(plan["col_port"]),
+                _equipment_switch_column(plan["headers"]),
+            )
+            grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+            for row in rows:
+                candidate = _s(row.get("switch_value")) or sheet_name
+                grouped.setdefault(candidate, []).append(row)
+            units.append(
+                {
+                    "sheet_name": sheet_name,
+                    "skip_reason": None,
+                    "groups": [
+                        {
+                            "sheet_name": sheet_name,
+                            "switch_value": _s((rows_for_switch[0] or {}).get("switch_value")) if rows_for_switch else "",
+                            "candidate": candidate,
+                            "rows": rows_for_switch,
+                        }
+                        for candidate, rows_for_switch in grouped.items()
+                    ],
+                }
+            )
+
+        all_groups = [group for unit in units for group in (unit.get("groups") or [])]
+        candidate_counts = Counter(_s(group.get("candidate")) for group in all_groups)
+        for unit in units:
+            groups = unit.get("groups") or []
+            sheet_group_count = len(groups)
+            for group in groups:
+                candidate = _s(group.get("candidate"))
+                sheet_name = _s(group.get("sheet_name"))
+                if candidate_counts[candidate] > 1:
+                    group["device_code"] = sheet_name if sheet_group_count == 1 else f"{sheet_name} · {candidate}"
+                else:
+                    group["device_code"] = candidate or sheet_name
+                group["model"] = _s(group.get("switch_value")) or None
+                group["sheet_group_count"] = sheet_group_count
+        return units
 
 
 network_service = NetworkService()

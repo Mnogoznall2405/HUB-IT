@@ -1,4 +1,4 @@
-import { startTransition, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -28,6 +28,11 @@ import {
   readSessionStorageValue,
   resolveRestoredMobileView,
 } from './chatSessionStorage';
+import {
+  CHAT_WIDE_DESKTOP_EXIT_MEDIA,
+  CHAT_WIDE_DESKTOP_MEDIA,
+  resolveWideDesktopLayout,
+} from './chatRightPanelLayout';
 import useChatPageRefs from './useChatPageRefs';
 
 function useChatMessageTextState(latestMessageTextRef) {
@@ -66,7 +71,16 @@ export default function useChatPageInitialState() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
-  const isWideDesktop = useMediaQuery('(min-width:1200px)');
+  const matchesWideDesktopEnter = useMediaQuery(CHAT_WIDE_DESKTOP_MEDIA);
+  const matchesWideDesktopExit = useMediaQuery(CHAT_WIDE_DESKTOP_EXIT_MEDIA);
+  const [isWideDesktop, setIsWideDesktop] = useState(matchesWideDesktopEnter);
+  useEffect(() => {
+    setIsWideDesktop((current) => resolveWideDesktopLayout({
+      currentlyWide: current,
+      matchesEnter: matchesWideDesktopEnter,
+      matchesExit: matchesWideDesktopExit,
+    }));
+  }, [matchesWideDesktopEnter, matchesWideDesktopExit]);
   const compactDesktopMedia = useMediaQuery('(min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)');
   const ui = useMemo(
     () => buildChatUiTokens(theme, {

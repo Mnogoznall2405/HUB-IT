@@ -33,6 +33,8 @@ export default function useTaskWorkflowActions({
 
   const [reviewTask, setReviewTask] = useState(null);
   const [reviewSaving, setReviewSaving] = useState(false);
+  const [closeTask, setCloseTask] = useState(null);
+  const [closeSaving, setCloseSaving] = useState(false);
   const [startingTaskId, setStartingTaskId] = useState('');
   const [reopenTargetTask, setReopenTargetTask] = useState(null);
   const [reopeningTaskId, setReopeningTaskId] = useState('');
@@ -65,7 +67,23 @@ export default function useTaskWorkflowActions({
     } finally {
       setReviewSaving(false);
     }
-  }, [handleWorkflowConflict, refreshTasksAndDetails, reviewSaving, reviewTask, setError]);
+  }, [handleWorkflowConflict, refreshTasksAndDetails, reviewSaving, reviewTask]);
+
+  const handleCloseTask = useCallback(async ({ comment = '' } = {}) => {
+    if (!closeTask?.id || closeSaving) return;
+    const closeTaskId = closeTask.id;
+    setCloseSaving(true);
+    try {
+      await hubTasksAPI.completeTask(closeTaskId, { comment });
+      setCloseTask(null);
+      await refreshTasksAndDetails(closeTaskId);
+      window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+    } catch (err) {
+      await handleWorkflowConflict(err, closeTaskId, 'Ошибка закрытия задачи');
+    } finally {
+      setCloseSaving(false);
+    }
+  }, [closeSaving, closeTask, handleWorkflowConflict, refreshTasksAndDetails]);
 
   const handleStartTask = async (taskId) => {
     const normalizedId = String(taskId || '').trim();
@@ -149,11 +167,15 @@ export default function useTaskWorkflowActions({
     reviewTask,
     setReviewTask,
     reviewSaving,
+    closeTask,
+    setCloseTask,
+    closeSaving,
     startingTaskId,
     reopenTargetTask,
     setReopenTargetTask,
     reopeningTaskId,
     handleReviewTask,
+    handleCloseTask,
     handleStartTask,
     handleOpenReopenTask,
     handleConfirmReopenTask,

@@ -4,6 +4,8 @@ import { alpha, useTheme } from '@mui/material/styles';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
 import { getOfficeAttachmentSourceKind } from './mailMessageFileActions';
 import MailOfficePreviewTeaser from './MailOfficePreviewTeaser';
+import { isNativeShellRuntime } from '../../lib/platform';
+import { getDesktopOfficeOpenLabel } from '../documentPreview/desktopOfficeOpen';
 
 const MailExcelPreviewGrid = lazy(() => import('./MailExcelPreviewGrid'));
 
@@ -58,6 +60,11 @@ export default function MailOfficeAttachmentInlinePreview({
     };
   }, [attachment, loadOfficeInlinePreview, message, sourceKind]);
 
+  const desktop = isNativeShellRuntime();
+  const actionLabel = desktop ? getDesktopOfficeOpenLabel(sourceKind) : 'Просмотреть';
+  const placeholderHint = desktop
+    ? `Нажмите «${actionLabel}», чтобы открыть оригинал`
+    : 'Наведите курсор и нажмите «Просмотреть» для полного просмотра';
   const placeholder = (
     <Stack
       spacing={1}
@@ -91,7 +98,7 @@ export default function MailOfficeAttachmentInlinePreview({
           textAlign: 'center',
         }}
       >
-        Наведите курсор и нажмите «Просмотреть» для полного просмотра
+        {placeholderHint}
       </Typography>
     </Stack>
   );
@@ -115,7 +122,7 @@ export default function MailOfficeAttachmentInlinePreview({
 
   return (
     <Box sx={{ width: 'min(100%, 520px)' }}>
-      <MailOfficePreviewTeaser onOpenFull={() => onOpenFull?.()}>
+      <MailOfficePreviewTeaser onOpenFull={() => onOpenFull?.()} actionLabel={actionLabel}>
         {body}
       </MailOfficePreviewTeaser>
     </Box>

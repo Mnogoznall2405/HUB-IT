@@ -1,4 +1,5 @@
 using System.Windows.Controls;
+using Hub.Desktop.Diagnostics;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
@@ -33,8 +34,10 @@ public sealed class DesktopWebViewHost : IDisposable
         try
         {
             var environment = await _environmentProvider.GetAsync(cancellationToken);
+            Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_environment_ready");
             cancellationToken.ThrowIfCancellationRequested();
             await view.EnsureCoreWebView2Async(environment);
+            Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_core_ready");
             cancellationToken.ThrowIfCancellationRequested();
             return view.CoreWebView2;
         }

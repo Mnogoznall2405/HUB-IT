@@ -19,6 +19,20 @@ settings.load_profile("itinvent")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "WEB-itinvent"))
 
+# MAIL-AUDIT-026: import-time MailService() must not hit live APP_DATABASE_URL.
+# load_dotenv does not override existing keys, so this wins over the root .env.
+# Opt out with PYTEST_USE_LIVE_APP_DATABASE=1 only for explicit live-DB suites.
+_PYTEST_USE_LIVE_APP_DB = str(os.getenv("PYTEST_USE_LIVE_APP_DATABASE") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if not _PYTEST_USE_LIVE_APP_DB:
+    _pytest_runtime = Path(__file__).resolve().parent.parent / ".pytest_runtime"
+    _pytest_runtime.mkdir(parents=True, exist_ok=True)
+    os.environ["APP_DATABASE_URL"] = f"sqlite:///{(_pytest_runtime / 'pytest_app.sqlite3').as_posix()}"
+
 
 @pytest.fixture
 def temp_dir():

@@ -112,11 +112,15 @@ export const myFilesAPI = {
     return response.data;
   },
   getPublicFile: async (token) => {
-    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}`);
+    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}`, {
+      suppressAuthRequired: true,
+    });
     return response.data;
   },
   getPublicPreviewMeta: async (token) => {
-    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}/preview`);
+    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}/preview`, {
+      suppressAuthRequired: true,
+    });
     return response.data;
   },
   buildPublicPreviewContentUrl: (token) => (

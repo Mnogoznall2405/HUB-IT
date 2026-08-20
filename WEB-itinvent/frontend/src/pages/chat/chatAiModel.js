@@ -174,7 +174,7 @@ export const buildAiSidebarRows = ({
         bot_id: String(bot?.id || '').trim(),
         conversation_id: conversationId,
         title: String(conversation?.title || bot?.title || 'AI').trim() || 'AI',
-        assistant_title: String(bot?.title || '').trim() || 'Личный AI',
+        assistant_title: String(bot?.title || '').trim() || 'HUB Ассистент',
         last_message_preview: String(conversation?.last_message_preview || '').trim(),
         last_message_at: conversation?.last_message_at || '',
         updated_at: conversation?.updated_at || '',

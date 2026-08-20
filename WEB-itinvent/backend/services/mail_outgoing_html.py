@@ -445,3 +445,27 @@ def build_outgoing_html_body(
         parts.append(signature_source)
 
     return wrap_outgoing_html_fragment("".join(parts))
+
+
+def extract_reply_new_body_html(body_html: Any) -> str:
+    """Keep only the new reply text so Exchange ReplyToItem can append the original."""
+    source = normalize_text(body_html)
+    if not source:
+        return ""
+
+    lowered = source.lower()
+    quoted_block_idx = lowered.find("data-mail-quoted-block")
+    if quoted_block_idx > 0:
+        tag_start = lowered.rfind("<", 0, quoted_block_idx + 1)
+        if tag_start > 0:
+            primary_html = source[:tag_start].rstrip()
+            if primary_html:
+                return primary_html
+
+    primary_html, quoted_html = split_outgoing_html_for_signature(
+        source,
+        prefer_blockquote_split=True,
+    )
+    if quoted_html and primary_html:
+        return primary_html
+    return source

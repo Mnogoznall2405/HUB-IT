@@ -36,6 +36,7 @@ export default function TasksDetailPanel() {
       canStartTask={detail.canStartTask}
       canSubmitTask={detail.canSubmitTask}
       canReviewTask={detail.canReviewTask}
+      canCloseTask={detail.canCloseTask}
       canReopenTask={detail.canReopenTask}
       getTransferActReminderLabel={getTransferActReminderLabel}
       isTransferActUploadTask={isTransferActUploadTask}
@@ -64,6 +65,7 @@ export default function TasksDetailPanel() {
       onReopenTask={detail.handleOpenReopenTask}
       onOpenSubmitTask={detail.setSubmitTask}
       onOpenReviewTask={detail.setReviewTask}
+      onOpenCloseTask={detail.setCloseTask}
       renderChecklist={detail.renderTaskChecklist}
     />
   );

@@ -526,8 +526,40 @@ export function TaskReviewDialog({ task, open, saving = false, onClose, onSubmit
       </DialogContent>
       <DialogActions sx={{ px: 2.2, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft }}>
         <Button onClick={onClose} disabled={saving}>Отмена</Button>
-        <Button variant="outlined" color="warning" onClick={() => onSubmit?.('reject', comment)} disabled={saving}>Вернуть</Button>
+        <Button variant="outlined" color="warning" onClick={() => onSubmit?.('reject', comment)} disabled={saving}>Вернуть на доработку</Button>
         <Button variant="contained" color="success" onClick={() => onSubmit?.('approve', comment)} disabled={saving} sx={{ boxShadow: 'none' }}>Принять</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+export function TaskCloseDialog({ task, open, saving = false, onClose, onSubmit, ui }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  const [comment, setComment] = useState('');
+  useEffect(() => {
+    if (open) setComment('');
+  }, [open, task?.id]);
+
+  return (
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+      <Box sx={getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 })}>
+        <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Закрыть задачу</Typography>
+      </Box>
+      <DialogContent sx={{ px: 2.2, py: 1.6 }}>
+        <Stack spacing={1.2}>
+          <Typography sx={{ fontWeight: 700 }}>{task?.title || '-'}</Typography>
+          <Typography variant="body2" sx={{ color: ui?.mutedText }}>
+            Задача будет сразу переведена в статус «Готово», без сдачи исполнителем.
+          </Typography>
+          <TextField label="Комментарий (необязательно)" value={comment} onChange={(event) => setComment(event.target.value)} multiline minRows={3} fullWidth />
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 2.2, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft }}>
+        <Button onClick={onClose} disabled={saving}>Отмена</Button>
+        <Button variant="contained" onClick={() => onSubmit?.({ comment })} disabled={saving} sx={{ boxShadow: 'none' }}>
+          {saving ? 'Закрытие...' : 'Закрыть'}
+        </Button>
       </DialogActions>
     </Dialog>
   );
@@ -550,12 +582,12 @@ export function TaskSubmitDialog({ task, open, saving = false, onClose, onSubmit
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
       <Box sx={getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 })}>
-        <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Сдать работу</Typography>
+        <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Отправить на проверку</Typography>
       </Box>
       <DialogContent sx={{ px: 2.2, py: 1.6 }}>
         <Stack spacing={1.2}>
           <Typography sx={{ fontWeight: 700 }}>{task?.title || '-'}</Typography>
-          <TextField label="Комментарий к сдаче" value={comment} onChange={(event) => setComment(event.target.value)} multiline minRows={3} fullWidth />
+          <TextField label="Комментарий к проверке" value={comment} onChange={(event) => setComment(event.target.value)} multiline minRows={3} fullWidth />
           <Button component="label" size="small" variant="outlined" startIcon={<AttachFileIcon />} sx={{ alignSelf: 'flex-start' }}>
             {fileLabel}
             <input type="file" hidden onChange={(event) => setFile(event.target.files?.[0] || null)} />
@@ -565,7 +597,7 @@ export function TaskSubmitDialog({ task, open, saving = false, onClose, onSubmit
       <DialogActions sx={{ px: 2.2, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft }}>
         <Button onClick={onClose} disabled={saving}>Отмена</Button>
         <Button variant="contained" onClick={() => onSubmit?.({ comment, file })} disabled={saving} sx={{ fontWeight: 800, boxShadow: 'none' }}>
-          {saving ? 'Отправка...' : 'Сдать'}
+          {saving ? 'Отправка...' : 'Отправить на проверку'}
         </Button>
       </DialogActions>
     </Dialog>

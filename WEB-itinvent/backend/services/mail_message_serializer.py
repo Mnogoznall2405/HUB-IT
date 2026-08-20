@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import logging
+import os
 import re
 from typing import Any, Callable
 
@@ -73,6 +74,29 @@ def item_sender(item: Any) -> str:
     return _normalize_text(item_sender_person(item).get("email")).lower()
 
 
+def mail_use_reply_to_enabled(raw: Any | None = None) -> bool:
+    value = os.getenv("MAIL_USE_REPLY_TO") if raw is None else raw
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if not text:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    logger.warning("MAIL_USE_REPLY_TO has unrecognized value %r; keeping Reply-To enabled", text)
+    return True
+
+
+def item_reply_to_emails(item: Any) -> list[str]:
+    return [
+        _normalize_text(person.get("email")).lower()
+        for person in item_recipient_people(item, attrs=("reply_to",))
+        if _normalize_text(person.get("email"))
+    ]
+
+
 def draft_sender_person_fallback(
     folder_key: str,
     mailbox_email: str,
@@ -130,11 +154,19 @@ def item_message_id(item: Any) -> str:
     return _normalize_text(getattr(item, "message_id", None)).strip()
 
 
+_SUBJECT_PREFIX_RE = re.compile(
+    r"^(?:(?:re|aw|sv|odp|resp|отв|ответ|fw|fwd|wg|vs|tr|пересл(?:ано)?)\s*:\s*)+",
+    re.IGNORECASE,
+)
+_REPLY_SUBJECT_PREFIX_RE = re.compile(r"^(?:re|aw|sv|odp|resp|отв|ответ)\s*:", re.IGNORECASE)
+_FORWARD_SUBJECT_PREFIX_RE = re.compile(r"^(?:fw|fwd|wg|vs|tr|пересл(?:ано)?)\s*:", re.IGNORECASE)
+
+
 def normalize_subject_for_conversation(subject: Any) -> str:
     value = _normalize_text(subject).lower()
     if not value:
         return "(без темы)"
-    normalized = re.sub(r"^(?:(?:re|fwd?|fw)\s*:\s*)+", "", value, flags=re.IGNORECASE).strip()
+    normalized = _SUBJECT_PREFIX_RE.sub("", value).strip()
     return normalized or "(без темы)"
 
 
@@ -238,8 +270,8 @@ class MailMessageSerializer:
             return result
 
         quote_html = self.build_quote_html(item)
-        reply_subject = subject if re.match(r"(?i)^re:\s*", subject) else f"Re: {subject}"
-        forward_subject = subject if re.match(r"(?i)^fwd?:\s*", subject) else f"Fwd: {subject}"
+        reply_subject = subject if _REPLY_SUBJECT_PREFIX_RE.match(subject) else f"Re: {subject}"
+        forward_subject = subject if _FORWARD_SUBJECT_PREFIX_RE.match(subject) else f"Fwd: {subject}"
 
         reply_all_to = _dedupe([sender, *to_values])
         if sender and sender in reply_all_to:
@@ -247,12 +279,16 @@ class MailMessageSerializer:
             filtered_to.extend([value for value in reply_all_to if value != sender])
             reply_all_to = filtered_to
 
+        reply_to = _dedupe([sender])
+        if mail_use_reply_to_enabled():
+            reply_to = _dedupe(item_reply_to_emails(item)) or reply_to
+
         return {
             "mailbox_id": _normalize_text(mailbox_id) or None,
             "mailbox_email": mailbox or None,
             "reply": {
                 "subject": reply_subject,
-                "to": _dedupe([sender]),
+                "to": reply_to,
                 "cc": [],
                 "quote_html": quote_html,
             },

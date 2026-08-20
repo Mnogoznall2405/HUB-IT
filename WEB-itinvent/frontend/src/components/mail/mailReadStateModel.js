@@ -18,7 +18,7 @@ export const getConversationReadUnreadCount = ({
   unreadCount = 0,
   messageCount = 0,
 } = {}) => (
-  Boolean(isRead)
+  isRead
     ? 0
     : Math.max(1, Number(messageCount || 0), Number(unreadCount || 0))
 );

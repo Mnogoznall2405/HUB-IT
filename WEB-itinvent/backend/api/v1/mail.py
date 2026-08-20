@@ -9,21 +9,41 @@ import logging
 import os
 import re
 import time
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Form, File, UploadFile, Response, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Form, File, UploadFile, Response, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.api.deps import ensure_user_permission, get_current_active_user, get_current_admin_user, get_current_session_id
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_MAIL_ACCESS
-from backend.services.request_auth_context_service import pop_request_session_id, push_request_session_id
+from backend.services.request_auth_context_service import (
+    get_request_session_id,
+    pop_request_session_id,
+    push_request_session_id,
+)
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
+from backend.services.mail_send_timeouts import (
+    increment_ambiguous_send,
+    mail_send_wait_for_sec,
+    record_mail_send_timing,
+)
+from backend.services.mail_observability import (
+    mail_op_name,
+    record_mail_attachment_bytes,
+    record_mail_call,
+    record_mail_cancelled_wait,
+    record_mail_send_state,
+    record_mail_source,
+    send_state_from_error_code,
+)
+from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.user_service import user_service
 
 
@@ -34,12 +54,25 @@ _MAIL_CALL_LIMITER: asyncio.Semaphore | None = None
 _MAIL_CALL_LIMITER_LIMIT = 0
 _MAIL_CALL_LIMITER_LOOP = None
 _BOOTSTRAP_REFRESH_INFLIGHT: set[tuple[int, str, int]] = set()
-_DEBUG_CLIENT_LOG_ENABLED = str(os.getenv("DEBUG_CLIENT_LOG_ENABLED", "0")).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+_PREVIEW_PDF_MEDIA_TYPE = "application/pdf"
+_FORBIDDEN_INLINE_MEDIA_TYPES = frozenset({
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+    "application/javascript",
+    "text/javascript",
+    "application/x-javascript",
+})
+_FORBIDDEN_INLINE_EXTENSIONS = frozenset({
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".svg",
+    ".xml",
+    ".js",
+})
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -56,6 +89,13 @@ _MAIL_EXECUTOR = ThreadPoolExecutor(
     max_workers=_env_int("MAIL_WORKER_THREADS", 16, 4, 64),
     thread_name_prefix="mail-io",
 )
+
+
+def _shutdown_mail_executor() -> None:
+    _MAIL_EXECUTOR.shutdown(wait=True, cancel_futures=False)
+
+
+atexit.register(_shutdown_mail_executor)
 
 
 async def _run_in_mail_executor(func, /, *args, **kwargs):
@@ -118,6 +158,78 @@ def _build_content_disposition(filename: str, disposition: str = "attachment") -
     return f"{normalized_disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
+def _mail_inline_allowlist_enabled() -> bool:
+    raw = os.getenv("MAIL_INLINE_ALLOWLIST")
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _attachment_media_type(content_type: str) -> str:
+    return _normalize_text(content_type).split(";", 1)[0].strip().lower()
+
+
+def _attachment_filename_extension(filename: str) -> str:
+    name = _normalize_text(filename).replace("\\", "/").rsplit("/", 1)[-1]
+    if "." not in name:
+        return ""
+    return "." + name.rsplit(".", 1)[-1].strip().lower()
+
+
+def _is_inline_safe_attachment(*, content_type: str, filename: str) -> bool:
+    media_type = _attachment_media_type(content_type)
+    extension = _attachment_filename_extension(filename)
+    if media_type in _FORBIDDEN_INLINE_MEDIA_TYPES or extension in _FORBIDDEN_INLINE_EXTENSIONS:
+        return False
+    if media_type.startswith("image/"):
+        return True
+    return media_type == "application/pdf"
+
+
+def _resolve_attachment_disposition(
+    *,
+    requested_disposition: str,
+    content_type: str,
+    filename: str,
+) -> str:
+    wanted = "inline" if _normalize_text(requested_disposition).lower() == "inline" else "attachment"
+    if wanted != "inline":
+        return "attachment"
+    if not _mail_inline_allowlist_enabled():
+        return "inline"
+    return "inline" if _is_inline_safe_attachment(content_type=content_type, filename=filename) else "attachment"
+
+
+def _nosniff_headers() -> dict[str, str]:
+    return {"X-Content-Type-Options": "nosniff"}
+
+
+def _build_attachment_download_headers(
+    *,
+    filename: str,
+    content_type: str,
+    requested_disposition: str,
+) -> dict[str, str]:
+    disposition = _resolve_attachment_disposition(
+        requested_disposition=requested_disposition,
+        content_type=content_type,
+        filename=filename,
+    )
+    return {
+        "Content-Disposition": _build_content_disposition(filename, disposition=disposition),
+        "Cache-Control": "private, max-age=300",
+        **_nosniff_headers(),
+    }
+
+
+def _build_preview_pdf_headers(filename: str) -> dict[str, str]:
+    return {
+        "Content-Disposition": _build_content_disposition(filename, disposition="inline"),
+        "Cache-Control": "private, max-age=300",
+        **_nosniff_headers(),
+    }
+
+
 def _request_id_from_headers(request: Request) -> str:
     return _normalize_text(request.headers.get("X-Client-Request-ID"), "-")
 
@@ -147,39 +259,35 @@ def _get_mail_call_limiter() -> asyncio.Semaphore:
 
 
 async def _run_mail_call(func, /, *args, **kwargs):
-    wait_started_at = time.perf_counter()
-    async with _get_mail_call_limiter():
-        sem_wait_ms = (time.perf_counter() - wait_started_at) * 1000.0
-        # #region agent log
-        try:
-            import json as _json
-            from pathlib import Path as _Path
+    result, _metrics = await _run_mail_instrumented(func, *args, **kwargs)
+    return result
 
-            if _DEBUG_CLIENT_LOG_ENABLED and sem_wait_ms >= 50.0:
-                _log = _Path(__file__).resolve().parents[4] / "debug-20cb37.log"
-                with _log.open("a", encoding="utf-8") as _f:
-                    _f.write(
-                        _json.dumps(
-                            {
-                                "sessionId": "20cb37",
-                                "runId": "post-fix",
-                                "hypothesisId": "M",
-                                "location": "mail.py:_run_mail_call",
-                                "message": "mail call limiter wait",
-                                "data": {
-                                    "func": getattr(func, "__name__", str(func))[:80],
-                                    "sem_wait_ms": round(sem_wait_ms, 1),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-        except Exception:
-            pass
-        # #endregion
-        return await _run_in_mail_executor(func, *args, **kwargs)
+
+async def _run_mail_send_call(func, /, *args, **kwargs):
+    timeout_sec = mail_send_wait_for_sec()
+    started_at = time.perf_counter()
+    send_state = ""
+    try:
+        result = await asyncio.wait_for(_run_mail_call(func, *args, **kwargs), timeout=timeout_sec)
+        send_state = "sent"
+        return result
+    except asyncio.TimeoutError as exc:
+        increment_ambiguous_send()
+        send_state = "timeout"
+        logger.warning("mail.send wait_for timeout_sec=%.1f", timeout_sec)
+        raise MailServiceError(
+            "Отправка заняла слишком много времени. Письмо могло быть отправлено. "
+            "Проверьте папку «Отправленные» и не отправляйте его повторно сразу.",
+            code="MAIL_SEND_TIMEOUT",
+            status_code=504,
+        ) from exc
+    except MailServiceError as exc:
+        send_state = send_state_from_error_code(getattr(exc, "code", ""))
+        raise
+    finally:
+        if send_state:
+            record_mail_send_state(send_state)
+        record_mail_send_timing((time.perf_counter() - started_at) * 1000.0)
 
 
 async def _write_through_mail_read_state(**kwargs: Any) -> None:
@@ -201,57 +309,54 @@ async def _write_through_mail_preferences(*, user_id: int, preferences: dict[str
         logger.warning("Mail preferences snapshot write-through failed", exc_info=True)
 
 
-def _run_mail_call_with_metrics_sync(func, args, kwargs):
+def _run_mail_call_timed_sync(func, args, kwargs, submitted_at: float):
+    executor_wait_ms = (time.perf_counter() - submitted_at) * 1000.0
     request_tokens = mail_service.push_request_context()
     metrics: dict[str, Any] = {}
+    call_started = time.perf_counter()
     try:
         result = func(*args, **kwargs)
         metrics = dict(mail_service.get_request_metrics() or {})
-        return result, metrics, None
+        return result, metrics, None, executor_wait_ms, (time.perf_counter() - call_started) * 1000.0
     except Exception as exc:
         metrics = dict(mail_service.get_request_metrics() or {})
-        return None, metrics, exc
+        return None, metrics, exc, executor_wait_ms, (time.perf_counter() - call_started) * 1000.0
     finally:
         mail_service.pop_request_context(request_tokens)
 
 
-async def _run_mail_call_with_metrics(func, /, *args, **kwargs):
-    wait_started_at = time.perf_counter()
-    async with _get_mail_call_limiter():
-        sem_wait_ms = (time.perf_counter() - wait_started_at) * 1000.0
-        # #region agent log
-        try:
-            import json as _json
-            from pathlib import Path as _Path
+async def _run_mail_instrumented(func, /, *args, **kwargs):
+    wait_started = time.perf_counter()
+    try:
+        async with _get_mail_call_limiter():
+            semaphore_wait_ms = (time.perf_counter() - wait_started) * 1000.0
+            submitted_at = time.perf_counter()
+            result, metrics, error, executor_wait_ms, call_ms = await _run_in_mail_executor(
+                _run_mail_call_timed_sync,
+                func,
+                args,
+                kwargs,
+                submitted_at,
+            )
+        record_mail_call(
+            op=mail_op_name(func),
+            semaphore_wait_ms=semaphore_wait_ms,
+            executor_wait_ms=executor_wait_ms,
+            call_ms=call_ms,
+            metrics=metrics,
+            error=error is not None,
+        )
+        if error is not None:
+            raise error
+        return result, metrics
+    except asyncio.CancelledError:
+        # Client abort cancels the await, not the EWS SOAP thread (MAIL-AUDIT-025).
+        record_mail_cancelled_wait()
+        raise
 
-            if _DEBUG_CLIENT_LOG_ENABLED and sem_wait_ms >= 50.0:
-                _log = _Path(__file__).resolve().parents[4] / "debug-20cb37.log"
-                with _log.open("a", encoding="utf-8") as _f:
-                    _f.write(
-                        _json.dumps(
-                            {
-                                "sessionId": "20cb37",
-                                "runId": "post-fix",
-                                "hypothesisId": "M",
-                                "location": "mail.py:_run_mail_call_with_metrics",
-                                "message": "mail metrics call limiter wait",
-                                "data": {
-                                    "func": getattr(func, "__name__", str(func))[:80],
-                                    "sem_wait_ms": round(sem_wait_ms, 1),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-        except Exception:
-            pass
-        # #endregion
-        result, metrics, error = await _run_in_mail_executor(_run_mail_call_with_metrics_sync, func, args, kwargs)
-    if error is not None:
-        raise error
-    return result, metrics
+
+async def _run_mail_call_with_metrics(func, /, *args, **kwargs):
+    return await _run_mail_instrumented(func, *args, **kwargs)
 
 
 def _mail_metrics_log_context(metrics: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -294,10 +399,23 @@ def _mail_http_exception(
     if resolved_code == "MAIL_AUTH_INVALID":
         if resolved_user_id > 0:
             mail_service.invalidate_saved_password(user_id=resolved_user_id)
+        # Stale AD password may still live in the web session context from an earlier
+        # password login. Clear it so /mail can prompt for an update without full re-login
+        # (trusted-device / passkey sessions never had a password here at all).
+        session_id = get_request_session_id()
+        if session_id:
+            try:
+                session_auth_context_service.delete_session_context(session_id)
+            except Exception:
+                logger.warning(
+                    "Failed to clear mail session auth context after AUTH_INVALID: user_id=%s",
+                    resolved_user_id,
+                    exc_info=True,
+                )
         headers["X-Mail-Error-Code"] = "MAIL_AUTH_INVALID"
         return HTTPException(
             status_code=409,
-            detail="Пароль корпоративной почты устарел или неверен. Введите новый пароль.",
+            detail="Пароль корпоративной почты устарел или неверен. Введите новый пароль на странице Почта.",
             headers=headers,
         )
     if resolved_code == "MAIL_PASSWORD_REQUIRED":
@@ -763,6 +881,7 @@ async def get_mail_bootstrap(
             # Serve fresh OR stale snapshot immediately; Exchange under chat load is 10s+.
             if snapshot_state in {"ok", "stale"} and isinstance(snapshot.get("payload"), dict):
                 bootstrap_source = "snapshot"
+                record_mail_source("snapshot")
                 if snapshot_state == "stale":
                     _schedule_mail_bootstrap_refresh(
                         user_id=int(current_user.id),
@@ -770,39 +889,6 @@ async def get_mail_bootstrap(
                         limit=int(limit),
                         snapshot_context=snapshot_context,
                     )
-                # #region agent log
-                try:
-                    import json as _json
-                    from pathlib import Path as _Path
-
-                    if not _DEBUG_CLIENT_LOG_ENABLED:
-                        raise RuntimeError("client debug logging disabled")
-                    _log = _Path(__file__).resolve().parents[4] / "debug-20cb37.log"
-                    with _log.open("a", encoding="utf-8") as _f:
-                        _f.write(
-                            _json.dumps(
-                                {
-                                    "sessionId": "20cb37",
-                                    "runId": "post-fix",
-                                    "hypothesisId": "M",
-                                    "location": "mail.py:get_mail_bootstrap",
-                                    "message": "mail bootstrap served from snapshot",
-                                    "data": {
-                                        "user_id": int(current_user.id),
-                                        "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 1),
-                                        "source": "snapshot",
-                                        "snapshot_state": snapshot_state,
-                                        "bg_refresh": int(snapshot_state == "stale"),
-                                    },
-                                    "timestamp": int(time.time() * 1000),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                except Exception:
-                    pass
-                # #endregion
                 # Always expose state=ok to UI so client SWR does not force a live Exchange roundtrip.
                 return {
                     **snapshot["payload"],
@@ -820,6 +906,7 @@ async def get_mail_bootstrap(
             limit=int(limit),
         )
         bootstrap_source = "exchange"
+        record_mail_source("exchange")
         await _run_in_mail_executor(
             mail_runtime_snapshot_service.write_success,
             user_id=int(current_user.id),
@@ -829,38 +916,6 @@ async def get_mail_bootstrap(
             payload=result,
             ttl_seconds=300,
         )
-        # #region agent log
-        try:
-            import json as _json
-            from pathlib import Path as _Path
-
-            if not _DEBUG_CLIENT_LOG_ENABLED:
-                raise RuntimeError("client debug logging disabled")
-            _log = _Path(__file__).resolve().parents[4] / "debug-20cb37.log"
-            with _log.open("a", encoding="utf-8") as _f:
-                _f.write(
-                    _json.dumps(
-                        {
-                            "sessionId": "20cb37",
-                            "runId": "post-fix",
-                            "hypothesisId": "M",
-                            "location": "mail.py:get_mail_bootstrap",
-                            "message": "mail bootstrap served from exchange",
-                            "data": {
-                                "user_id": int(current_user.id),
-                                "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 1),
-                                "source": "exchange",
-                                "cache_hit": (metrics or {}).get("cache_hit"),
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
         return {**result, "state": "ok", "source": "exchange", "as_of": None, "last_error": ""}
     except MailServiceError as exc:
         await _run_in_mail_executor(
@@ -873,13 +928,13 @@ async def get_mail_bootstrap(
         )
         raise _mail_http_exception(exc, current_user=current_user) from exc
     finally:
-        _ = bootstrap_source
         _log_request_timing(
             "bootstrap",
             request_id,
             started_at,
             user_id=int(current_user.id),
             limit=int(limit),
+            source=bootstrap_source,
             **_mail_metrics_log_context(metrics),
         )
 
@@ -1452,6 +1507,7 @@ async def get_mail_unread_count(
             snapshot_type="unread",
         )
         payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+        record_mail_source("snapshot")
         return {
             "unread_count": int(payload.get("unread_count", 0) or 0),
             "state": snapshot.get("state") or "unknown",
@@ -1465,6 +1521,7 @@ async def get_mail_unread_count(
             user_id=int(current_user.id),
             mailbox_id=normalized_mailbox_id,
         )
+        record_mail_source("exchange")
         return {"unread_count": count, "state": "ok", "source": "exchange", "as_of": None}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1536,11 +1593,12 @@ async def send_message(
     request: Request,
     payload: SendMessageRequest,
     current_user: User = Depends(get_current_mail_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
     try:
-        return await _run_mail_call(
+        return await _run_mail_send_call(
             mail_service.send_message,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.from_mailbox_id) or None,
@@ -1554,6 +1612,7 @@ async def send_message(
             forward_message_id=_normalize_text(payload.forward_message_id),
             draft_id=_normalize_text(payload.draft_id),
             retain_existing_attachments=payload.retain_existing_attachments,
+            idempotency_key=_normalize_text(idempotency_key),
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -1589,10 +1648,12 @@ async def download_message_attachment(
             message_id=message_id,
             attachment_ref=attachment_ref,
         )
-        headers = {
-            "Content-Disposition": _build_content_disposition(filename, disposition=disposition),
-            "Cache-Control": "private, max-age=300",
-        }
+        headers = _build_attachment_download_headers(
+            filename=filename,
+            content_type=content_type,
+            requested_disposition=disposition,
+        )
+        record_mail_attachment_bytes(len(content or b""))
         return Response(content=content, media_type=content_type, headers=headers)
     except MailServiceError as exc:
         logger.warning(
@@ -1692,16 +1753,12 @@ async def download_message_attachment_preview_pdf(
                 headers["Retry-After"] = str(max(1, (retry_after_ms + 999) // 1000))
             return JSONResponse(content=preview, status_code=status_code, headers=headers)
         filename = _normalize_text(preview.get("pdf_filename"), "preview.pdf")
-        headers = {
-            "Content-Disposition": _build_content_disposition(filename, disposition="inline"),
-            "Cache-Control": "private, max-age=300",
-        }
         return FileResponse(
             path=str(preview["path"]),
             filename=filename,
-            media_type="application/pdf",
+            media_type=_PREVIEW_PDF_MEDIA_TYPE,
             content_disposition_type="inline",
-            headers=headers,
+            headers=_build_preview_pdf_headers(filename),
         )
     except MailServiceError as exc:
         logger.warning(
@@ -1754,7 +1811,10 @@ async def download_mail_message_source(
             mailbox_id=_normalize_text(mailbox_id) or None,
             message_id=_normalize_text(message_id),
         )
-        headers = {"Content-Disposition": _build_content_disposition(filename)}
+        headers = {
+            "Content-Disposition": _build_content_disposition(filename),
+            **_nosniff_headers(),
+        }
         return Response(content=content, media_type="message/rfc822", headers=headers)
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1776,6 +1836,7 @@ async def send_message_multipart(
     retain_existing_attachments_json: str = Form(""),
     files: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_mail_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
@@ -1799,7 +1860,7 @@ async def send_message_multipart(
                 raise MailServiceError("retain_existing_attachments_json must be a JSON array")
             retain_existing_attachments = [_normalize_text(item) for item in retain_raw if _normalize_text(item)]
 
-        return await _run_mail_call(
+        return await _run_mail_send_call(
             mail_service.send_message,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(from_mailbox_id) or None,
@@ -1814,6 +1875,7 @@ async def send_message_multipart(
             forward_message_id=_normalize_text(forward_message_id),
             draft_id=_normalize_text(draft_id),
             retain_existing_attachments=retain_existing_attachments,
+            idempotency_key=_normalize_text(idempotency_key),
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -1924,7 +1986,7 @@ async def send_it_request_message(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        return await _run_mail_send_call(
             mail_service.send_it_request,
             user_id=int(current_user.id),
             template_id=_normalize_text(payload.template_id),
@@ -1961,7 +2023,7 @@ async def send_it_request_message_multipart(
                 continue
             attachments.append((file.filename or "attachment.bin", content))
 
-        return await _run_mail_call(
+        return await _run_mail_send_call(
             mail_service.send_it_request,
             user_id=int(current_user.id),
             template_id=_normalize_text(template_id),

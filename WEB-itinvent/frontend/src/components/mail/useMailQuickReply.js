@@ -1,6 +1,13 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { toRecipientEmails } from './mailComposeState';
 import { normalizeComposeSubject } from './mailComposeSubject';
+import {
+  buildQuickReplyHtml,
+  buildQuickReplyOutgoingHtml,
+  resolveMailReplyQuoteHtml,
+} from './mailQuickReplyBody';
+import { createMailSendIdempotencyKey } from './mailSendIdempotency';
+import { getMailSendErrorMessage } from './mailSendOutcome';
 
 const getQuickReplyFallbackSender = (message) => {
   const values = [
@@ -17,9 +24,7 @@ const getQuickReplyFallbackSender = (message) => {
   return [];
 };
 
-export const buildQuickReplyHtml = (body = '') => (
-  `<p>${String(body || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`
-);
+export { buildQuickReplyHtml };
 
 export default function useMailQuickReply({
   mailAPI,
@@ -28,23 +33,32 @@ export default function useMailQuickReply({
   refreshList,
   refreshFolderSummary,
   handleMailCredentialsRequired,
-  getMailErrorDetail,
   onError,
   onSendingStart,
   onSent,
 } = {}) {
-  const [quickReplyBody, setQuickReplyBody] = useState('');
   const [quickReplySending, setQuickReplySending] = useState(false);
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const sendingLockRef = useRef(false);
+  const idempotencyKeyRef = useRef('');
 
-  const sendQuickReply = useCallback(async (selectedMessage, bodyOverride) => {
+  const sendQuickReply = useCallback(async (selectedMessage, body, { mode = 'reply' } = {}) => {
     if (!selectedMessage?.id) return false;
-    const body = String(bodyOverride ?? quickReplyBody ?? '').trim();
-    if (!body) return false;
+    if (!body?.trim()) return false;
+    if (sendingLockRef.current) return false;
+    sendingLockRef.current = true;
+    if (!idempotencyKeyRef.current) {
+      idempotencyKeyRef.current = createMailSendIdempotencyKey();
+    }
+    const normalizedBody = String(body).trim();
 
     setQuickReplySending(true);
     onSendingStart?.();
     try {
-      const context = selectedMessage?.compose_context?.reply || {};
+      const contextKey = mode === 'reply_all' ? 'reply_all' : 'reply';
+      const context = selectedMessage?.compose_context?.[contextKey]
+        || selectedMessage?.compose_context?.reply
+        || {};
       const to = toRecipientEmails(context?.to);
       await mailAPI.sendMessage({
         from_mailbox_id: resolveComposeMailboxId(context?.mailbox_id || selectedMessage?.mailbox_id),
@@ -52,11 +66,16 @@ export default function useMailQuickReply({
         cc: toRecipientEmails(context?.cc),
         bcc: [],
         subject: normalizeComposeSubject('reply', context?.subject || selectedMessage.subject || ''),
-        body: buildQuickReplyHtml(body),
+        body: buildQuickReplyOutgoingHtml(
+          normalizedBody,
+          resolveMailReplyQuoteHtml(selectedMessage, context),
+        ),
         is_html: true,
         reply_to_message_id: selectedMessage.id,
+        idempotencyKey: idempotencyKeyRef.current,
       });
-      setQuickReplyBody('');
+      idempotencyKeyRef.current = '';
+      setDraftEpoch((value) => value + 1);
       invalidateMailClientCache?.();
       await refreshList?.({ silent: true, force: true });
       await refreshFolderSummary?.();
@@ -65,18 +84,17 @@ export default function useMailQuickReply({
     } catch (requestError) {
       const fallback = 'Не удалось отправить быстрый ответ.';
       if (!(await handleMailCredentialsRequired?.(requestError, fallback))) {
-        onError?.(getMailErrorDetail?.(requestError, fallback) || fallback);
+        onError?.(getMailSendErrorMessage(requestError, fallback));
       }
       return false;
     } finally {
+      sendingLockRef.current = false;
       setQuickReplySending(false);
     }
   }, [
-    getMailErrorDetail,
     handleMailCredentialsRequired,
     invalidateMailClientCache,
     mailAPI,
-    quickReplyBody,
     refreshFolderSummary,
     refreshList,
     resolveComposeMailboxId,
@@ -86,8 +104,7 @@ export default function useMailQuickReply({
   ]);
 
   return {
-    quickReplyBody,
-    setQuickReplyBody,
+    draftEpoch,
     quickReplySending,
     sendQuickReply,
   };

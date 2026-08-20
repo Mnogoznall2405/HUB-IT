@@ -8,6 +8,7 @@ import {
   normalizeMailViewState,
   readStoredMailListViewState,
   readStoredMailViewState,
+  updateMailListViewStateMap,
   writeStoredMailListViewState,
   writeStoredMailViewState,
 } from './mailViewStateModel';
@@ -121,5 +122,16 @@ describe('mailViewStateModel', () => {
     expect(JSON.parse(storage.dump()[MAIL_LIST_VIEW_STATE_STORAGE_KEY])).toEqual({
       'messages:sent': { scrollTop: 20 },
     });
+
+    expect(updateMailListViewStateMap({
+      'messages:inbox': { scrollTop: 10, selectedMessageIdAtOpen: 'old' },
+    }, 'messages:inbox', (prev) => ({
+      ...prev,
+      scrollTop: 80,
+    }))).toEqual({
+      'messages:inbox': { scrollTop: 80, selectedMessageIdAtOpen: 'old' },
+    });
+    expect(updateMailListViewStateMap({ 'messages:inbox': { scrollTop: 10 } }, '', { scrollTop: 99 }))
+      .toEqual({ 'messages:inbox': { scrollTop: 10 } });
   });
 });

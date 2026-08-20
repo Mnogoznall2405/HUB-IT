@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -50,7 +51,14 @@ from backend.services.mail_folder_tree import MailFolderTreeBuilder
 from backend.services.mail_folder_mutations import MailFolderMutationError, MailFolderMutations
 from backend.services.mail_message_actions import MailMessageActionError, MailMessageActions
 from backend.services.mail_message_content import MailMessageContent, MailMessageContentError
+from backend.services.mail_attachment_download import (
+    ATTACHMENT_CONTENT_CACHE_MAX_ENTRY_BYTES,
+    MailAttachmentDownload,
+    MailAttachmentDownloadError,
+    should_cache_attachment_payload,
+)
 from backend.services.mail_draft_lifecycle import MailDraftLifecycle, MailDraftLifecycleError
+from backend.services.mail_send_pipeline import MailSendPipeline, MailSendPipelineError
 from backend.services.mail_conversation_finder import MailConversationFinder, MailConversationFinderError
 from backend.services.mail_conversation_payloads import MailConversationPayloadBuilder
 from backend.services.mail_message_listing import (
@@ -76,11 +84,16 @@ from backend.services.mail_compose_orchestration import (
     build_draft_upsert_plan,
     build_outbound_send_plan,
     build_recipient_set,
-    build_reply_forward_reference_headers,
     parse_recipients,
     resolve_outbound_mailbox_id,
 )
 from backend.services.mail_metadata_store import MailMetadataStore
+from backend.services.mail_send_idempotency import (
+    MailSendIdempotencyClaim,
+    MailSendIdempotencyStore,
+    hash_mail_send_payload,
+    mail_send_idempotency_enabled,
+)
 from backend.services.mail_message_serializer import (
     MailMessageSerializer,
     item_bcc_recipient_people,
@@ -107,6 +120,7 @@ from backend.services.mail_runtime_cache import (
 from backend.services.mail_reference_codec import (
     ATTACHMENT_TOKEN_PREFIX,
     ATTACHMENT_TOKEN_PREFIX_LEGACY,
+    ITEM_SCOPED_FOLDER,
     MailReferenceError,
     build_inline_attachment_src,
     decode_attachment_ref,
@@ -119,6 +133,7 @@ from backend.services.mail_reference_codec import (
     encode_message_id,
     extract_attachment_id_from_repr,
     extract_attachment_raw_id,
+    is_item_scoped_folder,
     make_scoped_storage_key,
     normalize_attachment_content_id,
     normalize_attachment_id_candidate,
@@ -185,6 +200,31 @@ def _to_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return bool(default)
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_MAIL_VERIFY_TLS_TRUE = frozenset({"1", "true", "yes", "on"})
+_MAIL_VERIFY_TLS_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+class MailTlsConfigurationError(RuntimeError):
+    """Raised when MAIL_VERIFY_TLS is not a recognized boolean."""
+
+
+def parse_mail_verify_tls(value: Any, *, default: bool = True) -> bool:
+    if value is None:
+        return bool(default)
+    text = str(value).strip()
+    if not text:
+        return bool(default)
+    lowered = text.lower()
+    if lowered in _MAIL_VERIFY_TLS_TRUE:
+        return True
+    if lowered in _MAIL_VERIFY_TLS_FALSE:
+        return False
+    raise MailTlsConfigurationError(
+        "Invalid MAIL_VERIFY_TLS="
+        f"{text!r}; expected true/false/1/0/yes/no/on/off or empty"
+    )
 
 
 def _parse_date_filter(value: Any) -> date | None:
@@ -336,6 +376,11 @@ class MailService:
         "bcc_recipients",
         "message_id",
         "is_read",
+        "parent_folder_id",
+    )
+    _MESSAGE_SOURCE_FIELDS = (
+        "mime_content",
+        "subject",
     )
     _CACHE_BUCKET_POLICIES = {
         "folder_summary": RuntimeCachePolicy(max_entries=200, ttl_sec=90),
@@ -353,7 +398,7 @@ class MailService:
             max_entries=32,
             ttl_sec=600,
             max_total_bytes=64 * 1024 * 1024,
-            max_entry_bytes=25 * 1024 * 1024,
+            max_entry_bytes=ATTACHMENT_CONTENT_CACHE_MAX_ENTRY_BYTES,
         ),
         "notification_feed": RuntimeCachePolicy(max_entries=100, ttl_sec=30),
     }
@@ -402,6 +447,7 @@ class MailService:
     )
 
     def __init__(self, *, database_url: str | None = None) -> None:
+        parse_mail_verify_tls(os.getenv("MAIL_VERIFY_TLS"))
         explicit_database_url = str(database_url or "").strip() or None
         self._database_url = (
             get_app_database_url(explicit_database_url)
@@ -491,15 +537,27 @@ class MailService:
         self._message_actions = MailMessageActions(
             resolve_folder=self._resolve_folder,
             encode_message_id=self._encode_message_id,
+            fetch_item_by_id=lambda account, exchange_id, only_fields=None: self._fetch_item_by_exchange_id(
+                account,
+                exchange_id,
+                only_fields=only_fields,
+            ),
+            folder_key_from_item=lambda account, item: self._folder_key_from_item(account, item),
         )
         self._draft_lifecycle = MailDraftLifecycle()
+        self._send_pipeline = MailSendPipeline()
+        self._attachment_download = MailAttachmentDownload()
         self._conversation_finder = MailConversationFinder(
             search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
                 account,
                 folder=folder,
                 folder_scope=folder_scope,
             ),
-            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(folder_obj, folder_key),
+            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(
+                folder_obj,
+                folder_key,
+                scan_only=True,
+            ),
             item_conversation_key=lambda item: self._item_conversation_key(item),
             decode_message_id=lambda message_id: self._decode_message_id(message_id),
             resolve_folder=lambda account, folder_key: self._resolve_folder(account, folder_key),
@@ -512,7 +570,11 @@ class MailService:
                 folder=folder,
                 folder_scope=folder_scope,
             ),
-            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(folder_obj, folder_key),
+            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(
+                folder_obj,
+                folder_key,
+                preview_only=True,
+            ),
             message_matches_filters=lambda item, **filters: self._message_matches_filters(item, **filters),
             item_conversation_key=lambda item: self._item_conversation_key(item),
             item_sender=lambda item: self._item_sender(item),
@@ -561,7 +623,10 @@ class MailService:
                 logger.warning(
                     "Mail runtime is using SQLite-backed APP_DATABASE_URL; use a PostgreSQL-compatible app DB for stable multi-user mail load."
                 )
-            initialize_app_schema(self._database_url)
+            else:
+                # SQLite mail tests use _ensure_schema() for mail tables.
+                # Full AppBase create_all here is ~40s per unique sqlite URL (MAIL-AUDIT-026).
+                initialize_app_schema(self._database_url)
         self._ensure_schema()
         self._migrate_legacy_template_fields()
         self._cleanup_message_log()
@@ -609,10 +674,17 @@ class MailService:
                 max_total_bytes=default_policy.max_total_bytes,
                 max_entry_bytes=default_policy.max_entry_bytes,
             )
-        return self._CACHE_BUCKET_POLICIES.get(
-            normalized_bucket,
-            RuntimeCachePolicy(max_entries=100, ttl_sec=self.mail_cache_ttl_sec),
-        )
+        default_policy = self._CACHE_BUCKET_POLICIES.get(normalized_bucket)
+        if default_policy is None:
+            return RuntimeCachePolicy(max_entries=100, ttl_sec=self.mail_cache_ttl_sec)
+        if normalized_bucket in {"folder_summary", "folder_tree", "messages"}:
+            return RuntimeCachePolicy(
+                max_entries=default_policy.max_entries,
+                ttl_sec=self.mail_cache_ttl_sec,
+                max_total_bytes=default_policy.max_total_bytes,
+                max_entry_bytes=default_policy.max_entry_bytes,
+            )
+        return default_policy
 
     def _cache_key(self, *, user_id: int, bucket: str, extra: str = "", mailbox_scope: str = "") -> str:
         return cache_key(user_id=int(user_id), bucket=bucket, extra=extra, mailbox_scope=mailbox_scope)
@@ -1084,7 +1156,7 @@ class MailService:
 
     @property
     def verify_tls(self) -> bool:
-        return _to_bool(os.getenv("MAIL_VERIFY_TLS"), default=True)
+        return parse_mail_verify_tls(os.getenv("MAIL_VERIFY_TLS"))
 
     @property
     def tls_ca_bundle(self) -> str:
@@ -1479,7 +1551,7 @@ class MailService:
             raise MailServiceError("Mailbox password is required", code="MAIL_PASSWORD_REQUIRED", status_code=409)
         try:
             account = self._create_account(email=email, login=login, password=password)
-            list(account.inbox.all().order_by("-datetime_received")[:1])
+            self._probe_inbox_sample(account)
         except MailServiceError:
             raise
         except Exception as exc:
@@ -1898,6 +1970,53 @@ class MailService:
         except Exception:
             logger.warning("Failed to clear saved mail password for user_id=%s", int(user_id), exc_info=True)
 
+    def _sync_session_password_after_credentials_save(
+        self,
+        *,
+        user: dict[str, Any],
+        mailbox_login: str,
+        mailbox_password: str,
+    ) -> None:
+        """Refresh encrypted session password after user updates AD/Exchange password on /mail."""
+        if _normalize_text((user or {}).get("auth_source")).lower() != "ldap":
+            return
+        password = _normalize_text(mailbox_password)
+        if not password:
+            return
+        session_id = get_request_session_id()
+        if not session_id:
+            return
+        user_id = int((user or {}).get("id") or 0)
+        if user_id <= 0:
+            return
+        try:
+            from backend.services.session_service import session_service
+
+            session = session_service.get_session(session_id) or {}
+            expires_at = _normalize_text(session.get("expires_at"))
+            if not expires_at:
+                existing = session_auth_context_service.get_session_context(session_id, user_id=user_id) or {}
+                expires_at = _normalize_text(existing.get("expires_at"))
+            if not expires_at:
+                return
+            login = _normalize_text(mailbox_login) or normalize_exchange_login(
+                _normalize_text((user or {}).get("username"))
+            )
+            session_auth_context_service.store_session_context(
+                session_id=session_id,
+                user_id=user_id,
+                auth_source="ldap",
+                exchange_login=login,
+                password=password,
+                expires_at=expires_at,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to sync mail session password after credentials save: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+
     def _resolve_user_mail_profile(
         self,
         user_id: int,
@@ -1942,7 +2061,10 @@ class MailService:
             BaseProtocol.HTTP_ADAPTER_CLS = old_adapter
 
     def _create_account(self, *, email: str, login: str, password: str):
+        from backend.services.mail_observability import record_mail_create_account_ms
+
         self._configure_exchange_http_adapter_for_runtime()
+        started_at = time.perf_counter()
         try:
             return create_exchange_account(
                 email=email,
@@ -1954,6 +2076,8 @@ class MailService:
             )
         except ExchangeTransportError as exc:
             raise MailServiceError(str(exc)) from exc
+        finally:
+            record_mail_create_account_ms((time.perf_counter() - started_at) * 1000.0)
 
     @staticmethod
     def _safe_folder_attr(target, attr_name: str):
@@ -2133,6 +2257,8 @@ class MailService:
 
     def _resolve_folder(self, account, folder: str):
         key = _normalize_text(folder, "inbox")
+        if is_item_scoped_folder(key):
+            raise MailServiceError(f"Folder is not available: {ITEM_SCOPED_FOLDER}")
         normalized = key.lower()
         aliases = {
             "inbox": "inbox",
@@ -2164,6 +2290,86 @@ class MailService:
         except Exception as exc:
             raise MailServiceError(f"Failed to resolve folder: {exc}") from exc
         raise MailServiceError(f"Folder not found: {exchange_id}")
+
+    def _fetch_item_by_exchange_id(
+        self,
+        account,
+        exchange_id: str,
+        *,
+        only_fields: tuple[str, ...] | None = None,
+    ):
+        normalized_exchange_id = _normalize_text(exchange_id)
+        if not normalized_exchange_id:
+            raise MailServiceError("Message not found: ")
+        try:
+            fetched = list(
+                account.fetch(
+                    ids=[(normalized_exchange_id, None)],
+                    only_fields=list(only_fields) if only_fields else None,
+                )
+            )
+        except Exception as exc:
+            raise MailServiceError(f"Message not found: {normalized_exchange_id}") from exc
+        if not fetched:
+            raise MailServiceError(f"Message not found: {normalized_exchange_id}")
+        item = fetched[0]
+        if isinstance(item, Exception) or not _normalize_text(getattr(item, "id", None)):
+            raise MailServiceError(f"Message not found: {normalized_exchange_id}")
+        return item
+
+    def _folder_key_from_item(self, account, item) -> str:
+        folder_obj = getattr(item, "folder", None)
+        if folder_obj is not None and _normalize_text(getattr(folder_obj, "id", None)):
+            folder_key = self._folder_id_from_object(account, folder_obj)
+            if folder_key:
+                return folder_key
+        parent = getattr(item, "parent_folder_id", None)
+        parent_exchange_id = _normalize_text(getattr(parent, "id", None) or parent)
+        if not parent_exchange_id:
+            return "inbox"
+        standard = self._standard_folders(account)
+        for alias, standard_folder in standard.items():
+            if _normalize_text(getattr(standard_folder, "id", None)) == parent_exchange_id:
+                return alias
+        return self._encode_folder_id("mailbox", parent_exchange_id)
+
+    def _locate_message_item(
+        self,
+        account,
+        *,
+        folder_key: str,
+        exchange_id: str,
+        only_fields: tuple[str, ...] | None = None,
+    ) -> tuple[Any, str, Any]:
+        if is_item_scoped_folder(folder_key):
+            fetch_fields = only_fields
+            if only_fields and "parent_folder_id" not in only_fields:
+                fetch_fields = (*only_fields, "parent_folder_id")
+            try:
+                item = self._fetch_item_by_exchange_id(account, exchange_id, only_fields=fetch_fields)
+            except MailServiceError:
+                if not only_fields:
+                    raise
+                item = self._fetch_item_by_exchange_id(account, exchange_id, only_fields=None)
+            resolved_folder_key = self._folder_key_from_item(account, item)
+            return getattr(item, "folder", None), resolved_folder_key, item
+        folder_obj, resolved_folder_key = self._resolve_folder(account, folder_key)
+        item = None
+        if only_fields:
+            try:
+                item = folder_obj.all().only(*only_fields).get(id=exchange_id)
+            except Exception:
+                item = None
+        if item is None:
+            try:
+                queryset = folder_obj.all()
+            except Exception:
+                queryset = folder_obj
+            try:
+                item = queryset.get(id=exchange_id)
+            except Exception as exc:
+                raise MailServiceError(f"Message not found: {exchange_id}") from exc
+        return folder_obj, resolved_folder_key, item
 
     def _search_target_folders(self, account, *, folder: str, folder_scope: str = "current") -> list[tuple[Any, str]]:
         if _normalize_text(folder_scope, "current").lower() != "all":
@@ -2255,8 +2461,26 @@ class MailService:
     def _message_sort_attr(folder_key: str) -> str:
         return "-datetime_created" if folder_key == "drafts" else "-datetime_received"
 
-    def _folder_queryset(self, folder_obj, folder_key: str, *, preview_only: bool = False):
+    def _folder_queryset(
+        self,
+        folder_obj,
+        folder_key: str,
+        *,
+        preview_only: bool = False,
+        scan_only: bool = False,
+    ):
         queryset = folder_obj.all().order_by(self._message_sort_attr(folder_key))
+        if scan_only:
+            try:
+                return queryset.only(
+                    "subject",
+                    "datetime_received",
+                    "datetime_created",
+                    "is_read",
+                    "conversation_id",
+                )
+            except Exception:
+                return queryset
         if not preview_only:
             return queryset
         try:
@@ -2274,9 +2498,54 @@ class MailService:
                 "importance",
                 "has_attachments",
                 "attachments",
+                "conversation_id",
             )
         except Exception:
             return queryset
+
+    def _probe_inbox_sample(self, account) -> list[Any]:
+        inbox = self._safe_folder_attr(account, "inbox")
+        if inbox is None:
+            raise MailServiceError("Inbox is not available")
+        queryset = self._folder_queryset(inbox, "inbox", scan_only=True)
+        return list(queryset[:1])
+
+    def _hydrate_conversation_items(self, *, account, items_raw: list[tuple[Any, str]]) -> list[tuple[Any, str]]:
+        ids: list[tuple[str, None]] = []
+        folder_by_id: dict[str, str] = {}
+        for item, folder_key in items_raw:
+            exchange_id = _normalize_text(getattr(item, "id", None))
+            if not exchange_id or exchange_id in folder_by_id:
+                continue
+            ids.append((exchange_id, None))
+            folder_by_id[exchange_id] = folder_key
+        if not ids:
+            return items_raw
+        try:
+            fetched = list(
+                account.fetch(
+                    ids=ids,
+                    only_fields=list(self._MESSAGE_DETAIL_FIELDS),
+                )
+            )
+        except Exception:
+            return items_raw
+        hydrated_by_id: dict[str, Any] = {}
+        for item in fetched:
+            if isinstance(item, Exception):
+                continue
+            exchange_id = _normalize_text(getattr(item, "id", None))
+            if exchange_id:
+                hydrated_by_id[exchange_id] = item
+        if not hydrated_by_id:
+            return items_raw
+        return [
+            (
+                hydrated_by_id.get(_normalize_text(getattr(item, "id", None))) or item,
+                folder_key,
+            )
+            for item, folder_key in items_raw
+        ]
 
     def _build_quote_html(self, item) -> str:
         return self._message_serializer.build_quote_html(item)
@@ -2840,7 +3109,14 @@ class MailService:
         )
         return {"ok": True, "folder_id": folder_key}
 
-    def _get_message_context(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> dict[str, Any]:
+    def _get_message_context(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+        only_fields: tuple[str, ...] | None = _MESSAGE_DETAIL_FIELDS,
+    ) -> dict[str, Any]:
         folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
         resolved_mailbox_id = self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id)
         mail_context = self._resolve_account_context(
@@ -2850,15 +3126,12 @@ class MailService:
         )
         profile = mail_context["profile"]
         account = mail_context["account"]
-        folder_obj, folder_key = self._resolve_folder(account, folder_key)
-        try:
-            detail_queryset = folder_obj.all().only(*self._MESSAGE_DETAIL_FIELDS)
-        except Exception:
-            detail_queryset = folder_obj
-        try:
-            item = detail_queryset.get(id=exchange_id)
-        except Exception as exc:
-            raise MailServiceError(f"Message not found: {exchange_id}") from exc
+        folder_obj, folder_key, item = self._locate_message_item(
+            account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=only_fields,
+        )
         return {
             "account": account,
             "profile": profile,
@@ -3100,13 +3373,17 @@ class MailService:
         mailbox_id: str | None = None,
         message_id: str,
     ) -> dict[str, str]:
-        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service
+        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service, require_mail_ai_access
 
+        try:
+            require_mail_ai_access(user_id=int(user_id))
+        except MailAiServiceError as exc:
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
         detail = self.get_message(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
         try:
             return mail_ai_service.summarize_message(detail)
         except MailAiServiceError as exc:
-            raise MailServiceError(str(exc)) from exc
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
     def smart_replies_for_message(
         self,
@@ -3115,13 +3392,17 @@ class MailService:
         mailbox_id: str | None = None,
         message_id: str,
     ) -> dict[str, list[str]]:
-        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service
+        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service, require_mail_ai_access
 
+        try:
+            require_mail_ai_access(user_id=int(user_id))
+        except MailAiServiceError as exc:
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
         detail = self.get_message(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
         try:
             return mail_ai_service.smart_replies(detail)
         except MailAiServiceError as exc:
-            raise MailServiceError(str(exc)) from exc
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
     def _set_conversation_read_state(
         self,
@@ -3292,6 +3573,18 @@ class MailService:
             return content
         return MailMessageContent()
 
+    def _mail_send_pipeline(self) -> MailSendPipeline:
+        pipeline = getattr(self, "_send_pipeline", None)
+        if isinstance(pipeline, MailSendPipeline):
+            return pipeline
+        return MailSendPipeline()
+
+    def _mail_attachment_download(self) -> MailAttachmentDownload:
+        downloader = getattr(self, "_attachment_download", None)
+        if isinstance(downloader, MailAttachmentDownload):
+            return downloader
+        return MailAttachmentDownload()
+
     def _message_mime_content(self, item) -> bytes:
         return self._mail_message_content().message_mime_content(item)
 
@@ -3347,11 +3640,25 @@ class MailService:
         return forwarded_attachments
 
     def get_message_source(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> tuple[str, bytes]:
-        context = self._get_message_context(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
+        context = self._get_message_context(
+            user_id=int(user_id),
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+            only_fields=self._MESSAGE_SOURCE_FIELDS,
+        )
         try:
             return self._mail_message_content().message_source_payload(item=context["item"])
-        except MailMessageContentError as exc:
-            raise MailServiceError(str(exc)) from exc
+        except MailMessageContentError:
+            context = self._get_message_context(
+                user_id=int(user_id),
+                mailbox_id=mailbox_id,
+                message_id=message_id,
+                only_fields=None,
+            )
+            try:
+                return self._mail_message_content().message_source_payload(item=context["item"])
+            except MailMessageContentError as exc:
+                raise MailServiceError(str(exc)) from exc
 
     def get_message_headers(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> dict[str, Any]:
         filename, source = self.get_message_source(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
@@ -3419,6 +3726,18 @@ class MailService:
     ) -> dict[str, Any]:
         folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
         resolved_mailbox_id = self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id)
+        if is_item_scoped_folder(folder_key):
+            mail_context = self._resolve_account_context(
+                user_id=int(user_id),
+                mailbox_id=resolved_mailbox_id,
+                require_password=True,
+            )
+            _folder_obj, folder_key, _item = self._locate_message_item(
+                mail_context["account"],
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                only_fields=("parent_folder_id",),
+            )
         if permanent and folder_key != "trash":
             raise MailServiceError("Permanent delete is allowed only from trash")
         if not permanent and folder_key != "trash":
@@ -3472,9 +3791,21 @@ class MailService:
         target_folder: str = "",
     ) -> dict[str, Any]:
         folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
+        resolved_mailbox_id = self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id)
+        if is_item_scoped_folder(folder_key):
+            mail_context = self._resolve_account_context(
+                user_id=int(user_id),
+                mailbox_id=resolved_mailbox_id,
+                require_password=True,
+            )
+            _folder_obj, folder_key, _item = self._locate_message_item(
+                mail_context["account"],
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                only_fields=("parent_folder_id",),
+            )
         if folder_key != "trash":
             raise MailServiceError("Only messages from trash can be restored")
-        resolved_mailbox_id = self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id)
         hint = self._get_restore_hint(
             user_id=int(user_id),
             mailbox_id=resolved_mailbox_id,
@@ -3503,12 +3834,7 @@ class MailService:
             return int(cached)
         try:
             self._set_request_metric("cache_hit", 0)
-            total = 0
-            for row in self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=False):
-                row_id = _normalize_text(row.get("id"))
-                if not row_id:
-                    continue
-                total += self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=row_id)
+            total = self._aggregate_unread_count(user_id=int(user_id))
             self._cache_set(
                 user_id=int(user_id),
                 bucket="unread_count",
@@ -3518,6 +3844,41 @@ class MailService:
             return int(total)
         except Exception:
             return 0
+
+    @staticmethod
+    def _inbox_unread_from_summary(summary: dict[str, Any] | None) -> int | None:
+        try:
+            unread = (summary or {}).get("inbox", {}).get("unread")
+        except Exception:
+            return None
+        if unread is None:
+            return None
+        try:
+            return max(0, int(unread))
+        except Exception:
+            return None
+
+    def _aggregate_unread_count(
+        self,
+        *,
+        user_id: int,
+        current_mailbox_id: str | None = None,
+        current_inbox_unread: int | None = None,
+    ) -> int:
+        total = 0
+        current_id = _normalize_text(current_mailbox_id)
+        for row in self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=False):
+            row_id = _normalize_text(row.get("id"))
+            if not row_id:
+                continue
+            if current_id and row_id == current_id and current_inbox_unread is not None:
+                total += max(0, int(current_inbox_unread))
+                continue
+            try:
+                total += self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=row_id)
+            except Exception:
+                continue
+        return int(total)
 
     def list_notification_feed(
         self,
@@ -3703,11 +4064,20 @@ class MailService:
                         mailbox_scope=resolved_mailbox_id,
                     )
                 if next_unread_count is None:
+                    inbox_unread = self._inbox_unread_from_summary(next_summary)
                     next_unread_count = self._cache_set(
                         user_id=int(user_id),
                         bucket="unread_count",
                         mailbox_scope="aggregate",
-                        value=self.get_unread_count(user_id=int(user_id)),
+                        value=(
+                            self._aggregate_unread_count(
+                                user_id=int(user_id),
+                                current_mailbox_id=resolved_mailbox_id,
+                                current_inbox_unread=inbox_unread,
+                            )
+                            if inbox_unread is not None
+                            else self.get_unread_count(user_id=int(user_id))
+                        ),
                     )
                 if next_messages is None:
                     next_messages = self._cache_set(
@@ -3852,7 +4222,10 @@ class MailService:
                     mailbox_id=resolved_mailbox_id,
                     mailbox_email=profile["email"],
                 )
-                for item, item_folder_key in items_raw
+                for item, item_folder_key in self._hydrate_conversation_items(
+                    account=account,
+                    items_raw=items_raw,
+                )
             ]
             payload = self._conversation_payloads.conversation_detail_payload(
                 conversation_id=resolved_conversation_key,
@@ -4028,35 +4401,39 @@ class MailService:
             require_password=True,
         )
         account = mail_context["account"]
-        folder_obj, _ = self._resolve_folder(account, folder_key)
-        try:
-            attachment_queryset = folder_obj.all().only("attachments")
-        except Exception:
-            attachment_queryset = folder_obj
-        try:
-            item = attachment_queryset.get(id=exchange_id)
-        except Exception as exc:
-            raise MailServiceError(f"Message not found: {exchange_id}") from exc
+        _folder_obj, _folder_key, item = self._locate_message_item(
+            account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("attachments",),
+        )
 
         try:
-            for att in getattr(item, "attachments", []) or []:
-                att_id = self._extract_attachment_raw_id(att)
-                if att_id == attachment_id:
-                    payload = self._build_attachment_download_payload(attachment=att, account=account)
-                    if payload is not None:
-                        return self._cache_set(
-                            user_id=int(user_id),
-                            bucket="attachment_content",
-                            extra=f"{_normalize_text(message_id)}|{_normalize_text(attachment_id)}",
-                            value=payload,
-                            mailbox_scope=resolved_mailbox_id,
-                        )
-                    raise MailServiceError(f"Attachment type is not supported for download: {type(att).__name__}")
-            raise MailServiceError(f"Attachment not found: {attachment_id}")
+            payload = self._mail_attachment_download().payload_from_item(
+                item=item,
+                attachment_id=attachment_id,
+                account=account,
+                extract_attachment_id=self._extract_attachment_raw_id,
+                build_payload=self._build_attachment_download_payload,
+            )
+        except MailAttachmentDownloadError as exc:
+            raise MailServiceError(str(exc)) from exc
         except MailServiceError:
             raise
         except Exception as exc:
             raise MailServiceError(f"Failed to download attachment: {exc}") from exc
+
+        cache_policy = self._cache_policy("attachment_content")
+        if should_cache_attachment_payload(payload, max_entry_bytes=cache_policy.max_entry_bytes):
+            return self._cache_set(
+                user_id=int(user_id),
+                bucket="attachment_content",
+                extra=f"{_normalize_text(message_id)}|{_normalize_text(attachment_id)}",
+                value=payload,
+                mailbox_scope=resolved_mailbox_id,
+            )
+        self._set_request_metric("attachment_cache_skip", 1)
+        return payload
 
     def get_attachment_preview(
         self,
@@ -4145,6 +4522,119 @@ class MailService:
             error_text=error_text,
         )
 
+    def _claim_send_idempotency(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str,
+        idempotency_key: str,
+        to: list[str],
+        cc: list[str],
+        bcc: list[str],
+        subject: str,
+        body: str,
+        is_html: bool,
+        reply_to_message_id: str,
+        forward_message_id: str,
+        draft_id: str,
+        retain_existing_attachments: list[str] | None,
+        attachments: list[tuple[str, bytes]],
+    ) -> MailSendIdempotencyClaim | None:
+        if not mail_send_idempotency_enabled():
+            return None
+        key = _normalize_text(idempotency_key)
+        if not key:
+            return None
+        if len(key) < 8 or len(key) > 128:
+            raise MailServiceError(
+                "Idempotency-Key must be 8-128 characters",
+                code="MAIL_IDEMPOTENCY_KEY_INVALID",
+                status_code=400,
+            )
+        database_url = str(getattr(self, "_database_url", None) or "").strip() or None
+        if not database_url:
+            raise MailServiceError(
+                "Идемпотентная отправка недоступна: нет APP_DATABASE_URL.",
+                code="MAIL_IDEMPOTENCY_UNAVAILABLE",
+                status_code=503,
+            )
+        payload_hash = hash_mail_send_payload(
+            mailbox_id=mailbox_id,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            is_html=is_html,
+            reply_to_message_id=reply_to_message_id,
+            forward_message_id=forward_message_id,
+            draft_id=draft_id,
+            retain_existing_attachments=retain_existing_attachments,
+            attachments=attachments,
+        )
+        return MailSendIdempotencyStore(database_url).claim(
+            user_id=int(user_id),
+            mailbox_id=mailbox_id,
+            idempotency_key=key,
+            request_payload_hash=payload_hash,
+        )
+
+    def _apply_send_idempotency_claim(self, claim: MailSendIdempotencyClaim | None) -> dict[str, Any] | None:
+        if claim is None or claim.action == "proceed":
+            return None
+        if claim.action == "replay":
+            return dict(claim.result or {"ok": True})
+        if claim.action == "conflict":
+            raise MailServiceError(
+                "Этот ключ отправки уже использован для другого письма.",
+                code="MAIL_IDEMPOTENCY_CONFLICT",
+                status_code=409,
+            )
+        if claim.action == "in_flight":
+            raise MailServiceError(
+                "Отправка этого письма уже выполняется.",
+                code="MAIL_SEND_IN_FLIGHT",
+                status_code=409,
+            )
+        if claim.action == "unknown":
+            raise MailServiceError(
+                "Статус отправки неизвестен. Повторная отправка этим ключом заблокирована.",
+                code="MAIL_SEND_UNKNOWN",
+                status_code=409,
+            )
+        raise MailServiceError(
+            "Статус отправки неизвестен. Повторная отправка этим ключом заблокирована.",
+            code="MAIL_SEND_UNKNOWN",
+            status_code=409,
+        )
+
+    def _complete_send_idempotency(
+        self,
+        claim: MailSendIdempotencyClaim | None,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if claim is None or claim.action != "proceed" or not claim.row_id:
+            return
+        database_url = str(getattr(self, "_database_url", None) or "").strip() or None
+        if not database_url:
+            return
+        store = MailSendIdempotencyStore(database_url)
+        try:
+            if status == "sent":
+                store.complete_sent(claim.row_id, result)
+            else:
+                store.complete_failed(claim.row_id, error_code=error_code)
+        except Exception:
+            logger.warning(
+                "Mail send idempotency complete failed: row_id=%s status=%s",
+                claim.row_id,
+                status,
+                exc_info=True,
+            )
+
     def send_message(
         self,
         *,
@@ -4161,6 +4651,7 @@ class MailService:
         forward_message_id: str = "",
         draft_id: str = "",
         retain_existing_attachments: list[str] | None = None,
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         try:
             recipient_set = build_recipient_set(to=to, cc=cc, bcc=bcc, require_to=True)
@@ -4174,17 +4665,42 @@ class MailService:
             reply_to_message_id=reply_to_message_id,
             forward_message_id=forward_message_id,
         )
-        profile = self._resolve_mail_profile(
+        send_claim = self._claim_send_idempotency(
             user_id=int(user_id),
             mailbox_id=effective_mailbox_id,
-            require_password=True,
+            idempotency_key=idempotency_key,
+            to=recipient_set.to,
+            cc=recipient_set.cc,
+            bcc=recipient_set.bcc,
+            subject=subject,
+            body=body,
+            is_html=is_html,
+            reply_to_message_id=reply_to_message_id,
+            forward_message_id=forward_message_id,
+            draft_id=draft_id,
+            retain_existing_attachments=retain_existing_attachments,
+            attachments=safe_attachments,
         )
-        resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
-        account = self._create_account(
-            email=profile["email"],
-            login=profile["login"],
-            password=profile["password"],
-        )
+        replayed = self._apply_send_idempotency_claim(send_claim)
+        if replayed is not None:
+            return replayed
+        try:
+            profile = self._resolve_mail_profile(
+                user_id=int(user_id),
+                mailbox_id=effective_mailbox_id,
+                require_password=True,
+            )
+            resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
+            account = self._create_account(
+                email=profile["email"],
+                login=profile["login"],
+                password=profile["password"],
+            )
+        except Exception as exc:
+            self._complete_send_idempotency(send_claim, status="failed", error_code="MAIL_SEND_FAILED")
+            if isinstance(exc, MailServiceError):
+                raise
+            raise MailServiceError(f"Failed to send message: {exc}") from exc
         try:
             send_plan = build_outbound_send_plan(
                 mailbox_id=effective_mailbox_id,
@@ -4202,6 +4718,7 @@ class MailService:
                 mailbox_scope_resolver=self._resolve_mailbox_scope,
             )
         except ComposeValidationError as exc:
+            self._complete_send_idempotency(send_claim, status="failed", error_code="MAIL_COMPOSE_INVALID")
             raise MailServiceError(str(exc)) from exc
 
         message_id = _normalize_text(base64.urlsafe_b64encode(os.urandom(12)).decode("utf-8"))
@@ -4209,97 +4726,43 @@ class MailService:
         cc_recipients = send_plan.recipients.cc
         bcc_recipients = send_plan.recipients.bcc
         final_subject = send_plan.subject
-        final_body = send_plan.body
 
         try:
-            from exchangelib import HTMLBody, Mailbox, Message
-            from exchangelib.attachments import FileAttachment
-        except Exception as exc:
-            raise MailServiceError("exchangelib package is not installed") from exc
-
-        try:
-            to_recipients = [Mailbox(email_address=email) for email in recipients]
-            cc_mailboxes = [Mailbox(email_address=email) for email in cc_recipients]
-            bcc_mailboxes = [Mailbox(email_address=email) for email in bcc_recipients]
-            body_payload = HTMLBody(final_body) if send_plan.is_html else final_body
-            msg_kwargs = dict(
+            msg = self._mail_send_pipeline().send(
                 account=account,
-                folder=account.sent,
+                send_plan=send_plan,
+                attachments=safe_attachments,
+                internet_message_id=_normalize_text(
+                    getattr(send_claim, "internet_message_id", None) if send_claim is not None else ""
+                ),
+                retain_existing_attachments=retain_existing_attachments,
+                decode_message_id=self._decode_message_id,
+                resolve_folder=self._resolve_folder,
+                locate_message_item=self._locate_message_item,
+                collect_forwarded_attachments=self._collect_forwarded_attachments,
+                item_message_id=self._item_message_id,
+                resolve_attachment_id=self.resolve_attachment_id,
+                validate_attachments=self._validate_outgoing_attachments_dynamic,
+            )
+        except MailSendPipelineError as exc:
+            error_code = _normalize_text(getattr(exc, "code", None), "MAIL_SEND_FAILED")
+            self._complete_send_idempotency(send_claim, status="failed", error_code=error_code)
+            if error_code == "MAIL_EXCHANGELIB_MISSING":
+                raise MailServiceError("exchangelib package is not installed") from exc
+            self._log_message(
+                message_id=message_id,
+                user_id=int(profile["user"]["id"]),
+                username=_normalize_text(profile["user"].get("username")),
+                direction="outgoing",
+                folder_hint="sent",
                 subject=final_subject,
-                body=body_payload,
-                to_recipients=to_recipients,
-                cc_recipients=cc_mailboxes,
-                bcc_recipients=bcc_mailboxes,
+                recipients=recipients,
+                status="failed",
+                error_text=str(exc),
             )
-            reply_message_id_value = ""
-            reply_references = ""
-            forward_message_id_value = ""
-            retain_attachment_ids = (
-                {
-                    self.resolve_attachment_id(token)
-                    for token in (retain_existing_attachments or [])
-                    if _normalize_text(token)
-                }
-                if retain_existing_attachments is not None
-                else None
-            )
+            raise MailServiceError(f"Failed to send message: {exc}") from exc
 
-            if send_plan.draft_id:
-                draft_folder_key, draft_exchange_id = self._decode_message_id(send_plan.draft_id)
-                if draft_folder_key != "drafts":
-                    raise MailServiceError("Draft id must point to drafts folder")
-                draft_folder_obj, _ = self._resolve_folder(account, draft_folder_key)
-                try:
-                    draft_item = draft_folder_obj.get(id=draft_exchange_id)
-                except Exception as exc:
-                    raise MailServiceError(f"Draft source message not found: {exc}") from exc
-                safe_attachments.extend(
-                    self._collect_forwarded_attachments(
-                        item=draft_item,
-                        account=account,
-                        retain_attachment_ids=retain_attachment_ids,
-                    )
-                )
-                self._validate_outgoing_attachments_dynamic(safe_attachments)
-
-            if send_plan.reply_to_message_id:
-                reply_folder_key, reply_exchange_id = self._decode_message_id(send_plan.reply_to_message_id)
-                reply_folder_obj, _ = self._resolve_folder(account, reply_folder_key)
-                try:
-                    reply_item = reply_folder_obj.get(id=reply_exchange_id)
-                except Exception as exc:
-                    raise MailServiceError(f"Reply source message not found: {exc}") from exc
-                reply_message_id_value = self._item_message_id(reply_item)
-                reply_references = _normalize_text(getattr(reply_item, "references", None))
-
-            if send_plan.forward_message_id:
-                forward_folder_key, forward_exchange_id = self._decode_message_id(send_plan.forward_message_id)
-                forward_folder_obj, _ = self._resolve_folder(account, forward_folder_key)
-                try:
-                    forward_item = forward_folder_obj.get(id=forward_exchange_id)
-                except Exception as exc:
-                    raise MailServiceError(f"Forward source message not found: {exc}") from exc
-                forward_message_id_value = self._item_message_id(forward_item)
-                safe_attachments.extend(
-                    self._collect_forwarded_attachments(item=forward_item, account=account)
-                )
-                self._validate_outgoing_attachments_dynamic(safe_attachments)
-
-            msg_kwargs.update(
-                build_reply_forward_reference_headers(
-                    reply_message_id=reply_message_id_value,
-                    reply_references=reply_references,
-                    forward_message_id=forward_message_id_value,
-                )
-            )
-
-            msg = Message(**msg_kwargs)
-            if safe_attachments:
-                for filename, content in safe_attachments:
-                    att = FileAttachment(name=filename, content=content)
-                    msg.attach(att)
-
-            msg.send_and_save()
+        try:
             if draft_id:
                 try:
                     self.delete_draft(user_id=int(user_id), mailbox_id=resolved_mailbox_id, draft_id=draft_id)
@@ -4320,7 +4783,7 @@ class MailService:
                 user_id=int(user_id),
                 prefixes=("folder_summary", "folder_tree", "messages", "notification_feed", "bootstrap", "message_detail", "conversation_detail"),
             )
-            return {
+            result = {
                 "ok": True,
                 "message_id": message_id,
                 "subject": final_subject,
@@ -4330,7 +4793,10 @@ class MailService:
                 "mailbox_id": _normalize_text(profile.get("mailbox_id")) or None,
                 "mailbox_email": _normalize_text(profile.get("email")) or None,
             }
+            self._complete_send_idempotency(send_claim, status="sent", result=result)
+            return result
         except Exception as exc:
+            self._complete_send_idempotency(send_claim, status="failed", error_code="MAIL_SEND_FAILED")
             self._log_message(
                 message_id=message_id,
                 user_id=int(profile["user"]["id"]),
@@ -4677,6 +5143,11 @@ class MailService:
             if not updated:
                 raise MailServiceError("User not found")
             self._ensure_user_mailboxes_seeded(user_id=int(user_id))
+            self._sync_session_password_after_credentials_save(
+                user=updated if isinstance(updated, dict) else user,
+                mailbox_login=login,
+                mailbox_password=password,
+            )
             self.invalidate_user_cache(user_id=int(user_id))
             target_row = self._resolve_primary_mailbox_row(user_id=int(user_id), allow_inactive=True)
             return self.get_my_config(
@@ -4722,6 +5193,13 @@ class MailService:
             mailbox_login=next_login,
             mailbox_password=password,
             auth_mode="stored_credentials",
+        )
+        # Keep current web-session mail context in sync after AD password rotation,
+        # including trusted-device sessions that never captured a password at login.
+        self._sync_session_password_after_credentials_save(
+            user=user,
+            mailbox_login=next_login,
+            mailbox_password=password,
         )
         self.invalidate_user_cache(user_id=int(user_id))
         return self.get_my_config(user_id=int(user_id), mailbox_id=target_mailbox_id)
@@ -4800,8 +5278,7 @@ class MailService:
                 login=profile["login"],
                 password=profile["password"],
             )
-            inbox = account.inbox
-            sample = list(inbox.all().order_by("-datetime_received")[:1])
+            sample = self._probe_inbox_sample(account)
         except MailServiceError:
             raise
         except Exception as exc:

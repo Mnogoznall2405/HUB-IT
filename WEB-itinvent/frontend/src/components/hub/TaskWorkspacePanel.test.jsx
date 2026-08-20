@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TaskWorkspacePanel from './TaskWorkspacePanel';
@@ -14,6 +14,7 @@ vi.mock('../../api/client', () => ({
     startTask: vi.fn(),
     submitTask: vi.fn(),
     reviewTask: vi.fn(),
+    completeTask: vi.fn(),
     uploadTaskAttachment: vi.fn(),
     downloadTaskAttachment: vi.fn(),
     getAssignees: vi.fn(),
@@ -70,6 +71,7 @@ const task = {
     can_start: true,
     can_submit: false,
     can_review: false,
+    can_close: true,
     can_upload_files: true,
     can_update_checklist: true,
     can_reopen: false,
@@ -92,6 +94,7 @@ beforeEach(() => {
   hubAPI.deleteTask.mockResolvedValue({ ok: true, task_id: task.id });
   hubAPI.updateTask.mockResolvedValue(task);
   hubAPI.startTask.mockResolvedValue({ ...task, status: 'in_progress' });
+  hubAPI.completeTask.mockResolvedValue({ ...task, status: 'done', capabilities: { ...task.capabilities, can_close: false, can_reopen: true } });
   hubAPI.getAssignees.mockResolvedValue({ items: [{ id: 2, full_name: 'Пётр Исполнитель' }] });
   hubAPI.getControllers.mockResolvedValue({ items: [{ id: 3, full_name: 'Анна Контролёр' }] });
   hubAPI.getTaskProjects.mockResolvedValue({ items: [{ id: 'project-1', name: 'Офис', is_active: true }] });
@@ -112,14 +115,19 @@ beforeEach(() => {
   });
 });
 
+const openMoreMenu = async () => {
+  await screen.findByText('Пётр Исполнитель');
+  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }));
+};
+
 describe('TaskWorkspacePanel', () => {
   it('lets the task creator delete it from the chat workspace', async () => {
     const onOpenInTasks = vi.fn();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderPanel({ onOpenInTasks });
 
-    await screen.findByText('Настроить рабочее место');
-    fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+    await openMoreMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить' }));
 
     await waitFor(() => {
       expect(hubAPI.deleteTask).toHaveBeenCalledWith('task-1');
@@ -131,17 +139,17 @@ describe('TaskWorkspacePanel', () => {
   it('hides deletion from a user who did not create the task', async () => {
     renderPanel({ currentUser: { id: 2, role: 'viewer', permissions: ['tasks.read'] } });
 
-    await screen.findByText('Настроить рабочее место');
+    await openMoreMenu();
 
-    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Удалить' })).not.toBeInTheDocument();
   });
 
   it('shows a direct way back to the tasks list', async () => {
     const onOpenInTasks = vi.fn();
     renderPanel({ onOpenInTasks });
 
-    await screen.findByText('Настроить рабочее место');
-    fireEvent.click(screen.getByRole('button', { name: 'К задачам' }));
+    await openMoreMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Открыть в задачах' }));
 
     expect(onOpenInTasks).toHaveBeenCalledTimes(1);
   });
@@ -149,17 +157,39 @@ describe('TaskWorkspacePanel', () => {
   it('loads and renders the complete task workspace', async () => {
     renderPanel();
 
-    expect(await screen.findByText('Настроить рабочее место')).toBeInTheDocument();
-    expect(screen.getByText('Пётр Исполнитель')).toBeInTheDocument();
+    expect(await screen.findByText('Пётр Исполнитель')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /Файлы/ }));
     expect(screen.getByText('plan.xlsx')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Предпросмотр plan\.xlsx/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Обзор' }));
     expect(screen.getByTestId('task-workspace-checklist')).toHaveTextContent('1/2');
-    expect(screen.getByRole('button', { name: 'Начать' })).toBeInTheDocument();
+    const actions = screen.getByTestId('task-workspace-actions');
+    expect(within(actions).getByRole('button', { name: 'В работу' })).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: 'Отправить на проверку' })).toBeDisabled();
+    expect(within(actions).getByRole('button', { name: 'Закрыть' })).toBeEnabled();
+    expect(screen.getByText(/Недоступно: вы являетесь постановщиком/i)).toBeInTheDocument();
     expect(hubAPI.getTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('lets the task creator close the task without review', async () => {
+    renderPanel();
+
+    const actions = await screen.findByTestId('task-workspace-actions');
+    fireEvent.click(within(actions).getByRole('button', { name: 'Закрыть' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Закрыть задачу');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }));
+
+    await waitFor(() => {
+      expect(hubAPI.completeTask).toHaveBeenCalledWith('task-1', { comment: '' });
+    });
   });
 
   it('opens task files through the background preview flow', async () => {
     renderPanel();
+    await screen.findByText('Пётр Исполнитель');
+    fireEvent.click(screen.getByRole('tab', { name: /Файлы/ }));
     await screen.findByText('plan.xlsx');
 
     fireEvent.click(screen.getByRole('button', { name: /Предпросмотр plan\.xlsx/i }));
@@ -180,7 +210,7 @@ describe('TaskWorkspacePanel', () => {
     const nextUpdateHandler = vi.fn();
     const { rerender } = renderPanel({ onTaskUpdated: firstUpdateHandler });
 
-    await screen.findByText('Настроить рабочее место');
+    await screen.findByText('Пётр Исполнитель');
     expect(hubAPI.getTask).toHaveBeenCalledTimes(1);
 
     rerender(
@@ -197,7 +227,7 @@ describe('TaskWorkspacePanel', () => {
   it('reloads the workspace when the task id changes', async () => {
     const { rerender } = renderPanel();
 
-    await screen.findByText('Настроить рабочее место');
+    await screen.findByText('Пётр Исполнитель');
 
     rerender(
       <ThemeProvider theme={createTheme()}>
@@ -243,12 +273,13 @@ describe('TaskWorkspacePanel', () => {
 
   it('loads edit reference data only after the user opens editing', async () => {
     renderPanel();
-    await screen.findByText('Настроить рабочее место');
+    await screen.findByText('Пётр Исполнитель');
 
     expect(hubAPI.getAssignees).not.toHaveBeenCalled();
     expect(departmentsAPI.list).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Изменить' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ещё' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Изменить' }));
 
     await waitFor(() => {
       expect(hubAPI.getAssignees).toHaveBeenCalledWith({ ids: '2' });

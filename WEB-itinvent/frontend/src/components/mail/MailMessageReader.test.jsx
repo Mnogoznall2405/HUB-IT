@@ -1,8 +1,9 @@
 import React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import MailMessageReader from './MailMessageReader';
+import { MAIL_HTML_SANDBOX_STORAGE_KEY, setMailHtmlSandboxEnabled } from './mailHtmlSandboxFlags';
 
 function renderWithTheme(node) {
   return render(
@@ -43,6 +44,9 @@ function buildProps(overrides = {}) {
 }
 
 describe('MailMessageReader', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(MAIL_HTML_SANDBOX_STORAGE_KEY);
+  });
   it('shows blocked external images action and reveals them for the current message', () => {
     const props = buildProps({
       renderState: {
@@ -133,5 +137,14 @@ describe('MailMessageReader', () => {
     expect(screen.getByTestId('mail-attachment-summary-row')).toBeVisible();
     expect(screen.getByTestId('mail-attachment-compact-strip')).toBeVisible();
     expect(screen.getAllByTestId(/^mail-attachment-compact-card-/)).toHaveLength(5);
+  });
+
+  it('isolates the message body in a sandbox iframe when the flag is on', () => {
+    setMailHtmlSandboxEnabled(true);
+    renderWithTheme(<MailMessageReader {...buildProps()} />);
+
+    const frame = screen.getByTestId('mail-html-sandbox');
+    expect(frame.getAttribute('sandbox') || '').not.toContain('allow-scripts');
+    expect(frame.getAttribute('srcdoc') || frame.getAttribute('srcDoc') || '').toContain('Current message body');
   });
 });

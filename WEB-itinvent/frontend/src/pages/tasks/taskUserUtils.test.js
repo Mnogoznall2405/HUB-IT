@@ -15,6 +15,7 @@ describe('taskUserUtils', () => {
   it('prefers full name for label', () => {
     expect(getTaskUserLabel(users[0])).toBe('Иван Петров');
     expect(getTaskUserLabel({ username: 'guest' })).toBe('guest');
+    expect(getTaskUserLabel({ full_name: 'Announcement Admin', username: 'feed_admin' })).toBe('Системный контролёр');
     expect(getTaskUserLabel({})).toBe('Пользователь');
   });
 

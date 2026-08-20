@@ -12,15 +12,20 @@ import {
   MenuItem,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CreateOutlinedIcon from '@mui/icons-material/CreateOutlined';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
+import DrawOutlinedIcon from '@mui/icons-material/DrawOutlined';
 import {
   buildMailUiTokens,
   getMailBottomSheetPaperSx,
@@ -33,8 +38,8 @@ import ShellNotificationsButton from '../layout/ShellNotificationsButton';
 
 const iconButtonSx = (tokens, overrides = {}) => ({
   ...getMailIconButtonSx(tokens, {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     ...overrides,
   }),
 });
@@ -46,6 +51,7 @@ function MailboxListContent({
   onManageMailboxes,
   onClose,
   tokens,
+  extraItems = [],
 }) {
   return (
     <Box className="mail-scroll-hidden" sx={{ maxHeight: '80dvh', overflowY: 'auto' }}>
@@ -67,9 +73,9 @@ function MailboxListContent({
               onSelectMailbox?.(mailboxId, mailbox);
             }}
             sx={{
-              minHeight: 62,
+              minHeight: 56,
               px: 2,
-              py: 1.15,
+              py: 1,
               justifyContent: 'space-between',
               borderRadius: 0,
               textTransform: 'none',
@@ -128,7 +134,7 @@ function MailboxListContent({
           onManageMailboxes?.();
         }}
         sx={{
-          minHeight: 56,
+          minHeight: 48,
           borderRadius: 0,
           justifyContent: 'flex-start',
           px: 2,
@@ -139,6 +145,34 @@ function MailboxListContent({
       >
         + Подключить ящик
       </Button>
+      {extraItems.length > 0 ? (
+        <>
+          <Divider />
+          {extraItems.map((item) => (
+            <Button
+              key={item.id}
+              data-testid={item.testId}
+              fullWidth
+              onClick={() => {
+                onClose?.();
+                item.onClick?.();
+              }}
+              sx={{
+                minHeight: 48,
+                borderRadius: 0,
+                justifyContent: 'flex-start',
+                px: 2,
+                textTransform: 'none',
+                color: tokens.textPrimary,
+                fontWeight: 600,
+              }}
+              startIcon={item.icon}
+            >
+              {item.label}
+            </Button>
+          ))}
+        </>
+      ) : null}
     </Box>
   );
 }
@@ -153,16 +187,23 @@ export default function MailToolbar({
   search,
   onSearchChange,
   onRefresh,
+  onCompose,
   onOpenAdvancedSearch,
   onOpenToolsMenu,
   onOpenNavigation,
-  currentFolderLabel = '',
+  onOpenStorage,
+  onBackFromStorage,
+  onOpenSignatures,
+  onOpenMailSettings,
+  canOpenStorage = false,
+  storageActive = false,
   hasActiveFilters = false,
   mobile = false,
-  sectionTabs = null,
-  mobileHeaderTabs = null,
+  embedded = false,
+  showNavigationButton = false,
   loading = false,
-  searchPlaceholder = 'Поиск по теме, отправителю или письму',
+  refreshTooltip = 'Обновить',
+  searchPlaceholder = 'Поиск по теме, адресу и тексту…',
   searchInputRef,
 }) {
   const theme = useTheme();
@@ -171,7 +212,6 @@ export default function MailToolbar({
   const [mobileMailboxSheetOpen, setMobileMailboxSheetOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
-  const resolvedSectionTabs = sectionTabs ?? mobileHeaderTabs;
   const normalizedMailboxes = Array.isArray(mailboxes) ? mailboxes : [];
   const activeMailboxId = String(activeMailbox?.id || '').trim();
   const activeMailboxLabel = String(
@@ -181,6 +221,37 @@ export default function MailToolbar({
       || 'Ящик'
   ).trim();
   const activeUnreadCount = Number(activeMailbox?.unread_count || 0);
+  const showNavButton = Boolean(mobile || showNavigationButton);
+
+  const mailboxExtraItems = [
+    storageActive ? {
+      id: 'back-to-mail',
+      testId: 'mail-toolbar-menu-back-to-mail',
+      label: 'К письмам',
+      icon: <ArrowBackRoundedIcon fontSize="small" />,
+      onClick: onBackFromStorage,
+    } : canOpenStorage ? {
+      id: 'storage',
+      testId: 'mail-toolbar-open-storage',
+      label: 'Хранилище',
+      icon: <StorageOutlinedIcon fontSize="small" />,
+      onClick: onOpenStorage,
+    } : null,
+    {
+      id: 'signatures',
+      testId: 'mail-toolbar-open-signatures',
+      label: 'Управление подписями',
+      icon: <DrawOutlinedIcon fontSize="small" />,
+      onClick: onOpenSignatures,
+    },
+    {
+      id: 'settings',
+      testId: 'mail-toolbar-open-mail-settings',
+      label: 'Настройки почты',
+      icon: <TuneRoundedIcon fontSize="small" />,
+      onClick: onOpenMailSettings,
+    },
+  ].filter(Boolean);
 
   useEffect(() => {
     if (!mobile) return;
@@ -191,7 +262,7 @@ export default function MailToolbar({
 
   const searchField = (
     <TextField
-      data-testid={mobile ? 'mail-toolbar-mobile-search' : undefined}
+      data-testid={mobile ? 'mail-toolbar-mobile-search' : 'mail-toolbar-search'}
       inputRef={searchInputRef}
       size="small"
       value={search}
@@ -205,10 +276,15 @@ export default function MailToolbar({
           </InputAdornment>
         ),
         sx: {
-          minHeight: mobile ? 46 : 44,
+          minHeight: mobile ? 40 : (embedded ? 32 : 36),
           borderRadius: tokens.inputRadius,
           bgcolor: tokens.surfaceBg,
           color: tokens.textPrimary,
+          fontSize: '0.875rem',
+          '& input::placeholder': {
+            color: tokens.textSecondary,
+            opacity: 1,
+          },
           '& .MuiOutlinedInput-notchedOutline': {
             borderColor: tokens.surfaceBorder,
           },
@@ -223,6 +299,51 @@ export default function MailToolbar({
     />
   );
 
+  const mailboxSwitcherButton = (
+    <Button
+      data-testid={mobile ? 'mail-toolbar-mobile-mailbox-switcher' : 'mail-toolbar-mailbox-switcher'}
+      aria-label="Выбрать почтовый ящик"
+      aria-expanded={Boolean(mailboxMenuAnchorEl || mobileMailboxSheetOpen)}
+      onClick={(event) => {
+        onOpenMailboxList?.();
+        if (mobile) {
+          setMobileMailboxSheetOpen(true);
+          return;
+        }
+        setMailboxMenuAnchorEl(event.currentTarget);
+      }}
+      sx={{
+        minWidth: 0,
+        maxWidth: mobile ? '100%' : (embedded ? 200 : 220),
+        flex: mobile ? 1 : (embedded ? '0 1 200px' : '0 1 220px'),
+        minHeight: embedded ? 32 : 36,
+        px: 1,
+        justifyContent: 'space-between',
+        ...getMailSurfaceButtonSx(tokens, {
+          borderRadius: tokens.controlRadius,
+          fontWeight: 600,
+        }),
+      }}
+    >
+      <Stack direction="row" spacing={0.8} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+        <Badge color="primary" badgeContent={activeUnreadCount || null}>
+          <Box
+            sx={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              bgcolor: activeMailbox?.is_primary ? 'primary.main' : tokens.textSecondary,
+            }}
+          />
+        </Badge>
+        <Typography noWrap sx={{ fontWeight: 600, fontSize: '0.84rem', minWidth: 0, flex: 1, textAlign: 'left' }}>
+          {activeMailboxLabel}
+        </Typography>
+      </Stack>
+      <ExpandMoreRoundedIcon fontSize="small" />
+    </Button>
+  );
+
   if (mobile) {
     return (
       <>
@@ -231,73 +352,54 @@ export default function MailToolbar({
           className="mail-safe-top"
           sx={{
             px: 1,
-            pt: 'calc(12px + env(safe-area-inset-top, 0px))',
+            pt: 'calc(8px + env(safe-area-inset-top, 0px))',
             pb: 0.75,
-            bgcolor: tokens.panelBg,
+            minHeight: 52,
+            bgcolor: tokens.shellBg || tokens.panelBg,
             borderBottom: '1px solid',
             borderColor: tokens.panelBorder,
           }}
         >
-          <Stack spacing={mobileSearchOpen ? 0.75 : 0.65}>
-            {resolvedSectionTabs ? (
-              <Box data-testid="mail-toolbar-mobile-header-tabs">
-                {resolvedSectionTabs}
-              </Box>
-            ) : null}
+          <Stack spacing={mobileSearchOpen ? 0.75 : 0.5}>
             <Stack direction="row" spacing={0.65} alignItems="center">
-              <IconButton
-                aria-label="Открыть навигацию"
-                data-testid="mail-toolbar-open-navigation"
-                onClick={onOpenNavigation}
-                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
-              >
-                <MenuRoundedIcon fontSize="small" />
-              </IconButton>
+              {showNavButton ? (
+                <IconButton
+                  aria-label="Открыть навигацию"
+                  data-testid="mail-toolbar-open-navigation"
+                  onClick={onOpenNavigation}
+                  sx={iconButtonSx(tokens)}
+                >
+                  <MenuRoundedIcon fontSize="small" />
+                </IconButton>
+              ) : null}
 
-              <Button
-                data-testid="mail-toolbar-mobile-mailbox-switcher"
-                onClick={() => {
-                  onOpenMailboxList?.();
-                  setMobileMailboxSheetOpen(true);
-                }}
-                sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  minHeight: 38,
-                  px: 1,
-                  justifyContent: 'space-between',
-                  ...getMailSurfaceButtonSx(tokens, {
-                    borderRadius: tokens.controlRadius,
-                  }),
-                }}
-              >
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
-                  <Badge color="primary" badgeContent={activeUnreadCount || null}>
-                    <Box
-                      sx={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: '50%',
-                        bgcolor: activeMailbox?.is_primary ? 'primary.main' : tokens.textSecondary,
-                      }}
-                    />
-                  </Badge>
-                  <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
-                    <Typography noWrap sx={{ fontWeight: 700, fontSize: '0.9rem' }}>
-                      {activeMailboxLabel}
-                    </Typography>
-                  </Box>
-                </Stack>
-                <ExpandMoreRoundedIcon fontSize="small" />
-              </Button>
+              {mailboxSwitcherButton}
+
+              {onCompose ? (
+                <Tooltip title="Написать письмо">
+                  <IconButton
+                    aria-label="Написать письмо"
+                    data-testid="mail-compose-button"
+                    onClick={onCompose}
+                    sx={iconButtonSx(tokens, {
+                      bgcolor: theme.palette.primary.main,
+                      color: theme.palette.primary.contrastText,
+                      borderColor: 'transparent',
+                      '&:hover': {
+                        bgcolor: theme.palette.primary.dark,
+                      },
+                    })}
+                  >
+                    <CreateOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              ) : null}
 
               <IconButton
                 aria-label="Открыть поиск"
                 data-testid="mail-toolbar-toggle-search"
                 onClick={() => setMobileSearchOpen((prev) => !prev)}
                 sx={iconButtonSx(tokens, {
-                  width: 38,
-                  height: 38,
                   bgcolor: mobileSearchOpen ? tokens.selectedBg : tokens.actionBg,
                   color: mobileSearchOpen ? 'primary.main' : tokens.textPrimary,
                 })}
@@ -309,14 +411,14 @@ export default function MailToolbar({
                 aria-label="Открыть действия"
                 data-testid="mail-toolbar-open-tools"
                 onClick={onOpenToolsMenu}
-                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
+                sx={iconButtonSx(tokens)}
               >
                 <MoreHorizRoundedIcon fontSize="small" />
               </IconButton>
 
               <ShellNotificationsButton
                 size="small"
-                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
+                sx={iconButtonSx(tokens)}
               />
             </Stack>
 
@@ -354,6 +456,7 @@ export default function MailToolbar({
             onManageMailboxes={onManageMailboxes}
             onClose={() => setMobileMailboxSheetOpen(false)}
             tokens={tokens}
+            extraItems={mailboxExtraItems}
           />
         </Drawer>
       </>
@@ -362,90 +465,76 @@ export default function MailToolbar({
 
   return (
     <Box
+      data-testid="mail-toolbar-desktop"
+      data-embedded={embedded ? 'true' : 'false'}
       sx={{
-        px: { xs: 1.25, md: 1.8 },
-        py: 1.1,
-        borderBottom: '1px solid',
+        px: embedded ? 0 : { xs: 1, md: 1.25 },
+        py: embedded ? 0 : 0.5,
+        minHeight: embedded ? 0 : 52,
+        height: embedded ? 36 : 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        gap: embedded ? 0.75 : 1,
+        flex: embedded ? 1 : undefined,
+        minWidth: 0,
+        borderBottom: embedded ? 'none' : '1px solid',
         borderColor: tokens.panelBorder,
-        bgcolor: tokens.panelBg,
+        bgcolor: embedded ? 'transparent' : (tokens.shellBg || tokens.panelBg),
       }}
     >
-      <Stack spacing={1.1}>
-        {resolvedSectionTabs ? (
-          <Box data-testid="mail-toolbar-desktop-header-tabs">
-            {resolvedSectionTabs}
-          </Box>
-        ) : null}
-        <Stack direction="row" spacing={1.2} alignItems="center" justifyContent="space-between">
-          <Stack direction="row" spacing={1.1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: '1.08rem', color: tokens.textPrimary, whiteSpace: 'nowrap' }}>
-              Почта
-            </Typography>
+      {showNavButton ? (
+        <IconButton
+          aria-label="Открыть папки"
+          data-testid="mail-toolbar-open-navigation"
+          onClick={onOpenNavigation}
+          sx={iconButtonSx(tokens)}
+        >
+          <MenuRoundedIcon fontSize="small" />
+        </IconButton>
+      ) : null}
 
-            <Button
-              data-testid="mail-toolbar-mailbox-switcher"
-              onClick={(event) => {
-                onOpenMailboxList?.();
-                setMailboxMenuAnchorEl(event.currentTarget);
-              }}
-              sx={{
-                minWidth: 0,
-                maxWidth: 320,
-                minHeight: 40,
-                px: 1.25,
-                justifyContent: 'space-between',
-                  ...getMailSurfaceButtonSx(tokens, {
-                    borderRadius: tokens.controlRadius,
-                  }),
-                }}
-              >
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
-                <Badge color="primary" badgeContent={activeUnreadCount || null}>
-                  <Box
-                    sx={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: '50%',
-                      bgcolor: activeMailbox?.is_primary ? 'primary.main' : tokens.textSecondary,
-                    }}
-                  />
-                </Badge>
-                <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
-                  <Typography noWrap sx={{ fontWeight: 700, fontSize: '0.9rem' }}>
-                    {activeMailboxLabel}
-                  </Typography>
-                </Box>
-              </Stack>
-              <ExpandMoreRoundedIcon fontSize="small" />
-            </Button>
+      {mailboxSwitcherButton}
 
-            {currentFolderLabel ? (
-              <Chip
-                size="small"
-                label={currentFolderLabel}
-                sx={{
-                  bgcolor: hasActiveFilters ? tokens.selectedBg : tokens.surfaceBg,
-                  color: hasActiveFilters ? 'primary.main' : tokens.textPrimary,
-                  fontWeight: 700,
-                }}
-              />
-            ) : null}
-          </Stack>
-
-          <Stack direction="row" spacing={0.75} alignItems="center">
-            <IconButton aria-label="Обновить" onClick={onRefresh} disabled={loading} sx={iconButtonSx(tokens)}>
-              <RefreshRoundedIcon fontSize="small" />
-            </IconButton>
-            <IconButton aria-label="Фильтры" onClick={onOpenAdvancedSearch} sx={iconButtonSx(tokens)}>
-              <TuneRoundedIcon fontSize="small" />
-            </IconButton>
-            <IconButton aria-label="Ещё" onClick={onOpenToolsMenu} sx={iconButtonSx(tokens)}>
-              <MoreHorizRoundedIcon fontSize="small" />
-            </IconButton>
-          </Stack>
-        </Stack>
-
+      <Box sx={{ flex: 1, minWidth: embedded ? 120 : 160, maxWidth: embedded ? 720 : 640 }}>
         {searchField}
+      </Box>
+
+      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+        <Tooltip title="Фильтры">
+          <IconButton
+            aria-label="Фильтры"
+            data-testid="mail-toolbar-open-filters"
+            onClick={onOpenAdvancedSearch}
+            sx={iconButtonSx(tokens, {
+              width: embedded ? 32 : 36,
+              height: embedded ? 32 : 36,
+              bgcolor: hasActiveFilters ? tokens.selectedBg : tokens.actionBg,
+              color: hasActiveFilters ? 'primary.main' : tokens.textPrimary,
+            })}
+          >
+            <TuneRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={refreshTooltip}>
+          <IconButton
+            aria-label="Обновить"
+            onClick={onRefresh}
+            disabled={loading}
+            sx={iconButtonSx(tokens, embedded ? { width: 32, height: 32 } : {})}
+          >
+            <RefreshRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Ещё">
+          <IconButton
+            aria-label="Ещё"
+            data-testid="mail-toolbar-open-tools"
+            onClick={onOpenToolsMenu}
+            sx={iconButtonSx(tokens, embedded ? { width: 32, height: 32 } : {})}
+          >
+            <MoreHorizRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
       </Stack>
 
       <Menu
@@ -501,10 +590,25 @@ export default function MailToolbar({
             setMailboxMenuAnchorEl(null);
             onManageMailboxes?.();
           }}
-          sx={{ minHeight: 50, fontWeight: 700, color: 'primary.main' }}
+          sx={{ minHeight: 44, fontWeight: 700, color: 'primary.main' }}
         >
           + Подключить ящик
         </MenuItem>
+        {mailboxExtraItems.length > 0 ? <Divider /> : null}
+        {mailboxExtraItems.map((item) => (
+          <MenuItem
+            key={item.id}
+            data-testid={item.testId}
+            onClick={() => {
+              setMailboxMenuAnchorEl(null);
+              item.onClick?.();
+            }}
+            sx={{ minHeight: 44, gap: 1 }}
+          >
+            {item.icon}
+            {item.label}
+          </MenuItem>
+        ))}
       </Menu>
     </Box>
   );

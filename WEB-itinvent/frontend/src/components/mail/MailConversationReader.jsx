@@ -1,6 +1,9 @@
-import { Box, Button, Chip, Paper, Stack, TextField, Typography } from '@mui/material';
+import { Box, Button, Chip, Paper, Stack, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import MailAttachmentCard from './MailAttachmentCard';
+import MailHtmlBody from './MailHtmlBody';
+import MailQuickReplyComposer from './MailQuickReplyComposer';
+import MailQuickReplyDraftField from './MailQuickReplyDraftField';
 import { buildRenderedMailHtml, filterVisibleMailAttachments } from './mailHtmlContent';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
 
@@ -19,10 +22,15 @@ export default function MailConversationReader({
   scrollRef,
   ui,
   isMobile = false,
-  quickReplyBody = '',
+  quickReplyDraftKey,
+  quickReplyDraftEpoch = 0,
   quickReplySending = false,
-  onQuickReplyBodyChange,
+  quickReplyDisabled = false,
   onSendQuickReply,
+  onQuickReplyFocus,
+  smartReplySuggestions = [],
+  smartReplyLoading = false,
+  smartReplyChipsEnabled = true,
   onOpenComposeFromMessage,
   onSelectMessage,
   isOwnMessage,
@@ -37,6 +45,7 @@ export default function MailConversationReader({
   onRevealRemoteImages,
   onOpenAttachment,
   onDownloadAttachment,
+  placeholder,
 } = {}) {
   const theme = useTheme();
   const getContentSx = typeof getRenderedContentSx === 'function'
@@ -175,9 +184,17 @@ export default function MailConversationReader({
                         </Button>
                       </Box>
                     ) : null}
-                    <Box
+                    <MailHtmlBody
                       sx={getContentSx({ ui, variant: 'conversation', mine })}
-                      dangerouslySetInnerHTML={{ __html: renderedConversationBody.html || '<p style="color:#999">Нет содержимого</p>' }}
+                      html={renderedConversationBody.html}
+                      title="Содержимое письма"
+                      colorScheme={mailRenderColorScheme}
+                      color={mine
+                        ? (ui?.isDark ? 'rgba(255,255,255,0.96)' : undefined)
+                        : ui?.textPrimary}
+                      fontSize="0.92rem"
+                      lineHeight={1.54}
+                      onActivate={() => onSelectMessage?.(item)}
                     />
                     {visibleConversationAttachments.length > 0 ? (
                       <Stack spacing={0.8} sx={{ mt: 0.9 }}>
@@ -230,7 +247,32 @@ export default function MailConversationReader({
           })}
         </Stack>
       </Box>
-      {!isMobile ? (
+      {isMobile ? (
+        <Box
+          data-testid="mail-conversation-mobile-quick-reply"
+          sx={{
+            p: 1,
+            borderTop: '1px solid',
+            borderColor: ui?.borderSoft,
+            bgcolor: ui?.panelSolid,
+            flexShrink: 0,
+          }}
+        >
+          <MailQuickReplyComposer
+            embedded
+            draftKey={quickReplyDraftKey}
+            draftEpoch={quickReplyDraftEpoch}
+            sending={quickReplySending}
+            disabled={quickReplyDisabled}
+            chipsEnabled={smartReplyChipsEnabled}
+            suggestions={smartReplySuggestions}
+            chipsLoading={smartReplyLoading}
+            placeholder={placeholder}
+            onSend={onSendQuickReply}
+            onFocus={onQuickReplyFocus}
+          />
+        </Box>
+      ) : (
         <Box
           sx={{
             p: 1,
@@ -244,54 +286,54 @@ export default function MailConversationReader({
           }}
         >
           <Stack spacing={0.7}>
-            <TextField
-              multiline
-              minRows={2}
-              maxRows={6}
-              size="small"
-              label="Быстрый ответ"
-              placeholder="Напишите сообщение..."
-              value={quickReplyBody}
-              onChange={(event) => onQuickReplyBodyChange?.(event.target.value)}
-              inputProps={{ 'data-testid': 'mail-quick-reply-body' }}
-              InputProps={{ sx: { borderRadius: ui?.inputRadius } }}
-            />
-            <Stack
-              direction={{ xs: 'column', sm: 'row' }}
-              justifyContent="space-between"
-              alignItems={{ xs: 'stretch', sm: 'center' }}
-              flexWrap="wrap"
-              useFlexGap
-              gap={0.6}
+            <MailQuickReplyDraftField
+              variant="desktop"
+              draftKey={quickReplyDraftKey}
+              draftEpoch={quickReplyDraftEpoch}
+              sending={quickReplySending}
+              disabled={quickReplyDisabled}
+              ui={ui}
+              onSend={onSendQuickReply}
             >
-              <Stack direction="row" spacing={0.4} flexWrap="wrap" useFlexGap>
-                <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('reply')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                  Ответить
-                </Button>
-                <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('reply_all')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                  Всем
-                </Button>
-                <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('forward')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                  Переслать
-                </Button>
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ maxWidth: { xs: '100%', sm: 280 } }}>
-                Ответ отправляется отправителю выбранного сообщения.
-              </Typography>
-              <Button
-                data-testid="mail-quick-reply-send"
-                size="small"
-                variant="contained"
-                disabled={quickReplySending || !String(quickReplyBody || '').trim()}
-                sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
-                onClick={() => onSendQuickReply?.()}
-              >
-                {quickReplySending ? 'Отправка...' : 'Отправить'}
-              </Button>
-            </Stack>
+              {({ canSend, send, sending }) => (
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  justifyContent="space-between"
+                  alignItems={{ xs: 'stretch', sm: 'center' }}
+                  flexWrap="wrap"
+                  useFlexGap
+                  gap={0.6}
+                >
+                  <Stack direction="row" spacing={0.4} flexWrap="wrap" useFlexGap>
+                    <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('reply')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
+                      Ответить
+                    </Button>
+                    <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('reply_all')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
+                      Всем
+                    </Button>
+                    <Button size="small" variant="text" onClick={() => onOpenComposeFromMessage?.('forward')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
+                      Переслать
+                    </Button>
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary" sx={{ maxWidth: { xs: '100%', sm: 280 } }}>
+                    Ответ отправляется отправителю выбранного сообщения.
+                  </Typography>
+                  <Button
+                    data-testid="mail-quick-reply-send"
+                    size="small"
+                    variant="contained"
+                    disabled={!canSend}
+                    sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
+                    onClick={send}
+                  >
+                    {sending ? 'Отправка...' : 'Отправить'}
+                  </Button>
+                </Stack>
+              )}
+            </MailQuickReplyDraftField>
           </Stack>
         </Box>
-      ) : null}
+      )}
     </Box>
   );
 }

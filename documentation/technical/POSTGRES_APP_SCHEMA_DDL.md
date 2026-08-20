@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-15 17:28 UTC_  
+_Сгенерировано: 2026-08-20 13:24 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (134 tables)
+## Schema `app` (135 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -1598,6 +1598,34 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_mail_runtime_snapshots_expires`: (expires_at)
   - `ix_app_mail_runtime_snapshots_user_type`: (user_id, snapshot_type)
   - `uq_app_mail_runtime_snapshot_scope` UNIQUE: (user_id, mailbox_id, snapshot_type, context_key)
+
+---
+
+### `app.mail_send_idempotency`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `mailbox_id` | varchar(128) | no | `` |
+| `idempotency_key` | varchar(128) | no | `` |
+| `request_payload_hash` | varchar(64) | no | `` |
+| `status` | varchar(16) | no | `'reserved'::character varying` |
+| `internet_message_id` | varchar(255) | no | `''::character varying` |
+| `response_json` | text | no | `'{}'::text` |
+| `error_code` | varchar(64) | yes | `` |
+| `processing_lease_until` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `updated_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `completed_at` | timestamptz | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mail_send_idempotency_status`: (status)
+  - `ix_app_mail_send_idempotency_status_lease`: (status, processing_lease_until)
+  - `ix_app_mail_send_idempotency_user_created`: (user_id, created_at)
+  - `ix_app_mail_send_idempotency_user_id`: (user_id)
+  - `uq_app_mail_send_idempotency_scope` UNIQUE: (user_id, mailbox_id, idempotency_key)
 
 ---
 

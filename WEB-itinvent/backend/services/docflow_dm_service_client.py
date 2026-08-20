@@ -1383,6 +1383,9 @@ class DocflowDMServiceClient:
         return detail
 
     async def get_task_state(self, *, login: str, password: str, task_ref: str) -> dict[str, Any]:
+        # Command reconciliation must be authoritative: a just-completed task can
+        # otherwise remain hidden behind the short-lived task XML cache.
+        self._invalidate_task_caches(login, task_ref)
         task = await self._visible_task_element(login=login, password=password, task_ref=task_ref)
         detail = self._parse_task(task)
         detail["dm_version"] = await self.get_version(login=login, password=password)

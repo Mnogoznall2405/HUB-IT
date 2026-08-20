@@ -117,3 +117,53 @@ export const readStoredComposeState = ({
     return null;
   }
 };
+
+export const parseComposeDraftSavedAtMs = (value) => {
+  const ms = Date.parse(String(value || ''));
+  return Number.isFinite(ms) ? ms : 0;
+};
+
+export const shouldOverwriteStoredComposeDraft = ({
+  existingRaw,
+  lastWrittenSavedAt = '',
+  localDirty = true,
+} = {}) => {
+  if (localDirty) return true;
+  if (!existingRaw) return true;
+  try {
+    const parsed = JSON.parse(existingRaw);
+    const existingMs = parseComposeDraftSavedAtMs(parsed?.saved_at);
+    const lastWrittenMs = parseComposeDraftSavedAtMs(lastWrittenSavedAt);
+    return existingMs <= lastWrittenMs;
+  } catch {
+    return true;
+  }
+};
+
+export const writeStoredComposeState = ({
+  composeDraftKey,
+  payload,
+  storage = getDefaultStorage(),
+  lastWrittenSavedAt = '',
+  localDirty = true,
+} = {}) => {
+  if (!storage || !composeDraftKey || !payload || typeof payload !== 'object') {
+    return { wrote: false, savedAt: '', adoptedRaw: null };
+  }
+  let existingRaw = null;
+  try {
+    existingRaw = storage.getItem(composeDraftKey);
+  } catch {
+    existingRaw = null;
+  }
+  if (!shouldOverwriteStoredComposeDraft({ existingRaw, lastWrittenSavedAt, localDirty })) {
+    return { wrote: false, savedAt: '', adoptedRaw: existingRaw };
+  }
+  const savedAt = String(payload.saved_at || new Date().toISOString());
+  try {
+    storage.setItem(composeDraftKey, JSON.stringify({ ...payload, saved_at: savedAt }));
+    return { wrote: true, savedAt, adoptedRaw: null };
+  } catch {
+    return { wrote: false, savedAt: '', adoptedRaw: null };
+  }
+};

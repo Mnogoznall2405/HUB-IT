@@ -334,15 +334,18 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Ctrl+K" />
                                 <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Быстрый переход" />
                                 <TextBlock Grid.Row="1" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Ctrl+P" />
                                 <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Печать текущей страницы" />
-                                <TextBlock Grid.Row="2" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Ctrl+Shift+H" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Показать или скрыть HUB, если включено в настройках" TextWrapping="Wrap" />
-                                <TextBlock Grid.Row="3" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Esc" />
-                                <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Закрыть вспомогательное окно" />
+                                <TextBlock Grid.Row="2" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Ctrl+F5" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Обновить портал без кэша" />
+                                <TextBlock Grid.Row="3" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Ctrl+Shift+H" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Показать или скрыть HUB, если включено в настройках" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="4" Style="{StaticResource RuntimeValueStyle}" FontWeight="SemiBold" Text="Esc" />
+                                <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource RuntimeValueStyle}" Text="Закрыть вспомогательное окно" />
                             </Grid>
                         </StackPanel>
                     </Border>

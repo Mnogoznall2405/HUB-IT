@@ -629,6 +629,7 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=32000)
     parser.add_argument("--seed", type=int, default=20260815)
     parser.add_argument("--reasoning-effort")
+    parser.add_argument("--disable-response-format", action="store_true")
     args = parser.parse_args()
 
     dataset = _build_dataset()
@@ -662,7 +663,8 @@ def main() -> int:
         if "seed" in supported:
             kwargs["seed"] = args.seed
         if "response_format" in supported:
-            kwargs["response_format"] = {"type": "json_object"}
+            if not args.disable_response_format:
+                kwargs["response_format"] = {"type": "json_object"}
         if args.reasoning_effort:
             kwargs["reasoning_effort"] = args.reasoning_effort
 

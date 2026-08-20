@@ -38,7 +38,7 @@ const SPACIOUS_CHAT_DENSITY = {
   touchTarget: 44,
   contentMaxWidth: 940,
   sidebarColumnMin: 320,
-  sidebarColumnMax: 400,
+  sidebarColumnMax: 340,
   sidebarAvatar: 52,
   sidebarAvatarMobile: 54,
   sidebarActionButton: 36,

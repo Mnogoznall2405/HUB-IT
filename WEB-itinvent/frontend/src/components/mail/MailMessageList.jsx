@@ -7,7 +7,6 @@ import {
   Divider,
   IconButton,
   Menu,
-  MenuItem,
   Skeleton,
   Stack,
   Tooltip,
@@ -39,7 +38,11 @@ import {
   getMailSurfaceButtonSx,
 } from './mailUiTokens';
 import { formatMailPeopleLine, getMailPersonDisplay } from './mailPeople';
+import { formatPrimaryCorrespondentLabel, getPrimaryCorrespondent } from './mailCorrespondent';
+import { MailCompactMenuItem, MailMoveSection } from './MailMoveToMenu';
+import { filterMailMoveTargets } from './mailMoveTargets';
 import { buildMailMonthGroups } from './mailDateGrouping';
+import { formatFullDate } from './mailMessagePresentation';
 
 const LONG_PRESS_MS = 420;
 const SWIPE_AXIS_LOCK_THRESHOLD = 10;
@@ -169,7 +172,6 @@ function MessageRow({
   viewMode,
   selectedItems,
   activeSwipeState,
-  hovered,
   dragHandleActive,
   menuOpen,
   onOpen,
@@ -179,7 +181,6 @@ function MessageRow({
   onDelete,
   onRestore,
   onOpenDesktopMenu,
-  onHoverChange,
   onDragHandleHoverChange,
   onSetActiveSwipeState,
   onSwipeGestureChange,
@@ -189,9 +190,12 @@ function MessageRow({
   density,
   showPreviewSnippets,
   isMobile,
+  isSearch = false,
+  mailboxEmails,
   tokens,
 }) {
   const compact = density === 'compact';
+  const [localHover, setLocalHover] = useState(false);
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
   const commitTimeoutRef = useRef(null);
@@ -202,25 +206,22 @@ function MessageRow({
   const canLongPressSelect = isMobile && viewMode === 'messages' && Boolean(onToggleSelected);
   const canDesktopActions = !isMobile;
   const canDragHandle = !isMobile && viewMode === 'messages';
-  const isDraftMessagesView = viewMode === 'messages' && String(folder || '').toLowerCase() === 'drafts';
-  const senderPerson = item?.sender_person || {
-    display: item?.sender_display,
-    name: item?.sender_name,
-    email: item?.sender_email || item?.sender,
-  };
-  const draftRecipientLine = isDraftMessagesView
-    ? formatMailPeopleLine(
-      item?.to_people
-      || item?.recipient_people
-      || item?.to
-      || item?.recipients,
-      '',
-    )
-    : '';
-  const fallbackSenderLine = getMailPersonDisplay(senderPerson, item?.sender || '-');
+  const correspondent = viewMode === 'conversations'
+    ? {
+      kind: 'from',
+      person: null,
+      extraCount: 0,
+      prefix: '',
+      emptyLabel: formatParticipantLine(item?.participant_people || item?.participants),
+    }
+    : getPrimaryCorrespondent(item, { folder, isSearch, mailboxEmails });
   const senderLine = viewMode === 'conversations'
     ? formatParticipantLine(item?.participant_people || item?.participants)
-    : (isDraftMessagesView ? (draftRecipientLine || fallbackSenderLine) : fallbackSenderLine);
+    : formatPrimaryCorrespondentLabel(correspondent, item?.sender || '-');
+  const avatarSource = getMailPersonDisplay(
+    correspondent.person,
+    senderLine,
+  );
   const title = item.subject || '(без темы)';
   const previewLine = viewMode === 'conversations'
     ? (item.preview || '')
@@ -251,10 +252,9 @@ function MessageRow({
   const negativeSwipeVisible = canSwipe && swipeVisualOffset < -6;
   const parked = activeSwipeState?.rowId === rowId && !committedSide;
   const showDesktopRail = canDesktopActions;
-  const desktopRailEmphasis = hovered || selected || rowIsSelectedInBulk || dragHandleActive || menuOpen;
-  const desktopRailWidth = viewMode === 'messages'
-    ? (canDragHandle ? 112 : 84)
-    : 64;
+  const desktopRailEmphasis = localHover || selected || rowIsSelectedInBulk || dragHandleActive || menuOpen;
+  const showDragHandle = canDragHandle && (localHover || dragHandleActive);
+  const desktopRailWidth = 76;
 
   const clearLongPress = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -406,22 +406,63 @@ function MessageRow({
     closeReveal();
   };
 
+  const unreadCount = viewMode === 'conversations'
+    ? Math.max(0, Number(item.unread_count || 0))
+    : (unread ? 1 : 0);
+  const rowAccent = selected
+    ? tokens.selectedBorder
+    : rowIsSelectedInBulk
+      ? tokens.bulkSelectedBorder
+      : unread
+        ? tokens.unreadAccent
+        : 'transparent';
+  const rowBg = selected
+    ? tokens.selectedBg
+    : rowIsSelectedInBulk
+      ? tokens.bulkSelectedBg
+      : unread
+        ? tokens.unreadBg
+        : tokens.panelBg;
+  const rowHoverBg = selected
+    ? tokens.selectedHover
+    : rowIsSelectedInBulk
+      ? tokens.bulkSelectedHover
+      : unread
+        ? tokens.unreadHover
+        : tokens.surfaceHover;
   const dragHandleIds = rowIsSelectedInBulk
     ? selectedItems
     : [String(item.id)].filter(Boolean);
 
+  const beginRowDrag = (event) => {
+    if (!canDragHandle) return;
+    if (event.target?.closest?.('button, a, [role="menuitem"], input, textarea')) {
+      event.preventDefault();
+      return;
+    }
+    onStartDragItems?.(dragHandleIds, item);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', dragHandleIds.join(','));
+  };
+
   return (
     <Box
       data-testid={`mail-row-shell-${rowId}`}
+      data-mail-content-visibility="auto"
+      className="mail-row-shell"
+      draggable={canDragHandle}
+      onDragStart={beginRowDrag}
       sx={{
         position: 'relative',
         overflow: 'hidden',
         contentVisibility: 'auto',
-        containIntrinsicSize: compact ? '64px' : '72px',
+        containIntrinsicSize: compact ? '70px' : '72px',
       }}
-      onMouseEnter={() => onHoverChange?.(rowId)}
+      onMouseEnter={() => {
+        setLocalHover(true);
+      }}
       onMouseLeave={() => {
-        onHoverChange?.('');
+        setLocalHover(false);
         onDragHandleHoverChange?.('');
       }}
     >
@@ -508,45 +549,95 @@ function MessageRow({
       >
         <Box
           data-testid={`mail-row-${rowId}`}
+          data-mail-unread={unread ? 'true' : 'false'}
           sx={{
-            px: { xs: 1.05, md: compact ? 1.15 : 1.35 },
+            px: { xs: 1.05, md: compact ? 1 : 1.15 },
             py: compact ? 0.55 : 0.7,
             minHeight: compact ? tokens.rowCompactMinHeight : tokens.rowMinHeight,
-            borderLeft: selected ? '2px solid' : rowIsSelectedInBulk ? '1px solid' : '2px solid',
-            borderLeftColor: selected
-              ? tokens.selectedBorder
-              : rowIsSelectedInBulk
-                ? tokens.bulkSelectedBorder
-                : 'transparent',
-            bgcolor: selected
-              ? tokens.selectedBg
-              : rowIsSelectedInBulk
-                ? tokens.bulkSelectedBg
-                : hovered
-                  ? tokens.surfaceHover
-                  : tokens.panelBg,
+            borderLeft: selected || unread ? '3px solid' : rowIsSelectedInBulk ? '1px solid' : '3px solid',
+            borderLeftColor: rowAccent,
+            bgcolor: rowBg,
             transition: tokens.transition,
             '&:hover': {
-              bgcolor: selected ? tokens.selectedHover : tokens.surfaceHover,
+              bgcolor: rowHoverBg,
             },
             '[role="button"]:focus-visible &': {
               boxShadow: `inset 0 0 0 2px ${tokens.selectedBorder}`,
             },
           }}
         >
-          <Stack direction="row" spacing={0.9} alignItems="center">
+          <Stack direction="row" spacing={0.9} alignItems="flex-start" sx={{ position: 'relative' }}>
+            {canDragHandle ? (
+              <Box
+                data-testid={`mail-row-drag-gutter-${rowId}`}
+                sx={{
+                  width: 18,
+                  minWidth: 18,
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'center',
+                  pt: 0.45,
+                }}
+              >
+                <Tooltip title="Перетащить в папку" enterDelay={240}>
+                  <Box
+                    role="button"
+                    tabIndex={0}
+                    draggable
+                    aria-label="Перетащить в папку"
+                    data-testid={`mail-row-drag-handle-${rowId}`}
+                    onClick={(event) => stopRowEvent(event)}
+                    onMouseEnter={(event) => {
+                      event.stopPropagation();
+                      onDragHandleHoverChange?.(rowId);
+                    }}
+                    onMouseLeave={(event) => {
+                      event.stopPropagation();
+                      onDragHandleHoverChange?.('');
+                    }}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      onStartDragItems?.(dragHandleIds, item);
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', dragHandleIds.join(','));
+                    }}
+                    onDragEnd={() => onDragHandleHoverChange?.('')}
+                    sx={{
+                      width: 18,
+                      height: 22,
+                      borderRadius: tokens.iconButtonRadius,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: tokens.textSecondary,
+                      cursor: 'grab',
+                      opacity: showDragHandle ? 1 : 0,
+                      pointerEvents: showDragHandle ? 'auto' : 'none',
+                      transition: 'opacity 0.16s ease',
+                      '.mail-row-shell:hover &, .mail-row-shell:focus-within &': {
+                        opacity: 1,
+                        pointerEvents: 'auto',
+                      },
+                    }}
+                  >
+                    <DragIndicatorRoundedIcon sx={{ fontSize: 16 }} />
+                  </Box>
+                </Tooltip>
+              </Box>
+            ) : null}
             <Box sx={{ position: 'relative', flexShrink: 0 }}>
               <Avatar
                 sx={{
                   width: compact ? 30 : 32,
                   height: compact ? 30 : 32,
-                  bgcolor: rowIsSelectedInBulk ? tokens.selectedBorder : getAvatarColor(senderLine),
+                  bgcolor: rowIsSelectedInBulk ? tokens.selectedBorder : getAvatarColor(avatarSource),
                   color: rowIsSelectedInBulk ? '#fff' : undefined,
                   fontWeight: 800,
                   fontSize: tokens.fontSizeFine,
                 }}
               >
-                {getInitials(senderLine)}
+                {getInitials(avatarSource)}
               </Avatar>
               {rowIsSelectedInBulk ? (
                 <Box
@@ -572,56 +663,95 @@ function MessageRow({
               ) : null}
             </Box>
 
-            <Stack spacing={0.1} sx={{ minWidth: 0, flex: 1, pr: 0.25 }}>
-              <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
-                <Typography
-                  noWrap
-                  sx={{
-                    minWidth: 0,
-                    flex: 1,
-                    color: tokens.textPrimary,
-                    fontWeight: unread ? 800 : 700,
-                    fontSize: compact ? '0.88rem' : '0.94rem',
-                    lineHeight: 1.15,
-                  }}
-                >
-                  {senderLine}
-                </Typography>
+            <Stack spacing={0.2} sx={{ minWidth: 0, flex: 1, pr: 0.25 }}>
+              <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+                  <Box
+                    aria-hidden={!unread}
+                    data-testid={unread ? `mail-row-unread-dot-${rowId}` : undefined}
+                    title={unread ? 'Непрочитано' : undefined}
+                    sx={{
+                      width: unreadCount > 1 ? 18 : 8,
+                      minWidth: unreadCount > 1 ? 18 : 8,
+                      height: unreadCount > 1 ? 18 : 8,
+                      flexShrink: 0,
+                      borderRadius: unreadCount > 1 ? tokens.badgeRadius : '50%',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      bgcolor: unread ? 'primary.main' : 'transparent',
+                      color: '#fff',
+                      fontSize: '0.62rem',
+                      fontWeight: 800,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {unreadCount > 1 ? (unreadCount > 99 ? '99+' : unreadCount) : null}
+                  </Box>
+                  <Typography
+                    noWrap
+                    sx={{
+                      minWidth: 0,
+                      flex: 1,
+                      color: tokens.textPrimary,
+                      fontWeight: unread ? 800 : 500,
+                      fontSize: compact ? '0.8125rem' : '0.875rem',
+                      lineHeight: 1.25,
+                    }}
+                  >
+                    {senderLine}
+                  </Typography>
+                </Stack>
 
                 <Box
                   sx={{
+                    position: 'relative',
                     flexShrink: 0,
                     minWidth: canDesktopActions ? desktopRailWidth : 48,
                     width: canDesktopActions ? desktopRailWidth : 'auto',
+                    minHeight: 18,
                     display: 'flex',
                     flexDirection: 'column',
+                    justifyContent: 'flex-start',
                     alignItems: 'flex-end',
+                    gap: 0.15,
                   }}
                 >
-                  <Typography
-                    sx={{
-                      ...getMailMetaTextSx(tokens, {
-                      color: unread ? tokens.textPrimary : tokens.textSecondary,
-                      fontWeight: unread ? 700 : 600,
-                      whiteSpace: 'nowrap',
-                      lineHeight: 1.2,
-                      }),
-                    }}
+                  <Tooltip
+                    title={formatFullDate(viewMode === 'conversations' ? item.last_received_at : item.received_at)}
+                    enterDelay={400}
                   >
-                    {formatTime(viewMode === 'conversations' ? item.last_received_at : item.received_at)}
-                  </Typography>
+                    <Typography
+                      data-testid={`mail-row-time-${rowId}`}
+                      sx={{
+                        ...getMailMetaTextSx(tokens, {
+                          color: unread ? tokens.textPrimary : tokens.textSecondary,
+                          fontWeight: unread ? 700 : 500,
+                          whiteSpace: 'nowrap',
+                          lineHeight: 1.2,
+                          fontSize: '0.75rem',
+                        }),
+                      }}
+                    >
+                      {formatTime(viewMode === 'conversations' ? item.last_received_at : item.received_at)}
+                    </Typography>
+                  </Tooltip>
 
                   {showDesktopRail ? (
                     <Stack
+                      className="mail-row-actions"
                       direction="row"
-                      spacing={0.2}
+                      spacing={0.05}
                       alignItems="center"
                       sx={{
-                        mt: 0.25,
+                        minHeight: 26,
                         opacity: desktopRailEmphasis ? 1 : 0,
                         pointerEvents: desktopRailEmphasis ? 'auto' : 'none',
-                        transform: 'translateX(0px)',
-                        transition: 'opacity 0.16s ease, transform 0.16s ease',
+                        transition: 'opacity 0.16s ease',
+                        '.mail-row-shell:focus-within &': {
+                          opacity: 1,
+                          pointerEvents: 'auto',
+                        },
                       }}
                     >
                       <Tooltip title={readAction.label} enterDelay={240}>
@@ -639,12 +769,11 @@ function MessageRow({
                           }}
                           sx={{
                             ...getMailIconButtonSx(tokens, {
-                            width: 28,
-                            height: 28,
-                            border: 'none',
-                            bgcolor: 'transparent',
-                            color: readAction.color,
-                            opacity: desktopRailEmphasis ? 1 : 0,
+                              width: 26,
+                              height: 26,
+                              border: 'none',
+                              bgcolor: 'transparent',
+                              color: tokens.textSecondary,
                             }),
                           }}
                         >
@@ -668,12 +797,14 @@ function MessageRow({
                             }}
                             sx={{
                               ...getMailIconButtonSx(tokens, {
-                              width: 28,
-                              height: 28,
-                              border: 'none',
-                              bgcolor: 'transparent',
-                              color: folder === 'trash' ? readAction.color : deleteAction.color,
-                              opacity: desktopRailEmphasis ? 1 : 0,
+                                width: 26,
+                                height: 26,
+                                border: 'none',
+                                bgcolor: 'transparent',
+                                color: tokens.textSecondary,
+                                '&:hover': {
+                                  color: folder === 'trash' ? readAction.color : 'error.main',
+                                },
                               }),
                             }}
                           >
@@ -693,84 +824,66 @@ function MessageRow({
                           }}
                           sx={{
                             ...getMailIconButtonSx(tokens, {
-                            width: 28,
-                            height: 28,
-                            border: 'none',
-                            bgcolor: 'transparent',
-                            color: tokens.textSecondary,
-                            opacity: desktopRailEmphasis ? 1 : 0,
+                              width: 26,
+                              height: 26,
+                              border: 'none',
+                              bgcolor: 'transparent',
+                              color: tokens.textSecondary,
                             }),
                           }}
                         >
                           <MoreHorizRoundedIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
-
-                      {canDragHandle ? (
-                        <Tooltip title="Перетащить в папку" enterDelay={240}>
-                          <Box
-                            role="button"
-                            tabIndex={0}
-                            draggable
-                            aria-label="Перетащить в папку"
-                            data-testid={`mail-row-drag-handle-${rowId}`}
-                            onClick={(event) => stopRowEvent(event)}
-                            onMouseEnter={(event) => {
-                              event.stopPropagation();
-                              onDragHandleHoverChange?.(rowId);
-                            }}
-                            onMouseLeave={(event) => {
-                              event.stopPropagation();
-                              onDragHandleHoverChange?.('');
-                            }}
-                            onDragStart={(event) => {
-                              event.stopPropagation();
-                              onStartDragItems?.(dragHandleIds, item);
-                              event.dataTransfer.effectAllowed = 'move';
-                              event.dataTransfer.setData('text/plain', dragHandleIds.join(','));
-                            }}
-                            onDragEnd={() => onDragHandleHoverChange?.('')}
-                            sx={{
-                              width: 26,
-                              height: 26,
-                              borderRadius: tokens.iconButtonRadius,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              color: tokens.textSecondary,
-                              cursor: 'grab',
-                              opacity: desktopRailEmphasis ? 1 : 0,
-                              transition: tokens.transition,
-                              '&:hover': {
-                                bgcolor: tokens.surfaceBg,
-                                transform: 'translateY(-1px)',
-                              },
-                            }}
-                          >
-                            <DragIndicatorRoundedIcon fontSize="small" />
-                          </Box>
-                        </Tooltip>
-                      ) : null}
                     </Stack>
-                  ) : unread ? (
-                    <Box sx={{ width: 8, height: 8, mt: 0.45, borderRadius: '50%', bgcolor: 'primary.main' }} />
                   ) : null}
                 </Box>
               </Stack>
 
-              <Typography
-                className="mail-line-clamp-1"
-                sx={{
-                  color: unread
-                    ? (tokens.isDark ? alpha('#fff', 0.82) : alpha('#0f172a', 0.76))
-                    : tokens.textSecondary,
-                  fontWeight: unread ? 600 : 500,
-                  fontSize: compact ? '0.8rem' : '0.84rem',
-                  lineHeight: 1.2,
-                }}
-              >
-                {title}
-              </Typography>
+              <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
+                <Typography
+                  noWrap
+                  sx={{
+                    minWidth: 0,
+                    flex: 1,
+                    color: unread
+                      ? tokens.textPrimary
+                      : (tokens.isDark ? alpha('#fff', 0.72) : alpha('#0f172a', 0.68)),
+                    fontWeight: unread ? 700 : 500,
+                    fontSize: compact ? '0.8125rem' : '0.875rem',
+                    lineHeight: 1.25,
+                  }}
+                >
+                  {title}
+                </Typography>
+                {showAttachmentIndicator ? (
+                  <Tooltip title={item.attachments_count > 0 ? `Вложений: ${item.attachments_count}` : 'Есть вложения'}>
+                    <Box
+                      aria-label={item.attachments_count > 0 ? `Вложений: ${item.attachments_count}` : 'Есть вложения'}
+                      sx={{ display: 'inline-flex', alignItems: 'center', color: tokens.textSecondary, flexShrink: 0 }}
+                    >
+                      <AttachFileIcon sx={{ fontSize: 14 }} />
+                    </Box>
+                  </Tooltip>
+                ) : null}
+                {viewMode === 'conversations' ? (
+                  <Chip
+                    size="small"
+                    icon={<ForumOutlinedIcon sx={{ fontSize: '14px !important' }} />}
+                    label={conversationCountLabel}
+                    sx={{
+                      height: 20,
+                      bgcolor: tokens.surfaceBg,
+                      color: tokens.textSecondary,
+                      '& .MuiChip-label': {
+                        px: 0.6,
+                        fontWeight: 600,
+                        fontSize: tokens.fontSizeFine,
+                      },
+                    }}
+                  />
+                ) : null}
+              </Stack>
 
               {showPreviewSnippets && previewLine ? (
                 <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
@@ -778,69 +891,34 @@ function MessageRow({
                     <ForumOutlinedIcon sx={{ fontSize: 12, color: tokens.textSecondary, flexShrink: 0 }} />
                   ) : null}
                   <Typography
+                    noWrap
                     className="mail-line-clamp-1"
                     sx={{
-                      color: tokens.isDark
-                        ? alpha('#fff', 0.58)
-                        : alpha('#0f172a', 0.58),
-                      fontSize: compact ? '0.74rem' : '0.78rem',
-                      lineHeight: 1.2,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      color: unread
+                        ? (tokens.isDark ? alpha('#fff', 0.78) : alpha('#0f172a', 0.72))
+                        : (tokens.isDark ? alpha('#fff', 0.52) : alpha('#0f172a', 0.5)),
+                      fontSize: '0.75rem',
+                      fontWeight: unread ? 500 : 400,
+                      lineHeight: 1.25,
                     }}
                   >
                     {previewLine}
                   </Typography>
                 </Stack>
               ) : null}
-
-              <Stack direction="row" spacing={0.65} alignItems="center" sx={{ pt: viewMode === 'conversations' ? 0.1 : 0 }}>
-                {viewMode === 'conversations' ? (
-                  <Chip
-                    size="small"
-                    icon={<ForumOutlinedIcon sx={{ fontSize: '14px !important' }} />}
-                    label={conversationCountLabel}
-                    sx={{
-                      height: 24,
-                      bgcolor: tokens.surfaceBg,
-                      color: tokens.textSecondary,
-                      '& .MuiChip-label': {
-                        px: 0.75,
-                        fontWeight: 700,
-                      fontSize: tokens.fontSizeFine,
-                      },
-                    }}
-                  />
-                ) : null}
-                {showAttachmentIndicator ? (
-                  <Chip
-                    size="small"
-                    icon={<AttachFileIcon sx={{ fontSize: '14px !important' }} />}
-                    label={String(Math.max(Number(item.attachments_count || 0), item.has_attachments ? 1 : 0))}
-                    sx={{
-                      height: 24,
-                      bgcolor: tokens.surfaceBg,
-                      color: tokens.textSecondary,
-                      '& .MuiChip-label': {
-                        px: 0.75,
-                        fontWeight: 700,
-                      fontSize: tokens.fontSizeFine,
-                      },
-                    }}
-                  />
-                ) : null}
-                {rowIsSelectedInBulk && !isMobile ? (
-                  <Chip
-                    size="small"
-                    label="Выбрано"
-                    color="primary"
-                    sx={{ height: 24, borderRadius: tokens.chipRadius, '& .MuiChip-label': { fontWeight: 700, fontSize: tokens.fontSizeFine } }}
-                  />
-                ) : null}
-              </Stack>
             </Stack>
           </Stack>
         </Box>
 
-        <Box className="mail-divider-inset" sx={{ borderBottom: '1px solid' }} />
+        <Box
+          className="mail-divider-inset"
+          sx={{
+            borderBottom: '1px solid',
+            borderColor: tokens.isDark ? alpha('#fff', 0.06) : alpha('#0f172a', 0.08),
+          }}
+        />
       </motion.div>
     </Box>
   );
@@ -867,108 +945,96 @@ function DesktopRowMenu({
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const isTrashFolder = folder === 'trash';
   const canArchive = viewMode === 'messages' && folder !== 'archive' && folder !== 'trash';
-  const normalizedMoveTargets = Array.isArray(moveTargets) ? moveTargets : [];
+  const normalizedMoveTargets = filterMailMoveTargets(moveTargets, folder);
+
+  const closeMenu = () => {
+    onClose?.();
+  };
 
   return (
     <Menu
       anchorEl={anchorEl}
       open={open}
-      onClose={onClose}
+      onClose={closeMenu}
       transformOrigin={{ horizontal: 'right', vertical: 'top' }}
       anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-      PaperProps={{ sx: getMailMenuPaperSx(tokens, { minWidth: 250 }) }}
+      MenuListProps={{ dense: true, 'data-testid': 'mail-row-more-menu' }}
+      PaperProps={{
+        sx: getMailMenuPaperSx(tokens, {
+          minWidth: 248,
+          maxHeight: 'min(72vh, 420px)',
+          '& .MuiMenuItem-root': { minHeight: 32 },
+        }),
+      }}
     >
       {viewMode === 'conversations' ? (
-        <MenuItem
+        <MailCompactMenuItem
+                      label="Открыть цепочку"
           onClick={() => {
-            onClose?.();
+            closeMenu();
             onOpen?.(rowId, item);
           }}
-        >
-          Открыть диалог
-        </MenuItem>
+        />
       ) : (
-        [
-          canArchive ? (
-            <MenuItem
-              key="archive"
+        <>
+          {canArchive ? (
+            <MailCompactMenuItem
+              icon={<ArchiveRoundedIcon fontSize="small" />}
+              label="В архив"
               onClick={() => {
-                onClose?.();
+                closeMenu();
                 onArchive?.(item);
               }}
-            >
-              <Stack direction="row" spacing={1} alignItems="center">
-                <ArchiveRoundedIcon fontSize="small" />
-                <span>В архив</span>
-              </Stack>
-            </MenuItem>
-          ) : null,
-          normalizedMoveTargets.length > 0 ? <Divider key="move-divider" /> : null,
-          ...normalizedMoveTargets.map((target) => (
-            <MenuItem
-              key={`move-${String(target?.value || '')}`}
-              onClick={() => {
-                onClose?.();
-                onMove?.(item, String(target?.value || ''));
-              }}
-            >
-              Переместить в {String(target?.label || target?.value || 'папку')}
-            </MenuItem>
-          )),
-          normalizedMoveTargets.length > 0 ? <Divider key="detail-divider" /> : null,
-          <MenuItem
-            key="headers"
+            />
+          ) : null}
+          {normalizedMoveTargets.length > 0 ? <Divider /> : null}
+          <MailMoveSection
+            targets={normalizedMoveTargets}
+            tokens={tokens}
+            currentFolder={folder}
+            onSelect={(value) => {
+              closeMenu();
+              onMove?.(item, value);
+            }}
+          />
+          <Divider />
+          <MailCompactMenuItem
+            icon={<SubjectRoundedIcon fontSize="small" />}
+            label="Заголовки"
             onClick={() => {
-              onClose?.();
+              closeMenu();
               onOpenHeaders?.(item);
             }}
-          >
-            <Stack direction="row" spacing={1} alignItems="center">
-              <SubjectRoundedIcon fontSize="small" />
-              <span>Заголовки</span>
-            </Stack>
-          </MenuItem>,
-          <MenuItem
-            key="source"
+          />
+          <MailCompactMenuItem
+            icon={<DownloadRoundedIcon fontSize="small" />}
+            label="Скачать исходник"
             onClick={() => {
-              onClose?.();
+              closeMenu();
               onDownloadSource?.(item);
             }}
-          >
-            <Stack direction="row" spacing={1} alignItems="center">
-              <DownloadRoundedIcon fontSize="small" />
-              <span>Скачать исходник</span>
-            </Stack>
-          </MenuItem>,
-          <MenuItem
-            key="print"
+          />
+          <MailCompactMenuItem
+            icon={<PrintOutlinedIcon fontSize="small" />}
+            label="Печать"
             onClick={() => {
-              onClose?.();
+              closeMenu();
               onPrint?.(item);
             }}
-          >
-            <Stack direction="row" spacing={1} alignItems="center">
-              <PrintOutlinedIcon fontSize="small" />
-              <span>Печать</span>
-            </Stack>
-          </MenuItem>,
-          isTrashFolder ? <Divider key="danger-divider" /> : null,
-          isTrashFolder ? (
-            <MenuItem
-              key="delete-forever"
+          />
+          {isTrashFolder ? <Divider /> : null}
+          {isTrashFolder ? (
+            <MailCompactMenuItem
+              icon={<DeleteForeverRoundedIcon fontSize="small" />}
+              label="Удалить навсегда"
+              danger
               onClick={() => {
-                onClose?.();
+                closeMenu();
                 onDelete?.(item, { permanent: true });
               }}
-              sx={{ color: 'error.main' }}
-            >
-              <Stack direction="row" spacing={1} alignItems="center">
-                <DeleteForeverRoundedIcon fontSize="small" />
-                <span>Удалить навсегда</span>
-              </Stack>
-            </MenuItem>
-          ) : null,
-        ]
+            />
+          ) : null}
+        </>
       )}
     </Menu>
   );
@@ -1009,6 +1075,8 @@ export default function MailMessageList({
   moveTargets = [],
   onPullToRefresh,
   bottomInset = 0,
+  isSearch = false,
+  mailboxEmails,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
@@ -1020,7 +1088,6 @@ export default function MailMessageList({
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshArmed, setRefreshArmed] = useState(false);
   const [activeSwipeState, setActiveSwipeState] = useState({ rowId: '', side: '' });
-  const [hoveredRowId, setHoveredRowId] = useState('');
   const [dragHandleRowId, setDragHandleRowId] = useState('');
   const [desktopMenuState, setDesktopMenuState] = useState({
     anchorEl: null,
@@ -1144,7 +1211,6 @@ export default function MailMessageList({
       item,
       rowId: String(rowId || ''),
     });
-    setHoveredRowId(String(rowId || ''));
   }, []);
 
   const handleCloseDesktopMenu = useCallback(() => {
@@ -1155,6 +1221,7 @@ export default function MailMessageList({
     <Box sx={{ ...listSx, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden', bgcolor: tokens.panelBg }}>
       <Box
         data-testid="mail-list-scroll-root"
+        data-mail-message-list="true"
         ref={(node) => {
           localListRef.current = node;
           assignRef(messageListRef, node);
@@ -1215,7 +1282,14 @@ export default function MailMessageList({
                   <Skeleton variant="text" width="90%" height={18} />
                 </Box>
               </Stack>
-              <Box className="mail-divider-inset" sx={{ borderBottom: '1px solid', mt: 1 }} />
+              <Box
+                className="mail-divider-inset"
+                sx={{
+                  borderBottom: '1px solid',
+                  borderColor: tokens.isDark ? alpha('#fff', 0.06) : alpha('#0f172a', 0.08),
+                  mt: 1,
+                }}
+              />
             </Box>
           ))
         ) : listData.items.length === 0 ? (
@@ -1252,11 +1326,11 @@ export default function MailMessageList({
                       data-testid={`mail-month-group-${monthKey}`}
                       sx={{
                         px: { xs: 1.2, md: 1.5 },
-                        pt: 1.05,
-                        pb: 0.55,
+                        pt: 0.7,
+                        pb: 0.35,
                         bgcolor: tokens.panelBg,
                         borderBottom: '1px solid',
-                        borderBottomColor: tokens.panelBorder,
+                        borderBottomColor: tokens.isDark ? alpha('#fff', 0.06) : alpha('#0f172a', 0.08),
                       }}
                     >
                       <Typography
@@ -1279,7 +1353,6 @@ export default function MailMessageList({
                   viewMode={viewMode}
                   selectedItems={selectedItems}
                   activeSwipeState={activeSwipeState}
-                  hovered={hoveredRowId === rowId}
                   dragHandleActive={dragHandleRowId === rowId}
                   menuOpen={desktopMenuState.rowId === rowId}
                   onOpen={handleOpenRow}
@@ -1289,7 +1362,6 @@ export default function MailMessageList({
                   onDelete={onSwipeDelete}
                   onRestore={onRestoreMessage}
                   onOpenDesktopMenu={handleOpenDesktopMenu}
-                  onHoverChange={setHoveredRowId}
                   onDragHandleHoverChange={setDragHandleRowId}
                   onSetActiveSwipeState={setActiveSwipeState}
                   onSwipeGestureChange={handleSwipeGestureChange}
@@ -1299,6 +1371,8 @@ export default function MailMessageList({
                   density={density}
                   showPreviewSnippets={showPreviewSnippets}
                   isMobile={isMobile}
+                  isSearch={isSearch}
+                  mailboxEmails={mailboxEmails}
                   tokens={tokens}
                   />
                 </Fragment>

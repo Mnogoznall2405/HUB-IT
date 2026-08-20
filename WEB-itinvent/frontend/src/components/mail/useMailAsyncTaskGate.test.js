@@ -1,15 +1,18 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import useMailAsyncTaskGate from './useMailAsyncTaskGate';
+import { getMailRefreshMetrics, resetMailRefreshMetrics } from './mailRefreshMetrics';
 
 describe('useMailAsyncTaskGate', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    resetMailRefreshMetrics();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    resetMailRefreshMetrics();
   });
 
   it('deduplicates concurrent work for the same gate key', async () => {
@@ -87,5 +90,30 @@ describe('useMailAsyncTaskGate', () => {
     });
 
     expect(task).toHaveBeenCalledTimes(2);
+  });
+
+  it('records started, overlap, and cooldown-skip counts', async () => {
+    const { result } = renderHook(() => useMailAsyncTaskGate({ cooldownMs: 4000 }));
+    let resolveTask;
+    const task = vi.fn(() => new Promise((resolve) => {
+      resolveTask = resolve;
+    }));
+
+    let first;
+    act(() => {
+      first = result.current.run('mail-view:inbox', task);
+      result.current.run('mail-view:inbox', task);
+    });
+    expect(getMailRefreshMetrics()).toEqual({ started: 1, overlap: 1, cooldownSkip: 0 });
+
+    await act(async () => {
+      resolveTask('done');
+      await first;
+    });
+
+    act(() => {
+      expect(result.current.run('mail-view:inbox', task)).toBeNull();
+    });
+    expect(getMailRefreshMetrics()).toEqual({ started: 1, overlap: 1, cooldownSkip: 1 });
   });
 });

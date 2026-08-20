@@ -205,7 +205,96 @@ describe('MailMessageList', () => {
     expect(screen.queryByText('Sender Name')).toBeNull();
   });
 
-  it('shows the real attachment count in the message list chip', () => {
+  it('shows recipient instead of the current user in the sent folder', () => {
+    const props = buildProps({
+      folder: 'sent',
+      listData: {
+        items: [
+          {
+            id: 'msg-1',
+            sender: 'me@example.com',
+            sender_email: 'me@example.com',
+            sender_display: 'Current User',
+            to_people: [
+              { display: 'Иванов Сергей', email: 'ivanov@example.com' },
+              { display: 'Петрова Анна', email: 'petrova@example.com' },
+            ],
+            subject: 'Sent subject',
+            body_preview: 'Sent preview',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: true,
+            has_attachments: false,
+            attachments_count: 0,
+          },
+        ],
+        has_more: false,
+      },
+      isMobile: false,
+      mailboxEmails: ['me@example.com'],
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByText('Иванов Сергей +1')).toBeTruthy();
+    expect(screen.queryByText('Current User')).toBeNull();
+  });
+
+  it('shows a placeholder in drafts without a recipient', () => {
+    const props = buildProps({
+      folder: 'drafts',
+      listData: {
+        items: [
+          {
+            id: 'msg-1',
+            sender_display: 'Current User',
+            sender_email: 'me@example.com',
+            to_people: [],
+            subject: 'Empty draft',
+            body_preview: 'Draft preview',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: true,
+            has_attachments: false,
+            attachments_count: 0,
+          },
+        ],
+        has_more: false,
+      },
+      isMobile: false,
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByText('Без получателя')).toBeTruthy();
+  });
+
+  it('prefixes search results with direction', () => {
+    const props = buildProps({
+      folder: 'inbox',
+      isSearch: true,
+      mailboxEmails: ['me@example.com'],
+      listData: {
+        items: [
+          {
+            id: 'msg-1',
+            sender_display: 'Иванов Сергей',
+            sender_email: 'ivanov@example.com',
+            to_people: [{ display: 'Current User', email: 'me@example.com' }],
+            subject: 'Found',
+            body_preview: 'Preview',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: true,
+          },
+        ],
+        has_more: false,
+      },
+      isMobile: false,
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+    expect(screen.getByText('От: Иванов Сергей')).toBeTruthy();
+  });
+
+  it('keeps row text stable while hover actions appear', () => {
     const props = buildProps({
       isMobile: false,
       listData: {
@@ -229,7 +318,14 @@ describe('MailMessageList', () => {
 
     renderWithTheme(<MailMessageList {...props} />);
 
-    expect(screen.getByText('4')).toBeVisible();
+    const row = screen.getByTestId('mail-row-shell-msg-att');
+    const before = row.getBoundingClientRect().width;
+    expect(screen.getByLabelText('Вложений: 4')).toBeTruthy();
+    expect(screen.getByTestId('mail-row-read-action-msg-att')).not.toBeVisible();
+    fireEvent.mouseEnter(row);
+    expect(screen.getByTestId('mail-row-read-action-msg-att')).toBeVisible();
+    expect(row.getBoundingClientRect().width).toBe(before);
+    expect(screen.getByText('Files attached')).toBeTruthy();
   });
 
   it('renders month headings for the full list after another page is appended', () => {
@@ -336,10 +432,14 @@ describe('MailMessageList', () => {
 
     const desktopRow = screen.getByTestId('mail-row-shell-msg-1');
     expect(screen.getByTestId('mail-row-read-action-msg-1')).not.toBeVisible();
+    expect(screen.getByTestId('mail-row-drag-handle-msg-1')).not.toBeVisible();
     expect(screen.getByText('Boss Name')).toBeTruthy();
     expect(screen.getByLabelText('Прочитано')).toBeTruthy();
     fireEvent.mouseEnter(desktopRow);
     expect(screen.getByTestId('mail-row-read-action-msg-1')).toBeVisible();
+    expect(screen.getByTestId('mail-row-drag-handle-msg-1')).toBeVisible();
+    expect(screen.getByTestId('mail-row-time-msg-1')).toBeVisible();
+    expect(screen.getByTestId('mail-row-drag-gutter-msg-1').contains(screen.getByTestId('mail-row-drag-handle-msg-1'))).toBe(true);
 
     const dragHandle = screen.getByTestId('mail-row-drag-handle-msg-1');
     expect(dragHandle).toHaveAttribute('aria-label', 'Перетащить в папку');
@@ -348,10 +448,111 @@ describe('MailMessageList', () => {
       effectAllowed: '',
       setData: vi.fn(),
     };
-    fireEvent(dragHandle, dragStartEvent);
+    fireEvent(desktopRow, dragStartEvent);
     expect(desktopProps.onStartDragItems).toHaveBeenCalledWith(['msg-1'], expect.objectContaining({ id: 'msg-1' }));
 
     fireEvent.click(screen.getByTestId('mail-row-more-action-msg-1'));
     expect(screen.getByText('В архив')).toBeVisible();
+  });
+
+  it('lists folder names in the row overflow instead of repeating move labels', () => {
+    const props = buildProps({
+      isMobile: false,
+      moveTargets: [
+        { value: 'junk', label: 'Нежелательные' },
+        { value: 'sent', label: 'Отправленные' },
+        { value: 'rss', label: 'RSS-каналы' },
+      ],
+    });
+    renderWithTheme(<MailMessageList {...props} />);
+
+    fireEvent.mouseEnter(screen.getByTestId('mail-row-shell-msg-1'));
+    fireEvent.click(screen.getByTestId('mail-row-more-action-msg-1'));
+    expect(screen.getByTestId('mail-move-to-heading')).toHaveTextContent('Переместить в');
+    expect(screen.getByTestId('mail-move-to-option-sent')).toHaveTextContent('Отправленные');
+    expect(screen.queryByText('Переместить в Отправленные')).toBeNull();
+    expect(screen.queryByTestId('mail-move-to-option-rss')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('mail-move-to-option-sent'));
+
+    expect(props.onMoveMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }), 'sent');
+  });
+
+  it('makes unread messages visually stronger than read ones', () => {
+    const props = buildProps({
+      isMobile: false,
+      listData: {
+        items: [
+          {
+            id: 'unread-1',
+            sender_display: 'Unread Sender',
+            subject: 'Unread subject',
+            body_preview: 'Unread preview',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: false,
+          },
+          {
+            id: 'read-1',
+            sender_display: 'Read Sender',
+            subject: 'Read subject',
+            body_preview: 'Read preview',
+            received_at: '2026-04-08T09:00:00Z',
+            is_read: true,
+          },
+        ],
+        has_more: false,
+      },
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    const unreadRow = screen.getByTestId('mail-row-unread-1');
+    const readRow = screen.getByTestId('mail-row-read-1');
+    expect(unreadRow).toHaveAttribute('data-mail-unread', 'true');
+    expect(readRow).toHaveAttribute('data-mail-unread', 'false');
+    expect(screen.getByTestId('mail-row-unread-dot-unread-1')).toBeTruthy();
+    expect(screen.queryByTestId('mail-row-unread-dot-read-1')).toBeNull();
+
+    const unreadStyles = window.getComputedStyle(unreadRow);
+    const readStyles = window.getComputedStyle(readRow);
+    expect(unreadStyles.borderLeftColor).not.toBe('transparent');
+    expect(unreadStyles.backgroundColor).not.toBe(readStyles.backgroundColor);
+
+    expect(window.getComputedStyle(screen.getByText('Unread Sender')).fontWeight)
+      .toBe('800');
+    expect(window.getComputedStyle(screen.getByText('Read Sender')).fontWeight)
+      .toBe('500');
+    expect(window.getComputedStyle(screen.getByText('Unread subject')).fontWeight)
+      .toBe('700');
+    expect(window.getComputedStyle(screen.getByText('Read subject')).fontWeight)
+      .toBe('500');
+  });
+
+  it('shows an unread count badge on conversation rows with several unread messages', () => {
+    const props = buildProps({
+      viewMode: 'conversations',
+      isMobile: false,
+      listData: {
+        items: [
+          {
+            id: 'conv-1',
+            conversation_id: 'conv-1',
+            participants: ['Unread Sender'],
+            participant_people: [{ display: 'Unread Sender', email: 'unread@example.com' }],
+            subject: 'Thread subject',
+            preview: 'Latest preview',
+            last_received_at: '2026-04-08T10:00:00Z',
+            unread_count: 4,
+            messages_count: 9,
+          },
+        ],
+        has_more: false,
+      },
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByTestId('mail-row-conv-1')).toHaveAttribute('data-mail-unread', 'true');
+    expect(screen.getByTestId('mail-row-unread-dot-conv-1')).toHaveTextContent('4');
   });
 });

@@ -20,7 +20,7 @@ import {
   normalizeMailListResponse,
 } from './mailListModel';
 import { normalizeMailViewMode } from './mailViewStateModel';
-import { emitAgentDebugLog } from '../../lib/debugClientLog';
+import { isCanceledMailRequestError } from './mailErrorModel';
 
 function isMailAppSnapshotPayload(payload) {
   return String(payload?.source || '').trim().toLowerCase() === 'app_snapshot';
@@ -106,6 +106,27 @@ export default function useMailListDataController({
   currentListContextKeyRef.current = currentListContextKey;
   const bootstrapGenerationRef = useRef(0);
   const listFetchGenerationRef = useRef(0);
+  const listRequestAbortRef = useRef(null);
+  const listRequestContextKeyRef = useRef('');
+  const mailboxRequestAbortRef = useRef(null);
+  const mailboxRequestScopeRef = useRef('');
+
+  const takeMailboxRequestSignal = useCallback((scope) => {
+    const nextScope = String(scope || '');
+    if (mailboxRequestScopeRef.current && mailboxRequestScopeRef.current !== nextScope) {
+      mailboxRequestAbortRef.current?.abort?.();
+      mailboxRequestAbortRef.current = new AbortController();
+    } else if (!mailboxRequestAbortRef.current) {
+      mailboxRequestAbortRef.current = new AbortController();
+    }
+    mailboxRequestScopeRef.current = nextScope;
+    return mailboxRequestAbortRef.current.signal;
+  }, []);
+
+  useEffect(() => () => {
+    listRequestAbortRef.current?.abort?.();
+    mailboxRequestAbortRef.current?.abort?.();
+  }, []);
 
   const flushPendingSnapshotHeadRefresh = useCallback(() => {
     if (!pendingSnapshotHeadRefreshRef.current) return false;
@@ -114,15 +135,6 @@ export default function useMailListDataController({
     if (skipNextListRefreshRef) {
       skipNextListRefreshRef.current = true;
     }
-    // #region agent log
-    emitAgentDebugLog({
-      runId: 'mail-freeze',
-      hypothesisId: 'H1',
-      location: 'useMailListDataController.js:flushPendingSnapshotHeadRefresh',
-      message: 'flush pending snapshot head refresh',
-      data: { scope: String(mailCacheScopeRef.current || '') },
-    });
-    // #endregion
     void refreshListFnRef.current?.({ silent: true, force: true });
     return true;
   }, [skipNextListRefreshRef]);
@@ -142,20 +154,6 @@ export default function useMailListDataController({
     if (skipNextListRefreshRef) {
       skipNextListRefreshRef.current = true;
     }
-    // #region agent log
-    emitAgentDebugLog({
-      runId: 'mail-freeze',
-      hypothesisId: 'H1',
-      location: 'useMailListDataController.js:scheduleSilentHeadRefreshAfterSnapshot',
-      message: 'schedule silent head refresh + skip flag',
-      data: {
-        source: String(payload?.source || ''),
-        state: String(payload?.state || ''),
-        mailAccessReady: !!mailAccessReadyRef.current,
-        as_of: String(payload?.as_of || '').slice(0, 40),
-      },
-    });
-    // #endregion
     void Promise.resolve().then(() => {
       flushPendingSnapshotHeadRefresh();
     });
@@ -222,21 +220,7 @@ export default function useMailListDataController({
       const liveAllowsBootstrapList = currentContextUsesBootstrapListRef.current;
       const uiContextKey = String(currentListKeyRef?.current || currentListContextKeyRef.current || '');
       const bootstrapTargetsCurrentUi = !uiContextKey || uiContextKey === resolvedListContextKey;
-      if (!liveAllowsBootstrapList || !bootstrapTargetsCurrentUi) {
-        emitAgentDebugLog({
-          runId: 'mail-folder-timing',
-          hypothesisId: 'T1',
-          location: 'useMailListDataController.js:applyBootstrapPayload',
-          message: 'skip bootstrap list paint (folder/context changed)',
-          data: {
-            liveAllowsBootstrapList: !!liveAllowsBootstrapList,
-            bootstrapTargetsCurrentUi: !!bootstrapTargetsCurrentUi,
-            uiContextKey: uiContextKey.slice(0, 120),
-            bootstrapContextKey: String(resolvedListContextKey || '').slice(0, 120),
-            folder: String(folder || ''),
-          },
-        });
-      } else {
+      if (liveAllowsBootstrapList && bootstrapTargetsCurrentUi) {
         const previousListData = listDataRef?.current || createEmptyListData();
         const normalizedMessagesPayload = normalizeMailListResponse(messagesPayload);
         const bootstrapHasVisibleMessages = Array.isArray(normalizedMessagesPayload.items)
@@ -320,27 +304,10 @@ export default function useMailListDataController({
       return currentContextUsesBootstrapListRef.current && !hasHydratedCurrentList;
     };
     const bootstrapCacheKey = buildMailBootstrapCacheKey({ scope: requestScope, limit: mailBootstrapLimit });
-    const shouldApplyBootstrapList = resolveShouldApplyBootstrapList();
     const cachedBootstrap = peekSWRCache(bootstrapCacheKey, { staleTimeMs: mailSwrStaleTimeMs });
     const cachedBootstrapState = String(cachedBootstrap?.data?.state || '').trim().toLowerCase();
     const forceBootstrapFetch = force || (cachedBootstrapState && cachedBootstrapState !== 'ok');
     const hasRecentHydration = recentHydratedScope === requestScope;
-    // #region agent log
-    emitAgentDebugLog({
-      runId: 'mail-freeze',
-      hypothesisId: 'H6',
-      location: 'useMailListDataController.js:refreshBootstrap',
-      message: 'bootstrap start',
-      data: {
-        scope: requestScope,
-        gen: requestGeneration,
-        force: !!force,
-        live: !!live,
-        hasCache: !!cachedBootstrap?.data,
-        mailAccessReady: !!mailAccessReady,
-      },
-    });
-    // #endregion
     if (cachedBootstrap?.data) {
       if (isCurrentBootstrap()) {
         applyBootstrapPayload(cachedBootstrap.data || {}, { applyList: resolveShouldApplyBootstrapList() });
@@ -354,11 +321,12 @@ export default function useMailListDataController({
       setMailBackgroundRefreshing(true);
     }
     try {
+      const mailboxSignal = takeMailboxRequestSignal(requestScope);
       const fetcher = () => mailAPI.getBootstrap({
         limit: mailBootstrapLimit,
         mailbox_id: activeMailboxId || undefined,
         refresh: live ? 'live' : 'auto',
-      });
+      }, mailboxSignal ? { signal: mailboxSignal } : {});
       const result = await getOrFetchSWR(
         bootstrapCacheKey,
         fetcher,
@@ -369,15 +337,6 @@ export default function useMailListDataController({
         }
       );
       if (!isCurrentBootstrap()) {
-        // #region agent log
-        emitAgentDebugLog({
-          runId: 'mail-freeze',
-          hypothesisId: 'H6',
-          location: 'useMailListDataController.js:refreshBootstrap',
-          message: 'bootstrap stale drop after await',
-          data: { scope: requestScope, gen: requestGeneration, currentScope: String(mailCacheScopeRef.current || '') },
-        });
-        // #endregion
         return null;
       }
       if (result?.data) {
@@ -401,7 +360,7 @@ export default function useMailListDataController({
           applyBootstrapPayload(freshResult.data || {}, { applyList: resolveShouldApplyBootstrapList() });
           scheduleSilentHeadRefreshAfterSnapshot(freshResult.data || {});
         }).catch(async (requestError) => {
-          if (!isCurrentBootstrap()) return;
+          if (isCanceledMailRequestError(requestError) || !isCurrentBootstrap()) return;
           if (await handleMailCredentialsRequired(requestError, 'Не удалось загрузить почтовый экран.')) {
             setListData((prev) => ({ ...prev, items: [] }));
           }
@@ -409,7 +368,7 @@ export default function useMailListDataController({
       }
       return result?.data || null;
     } catch (requestError) {
-      if (!isCurrentBootstrap()) return null;
+      if (isCanceledMailRequestError(requestError) || !isCurrentBootstrap()) return null;
       if (await handleMailCredentialsRequired(requestError, 'Не удалось загрузить почтовый экран.')) {
         if (!cachedBootstrap?.data && !hasRecentHydration) {
           setMailboxInfo(null);
@@ -436,21 +395,6 @@ export default function useMailListDataController({
           setMailBackgroundRefreshing(false);
         }
       }
-      // #region agent log
-      emitAgentDebugLog({
-        runId: 'mail-freeze',
-        hypothesisId: 'H6',
-        location: 'useMailListDataController.js:refreshBootstrap',
-        message: 'bootstrap finally',
-        data: {
-          scope: requestScope,
-          gen: requestGeneration,
-          current: isCurrentBootstrap(),
-          skip: !!skipNextListRefreshRef?.current,
-          applyList: shouldApplyBootstrapList,
-        },
-      });
-      // #endregion
     }
   }, [
     activeMailboxId,
@@ -466,6 +410,7 @@ export default function useMailListDataController({
     recentHydratedScope,
     scheduleSilentHeadRefreshAfterSnapshot,
     setError,
+    takeMailboxRequestSignal,
     setFolderSummary,
     setFolderTree,
     setListData,
@@ -480,9 +425,13 @@ export default function useMailListDataController({
       return {};
     }
     try {
+      const mailboxSignal = takeMailboxRequestSignal(mailCacheScope);
       const result = await getOrFetchSWR(
         currentFolderSummaryCacheKey,
-        () => mailAPI.getFolderSummary({ mailbox_id: activeMailboxId || undefined }),
+        () => mailAPI.getFolderSummary(
+          { mailbox_id: activeMailboxId || undefined },
+          mailboxSignal ? { signal: mailboxSignal } : {},
+        ),
         {
           staleTimeMs: mailSwrStaleTimeMs,
           force,
@@ -498,6 +447,9 @@ export default function useMailListDataController({
       persistRecentBootstrapSnapshot(nextItems, folderTreeRef?.current, activeMailboxId || mailCacheScope);
       return nextItems;
     } catch (requestError) {
+      if (isCanceledMailRequestError(requestError)) {
+        return folderSummaryRef?.current || {};
+      }
       if (await handleMailCredentialsRequired(requestError)) {
         setFolderSummary({});
         return {};
@@ -522,6 +474,7 @@ export default function useMailListDataController({
     mailSwrStaleTimeMs,
     persistRecentBootstrapSnapshot,
     setFolderSummary,
+    takeMailboxRequestSignal,
   ]);
 
   const refreshFolderTree = useCallback(async ({ force = false } = {}) => {
@@ -530,9 +483,13 @@ export default function useMailListDataController({
       return [];
     }
     try {
+      const mailboxSignal = takeMailboxRequestSignal(mailCacheScope);
       const result = await getOrFetchSWR(
         currentFolderTreeCacheKey,
-        () => mailAPI.getFolderTree({ mailbox_id: activeMailboxId || undefined }),
+        () => mailAPI.getFolderTree(
+          { mailbox_id: activeMailboxId || undefined },
+          mailboxSignal ? { signal: mailboxSignal } : {},
+        ),
         {
           staleTimeMs: mailSwrStaleTimeMs,
           force,
@@ -545,6 +502,9 @@ export default function useMailListDataController({
       persistRecentBootstrapSnapshot(folderSummaryRef?.current, nextItems, activeMailboxId || mailCacheScope);
       return nextItems;
     } catch (requestError) {
+      if (isCanceledMailRequestError(requestError)) {
+        return folderTreeRef?.current || [];
+      }
       if (await handleMailCredentialsRequired(requestError)) {
         setFolderTree([]);
         return [];
@@ -568,6 +528,7 @@ export default function useMailListDataController({
     mailSwrStaleTimeMs,
     persistRecentBootstrapSnapshot,
     setFolderTree,
+    takeMailboxRequestSignal,
   ]);
 
   const applyResolvedListData = useCallback((nextListData, {
@@ -671,18 +632,19 @@ export default function useMailListDataController({
     listParams: listParamsOverride = null,
     listCacheKey: listCacheKeyOverride = null,
     listContextKey: listContextKeyOverride = null,
+    viewMode: viewModeOverride = null,
     reason = '',
     startedAt = 0,
   } = {}) => {
     const timingStartedAt = Number(startedAt || Date.now());
     const mark = (phase, extra = {}) => {
       const elapsedMs = Date.now() - timingStartedAt;
-      const payload = {
-        runId: 'mail-folder-timing',
-        hypothesisId: 'T1',
-        location: 'useMailListDataController.js:fetchList',
-        message: phase,
-        data: {
+      try {
+        const key = '__mailFolderTimings';
+        const ring = Array.isArray(window[key]) ? window[key] : [];
+        ring.push({
+          t: Date.now(),
+          phase,
           reason: String(reason || ''),
           folder: String((listParamsOverride || currentListParams)?.folder || folder || ''),
           elapsedMs,
@@ -690,13 +652,7 @@ export default function useMailListDataController({
           silent: !!silent,
           force: !!force,
           ...extra,
-        },
-      };
-      emitAgentDebugLog(payload);
-      try {
-        const key = '__mailFolderTimings';
-        const ring = Array.isArray(window[key]) ? window[key] : [];
-        ring.push({ t: Date.now(), phase, ...payload.data });
+        });
         window[key] = ring.slice(-100);
       } catch {
         // ignore
@@ -721,12 +677,26 @@ export default function useMailListDataController({
       requestGeneration === listFetchGenerationRef.current
       && requestScope === String(mailCacheScopeRef.current || '')
     );
+    const effectiveViewMode = normalizeMailViewMode(viewModeOverride || viewMode);
     const effectiveListParams = listParamsOverride || currentListParams;
     const effectiveListCacheKey = listCacheKeyOverride || currentListCacheKey;
     const currentListData = listDataRef?.current || {};
     const currentOffset = reset ? 0 : Number(currentListData.append_offset ?? currentListData.next_offset ?? currentListData.offset ?? 0);
     const cachedList = reset ? peekSWRCache(effectiveListCacheKey, { staleTimeMs: mailSwrStaleTimeMs }) : null;
     const nextContextKey = listContextKeyOverride || JSON.stringify(effectiveListCacheKey);
+    if (reset) {
+      const previousKey = listRequestContextKeyRef.current;
+      if (previousKey && previousKey !== nextContextKey) {
+        listRequestAbortRef.current?.abort?.();
+        listRequestAbortRef.current = new AbortController();
+      } else if (!listRequestAbortRef.current) {
+        listRequestAbortRef.current = new AbortController();
+      }
+      listRequestContextKeyRef.current = nextContextKey;
+    } else if (!listRequestAbortRef.current) {
+      listRequestAbortRef.current = new AbortController();
+    }
+    const listSignal = listRequestAbortRef.current?.signal;
     const shouldForceHydratedRefresh = reset && recentHydratedListContextsRef?.current?.has(nextContextKey);
     const forceNetwork = force || shouldForceHydratedRefresh;
     const previousHadItems = Array.isArray(currentListData?.items) && currentListData.items.length > 0;
@@ -745,16 +715,17 @@ export default function useMailListDataController({
       setLoadingMore(true);
     }
     try {
-      const fetcher = (params) => (
-        viewMode === 'conversations'
-          ? mailAPI.getConversations(withActiveMailboxParams(params))
-          : mailAPI.getMessages(withActiveMailboxParams(params))
-      );
+      const fetcher = (params) => {
+        const requestOptions = listSignal ? { signal: listSignal } : {};
+        return effectiveViewMode === 'conversations'
+          ? mailAPI.getConversations(withActiveMailboxParams(params), requestOptions)
+          : mailAPI.getMessages(withActiveMailboxParams(params), requestOptions);
+      };
       if (reset) {
         const contextKey = nextContextKey;
         const applyOptions = {
           reset: true,
-          selectionMode: viewMode,
+          selectionMode: effectiveViewMode,
           selectFirstIfSelectionMissing,
           listCacheKey: effectiveListCacheKey,
           listContextKey: contextKey,
@@ -846,7 +817,7 @@ export default function useMailListDataController({
       const data = await fetcher(params);
       return applyResolvedListData(data, {
         reset: false,
-        selectionMode: viewMode,
+        selectionMode: effectiveViewMode,
         updateMode: 'append',
         listCacheKey: effectiveListCacheKey,
         listContextKey: nextContextKey,
@@ -856,6 +827,9 @@ export default function useMailListDataController({
         status: Number(requestError?.response?.status || 0) || null,
         detail: String(requestError?.response?.data?.detail || requestError?.message || '').slice(0, 160),
       });
+      if (isCanceledMailRequestError(requestError)) {
+        return null;
+      }
       if (await handleMailCredentialsRequired(requestError)) {
         if (reset) setListData((prev) => ({ ...prev, items: [] }));
         return null;
@@ -917,6 +891,7 @@ export default function useMailListDataController({
     listParams = null,
     listCacheKey = null,
     listContextKey = null,
+    viewMode = null,
     reason = '',
     startedAt = 0,
   } = {}) => {
@@ -928,6 +903,7 @@ export default function useMailListDataController({
       listParams,
       listCacheKey,
       listContextKey,
+      viewMode,
       reason,
       startedAt,
     });

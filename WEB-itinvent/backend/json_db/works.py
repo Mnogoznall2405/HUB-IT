@@ -31,6 +31,29 @@ class WorksManager:
     COMPONENT_FILE = "component_replacements.json"
     CLEANING_FILE = "pc_cleanings.json"
     NOTE_AUTHOR = "IT-BOT"
+    # ITINVENT uses ITEMS.DESCR, not DESCRIPTION.
+    INVENTORY_STATISTICS_QUERY = """
+                SELECT
+                    i.ID as id,
+                    i.DESCR as description,
+                    b.BRANCH_NAME as branch_name,
+                    l.DESCR as location,
+                    i.INV_NO as inv_no,
+                    i.SERIAL_NO as serial_no,
+                    i.HW_SERIAL_NO as hw_serial_no,
+                    t.TYPE_NAME as type_name,
+                    m.MODEL_NAME as model_name,
+                    v.VENDOR_NAME as vendor_name,
+                    o.OWNER_DISPLAY_NAME as employee_name
+                FROM ITEMS i
+                LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+                LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+                LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+                LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+                LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+                LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+                WHERE i.CI_TYPE = 1
+            """
     # Keep in sync with frontend/src/pages/database/equipmentModel.js (PC_KEYWORDS).
     PC_KEYWORDS = (
         "системный блок",
@@ -1173,6 +1196,7 @@ class WorksManager:
 
         total_pc_by_branch: Dict[str, int] = {}
         cleaned_pc_by_branch: Dict[str, int] = {}
+        remaining_pcs_by_branch: Dict[str, List[Dict[str, Any]]] = {}
 
         for item in pc_inventory:
             branch_name = self._normalize_branch_name(item.get("branch_name"))
@@ -1187,6 +1211,10 @@ class WorksManager:
 
             if latest_for_item is not None and latest_for_item >= start_dt:
                 cleaned_pc_by_branch[branch_name] = cleaned_pc_by_branch.get(branch_name, 0) + 1
+            else:
+                remaining_pcs_by_branch.setdefault(branch_name, []).append(
+                    self._build_remaining_pc_item(item, latest_for_item)
+                )
 
         all_branches = set(total_pc_by_branch.keys()) | set(cleanings_by_branch_total.keys())
         rows = []
@@ -1194,6 +1222,15 @@ class WorksManager:
         for branch_name in sorted(all_branches):
             total_pc = total_pc_by_branch.get(branch_name, 0)
             cleaned_pc = cleaned_pc_by_branch.get(branch_name, 0)
+            remaining_pcs = remaining_pcs_by_branch.get(branch_name, [])
+            remaining_pcs.sort(
+                key=lambda row: (
+                    str(row.get("location") or ""),
+                    str(row.get("employee") or ""),
+                    str(row.get("inv_no") or ""),
+                    str(row.get("serial_no") or ""),
+                )
+            )
             remaining_pc = max(total_pc - cleaned_pc, 0)
             coverage_percent = round((cleaned_pc / total_pc) * 100, 1) if total_pc else 0.0
 
@@ -1206,6 +1243,7 @@ class WorksManager:
                     "coverage_percent": coverage_percent,
                     "cleanings_total": cleanings_by_branch_total.get(branch_name, 0),
                     "cleanings_period": cleanings_by_branch_period.get(branch_name, 0),
+                    "remaining_pcs": remaining_pcs,
                 }
             )
 
@@ -1229,6 +1267,34 @@ class WorksManager:
                 "cleanings_period": cleanings_period,
             },
             "branches": rows,
+        }
+
+    def get_pc_cleaning_remaining(
+        self,
+        period_days: int = 90,
+        db_name: Optional[str] = None,
+        branch: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return uncleaned PCs for one branch in the selected period."""
+        stats = self.get_pc_cleaning_statistics(period_days=period_days, db_name=db_name)
+        wanted = self._normalize_branch_name(branch)
+        wanted_key = wanted.casefold()
+        matched = None
+        for row in stats.get("branches") or []:
+            row_name = self._normalize_branch_name(row.get("branch"))
+            if row_name.casefold() == wanted_key:
+                matched = row
+                break
+
+        remaining_pcs = list(matched.get("remaining_pcs") or []) if matched else []
+        return {
+            "branch": matched.get("branch") if matched else wanted,
+            "period_days": stats.get("period_days") or max(1, int(period_days or 90)),
+            "start_date": stats.get("start_date") or "",
+            "end_date": stats.get("end_date") or "",
+            "total_pc": int(matched.get("total_pc") or 0) if matched else 0,
+            "remaining_pc": int(matched.get("remaining_pc") or 0) if matched else 0,
+            "remaining_pcs": remaining_pcs,
         }
 
     def get_mfu_statistics(
@@ -1513,25 +1579,7 @@ class WorksManager:
             from backend.database.connection import get_db
 
             db = get_db(db_name)
-            query = """
-                SELECT
-                    b.BRANCH_NAME as branch_name,
-                    l.DESCR as location,
-                    i.INV_NO as inv_no,
-                    i.SERIAL_NO as serial_no,
-                    i.HW_SERIAL_NO as hw_serial_no,
-                    t.TYPE_NAME as type_name,
-                    m.MODEL_NAME as model_name,
-                    v.VENDOR_NAME as vendor_name
-                FROM ITEMS i
-                LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-                LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-                LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
-                LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-                LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-                WHERE i.CI_TYPE = 1
-            """
-            rows = db.execute_query(query, ())
+            rows = db.execute_query(self.INVENTORY_STATISTICS_QUERY, ())
             if not isinstance(rows, list):
                 return []
             return rows
@@ -1756,6 +1804,36 @@ class WorksManager:
             except ValueError:
                 pass
         return text.upper()
+
+    def _build_remaining_pc_item(
+        self,
+        item: Dict[str, Any],
+        last_cleaned_at: Optional[datetime],
+    ) -> Dict[str, Any]:
+        """Serialize an inventory PC that was not cleaned in the selected period."""
+        serial_no = str(item.get("serial_no") or "").strip()
+        hw_serial_no = str(item.get("hw_serial_no") or "").strip()
+        equipment_id = None
+        raw_id = item.get("id") if item.get("id") is not None else item.get("ID")
+        if raw_id is None:
+            raw_id = item.get("equipment_id")
+        try:
+            if raw_id not in (None, ""):
+                equipment_id = int(raw_id)
+        except (TypeError, ValueError):
+            equipment_id = None
+        return {
+            "inv_no": str(item.get("inv_no") or "").strip(),
+            "serial_no": serial_no or hw_serial_no,
+            "hw_serial_no": hw_serial_no,
+            "location": self._normalize_location_name(item.get("location")),
+            "model_name": str(item.get("model_name") or "").strip() or "Не указано",
+            "employee": str(item.get("employee_name") or item.get("employee") or "").strip(),
+            "last_cleaned_at": last_cleaned_at.isoformat() if last_cleaned_at else "",
+            "equipment_id": equipment_id,
+            "manufacturer": str(item.get("vendor_name") or item.get("manufacturer") or "").strip(),
+            "current_description": str(item.get("description") or item.get("DESCRIPTION") or "").strip(),
+        }
 
     def _extract_identifiers(self, record: Dict[str, Any]) -> List[str]:
         """Extract normalized identifiers from JSON or SQL record."""

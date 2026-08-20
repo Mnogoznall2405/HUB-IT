@@ -267,6 +267,20 @@ class WorksStatisticsResponse(BaseModel):
     total_all: int
 
 
+class PcCleaningRemainingPc(BaseModel):
+    """One PC that was not cleaned in the selected period."""
+    inv_no: str = ""
+    serial_no: str = ""
+    hw_serial_no: str = ""
+    location: str = ""
+    model_name: str = ""
+    employee: str = ""
+    last_cleaned_at: str = ""
+    equipment_id: Optional[int] = None
+    manufacturer: str = ""
+    current_description: str = ""
+
+
 class PcCleaningBranchStatistics(BaseModel):
     """PC cleaning statistics row for a branch."""
     branch: str
@@ -276,6 +290,7 @@ class PcCleaningBranchStatistics(BaseModel):
     coverage_percent: float
     cleanings_total: int
     cleanings_period: int
+    remaining_pcs: List[PcCleaningRemainingPc] = Field(default_factory=list)
 
 
 class PcCleaningTotalsStatistics(BaseModel):
@@ -296,6 +311,17 @@ class PcCleaningStatisticsResponse(BaseModel):
     end_date: str
     totals: PcCleaningTotalsStatistics
     branches: List[PcCleaningBranchStatistics]
+
+
+class PcCleaningRemainingResponse(BaseModel):
+    """Uncleaned PCs for one branch in the selected period."""
+    branch: str
+    period_days: int
+    start_date: str
+    end_date: str
+    total_pc: int
+    remaining_pc: int
+    remaining_pcs: List[PcCleaningRemainingPc] = Field(default_factory=list)
 
 
 class MfuTotalsStatistics(BaseModel):

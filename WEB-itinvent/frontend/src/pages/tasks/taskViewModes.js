@@ -228,6 +228,7 @@ export const buildMobileTaskActionState = (task, options = {}) => {
   const canStart = Boolean(options.canStart);
   const canSubmit = Boolean(options.canSubmit);
   const canReview = Boolean(options.canReview);
+  const canClose = Boolean(options.canClose);
 
   if (canUploadAct) {
     return {
@@ -264,9 +265,19 @@ export const buildMobileTaskActionState = (task, options = {}) => {
       return {
         key: 'review',
         stepLabel: 'Проверить результат',
-        actionLabel: 'Проверить',
-        hint: 'Проверьте результат и примите или верните задачу.',
+        actionLabel: 'Принять',
+        hint: 'Проверьте результат и примите или верните задачу. Можно сразу закрыть.',
         tone: 'review',
+      };
+    }
+
+    if (canClose) {
+      return {
+        key: 'close',
+        stepLabel: 'Закрыть задачу',
+        actionLabel: 'Закрыть',
+        hint: 'Закройте задачу, если проверка больше не нужна.',
+        tone: 'primary',
       };
     }
 
@@ -280,23 +291,55 @@ export const buildMobileTaskActionState = (task, options = {}) => {
     };
   }
 
-  if (status === 'new' || canStart) {
+  if (canStart) {
     return {
       key: 'start',
       stepLabel: 'Взять в работу',
-      actionLabel: canStart ? 'Начать' : '',
+      actionLabel: 'Начать',
       hint: 'Начните задачу, когда готовы выполнять.',
       tone: 'primary',
     };
   }
 
-  if (status === 'in_progress' || canSubmit) {
+  if (canSubmit) {
     return {
       key: 'submit',
-      stepLabel: 'Сдать результат',
-      actionLabel: canSubmit ? 'Сдать' : '',
-      hint: 'Нажмите "Сдать", добавьте комментарий и файл при необходимости.',
+      stepLabel: 'Отправить результат',
+      actionLabel: 'Отправить на проверку',
+      hint: 'Отправьте результат на проверку. Можно добавить комментарий и файл.',
       tone: 'warning',
+    };
+  }
+
+  if (canClose) {
+    return {
+      key: 'close',
+      stepLabel: 'Закрыть задачу',
+      actionLabel: 'Закрыть',
+      hint: 'Закройте задачу, если выполнение больше не требуется.',
+      tone: 'primary',
+    };
+  }
+
+  if (status === 'new') {
+    return {
+      key: 'waiting_assignee',
+      stepLabel: 'Ожидает исполнителя',
+      actionLabel: '',
+      hint: 'Исполнитель ещё не взял задачу в работу.',
+      tone: 'neutral',
+      passive: true,
+    };
+  }
+
+  if (status === 'in_progress') {
+    return {
+      key: 'waiting_work',
+      stepLabel: 'В работе у исполнителя',
+      actionLabel: '',
+      hint: 'Исполнитель выполняет задачу. Ожидайте сдачи результата.',
+      tone: 'neutral',
+      passive: true,
     };
   }
 

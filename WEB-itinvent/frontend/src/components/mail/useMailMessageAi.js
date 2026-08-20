@@ -32,7 +32,8 @@ export default function useMailMessageAi({
   const [smartRepliesLoading, setSmartRepliesLoading] = useState(false);
   const [smartRepliesLoaded, setSmartRepliesLoaded] = useState(false);
   const cacheRef = useRef(new Map());
-  const abortRef = useRef(null);
+  const summaryAbortRef = useRef(null);
+  const smartRepliesAbortRef = useRef(null);
 
   const cacheKey = `${mailboxId || 'default'}:${messageId || ''}`;
 
@@ -42,8 +43,10 @@ export default function useMailMessageAi({
     setSmartRepliesLoaded(false);
     setSummaryLoading(false);
     setSmartRepliesLoading(false);
-    abortRef.current?.abort?.();
-    abortRef.current = null;
+    summaryAbortRef.current?.abort?.();
+    smartRepliesAbortRef.current?.abort?.();
+    summaryAbortRef.current = null;
+    smartRepliesAbortRef.current = null;
   }, [cacheKey]);
 
   const loadSummary = useCallback(async () => {
@@ -57,12 +60,15 @@ export default function useMailMessageAi({
       return { summary: cached, error: '' };
     }
 
-    abortRef.current?.abort?.();
+    summaryAbortRef.current?.abort?.();
     const controller = new AbortController();
-    abortRef.current = controller;
+    summaryAbortRef.current = controller;
     setSummaryLoading(true);
     try {
       const data = await mailAiAPI.summarizeMessage(messageId, mailboxId, { signal: controller.signal });
+      if (controller.signal.aborted || summaryAbortRef.current !== controller) {
+        return { summary: '', error: '' };
+      }
       const nextSummary = String(data?.summary || '').trim();
       if (!nextSummary) {
         const errorMessage = 'AI вернул пустой пересказ.';
@@ -73,13 +79,13 @@ export default function useMailMessageAi({
       setSummary(nextSummary);
       return { summary: nextSummary, error: '' };
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || summaryAbortRef.current !== controller) {
         return { summary: '', error: '' };
       }
       const errorMessage = resolveAiErrorMessage(error);
       return { summary: '', error: errorMessage };
     } finally {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && summaryAbortRef.current === controller) {
         setSummaryLoading(false);
       }
     }
@@ -94,9 +100,15 @@ export default function useMailMessageAi({
       return cached;
     }
 
+    smartRepliesAbortRef.current?.abort?.();
+    const controller = new AbortController();
+    smartRepliesAbortRef.current = controller;
     setSmartRepliesLoading(true);
     try {
-      const data = await mailAiAPI.getSmartReplies(messageId, mailboxId);
+      const data = await mailAiAPI.getSmartReplies(messageId, mailboxId, { signal: controller.signal });
+      if (controller.signal.aborted || smartRepliesAbortRef.current !== controller) {
+        return [];
+      }
       const suggestions = Array.isArray(data?.suggestions)
         ? data.suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
         : [];
@@ -105,16 +117,22 @@ export default function useMailMessageAi({
       setSmartRepliesLoaded(true);
       return suggestions;
     } catch (error) {
+      if (controller.signal.aborted || smartRepliesAbortRef.current !== controller) {
+        return [];
+      }
       onError?.(error);
       setSmartRepliesLoaded(true);
       return [];
     } finally {
-      setSmartRepliesLoading(false);
+      if (!controller.signal.aborted && smartRepliesAbortRef.current === controller) {
+        setSmartRepliesLoading(false);
+      }
     }
   }, [cacheKey, enabled, mailboxId, messageId, onError, smartRepliesLoaded]);
 
   useEffect(() => () => {
-    abortRef.current?.abort?.();
+    summaryAbortRef.current?.abort?.();
+    smartRepliesAbortRef.current?.abort?.();
   }, []);
 
   return {

@@ -81,6 +81,7 @@ def test_mail_http_exception_recovers_auth_code_from_wrapped_exchange_cause(monk
     from backend.api.v1 import mail as mail_api
 
     invalidated: list[tuple[int, str | None]] = []
+    cleared_sessions: list[str] = []
 
     class _DummyMailService:
         def classify_mail_error_code(self, value):
@@ -89,7 +90,13 @@ def test_mail_http_exception_recovers_auth_code_from_wrapped_exchange_cause(monk
         def invalidate_saved_password(self, *, user_id: int, mailbox_id: str | None = None) -> None:
             invalidated.append((user_id, mailbox_id))
 
+    class _DummySessionAuth:
+        def delete_session_context(self, session_id):
+            cleared_sessions.append(str(session_id))
+
     monkeypatch.setattr(mail_api, "mail_service", _DummyMailService())
+    monkeypatch.setattr(mail_api, "session_auth_context_service", _DummySessionAuth())
+    monkeypatch.setattr(mail_api, "get_request_session_id", lambda: "sess-auth-invalid")
 
     cause = RuntimeError("Invalid credentials for https://10.103.0.50/EWS/Exchange.asmx")
     wrapped = MailServiceError(
@@ -104,4 +111,6 @@ def test_mail_http_exception_recovers_auth_code_from_wrapped_exchange_cause(monk
     assert http_exc.status_code == 409
     assert http_exc.headers["X-Mail-Error-Code"] == "MAIL_AUTH_INVALID"
     assert "парол" in str(http_exc.detail).lower()
+    assert "странице" in str(http_exc.detail).lower()
     assert invalidated == [(42, None)]
+    assert cleared_sessions == ["sess-auth-invalid"]

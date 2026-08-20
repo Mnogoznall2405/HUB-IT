@@ -17,6 +17,7 @@ vi.mock('../../api/hubTasks', () => ({
     startTask: vi.fn(),
     submitTask: vi.fn(),
     reviewTask: vi.fn(),
+    completeTask: vi.fn(),
     reopenTask: vi.fn(),
   },
 }));

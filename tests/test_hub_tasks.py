@@ -248,6 +248,41 @@ def test_reopen_completed_task_by_participant(task_env):
     assert ("done", "in_progress") in transitions
 
 
+def test_creator_can_close_task_and_assignee_cannot(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    created = _create_task(client, title="Close By Creator")
+    task_id = created["id"]
+
+    creator_detail = client.get(f"/hub/tasks/{task_id}")
+    assert creator_detail.status_code == 200
+    assert creator_detail.json()["capabilities"]["can_close"] is True
+    assert creator_detail.json()["status"] == "new"
+
+    set_user(2)
+    assignee_detail = client.get(f"/hub/tasks/{task_id}")
+    assert assignee_detail.status_code == 200
+    assert assignee_detail.json()["capabilities"]["can_close"] is False
+    denied = client.post(f"/hub/tasks/{task_id}/complete", json={"comment": "Done by assignee"})
+    assert denied.status_code == 403
+
+    set_user(1)
+    closed = client.post(f"/hub/tasks/{task_id}/complete", json={"comment": "Больше не нужно"})
+    assert closed.status_code == 200, closed.text
+    payload = closed.json()
+    assert payload["status"] == "done"
+    assert payload["review_comment"] == "Больше не нужно"
+    assert payload["capabilities"]["can_close"] is False
+    assert payload["capabilities"]["can_reopen"] is True
+
+    status_log = client.get(f"/hub/tasks/{task_id}/status-log")
+    assert status_log.status_code == 200
+    transitions = [(row["old_status"], row["new_status"]) for row in status_log.json()["items"]]
+    assert ("new", "done") in transitions
+
+
 def test_reopen_completed_task_denied_for_outsider(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]
@@ -358,6 +393,7 @@ def test_create_task_detail_access_and_role_scopes(task_env):
         "can_start": False,
         "can_submit": False,
         "can_review": False,
+        "can_close": False,
         "can_reopen": False,
         "can_upload_files": True,
         "can_update_checklist": True,
@@ -1794,6 +1830,7 @@ def test_task_observer_can_view_list_and_chat_capabilities(task_env):
         "can_start": False,
         "can_submit": False,
         "can_review": False,
+        "can_close": False,
         "can_reopen": False,
         "can_upload_files": False,
         "can_update_checklist": False,

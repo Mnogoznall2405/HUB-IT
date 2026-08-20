@@ -329,20 +329,21 @@ export default function EquipmentDetailWarehouse1CTab({
     setBalancesLoading(true);
     setBalancesError('');
     setBalancesMeta({});
-    const cardPartNo = String(readFirst(data, ['PART_NO', 'part_no'], '')).trim();
     const nomenclatureCode = String(item?.code || '').trim();
     const cardModelName = buildModelSearchText(data);
     const hubQuery = String(triedQuery || searchText || defaultSearchText || '').trim();
     // Парт. № для Хаба: карточка и/или код выбранной номенклатуры 1С.
-    const usableCardPart = isUsablePartNo(cardPartNo) ? cardPartNo : '';
-    const usableNomenclaturePart = isUsablePartNo(nomenclatureCode) ? nomenclatureCode : '';
-    const modelName = cardModelName || (hubQuerySource === 'model' ? hubQuery : '');
-    const source = (usableCardPart || usableNomenclaturePart) ? 'part_no' : 'model';
+    const usableNomenclatureCode = isUsablePartNo(nomenclatureCode) ? nomenclatureCode : '';
+    const usableHubQuery = isUsablePartNo(hubQuery) ? hubQuery : '';
+    const usablePartNo = usableNomenclatureCode || usableHubQuery;
+    const selectedModelName = String(item?.name || '').trim();
+    const modelName = selectedModelName || hubQuery || cardModelName;
+    const source = usablePartNo ? 'part_no' : 'model';
     try {
       const data = await warehouse1cAPI.getBalancesWithHub({
         nomenclatureRef: item.ref,
-        partNo: usableCardPart,
-        nomenclatureCode: usableNomenclaturePart,
+        partNo: usablePartNo,
+        nomenclatureCode: usableNomenclatureCode,
         modelName,
         hubQuery,
         hubQuerySource: source,

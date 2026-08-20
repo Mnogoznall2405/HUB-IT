@@ -282,7 +282,7 @@ export default function useMailReadMutations({
         mailboxId: activeMailboxId || '',
         folder,
         unreadDelta: -unreadDelta,
-        nextIsRead: !Boolean(nextIsRead),
+        nextIsRead: !nextIsRead,
       });
       localReadStateOverridesRef.current = clearLocalReadStateOverride({
         mode: normalizedMode,

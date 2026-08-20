@@ -177,10 +177,12 @@ async function ensurePasswordFormVisible() {
 
 describe('Login hybrid internal/external flow', () => {
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
   beforeEach(() => {
+    vi.useRealTimers();
     mockLogin.mockReset();
     mockStartTwoFactorSetup.mockReset();
     mockVerifyTwoFactorSetup.mockReset();
@@ -308,7 +310,7 @@ describe('Login hybrid internal/external flow', () => {
     expect(await screen.findByLabelText('Логин')).toHaveValue('petrov');
   });
 
-  it('reads a username inserted directly by the WebView password manager', async () => {
+    it('reads a username inserted directly by the WebView password manager', async () => {
     mockLogin.mockResolvedValue({ success: false, error: 'invalid_credentials' });
     render(<Login />);
     await ensurePasswordFormVisible();
@@ -325,6 +327,70 @@ describe('Login hybrid internal/external flow', () => {
     await waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith('autofilled.user', 'secret');
     });
+  });
+
+  it('sends only one login request when the form is submitted twice while the first request is in flight', async () => {
+    let resolveLogin;
+    mockLogin.mockImplementation(() => new Promise((resolve) => {
+      resolveLogin = resolve;
+    }));
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    submitPasswordStep();
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+    });
+    submitPasswordStep();
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveLogin({ success: false, error: 'invalid_credentials' });
+    });
+    await waitFor(() => {
+      expect(screen.getByText('invalid_credentials')).toBeInTheDocument();
+    });
+
+    submitPasswordStep();
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('keeps the login form locked for a short cooldown after HTTP 429', async () => {
+    mockLogin.mockResolvedValue({
+      success: false,
+      error: 'Too many failed login attempts, try again later',
+      statusCode: 429,
+    });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    try {
+      await act(async () => {
+        submitPasswordStep();
+      });
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Слишком много попыток входа. Подождите немного и попробуйте снова.')).toBeInTheDocument();
+
+      submitPasswordStep();
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+
+      await act(async () => {
+        submitPasswordStep();
+      });
+      expect(mockLogin).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+      });
+      vi.useRealTimers();
+    }
   });
 
   it('shows a dismissible VPN hint when login-mode reports outside Russia', async () => {

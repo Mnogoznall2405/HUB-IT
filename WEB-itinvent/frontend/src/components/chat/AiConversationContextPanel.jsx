@@ -20,7 +20,6 @@ import {
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
@@ -32,6 +31,8 @@ import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 
+import ChatRightPanelHeader from './ChatRightPanelHeader';
+import { HUB_ASSISTANT_TITLE } from './chatHelpers';
 import { AiConversationAvatar } from './ChatCommon';
 import OpenCodeConversationContext from './OpenCodeConversationContext';
 import useAiPersonalMemory from './useAiPersonalMemory';
@@ -119,11 +120,26 @@ export default function AiConversationContextPanel({
     conversationId: activeConversation?.id,
   });
   const capabilities = useMemo(() => [
-    agent?.live_data_enabled ? 'Данные HUB' : null,
-    'База знаний',
-    agent?.allow_file_input !== false ? 'Файлы и документы' : null,
-    (isGenericAgent || agent?.allow_generated_artifacts) ? 'Создание документов' : null,
-  ].filter(Boolean), [agent, isGenericAgent]);
+    {
+      key: 'hub',
+      label: 'Данные HUB',
+      status: agent?.live_data_enabled ? 'Доступ разрешён' : 'Нет доступа',
+      enabled: Boolean(agent?.live_data_enabled),
+    },
+    { key: 'kb', label: 'База знаний', status: 'Доступ разрешён', enabled: true },
+    {
+      key: 'mail',
+      label: 'Почта',
+      status: 'Только черновики',
+      enabled: true,
+    },
+    {
+      key: 'docs',
+      label: 'Создание документов',
+      status: (isGenericAgent || agent?.allow_generated_artifacts) ? 'Требует подтверждения' : 'Нет доступа',
+      enabled: Boolean(isGenericAgent || agent?.allow_generated_artifacts),
+    },
+  ].filter((item) => item.key !== 'hub' || agent?.live_data_enabled || isGenericAgent), [agent, isGenericAgent]);
 
   const beginEditMemory = (item) => {
     setEditingMemory(item);
@@ -153,18 +169,17 @@ export default function AiConversationContextPanel({
         borderColor: 'divider',
       }}
     >
-      <Box sx={{ minHeight: 64, px: 1.5, display: 'flex', alignItems: 'center', gap: 1, borderBottom: 1, borderColor: 'divider' }}>
-        <IconButton aria-label="Закрыть информацию об агенте" onClick={onClose} sx={{ minWidth: 44, minHeight: 44 }}>
-          <CloseRoundedIcon />
-        </IconButton>
-        <Typography variant="subtitle1" fontWeight={800}>О диалоге</Typography>
-      </Box>
+      <ChatRightPanelHeader
+        title="О диалоге"
+        onClose={onClose}
+        closeLabel="Закрыть информацию об агенте"
+      />
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 2, py: 2.5 }}>
         <Stack alignItems="center" spacing={1.25} sx={{ textAlign: 'center', mb: 3 }}>
           <AiConversationAvatar size={72} />
           <Typography variant="h6" fontWeight={800}>
-            {agent?.title || 'Личный AI'}
+            {agent?.title || HUB_ASSISTANT_TITLE}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 300 }}>
             {agent?.description || 'Личный помощник для общения, базы знаний, анализа файлов и создания документов.'}
@@ -173,7 +188,15 @@ export default function AiConversationContextPanel({
 
         <Typography variant="overline" color="text.secondary" fontWeight={800}>Возможности</Typography>
         <Stack direction="row" useFlexGap flexWrap="wrap" gap={1} sx={{ mt: 1, mb: 2.5 }}>
-          {capabilities.map((item) => <Chip key={item} label={item} size="small" />)}
+          {capabilities.map((item) => (
+            <Chip
+              key={item.key}
+              label={`${item.label} · ${item.status}`}
+              size="small"
+              color={item.enabled ? 'primary' : 'default'}
+              variant={item.enabled ? 'outlined' : 'filled'}
+            />
+          ))}
         </Stack>
 
         <Divider />
@@ -183,7 +206,7 @@ export default function AiConversationContextPanel({
           </Button>
           {agent?.allow_file_input !== false ? (
             <Button startIcon={<AttachFileRoundedIcon />} onClick={onOpenFilePicker} sx={{ minHeight: 44, justifyContent: 'flex-start' }}>
-              Прикрепить файл
+              Файлы диалога {files.length} · Добавить
             </Button>
           ) : null}
         </Stack>
@@ -199,7 +222,7 @@ export default function AiConversationContextPanel({
           </>
         ) : null}
         <Typography variant="overline" color="text.secondary" fontWeight={800} sx={{ display: 'block', mt: 2 }}>
-          Личная память
+          Память ассистента
         </Typography>
         {!personalMemoryAvailable ? (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, mb: 2 }}>
@@ -208,7 +231,7 @@ export default function AiConversationContextPanel({
         ) : (
           <Stack spacing={1} sx={{ mt: 0.5, mb: 2 }}>
             <Typography variant="body2" color="text.secondary">
-              В текущем чате учитываются последние 20 сообщений и краткое резюме более ранней части. Личная память может использоваться между AI-чатами.
+              Сохранённые предпочтения используются между диалогами HUB Ассистента. Их видите только вы.
             </Typography>
             <FormControlLabel
               control={(
@@ -219,9 +242,12 @@ export default function AiConversationContextPanel({
                   inputProps={{ 'aria-label': 'Использовать личную память' }}
                 />
               )}
-              label="Использовать в AI-чатах"
+              label="Использовать ваши предпочтения между диалогами"
               sx={{ minHeight: 44, m: 0 }}
             />
+            <Typography variant="body2" color="text.secondary">
+              Сохранено фактов: {memory.loading ? '…' : memory.items.length}
+            </Typography>
             {memory.loading ? (
               <Stack direction="row" spacing={1} alignItems="center" sx={{ minHeight: 44 }}>
                 <CircularProgress size={18} />
@@ -278,6 +304,14 @@ export default function AiConversationContextPanel({
             ) : null}
           </Stack>
         )}
+
+        <Divider />
+        <Typography variant="overline" color="text.secondary" fontWeight={800} sx={{ display: 'block', mt: 2 }}>
+          Контекст текущего диалога
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, mb: 2 }}>
+          Используются последние 20 сообщений. Этот контекст не сохраняется в память ассистента.
+        </Typography>
 
         <Divider />
         <Typography variant="overline" color="text.secondary" fontWeight={800} sx={{ display: 'block', mt: 2 }}>

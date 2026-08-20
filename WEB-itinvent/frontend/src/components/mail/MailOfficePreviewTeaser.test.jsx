@@ -23,4 +23,15 @@ describe('MailOfficePreviewTeaser', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Просмотреть' }));
     expect(onOpenFull).toHaveBeenCalledTimes(1);
   });
+
+  it('shows a custom action label when provided', () => {
+    const { container } = renderWithTheme(
+      <MailOfficePreviewTeaser onOpenFull={vi.fn()} actionLabel="Открыть в Word">
+        <div>preview body</div>
+      </MailOfficePreviewTeaser>,
+    );
+
+    fireEvent.mouseEnter(container.firstChild);
+    expect(screen.getByRole('button', { name: 'Открыть в Word' })).toBeTruthy();
+  });
 });

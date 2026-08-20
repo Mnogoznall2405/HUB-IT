@@ -3,6 +3,7 @@ import { Box, IconButton, TableCell, TableRow, Tooltip, Typography } from '@mui/
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import { formatDateTime, formatShortDate } from '../../../pages/tasks/taskFormatters';
 import TaskTagsRow from './TaskTagsRow';
+import OverflowMenu from '../../common/OverflowMenu';
 
 function TasksListTableRow({
   task,
@@ -11,8 +12,10 @@ function TasksListTableRow({
   taskDiscussionChatEnabled = false,
   projectLabel = '-',
   canDelete = false,
+  menuItems = [],
   onOpen,
   onDelete,
+  onMenuSelect,
 }) {
   return (
     <TableRow
@@ -30,6 +33,13 @@ function TasksListTableRow({
           <Typography sx={{ minWidth: 0, flex: 1, fontWeight: 850, lineHeight: 1.25 }}>
             {task?.title || '-'}
           </Typography>
+          {menuItems.length > 0 ? (
+            <OverflowMenu
+              label={`Действия задачи «${task?.title || 'Без названия'}»`}
+              items={menuItems}
+              onSelect={(key) => onMenuSelect?.(task, key)}
+            />
+          ) : null}
           {canDelete ? (
             <Tooltip title="Удалить задачу">
               <IconButton

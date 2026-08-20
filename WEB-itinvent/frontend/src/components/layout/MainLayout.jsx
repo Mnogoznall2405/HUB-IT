@@ -174,6 +174,7 @@ const groupItemsByRelativeDate = (items, dateKey) => {
 function MainLayout({
   children,
   headerMode = 'default',
+  pageTitle,
   contentMode = 'default',
   mobileBottomNavMode = 'auto',
   mobileBottomNavTransitionMs = 280,
@@ -321,6 +322,7 @@ function MainLayout({
   const isMobileChatRoute = isPhone && isChatRoute;
   const isDesktopChatRoute = !isPhone && isChatRoute;
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
+  const isEdgeToEdgeContent = contentMode === 'edge-to-edge' || isEdgeToEdgeMobileContent;
   const notificationsOnlyHeader = headerMode === 'notifications-only';
   const hiddenHeader = headerMode === 'hidden' || isPhone;
   const minimalHeader = isPhone && headerMode === 'minimal';
@@ -1837,7 +1839,7 @@ useEffect(() => {
     if (activeNavigationPath.startsWith('/menu')) return 'Меню';
     return APP_BRAND_NAME;
   };
-  const currentTitle = getCurrentTitle();
+  const currentTitle = pageTitle || getCurrentTitle();
   const activeMobileNavigationPath = useMemo(() => {
     const item = visibleMobileNavigationItems.find((item) => isNavigationItemActive(item.path, activeNavigationPath));
     if (item?.path) return item.path;
@@ -2356,7 +2358,7 @@ useEffect(() => {
                         toggleSidebar();
                       }}
                       sx={{
-                        mr: 2,
+                        mr: headerInlineContent ? 1 : 2,
                         ...getOfficeQuietActionSx(ui, theme, 'neutral', {
                           borderColor: 'transparent',
                           bgcolor: 'transparent',
@@ -2441,12 +2443,24 @@ useEffect(() => {
                     )
                   ) : (
                     <>
-                      <Stack direction="row" spacing={1.2} alignItems="center" sx={{ flexGrow: 1, minWidth: 0 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ flexGrow: 1, minWidth: 0, mr: 1 }}>
                         {!shouldHideHeaderContext && !isPhone && (
-                          <Typography variant="subtitle1" noWrap sx={{ fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+                          <Typography
+                            variant="subtitle1"
+                            noWrap
+                            sx={{ fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.25, flexShrink: 0 }}
+                          >
                             {currentTitle}
                           </Typography>
                         )}
+                        {headerInlineContent ? (
+                          <Box
+                            data-testid="main-layout-header-inline"
+                            sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}
+                          >
+                            {headerInlineContent}
+                          </Box>
+                        ) : null}
                       </Stack>
                       {showNotificationsButton && !minimalHeader ? (
                         <IconButton
@@ -2619,18 +2633,18 @@ useEffect(() => {
           flexDirection: isFixedHeightRoute ? 'column' : undefined,
           overflow: isFixedHeightRoute ? 'hidden' : 'visible',
           px: {
-            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
-            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+            xs: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pb: {
             xs: hasMobileBottomNavigation
               ? (mobileBottomNavHidden ? 0 : 'var(--app-shell-mobile-bottom-nav-height)')
-              : ((isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2),
-            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+              : ((isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2),
+            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pt: {
-            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
-            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+            xs: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
           bgcolor: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
           width: {

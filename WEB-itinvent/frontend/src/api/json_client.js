@@ -203,6 +203,17 @@ export const jsonAPI = {
     apiClient.get('/json/works/cleaning/statistics', { params }),
 
   /**
+   * Get uncleaned PCs for one branch in the selected period
+   * @param {Object} params
+   * @param {number} [params.period_days]
+   * @param {string} params.branch
+   * @param {string} [params.db_name]
+   * @returns {Promise<Object>} Remaining PCs payload
+   */
+  getPcCleaningRemaining: (params) =>
+    apiClient.get('/json/works/cleaning/statistics/remaining', { params }),
+
+  /**
    * Get MFU maintenance statistics by branches
    * @param {Object} [params] - Query parameters
    * @param {number} [params.period_days] - Statistics window in days

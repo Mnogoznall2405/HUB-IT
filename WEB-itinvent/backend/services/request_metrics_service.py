@@ -170,6 +170,11 @@ class RequestMetricsService:
             reset_auth_session_metrics()
         except Exception:
             pass
+        try:
+            from backend.services.mail_observability import reset_mail_observability
+            reset_mail_observability()
+        except Exception:
+            pass
 
     def route_path_for_request(self, request: Request) -> str:
         route = request.scope.get("route")
@@ -218,6 +223,12 @@ class RequestMetricsService:
             auth_session = auth_session_snapshot()
         except Exception as exc:
             auth_session = {"error": type(exc).__name__}
+        mail_sli: dict[str, Any] = {}
+        try:
+            from backend.services.mail_observability import mail_observability_snapshot
+            mail_sli = mail_observability_snapshot()
+        except Exception as exc:
+            mail_sli = {"enabled": False, "error": type(exc).__name__}
         return {
             "enabled": self.enabled,
             "started_at": _utc_iso(started_at),
@@ -233,6 +244,7 @@ class RequestMetricsService:
             "pools": self._pool_status(),
             "background_jobs": self._background_job_status(),
             "auth_session": auth_session,
+            "mail": mail_sli,
         }
 
     @staticmethod

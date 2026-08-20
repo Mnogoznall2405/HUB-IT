@@ -33,12 +33,60 @@ def _reset_runtime_adapter_state(base_protocol, original_adapter):
     mail_module._EXCHANGE_HTTP_ADAPTER_SIGNATURE = None
 
 
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_parse_mail_verify_tls_empty_defaults_to_true(raw):
+    assert mail_module.parse_mail_verify_tls(raw) is True
+
+
+@pytest.mark.parametrize("raw", ["true", "TRUE", "1", "yes", "ON"])
+def test_parse_mail_verify_tls_truthy_values(raw):
+    assert mail_module.parse_mail_verify_tls(raw) is True
+
+
+@pytest.mark.parametrize("raw", ["false", "FALSE", "0", "no", "OFF"])
+def test_parse_mail_verify_tls_false_values(raw):
+    assert mail_module.parse_mail_verify_tls(raw) is False
+
+
+@pytest.mark.parametrize("raw", ["nope", "fasle", "enabled", "2", "maybe"])
+def test_parse_mail_verify_tls_rejects_typos_as_startup_error(raw):
+    with pytest.raises(mail_module.MailTlsConfigurationError, match="MAIL_VERIFY_TLS"):
+        mail_module.parse_mail_verify_tls(raw)
+
+
+def test_generic_to_bool_still_treats_garbage_as_false():
+    assert mail_module._to_bool("nope", default=True) is False
+    assert mail_module._to_bool("fasle", default=True) is False
+
+
 def test_mail_service_verifies_tls_by_default(monkeypatch):
     monkeypatch.delenv("MAIL_VERIFY_TLS", raising=False)
     monkeypatch.delenv("MAIL_TLS_CA_BUNDLE", raising=False)
     monkeypatch.delenv("MAIL_CA_BUNDLE", raising=False)
 
     assert _service().verify_tls is True
+
+
+def test_mail_service_empty_verify_tls_defaults_to_true(monkeypatch):
+    monkeypatch.setenv("MAIL_VERIFY_TLS", "")
+    monkeypatch.delenv("MAIL_TLS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("MAIL_CA_BUNDLE", raising=False)
+
+    assert _service().verify_tls is True
+
+
+def test_mail_service_garbage_verify_tls_is_configuration_error(monkeypatch):
+    monkeypatch.setenv("MAIL_VERIFY_TLS", "nope")
+
+    with pytest.raises(mail_module.MailTlsConfigurationError, match="MAIL_VERIFY_TLS"):
+        _service().verify_tls
+
+
+def test_mail_service_init_rejects_garbage_verify_tls(monkeypatch):
+    monkeypatch.setenv("MAIL_VERIFY_TLS", "fasle")
+
+    with pytest.raises(mail_module.MailTlsConfigurationError, match="MAIL_VERIFY_TLS"):
+        mail_module.MailService(database_url="sqlite:///:memory:")
 
 
 def test_mail_service_uses_no_verify_adapter_only_inside_explicit_insecure_context(monkeypatch):

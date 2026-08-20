@@ -54,6 +54,7 @@ const renderWorkspace = (props = {}) => render(
       canStartTask={alwaysFalse}
       canSubmitTask={alwaysTrue}
       canReviewTask={alwaysFalse}
+      canCloseTask={alwaysFalse}
       canReopenTask={alwaysFalse}
       getTransferActReminderLabel={() => ''}
       isTransferActUploadTask={alwaysFalse}

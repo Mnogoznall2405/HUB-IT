@@ -6,6 +6,7 @@ import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import SaveAltRoundedIcon from '@mui/icons-material/SaveAltRounded';
@@ -279,7 +280,13 @@ export function AiConversationAvatar({ size = 48, sx = {} }) {
 
 export function TaskConversationAvatar({ conversation, size = 48, sx = {} }) {
   const [, statusColor] = getStatusMeta(conversation?.task_status);
-  const completed = String(conversation?.task_status || '').trim().toLowerCase() === 'done';
+  const status = String(conversation?.task_status || '').trim().toLowerCase();
+  const completed = status === 'done';
+  const StatusIcon = completed
+    ? TaskAltRoundedIcon
+    : status === 'in_progress'
+      ? ScheduleRoundedIcon
+      : PlayArrowRoundedIcon;
   return (
     <Box
       sx={{
@@ -313,7 +320,7 @@ export function TaskConversationAvatar({ conversation, size = 48, sx = {} }) {
           border: `2px solid ${alpha(statusColor, muiTheme.palette.mode === 'dark' ? 0.82 : 0.68)}`,
         })}
       >
-        <TaskAltRoundedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+        <StatusIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
       </Box>
       {completed ? (
         <Box

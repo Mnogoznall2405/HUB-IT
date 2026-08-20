@@ -35,7 +35,7 @@ function TypingDots({ color }) {
 }
 
 function ChatTypingIndicator({
-  botName = 'AI Ассистент',
+  botName = 'HUB Ассистент',
   theme,
   ui,
   compactMobile = false,

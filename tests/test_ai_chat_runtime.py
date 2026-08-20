@@ -1932,6 +1932,44 @@ def test_missing_create_format_creates_choice_without_live_tool_results(monkeypa
     assert created[0]["payload"]["source_file_spec"]["content"] == "Decision: prepare the rollout checklist."
 
 
+def test_file_format_choice_payloads_capture_live_tool_results():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    live_result = {
+        "tool_id": "itinvent.employee.list_equipment",
+        "ok": True,
+        "data": {
+            "items": [
+                {
+                    "inv_no": "101",
+                    "serial_no": "SN-101",
+                    "type_name": "Laptop",
+                    "model_name": "Lenovo ThinkPad",
+                }
+            ]
+        },
+    }
+    format_choice_result = {
+        "tool_id": "ai.files.create",
+        "ok": True,
+        "data": {
+            "needs_format_choice": True,
+            "format_choice_payloads": [
+                {
+                    "title": "Equipment",
+                    "summary": "Choose format",
+                    "file_name_base": "inventory",
+                    "source_file_spec": {"file_name": "inventory", "rows": []},
+                }
+            ],
+        },
+    }
+
+    payloads = ai_chat_module._collect_file_format_choice_payloads([live_result, format_choice_result])
+    assert len(payloads) == 1
+    assert payloads[0]["source_tool_results"] == [live_result]
+
+
 def test_ai_context_limits_cannot_exceed_product_caps():
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
 
@@ -2003,6 +2041,75 @@ def test_report_format_choice_confirm_sends_one_generated_file(tmp_path, monkeyp
     assert confirmed["result"]["message_id"] == "msg-report-1"
     assert repeated["status"] == "confirmed"
     assert len(sent_files) == 1
+
+
+def test_report_format_choice_rebuilds_empty_source_spec_using_source_tool_results(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_choice_rebuild.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Equipment for Pakhotin",
+            "summary": "Equipment list",
+            "source_file_spec": {"file_name": "inventory", "rows": []},
+            "source_tool_results": [
+                {
+                    "tool_id": "itinvent.employee.list_equipment",
+                    "ok": True,
+                    "data": {
+                        "items": [
+                            {
+                                "inv_no": "101665.0",
+                                "serial_no": "PC25J7G6",
+                                "type_name": "Desktop",
+                                "model_name": "Lenovo ThinkCentre M720q",
+                                "owner_name": "Пахотин И.И.",
+                                "status": "Работает",
+                                "branch": "IT",
+                                "location": "19_105",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "database_id": "ITINVENT",
+        },
+    )
+    sheet_rows: list[int] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            upload = kwargs["uploads"][0]
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(io.BytesIO(upload.file.getvalue()))
+            if len(workbook.sheetnames) >= 2:
+                sheet_rows.append(workbook[workbook.sheetnames[1]].max_row)
+            else:
+                sheet_rows.append(workbook.active.max_row)
+            return {
+                "id": "msg-report-2",
+                "attachments": [{"id": "att-report-2", "file_name": upload.filename, "file_size": upload.file.getbuffer().nbytes}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert sheet_rows and sheet_rows[0] >= 2
 
 
 def test_report_format_choice_blocks_other_users_and_expired_actions(tmp_path, monkeypatch):
@@ -3436,6 +3543,269 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
     assert "Dell Latitude 5430" in messages[-1].body
     assert "Статус: В эксплуатации" in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_report_roundtrip.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "response_schema": kwargs.get("response_schema"),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.search",
+                        "args": {"query": "Pakhotin I.I."},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 18,
+                "completion_tokens": 6,
+                "total_tokens": 24,
+            }
+        if len(completion_calls) == 2:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.list_equipment",
+                        "args": {"owner_no": 777},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 16,
+                "completion_tokens": 8,
+                "total_tokens": 24,
+            }
+        if len(completion_calls) == 3:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.report",
+                        "args": {
+                            "title": "Equipment for Pakhotin",
+                            "summary": "Found equipment list",
+                            "file_name": "pakhotin-equipment",
+                        },
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 14,
+                "completion_tokens": 9,
+                "total_tokens": 23,
+            }
+        return {
+            "answer_markdown": (
+                "## Report prepared\n\n"
+                "I prepared a report and ask to choose output format.\n"
+                "ITinvent source: owner equipment."
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 11,
+            "completion_tokens": 16,
+            "total_tokens": 27,
+        }
+
+    def fake_search_employees(search_term, page=1, limit=50, db_id=None):
+        return {
+            "employees": [
+                {
+                    "OWNER_NO": 777,
+                    "FIO": "Pakhotin I.I.",
+                    "DEPARTMENT": "IT Dept",
+                    "POSITION": "Engineer",
+                }
+            ],
+            "total": 1,
+            "page": int(page),
+            "limit": int(limit),
+            "pages": 1,
+        }
+
+    def fake_get_equipment_by_owner(owner_no, db_id=None):
+        assert int(owner_no or 0) == 777
+        return [
+            {
+                "INV_NO": "101665",
+                "SERIAL_NO": "PC25J7G6",
+                "TYPE_NAME": "Desktop",
+                "MODEL_NAME": "Lenovo ThinkCentre M720q",
+                "OWNER_NAME": "Pakhotin I.I.",
+                "STATUS_NAME": "Works",
+                "BRANCH_NAME": "IT",
+                "LOCATION_NAME": "19_105",
+            }
+        ]
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.search_employees", fake_search_employees)
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.get_equipment_by_owner", fake_get_equipment_by_owner)
+
+    chat_db.initialize_chat_schema(database_url)
+    appdb_db.initialize_app_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_chain_report",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Chain Report",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    updated_bot = temp_ai_service.update_bot(
+        bot["id"],
+        {
+            "enabled_tools": [
+                "itinvent.employee.search",
+                "itinvent.employee.list_equipment",
+                "ai.files.report",
+            ],
+            "tool_settings": {
+                "multi_db_mode": "single",
+                "allowed_databases": [],
+            },
+        },
+    )
+    assert updated_bot["enabled_tools"] == [
+        "itinvent.employee.search",
+        "itinvent.employee.list_equipment",
+        "ai.files.report",
+    ]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-report-roundtrip-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Export equipment for employee Pakhotin",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-report-roundtrip-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with appdb_db.app_session(database_url) as session:
+        run = session.execute(
+            select(app_models.AppAiBotRun)
+            .where(app_models.AppAiBotRun.conversation_id == opened["id"])
+            .order_by(app_models.AppAiBotRun.created_at.desc())
+        ).scalar_one()
+        pending_actions = list(
+            session.execute(
+                select(app_models.AppAiPendingAction)
+                .where(
+                    app_models.AppAiPendingAction.run_id == run.id,
+                    app_models.AppAiPendingAction.status == "pending",
+                )
+            ).scalars()
+        )
+
+    assert len(completion_calls) == 4
+    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
+    assert len(pending_actions) == 1
+    action_id = pending_actions[0].id
+    sheet_rows: list[int] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            upload = kwargs["uploads"][0]
+            workbook = __import__("openpyxl").load_workbook(io.BytesIO(upload.file.getvalue()))
+            if len(workbook.sheetnames) >= 2:
+                sheet_rows.append(workbook[workbook.sheetnames[1]].max_row)
+            else:
+                sheet_rows.append(workbook.active.max_row)
+            return {
+                "id": "msg-report-roundtrip",
+                "attachments": [
+                    {
+                        "id": "att-report-roundtrip",
+                        "file_name": upload.filename,
+                        "file_size": upload.file.getbuffer().nbytes,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=action_id,
+        current_user=SimpleNamespace(id=int(actor["id"]), role="viewer", permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert sheet_rows and sheet_rows[0] >= 2
 
 
 def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tmp_path, monkeypatch):

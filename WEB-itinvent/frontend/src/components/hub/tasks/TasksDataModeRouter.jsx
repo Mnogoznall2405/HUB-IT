@@ -116,9 +116,13 @@ function TasksDataModeRouter({
 
   canDeleteTask,
 
+  getTaskActionMenuItems,
+
   onOpenTask,
 
   onDeleteTask,
+
+  onTaskMenuSelect,
 
   deadlineBuckets = [],
 
@@ -212,9 +216,13 @@ function TasksDataModeRouter({
 
         canDeleteTask={canDeleteTask}
 
+        getTaskActionMenuItems={getTaskActionMenuItems}
+
         onOpenTask={onOpenTask}
 
         onDeleteTask={onDeleteTask}
+
+        onTaskMenuSelect={onTaskMenuSelect}
 
         hasMoreTasks={hasMoreTasks}
 

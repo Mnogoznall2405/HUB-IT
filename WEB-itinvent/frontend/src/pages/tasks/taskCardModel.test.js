@@ -13,4 +13,9 @@ describe('taskCardModel', () => {
     expect(items.map((item) => item.key)).toEqual(['edit', 'copy', 'delete']);
     expect(items.find((item) => item.key === 'delete')?.tone).toBe('danger');
   });
+
+  it('adds workflow actions for the task creator', () => {
+    const items = buildMobileTaskCardMenuItems({ canClose: true, canReview: true, canEdit: true });
+    expect(items.map((item) => item.key)).toEqual(['review', 'close', 'edit', 'copy']);
+  });
 });

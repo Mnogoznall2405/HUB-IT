@@ -523,6 +523,31 @@ class ChatSerialization:
             return f"Вы: {preview}" if preview else "Вы"
         return preview
 
+    def _users_map_with_message_senders(
+        self,
+        *,
+        users_by_id: Optional[dict[int, dict]],
+        messages: list[Any],
+    ) -> dict[int, dict]:
+        resolved = {
+            int(user_id): payload
+            for user_id, payload in dict(users_by_id or {}).items()
+            if int(user_id) > 0
+        }
+        missing_ids = {
+            int(getattr(item, "sender_user_id", 0) or 0)
+            for item in list(messages or [])
+            if int(getattr(item, "sender_user_id", 0) or 0) > 0
+            and int(getattr(item, "sender_user_id", 0) or 0) not in resolved
+        }
+        if missing_ids:
+            extra = self._service._get_users_map(user_ids=missing_ids) or {}
+            for user_id, payload in extra.items():
+                normalized_id = int(user_id or 0)
+                if normalized_id > 0:
+                    resolved[normalized_id] = payload
+        return resolved
+
     def _build_reply_previews(
         self,
         *,
@@ -545,11 +570,15 @@ class ChatSerialization:
             session=session,
             message_ids=[item.id for item in reply_messages],
         )
+        resolved_users = self._users_map_with_message_senders(
+            users_by_id=users_by_id,
+            messages=reply_messages,
+        )
         return {
             item.id: self._service._reply_preview_payload(
                 message=item,
                 attachments=attachments_by_message.get(item.id, []),
-                users_by_id=users_by_id,
+                users_by_id=resolved_users,
             )
             for item in reply_messages
         }
@@ -577,7 +606,10 @@ class ChatSerialization:
             message_ids=[item.id for item in source_messages],
         )
         if users_by_id is not None:
-            resolved_users = users_by_id
+            resolved_users = self._users_map_with_message_senders(
+                users_by_id=users_by_id,
+                messages=source_messages,
+            )
         else:
             source_sender_ids = {
                 int(getattr(item, "sender_user_id", 0) or 0)

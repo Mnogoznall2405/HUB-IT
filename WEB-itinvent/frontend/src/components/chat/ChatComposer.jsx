@@ -915,7 +915,7 @@ const ChatComposer = memo(function ChatComposer({
               </>
             ) : (
               <>
-                {!canSendComposerMessage ? (
+                {!voiceRecording ? (
                   <Tooltip title="Меню вложений">
                     <span>
                       <button

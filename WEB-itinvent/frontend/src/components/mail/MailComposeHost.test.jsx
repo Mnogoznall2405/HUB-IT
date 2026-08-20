@@ -462,4 +462,221 @@ describe('MailComposeHost', () => {
 
     expect(uploadSignal.aborted).toBe(true);
   });
+
+  it('ignores a second send click while the first send is in flight', async () => {
+    let resolveSend;
+    mockSendMessage.mockImplementation(() => new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    renderHost();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    resolveSend({});
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-sending', 'false');
+    });
+  });
+
+  it('reuses the same send idempotency key after a failed attempt', async () => {
+    mockSendMessage
+      .mockRejectedValueOnce(new Error('HTTP 500'))
+      .mockResolvedValueOnce({});
+
+    renderHost();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-sending', 'false');
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    const firstKey = mockSendMessage.mock.calls[0][0].idempotencyKey;
+    const secondKey = mockSendMessage.mock.calls[1][0].idempotencyKey;
+    expect(firstKey).toEqual(expect.any(String));
+    expect(firstKey.length).toBeGreaterThanOrEqual(8);
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it('shows maybe-sent copy on send timeout and does not auto-retry', async () => {
+    const requestError = Object.assign(new Error('timeout of 115000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    mockSendMessage.mockRejectedValueOnce(requestError);
+
+    renderHost();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog').getAttribute('data-compose-error') || '')
+        .toContain('могло быть отправлено');
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs afterClose after an empty compose is closed without a prompt', async () => {
+    const onCloseSession = vi.fn();
+    const afterClose = vi.fn();
+    let closeHandler;
+    renderHost({
+      onCloseSession,
+      onRegisterCloseHandler: (handler) => { closeHandler = handler; },
+      session: {
+        id: 9,
+        initialState: {
+          composeToValues: [],
+          composeSubject: '',
+          composeBody: '',
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    await act(async () => {
+      await closeHandler({ afterClose });
+    });
+
+    expect(onCloseSession).toHaveBeenCalledTimes(1);
+    expect(afterClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Сохранить' })).toBeNull();
+  });
+
+  it('autosaves a typed compose and runs afterClose when switching away', async () => {
+    const onCloseSession = vi.fn();
+    const onDraftSaved = vi.fn().mockResolvedValue(undefined);
+    const afterClose = vi.fn();
+    let closeHandler;
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-1', attachments: [] });
+    renderHost({
+      onCloseSession,
+      onDraftSaved,
+      onRegisterCloseHandler: (handler) => { closeHandler = handler; },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    await act(async () => {
+      await closeHandler({ afterClose });
+    });
+
+    await waitFor(() => {
+      expect(mockSaveDraftMultipart).toHaveBeenCalled();
+      expect(onDraftSaved).toHaveBeenCalledTimes(1);
+      expect(onCloseSession).toHaveBeenCalledTimes(1);
+      expect(afterClose).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Сохранить' })).toBeNull();
+  });
+
+  it('does not run afterClose when the user continues editing after the close button', async () => {
+    const onCloseSession = vi.fn();
+    const afterClose = vi.fn();
+    let closeHandler;
+    renderHost({
+      onCloseSession,
+      onRegisterCloseHandler: (handler) => { closeHandler = handler; },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    await act(async () => {
+      await closeHandler();
+    });
+
+    expect(onCloseSession).not.toHaveBeenCalled();
+    expect(afterClose).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Продолжить редактирование' }));
+    expect(onCloseSession).not.toHaveBeenCalled();
+    expect(afterClose).not.toHaveBeenCalled();
+    expect(mockSaveDraftMultipart).not.toHaveBeenCalled();
+  });
+
+  it('keeps compose open when autosave fails while switching away', async () => {
+    const onCloseSession = vi.fn();
+    const afterClose = vi.fn();
+    const onComposeWarning = vi.fn();
+    let closeHandler;
+    mockSaveDraftMultipart.mockRejectedValueOnce(new Error('offline'));
+    renderHost({
+      onCloseSession,
+      onComposeWarning,
+      onRegisterCloseHandler: (handler) => { closeHandler = handler; },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    await act(async () => {
+      await closeHandler({ afterClose });
+    });
+
+    await waitFor(() => {
+      expect(onComposeWarning).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'draft_save_failed',
+      }));
+    });
+    expect(onCloseSession).not.toHaveBeenCalled();
+    expect(afterClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+  });
+
+  it('runs onCloseSession after the user confirms saving from the close prompt', async () => {
+    const onCloseSession = vi.fn();
+    const onDraftSaved = vi.fn().mockResolvedValue(undefined);
+    let closeHandler;
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-1', attachments: [] });
+    renderHost({
+      onCloseSession,
+      onDraftSaved,
+      onRegisterCloseHandler: (handler) => { closeHandler = handler; },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    await act(async () => {
+      await closeHandler();
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => {
+      expect(mockSaveDraftMultipart).toHaveBeenCalled();
+      expect(onDraftSaved).toHaveBeenCalledTimes(1);
+      expect(onCloseSession).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -193,9 +193,9 @@ describe('TaskUi helpers', () => {
           formatDateTime={(value) => value || '-'}
           actionState={{
             key: 'submit',
-            stepLabel: 'Сдать результат',
-            actionLabel: 'Сдать',
-            hint: 'Нажмите "Сдать", добавьте комментарий и файл при необходимости.',
+            stepLabel: 'Отправить результат',
+            actionLabel: 'Отправить на проверку',
+            hint: 'Отправьте результат на проверку. Можно добавить комментарий и файл.',
           }}
           actions={<button type="button">primary</button>}
           mobile
@@ -204,8 +204,8 @@ describe('TaskUi helpers', () => {
     );
 
     expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Что сделать');
-    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Сдать результат');
-    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Нажмите "Сдать"');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Отправить результат');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Отправьте результат на проверку');
     expect(screen.getByTestId('task-context-mobile-context')).toBeInTheDocument();
     expect(screen.getByTestId('task-context-mobile-timeline')).toBeInTheDocument();
 

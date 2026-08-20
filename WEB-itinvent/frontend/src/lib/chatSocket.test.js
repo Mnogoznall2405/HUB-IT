@@ -100,6 +100,93 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('does not reconnect an OPEN zombie socket through connect()', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+
+    chatSocket.connect();
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(chatSocket.socket).toBe(firstSocket);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('replaces an OPEN zombie socket through recoverAfterSystemResume', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    chatSocket.wantInbox = true;
+    chatSocket.activeConversationIds.add('conv-7');
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(firstSocket.onclose).toBeNull();
+    expect(chatSocket.socket).not.toBe(firstSocket);
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+    const types = secondSocket.sent.map((payload) => JSON.parse(payload).type);
+    expect(types).toContain('chat.subscribe_inbox');
+    expect(types).toContain('chat.subscribe_conversation');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('skips system resume recovery when the socket is not retained', async () => {
+    const { chatSocket } = await loadChatSocket();
+    expect(chatSocket.recoverAfterSystemResume()).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not replace a CONNECTING recovery socket on a second resume call', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    const replacement = MockWebSocket.instances[1];
+    expect(replacement.readyState).toBe(MockWebSocket.CONNECTING);
+    const closed = vi.fn();
+    replacement.close = function closeReplacement() {
+      closed();
+      this.readyState = MockWebSocket.CLOSED;
+    };
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(closed).not.toHaveBeenCalled();
+    expect(chatSocket.socket).toBe(replacement);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('clears a stale auth block and replaces an OPEN zombie socket after system resume', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    chatSocket.authBlocked = true;
+    chatSocket.wantInbox = true;
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(chatSocket.socket).not.toBe(firstSocket);
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('resolves sendMessage with the message payload from chat.command.ok', async () => {
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();

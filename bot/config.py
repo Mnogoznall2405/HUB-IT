@@ -32,7 +32,7 @@ class APIConfig:
     """РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ РІРЅРµС€РЅРёС… API"""
     openrouter_api_key: str
     openrouter_base_url: str = "https://routerai.ru/api/v1"
-    ocr_model: str = "google/gemini-3.6-flash"
+    ocr_model: str = "google/gemini-3.7-flash"
 
 
 @dataclass
@@ -173,7 +173,7 @@ def load_config() -> AppConfig:
         ocr_model=(
             os.getenv("ROUTERAI_MODEL_OCR")
             or os.getenv("ROUTERAI_MODEL")
-            or os.getenv("OCR_MODEL", "google/gemini-3.6-flash")
+            or os.getenv("OCR_MODEL", "google/gemini-3.7-flash")
         ),
     )
     

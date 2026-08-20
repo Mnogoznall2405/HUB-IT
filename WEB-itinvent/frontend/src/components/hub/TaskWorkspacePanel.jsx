@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Chip,
@@ -9,20 +8,22 @@ import {
   Divider,
   IconButton,
   LinearProgress,
+  Menu,
+  MenuItem,
   Stack,
+  Tab,
+  Tabs,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
-import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { hubAPI } from '../../api/client';
 import { departmentsAPI } from '../../api/departments';
@@ -35,8 +36,15 @@ import {
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import MarkdownRenderer from './MarkdownRenderer';
 import TaskChecklist from './TaskChecklist';
-import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog } from './TaskActionDialogs';
+import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
 import TaskAttachmentPreviewDialog, { useTaskAttachmentPreview } from './tasks/TaskAttachmentPreviewDialog';
+import ChatRightPanelHeader from '../chat/ChatRightPanelHeader';
+import {
+  buildTaskHistoryItems,
+  buildTaskWorkspacePrimaryActions,
+  formatHubPersonDisplay,
+  formatRelativeUpdatedAt,
+} from './taskWorkspaceActions';
 
 const EMPTY_REFERENCES = {
   assignees: [],
@@ -85,17 +93,18 @@ const formatFileSize = (value) => {
 };
 
 const userLabel = (task, prefix) => (
-  task?.[`${prefix}_full_name`]
-  || task?.[`${prefix}_username`]
-  || '-'
+  formatHubPersonDisplay(
+    task?.[`${prefix}_full_name`],
+    task?.[`${prefix}_username`],
+  ).label
 );
 
 const observersLabel = (task) => {
   const fromObservers = Array.isArray(task?.observers) ? task.observers : [];
   if (fromObservers.length) {
     return fromObservers
-      .map((observer) => String(observer?.full_name || observer?.username || observer?.user_id || '').trim())
-      .filter(Boolean)
+      .map((observer) => formatHubPersonDisplay(observer?.full_name, observer?.username).label)
+      .filter((label) => label && label !== '-')
       .join(', ');
   }
   const ids = Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [];
@@ -146,9 +155,12 @@ function TaskWorkspacePanel({
   const [editOpen, setEditOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [references, setReferences] = useState(EMPTY_REFERENCES);
   const [referencesLoading, setReferencesLoading] = useState(false);
+  const [detailTab, setDetailTab] = useState('overview');
+  const [moreMenuAnchor, setMoreMenuAnchor] = useState(null);
   const attachmentPreview = useTaskAttachmentPreview();
   const loadRequestIdRef = useRef(0);
   const onTaskUpdatedRef = useRef(onTaskUpdated);
@@ -184,6 +196,9 @@ function TaskWorkspacePanel({
     setEditOpen(false);
     setSubmitOpen(false);
     setReviewOpen(false);
+    setCloseOpen(false);
+    setDetailTab('overview');
+    setMoreMenuAnchor(null);
     setReferences(EMPTY_REFERENCES);
     if (normalizedTaskId) void loadTask();
   }, [loadTask, normalizedTaskId]);
@@ -208,7 +223,9 @@ function TaskWorkspacePanel({
     setReferencesLoading(true);
     setError('');
     try {
+      const assigneeId = task?.assignee_user_id;
       const results = await Promise.allSettled([
+        assigneeId ? hubAPI.getAssignees({ ids: String(assigneeId) }) : Promise.resolve({ items: [] }),
         hubAPI.getControllers(),
         departmentsAPI.list(),
         hubAPI.getTaskProjects({ include_inactive: true }),
@@ -223,11 +240,11 @@ function TaskWorkspacePanel({
           : []
       );
       setReferences({
-        assignees: [],
-        controllers: items(0),
-        departments: items(1),
-        projects: items(2),
-        objects: items(3),
+        assignees: items(0),
+        controllers: items(1),
+        departments: items(2),
+        projects: items(3),
+        objects: items(4),
       });
       setEditOpen(true);
     } catch (requestError) {
@@ -235,7 +252,7 @@ function TaskWorkspacePanel({
     } finally {
       setReferencesLoading(false);
     }
-  }, [referencesLoading]);
+  }, [referencesLoading, task?.assignee_user_id]);
 
   const handleToggleChecklist = useCallback(async (itemId, done) => {
     if (!task?.id || !itemId || updatingChecklistItemId) return;
@@ -289,7 +306,9 @@ function TaskWorkspacePanel({
   const priority = taskWorkspacePriorityMeta(task?.priority);
   const attachments = Array.isArray(task?.attachments) ? task.attachments : [];
   const transferReminder = isTransferActUploadTask(task);
-  const hasPrimaryAction = capabilities.can_start || capabilities.can_submit || capabilities.can_review || capabilities.can_reopen || canOpenTransferActUpload(task);
+  const primaryActions = task ? buildTaskWorkspacePrimaryActions(task, currentUser) : [];
+  const historyItems = task ? buildTaskHistoryItems(task) : [];
+  const updatedLabel = formatRelativeUpdatedAt(task?.updated_at || task?.created_at);
   const canDeleteTask = Boolean(
     task?.id
     && !transferReminder
@@ -298,6 +317,33 @@ function TaskWorkspacePanel({
       || Number(task?.created_by_user_id) === Number(currentUser?.id)
     )
   );
+
+  const runPrimaryAction = (action) => {
+    if (!action?.enabled || busyAction) return;
+    if (action.key === 'start') {
+      void runAction('start', () => hubAPI.startTask(task.id));
+      return;
+    }
+    if (action.key === 'submit') {
+      setSubmitOpen(true);
+      return;
+    }
+    if (action.key === 'approve') {
+      void runAction('review', () => hubAPI.reviewTask(task.id, { decision: 'approve', comment: '' }));
+      return;
+    }
+    if (action.key === 'reject') {
+      setReviewOpen(true);
+      return;
+    }
+    if (action.key === 'close') {
+      setCloseOpen(true);
+      return;
+    }
+    if (action.key === 'reopen') {
+      setReopenOpen(true);
+    }
+  };
 
   const handleDeleteTask = async () => {
     if (!canDeleteTask || busyAction) return;
@@ -334,73 +380,97 @@ function TaskWorkspacePanel({
         color: ui.textPrimary,
       }}
     >
-      <Box
-        sx={{
-          px: 1.5,
-          py: 1.25,
-          borderBottom: '1px solid',
-          borderColor: ui.borderSoft,
-          bgcolor: ui.panelSolid,
-        }}
+      <ChatRightPanelHeader
+        title="Детали задачи"
+        onClose={onClose}
+        closeLabel="Закрыть карточку"
+        actions={(
+          <>
+            <Tooltip title="Скопировать ссылку на задачу">
+              <Button
+                size="small"
+                startIcon={<ContentCopyIcon fontSize="small" />}
+                onClick={() => void handleCopyLink()}
+                sx={{ minHeight: 36, textTransform: 'none', fontWeight: 700 }}
+              >
+                Ссылка
+              </Button>
+            </Tooltip>
+            <Tooltip title="Ещё">
+              <IconButton
+                aria-label="Ещё"
+                onClick={(event) => setMoreMenuAnchor(event.currentTarget)}
+                sx={{ width: 44, height: 44 }}
+              >
+                <MoreVertRoundedIcon />
+              </IconButton>
+            </Tooltip>
+          </>
+        )}
+      />
+      {updatedLabel ? (
+        <Typography sx={{ px: 1.5, py: 0.6, color: ui.subtleText, fontSize: '0.78rem' }}>
+          {updatedLabel}
+        </Typography>
+      ) : null}
+
+      <Menu
+        anchorEl={moreMenuAnchor}
+        open={Boolean(moreMenuAnchor)}
+        onClose={() => setMoreMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
-        <Stack spacing={1}>
-          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
-            <Button
-              size="small"
-              color="inherit"
-              startIcon={<ArrowBackRoundedIcon fontSize="small" />}
-              onClick={onOpenInTasks}
-              sx={{ minHeight: 36, px: 1, fontWeight: 800, textTransform: 'none' }}
-            >
-              К задачам
-            </Button>
-            <Stack direction="row" spacing={0.1}>
-              <Tooltip title="Обновить">
-                <span>
-                  <IconButton size="small" onClick={() => void loadTask()} disabled={loading} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
-                    <RefreshRoundedIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Закрыть карточку">
-                <IconButton size="small" onClick={onClose} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
-                  <CloseRoundedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Stack>
-          </Stack>
-          <Stack direction="row" spacing={1} alignItems="flex-start">
-            <Avatar sx={{ width: 38, height: 38, bgcolor: alpha(theme.palette.primary.main, 0.12), color: theme.palette.primary.main }}>
-              <TaskAltRoundedIcon fontSize="small" />
-            </Avatar>
-            <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography sx={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-                {task?.title || (loading ? 'Загрузка задачи...' : 'Карточка задачи')}
-              </Typography>
-              {task ? (
-                <Stack direction="row" spacing={0.55} sx={{ mt: 0.7, flexWrap: 'wrap', gap: 0.55 }}>
-                  <Chip size="small" label={status.label} sx={{ fontWeight: 800, bgcolor: status.bg, color: status.color }} />
-                  {String(task.priority || 'normal') !== 'normal' ? (
-                    <Chip size="small" label={priority.label} sx={{ fontWeight: 800, bgcolor: alpha(priority.color, 0.12), color: priority.color }} />
-                  ) : null}
-                  {transferReminder ? (
-                    <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ fontWeight: 800, bgcolor: alpha('#2563eb', 0.12), color: '#2563eb' }} />
-                  ) : null}
-                </Stack>
-              ) : null}
-            </Box>
-          </Stack>
-        </Stack>
-      </Box>
+        {capabilities.can_edit ? (
+          <MenuItem onClick={() => { setMoreMenuAnchor(null); void loadEditReferences(); }}>
+            <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> Изменить
+          </MenuItem>
+        ) : null}
+        <MenuItem onClick={() => { setMoreMenuAnchor(null); onOpenInTasks?.(); }}>
+          <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1 }} /> Открыть в задачах
+        </MenuItem>
+        {canDeleteTask ? (
+          <MenuItem onClick={() => { setMoreMenuAnchor(null); void handleDeleteTask(); }} sx={{ color: 'error.main' }}>
+            <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> {busyAction === 'delete' ? 'Удаление...' : 'Удалить'}
+          </MenuItem>
+        ) : null}
+      </Menu>
 
       {loading ? <LinearProgress /> : null}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 1.5, py: 1.35 }}>
+      {task ? (
+        <Tabs
+          value={detailTab}
+          onChange={(_, value) => setDetailTab(value)}
+          variant="fullWidth"
+          sx={{
+            minHeight: 44,
+            px: 0.5,
+            borderBottom: '1px solid',
+            borderColor: ui.borderSoft,
+            '& .MuiTab-root': { minHeight: 44, textTransform: 'none', fontWeight: 700 },
+          }}
+        >
+          <Tab value="overview" label="Обзор" />
+          <Tab value="files" label={`Файлы${attachments.length ? ` ${attachments.length}` : ''}`} />
+          <Tab value="history" label="История" />
+        </Tabs>
+      ) : null}
+
+      <Box
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 1.5, py: 1.35 }}
+        onDragOver={capabilities.can_upload_files ? (event) => { event.preventDefault(); } : undefined}
+        onDrop={capabilities.can_upload_files ? (event) => {
+          event.preventDefault();
+          const file = event.dataTransfer?.files?.[0];
+          if (file) void handleUploadAttachment(file);
+        } : undefined}
+      >
         {error ? <Alert severity="error" sx={{ mb: 1.2 }}>{error}</Alert> : null}
         {!loading && !task && !error ? (
           <Typography variant="body2" sx={{ color: ui.mutedText }}>Карточка задачи недоступна.</Typography>
         ) : null}
-        {task ? (
+        {task && detailTab === 'overview' ? (
           <Stack spacing={1.15}>
             <Box sx={{ p: 1.25, borderRadius: '14px', border: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 0.75 }}>
@@ -426,6 +496,14 @@ function TaskWorkspacePanel({
 
             <Box sx={{ p: 1.25, borderRadius: '14px', border: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}>
               <Stack spacing={0.9}>
+                <Stack direction="row" spacing={0.55} useFlexGap flexWrap="wrap">
+                  <Chip size="small" label={status.label} sx={{ fontWeight: 800, bgcolor: status.bg, color: status.color }} />
+                  <Chip size="small" label={priority.label} sx={{ fontWeight: 800, bgcolor: alpha(priority.color, 0.12), color: priority.color }} />
+                  {transferReminder ? (
+                    <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ fontWeight: 800, bgcolor: alpha('#2563eb', 0.12), color: '#2563eb' }} />
+                  ) : null}
+                </Stack>
+                <Divider />
                 <DetailRow label="Постановщик" value={userLabel(task, 'created_by')} ui={ui} />
                 <DetailRow label="Исполнитель" value={userLabel(task, 'assignee')} ui={ui} />
                 <DetailRow label="Контролёр" value={userLabel(task, 'controller')} ui={ui} />
@@ -434,72 +512,10 @@ function TaskWorkspacePanel({
                 ) : null}
                 <Divider />
                 <DetailRow label="Крайний срок" value={task.due_at ? formatDateTime(task.due_at) : 'Без срока'} accent ui={ui} />
-                <DetailRow label="Статус" value={status.label} accent ui={ui} />
-                <DetailRow label="Дата создания" value={formatDateTime(task.created_at)} ui={ui} />
+                <DetailRow label="Приоритет" value={priority.label} ui={ui} />
                 <DetailRow label="Проект" value={task.project_name || 'Без проекта'} ui={ui} />
                 <DetailRow label="Объект" value={task.object_name || 'Без объекта'} ui={ui} />
               </Stack>
-            </Box>
-
-            <Box
-              data-testid="task-workspace-files"
-              sx={{ p: 1.25, borderRadius: '14px', border: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}
-            >
-              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: attachments.length ? 0.8 : 0 }}>
-                <Stack direction="row" spacing={0.7} alignItems="center">
-                  <AttachFileIcon sx={{ fontSize: 19, color: theme.palette.primary.main }} />
-                  <Typography sx={{ fontWeight: 900 }}>Файлы: {attachments.length}</Typography>
-                </Stack>
-                {capabilities.can_upload_files ? (
-                  <Button component="label" size="small" disabled={busyAction === 'upload'} sx={{ minWidth: 0 }}>
-                    {busyAction === 'upload' ? 'Загрузка...' : 'Добавить'}
-                    <input type="file" hidden onChange={(event) => {
-                      const file = event.target.files?.[0] || null;
-                      event.target.value = '';
-                      void handleUploadAttachment(file);
-                    }} />
-                  </Button>
-                ) : null}
-              </Stack>
-              {attachments.length ? (
-                <Stack spacing={0.55}>
-                  {attachments.map((attachment) => (
-                    <Stack
-                      key={attachment.id}
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      sx={{ p: 0.8, borderRadius: '10px', bgcolor: ui.panelBg }}
-                    >
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{attachment.file_name || 'file'}</Typography>
-                        <Typography variant="caption" sx={{ color: ui.subtleText }}>
-                          {[formatFileSize(attachment.file_size), formatDateTime(attachment.uploaded_at)].filter(Boolean).join(' · ')}
-                        </Typography>
-                      </Box>
-                      <Tooltip title="Предпросмотр">
-                        <IconButton
-                          size="small"
-                          aria-label={`Предпросмотр ${attachment.file_name || 'файла'}`}
-                          onClick={() => void attachmentPreview.openPreview(task, attachment)}
-                        >
-                          <VisibilityOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      <IconButton
-                        size="small"
-                        aria-label={`Скачать ${attachment.file_name || 'файл'}`}
-                        disabled={busyAction === `download-${attachment.id}`}
-                        onClick={() => void handleDownloadAttachment(attachment)}
-                      >
-                        <DownloadIcon fontSize="small" />
-                      </IconButton>
-                    </Stack>
-                  ))}
-                </Stack>
-              ) : (
-                <Typography variant="body2" sx={{ color: ui.mutedText }}>Файлов пока нет.</Typography>
-              )}
             </Box>
 
             <TaskChecklist
@@ -509,6 +525,84 @@ function TaskWorkspacePanel({
               onToggle={(itemId, done) => void handleToggleChecklist(itemId, done)}
               ui={ui}
             />
+          </Stack>
+        ) : null}
+
+        {task && detailTab === 'files' ? (
+          <Box
+            data-testid="task-workspace-files"
+            sx={{ p: 1.25, borderRadius: '14px', border: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}
+          >
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: attachments.length ? 0.8 : 0 }}>
+              <Stack direction="row" spacing={0.7} alignItems="center">
+                <AttachFileIcon sx={{ fontSize: 19, color: theme.palette.primary.main }} />
+                <Typography sx={{ fontWeight: 900 }}>Файлы: {attachments.length}</Typography>
+              </Stack>
+              {capabilities.can_upload_files ? (
+                <Button component="label" size="small" disabled={busyAction === 'upload'} sx={{ minWidth: 0, textTransform: 'none' }}>
+                  {busyAction === 'upload' ? 'Загрузка...' : 'Добавить'}
+                  <input type="file" hidden onChange={(event) => {
+                    const file = event.target.files?.[0] || null;
+                    event.target.value = '';
+                    void handleUploadAttachment(file);
+                  }} />
+                </Button>
+              ) : null}
+            </Stack>
+            {attachments.length ? (
+              <Stack spacing={0.55}>
+                {attachments.map((attachment) => (
+                  <Stack
+                    key={attachment.id}
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{ p: 0.8, borderRadius: '10px', bgcolor: ui.panelBg }}
+                  >
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{attachment.file_name || 'file'}</Typography>
+                      <Typography variant="caption" sx={{ color: ui.subtleText }}>
+                        {[formatFileSize(attachment.file_size), formatDateTime(attachment.uploaded_at)].filter(Boolean).join(' · ')}
+                      </Typography>
+                    </Box>
+                    <Tooltip title="Предпросмотр">
+                      <IconButton
+                        size="small"
+                        aria-label={`Предпросмотр ${attachment.file_name || 'файла'}`}
+                        onClick={() => void attachmentPreview.openPreview(task, attachment)}
+                      >
+                        <VisibilityOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <IconButton
+                      size="small"
+                      aria-label={`Скачать ${attachment.file_name || 'файл'}`}
+                      disabled={busyAction === `download-${attachment.id}`}
+                      onClick={() => void handleDownloadAttachment(attachment)}
+                    >
+                      <DownloadIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                ))}
+              </Stack>
+            ) : (
+              <Typography variant="body2" sx={{ color: ui.mutedText }}>
+                {capabilities.can_upload_files ? 'Перетащите файлы сюда или нажмите «Добавить».' : 'Файлов пока нет.'}
+              </Typography>
+            )}
+          </Box>
+        ) : null}
+
+        {task && detailTab === 'history' ? (
+          <Stack spacing={1} data-testid="task-workspace-history">
+            {historyItems.length ? historyItems.map((item) => (
+              <Box key={item.id} sx={{ p: 1.1, borderRadius: '12px', border: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}>
+                <Typography sx={{ fontWeight: 700, fontSize: '0.92rem' }}>{item.text}</Typography>
+                <Typography variant="caption" sx={{ color: ui.subtleText }}>{formatDateTime(item.at)}</Typography>
+              </Box>
+            )) : (
+              <Typography variant="body2" sx={{ color: ui.mutedText }}>История изменений появится после первых действий с задачей.</Typography>
+            )}
           </Stack>
         ) : null}
       </Box>
@@ -525,51 +619,32 @@ function TaskWorkspacePanel({
             boxShadow: `0 -10px 30px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.18 : 0.06)}`,
           }}
         >
-          <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.8 }}>
-            {canOpenTransferActUpload(task) ? (
-              <Button variant="contained" onClick={openTransferUpload} sx={{ fontWeight: 800, boxShadow: 'none' }}>Загрузить акт</Button>
-            ) : null}
-            {capabilities.can_start ? (
-              <Button variant="contained" onClick={() => void runAction('start', () => hubAPI.startTask(task.id))} disabled={Boolean(busyAction)} sx={{ fontWeight: 800, boxShadow: 'none' }}>
-                {busyAction === 'start' ? 'Запуск...' : 'Начать'}
-              </Button>
-            ) : null}
-            {capabilities.can_submit ? (
-              <Button variant="contained" onClick={() => setSubmitOpen(true)} disabled={Boolean(busyAction)} sx={{ fontWeight: 800, boxShadow: 'none' }}>
-                Сдать
-              </Button>
-            ) : null}
-            {capabilities.can_review ? (
-              <Button variant="contained" color="secondary" onClick={() => setReviewOpen(true)} disabled={Boolean(busyAction)} sx={{ fontWeight: 800, boxShadow: 'none' }}>
-                Проверить
-              </Button>
-            ) : null}
-            {capabilities.can_reopen ? (
-              <Button variant="outlined" onClick={() => setReopenOpen(true)} disabled={Boolean(busyAction)} sx={{ fontWeight: 800, boxShadow: 'none' }}>
-                Вернуть в работу
-              </Button>
-            ) : null}
-            {!hasPrimaryAction && capabilities.can_edit ? (
-              <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => void loadEditReferences()} disabled={referencesLoading}>
-                Изменить
-              </Button>
-            ) : null}
-            <Box sx={{ flex: 1 }} />
-            <Tooltip title="Копировать ссылку">
-              <IconButton onClick={() => void handleCopyLink()}><ContentCopyIcon fontSize="small" /></IconButton>
-            </Tooltip>
-            {canDeleteTask ? (
-              <Button
-                color="error"
-                variant="outlined"
-                startIcon={<DeleteOutlineOutlinedIcon />}
-                disabled={Boolean(busyAction)}
-                onClick={() => void handleDeleteTask()}
-                sx={{ fontWeight: 800, textTransform: 'none' }}
-              >
-                {busyAction === 'delete' ? 'Удаление...' : 'Удалить'}
-              </Button>
-            ) : null}
+          <Stack spacing={0.7}>
+            <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.8 }}>
+              {canOpenTransferActUpload(task) ? (
+                <Button variant="contained" onClick={openTransferUpload} sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none' }}>Загрузить акт</Button>
+              ) : null}
+              {primaryActions.map((action) => (
+                <Tooltip key={action.key} title={action.enabled ? '' : action.reason} disableHoverListener={action.enabled}>
+                  <span>
+                    <Button
+                      variant={action.variant}
+                      color={action.color}
+                      disabled={Boolean(busyAction) || !action.enabled}
+                      onClick={() => runPrimaryAction(action)}
+                      sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none', minHeight: 40 }}
+                    >
+                      {action.label}
+                    </Button>
+                  </span>
+                </Tooltip>
+              ))}
+            </Stack>
+            {primaryActions.filter((action) => !action.enabled).map((action) => (
+              <Typography key={`${action.key}-reason`} sx={{ color: ui.subtleText, fontSize: '0.78rem' }}>
+                {action.label}: {action.reason}
+              </Typography>
+            ))}
           </Stack>
         </Box>
       ) : null}
@@ -595,6 +670,17 @@ function TaskWorkspacePanel({
         onSubmit={(decision, comment) => void runAction('review', async () => {
           await hubAPI.reviewTask(task.id, { decision, comment });
           setReviewOpen(false);
+        })}
+        ui={ui}
+      />
+      <TaskCloseDialog
+        open={closeOpen}
+        task={task}
+        saving={busyAction === 'close'}
+        onClose={() => setCloseOpen(false)}
+        onSubmit={({ comment }) => void runAction('close', async () => {
+          await hubAPI.completeTask(task.id, { comment });
+          setCloseOpen(false);
         })}
         ui={ui}
       />

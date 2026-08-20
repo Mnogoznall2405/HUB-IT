@@ -20,7 +20,9 @@ import {
 import { emitAgentDebugLog } from './lib/debugClientLog';
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import DesktopNavigationBootstrap from './components/layout/DesktopNavigationBootstrap';
+import DesktopProtocolHandoff from './components/layout/DesktopProtocolHandoff';
 import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
+import DesktopLifecycleBootstrap from './components/layout/DesktopLifecycleBootstrap';
 import DesktopMemoryPressureBootstrap from './components/layout/DesktopMemoryPressureBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
@@ -542,8 +544,10 @@ function AuthenticatedAppShell() {
   return (
     <AuthProvider>
       <ScrollToTop />
+      <DesktopProtocolHandoff />
       <DesktopNavigationBootstrap />
       <DesktopPresenceBootstrap />
+      <DesktopLifecycleBootstrap />
       <DesktopMemoryPressureBootstrap />
       <AppPushBootstrap />
       <ChatSocketBootstrap />
@@ -553,11 +557,11 @@ function AuthenticatedAppShell() {
             <Routes>
               <Route path="/" element={<RootRoute />} />
               <Route path="/login" element={<LoginRoute />} />
+              <Route path="/shared-files/:token" element={<SharedFile />} />
 
               <Route element={<ProtectedRoute />}>
                 <Route path="/about" element={<About mode="onboarding" />} />
                 <Route element={<AboutOnboardingRoute />}>
-                <Route path="/shared-files/:token" element={<SharedFile />} />
                 <Route
                   path="/dashboard"
                   element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}

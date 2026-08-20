@@ -1,4 +1,9 @@
 import { useCallback, useRef } from 'react';
+import {
+  recordMailRefreshCooldownSkip,
+  recordMailRefreshOverlap,
+  recordMailRefreshStarted,
+} from './mailRefreshMetrics';
 
 export default function useMailAsyncTaskGate({ cooldownMs = 0 } = {}) {
   const inFlightRef = useRef(new Map());
@@ -9,7 +14,10 @@ export default function useMailAsyncTaskGate({ cooldownMs = 0 } = {}) {
     if (!normalizedGateKey || typeof task !== 'function') return null;
 
     const inFlight = inFlightRef.current.get(normalizedGateKey);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      recordMailRefreshOverlap();
+      return inFlight;
+    }
 
     const normalizedCooldownMs = Number(cooldownMs);
     const lastCompletedAt = Number(completedAtRef.current.get(normalizedGateKey) || 0);
@@ -20,8 +28,11 @@ export default function useMailAsyncTaskGate({ cooldownMs = 0 } = {}) {
       && normalizedCooldownMs > 0
       && (Date.now() - lastCompletedAt) < normalizedCooldownMs
     ) {
+      recordMailRefreshCooldownSkip();
       return null;
     }
+
+    recordMailRefreshStarted();
 
     let promise;
     try {

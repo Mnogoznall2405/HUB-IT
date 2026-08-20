@@ -107,7 +107,7 @@ _DIRECT_DESCRIPTIONS = {
     "MAIL_MODULE_ENABLED": ("Почта Exchange", "Включает или выключает почтовый модуль backend."),
     "MAIL_EXCHANGE_HOST": ("Почта Exchange", "Хост Exchange для почтового модуля."),
     "MAIL_EWS_URL": ("Почта Exchange", "Полный URL EWS Exchange."),
-    "MAIL_VERIFY_TLS": ("Почта Exchange", "Проверять ли TLS-сертификат при подключении к Exchange."),
+    "MAIL_VERIFY_TLS": ("Почта Exchange", "Проверять ли TLS-сертификат Exchange. Допустимо: true/1/yes/on, false/0/no/off; пусто = true. Иное значение — ошибка конфигурации."),
     "MAIL_TLS_CA_BUNDLE": ("Почта Exchange", "Путь к PEM-файлу внутреннего CA для Exchange при MAIL_VERIFY_TLS=1."),
     "MAIL_IT_RECIPIENTS": ("Почта Exchange", "Список IT-получателей уведомлений."),
     "MAIL_LOG_RETENTION_DAYS": ("Почта Exchange", "Сколько дней хранить журнал почтовых операций."),

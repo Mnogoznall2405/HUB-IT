@@ -85,6 +85,7 @@ import { pickChatPageLayoutSections } from './pickChatPageLayoutSections';
 import useChatMessageChromeController from './useChatMessageChromeController';
 import useChatPageRealtimeEffects from './useChatPageRealtimeEffects';
 import { syncChatPageCollectionRefs } from './syncChatPageCollectionRefs';
+import { persistChatRightPanelWidth, readStoredChatRightPanelWidth } from './chatRightPanelLayout';
 import { resolveActiveThreadRenderState } from './chatThreadMessages';
 
 export function ChatPageContent() {
@@ -169,6 +170,10 @@ export function ChatPageContent() {
     showJumpToLatest,
     setShowJumpToLatest,
   } = pageState;
+  const [desktopRightPanelWidth, setDesktopRightPanelWidth] = useState(() => readStoredChatRightPanelWidth());
+  const handleDesktopRightPanelWidthChange = useCallback((next) => {
+    setDesktopRightPanelWidth(persistChatRightPanelWidth(next));
+  }, []);
 
   const taskSplitLayout = !isMobile
     && new URLSearchParams(location.search || '').get('task_layout') === 'split';
@@ -621,6 +626,7 @@ export function ChatPageContent() {
     conversationMetaSubtitle,
   } = useChatThreadHeaderPresentation({
     activeConversation,
+    activeAiStatus,
     activeAiStatusDisplay,
     typingLine,
     typingUsers,
@@ -1540,6 +1546,13 @@ export function ChatPageContent() {
   return (
     <ChatShellLayout
       headerMode={isPhone ? 'hidden' : 'default'}
+      pageTitle={
+        sidebarWorkspace === 'ai' || String(activeConversation?.kind || '').trim() === 'ai'
+          ? 'HUB Ассистент'
+          : String(activeConversation?.kind || '').trim() === 'task'
+            ? 'Задачи'
+            : 'Чаты'
+      }
       mobileBottomNavMode={resolveChatMobileBottomNavMode(isMobile, pageState.mobileBottomNavHidden)}
       mobileBottomNavTransitionMs={CHAT_MOBILE_SCREEN_TRANSITION_MS}
       pageShellSx={{
@@ -1571,7 +1584,8 @@ export function ChatPageContent() {
           sidebarPane={sidebarPane}
           threadPane={threadPane}
           desktopRightPanelContent={desktopRightPanelContent}
-          desktopRightPanelWidth={String(activeConversation?.kind || '').trim() === 'ai' ? 360 : undefined}
+          desktopRightPanelWidth={desktopRightPanelWidth}
+          onDesktopRightPanelWidthChange={handleDesktopRightPanelWidthChange}
           taskSplitLayout={taskSplitLayout}
           renderDesktopRightPanel={renderDesktopRightPanel}
           renderPersistentRightPanel={renderPersistentRightPanel}

@@ -1,3 +1,5 @@
+import { isPendingLifecycleEnvelopeFresh } from './desktopLifecyclePolicy';
+
 export const DESKTOP_BRIDGE_PROTOCOL_VERSION = 1;
 
 const READY_MESSAGE_TYPE = 'desktop.ready';
@@ -18,6 +20,8 @@ const PREPARE_DOWNLOADED_FILE_MESSAGE_TYPE = 'file.prepareDownload';
 const PREPARE_DOWNLOADED_FILE_RESULT_MESSAGE_TYPE = 'file.prepareDownloadResult';
 const OPEN_NAVIGATION_MESSAGE_TYPE = 'navigation.open';
 const WINDOW_STATE_MESSAGE_TYPE = 'desktop.windowState';
+const SYSTEM_RESUME_MESSAGE_TYPE = 'desktop.system.resume';
+const SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE = 'desktop.network.changed';
 const OPEN_COMMAND_PALETTE_MESSAGE_TYPE = 'command.openPalette';
 const VNC_PREFLIGHT_MESSAGE_TYPE = 'remote.vncPreflight';
 const VNC_PREFLIGHT_RESULT_MESSAGE_TYPE = 'remote.vncPreflightResult';
@@ -26,6 +30,7 @@ const OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS = 600;
 const VNC_PREFLIGHT_RESULT_TIMEOUT_MS = 1000;
 const LEGACY_OPEN_INTENT_LIFETIME_MS = 15000;
 const MAXIMUM_INBOUND_MESSAGE_LENGTH = 4096;
+const MAXIMUM_SYSTEM_LIFECYCLE_MESSAGE_LENGTH = 512;
 const MAXIMUM_NOTIFICATION_ID_LENGTH = 128;
 const MAXIMUM_NOTIFICATION_TITLE_LENGTH = 128;
 const MAXIMUM_NOTIFICATION_BODY_LENGTH = 512;
@@ -57,10 +62,15 @@ let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
 let legacyOpenIntentBusyUntil = 0;
 const navigationListeners = new Set();
+const lifecycleListeners = new Set();
+const bridgeReadyWaiters = new Set();
+let pendingLifecycleEvent = null;
 
 export const DESKTOP_WINDOW_STATE_CHANGED_EVENT = 'itinvent:desktop-window-state-changed';
 export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command-palette';
 export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
+export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
+export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
 
 const getWebViewTransport = () => {
   if (typeof window === 'undefined') return null;
@@ -246,6 +256,105 @@ const isValidWindowStateMessage = (message) => {
     && typeof message.foreground === 'boolean';
 };
 
+const isValidLifecycleGeneration = (value) => (
+  Number.isInteger(value)
+  && value >= 1
+  && value <= 2147483647
+);
+
+const isValidOccurredUtc = (value) => (
+  typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)
+);
+
+const isCompactLifecycleMessage = (message) => {
+  try {
+    return JSON.stringify(message).length <= MAXIMUM_SYSTEM_LIFECYCLE_MESSAGE_LENGTH;
+  } catch {
+    return false;
+  }
+};
+
+const isValidSystemResumeMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('generation')
+    && keys.includes('occurredUtc')
+    && message.type === SYSTEM_RESUME_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidLifecycleGeneration(message.generation)
+    && isValidOccurredUtc(message.occurredUtc)
+    && isCompactLifecycleMessage(message);
+};
+
+const isValidNetworkChangedMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 5
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('generation')
+    && keys.includes('available')
+    && keys.includes('occurredUtc')
+    && message.type === SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidLifecycleGeneration(message.generation)
+    && typeof message.available === 'boolean'
+    && isValidOccurredUtc(message.occurredUtc)
+    && isCompactLifecycleMessage(message);
+};
+
+const normalizeLifecycleEvent = (message) => {
+  if (isValidSystemResumeMessage(message)) {
+    return {
+      type: SYSTEM_RESUME_MESSAGE_TYPE,
+      generation: message.generation,
+      occurredUtc: message.occurredUtc,
+      available: null,
+      isRecoveryAttempt: true,
+    };
+  }
+  if (isValidNetworkChangedMessage(message)) {
+    return {
+      type: SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE,
+      generation: message.generation,
+      occurredUtc: message.occurredUtc,
+      available: message.available,
+      isRecoveryAttempt: message.available === true,
+    };
+  }
+  return null;
+};
+
+const dispatchDesktopLifecycle = (event) => {
+  const envelope = {
+    event,
+    receivedAt: Date.now(),
+  };
+  if (lifecycleListeners.size === 0) {
+    pendingLifecycleEvent = envelope;
+    return;
+  }
+
+  pendingLifecycleEvent = null;
+  lifecycleListeners.forEach((listener) => listener(event));
+};
+
+const flushBridgeReadyWaiters = () => {
+  const waiters = [...bridgeReadyWaiters];
+  bridgeReadyWaiters.clear();
+  waiters.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // Waiters must not break the host handshake.
+    }
+  });
+};
+
 const isValidOpenCommandPaletteMessage = (message) => {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const keys = Object.keys(message);
@@ -335,6 +444,7 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
           : '';
         document.documentElement?.setAttribute('data-desktop-shell', 'true');
         settle(true);
+        flushBridgeReadyWaiters();
         return;
       }
 
@@ -414,6 +524,14 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
         window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_STATE_CHANGED_EVENT, {
           detail: { foreground: desktopWindowForeground },
         }));
+        return;
+      }
+
+      if (bridgeReady) {
+        const lifecycleEvent = normalizeLifecycleEvent(message);
+        if (lifecycleEvent) {
+          dispatchDesktopLifecycle(lifecycleEvent);
+        }
       }
     });
 
@@ -494,6 +612,36 @@ export function subscribeDesktopNavigation(listener) {
 
   return () => {
     navigationListeners.delete(listener);
+  };
+}
+
+export function subscribeDesktopBridgeReady(listener) {
+  if (typeof listener !== 'function') return () => {};
+  if (bridgeReady) {
+    listener();
+    return () => {};
+  }
+
+  bridgeReadyWaiters.add(listener);
+  return () => {
+    bridgeReadyWaiters.delete(listener);
+  };
+}
+
+export function subscribeDesktopLifecycle(listener) {
+  if (typeof listener !== 'function') return () => {};
+
+  lifecycleListeners.add(listener);
+  if (pendingLifecycleEvent) {
+    const pending = pendingLifecycleEvent;
+    pendingLifecycleEvent = null;
+    if (isPendingLifecycleEnvelopeFresh(pending, Date.now())) {
+      listener(pending.event);
+    }
+  }
+
+  return () => {
+    lifecycleListeners.delete(listener);
   };
 }
 

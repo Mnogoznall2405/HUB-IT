@@ -34,6 +34,7 @@ from backend.services.authorization_service import (
 )
 from backend.services.employee_absence_service import employee_absence_service
 from backend.services.access_policy_service import (
+    can_close_task,
     can_review_task,
     user_is_department_manager,
 )
@@ -236,6 +237,7 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
             "can_start": False,
             "can_submit": False,
             "can_review": False,
+            "can_close": False,
             "can_reopen": False,
             "can_upload_files": False,
             "can_update_checklist": False,
@@ -253,6 +255,7 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
             and status == "review"
             and can_review_task(actor, enriched)
         ),
+        "can_close": bool(can_close_task(actor, enriched)),
         "can_reopen": can_reopen,
         "can_upload_files": bool(
             not is_transfer_reminder
@@ -1742,6 +1745,37 @@ async def review_task(
         raise HTTPException(status_code=404, detail="Task not found")
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="review")
     return _enrich_task_payload(updated)
+
+
+@router.post("/tasks/{task_id}/complete")
+async def complete_task(
+    task_id: str,
+    payload: dict = Body(default_factory=dict),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    try:
+        updated = await run_in_threadpool(
+            hub_service.complete_task_direct,
+            task_id=task_id,
+            actor=_actor_dict(current_user),
+            comment=_normalize_text((payload or {}).get("comment")),
+            enforce_permission=True,
+        )
+    except TaskTransitionConflict as exc:
+        raise _http_task_transition_conflict(exc) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
+        task_id=task_id,
+        user_id=int(current_user.id),
+    )
+    await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="complete")
+    return _enrich_task_payload_for_user(updated, current_user)
 
 
 @router.get("/tasks/{task_id}/attachments/{attachment_id}/file")

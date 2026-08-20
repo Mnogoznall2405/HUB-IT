@@ -116,16 +116,22 @@ describe('mailHtmlContent', () => {
     expect(lowerHtml).not.toContain('<script');
   });
 
-  it('adapts low-contrast blue text for dark mode readability', () => {
-    const result = buildRenderedMailHtml(
+  it('adapts low-contrast body text to theme color and keeps links blue', () => {
+    const body = buildRenderedMailHtml(
       '<p style="color:#0070c0">Blue corporate text</p>',
       [],
       { colorScheme: 'dark' }
     );
+    const link = buildRenderedMailHtml(
+      '<a href="https://example.com" style="color:#0070c0">Link</a>',
+      [],
+      { colorScheme: 'dark' }
+    );
 
-    expect(result.html).toContain('Blue corporate text');
-    expect(result.html).toMatch(/color:\s*(#8cc8ff|rgb\(140,\s*200,\s*255\))/i);
-    expect(result.html).not.toMatch(/color:\s*#0070c0/i);
+    expect(body.html).toContain('Blue corporate text');
+    expect(body.html).toMatch(/color:\s*(#f3f2f1|rgb\(243,\s*242,\s*241\))/i);
+    expect(body.html).not.toMatch(/color:\s*(#8cc8ff|rgb\(140,\s*200,\s*255\))/i);
+    expect(link.html).toMatch(/color:\s*(#8cc8ff|rgb\(140,\s*200,\s*255\))/i);
   });
 
   it('adapts black text and light backgrounds for dark mode', () => {
@@ -245,5 +251,70 @@ describe('mailHtmlContent', () => {
     expect(result.html).toContain('max-width:100% !important');
     expect(result.html).toContain('min-width:0 !important');
     expect(result.html).toContain('box-sizing:border-box');
+  });
+
+  it('blocks remote CSS url, srcset and poster until external images are revealed', () => {
+    const payload = [
+      '<div style="background-image:url(\'https://tracker.example/pixel\')">css</div>',
+      '<img srcset="https://tracker.example/a 1x">',
+      '<video poster="https://tracker.example/p.jpg"></video>',
+    ].join('');
+
+    const blocked = buildRenderedMailHtml(payload, []);
+    expect(blocked.hasBlockedExternalImages).toBe(true);
+    expect(blocked.html.toLowerCase()).not.toContain('https://tracker.example/pixel');
+    expect(blocked.html.toLowerCase()).not.toContain('https://tracker.example/a');
+    expect(blocked.html.toLowerCase()).not.toContain('https://tracker.example/p.jpg');
+    expect(blocked.html).toContain('css');
+
+    const revealed = buildRenderedMailHtml(payload, [], { allowExternalImages: true });
+    expect(revealed.hasBlockedExternalImages).toBe(false);
+    expect(revealed.html.toLowerCase()).toContain('https://tracker.example/pixel');
+    expect(revealed.html.toLowerCase()).toContain('https://tracker.example/a');
+    expect(revealed.html.toLowerCase()).toContain('https://tracker.example/p.jpg');
+  });
+
+  it('keeps cid CSS background urls while blocking remote ones', () => {
+    const result = buildRenderedMailHtml(
+      '<div style="background-image:url(\'cid:logo123\');list-style-image:url(\'https://tracker.example/x\')">keep</div>',
+      []
+    );
+    const html = result.html.toLowerCase();
+
+    expect(result.hasBlockedExternalImages).toBe(true);
+    expect(html).toContain('cid:logo123');
+    expect(html).not.toContain('https://tracker.example/x');
+    expect(html).toContain('keep');
+  });
+
+  it('strips javascript href variants and encoded javascript URLs', () => {
+    const payload = [
+      '<a href="javascript:alert(1)">plain</a>',
+      '<a href="JaVaScRiPt:alert(1)">mixed</a>',
+      '<a href="&#x6a;avascript:alert(1)">encoded</a>',
+    ].join('');
+
+    const rendered = buildRenderedMailHtml(payload, []);
+    const sanitized = sanitizeMailHtmlFragment(payload);
+    const combined = `${rendered.html}\n${sanitized}`.toLowerCase();
+
+    expect(combined).not.toContain('javascript:');
+    expect(combined).not.toContain('alert(1)');
+    expect(rendered.html).toContain('plain');
+    expect(rendered.html).toContain('mixed');
+    expect(rendered.html).toContain('encoded');
+  });
+
+  it('adds noopener noreferrer to target=_blank links', () => {
+    const result = buildRenderedMailHtml(
+      '<a target="_blank" href="https://example.com">x</a>',
+      []
+    );
+    const anchorHtml = result.html.toLowerCase();
+
+    expect(anchorHtml).toContain('target="_blank"');
+    expect(anchorHtml).toContain('https://example.com');
+    expect(anchorHtml).toMatch(/rel="[^"]*noopener/);
+    expect(anchorHtml).toMatch(/rel="[^"]*noreferrer/);
   });
 });

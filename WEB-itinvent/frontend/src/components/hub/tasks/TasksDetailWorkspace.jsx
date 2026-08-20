@@ -111,6 +111,7 @@ export default function TasksDetailWorkspace({
   canStartTask,
   canSubmitTask,
   canReviewTask,
+  canCloseTask,
   canReopenTask,
   getTransferActReminderLabel,
   isTransferActUploadTask,
@@ -139,6 +140,7 @@ export default function TasksDetailWorkspace({
   onReopenTask,
   onOpenSubmitTask,
   onOpenReviewTask,
+  onOpenCloseTask,
   renderChecklist,
 }) {
   const attachmentPreview = useTaskAttachmentPreview();
@@ -167,9 +169,10 @@ export default function TasksDetailWorkspace({
       canStart: canStartTask(task),
       canSubmit: canSubmitTask(task),
       canReview: canReviewTask(task),
+      canClose: canCloseTask(task),
       canReopen: canReopenTask(task),
     });
-  }, [canOpenTransferActUpload, canReopenTask, canReviewTask, canStartTask, canSubmitTask, task]);
+  }, [canCloseTask, canOpenTransferActUpload, canReopenTask, canReviewTask, canStartTask, canSubmitTask, task]);
 
   const mobilePrimaryActions = task ? (
     <TaskPrimaryActions
@@ -178,6 +181,7 @@ export default function TasksDetailWorkspace({
       canStartTask={canStartTask(task)}
       canSubmitTask={canSubmitTask(task)}
       canReviewTask={canReviewTask(task)}
+      canCloseTask={canCloseTask(task)}
       canReopenTask={canReopenTask(task)}
       reopening={reopeningTaskId === String(task.id)}
       canEditTask={canEditTask(task)}
@@ -188,6 +192,7 @@ export default function TasksDetailWorkspace({
       onReopenTask={onReopenTask}
       onOpenSubmitTask={onOpenSubmitTask}
       onOpenReviewTask={onOpenReviewTask}
+      onOpenCloseTask={onOpenCloseTask}
       onOpenEditTask={onOpenEditTask}
       onDeleteTask={onDeleteTask}
       onCopyLink={onCopyLink}
@@ -202,6 +207,7 @@ export default function TasksDetailWorkspace({
       canStartTask={canStartTask(task)}
       canSubmitTask={canSubmitTask(task)}
       canReviewTask={canReviewTask(task)}
+      canCloseTask={canCloseTask(task)}
       canReopenTask={canReopenTask(task)}
       reopening={reopeningTaskId === String(task.id)}
       canEditTask={canEditTask(task)}
@@ -211,6 +217,7 @@ export default function TasksDetailWorkspace({
       onReopenTask={onReopenTask}
       onOpenSubmitTask={onOpenSubmitTask}
       onOpenReviewTask={onOpenReviewTask}
+      onOpenCloseTask={onOpenCloseTask}
       onOpenEditTask={onOpenEditTask}
       onDeleteTask={onDeleteTask}
       onCopyLink={onCopyLink}

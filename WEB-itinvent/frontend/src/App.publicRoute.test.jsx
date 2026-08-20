@@ -21,11 +21,13 @@ vi.mock('./contexts/AuthContext', () => ({
 vi.mock('./components/chat/ChatSocketBootstrap', () => ({ default: () => null }));
 vi.mock('./components/layout/DesktopNavigationBootstrap', () => ({ default: () => null }));
 vi.mock('./components/layout/DesktopPresenceBootstrap', () => ({ default: () => null }));
+vi.mock('./components/layout/DesktopLifecycleBootstrap', () => ({ default: () => null }));
 vi.mock('./components/layout/DesktopMemoryPressureBootstrap', () => ({ default: () => null }));
 vi.mock('./lib/appBadge', () => ({ syncAppBadge: vi.fn(() => Promise.resolve()) }));
 vi.mock('./pages/About', () => ({ default: () => <main>Знакомство с HUB-IT</main> }));
 vi.mock('./pages/Login', () => ({ default: () => <main>Вход в HUB-IT</main> }));
 vi.mock('./pages/Dashboard', () => ({ default: () => <main>HUB workspace</main> }));
+vi.mock('./pages/SharedFile', () => ({ default: () => <main>Общий файл</main> }));
 
 import App from './App';
 
@@ -79,17 +81,15 @@ describe('authenticated onboarding routes', () => {
     expect(window.location.pathname).toBe('/login');
   });
 
-  it('protects a shared-file link and stores it outside the login URL', async () => {
+  it('opens a shared-file link without login', async () => {
     window.history.replaceState({}, '', '/shared-files/private-token?preview=1');
 
     render(<App />);
 
-    expect(await screen.findByText('Вход в HUB-IT')).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/login');
-    expect(window.location.search).toBe('');
-    expect(window.sessionStorage.getItem('hubit.auth.return-to')).toBe(
-      '/shared-files/private-token?preview=1',
-    );
+    expect(await screen.findByText('Общий файл')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/shared-files/private-token');
+    expect(window.location.search).toBe('?preview=1');
+    expect(window.sessionStorage.getItem('hubit.auth.return-to')).toBeNull();
   });
 
   it('shows onboarding to a newly created user before any workspace route', async () => {

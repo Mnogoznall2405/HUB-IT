@@ -58,6 +58,11 @@ export const hubTasksAPI = {
     return response.data;
   },
 
+  completeTask: async (taskId, payload = {}) => {
+    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/complete`, payload);
+    return response.data;
+  },
+
   reopenTask: async (taskId, payload = {}) => {
     const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/reopen`, payload);
     return response.data;

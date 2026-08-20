@@ -16,6 +16,7 @@ import {
   getAttachmentKind,
   getMessagePreview,
   getReplyPreviewText,
+  resolveChatPreviewSenderName,
   getSearchResultPreview,
   hasChatMarkdownTable,
   isAudioAttachment,
@@ -224,22 +225,27 @@ describe('chatHelpers mojibake recovery', () => {
   });
 
   it('uses peer last message time when presence last_seen is older', () => {
-    const conversation = {
-      kind: 'direct',
-      last_message_is_own: false,
-      last_message_at: '2026-08-02T16:56:00.000Z',
-      last_message_preview: 'Привет',
-      direct_peer: {
-        presence: {
-          is_online: false,
-          last_seen_at: '2026-08-02T15:55:00.000Z',
-          status_text: 'Сегодня в 20:55',
+    vi.setSystemTime(new Date('2026-08-02T18:00:00.000Z'));
+    try {
+      const conversation = {
+        kind: 'direct',
+        last_message_is_own: false,
+        last_message_at: '2026-08-02T16:56:00.000Z',
+        last_message_preview: 'Привет',
+        direct_peer: {
+          presence: {
+            is_online: false,
+            last_seen_at: '2026-08-02T15:55:00.000Z',
+            status_text: 'Сегодня в 20:55',
+          },
         },
-      },
-    };
+      };
 
-    expect(getConversationHeaderSubtitle(conversation)).toMatch(/В сети|только что|мин назад|Сегодня в/);
-    expect(getConversationHeaderSubtitle(conversation)).not.toContain('20:55');
+      expect(getConversationHeaderSubtitle(conversation)).toMatch(/В сети|только что|мин назад|Сегодня в/);
+      expect(getConversationHeaderSubtitle(conversation)).not.toContain('20:55');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('formats notes conversation preview without presence', () => {
@@ -264,6 +270,11 @@ describe('chatHelpers mojibake recovery', () => {
 
     expect(getConversationHeaderSubtitle(conversation)).toBe('Статус: На проверке • 3 участников');
     expect(getConversationStatusLine(conversation)).toBe('На проверке • Вы: Готово');
+  });
+
+  it('describes AI conversations as the HUB assistant instead of a group presence line', () => {
+    expect(getConversationHeaderSubtitle({ kind: 'ai' })).toBe('HUB Ассистент • готов к работе');
+    expect(getConversationHeaderSubtitle({ kind: 'ai' }, { status: 'running' })).toBe('HUB Ассистент • выполняет действие');
   });
 });
 
@@ -341,5 +352,14 @@ describe('sortSidebarConversations', () => {
       'active-1',
       'group-1',
     ]);
+  });
+});
+
+describe('resolveChatPreviewSenderName', () => {
+  it('hides synthetic user-id stubs from quote previews', () => {
+    expect(resolveChatPreviewSenderName({ sender_name: 'Козловский' })).toBe('Козловский');
+    expect(resolveChatPreviewSenderName({ sender_name: 'user-64' })).toBe('Участник');
+    expect(resolveChatPreviewSenderName({ sender_name: 'USER-64' })).toBe('Участник');
+    expect(resolveChatPreviewSenderName({})).toBe('Участник');
   });
 });

@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+from backend.json_db.works import WorksManager
+from backend.models.json_operations import PcCleaningRemainingResponse, PcCleaningStatisticsResponse
+
+
+def test_inventory_statistics_query_uses_items_descr_not_description():
+    sql = WorksManager.INVENTORY_STATISTICS_QUERY
+    assert "i.DESCR as description" in sql
+    assert "i.DESCRIPTION" not in sql
+    assert "i.ID as id" in sql
+
+
+
+def _patch_cleaning_inventory(monkeypatch, manager):
+    now = datetime.now()
+    recent = (now - timedelta(days=3)).isoformat()
+    stale = (now - timedelta(days=180)).isoformat()
+    monkeypatch.setattr(
+        manager,
+        "_get_pc_inventory",
+        lambda db_name=None: [
+            {
+                "branch_name": "Москва",
+                "location": "Кабинет 12",
+                "inv_no": "1001",
+                "serial_no": "SN-CLEANED",
+                "hw_serial_no": "",
+                "model_name": "HP ProDesk",
+                "employee_name": "Иванов",
+                "id": 11,
+                "vendor_name": "HP",
+                "description": "ПК Иванова",
+            },
+            {
+                "branch_name": "Москва",
+                "location": "Склад",
+                "inv_no": "1002",
+                "serial_no": "SN-STALE",
+                "hw_serial_no": "",
+                "model_name": "Lenovo ThinkCentre",
+                "employee_name": "Петров",
+                "id": 12,
+                "vendor_name": "Lenovo",
+                "description": "Складской ПК",
+            },
+            {
+                "branch_name": "СПб",
+                "location": "Бухгалтерия",
+                "inv_no": "2001",
+                "serial_no": "SN-NEVER",
+                "hw_serial_no": "HW-2001",
+                "model_name": "Dell OptiPlex",
+                "employee_name": "Сидоров",
+                "id": 21,
+                "vendor_name": "Dell",
+                "description": "",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        manager,
+        "get_pc_cleanings",
+        lambda db_name=None: [
+            {"timestamp": recent, "branch": "Москва", "serial_no": "SN-CLEANED", "inv_no": "1001"},
+            {"timestamp": stale, "branch": "Москва", "serial_no": "SN-STALE", "inv_no": "1002"},
+        ],
+    )
+
+
+def test_pc_cleaning_statistics_lists_remaining_pcs_by_branch(monkeypatch):
+    manager = WorksManager(data_manager=SimpleNamespace())
+    _patch_cleaning_inventory(monkeypatch, manager)
+
+    stats = manager.get_pc_cleaning_statistics(period_days=90)
+    payload = PcCleaningStatisticsResponse(**stats)
+    by_branch = {row.branch: row for row in payload.branches}
+
+    moscow = by_branch["Москва"]
+    assert moscow.total_pc == 2
+    assert moscow.cleaned_pc == 1
+    assert moscow.remaining_pc == 1
+    assert [row.inv_no for row in moscow.remaining_pcs] == ["1002"]
+    assert moscow.remaining_pcs[0].employee == "Петров"
+    assert moscow.remaining_pcs[0].last_cleaned_at
+
+    spb = by_branch["СПб"]
+    assert spb.remaining_pc == 1
+    assert spb.remaining_pcs[0].inv_no == "2001"
+    assert spb.remaining_pcs[0].serial_no == "SN-NEVER"
+    assert spb.remaining_pcs[0].last_cleaned_at == ""
+    assert payload.totals.remaining_pc == 2
+
+
+def test_pc_cleaning_remaining_filters_one_branch(monkeypatch):
+    manager = WorksManager(data_manager=SimpleNamespace())
+    _patch_cleaning_inventory(monkeypatch, manager)
+
+    payload = PcCleaningRemainingResponse(
+        **manager.get_pc_cleaning_remaining(period_days=90, branch="спб")
+    )
+    assert payload.branch == "СПб"
+    assert payload.remaining_pc == 1
+    assert [row.inv_no for row in payload.remaining_pcs] == ["2001"]
+    assert payload.remaining_pcs[0].employee == "Сидоров"
+    assert payload.remaining_pcs[0].equipment_id == 21
+    assert payload.remaining_pcs[0].manufacturer == "Dell"

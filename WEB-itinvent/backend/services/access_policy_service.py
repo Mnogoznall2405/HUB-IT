@@ -181,6 +181,25 @@ def can_review_task(user: Any, task: dict[str, Any]) -> bool:
     return bool(department_id and user_is_department_manager(user, department_id)) or user_has_permission(user, PERM_TASKS_REVIEW)
 
 
+def user_can_close_task(user: Any, task: dict[str, Any]) -> bool:
+    if str((task or {}).get("integration_kind") or "").strip().lower() == "transfer_act_upload":
+        return False
+    if user_can_manage_tasks_all(user):
+        return True
+    uid = _user_id(user)
+    if uid > 0 and uid == int((task or {}).get("created_by_user_id") or 0):
+        return True
+    department_id = _resource_department_id(task)
+    return bool(department_id and user_is_department_manager(user, department_id))
+
+
+def can_close_task(user: Any, task: dict[str, Any]) -> bool:
+    status = str((task or {}).get("status") or "").strip().lower()
+    if status not in {"new", "in_progress", "review"}:
+        return False
+    return user_can_close_task(user, task)
+
+
 def _kb_owner_match(user: Any, item: dict[str, Any]) -> bool:
     uid = _user_id(user)
     if uid > 0 and int((item or {}).get("owner_user_id") or 0) == uid:

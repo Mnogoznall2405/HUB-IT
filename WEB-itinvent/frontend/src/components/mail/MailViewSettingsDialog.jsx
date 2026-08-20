@@ -37,6 +37,8 @@ export default function MailViewSettingsDialog({
   value,
   saving,
   mobileHint = false,
+  aiEnabled = false,
+  onAiEnabledChange,
   onClose,
   onChange,
   onSave,
@@ -103,6 +105,22 @@ export default function MailViewSettingsDialog({
               />
             )}
             label="Показывать избранные папки выше"
+          />
+
+          <Alert severity="info" data-testid="mail-ai-settings-disclosure" sx={{ borderRadius: '10px' }}>
+            Пересказ и подсказки ответа отправляют тему и текст письма во внешний сервис ИИ.
+            Не включайте для писем с паролями, персональными данными или служебными секретами.
+            Подсказки вставляются в черновик и не отправляются сами.
+          </Alert>
+          <FormControlLabel
+            control={(
+              <Switch
+                checked={Boolean(aiEnabled)}
+                onChange={(event) => onAiEnabledChange?.(event.target.checked)}
+                inputProps={{ 'data-testid': 'mail-ai-enabled-toggle' }}
+              />
+            )}
+            label="Разрешить ИИ для писем"
           />
         </Stack>
       </DialogContent>

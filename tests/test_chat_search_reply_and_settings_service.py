@@ -299,7 +299,7 @@ def test_message_reference_preview_payloads_share_body_rules(chat_env):
         attachments=[SimpleNamespace(file_name="hidden.pdf")],
         users_by_id={},
     )
-    assert deleted_reply_preview["sender_name"] == "user-99"
+    assert deleted_reply_preview["sender_name"] == "Участник"
     assert deleted_reply_preview["body"] == chat_service_module.CHAT_DELETED_MESSAGE_BODY
     assert deleted_reply_preview["attachments_count"] == 0
 

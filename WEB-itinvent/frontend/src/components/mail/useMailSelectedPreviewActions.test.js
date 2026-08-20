@@ -31,6 +31,9 @@ const createProps = (overrides = {}) => ({
   setError: vi.fn(),
   viewMode: 'messages',
   withActiveMailboxPayload: vi.fn((payload) => ({ mailbox_id: 'mailbox-1', ...payload })),
+  confirmPermanentDelete: vi.fn(() => true),
+  folder: 'inbox',
+  onRecoverableDelete: vi.fn(),
   ...overrides,
 });
 
@@ -108,6 +111,11 @@ describe('useMailSelectedPreviewActions', () => {
     expect(props.clearSelection).toHaveBeenCalledTimes(3);
     expect(props.clearSelection).toHaveBeenCalledWith({ mode: 'messages' });
     expect(props.afterListMutation).toHaveBeenCalledTimes(3);
+    expect(props.onRecoverableDelete).toHaveBeenCalledWith({
+      messageIds: [],
+      restoreFolder: 'inbox',
+      count: 1,
+    });
   });
 
   it('archives and permanently deletes with the expected payloads', async () => {
@@ -122,6 +130,40 @@ describe('useMailSelectedPreviewActions', () => {
 
     expect(mailAPI.moveMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', target_folder: 'archive' });
     expect(mailAPI.deleteMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', permanent: true });
+    expect(props.confirmPermanentDelete).toHaveBeenCalledWith({ count: 1 });
+    expect(props.onRecoverableDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm recoverable inbox delete', async () => {
+    const mailAPI = createMailAPI();
+    const props = createProps({ mailAPI, selectedMessage: { id: 'msg-1' } });
+    const { result } = renderHook(() => useMailSelectedPreviewActions(props));
+
+    await act(async () => {
+      await result.current.handleDeleteSelectedMessage(false);
+    });
+
+    expect(props.confirmPermanentDelete).not.toHaveBeenCalled();
+    expect(mailAPI.deleteMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', permanent: false });
+  });
+
+  it('skips the delete API when permanent confirm is cancelled', async () => {
+    const mailAPI = createMailAPI();
+    const props = createProps({
+      mailAPI,
+      confirmPermanentDelete: vi.fn(() => false),
+      selectedMessage: { id: 'msg-1' },
+    });
+    const { result } = renderHook(() => useMailSelectedPreviewActions(props));
+
+    await act(async () => {
+      await result.current.handleDeleteSelectedMessage(true);
+    });
+
+    expect(mailAPI.deleteMessage).not.toHaveBeenCalled();
+    expect(props.clearSelection).not.toHaveBeenCalled();
+    expect(props.afterListMutation).not.toHaveBeenCalled();
+    expect(props.onRecoverableDelete).not.toHaveBeenCalled();
   });
 
   it('delegates credential-required errors, skips generic error, and resets loading on failure', async () => {
@@ -147,5 +189,27 @@ describe('useMailSelectedPreviewActions', () => {
     expect(props.clearSelection).not.toHaveBeenCalled();
     expect(props.afterListMutation).not.toHaveBeenCalled();
     expect(result.current.messageActionLoading).toBe(false);
+  });
+
+  it('offers trash undo with the new trash message id after a recoverable delete', async () => {
+    const mailAPI = createMailAPI({
+      deleteMessage: vi.fn(async () => ({ message_id: 'trash-msg-1', folder: 'trash' })),
+    });
+    const props = createProps({
+      mailAPI,
+      folder: 'sent',
+      selectedMessage: { id: 'msg-1' },
+    });
+    const { result } = renderHook(() => useMailSelectedPreviewActions(props));
+
+    await act(async () => {
+      await result.current.handleDeleteSelectedMessage(false);
+    });
+
+    expect(props.onRecoverableDelete).toHaveBeenCalledWith({
+      messageIds: ['trash-msg-1'],
+      restoreFolder: 'sent',
+      count: 1,
+    });
   });
 });

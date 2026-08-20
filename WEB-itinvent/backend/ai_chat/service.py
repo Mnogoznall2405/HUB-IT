@@ -1430,6 +1430,11 @@ def _build_report_choice_payload(
 
 def _collect_file_format_choice_payloads(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
+    source_tool_results = [
+        item
+        for item in list(results or [])
+        if isinstance(item, dict) and bool(item.get("ok")) and not _is_file_tool_id(item.get("tool_id"))
+    ]
     for result in list(results or []):
         if not isinstance(result, dict) or not bool(result.get("ok")):
             continue
@@ -1440,7 +1445,10 @@ def _collect_file_format_choice_payloads(results: list[dict[str, Any]]) -> list[
             continue
         for item in list(data.get("format_choice_payloads") or []):
             if isinstance(item, dict):
-                payloads.append(item)
+                payload = dict(item)
+                if "source_tool_results" not in payload:
+                    payload["source_tool_results"] = source_tool_results[:20]
+                payloads.append(payload)
             if len(payloads) >= 5:
                 return payloads
     return payloads

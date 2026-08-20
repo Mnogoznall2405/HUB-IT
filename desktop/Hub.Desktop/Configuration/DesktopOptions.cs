@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using Hub.Desktop.Diagnostics;
 
 namespace Hub.Desktop.Configuration;
 
@@ -29,6 +30,16 @@ public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
         baseUrl = Environment.GetEnvironmentVariable("HUB_DESKTOP_BASE_URL") ?? baseUrl;
         return FromBaseUrl(baseUrl, allowHttpLoopback: true);
 #else
+#if PERF_BENCH
+        if (DesktopPerfBench.IsEnabled)
+        {
+            var benchBaseUrl = Environment.GetEnvironmentVariable("HUB_DESKTOP_BASE_URL");
+            if (!string.IsNullOrWhiteSpace(benchBaseUrl))
+            {
+                return FromBaseUrl(benchBaseUrl, allowHttpLoopback: true);
+            }
+        }
+#endif
         var options = FromProductionBaseUrl(baseUrl);
         if (document.Updates?.Enabled is false)
         {

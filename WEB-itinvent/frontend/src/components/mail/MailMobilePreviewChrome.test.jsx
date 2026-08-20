@@ -50,6 +50,30 @@ describe('MailMobilePreviewChrome', () => {
     expect(screen.getByTestId('mail-mobile-preview-summarize')).toBeVisible();
   });
 
+  it('requests AI consent instead of summarizing when AI is disabled', () => {
+    const onSummarize = vi.fn();
+    const onRequestAiEnable = vi.fn();
+    renderWithTheme(
+      <MailMobilePreviewChrome
+        selectedMessage={baseMessage}
+        selectedConversation={null}
+        viewMode="messages"
+        folder="inbox"
+        onBackToList={vi.fn()}
+        getAvatarColor={() => '#336699'}
+        getInitials={() => 'BN'}
+        formatFullDate={() => '31.03.2026 10:00'}
+        onSummarize={onSummarize}
+        aiEnabled={false}
+        onRequestAiEnable={onRequestAiEnable}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('mail-mobile-preview-summarize'));
+    expect(onRequestAiEnable).toHaveBeenCalledTimes(1);
+    expect(onSummarize).not.toHaveBeenCalled();
+  });
+
   it('opens details sheet from the compact toggle row', () => {
     renderWithTheme(
       <MailMobilePreviewChrome

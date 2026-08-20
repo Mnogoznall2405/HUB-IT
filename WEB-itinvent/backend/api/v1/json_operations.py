@@ -31,6 +31,7 @@ from backend.models.json_operations import (
     PcCleaningResponse,
     PcCleaningHistoryResponse,
     PcCleaningStatisticsResponse,
+    PcCleaningRemainingResponse,
     MfuStatisticsResponse,
     BatteryStatisticsResponse,
     PcComponentsStatisticsResponse,
@@ -579,6 +580,29 @@ async def get_pc_cleaning_statistics(
         return PcCleaningStatisticsResponse(**stats)
     except Exception as e:
         logger.error(f"Error getting PC cleaning statistics: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+@router.get("/works/cleaning/statistics/remaining", response_model=PcCleaningRemainingResponse)
+async def get_pc_cleaning_remaining(
+    period_days: int = Query(90, ge=1, le=3650),
+    branch: str = Query(..., min_length=1),
+    db_name: Optional[str] = None,
+    manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get uncleaned PCs for one branch in the selected period."""
+    try:
+        resolved_db = db_name or db_id
+        payload = manager.get_pc_cleaning_remaining(
+            period_days=period_days,
+            db_name=resolved_db,
+            branch=branch,
+        )
+        return PcCleaningRemainingResponse(**payload)
+    except Exception as e:
+        logger.error(f"Error getting remaining PC cleaning list: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 

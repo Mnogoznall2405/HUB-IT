@@ -216,6 +216,154 @@ def test_mail_service_fetches_message_detail_with_bounded_exchange_fields(temp_d
     assert {"mime_content", "headers", "unique_body", "effective_rights"}.isdisjoint(requested_fields)
 
 
+def test_mail_service_fetches_message_source_with_mime_fields_only(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    item = SimpleNamespace(
+        id="exchange-1",
+        subject="Quarter / Report",
+        mime_content=b"From: a@example.com\r\nSubject: Hi\r\n\r\nBody",
+    )
+    calls = {"only": [], "get": []}
+
+    class SourceQuery:
+        def only(self, *fields):
+            calls["only"].append(fields)
+            return self
+
+        def get(self, *, id):
+            calls["get"].append(id)
+            return item
+
+    class Folder:
+        def all(self):
+            return SourceQuery()
+
+        def get(self, **_kwargs):
+            raise AssertionError("message source must not fetch the full detail item first")
+
+    monkeypatch.setattr(service, "_decode_message_ref", lambda _message_id: ("inbox", "exchange-1", None))
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda _explicit, _encoded: "mailbox-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {
+            "profile": {"email": "user@example.com", "mailbox_id": "mailbox-1"},
+            "account": SimpleNamespace(),
+        },
+    )
+    monkeypatch.setattr(service, "_resolve_folder", lambda _account, _folder_key: (Folder(), "inbox"))
+
+    filename, source = service.get_message_source(user_id=7, mailbox_id="mailbox-1", message_id="msg-1")
+
+    assert filename == "Quarter_Report.eml"
+    assert source.endswith(b"Body")
+    assert calls["get"] == ["exchange-1"]
+    assert calls["only"] == [("mime_content", "subject")]
+
+
+def test_mail_service_falls_back_to_full_item_when_source_mime_is_empty(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    slim_item = SimpleNamespace(id="exchange-1", subject="Hi")
+    full_item = SimpleNamespace(
+        id="exchange-1",
+        subject="Hi",
+        mime_content=b"From: a@example.com\r\n\r\nBody",
+    )
+    calls = {"only": 0, "full_get": 0}
+
+    class SourceQuery:
+        def __init__(self, *, restricted=False):
+            self.restricted = restricted
+
+        def only(self, *fields):
+            calls["only"] += 1
+            return SourceQuery(restricted=True)
+
+        def get(self, *, id):
+            if self.restricted:
+                return slim_item
+            calls["full_get"] += 1
+            return full_item
+
+    class Folder:
+        def all(self):
+            return SourceQuery()
+
+        def get(self, **_kwargs):
+            raise AssertionError("source fallback should reuse queryset get without only()")
+
+    monkeypatch.setattr(service, "_decode_message_ref", lambda _message_id: ("inbox", "exchange-1", None))
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda _explicit, _encoded: "mailbox-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {
+            "profile": {"email": "user@example.com", "mailbox_id": "mailbox-1"},
+            "account": SimpleNamespace(),
+        },
+    )
+    monkeypatch.setattr(service, "_resolve_folder", lambda _account, _folder_key: (Folder(), "inbox"))
+
+    filename, source = service.get_message_source(user_id=7, mailbox_id="mailbox-1", message_id="msg-1")
+
+    assert filename == "Hi.eml"
+    assert source.endswith(b"Body")
+    assert calls["only"] == 1
+    assert calls["full_get"] == 1
+
+
+def test_mail_service_fetches_item_scoped_custom_folder_message_by_id(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    parent_folder = SimpleNamespace(id="AAMkCustomFolder")
+    item = SimpleNamespace(
+        id="exchange-custom-1",
+        folder=parent_folder,
+        parent_folder_id=SimpleNamespace(id="AAMkCustomFolder"),
+        subject="Nested",
+    )
+    folder_token = mail_module.encode_folder_id("mailbox", "AAMkCustomFolder")
+    message_id = mail_module.encode_message_id(folder_token, "exchange-custom-1", mailbox_id="mailbox-1")
+    fetch_calls = []
+
+    class Account:
+        def fetch(self, ids, only_fields=None):
+            fetch_calls.append((list(ids), only_fields))
+            return [item]
+
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda _explicit, _encoded: "mailbox-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {
+            "profile": {"email": "user@example.com", "mailbox_id": "mailbox-1"},
+            "account": Account(),
+        },
+    )
+    monkeypatch.setattr(service, "_standard_folders", lambda _account: {})
+
+    context = service._get_message_context(user_id=7, mailbox_id="mailbox-1", message_id=message_id)
+
+    assert context["item"] is item
+    assert context["exchange_id"] == "exchange-custom-1"
+    assert context["folder_key"] == folder_token
+    assert fetch_calls[0][0] == [("exchange-custom-1", None)]
+    assert "parent_folder_id" in fetch_calls[0][1]
+    assert len(message_id) < 260
+
+
+def test_mail_service_sqlite_skips_full_app_schema_init(temp_dir, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(mail_module, "initialize_app_schema", lambda database_url: calls.append(database_url))
+
+    started = time.perf_counter()
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    elapsed = time.perf_counter() - started
+
+    assert service._use_app_db is True
+    assert calls == []
+    assert elapsed < 5.0
+
+
 def test_mail_service_fetches_attachment_without_loading_full_message(temp_dir, monkeypatch):
     service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
     attachment = SimpleNamespace(attachment_id=SimpleNamespace(id="att-1"))
@@ -271,6 +419,68 @@ def test_mail_service_fetches_attachment_without_loading_full_message(temp_dir, 
     assert payload == ("logo.png", "image/png", b"png")
     assert calls["only"] == [("attachments",)]
     assert calls["get"] == ["exchange-1"]
+
+
+def test_mail_service_downloads_attachment_from_custom_folder_message_id(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    attachment = SimpleNamespace(attachment_id=SimpleNamespace(id="att-1"))
+    parent_folder = SimpleNamespace(id="AAMkAGI2MixedCASEFolderId")
+    item = SimpleNamespace(
+        id="exchange-custom-1",
+        attachments=[attachment],
+        folder=parent_folder,
+        parent_folder_id=SimpleNamespace(id="AAMkAGI2MixedCASEFolderId"),
+    )
+    folder_token = mail_module.encode_folder_id("mailbox", "AAMkAGI2MixedCASEFolderId")
+    message_id = mail_module.encode_message_id(folder_token, "exchange-custom-1", mailbox_id="mailbox-1")
+    fetch_calls = []
+
+    class Account:
+        def fetch(self, ids, only_fields=None):
+            fetch_calls.append((list(ids), only_fields))
+            return [item]
+
+    monkeypatch.setattr(service, "resolve_attachment_id", lambda _attachment_ref: "att-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_mail_profile",
+        lambda **_kwargs: {"mailbox_id": "mailbox-1"},
+    )
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda *_args: "mailbox-1")
+    monkeypatch.setattr(service, "_resolve_mailbox_id_from_message", lambda **_kwargs: "mailbox-1")
+    monkeypatch.setattr(service, "_resolve_mailbox_id_from_attachment", lambda **_kwargs: "mailbox-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {"account": Account()},
+    )
+    monkeypatch.setattr(service, "_standard_folders", lambda _account: {})
+    monkeypatch.setattr(service, "_extract_attachment_raw_id", lambda _attachment: "att-1")
+    monkeypatch.setattr(
+        service,
+        "_build_attachment_download_payload",
+        lambda **_kwargs: ("report.pdf", "application/pdf", b"pdf"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_cached_attachment_content",
+        lambda **_kwargs: None,
+    )
+
+    payload = service.download_attachment(
+        user_id=7,
+        mailbox_id="mailbox-1",
+        message_id=message_id,
+        attachment_ref="att-1",
+    )
+
+    assert payload == ("report.pdf", "application/pdf", b"pdf")
+    assert fetch_calls
+    assert fetch_calls[0][0] == [("exchange-custom-1", None)]
+    assert "attachments" in fetch_calls[0][1]
+    assert "parent_folder_id" in fetch_calls[0][1]
+    assert len(message_id) < 260
+    assert mail_module.decode_message_ref(message_id)[0] == mail_module.ITEM_SCOPED_FOLDER
 
 
 def test_mail_service_caches_conversation_detail_payload(temp_dir, monkeypatch):
@@ -390,7 +600,7 @@ def test_mail_service_caches_office_sized_attachment_payloads(temp_dir):
     ) == office_payload
     policy = service._cache_policy("attachment_content")
     assert policy.ttl_sec == 600
-    assert policy.max_entry_bytes == 25 * 1024 * 1024
+    assert policy.max_entry_bytes == 8 * 1024 * 1024
     assert policy.max_total_bytes == 64 * 1024 * 1024
 
 

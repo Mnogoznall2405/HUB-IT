@@ -62,6 +62,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private readonly Forms.ToolStripMenuItem _downloadsItem;
     private readonly Forms.ToolStripMenuItem _openInBrowserItem;
     private readonly Forms.ToolStripMenuItem _printItem;
+    private readonly Forms.ToolStripMenuItem _hardReloadItem;
     private readonly Forms.ToolStripMenuItem _commandPaletteItem;
     private readonly Forms.ToolStripMenuItem _quietModeItem;
     private readonly Forms.ToolStripMenuItem _privacyNotificationItem;
@@ -99,6 +100,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private bool _initializing;
     private bool _requiresReset;
     private bool _recoveryInProgress;
+    private bool _hardReloadInProgress;
     private bool _trayHintShown;
     private DesktopUpdatePackage? _readyUpdate;
     private AboutWindow? _aboutWindow;
@@ -122,6 +124,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private bool _taskbarPinSuggestionChecked;
     private bool _taskbarPinManualOnly;
     private bool _taskbarPinBusy;
+    private bool _benchFrontendProbeStarted;
 
     public MainWindow(
         DesktopOptions options,
@@ -171,6 +174,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         };
         _downloadFailureTimer.Tick += DownloadFailureTimer_Tick;
         InitializeComponent();
+        ContentRendered += MainWindow_ContentRendered;
         if (_startupSettings.WindowPlacement is not null)
         {
             WindowStartupLocation = WindowStartupLocation.Manual;
@@ -245,6 +249,12 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             Padding = new Forms.Padding(2, 4, 8, 4),
         };
         _printItem.Click += (_, _) => PrintCurrentPage();
+        _hardReloadItem = new Forms.ToolStripMenuItem("Обновить портал без кэша    Ctrl+F5")
+        {
+            AccessibleName = "Обновить текущее окно HUB без кэша",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _hardReloadItem.Click += (_, _) => _windowManager.ReloadLastOrPrimaryWithoutCache();
         _commandPaletteItem = new Forms.ToolStripMenuItem("Быстрый переход…    Ctrl+K")
         {
             AccessibleName = "Открыть быстрый переход по разделам и командам HUB",
@@ -393,6 +403,28 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         }
 
         _pendingInternalRoute = route;
+    }
+
+    public void ReloadWithoutCache()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(ReloadWithoutCache);
+            return;
+        }
+
+        _ = ReloadWithoutCacheAsync();
+    }
+
+    public bool TryDeliverSystemLifecycle(DesktopSystemLifecycleMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!Dispatcher.CheckAccess())
+        {
+            return Dispatcher.Invoke(() => TryDeliverSystemLifecycle(message));
+        }
+
+        return _desktopBridge?.TryPostSystemLifecycle(message) == true;
     }
 
     public void HandleLaunchRequest(DesktopLaunchRequest request)
@@ -612,6 +644,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= Window_Loaded;
+        DesktopPerfBench.MarkOnce("window_loaded");
 
         if (_startHidden)
         {
@@ -622,9 +655,355 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         }
 
         await CreateWebViewAsync();
-        if (!_startHidden)
+        if (!_startHidden && !DesktopPerfBench.IsEnabled)
         {
             await PresentTaskbarPinSuggestionAsync();
+        }
+    }
+
+    private void MainWindow_ContentRendered(object? sender, EventArgs e)
+    {
+        ContentRendered -= MainWindow_ContentRendered;
+        DesktopPerfBench.MarkOnce("window_shown");
+    }
+
+    private void MaybeStartBenchFrontendProbe()
+    {
+        if (!DesktopPerfBench.IsEnabled || _benchFrontendProbeStarted)
+        {
+            return;
+        }
+
+        _benchFrontendProbeStarted = true;
+        _ = ProbeBenchFrontendAsync();
+    }
+
+    private async Task ProbeBenchFrontendAsync()
+    {
+        try
+        {
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                await Task.Delay(500);
+                var core = _webView?.CoreWebView2;
+                if (core is null)
+                {
+                    continue;
+                }
+
+                string encoded;
+                try
+                {
+                    encoded = await core.ExecuteScriptAsync(DesktopPerfBench.CreateFrontendProbeScript());
+                }
+                catch (Exception exception) when (
+                    exception is InvalidOperationException
+                    or System.Runtime.InteropServices.COMException)
+                {
+                    continue;
+                }
+
+                if (!TryReadBenchFrontendProbe(encoded, out var fields))
+                {
+                    continue;
+                }
+
+                DesktopPerfBench.RecordFields("frontend_probe", fields);
+                if (fields.TryGetValue("fcp", out var firstContentful)
+                    && firstContentful is > 0)
+                {
+                    var navigationStartedAt = ReadBenchMarkMilliseconds("navigation_starting");
+                    if (navigationStartedAt is long navigationMs)
+                    {
+                        var paintOffset = fields.TryGetValue("fp", out var firstPaint)
+                            && firstPaint is > 0
+                            ? firstPaint.Value
+                            : firstContentful.Value;
+                        DesktopPerfBench.RecordFields(
+                            "first_paint",
+                            new Dictionary<string, long?>
+                            {
+                                ["first_paint_ms"] = navigationMs + paintOffset,
+                            });
+                    }
+
+                    break;
+                }
+            }
+
+            var coreForLogin = _webView?.CoreWebView2;
+            if (coreForLogin is not null)
+            {
+                await MaybeAutoLoginAsync(coreForLogin);
+                await ProbeBenchAuthenticatedFrontendAsync(coreForLogin);
+            }
+        }
+        finally
+        {
+            RecordBenchProcessSnapshot("frontend_probe_processes");
+            DesktopPerfBench.WriteReadySentinel();
+            MaybeQuitAfterBench();
+        }
+    }
+
+    private async Task NavigateBenchRouteAsync(CoreWebView2 core)
+    {
+        var script = DesktopPerfBench.CreateNavigateScript();
+        if (script is null)
+        {
+            return;
+        }
+
+        _ = await core.ExecuteScriptAsync(script);
+        DesktopPerfBench.MarkOnce("route_navigate");
+        await Task.Delay(2500);
+        var smoke = DesktopPerfBench.CreatePostNavigateSmokeScript();
+        if (smoke is not null)
+        {
+            try
+            {
+                var encoded = await core.ExecuteScriptAsync(smoke);
+                var json = System.Text.Json.JsonSerializer.Deserialize<string>(encoded);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(json);
+                    var loaded = document.RootElement.TryGetProperty("loaded", out var loadedEl)
+                        && loadedEl.ValueKind == System.Text.Json.JsonValueKind.True;
+                    var visible = document.RootElement.TryGetProperty("visible", out var visibleEl)
+                        && visibleEl.ValueKind == System.Text.Json.JsonValueKind.True;
+                    DesktopPerfBench.MarkOnce(loaded || visible
+                        ? "functional_smoke_ok"
+                        : "functional_smoke_failed");
+                }
+            }
+            catch (Exception exception) when (
+                exception is InvalidOperationException
+                or System.Runtime.InteropServices.COMException
+                or System.Text.Json.JsonException)
+            {
+                DesktopPerfBench.MarkOnce("functional_smoke_failed");
+            }
+        }
+    }
+
+    private async Task ProbeBenchAuthenticatedFrontendAsync(CoreWebView2 core)
+    {
+        if (!DesktopPerfBench.HasAutoLogin)
+        {
+            return;
+        }
+
+        await Task.Delay(800);
+        try
+        {
+            var encoded = await core.ExecuteScriptAsync(DesktopPerfBench.CreateFrontendProbeScript());
+            if (TryReadBenchFrontendProbe(encoded, out var fields))
+            {
+                DesktopPerfBench.RecordFields("frontend_probe_authenticated", fields);
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or System.Runtime.InteropServices.COMException)
+        {
+            DesktopPerfBench.MarkOnce("authenticated_probe_failed");
+        }
+
+        RecordBenchProcessSnapshot("authenticated_processes");
+    }
+
+    private static bool TryReadBenchFrontendProbe(
+        string encoded,
+        out Dictionary<string, long?> fields)
+    {
+        fields = [];
+        if (string.IsNullOrWhiteSpace(encoded) || encoded == "null")
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Deserialize<string>(encoded);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
+
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            DesktopPerfBench.RecordProbeJson("resource_timing", json);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                fields[property.Name] = property.Value.ValueKind switch
+                {
+                    System.Text.Json.JsonValueKind.Number => property.Value.TryGetInt64(out var number)
+                        ? number
+                        : null,
+                    System.Text.Json.JsonValueKind.Null => null,
+                    _ => null,
+                };
+            }
+
+            return fields.Count > 0;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+
+    private void RecordBenchProcessSnapshot(string mark)
+    {
+        if (!DesktopPerfBench.IsEnabled)
+        {
+            return;
+        }
+
+        var host = Process.GetCurrentProcess();
+        long? rendererCount = null;
+        long? gpuCount = null;
+        long? utilityCount = null;
+        long? rendererPrivateBytes = null;
+        try
+        {
+            var infos = _webView?.CoreWebView2?.Environment.GetProcessInfos();
+            if (infos is not null)
+            {
+                rendererCount = infos.Count(info => info.Kind == CoreWebView2ProcessKind.Renderer);
+                gpuCount = infos.Count(info => info.Kind == CoreWebView2ProcessKind.Gpu);
+                utilityCount = infos.Count(info =>
+                    info.Kind is CoreWebView2ProcessKind.Utility
+                        or CoreWebView2ProcessKind.SandboxHelper);
+                var renderer = infos.FirstOrDefault(info => info.Kind == CoreWebView2ProcessKind.Renderer);
+                if (renderer is not null)
+                {
+                    try
+                    {
+                        using var rendererProcess = Process.GetProcessById((int)renderer.ProcessId);
+                        rendererPrivateBytes = rendererProcess.PrivateMemorySize64;
+                    }
+                    catch (Exception exception) when (
+                        exception is ArgumentException
+                        or InvalidOperationException
+                        or System.ComponentModel.Win32Exception)
+                    {
+                        rendererPrivateBytes = null;
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or System.Runtime.InteropServices.COMException)
+        {
+            // Process enumeration is best-effort during a benchmark run.
+        }
+
+        DesktopPerfBench.RecordFields(
+            mark,
+            new Dictionary<string, long?>
+            {
+                ["private_bytes"] = host.PrivateMemorySize64,
+                ["working_set"] = host.WorkingSet64,
+                ["cpu_ms"] = (long)host.TotalProcessorTime.TotalMilliseconds,
+                ["renderer_count"] = rendererCount,
+                ["gpu_count"] = gpuCount,
+                ["utility_count"] = utilityCount,
+                ["renderer_private_bytes"] = rendererPrivateBytes,
+            });
+    }
+
+    private static long? ReadBenchMarkMilliseconds(string mark)
+    {
+        if (!DesktopPerfBench.TryGetOutputPath(out var outputPath) || !File.Exists(outputPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            foreach (var line in File.ReadLines(outputPath).Reverse())
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(line);
+                if (document.RootElement.TryGetProperty("mark", out var name)
+                    && name.GetString() == mark
+                    && document.RootElement.TryGetProperty("t_ms", out var elapsed)
+                    && elapsed.TryGetInt64(out var milliseconds))
+                {
+                    return milliseconds;
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or System.Text.Json.JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private void MaybeQuitAfterBench()
+    {
+        if (!DesktopPerfBench.TryGetQuitAfter(out var milliseconds))
+        {
+            return;
+        }
+
+        var timer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(milliseconds),
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            DesktopPerfBench.MarkOnce("bench_quit");
+            Application.Current?.Shutdown(0);
+        };
+        timer.Start();
+    }
+
+    private async Task MaybeAutoLoginAsync(CoreWebView2 core)
+    {
+        var passwordScript = DesktopPerfBench.CreatePasswordLoginScript();
+        if (passwordScript is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(800);
+            DesktopPerfBench.MarkOnce("login_password_submit");
+            _ = await core.ExecuteScriptAsync(passwordScript);
+            await Task.Delay(2500);
+            var totpScript = DesktopPerfBench.CreateTotpLoginScript();
+            if (totpScript is not null)
+            {
+                DesktopPerfBench.MarkOnce("login_totp_submit");
+                _ = await core.ExecuteScriptAsync(totpScript);
+                await Task.Delay(4500);
+            }
+
+            var encoded = await core.ExecuteScriptAsync(DesktopPerfBench.CreateAuthStateScript());
+            var state = System.Text.Json.JsonSerializer.Deserialize<string>(encoded);
+            if (string.Equals(state, "app", StringComparison.Ordinal))
+            {
+                DesktopPerfBench.MarkOnce("authenticated_ready");
+                await NavigateBenchRouteAsync(core);
+            }
+            else
+            {
+                DesktopPerfBench.MarkOnce("login_still_visible");
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or System.Runtime.InteropServices.COMException
+            or System.Text.Json.JsonException)
+        {
+            DesktopPerfBench.MarkOnce("login_inject_failed");
         }
     }
 
@@ -757,6 +1136,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
             _requiresReset = false;
             _performance.RecordWebViewInitialized(DateTimeOffset.UtcNow);
+            DesktopPerfBench.MarkOnce("webview_ready");
             DesktopLog.Info($"WebView2 initialized for {_navigationPolicy.TrustedOriginForLog}");
             core.Navigate(_options.BaseUri.AbsoluteUri);
             return null;
@@ -824,6 +1204,11 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         ApplyWebViewMemoryUsageTarget(core);
+        if (DesktopPerfBench.IsEnabled)
+        {
+            _ = core.AddScriptToExecuteOnDocumentCreatedAsync(
+                DesktopPerfBench.CreateDocumentCreatedScript());
+        }
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
@@ -834,6 +1219,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         {
             _lastNavigationStatus = "InProgress";
             _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+            DesktopPerfBench.MarkOnce("navigation_starting");
             _desktopBridge?.ResetDocumentReady();
             HideError();
             ShowLoading();
@@ -863,8 +1249,11 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         {
             _lastNavigationStatus = "Success";
             _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+            DesktopPerfBench.MarkOnce("navigation_completed");
+            RecordBenchProcessSnapshot("navigation_completed_processes");
             HideError();
             SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
+            MaybeStartBenchFrontendProbe();
             return;
         }
 
@@ -973,7 +1362,9 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     {
         _lastBridgeHandshakeUtc = DateTimeOffset.UtcNow;
         _performance.RecordBridgeReady(_lastBridgeHandshakeUtc.Value);
+        DesktopPerfBench.MarkOnce("bridge_ready");
         SendDesktopWindowForegroundState();
+        _windowManager.NotifyBridgeReady(this);
 
         if (_pendingCommandPalette && _desktopBridge?.TryOpenCommandPalette() == true)
         {
@@ -1194,6 +1585,13 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
         {
             e.Handled = OpenSecondaryWindow();
+            return;
+        }
+
+        if (e.Key == Key.F5 && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            ReloadWithoutCache();
             return;
         }
 
@@ -1633,6 +2031,46 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         timeout.Dispose();
     }
 
+    private async Task ReloadWithoutCacheAsync()
+    {
+        if (_hardReloadInProgress || _recoveryInProgress || _initializing)
+        {
+            return;
+        }
+
+        _hardReloadInProgress = true;
+        ReloadButton.IsEnabled = false;
+        try
+        {
+            if (_requiresReset || _webView?.CoreWebView2 is null)
+            {
+                await CreateWebViewAsync();
+                return;
+            }
+
+            HideError();
+            ShowLoading();
+            var reloaded = await DesktopWebViewHardReload.TryReloadIgnoringCacheAsync(
+                _webView.CoreWebView2,
+                _recoveryShutdown.Token);
+            if (!reloaded)
+            {
+                LoadingIndicator.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Window is shutting down.
+        }
+        finally
+        {
+            _hardReloadInProgress = false;
+            ReloadButton.IsEnabled = true;
+        }
+    }
+
+    private void ReloadButton_Click(object sender, RoutedEventArgs e) => ReloadWithoutCache();
+
     private async void RetryButton_Click(object sender, RoutedEventArgs e)
     {
         if (_recoveryInProgress)
@@ -1725,6 +2163,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopToolsItem.DropDownItems.Add(HubTrayContextMenu.CreateSeparator());
         _desktopToolsItem.DropDownItems.Add(_openInBrowserItem);
         _desktopToolsItem.DropDownItems.Add(_printItem);
+        _desktopToolsItem.DropDownItems.Add(_hardReloadItem);
         _desktopToolsItem.DropDownItems.Add(HubTrayContextMenu.CreateSeparator());
         _desktopToolsItem.DropDownItems.Add(_privacyNotificationItem);
         _desktopToolsItem.DropDownItems.Add(_autostartItem);
@@ -2000,6 +2439,13 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         SaveWindowPlacement();
+        if (DesktopPerfBench.IsEnabled)
+        {
+            DesktopPerfBench.MarkOnce("window_closing_shutdown");
+            Application.Current?.Shutdown(0);
+            return;
+        }
+
         if (_applicationController.ExitRequested)
         {
             return;

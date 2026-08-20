@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { invalidateSWRCacheByPrefix } from '../../lib/swrCache';
 import { patchTaskConversationFromTask } from './chatConversationModel';
+import { persistChatTaskPanelCollapsed, readStoredChatTaskPanelCollapsed } from './chatRightPanelLayout';
 
 export const CONTEXT_PANEL_ENTER_MS = 220;
 export const CONTEXT_PANEL_EXIT_MS = 180;
@@ -93,11 +94,15 @@ export default function useChatPanelsController({
   useEffect(() => {
     if (isMobile) return;
     setTaskPanelTaskId(activeTaskConversationTaskId);
-    setTaskPanelOpen(Boolean(activeTaskConversationTaskId));
     if (activeTaskConversationTaskId) {
       setContextPanelOpen(false);
       void loadTaskWorkspacePanelModule();
+      if (!readStoredChatTaskPanelCollapsed()) {
+        setTaskPanelOpen(true);
+      }
+      return;
     }
+    setTaskPanelOpen(false);
   }, [activeTaskConversationTaskId, isMobile]);
 
   const openTaskInTasks = useCallback(() => {
@@ -112,12 +117,14 @@ export default function useChatPanelsController({
       return;
     }
     void loadTaskWorkspacePanelModule();
+    persistChatTaskPanelCollapsed(false);
     setContextPanelOpen(false);
     setTaskPanelTaskId(normalizedTaskId);
     setTaskPanelOpen(true);
   }, [isMobile, navigate]);
 
   const closeTaskPanel = useCallback(() => {
+    persistChatTaskPanelCollapsed(true);
     setTaskPanelOpen(false);
   }, []);
 
@@ -186,10 +193,24 @@ export default function useChatPanelsController({
       return;
     }
     void loadChatContextPanelModule();
+    const isTaskConversation = String(activeConversation?.kind || '').trim() === 'task'
+      || Boolean(String(activeTaskConversationTaskId || '').trim());
+    if (isTaskConversation) {
+      setContextPanelOpen(false);
+      setTaskPanelOpen((current) => {
+        const next = !current;
+        persistChatTaskPanelCollapsed(!next);
+        return next;
+      });
+      if (!taskPanelOpen) void loadTaskWorkspacePanelModule();
+      return;
+    }
     setTaskPanelOpen(false);
     setContextPanelOpen((current) => !current);
   }, [
+    activeConversation,
     activeConversationIdRef,
+    activeTaskConversationTaskId,
     getCurrentBrowserConversationId,
     getMobileNav,
     isMobile,
@@ -198,6 +219,7 @@ export default function useChatPanelsController({
     setMessageMenuAnchor,
     setMessageMenuMessage,
     setThreadMenuAnchor,
+    taskPanelOpen,
   ]);
 
   const closeAllPanels = useCallback(() => {

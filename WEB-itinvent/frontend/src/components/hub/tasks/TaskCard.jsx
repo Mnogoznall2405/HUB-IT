@@ -41,20 +41,76 @@ const TaskCard = memo(function TaskCard({
   ui,
   canEdit = false,
   canDelete = false,
+  canStart = false,
+  canSubmit = false,
+  canReview = false,
+  canClose = false,
+  canReopen = false,
   onOpen,
   onEdit,
   onDelete,
   onCopyLink,
   onOpenTransferAct,
+  onStart,
+  onSubmit,
+  onReview,
+  onCloseTask,
+  onReopen,
 }) {
   const theme = useTheme();
   const latestComment = getTaskCommentPreview(task);
   const attachCount = Number(task?.attachments_count || 0);
   const isTransferReminder = isTransferActUploadTask(task);
   const priority = priorityMeta(task?.priority);
-  const mobileCardMenuItems = buildMobileTaskCardMenuItems({ canEdit, canDelete });
-  const columnColor = column?.color || theme.palette.primary.main;
   const canOpenTransferAct = canOpenTransferActUpload(task);
+  const mobileCardMenuItems = buildMobileTaskCardMenuItems({
+    canEdit,
+    canDelete,
+    canUploadAct: canOpenTransferAct,
+    canStart,
+    canSubmit,
+    canReview,
+    canClose,
+    canReopen,
+  });
+  const columnColor = column?.color || theme.palette.primary.main;
+  const handleMenuSelect = (key) => {
+    if (key === 'upload_act') {
+      onOpenTransferAct?.(task);
+      return;
+    }
+    if (key === 'start') {
+      onStart?.(task);
+      return;
+    }
+    if (key === 'submit') {
+      onSubmit?.(task);
+      return;
+    }
+    if (key === 'review') {
+      onReview?.(task);
+      return;
+    }
+    if (key === 'close') {
+      onCloseTask?.(task);
+      return;
+    }
+    if (key === 'reopen') {
+      onReopen?.(task);
+      return;
+    }
+    if (key === 'edit') {
+      onEdit?.(task);
+      return;
+    }
+    if (key === 'delete') {
+      onDelete?.(task);
+      return;
+    }
+    if (key === 'copy') {
+      onCopyLink?.(task);
+    }
+  };
 
   if (isMobile) {
     return (
@@ -98,19 +154,7 @@ const TaskCard = memo(function TaskCard({
               <OverflowMenu
                 label="Действия карточки задачи"
                 items={mobileCardMenuItems}
-                onSelect={(key) => {
-                  if (key === 'edit') {
-                    onEdit?.(task);
-                    return;
-                  }
-                  if (key === 'delete') {
-                    onDelete?.(task);
-                    return;
-                  }
-                  if (key === 'copy') {
-                    onCopyLink?.(task);
-                  }
-                }}
+                onSelect={handleMenuSelect}
               />
             ) : null}
           </Stack>
@@ -269,6 +313,11 @@ const TaskCard = memo(function TaskCard({
               <ContentCopyIcon sx={{ fontSize: 15 }} />
             </IconButton>
           </Tooltip>
+          <OverflowMenu
+            label="Действия карточки задачи"
+            items={mobileCardMenuItems}
+            onSelect={handleMenuSelect}
+          />
         </Stack>
       </Stack>
 

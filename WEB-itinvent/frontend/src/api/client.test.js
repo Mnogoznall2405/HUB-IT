@@ -179,6 +179,25 @@ describe('apiClient auth response interceptor', () => {
     window.removeEventListener('auth-required', onAuthRequired);
   });
 
+  it('keeps the cached user when a public shared-file request returns 401', async () => {
+    const onAuthRequired = vi.fn();
+    window.addEventListener('auth-required', onAuthRequired);
+    window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
+
+    const rejectedHandler = getRejectedHandler();
+    const error = {
+      response: { status: 401 },
+      config: { url: '/my-files/public/share-token' },
+    };
+
+    await expect(rejectedHandler(error)).rejects.toBe(error);
+
+    expect(window.localStorage.getItem('user')).toBe(JSON.stringify({ id: 1, username: 'user' }));
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    expect(apiClientMock.post).not.toHaveBeenCalled();
+    window.removeEventListener('auth-required', onAuthRequired);
+  });
+
   it('requires auth when the refresh endpoint definitively rejects the session', async () => {
     const onAuthRequired = vi.fn();
     window.addEventListener('auth-required', onAuthRequired);
@@ -1706,7 +1725,11 @@ describe('mailItRequestsAPI contract', () => {
 
     await expect(mailItRequestsAPI.sendItRequest(payload)).resolves.toEqual({ sent: true });
 
-    expect(apiClientMock.post).toHaveBeenCalledWith('/mail/messages/send-it-request', payload);
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/mail/messages/send-it-request',
+      payload,
+      { timeout: 115000 },
+    );
   });
 
   it('sends multipart IT requests with fields, files, progress, and abort signal', async () => {
@@ -1733,6 +1756,7 @@ describe('mailItRequestsAPI contract', () => {
     });
     expect(body.getAll('files')).toEqual([file]);
     expect(config).toEqual({
+      timeout: 115000,
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -2130,7 +2154,11 @@ describe('mailComposeAPI contract', () => {
 
     await expect(mailComposeAPI.sendMessage(payload)).resolves.toEqual({ id: 'sent-1' });
 
-    expect(apiClientMock.post).toHaveBeenCalledWith('/mail/messages/send', payload);
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/mail/messages/send',
+      payload,
+      { timeout: 115000 },
+    );
 
     await expect(mailComposeAPI.sendMessageMultipart({
       fromMailboxId: ' primary ',
@@ -2163,12 +2191,49 @@ describe('mailComposeAPI contract', () => {
     expect(body.get('draft_id')).toBe('draft/3');
     expect(body.getAll('files')).toEqual([file]);
     expect(config).toEqual({
+      timeout: 115000,
       headers: {
         'Content-Type': 'multipart/form-data',
       },
       onUploadProgress,
       signal,
     });
+  });
+
+  it('sends Idempotency-Key on JSON and multipart compose requests', async () => {
+    const { mailComposeAPI } = await importMailComposeAPI();
+    const payload = {
+      from_mailbox_id: 'primary',
+      to: ['to@example.com'],
+      subject: 'Hello',
+      body: '<p>Hello</p>',
+    };
+    const file = new File(['report'], 'report.txt', { type: 'text/plain' });
+
+    await expect(mailComposeAPI.sendMessage({
+      ...payload,
+      idempotencyKey: 'compose-key-1',
+    })).resolves.toEqual({ id: 'sent-1' });
+
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/mail/messages/send',
+      payload,
+      { timeout: 115000, headers: { 'Idempotency-Key': 'compose-key-1' } },
+    );
+
+    await expect(mailComposeAPI.sendMessageMultipart({
+      fromMailboxId: 'primary',
+      to: ['to@example.com'],
+      subject: 'Multipart subject',
+      body: '<p>Body</p>',
+      isHtml: true,
+      files: [file],
+      idempotencyKey: 'compose-key-2',
+    })).resolves.toEqual({ id: 'sent-1' });
+
+    const multipartCall = apiClientMock.post.mock.calls.find((item) => item[0] === '/mail/messages/send-multipart');
+    expect(multipartCall[2].headers['Idempotency-Key']).toBe('compose-key-2');
+    expect(multipartCall[2].headers['Content-Type']).toBe('multipart/form-data');
   });
 
   it('keeps mailAPI compose methods compatible with the dedicated module and re-export', async () => {
@@ -2272,6 +2337,30 @@ describe('mailMessageListAPI contract', () => {
       mailbox_id: '   ',
       mailboxId: 'fallback',
       unread_only: true,
+    });
+  });
+
+  it('forwards an abort signal on list requests without changing the mailbox query', async () => {
+    const { mailMessageListAPI } = await importMailMessageListAPI();
+    const controller = new AbortController();
+
+    await mailMessageListAPI.getMessages({ folder: 'sent', mailbox_id: ' mb-1 ' }, { signal: controller.signal });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/mail/messages', {
+      params: { folder: 'sent', mailbox_id: 'mb-1' },
+      signal: controller.signal,
+    });
+  });
+
+  it('forwards an abort signal on bootstrap without changing the mailbox query', async () => {
+    const { mailMessageListAPI } = await importMailMessageListAPI();
+    const controller = new AbortController();
+
+    await mailMessageListAPI.getBootstrap({ limit: 20, mailbox_id: ' mb-1 ' }, { signal: controller.signal });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/mail/bootstrap', {
+      params: { limit: 20, mailbox_id: 'mb-1' },
+      signal: controller.signal,
     });
   });
 
@@ -4702,6 +4791,8 @@ describe('hubTasksAPI', () => {
     const startResult = await hubTasksAPI.startTask('task/1');
     apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task/1', status: 'approved' } });
     const reviewResult = await hubTasksAPI.reviewTask('task/1', reviewPayload);
+    apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task/1', status: 'done' } });
+    const completeResult = await hubTasksAPI.completeTask('task/1', { comment: 'Closed by author' });
 
     expect(listResult).toEqual({ items: [], total: 0 });
     expect(detailResult).toEqual({ id: 'task/1', title: 'Replace toner' });
@@ -4710,6 +4801,7 @@ describe('hubTasksAPI', () => {
     expect(deleteResult).toEqual({ deleted: true });
     expect(startResult).toEqual({ id: 'task/1', status: 'in_progress' });
     expect(reviewResult).toEqual({ id: 'task/1', status: 'approved' });
+    expect(completeResult).toEqual({ id: 'task/1', status: 'done' });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/hub/tasks', { params: filters });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/hub/tasks/task%2F1');
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/tasks', createPayload);
@@ -4717,6 +4809,7 @@ describe('hubTasksAPI', () => {
     expect(apiClientMock.delete).toHaveBeenCalledWith('/hub/tasks/task%2F1');
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/tasks/task%2F1/start');
     expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/hub/tasks/task%2F1/review', reviewPayload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(4, '/hub/tasks/task%2F1/complete', { comment: 'Closed by author' });
   });
 
   it('submits tasks as multipart FormData with optional comment and file', async () => {
@@ -4757,6 +4850,7 @@ describe('hubTasksAPI', () => {
     expect(hubAPI.startTask).toBe(hubTasksAPI.startTask);
     expect(hubAPI.submitTask).toBe(hubTasksAPI.submitTask);
     expect(hubAPI.reviewTask).toBe(hubTasksAPI.reviewTask);
+    expect(hubAPI.completeTask).toBe(hubTasksAPI.completeTask);
   });
 });
 
@@ -5722,6 +5816,20 @@ describe('networksAPI.exportMapPdf', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/networks/branches/12/sockets/sync-host-context', {
       dry_run: true,
     });
+  });
+
+  it('imports equipment excel with a longer timeout', async () => {
+    const { networksAPI, NETWORK_EQUIPMENT_IMPORT_TIMEOUT_MS } = await import('./networks');
+    const formData = new FormData();
+
+    await networksAPI.importEquipment(54, formData);
+
+    expect(NETWORK_EQUIPMENT_IMPORT_TIMEOUT_MS).toBe(180000);
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/networks/branches/54/equipment/import',
+      formData,
+      { timeout: 180000 },
+    );
   });
 
   it('requests backend PDF export for the selected map', async () => {

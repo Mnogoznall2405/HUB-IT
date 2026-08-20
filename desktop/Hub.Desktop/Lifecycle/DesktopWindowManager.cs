@@ -20,6 +20,7 @@ public sealed class DesktopWindowManager
     private IDesktopHubWindow? _primary;
     private IDesktopHubWindow? _secondary;
     private IDesktopHubWindow? _lastActive;
+    private DesktopSystemLifecycleBroadcaster? _lifecycle;
 
     public DesktopWindowManager(Uri trustedBaseUri)
     {
@@ -36,6 +37,41 @@ public sealed class DesktopWindowManager
     public bool CanOpenSecondary => _primary is not null && _secondary is null;
 
     public int WindowCount => (_primary is null ? 0 : 1) + (_secondary is null ? 0 : 1);
+
+    public void AttachLifecycleBroadcaster(DesktopSystemLifecycleBroadcaster broadcaster)
+    {
+        _lifecycle = broadcaster ?? throw new ArgumentNullException(nameof(broadcaster));
+    }
+
+    public void PublishSystemLifecycle(DesktopSystemLifecycleMessage message)
+    {
+        _lifecycle?.Publish(message);
+    }
+
+    public void NotifyBridgeReady(IDesktopHubWindow window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        if (!IsRegistered(window))
+        {
+            return;
+        }
+
+        _lifecycle?.DeliverPendingTo(window);
+    }
+
+    public void ForEachWindow(Action<IDesktopHubWindow> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (_primary is not null)
+        {
+            action(_primary);
+        }
+
+        if (_secondary is not null)
+        {
+            action(_secondary);
+        }
+    }
 
     public void RegisterPrimary(IDesktopHubWindow window)
     {
@@ -88,11 +124,7 @@ public sealed class DesktopWindowManager
 
     public void ActivateLastOrPrimary(string? route = null)
     {
-        var target = _lastActive?.IsVisible == true
-            ? _lastActive
-            : _secondary?.IsVisible == true
-                ? _secondary
-                : _primary;
+        var target = ResolveLastOrPrimary();
         if (target is null)
         {
             return;
@@ -105,6 +137,18 @@ public sealed class DesktopWindowManager
         }
 
         target.ShowAndActivate();
+    }
+
+    public void ReloadLastOrPrimaryWithoutCache()
+    {
+        var target = ResolveLastOrPrimary();
+        if (target is null)
+        {
+            return;
+        }
+
+        target.ShowAndActivate();
+        target.ReloadWithoutCache();
     }
 
     public void UpdateShellStatus(IDesktopHubWindow window, DesktopShellStatus status)
@@ -181,6 +225,7 @@ public sealed class DesktopWindowManager
         Unsubscribe(window);
         _shellStatuses.Remove(window);
         _quickRoutes.Remove(window);
+        _lifecycle?.ForgetWindow(window);
         if (ReferenceEquals(window, _secondary))
         {
             _secondary = null;
@@ -206,6 +251,21 @@ public sealed class DesktopWindowManager
                 owner is not null && _quickRoutes.TryGetValue(owner, out var routes)
                     ? routes
                     : []));
+    }
+
+    private IDesktopHubWindow? ResolveLastOrPrimary()
+    {
+        if (_lastActive?.IsVisible == true)
+        {
+            return _lastActive;
+        }
+
+        if (_secondary?.IsVisible == true)
+        {
+            return _secondary;
+        }
+
+        return _primary;
     }
 
     private bool IsRegistered(IDesktopHubWindow window) =>

@@ -176,7 +176,7 @@ describe('ChatMessageList', () => {
     vi.useRealTimers();
   });
 
-  it('keeps sticky date dividers on desktop', () => {
+  it('renders inline date dividers on desktop without sticky positioning', () => {
     vi.setSystemTime(new Date('2026-06-29T12:00:00.000Z'));
 
     const { container } = renderWithTheme(
@@ -206,7 +206,8 @@ describe('ChatMessageList', () => {
     );
 
     expect(screen.getByText('27 июня')).toBeInTheDocument();
-    expect(container.querySelector('.sticky')).toBeInTheDocument();
+    expect(container.querySelector('.sticky')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-date-marker]')).toBeInTheDocument();
 
     vi.useRealTimers();
   });

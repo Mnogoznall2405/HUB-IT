@@ -14,6 +14,16 @@ def _normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
+def _item_attachment_hint(item: Any) -> tuple[bool, int]:
+    flag = getattr(item, "has_attachments", None)
+    if flag is not None:
+        has_attachments = bool(flag)
+        return has_attachments, (1 if has_attachments else 0)
+    attachments = getattr(item, "attachments", None) or []
+    count = len(list(attachments))
+    return count > 0, count
+
+
 @dataclass(frozen=True)
 class ConversationListResult:
     payload: dict[str, Any]
@@ -153,8 +163,8 @@ class MailConversationPayloadBuilder:
         group["messages_count"] += 1
         if not bool(getattr(item, "is_read", False)):
             group["unread_count"] += 1
-        attachments_count = len(getattr(item, "attachments", None) or [])
-        group["has_attachments"] = bool(group["has_attachments"] or attachments_count > 0)
+        has_attachments, attachments_count = _item_attachment_hint(item)
+        group["has_attachments"] = bool(group["has_attachments"] or has_attachments)
         group["attachments_count"] = max(int(group["attachments_count"]), attachments_count)
         if received_iso and (
             not group.get("last_received_at")

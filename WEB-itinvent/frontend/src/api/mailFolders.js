@@ -1,30 +1,20 @@
 import apiClient from './client';
+import { normalizeMailboxId, withMailboxQuery } from './mailMailboxQuery';
 
-const normalizeMailboxId = (value) => {
-  const normalized = String(value || '').trim();
-  return normalized || '';
-};
-
-const withMailboxQuery = (params = {}, mailboxId) => {
-  const normalizedMailboxId = normalizeMailboxId(mailboxId ?? params?.mailbox_id ?? params?.mailboxId);
-  const nextParams = { ...(params || {}) };
-  delete nextParams.mailboxId;
-  if (normalizedMailboxId) {
-    nextParams.mailbox_id = normalizedMailboxId;
-  } else {
-    delete nextParams.mailbox_id;
-  }
-  return nextParams;
-};
+const withSignal = (config, signal) => (signal ? { ...config, signal } : config);
 
 export const mailFoldersAPI = {
-  getFolderSummary: async (params = {}) => {
-    const response = await apiClient.get('/mail/folders/summary', { params: withMailboxQuery(params) });
+  getFolderSummary: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/mail/folders/summary', withSignal({
+      params: withMailboxQuery(params),
+    }, options?.signal));
     return response.data;
   },
 
-  getFolderTree: async (params = {}) => {
-    const response = await apiClient.get('/mail/folders/tree', { params: withMailboxQuery(params) });
+  getFolderTree: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/mail/folders/tree', withSignal({
+      params: withMailboxQuery(params),
+    }, options?.signal));
     return response.data;
   },
 

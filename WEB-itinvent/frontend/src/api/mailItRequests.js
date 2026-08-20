@@ -1,8 +1,9 @@
 import apiClient from './client';
+import { withMailSendTimeout } from '../components/mail/mailSendOutcome';
 
 export const mailItRequestsAPI = {
   sendItRequest: async (payload) => {
-    const response = await apiClient.post('/mail/messages/send-it-request', payload);
+    const response = await apiClient.post('/mail/messages/send-it-request', payload, withMailSendTimeout());
     return response.data;
   },
 
@@ -23,13 +24,13 @@ export const mailItRequestsAPI = {
         }
       });
     }
-    const response = await apiClient.post('/mail/messages/send-it-request-multipart', formData, {
+    const response = await apiClient.post('/mail/messages/send-it-request-multipart', formData, withMailSendTimeout({
       headers: {
         'Content-Type': 'multipart/form-data',
       },
       onUploadProgress,
       signal,
-    });
+    }));
     return response.data;
   },
 };

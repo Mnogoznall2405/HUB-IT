@@ -1346,7 +1346,7 @@ function ChatThread({
       />
 
       <AnimatePresence initial={false}>
-        {aiRunStatus ? (
+        {aiRunActive || aiRunStatus === 'failed' ? (
           <AiRunStatusBanner
             aiStatus={aiStatus}
             theme={theme}

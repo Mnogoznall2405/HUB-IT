@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.services.mail_ai_privacy import mail_ai_privacy_metrics, reset_mail_ai_privacy_state
 from backend.services.mail_ai_service import MailAiService, MailAiServiceError
 
 
@@ -19,6 +20,13 @@ class _FakeOpenRouterClient:
         return self.payload, {}
 
 
+@pytest.fixture(autouse=True)
+def _reset_mail_ai_privacy_metrics():
+    reset_mail_ai_privacy_state()
+    yield
+    reset_mail_ai_privacy_state()
+
+
 def test_summarize_message_returns_summary(monkeypatch):
     service = MailAiService()
     fake_client = _FakeOpenRouterClient({"summary": "Краткий пересказ письма."})
@@ -33,6 +41,7 @@ def test_summarize_message_returns_summary(monkeypatch):
     )
 
     assert result == {"summary": "Краткий пересказ письма."}
+    assert mail_ai_privacy_metrics()["ai_calls"] == 1
 
 
 def test_smart_replies_returns_suggestions(monkeypatch):

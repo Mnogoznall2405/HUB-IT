@@ -1156,6 +1156,37 @@ class AppMailRuntimeSnapshot(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppMailSendIdempotency(AppBase):
+    """Durable mail send ledger. Unique per user, mailbox and client key."""
+
+    __tablename__ = "mail_send_idempotency"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "mailbox_id",
+            "idempotency_key",
+            name="uq_app_mail_send_idempotency_scope",
+        ),
+        Index("ix_app_mail_send_idempotency_user_created", "user_id", "created_at"),
+        Index("ix_app_mail_send_idempotency_status_lease", "status", "processing_lease_until"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    mailbox_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved", index=True)
+    internet_message_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    response_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    processing_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AppOneCItemLink(AppBase):
     """Approved (or explicitly excluded) 1C nomenclature link for one HUB item.
 

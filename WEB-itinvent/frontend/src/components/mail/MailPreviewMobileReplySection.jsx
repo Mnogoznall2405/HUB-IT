@@ -1,35 +1,34 @@
 import { Box } from '@mui/material';
-import MailQuickReplyBar from './MailQuickReplyBar';
-import MailSmartReplyChips from './MailSmartReplyChips';
+import MailQuickReplyComposer from './MailQuickReplyComposer';
 
 export default function MailPreviewMobileReplySection({
-  quickReplyBody = '',
+  quickReplyDraftKey,
+  quickReplyDraftEpoch = 0,
   quickReplySending = false,
   quickReplyDisabled = false,
-  onQuickReplyBodyChange,
+  startCollapsed = false,
   onSendQuickReply,
   onQuickReplyFocus,
   smartReplySuggestions = [],
   smartReplyLoading = false,
-  onSmartReplySelect,
+  smartReplyChipsEnabled = true,
+  placeholder,
 }) {
   return (
     <Box data-testid="mail-preview-mobile-reply-section">
-      <MailQuickReplyBar
+      <MailQuickReplyComposer
         embedded
-        value={quickReplyBody}
+        startCollapsed={startCollapsed}
+        draftKey={quickReplyDraftKey}
+        draftEpoch={quickReplyDraftEpoch}
         sending={quickReplySending}
         disabled={quickReplyDisabled}
-        onChange={onQuickReplyBodyChange}
+        chipsEnabled={smartReplyChipsEnabled}
+        suggestions={smartReplySuggestions}
+        chipsLoading={smartReplyLoading}
+        placeholder={placeholder}
         onSend={onSendQuickReply}
         onFocus={onQuickReplyFocus}
-      />
-      <MailSmartReplyChips
-        embedded
-        suggestions={smartReplySuggestions}
-        loading={smartReplyLoading}
-        disabled={quickReplySending || quickReplyDisabled}
-        onSelect={onSmartReplySelect}
       />
     </Box>
   );

@@ -1,8 +1,9 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailAttachmentHero from './MailAttachmentHero';
+import { MAIL_ATTACHMENTS_EXPANDED_STORAGE_KEY } from './mailAttachmentExpandState';
 
 function renderWithTheme(node) {
   return render(
@@ -22,6 +23,10 @@ const buildAttachment = (index, ext = 'pdf') => ({
 });
 
 describe('MailAttachmentHero', () => {
+  beforeEach(() => {
+    sessionStorage.removeItem(MAIL_ATTACHMENTS_EXPANDED_STORAGE_KEY);
+  });
+
   it('renders hero cards only for one or two attachments', () => {
     renderWithTheme(
       <MailAttachmentHero
@@ -34,7 +39,7 @@ describe('MailAttachmentHero', () => {
     expect(screen.getByTestId('mail-attachment-hero-item-0')).toBeVisible();
     expect(screen.getByTestId('mail-attachment-hero-item-1')).toBeVisible();
     expect(screen.queryByTestId('mail-attachment-compact-strip')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('mail-attachment-summary-row')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mail-attachment-hero-toggle')).toHaveTextContent('Свернуть');
   });
 
   it('renders yandex-style compact cards for three attachments', () => {
@@ -50,12 +55,18 @@ describe('MailAttachmentHero', () => {
 
     expect(screen.getByTestId('mail-attachment-compact-strip')).toBeVisible();
     expect(screen.getAllByTestId(/^mail-attachment-compact-card-/)).toHaveLength(3);
-    expect(screen.getByTestId('mail-attachment-summary-row')).toHaveTextContent('3 файла, 12 KB');
+    expect(screen.getByTestId('mail-attachment-summary-row')).toHaveTextContent('Вложения · 3 файла · 12 KB');
     expect(screen.queryByTestId('mail-attachment-hero-item-0')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mail-attachment-show-all')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Просмотр вложения file-1.pdf' }));
     expect(onOpen).toHaveBeenCalled();
+
+    expect(screen.getByTestId('mail-attachment-hero-toggle')).toHaveTextContent('Показать');
+
+    fireEvent.click(screen.getByTestId('mail-attachment-hero-toggle'));
+    expect(screen.getByTestId('mail-attachment-hero-item-0')).toBeVisible();
+    expect(screen.getByTestId('mail-attachment-hero-toggle')).toHaveTextContent('Свернуть');
   });
 
   it('opens an Outlook-style file menu from the visible arrow', async () => {

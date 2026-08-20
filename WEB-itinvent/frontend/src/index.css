@@ -48,7 +48,7 @@
 html {
   font-size: 16px;
   min-height: 100%;
-  background-color: #f5f7fa;
+  background-color: var(--app-page-bg, #f5f7fa);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -96,15 +96,18 @@ body {
   margin: 0;
   padding: 0;
   font-family: Aptos, 'Segoe UI', Arial, sans-serif;
-  background-color: #f5f7fa;
+  background-color: var(--app-page-bg, #f5f7fa);
   color: rgba(0, 0, 0, 0.87);
   line-height: 1.5;
+  min-height: 100%;
   min-height: 100dvh;
   overscroll-behavior: none;
 }
 
 #root {
+  min-height: 100%;
   min-height: 100dvh;
+  background-color: var(--app-page-bg, #f5f7fa);
 }
 
 ::-webkit-scrollbar {
@@ -125,7 +128,15 @@ body {
   background: rgba(0, 0, 0, 0.3);
 }
 
-/* Desktop keeps wheel/touchpad scrolling but does not show the root WebView track. */
+/* Desktop keeps wheel/touchpad scrolling but does not show the root WebView track.
+   Do not set height:100% or overflow:hidden on html/body/#root: that clips the
+   document and removes page scroll on every route that relies on window scroll. */
+html[data-desktop-shell='true'],
+html[data-desktop-shell='true'] body,
+html[data-desktop-shell='true'] #root {
+  background-color: var(--app-page-bg, #f5f7fa);
+}
+
 html[data-desktop-shell='true'],
 html[data-desktop-shell='true'] body {
   scrollbar-width: none;
@@ -304,8 +315,9 @@ select {
   }
 
   .mail-divider-inset {
-    margin-left: 4rem;
-    border-color: var(--mail-divider, rgba(15, 23, 42, 0.08));
+    margin-left: 0;
+    width: 100%;
+    border-color: color-mix(in srgb, var(--mail-divider, rgba(148, 163, 184, 0.18)) 70%, transparent);
   }
 
   .mail-line-clamp-1 {

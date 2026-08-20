@@ -414,7 +414,7 @@ describe('ChatSidebar', () => {
 
     fireEvent.click(newChat);
     expect(screen.getByRole('dialog', { name: 'Новый AI-чат' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Личный AI/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /HUB Ассистент/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Fresh Bot/i })).toBeInTheDocument();
     expect(screen.queryByText('IT-помощник')).not.toBeInTheDocument();
     expect(screen.queryByText('OpenCode')).not.toBeInTheDocument();
@@ -426,7 +426,7 @@ describe('ChatSidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
     const personalPicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
-    fireEvent.click(within(personalPicker).getByRole('button', { name: /Личный AI/i }));
+    fireEvent.click(within(personalPicker).getByRole('button', { name: /HUB Ассистент/i }));
     await waitFor(() => expect(onCreateAiConversation).toHaveBeenCalledTimes(1));
 
     await waitForElementToBeRemoved(personalPicker);
@@ -492,7 +492,7 @@ describe('ChatSidebar', () => {
     );
 
     expect(screen.getByText(/Корпоративные помощники временно недоступны/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Личный AI/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /HUB Ассистент/i })).toBeInTheDocument();
   });
 
   it('shows read receipts and full date for own direct messages', () => {

@@ -32,7 +32,7 @@ describe('buildAiSidebarRows assistant identity', () => {
       expect.objectContaining({
         conversation_id: 'generic-conversation',
         title: 'Личный разговор',
-        assistant_title: 'Личный AI',
+        assistant_title: 'HUB Ассистент',
       }),
     ]);
   });

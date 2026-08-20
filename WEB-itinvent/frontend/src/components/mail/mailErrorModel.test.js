@@ -5,6 +5,7 @@ import {
   getMailErrorDetail,
   getMailErrorDetailAsync,
   isMissingMailDetailError,
+  isCanceledMailRequestError,
   isTransientMailRequestError,
 } from './mailErrorModel';
 
@@ -63,6 +64,10 @@ describe('mailErrorModel', () => {
     expect(isTransientMailRequestError({ message: 'Network Error' })).toBe(true);
     expect(isTransientMailRequestError({ message: 'Failed to fetch' })).toBe(true);
     expect(isTransientMailRequestError({ response: { status: 401 } })).toBe(false);
+    expect(isCanceledMailRequestError({ code: 'ERR_CANCELED' })).toBe(true);
+    expect(isCanceledMailRequestError({ name: 'CanceledError' })).toBe(true);
+    expect(isCanceledMailRequestError({ name: 'AbortError' })).toBe(true);
+    expect(isCanceledMailRequestError({ response: { status: 503 } })).toBe(false);
   });
 
   it('reads mail error code header case-insensitively for current axios shapes', () => {

@@ -37,4 +37,19 @@ describe('Tasks performance helpers', () => {
     const module = await import('../../components/hub/tasks/TasksCreateDialog');
     expect(module.default).toBeTypeOf('function');
   });
+
+  it('keeps analytics charts and emoji picker as dynamic imports in source', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const chartsView = readFileSync(
+      resolve(process.cwd(), 'src/components/hub/tasks/TasksAnalyticsView.jsx'),
+      'utf8',
+    );
+    const emojiPanel = readFileSync(
+      resolve(process.cwd(), 'src/components/chat/ChatEmojiPanel.jsx'),
+      'utf8',
+    );
+    expect(chartsView).toMatch(/lazy\(\(\) => import\('\.\/TasksAnalyticsCharts'\)\)/);
+    expect(emojiPanel).toMatch(/lazy\(\(\) => import\('emoji-picker-react'\)\)/);
+  });
 });

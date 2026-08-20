@@ -102,19 +102,7 @@ export default defineConfig(({ mode }) => {
       include: ['react', 'react-dom', '@emotion/react', '@emotion/styled'],
     },
     build: {
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (id.includes('node_modules/recharts')) {
-              return 'recharts';
-            }
-            if (id.includes('node_modules/emoji-picker-react')) {
-              return 'emoji-picker';
-            }
-            return undefined;
-          },
-        },
-      },
+      manifest: true,
     },
   };
 });
