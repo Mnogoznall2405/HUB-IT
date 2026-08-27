@@ -1,12 +1,15 @@
 node_modules/
 .expo/
+/.expo-build-check-*/
 .gradle-user-home/
 .gradle-user-home-jdk17/
 dist/
 *.apk
 *.aab
 /android/
+/android-stale-*/
 /ios/
+/artifacts/
 .env
 .env.local
 google-services.json

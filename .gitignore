@@ -163,6 +163,8 @@ bot.log*
 # Local agent/runtime artifacts
 .codex_tmp/
 .playwright-cli/
+/.npm-cache/
+/artifacts/
 WEB-itinvent/uploads/
 /*.xlsx
 /google-services.json
