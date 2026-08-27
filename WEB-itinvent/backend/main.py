@@ -38,6 +38,7 @@ from backend.services.address_book_service import background_address_book_sync_l
 from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
 from backend.services.docflow_service import docflow_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
+from backend.services.app_push_outbox_service import app_push_outbox_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.services.my_files_service import my_files_worker
@@ -145,6 +146,7 @@ def _install_application_logger_bridge() -> None:
         "backend.chat.realtime",
         "backend.chat.service",
         "backend.chat.push_outbox",
+        "backend.app.push_outbox",
     ):
         target_logger = logging.getLogger(logger_name)
         for handler in source_handlers:
@@ -235,6 +237,8 @@ async def lifespan(app: FastAPI):
             initialize_app_schema()
             ping_app_database()
             print("Internal app database: configured and reachable")
+            await app_push_outbox_service.start()
+            print(f"App push outbox: enabled={app_push_outbox_service.enabled}")
             expired_runtime_items = auth_runtime_store_service.cleanup_expired()
             if expired_runtime_items:
                 print(f"Auth runtime cleanup: removed {expired_runtime_items} expired items")
@@ -341,6 +345,7 @@ async def lifespan(app: FastAPI):
         announcement_publish_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
+    await app_push_outbox_service.stop()
     await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()

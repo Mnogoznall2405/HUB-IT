@@ -135,7 +135,7 @@
                     <Border Style="{StaticResource SectionStyle}">
                         <StackPanel>
                             <TextBlock FontSize="16" FontWeight="SemiBold" Text="Окно и клавиатура" />
-                            <CheckBox x:Name="AskOnCloseCheck" Content="Один раз спросить перед первым скрытием по кнопке X" />
+                            <CheckBox x:Name="AskOnCloseCheck" Content="Один раз спросить перед первым сворачиванием по кнопке X" />
                             <CheckBox x:Name="GlobalHotkeyCheck" Content="Ctrl+Shift+H — показать или скрыть HUB" AutomationProperties.HelpText="Глобальная комбинация включается только если не занята другой программой" />
                             <TextBlock Margin="22,5,0,0" Foreground="{StaticResource MutedTextBrush}" Text="Если комбинация занята другой программой, настройка не сохранится." TextWrapping="Wrap" />
                         </StackPanel>

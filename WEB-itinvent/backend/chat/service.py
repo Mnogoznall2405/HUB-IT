@@ -1266,6 +1266,18 @@ class ChatService:
         self._ensure_available()
         return self._conversation_reads.get_unread_summary(current_user_id=int(current_user_id))
 
+    def get_realtime_snapshot(self, *, current_user_id: int) -> dict:
+        self._ensure_available()
+        normalized_user_id = int(current_user_id)
+        return {
+            "unread_summary": self._conversation_reads.get_unread_summary(
+                current_user_id=normalized_user_id,
+            ),
+            "muted_conversation_ids": self._conversation_reads.get_muted_conversation_ids(
+                current_user_id=normalized_user_id,
+            ),
+        }
+
     def get_unread_summaries(
         self,
         *,
@@ -1738,6 +1750,20 @@ class ChatService:
             before_message_id=before_message_id,
         )
 
+    def search_messages_global(
+        self,
+        *,
+        current_user_id: int,
+        q: str,
+        limit: int = 20,
+    ) -> dict:
+        self._ensure_available()
+        return self._thread_reads.search_messages_global(
+            current_user_id=int(current_user_id),
+            q=q,
+            limit=limit,
+        )
+
     def get_message_reads(self, *, current_user_id: int, message_id: str) -> dict:
         self._ensure_available()
         return self._thread_reads.get_message_reads(
@@ -2029,6 +2055,21 @@ class ChatService:
             )
             attachment_media_kind = _normalize_text(attachment.media_kind).lower() or None
             try:
+                if normalized_variant == "preview" and attachment_media_kind == "sticker":
+                    from backend.chat.telegram_sticker_service import telegram_sticker_service
+
+                    sticker_preview = telegram_sticker_service.find_legacy_message_attachment_preview(
+                        session=session,
+                        source_path=file_path,
+                        file_name=attachment.file_name,
+                        mime_type=_normalize_text(attachment.mime_type),
+                        file_size=int(attachment.file_size or 0),
+                    )
+                    if sticker_preview is not None:
+                        return {
+                            **sticker_preview,
+                            "media_kind": attachment_media_kind,
+                        }
                 if normalized_variant in {"thumb", "preview"} and _normalize_text(attachment.mime_type).lower().startswith("image/"):
                     variant_path = self._resolve_attachment_variant_path(
                         conversation_id=message.conversation_id,
@@ -2260,11 +2301,17 @@ class ChatService:
         # Delivery-state outbox is deferred (aux TX after ACK), not discarded.
         payload.pop("_deferred_delivery_state", None)
         deferred_delivery_outbox = payload.pop("_deferred_delivery_outbox", None)
+        mentioned_user_ids = self._resolve_mentioned_member_user_ids(
+            member_user_ids=member_user_ids,
+            sender_user_id=int(current_user_id),
+            body=normalized_body,
+        )
         public_message = {
             key: value
             for key, value in dict(payload or {}).items()
             if not str(key).startswith("_")
         }
+        public_message["mentioned_user_ids"] = list(mentioned_user_ids or [])
         needs_enrichment = str(public_message.get("payload_mode") or "") == "lean"
         payload["_deferred_realtime_publish"] = {
             "conversation_id": _normalize_text(payload.get("conversation_id")) or _normalize_text(conversation_id),
@@ -2279,11 +2326,6 @@ class ChatService:
             payload["_deferred_delivery_outbox"] = deferred_delivery_outbox
 
         if not dedup_hit:
-            mentioned_user_ids = self._resolve_mentioned_member_user_ids(
-                member_user_ids=member_user_ids,
-                sender_user_id=int(current_user_id),
-                body=normalized_body,
-            )
             if defer_push_notifications:
                 # Keep notifications for every recipient, but do not block send ack on fan-out.
                 # Callers schedule _create_chat_notifications via chat message side-effects.
@@ -2487,6 +2529,49 @@ class ChatService:
         self._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations")
         return payload
 
+    def set_pinned_message(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: Optional[str] = None,
+    ) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        member_user_ids: list[int] = [int(current_user_id)]
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            if normalized_message_id:
+                message = session.get(ChatMessage, normalized_message_id)
+                if message is None or message.conversation_id != conversation.id:
+                    raise LookupError("Message not found")
+                if bool(getattr(message, "is_deleted", False)):
+                    raise ValueError("Cannot pin a deleted message")
+                if self._normalize_message_kind(getattr(message, "kind", "text")) == "system":
+                    raise ValueError("System messages cannot be pinned")
+                conversation.pinned_message_id = message.id
+                conversation.pinned_at = _utc_now()
+                conversation.pinned_by_user_id = int(current_user_id)
+            else:
+                conversation.pinned_message_id = None
+                conversation.pinned_at = None
+                conversation.pinned_by_user_id = None
+            conversation.updated_at = _utc_now()
+            session.flush()
+            member_user_ids = self._conversation_member_ids(session, conversation.id)
+            payload = self._build_conversation_payload(session, conversation, int(current_user_id))
+            payload["pinned_message"] = self._serialize_pinned_message_preview(session, conversation)
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted({int(user_id) for user_id in member_user_ids if int(user_id) > 0}),
+        )
+        return payload
+
     def delete_message(
         self,
         *,
@@ -2534,6 +2619,10 @@ class ChatService:
                 message.deleted_at = now
                 message.deleted_by_user_id = int(current_user_id)
                 message.deleted_reason = "self" if is_own_message else "moderated"
+                if _normalize_text(getattr(conversation, "pinned_message_id", None)) == normalized_message_id:
+                    conversation.pinned_message_id = None
+                    conversation.pinned_at = None
+                    conversation.pinned_by_user_id = None
 
                 if is_group:
                     actor = self._require_active_user(int(current_user_id))
@@ -2771,6 +2860,14 @@ class ChatService:
         users_override: Optional[dict[int, dict]] = None,
     ) -> dict:
         return self._serialization._build_conversation_payload(session, conversation, current_user_id, users_override=users_override)
+
+    def _serialize_pinned_message_preview(self, session, conversation: ChatConversation, *, users_by_id=None):
+        return self._serialization._serialize_pinned_message_preview(
+            session,
+            conversation,
+            users_by_id=users_by_id,
+        )
+
     def _build_conversation_summary_payload(
         self,
         session,

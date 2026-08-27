@@ -389,6 +389,7 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
             "items": [{
                 "full_name": "Иванов",
                 "employee_code": "E1",
+                "hire_date": "2021-05-17",
                 "work_phones": [{"value": "100"}],
                 "personal_phones": [{"value": "79990001122"}],
                 "work_emails": [{"value": "ivanov@zsgp.ru"}],
@@ -408,6 +409,7 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
     assert public_item["age"] == calculate_age("1990-01-01")
     assert public_item.get("date_of_birth") is None
     assert public_item.get("passport_number") is None
+    assert public_item.get("hire_date") is None
     assert service.get_personal_by_codes(["E1"]) == {
         "E1": {"date_of_birth": "1990-01-01", "passport_number": "123456"}
     }
@@ -415,10 +417,12 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
     restricted_item = service.search(
         "иванов",
         include_age=False,
+        include_hire_date=False,
         include_personal_emails=False,
         include_personal_phones=False,
     )["items"][0]
     assert restricted_item.get("age") is None
+    assert restricted_item.get("hire_date") is None
     assert restricted_item["work_phones"] == [{"value": "100"}]
     assert restricted_item["personal_phones"] == []
     assert restricted_item["work_emails"] == [{"value": "ivanov@zsgp.ru"}]
@@ -429,6 +433,9 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
     assert service.search("ivanov@example.com", include_personal_emails=False)["total"] == 0
     assert service.search("ivanov@example.com", include_personal_emails=True)["total"] == 1
 
+    allowed_item = service.search("иванов", include_hire_date=True)["items"][0]
+    assert allowed_item["hire_date"] == "2021-05-17"
+
 
 def test_calculate_age_uses_birthday_and_rejects_invalid_dates():
     today = date(2026, 8, 5)
@@ -437,6 +444,29 @@ def test_calculate_age_uses_birthday_and_rejects_invalid_dates():
     assert calculate_age("1990-08-06", today=today) == 35
     assert calculate_age("not-a-date", today=today) is None
     assert calculate_age("2027-01-01", today=today) is None
+
+
+def test_employee_query_and_loader_include_current_hire_date(monkeypatch):
+    assert "Текущие.ДатаПриема КАК HireDate" in employee_query()
+    rows = [
+        SimpleNamespace(
+            FullName="Иванов Иван",
+            EmployeeCode="E1",
+            HireDate="20210517",
+            Department="ИТ",
+            DepartmentCode="D1",
+            DepartmentLocation="Тюмень",
+            Position="Инженер",
+        )
+    ]
+    monkeypatch.setattr(
+        "backend.services.address_book_service.execute_query",
+        lambda *_args, **_kwargs: FakeSelection(rows),
+    )
+
+    service = AddressBookService(data_manager=MemoryDataManager())
+
+    assert service._load_employees(Fake1CConnection())[0]["hire_date"] == "2021-05-17"
 
 
 def test_search_matches_name_department_position_city_and_phone():

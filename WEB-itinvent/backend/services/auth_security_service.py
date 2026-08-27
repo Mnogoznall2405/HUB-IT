@@ -550,6 +550,7 @@ class AuthSecurityService:
         auth_method: str,
         device_id: str | None,
         client_device_id: str | None = None,
+        send_login_alert: bool = True,
     ) -> dict[str, Any]:
         requested_session_id = uuid.uuid4().hex
         effective_client_device_id = normalize_client_device_id(
@@ -605,14 +606,15 @@ class AuthSecurityService:
         final_device_id = str(device_id or f"session:{session_id}")
         tokens = self.issue_tokens(user=user, session_id=session_id, device_id=final_device_id)
         self.delete_login_challenge(str(challenge.get("challenge_id") or ""))
-        _dispatch_new_login_alert(
-            recipient_email=user.get("email"),
-            username=str(user.get("username") or ""),
-            ip_address=str(challenge.get("ip_address") or ""),
-            device_label=_build_device_label(str(challenge.get("user_agent") or "")),
-            auth_method=auth_method,
-            login_at=_now_utc(),
-        )
+        if send_login_alert:
+            _dispatch_new_login_alert(
+                recipient_email=user.get("email"),
+                username=str(user.get("username") or ""),
+                ip_address=str(challenge.get("ip_address") or ""),
+                device_label=_build_device_label(str(challenge.get("user_agent") or "")),
+                auth_method=auth_method,
+                login_at=_now_utc(),
+            )
         return {
             "status": "authenticated",
             "user": self._build_public_user(
@@ -628,6 +630,44 @@ class AuthSecurityService:
             "client_device_id": effective_client_device_id or None,
             **tokens,
         }
+
+    def complete_mobile_biometric_login(
+        self,
+        *,
+        user: dict[str, Any],
+        credential_id: str,
+        client_device_id: str,
+        ip_address: str,
+        user_agent: str,
+        network_zone: str,
+    ) -> dict[str, Any]:
+        """Issue ordinary finite tokens from a durable, revocable APK credential."""
+        if not bool(user.get("is_active", True)) or not bool(user.get("is_2fa_enabled", False)):
+            raise AuthSecurityError("Biometric login is no longer allowed")
+        effective_zone = str(network_zone or "external").strip().lower() or "external"
+        effective_policy = resolve_twofa_policy()
+        return self._complete_login(
+            challenge={
+                "challenge_id": None,
+                "user_id": int(user.get("id") or 0),
+                "username": str(user.get("username") or ""),
+                "role": str(user.get("role") or "viewer"),
+                "auth_source": str(user.get("auth_source") or "local"),
+                "ip_address": str(ip_address or ""),
+                "user_agent": str(user_agent or ""),
+                "network_zone": effective_zone,
+                "twofa_policy": effective_policy,
+                "twofa_required_for_current_request": is_twofa_required_for_zone(
+                    effective_zone,
+                    policy=effective_policy,
+                ),
+            },
+            user=user,
+            auth_method="mobile_biometric",
+            device_id=f"mobile-biometric:{str(credential_id or '').strip()}",
+            client_device_id=client_device_id,
+            send_login_alert=False,
+        )
 
     def finalize_trusted_device_login(
         self,
@@ -723,6 +763,9 @@ class AuthSecurityService:
         with app_session() as session:
             session.execute(delete(AppUser2FABackupCode).where(AppUser2FABackupCode.user_id == int(user_id)))
         revoked_devices = trusted_device_service.revoke_all_user_devices(int(user_id))
+        from backend.services.mobile_biometric_session_service import mobile_biometric_session_service
+
+        revoked_biometric_credentials = mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
         active_sessions = [
             item
             for item in session_service.list_sessions(active_only=True)
@@ -737,6 +780,7 @@ class AuthSecurityService:
             "success": True,
             "user_id": int(user_id),
             "revoked_devices": revoked_devices,
+            "revoked_biometric_credentials": revoked_biometric_credentials,
             "closed_sessions": len(active_sessions),
         }
 

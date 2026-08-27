@@ -21,7 +21,11 @@ from backend.db_schema import schema_name
 from backend import inventory_runtime
 from backend.models.auth import User
 from backend.services.user_db_selection_service import user_db_selection_service
-from backend.services.authorization_service import PERM_COMPUTERS_READ, PERM_COMPUTERS_READ_ALL
+from backend.services.authorization_service import (
+    PERM_COMPUTERS_MANAGE,
+    PERM_COMPUTERS_READ,
+    PERM_COMPUTERS_READ_ALL,
+)
 from local_store import get_local_store
 
 router = APIRouter()
@@ -48,6 +52,59 @@ OUTLOOK_ALLOWED_SOURCE = {"user_helper_com", "system_scan", "none"}
 COMPUTER_SEARCH_FIELDS = {"identity", "user", "profiles", "outlook", "network", "location", "database"}
 COMPUTER_SEARCH_DEFAULT_FIELDS = set(COMPUTER_SEARCH_FIELDS)
 COMPUTER_SEARCH_DYNAMIC_FIELDS = {"network", "location", "database"}
+
+# Native clients intentionally receive only the fields rendered by the native
+# Computers UI.  Full agent/profile/change payloads remain available to the
+# protected web endpoint, but must not cross the mobile transport boundary.
+_MOBILE_COMPUTER_LIST_FIELDS = (
+    "mac_address",
+    "hostname",
+    "status",
+    "age_seconds",
+    "current_user",
+    "user_login",
+    "user_full_name",
+    "branch_name",
+    "location_name",
+    "is_unassigned",
+    "ip_primary",
+    "has_hardware_changes",
+    "changes_count_30d",
+)
+_MOBILE_COMPUTER_DETAIL_FIELDS = _MOBILE_COMPUTER_LIST_FIELDS + (
+    "last_seen_at",
+    "database_name",
+    "inventory_inv_no",
+    "inventory_model_name",
+    "ip_list",
+    "cpu_load_percent",
+    "ram_used_percent",
+    "uptime_seconds",
+    "last_reboot_at",
+    "cpu_model",
+    "ram_gb",
+    "system_serial",
+    "outlook_status",
+    "outlook_total_size_bytes",
+    "outlook_archives_count",
+)
+_MOBILE_DISK_FIELDS = (
+    "name",
+    "display_name",
+    "mountpoint",
+    "device",
+    "total_gb",
+    "free_gb",
+    "size_gb",
+    "health_status",
+    "media_type",
+)
+_MOBILE_NETWORK_DEVICE_FIELDS = (
+    "name",
+    "connection_status",
+    "link_speed",
+    "ipv4",
+)
 DEFAULT_INVENTORY_NETWORK_SCOPE_MAP = "10.105.6.0/24=ITINVENT|г.Тюмень, Велижанский тракт 6"
 INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
     "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
@@ -444,6 +501,43 @@ def _dedupe_strings(values: List[Any]) -> List[str]:
         seen.add(value)
         out.append(value)
     return out
+
+
+def _project_mobile_computer(record: Dict[str, Any], *, detail: bool) -> Dict[str, Any]:
+    """Return the bounded, path-free Computers contract used by native clients."""
+    source = record if isinstance(record, dict) else {}
+    allowed_fields = _MOBILE_COMPUTER_DETAIL_FIELDS if detail else _MOBILE_COMPUTER_LIST_FIELDS
+    projected = {field: source.get(field) for field in allowed_fields if field in source}
+
+    for collection_name in ("logical_disks", "storage"):
+        rows = source.get(collection_name) if isinstance(source.get(collection_name), list) else []
+        projected[collection_name] = [
+            {field: row.get(field) for field in _MOBILE_DISK_FIELDS if field in row}
+            for row in rows[:32]
+            if isinstance(row, dict)
+        ]
+
+    if detail:
+        projected["ip_list"] = _dedupe_strings(
+            source.get("ip_list") if isinstance(source.get("ip_list"), list) else []
+        )[:16]
+        network = source.get("network") if isinstance(source.get("network"), dict) else {}
+        devices = network.get("devices") if isinstance(network.get("devices"), list) else []
+        projected_devices = []
+        for row in devices[:32]:
+            if not isinstance(row, dict):
+                continue
+            projected_devices.append(
+                {
+                    "name": _normalize_text(row.get("name") or row.get("description")),
+                    "connection_status": row.get("connection_status"),
+                    "link_speed": row.get("link_speed"),
+                    "ipv4": _dedupe_strings(row.get("ipv4") if isinstance(row.get("ipv4"), list) else [])[:8],
+                }
+            )
+        projected["network"] = {"devices": projected_devices}
+
+    return projected
 
 
 def _extract_ip_fields(record: Dict[str, Any]) -> Tuple[str, List[str]]:
@@ -2422,9 +2516,10 @@ def search_computers(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     include_summary: bool = Query(False),
+    mobile_safe: bool = Query(False),
 ):
     """Return paginated collected computers with fielded server-side search."""
-    return _build_computers_search_payload(
+    payload = _build_computers_search_payload(
         current_user=current_user,
         db_id_selected=db_id_selected,
         scope=scope,
@@ -2443,6 +2538,13 @@ def search_computers(
         offset=offset,
         include_summary=_query_bool(include_summary, False),
     )
+    if _query_bool(mobile_safe, False):
+        payload["items"] = [
+            _project_mobile_computer(item, detail=False)
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+        ]
+    return payload
 
 
 @router.get("/computers")
@@ -2493,23 +2595,28 @@ def get_computer_detail(
     current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
     db_id_selected: Optional[str] = Depends(get_current_database_id),
     scope: str = Query("selected"),
+    mobile_safe: bool = Query(False),
 ):
     """Return full inventory payload for a single computer."""
-    return _build_computer_detail_payload(
+    payload = _build_computer_detail_payload(
         current_user=current_user,
         mac_address=mac_address,
         db_id_selected=db_id_selected,
         scope=scope,
     )
+    if _query_bool(mobile_safe, False):
+        return _project_mobile_computer(payload, detail=True)
+    return payload
 
 
 @router.post("/computers/{mac_address}/hide")
 def hide_computer(
     mac_address: str,
-    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_MANAGE)),
     reason: Optional[str] = Query(None),
 ):
-    """Soft-hide an inventory host (operator-owned; agent ingest does not clear the flag)."""
+    """Soft-hide an inventory host for a Computers manager."""
+    ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
     app_store = _get_inventory_app_store()
     if app_store is None:
         raise HTTPException(
@@ -2538,9 +2645,10 @@ def hide_computer(
 @router.post("/computers/{mac_address}/unhide")
 def unhide_computer(
     mac_address: str,
-    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_MANAGE)),
 ):
     """Restore a soft-hidden inventory host to the default list."""
+    ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
     app_store = _get_inventory_app_store()
     if app_store is None:
         raise HTTPException(

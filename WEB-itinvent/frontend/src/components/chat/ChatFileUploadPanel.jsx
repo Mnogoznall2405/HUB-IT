@@ -12,6 +12,7 @@ import {
 import { alpha } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
@@ -22,6 +23,7 @@ import {
   isChatMediaFile,
   isChatVideoFile,
 } from './chatUploadPrep';
+import { isChatImageEditorSupported } from './chatImageEditor';
 
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
@@ -287,7 +289,7 @@ function LocalVideoPreview({ file, onPlaybackStart, src, tokens }) {
   );
 }
 
-function MediaUploadGrid({ busy, files, isDropMode, onRemove, previewUrls, tokens }) {
+function MediaUploadGrid({ busy, files, imageEdits, isDropMode, onEdit, onRemove, previewUrls, tokens }) {
   const activeVideoRef = useRef(null);
   const mediaItems = useMemo(
     () => (Array.isArray(files) ? files : [])
@@ -334,6 +336,8 @@ function MediaUploadGrid({ busy, files, isDropMode, onRemove, previewUrls, token
       {mediaItems.map(({ file, fileIndex }, mediaIndex) => {
         const previewUrl = previewUrls.get(file) || '';
         const singleItem = itemCount === 1;
+        const editable = isChatImageEditorSupported(file);
+        const edited = Boolean(imageEdits?.[fileIndex]?.edited);
         return (
           <Box
             key={`${getFileLabel(file)}-${Number(file?.size || 0)}-${fileIndex}`}
@@ -369,28 +373,74 @@ function MediaUploadGrid({ busy, files, isDropMode, onRemove, previewUrls, token
               />
             )}
             {!isDropMode ? (
-              <IconButton
-                aria-label={`Удалить ${getFileLabel(file)}`}
-                data-testid={`file-dialog-remove-${fileIndex}`}
-                disabled={busy}
-                onClick={() => onRemove?.(fileIndex)}
-                size="small"
-                sx={{
-                  position: 'absolute',
-                  top: 6,
-                  insetInlineEnd: 6,
-                  width: 40,
-                  height: 40,
-                  bgcolor: 'rgba(15, 23, 42, 0.68)',
-                  color: '#ffffff',
-                  backdropFilter: 'blur(5px)',
-                  '&:hover': { bgcolor: 'rgba(15, 23, 42, 0.82)' },
-                  '&:active': { transform: 'scale(0.96)' },
-                  '&:focus-visible': { outline: `2px solid ${tokens.accent}`, outlineOffset: 2 },
-                }}
-              >
-                <CloseRoundedIcon sx={{ fontSize: 20 }} />
-              </IconButton>
+              <>
+                {editable && onEdit ? (
+                  <IconButton
+                    aria-label={`Редактировать ${getFileLabel(file)}`}
+                    data-testid={`file-dialog-edit-${fileIndex}`}
+                    disabled={busy}
+                    onClick={() => onEdit(fileIndex)}
+                    size="small"
+                    sx={{
+                      position: 'absolute',
+                      top: 6,
+                      insetInlineStart: 6,
+                      width: 44,
+                      height: 44,
+                      bgcolor: edited ? tokens.accent : 'rgba(15, 23, 42, 0.68)',
+                      color: '#ffffff',
+                      backdropFilter: 'blur(5px)',
+                      transition: 'background-color 120ms ease, transform 120ms ease',
+                      '&:hover': { bgcolor: edited ? tokens.accent : 'rgba(15, 23, 42, 0.82)' },
+                      '&:active': { transform: 'scale(0.96)' },
+                      '&:focus-visible': { outline: `2px solid ${tokens.accent}`, outlineOffset: 2 },
+                    }}
+                  >
+                    <EditRoundedIcon sx={{ fontSize: 21 }} />
+                  </IconButton>
+                ) : null}
+                <IconButton
+                  aria-label={`Удалить ${getFileLabel(file)}`}
+                  data-testid={`file-dialog-remove-${fileIndex}`}
+                  disabled={busy}
+                  onClick={() => onRemove?.(fileIndex)}
+                  size="small"
+                  sx={{
+                    position: 'absolute',
+                    top: 6,
+                    insetInlineEnd: 6,
+                    width: 44,
+                    height: 44,
+                    bgcolor: 'rgba(15, 23, 42, 0.68)',
+                    color: '#ffffff',
+                    backdropFilter: 'blur(5px)',
+                    '&:hover': { bgcolor: 'rgba(15, 23, 42, 0.82)' },
+                    '&:active': { transform: 'scale(0.96)' },
+                    '&:focus-visible': { outline: `2px solid ${tokens.accent}`, outlineOffset: 2 },
+                  }}
+                >
+                  <CloseRoundedIcon sx={{ fontSize: 20 }} />
+                </IconButton>
+                {edited ? (
+                  <Box
+                    data-testid={`file-dialog-edited-${fileIndex}`}
+                    sx={{
+                      position: 'absolute',
+                      insetInlineStart: 8,
+                      bottom: 8,
+                      px: 1,
+                      py: 0.45,
+                      borderRadius: 999,
+                      bgcolor: 'rgba(15, 23, 42, 0.76)',
+                      color: '#ffffff',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Изменено
+                  </Box>
+                ) : null}
+              </>
             ) : null}
           </Box>
         );
@@ -408,11 +458,14 @@ export default function ChatFileUploadPanel({
   onAdd,
   onCancel,
   onCaptionChange,
+  onEditImage,
   onOpenEmoji,
   onOpenMenu,
   onRemoveFile,
   onSend,
   onSendMediaAsFilesChange,
+  imageEdits = [],
+  originalModeDisabledReason = '',
   preparing = false,
   sending = false,
   sendMediaAsFiles = false,
@@ -507,7 +560,9 @@ export default function ChatFileUploadPanel({
             <MediaUploadGrid
               busy={busy}
               files={items}
+              imageEdits={imageEdits}
               isDropMode={isDropMode}
+              onEdit={onEditImage}
               onRemove={onRemoveFile}
               previewUrls={previewUrls}
               tokens={tokens}
@@ -547,11 +602,12 @@ export default function ChatFileUploadPanel({
           {mediaItemCount > 0 && !isDropMode ? (
             <FormControlLabel
               data-testid="send-media-as-files-control"
-              disabled={busy}
+              disabled={busy || Boolean(originalModeDisabledReason)}
               control={(
                 <Checkbox
                   checked={Boolean(sendMediaAsFiles)}
                   onChange={(event) => onSendMediaAsFilesChange?.(event.target.checked)}
+                  disabled={busy || Boolean(originalModeDisabledReason)}
                   inputProps={{ 'aria-label': 'Отправить как файл' }}
                   sx={{ color: tokens.muted, '&.Mui-checked': { color: tokens.accent } }}
                 />
@@ -564,6 +620,12 @@ export default function ChatFileUploadPanel({
                 '& .MuiFormControlLabel-label': { fontSize: '14px', lineHeight: 1.3 },
               }}
             />
+          ) : null}
+
+          {mediaItemCount > 0 && !isDropMode && originalModeDisabledReason ? (
+            <Typography role="status" sx={{ mt: -0.7, color: tokens.muted, fontSize: '12px', lineHeight: 1.35 }}>
+              {originalModeDisabledReason}
+            </Typography>
           ) : null}
 
           {(preparing || sending) ? (
@@ -589,15 +651,25 @@ export default function ChatFileUploadPanel({
               <Stack direction="row" alignItems="flex-end" spacing={1}>
                 <InputBase
                   inputRef={captionInputRef}
-                  aria-label="Подпись"
                   placeholder="Подпись"
                   value={caption}
                   onChange={(event) => onCaptionChange?.(event.target.value)}
+                  onKeyDown={(event) => {
+                    const composing = Boolean(event.nativeEvent?.isComposing);
+                    const plainEnter = event.key === 'Enter'
+                      && !event.shiftKey
+                      && !event.ctrlKey
+                      && !event.metaKey
+                      && !event.altKey;
+                    if (!plainEnter || composing) return;
+                    event.preventDefault();
+                    if (!busy && !isDropMode && items.length > 0) onSend?.();
+                  }}
                   disabled={busy || isDropMode}
                   multiline
                   minRows={1}
                   maxRows={4}
-                  inputProps={{ maxLength: 12000 }}
+                  inputProps={{ 'aria-label': 'Подпись', maxLength: 12000, enterKeyHint: 'send' }}
                   sx={{
                     flex: 1,
                     color: tokens.inputText,

@@ -5,6 +5,7 @@ import {
   parseStoredPinnedMessage,
   readLocalStorageJsonObject,
   resolveHeavyChatSurfacePrefetchTargets,
+  resolveInitialPinnedMessage,
   scheduleHeavyChatSurfacePrefetch,
   shouldSkipPinnedMessageReconcile,
 } from './useChatActiveConversationSurfaceEffects';
@@ -54,6 +55,28 @@ describe('useChatActiveConversationSurfaceEffects helpers', () => {
       senderName: 'Bob',
       preview: 'hi',
       createdAt: 't',
+    });
+  });
+
+  it('resolveInitialPinnedMessage prefers the server pin over local storage', () => {
+    expect(resolveInitialPinnedMessage(undefined, { id: 'local-1' })).toEqual({
+      id: 'local-1',
+      senderName: '',
+      preview: '',
+      createdAt: '',
+    });
+    expect(resolveInitialPinnedMessage(null, { id: 'local-1' })).toBeNull();
+    expect(resolveInitialPinnedMessage('srv-1', { id: 'srv-1', senderName: 'Ann', preview: 'Hi', createdAt: 't' })).toEqual({
+      id: 'srv-1',
+      senderName: 'Ann',
+      preview: 'Hi',
+      createdAt: 't',
+    });
+    expect(resolveInitialPinnedMessage('srv-2', { id: 'local-1' })).toEqual({
+      id: 'srv-2',
+      senderName: '',
+      preview: '',
+      createdAt: '',
     });
   });
 

@@ -1,6 +1,7 @@
 """Group and direct conversation mutations."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import and_, func, or_, select
@@ -30,6 +31,19 @@ from backend.chat.utils import normalize_text as _normalize_text
 
 if TYPE_CHECKING:
     from backend.chat.service import ChatService
+
+
+def _advance_state_to_conversation_tip(
+    state: ChatConversationUserState,
+    conversation: ChatConversation,
+    *,
+    updated_at: datetime,
+) -> None:
+    state.last_read_message_id = conversation.last_message_id
+    state.last_read_seq = max(0, int(conversation.last_message_seq or 0))
+    state.last_read_at = conversation.last_message_at
+    state.unread_count = 0
+    state.updated_at = updated_at
 
 
 class ChatGroupService:
@@ -282,11 +296,12 @@ class ChatGroupService:
                     current_user_id=int(user_id),
                 )
                 state.is_archived = False
-                state.updated_at = now
+                _advance_state_to_conversation_tip(state, conversation, updated_at=now)
                 added_users.append(user)
                 affected_user_ids.add(int(user_id))
 
             if added_users:
+                session.flush()
                 member_ids_after = self._service._conversation_member_ids(session, conversation.id)
                 added_names = ", ".join(_display_user_name(user) for user in added_users)
                 self._service._append_system_message(
@@ -343,6 +358,7 @@ class ChatGroupService:
             target = self._service._require_active_user(normalized_target_user_id)
             now = _utc_now()
             target_member.left_at = now
+            session.flush()
             member_ids_after = self._service._conversation_member_ids(session, conversation.id)
             self._service._append_system_message(
                 session=session,
@@ -352,6 +368,12 @@ class ChatGroupService:
                 member_user_ids=member_ids_after,
                 now=now,
             )
+            target_state = self._service._get_or_create_conversation_state(
+                session=session,
+                conversation_id=conversation.id,
+                current_user_id=normalized_target_user_id,
+            )
+            _advance_state_to_conversation_tip(target_state, conversation, updated_at=now)
             affected_user_ids.update(member_ids_after)
             session.flush()
             payload = self._service._build_conversation_detail_payload(session, conversation, int(current_user_id))
@@ -359,6 +381,7 @@ class ChatGroupService:
         self._service._invalidate_conversation_views_for_users(
             conversation_id=_normalize_text(conversation_id),
             user_ids=sorted(affected_user_ids),
+            hard_drop_unread=True,
         )
         return payload
 
@@ -488,6 +511,7 @@ class ChatGroupService:
             actor = self._service._require_active_user(int(current_user_id))
             now = _utc_now()
             actor_member.left_at = now
+            session.flush()
             member_ids_after = self._service._conversation_member_ids(session, conversation.id)
             self._service._append_system_message(
                 session=session,
@@ -497,12 +521,19 @@ class ChatGroupService:
                 member_user_ids=member_ids_after,
                 now=now,
             )
+            actor_state = self._service._get_or_create_conversation_state(
+                session=session,
+                conversation_id=conversation.id,
+                current_user_id=int(current_user_id),
+            )
+            _advance_state_to_conversation_tip(actor_state, conversation, updated_at=now)
             affected_user_ids.update(member_ids_after)
             session.flush()
 
         self._service._invalidate_conversation_views_for_users(
             conversation_id=_normalize_text(conversation_id),
             user_ids=sorted(affected_user_ids),
+            hard_drop_unread=True,
         )
         return {"conversation_id": _normalize_text(conversation_id), "left": True}
 

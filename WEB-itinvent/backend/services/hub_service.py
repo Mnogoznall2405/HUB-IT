@@ -620,7 +620,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     @staticmethod
     def _deliver_hub_push_job(job: dict[str, Any]) -> None:
         try:
-            app_push_service.send_notification(**job)
+            app_push_service.enqueue_notification(**job)
         except Exception:
             logger.warning(
                 "Failed to send deferred hub push recipient_user_id=%s channel=%s tag=%s",
@@ -3401,7 +3401,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     self._pending_hub_push_jobs.append(push_job)
                 else:
                     try:
-                        app_push_service.send_notification(**push_job)
+                        app_push_service.enqueue_notification(**push_job)
                     except Exception:
                         logger.warning(
                             "Failed to send hub push recipient_user_id=%s channel=%s notification_id=%s",
@@ -3729,8 +3729,36 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         matched.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
         return {"items": matched, "total": total, "limit": limited}
 
-    def list_announcement_recipients(self) -> dict[str, Any]:
-        users = self.list_assignees()
+    def list_announcement_recipients(
+        self,
+        *,
+        q: str = "",
+        limit: Optional[int] = None,
+        user_ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        all_users = self.list_assignees()
+        normalized_q = _normalize_text(q).lower()
+        normalized_limit = max(1, min(int(limit or 30), 200)) if limit is not None else None
+        selected_ids = {self._as_int(value) for value in (user_ids or []) if self._as_int(value) > 0}
+        selected_users = [row for row in all_users if self._as_int(row.get("id")) in selected_ids]
+        selected_user_ids = {self._as_int(row.get("id")) for row in selected_users}
+
+        if normalized_q:
+            matched_users, total = self._filter_user_directory(
+                all_users,
+                q=normalized_q,
+                limit=normalized_limit or 30,
+            )
+        elif normalized_limit is not None:
+            matched_users = all_users[:normalized_limit]
+            total = len(all_users)
+        else:
+            matched_users = all_users
+            total = len(all_users)
+        users = selected_users + [
+            row for row in matched_users
+            if self._as_int(row.get("id")) not in selected_user_ids
+        ]
         roles: list[dict[str, str]] = []
         seen_roles: set[str] = set()
         for row in self._active_users():
@@ -3740,7 +3768,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             seen_roles.add(role_value)
             roles.append({"value": role_value, "label": role_value.title()})
         roles.sort(key=lambda item: item["label"])
-        return {"users": users, "roles": roles}
+        return {
+            "users": users,
+            "roles": roles,
+            "total": total,
+            "limit": normalized_limit,
+        }
 
     def list_task_projects(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
@@ -4279,7 +4312,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     ) -> dict[str, Any]:
         normalized = self._normalize_announcement_payload(payload)
         now_iso = _utc_now_iso()
-        ann_id = str(uuid.uuid4())
+        client_request_id = _normalize_text(payload.get("client_request_id"))
+        if len(client_request_id) > 200:
+            raise ValueError("Announcement client request id is too long")
+        actor_user_id = self._as_int(actor.get("id"))
+        ann_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"hub-announcement-create:{actor_user_id}:{client_request_id}",
+        )) if client_request_id else str(uuid.uuid4())
         title_text = normalized["title"]
         status = normalized["status"]
         published_from = self._parse_iso_datetime(normalized.get("published_from"))
@@ -4294,6 +4334,27 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         result: dict[str, Any] = {}
 
         with self._lock, self._connect() as conn:
+            if client_request_id:
+                existing_row = conn.execute(
+                    f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?",
+                    (ann_id,),
+                ).fetchone()
+                if existing_row is not None:
+                    existing_item = dict(existing_row)
+                    if (
+                        self._as_int(existing_item.get("author_user_id")) != actor_user_id
+                        or _normalize_text(existing_item.get("title")) != title_text
+                        or _normalize_text(existing_item.get("preview")) != normalized["preview"]
+                        or _normalize_text(existing_item.get("body")) != normalized["body"]
+                    ):
+                        raise ValueError("Announcement client request id was already used for another payload")
+                    return self._build_announcement_item(
+                        conn,
+                        existing_row,
+                        viewer_user_id=actor_user_id,
+                        is_admin=self._user_can_moderate_announcements(actor),
+                        include_hidden_for_manager=True,
+                    ) or {}
             conn.execute(
                 f"""
                 INSERT INTO {self._ANN_TABLE}
@@ -4330,8 +4391,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     normalized["category_id"],
                 ),
             )
-            for attachment_index, payload in enumerate(attachment_payloads):
-                file_bytes = payload.get("file_bytes")
+            for attachment_index, attachment_payload in enumerate(attachment_payloads):
+                file_bytes = attachment_payload.get("file_bytes")
                 if not isinstance(file_bytes, (bytes, bytearray)) or len(file_bytes) == 0:
                     continue
                 attachment_id = str(uuid.uuid4())
@@ -4339,7 +4400,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     root=self.announcement_attachments_root,
                     parent_id=ann_id,
                     attachment_id=attachment_id,
-                    file_name=_normalize_text(payload.get("file_name"), "file.bin"),
+                    file_name=_normalize_text(attachment_payload.get("file_name"), "file.bin"),
                     file_bytes=bytes(file_bytes),
                 )
                 conn.execute(
@@ -4353,13 +4414,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                         ann_id,
                         safe_name,
                         rel_path,
-                        _normalize_text(payload.get("file_mime")),
+                        _normalize_text(attachment_payload.get("file_mime")),
                         file_size,
                         self._as_int(actor.get("id")),
                         _normalize_text(actor.get("username")),
                         now_iso,
                         attachment_index,
-                        1 if attachment_index == 0 and _normalize_text(payload.get("file_mime")).lower().startswith("image/") else 0,
+                        1 if attachment_index == 0 and _normalize_text(attachment_payload.get("file_mime")).lower().startswith("image/") else 0,
                     ),
                 )
             self._sync_announcement_tags(conn, announcement_id=ann_id, tags=normalized["tags"])
@@ -5123,6 +5184,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         parent_comment_id: str = "",
         mentioned_user_ids: list[int] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        client_request_id: str = "",
     ) -> dict[str, Any]:
         ann_id = _normalize_text(announcement_id)
         body_text = _normalize_text(body)
@@ -5134,7 +5196,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             raise ValueError("Comment must not be empty")
         if len(body_text) > 4000:
             raise ValueError("Comment must contain no more than 4000 characters")
-        comment_id = str(uuid.uuid4())
+        normalized_request_id = _normalize_text(client_request_id)
+        if len(normalized_request_id) > 200:
+            raise ValueError("Comment client request id is too long")
+        comment_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"hub-announcement-comment:{ann_id}:{user_id}:{normalized_request_id}",
+        )) if normalized_request_id else str(uuid.uuid4())
         now_iso = _utc_now_iso()
         with self._lock, self._connect() as conn:
             ann_row = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
@@ -5150,6 +5218,55 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if not bool(self._as_int(announcement.get("comments_enabled"), 1)):
                 raise ValueError("Comments are disabled for this publication")
             parent_id = _normalize_text(parent_comment_id)
+            if normalized_request_id:
+                existing = conn.execute(
+                    f"SELECT * FROM {self._ANN_COMMENTS_TABLE} WHERE id = ? AND announcement_id = ?",
+                    (comment_id, ann_id),
+                ).fetchone()
+                if existing is not None:
+                    existing_item = dict(existing)
+                    existing_attachments = [
+                        dict(row)
+                        for row in conn.execute(
+                            f"""SELECT id, comment_id, announcement_id, file_name, file_mime, file_size, uploaded_at
+                                FROM {self._ANN_COMMENT_ATTACH_TABLE}
+                                WHERE comment_id = ? ORDER BY uploaded_at ASC""",
+                            (comment_id,),
+                        ).fetchall()
+                    ]
+                    requested_attachments = [
+                        item for item in attachment_payloads
+                        if isinstance(item.get("file_bytes"), (bytes, bytearray)) and item.get("file_bytes")
+                    ]
+                    attachment_matches = len(existing_attachments) == len(requested_attachments) and all(
+                        _normalize_text(saved.get("file_name")) == _safe_file_name(_normalize_text(requested.get("file_name"), "file.bin"))
+                        and self._as_int(saved.get("file_size")) == len(requested.get("file_bytes") or b"")
+                        for saved, requested in zip(existing_attachments, requested_attachments)
+                    )
+                    if (
+                        self._as_int(existing_item.get("user_id")) != user_id
+                        or _normalize_text(existing_item.get("body")) != body_text
+                        or _normalize_text(existing_item.get("parent_comment_id")) != parent_id
+                        or not attachment_matches
+                    ):
+                        raise ValueError("Comment client request id was already used for another payload")
+                    reaction_counts = {
+                        _normalize_text(row["reaction_type"]): self._as_int(row["c"])
+                        for row in conn.execute(
+                            f"SELECT reaction_type, COUNT(*) AS c FROM {self._ANN_COMMENT_REACTIONS_TABLE} WHERE comment_id = ? GROUP BY reaction_type",
+                            (comment_id,),
+                        ).fetchall()
+                    }
+                    deleted = bool(_normalize_text(existing_item.get("deleted_at")))
+                    existing_item["body"] = "Комментарий удалён" if deleted else body_text
+                    existing_item["can_edit"] = not deleted
+                    existing_item["can_delete"] = not deleted
+                    existing_item["attachments"] = [] if deleted else existing_attachments
+                    existing_item["reaction_counts"] = reaction_counts
+                    existing_item["viewer_reaction"] = None
+                    existing_item["reply_count"] = 0
+                    existing_item["is_deleted"] = deleted
+                    return existing_item
             parent = None
             root_id = comment_id
             reply_to_user_id = None
@@ -5668,17 +5785,46 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         reads["summary"]["poll_total_votes"] = self._as_int((poll_payload or {}).get("total_votes"))
         return reads
 
-    def add_announcement_attachment(self, *, announcement_id: str, user: dict[str, Any], file_name: str, file_bytes: bytes, file_mime: str = "") -> dict[str, Any]:
+    def add_announcement_attachment(
+        self,
+        *,
+        announcement_id: str,
+        user: dict[str, Any],
+        file_name: str,
+        file_bytes: bytes,
+        file_mime: str = "",
+        client_upload_id: str = "",
+    ) -> dict[str, Any]:
         ann_id = _normalize_text(announcement_id)
         user_id = self._as_int(user.get("id"))
+        normalized_upload_id = _normalize_text(client_upload_id)
+        if len(normalized_upload_id) > 200:
+            raise ValueError("Attachment client upload id is too long")
         with self._lock, self._connect() as conn:
             announcement = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,)).fetchone()
             if announcement is None:
                 raise LookupError("Announcement not found")
             if not self._user_can_moderate_announcements(user) and self._as_int(announcement["author_user_id"]) != user_id:
                 raise PermissionError("Only publication author or moderator can change attachments")
+            attachment_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"hub-announcement-attachment:{ann_id}:{user_id}:{normalized_upload_id}",
+            )) if normalized_upload_id else str(uuid.uuid4())
+            if normalized_upload_id:
+                existing = conn.execute(
+                    f"SELECT * FROM {self._ANN_ATTACH_TABLE} WHERE id = ? AND announcement_id = ?",
+                    (attachment_id, ann_id),
+                ).fetchone()
+                if existing is not None:
+                    existing_item = dict(existing)
+                    if (
+                        _normalize_text(existing_item.get("file_name")) != _safe_file_name(file_name or "file.bin")
+                        or self._as_int(existing_item.get("file_size")) != len(file_bytes or b"")
+                        or _normalize_text(existing_item.get("file_mime")) != _normalize_text(file_mime)
+                    ):
+                        raise ValueError("Attachment client upload id was already used for another file")
+                    return self._attachment_row_to_dict(existing)
             order_row = conn.execute(f"SELECT COALESCE(MAX(sort_order), -1) AS n FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ?", (ann_id,)).fetchone()
-            attachment_id = str(uuid.uuid4())
             safe_name, rel_path, file_size = self._store_attachment_file(root=self.announcement_attachments_root, parent_id=ann_id, attachment_id=attachment_id, file_name=file_name, file_bytes=file_bytes)
             is_image = _normalize_text(file_mime).lower().startswith("image/") or self._announcement_attachment_is_image({"file_name": safe_name})
             cover_row = conn.execute(f"SELECT id FROM {self._ANN_ATTACH_TABLE} WHERE announcement_id = ? AND is_cover = 1", (ann_id,)).fetchone()

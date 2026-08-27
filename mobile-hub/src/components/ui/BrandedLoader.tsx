@@ -1,13 +1,13 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { hubTheme } from '../../theme/hubTheme';
-import { officeTokens } from '../../theme/officeTokens';
+import { useAppFluentTokens } from '../../theme/fluentTokens';
 
 export function BrandedLoader({ label = 'Загружаем...' }: { label?: string }) {
+  const tokens = useAppFluentTokens();
   return (
-    <View style={styles.wrap}>
-      <ActivityIndicator size="large" color={hubTheme.primary} />
-      <Text style={styles.label}>{label}</Text>
+    <View style={[styles.wrap, { backgroundColor: tokens.pageBg }]}>
+      <ActivityIndicator size="large" color={tokens.primary} />
+      <Text style={[styles.label, { color: tokens.textSecondary }]}>{label}</Text>
     </View>
   );
 }
@@ -17,8 +17,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: officeTokens.pageBg,
     gap: 12,
   },
-  label: { color: hubTheme.textSecondary, fontSize: 16 },
+  label: { fontSize: 16 },
 });

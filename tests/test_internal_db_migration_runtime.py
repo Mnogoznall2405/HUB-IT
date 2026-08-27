@@ -240,6 +240,46 @@ def test_initialize_chat_schema_uses_legacy_public_postgres_tables(monkeypatch):
     assert calls["attachment"] == 1
 
 
+def test_legacy_user_state_backfill_zeros_unread_for_inactive_members(monkeypatch):
+    executed: list[str] = []
+
+    class _FakeConnection:
+        def execute(self, statement):
+            executed.append(str(statement))
+
+    class _FakeBegin:
+        def __enter__(self):
+            return _FakeConnection()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class _FakeEngine(_FakePostgresEngine):
+        def begin(self):
+            return _FakeBegin()
+
+    inspector = _FakeChatInspector(
+        columns_by_table={
+            "chat_conversation_user_state": {
+                "is_archived",
+                "last_read_seq",
+                "unread_count",
+            },
+        },
+    )
+    monkeypatch.setattr(chat_db_module, "inspect", lambda current_engine: inspector)
+
+    chat_db_module._ensure_chat_user_state_columns(_FakeEngine({CHAT_SCHEMA: None}))
+
+    unread_updates = [statement for statement in executed if "SET unread_count" in statement]
+    assert len(unread_updates) == 1
+    normalized_sql = " ".join(unread_updates[0].split())
+    assert "CASE WHEN EXISTS" in normalized_sql
+    assert "chat_members member" in normalized_sql
+    assert "member.left_at IS NULL" in normalized_sql
+    assert "ELSE 0 END" in normalized_sql
+
+
 def test_initialize_chat_schema_production_postgres_uses_migration_only(monkeypatch):
     engine = _FakePostgresEngine()
     inspector = _FakeChatInspector(

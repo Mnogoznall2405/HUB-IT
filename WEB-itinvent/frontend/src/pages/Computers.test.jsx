@@ -7,6 +7,7 @@ import { equipmentAPI } from '../api/client';
 
 const nativeIntersectionObserver = globalThis.IntersectionObserver;
 let intersectionObservers = [];
+let mockPermissions = ['computers.read', 'computers.read_all', 'computers.manage'];
 
 async function intersectLatestLoadSentinel() {
   await waitFor(() => {
@@ -34,7 +35,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    hasPermission: (permission) => permission === 'computers.read_all' || permission === 'computers.read',
+    hasPermission: (permission) => mockPermissions.includes(permission),
   }),
 }));
 
@@ -200,6 +201,7 @@ const sampleComputer = {
 
 describe('Computers page', () => {
   beforeEach(() => {
+    mockPermissions = ['computers.read', 'computers.read_all', 'computers.manage'];
     intersectionObservers = [];
     globalThis.IntersectionObserver = class IntersectionObserverMock {
       constructor(callback, options) {
@@ -480,6 +482,18 @@ describe('Computers page', () => {
     await waitFor(() => {
       expect(equipmentAPI.hideComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
     });
+  }, 15000);
+
+  it('does not show hide controls with read-only Computers permission', async () => {
+    mockPermissions = ['computers.read'];
+    renderComputers();
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    expect(screen.queryByRole('button', { name: 'Скрыть' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Вернуть' })).not.toBeInTheDocument();
   }, 15000);
 
   it('loads the next page in the background when the list sentinel approaches the viewport', async () => {

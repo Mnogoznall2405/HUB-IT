@@ -17,6 +17,17 @@ def test_is_expected_client_message_dedup_violation_matches_constraint_name():
     assert is_expected_client_message_dedup_violation(exc) is True
 
 
+def test_is_expected_client_message_dedup_violation_matches_runtime_index_name_with_sql_context():
+    exc = Exception(
+        '(psycopg.errors.UniqueViolation) duplicate key value violates unique constraint '
+        '"idx_chat_messages_conversation_sender_client_message" '
+        '[SQL: INSERT INTO public.chat_messages '
+        '(conversation_id, sender_user_id, conversation_seq, client_message_id) VALUES (...)]'
+    )
+
+    assert is_expected_client_message_dedup_violation(exc) is True
+
+
 def test_is_expected_client_message_dedup_violation_ignores_seq_unique():
     exc = Exception("duplicate key value violates unique constraint uq_chat_messages_conversation_seq")
     assert is_expected_client_message_dedup_violation(exc) is False

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from io import BytesIO
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import httpx
@@ -110,6 +111,45 @@ def test_telegram_preview_is_resized_for_the_picker(temp_dir: str):
     with Image.open(BytesIO(optimized)) as image:
         assert image.format == "WEBP"
         assert image.size == (128, 128)
+
+
+def test_legacy_message_sticker_resolves_the_cached_static_preview(temp_dir: str):
+    storage_root = Path(temp_dir)
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    pack = SimpleNamespace(id="pack-1")
+    sticker = SimpleNamespace(id="sticker-1", storage_name="animated.tgs")
+    pack_dir = storage_root / pack.id
+    pack_dir.mkdir()
+    original = pack_dir / sticker.storage_name
+    original.write_bytes(b"same-sticker")
+    preview = pack_dir / "sticker-1.preview"
+    preview.write_bytes(b"\x89PNG\r\n\x1a\npreview")
+    message_copy = storage_root / "message-copy.tgs"
+    message_copy.write_bytes(b"same-sticker")
+
+    class Result:
+        @staticmethod
+        def all():
+            return [(sticker, pack)]
+
+    class Session:
+        @staticmethod
+        def execute(_statement):
+            return Result()
+
+    resolved = service.find_legacy_message_attachment_preview(
+        session=Session(),
+        source_path=message_copy,
+        file_name="sticker-office.tgs",
+        mime_type="application/x-tgsticker",
+        file_size=len(b"same-sticker"),
+    )
+
+    assert resolved == {
+        "path": str(preview),
+        "file_name": "sticker-1.preview",
+        "mime_type": "image/png",
+    }
 
 
 @pytest.mark.asyncio

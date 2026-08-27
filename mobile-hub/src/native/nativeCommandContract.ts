@@ -1,0 +1,27 @@
+export const NATIVE_COMMANDS = [
+  'notifications.getState',
+  'notifications.requestPermission',
+  'notifications.openSettings',
+  'notifications.openChannelSettings',
+  'update.getState',
+  'update.check',
+  'update.install',
+  'update.openInstallerSettings',
+  'appLock.getState',
+  'appLock.update',
+  'biometrics.enable',
+  'biometrics.disable',
+  'diagnostics.getState',
+  'diagnostics.share',
+  'diagnostics.clear',
+  'offline.getState',
+  'offline.prepareNative',
+  'offline.retryQueues',
+  'offline.clearFileCache',
+  'network.getState',
+  'system.openBackgroundSettings',
+  'haptics.perform',
+  'share.text',
+] as const;
+
+export type NativeCommandName = (typeof NATIVE_COMMANDS)[number];

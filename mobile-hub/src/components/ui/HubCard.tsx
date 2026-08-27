@@ -1,7 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, type ViewProps } from 'react-native';
-import { officeTokens } from '../../theme/officeTokens';
-import { hubTheme } from '../../theme/hubTheme';
+import { useAppFluentTokens } from '../../theme/fluentTokens';
 
 export function HubCard({
   children,
@@ -10,15 +9,24 @@ export function HubCard({
   children: React.ReactNode;
   style?: ViewProps['style'];
 }) {
-  return <View style={[styles.card, style]}>{children}</View>;
+  const tokens = useAppFluentTokens();
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft },
+        style,
+      ]}
+    >
+      {children}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: officeTokens.panelSolid,
-    borderRadius: hubTheme.borderRadius,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: officeTokens.borderSoft,
     padding: 16,
   },
 });

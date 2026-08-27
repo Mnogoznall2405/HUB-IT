@@ -30,6 +30,9 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler? OpenDiagnosticsRequested;
     public event EventHandler? CheckForUpdatesRequested;
     public event EventHandler? OpenCurrentInBrowserRequested;
+    public event EventHandler<DesktopMailComposeWindowRequestedEventArgs>? MailComposeWindowRequested;
+    public event EventHandler<DesktopMailComposeWindowCloseResultEventArgs>? MailComposeWindowCloseResult;
+    public event EventHandler? MailComposeWindowSent;
 
     public DesktopBridgeHost(
         CoreWebView2 core,
@@ -144,6 +147,42 @@ public sealed class DesktopBridgeHost : IDisposable
         }
     }
 
+    public bool TryRequestMailComposeWindowClose(string requestId)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+        try
+        {
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateMailComposeWindowCloseRequestedMessage(requestId));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop compose close request failed", exception);
+            return false;
+        }
+    }
+
+    public bool TryPostMailComposeWindowCompleted()
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+        try
+        {
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateMailComposeWindowCompletedMessage());
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop compose completion notification failed", exception);
+            return false;
+        }
+    }
+
     private void Core_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (!IsTrustedDocument(e.Source) || !IsTrustedDocument(_core.Source))
@@ -168,6 +207,38 @@ public sealed class DesktopBridgeHost : IDisposable
             _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateCapabilitiesMessage());
             DesktopLog.Info("Desktop bridge handshake completed");
             Ready?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.OpenMailComposeWindow
+            && message.MailComposeWindow is { } openCompose)
+        {
+            var eventArgs = new DesktopMailComposeWindowRequestedEventArgs(openCompose.Route);
+            if (_bridgeReady)
+            {
+                MailComposeWindowRequested?.Invoke(this, eventArgs);
+            }
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateMailComposeWindowResultMessage(
+                    openCompose.RequestId,
+                    eventArgs.Status));
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.MailComposeWindowCloseResult
+            && message.MailComposeWindow is { } closeCompose)
+        {
+            MailComposeWindowCloseResult?.Invoke(
+                this,
+                new DesktopMailComposeWindowCloseResultEventArgs(
+                    closeCompose.RequestId,
+                    closeCompose.Status == "saved"));
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.MailComposeWindowSent)
+        {
+            MailComposeWindowSent?.Invoke(this, EventArgs.Empty);
             return;
         }
 
@@ -350,4 +421,18 @@ public sealed class DesktopQuickRoutesChangedEventArgs(
     IReadOnlyList<DesktopQuickRoute> routes) : EventArgs
 {
     public IReadOnlyList<DesktopQuickRoute> Routes { get; } = routes;
+}
+
+public sealed class DesktopMailComposeWindowRequestedEventArgs(string route) : EventArgs
+{
+    public string Route { get; } = route;
+
+    public string Status { get; set; } = "failed";
+}
+
+public sealed class DesktopMailComposeWindowCloseResultEventArgs(string requestId, bool saved) : EventArgs
+{
+    public string RequestId { get; } = requestId;
+
+    public bool Saved { get; } = saved;
 }

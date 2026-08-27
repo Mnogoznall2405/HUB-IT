@@ -27,7 +27,6 @@ import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
-import NotificationsOffOutlinedIcon from '@mui/icons-material/NotificationsOffOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -44,7 +43,6 @@ import {
   formatShortTime,
   getConversationDisplayTitle,
   getConversationStatusLine,
-  getPersonStatusLine,
   getStatusMeta,
   getTaskConversationMetaLine,
   isCompletedTaskConversation,
@@ -800,15 +798,6 @@ function ChatSidebar({
             <PushPinOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
             {folderMenuConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
           </MenuItem>
-          {!isAiFolderMenuConversation ? (
-            <MenuItem
-              onClick={() => runConversationSetting({ is_muted: !folderMenuConversation?.is_muted })}
-              disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
-            >
-              <NotificationsOffOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
-              {folderMenuConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
-            </MenuItem>
-          ) : null}
           <MenuItem
             onClick={() => runConversationSetting({ is_archived: !folderMenuConversation?.is_archived })}
             disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}

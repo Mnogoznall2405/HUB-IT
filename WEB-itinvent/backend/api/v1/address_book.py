@@ -9,6 +9,7 @@ from backend.models.auth import User
 from backend.services.address_book_service import address_book_service
 from backend.services.authorization_service import (
     PERM_ADDRESS_BOOK_AGE_READ,
+    PERM_ADDRESS_BOOK_HIRE_DATE_READ,
     PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
     PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
     PERM_ADDRESS_BOOK_READ,
@@ -38,6 +39,7 @@ async def search_address_book(
         q,
         int(limit),
         include_age=PERM_ADDRESS_BOOK_AGE_READ in permissions,
+        include_hire_date=PERM_ADDRESS_BOOK_HIRE_DATE_READ in permissions,
         include_personal_emails=PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ in permissions,
         include_personal_phones=PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ in permissions,
     )

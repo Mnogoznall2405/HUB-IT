@@ -91,6 +91,7 @@ const permissionGroups = [
       { value: 'mfu.read', label: 'МФУ: просмотр' },
       { value: 'computers.read', label: 'Компьютеры: просмотр' },
       { value: 'computers.read_all', label: 'Компьютеры: просмотр всех БД' },
+      { value: 'computers.manage', label: 'Компьютеры: скрытие и возврат' },
     ],
   },
   {
@@ -127,6 +128,7 @@ const permissionGroups = [
     permissions: [
       { value: 'address_book.read', label: 'Адресная книга: просмотр — доступно всем', alwaysGranted: true },
       { value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' },
+      { value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' },
       { value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' },
       { value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' },
     ],

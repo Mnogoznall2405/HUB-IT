@@ -34,7 +34,7 @@ async def _ws_post_connect_bootstrap(
         if not chat_api().chat_realtime.is_connection_registered(connection_id):
             return
         snapshot = await chat_api()._run_chat_call(
-            chat_api().chat_service.get_unread_summary,
+            chat_api().chat_service.get_realtime_snapshot,
             current_user_id=int(user_id),
         )
         if not chat_api().chat_realtime.is_connection_registered(connection_id):
@@ -42,7 +42,7 @@ async def _ws_post_connect_bootstrap(
         await chat_api().chat_realtime.send_to_connection(
             connection_id,
             event_type="chat.snapshot",
-            payload={"unread_summary": snapshot},
+            payload=snapshot,
         )
     except Exception:
         pass

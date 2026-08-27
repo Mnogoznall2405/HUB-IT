@@ -29,6 +29,7 @@ from backend.services.request_auth_context_service import (
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
+from backend.services.mail_outgoing_attachment import MailOutgoingAttachment
 from backend.services.mail_send_timeouts import (
     increment_ambiguous_send,
     mail_send_wait_for_sec,
@@ -73,6 +74,70 @@ _FORBIDDEN_INLINE_EXTENSIONS = frozenset({
     ".xml",
     ".js",
 })
+_SAFE_INLINE_CONTENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,190}$")
+
+
+def _parse_inline_content_ids(raw_value: str, *, expected_count: int) -> list[str]:
+    try:
+        parsed = json.loads(_normalize_text(raw_value, "[]"))
+    except Exception as exc:
+        raise MailServiceError("inline_content_ids_json must contain a valid JSON array") from exc
+    if not isinstance(parsed, list):
+        raise MailServiceError("inline_content_ids_json must be a JSON array")
+    content_ids = [_normalize_text(item) for item in parsed]
+    if len(content_ids) != int(expected_count):
+        raise MailServiceError("inline_files and inline_content_ids_json must have the same length")
+    if any(not content_id or not _SAFE_INLINE_CONTENT_ID_RE.fullmatch(content_id) for content_id in content_ids):
+        raise MailServiceError("Inline image Content-ID is invalid")
+    if len(set(content_ids)) != len(content_ids):
+        raise MailServiceError("Inline image Content-ID values must be unique")
+    return content_ids
+
+
+async def _read_compose_attachments(
+    *,
+    files: list[UploadFile],
+    inline_files: list[UploadFile],
+    inline_content_ids_json: str,
+) -> list[MailOutgoingAttachment]:
+    attachments: list[MailOutgoingAttachment] = []
+    for file in files or []:
+        content = await file.read()
+        if not content:
+            continue
+        attachments.append(
+            MailOutgoingAttachment(
+                filename=file.filename or "attachment.bin",
+                content=content,
+                content_type=_normalize_text(file.content_type),
+            )
+        )
+
+    inline_ids = _parse_inline_content_ids(
+        inline_content_ids_json,
+        expected_count=len(inline_files or []),
+    )
+    for file, content_id in zip(inline_files or [], inline_ids):
+        content_type = _normalize_text(file.content_type).lower()
+        filename = file.filename or "inline-image"
+        if (
+            not _attachment_media_type(content_type).startswith("image/")
+            or not _is_inline_safe_attachment(content_type=content_type, filename=filename)
+        ):
+            raise MailServiceError("Inline attachments must use a safe image/* MIME type")
+        content = await file.read()
+        if not content:
+            raise MailServiceError("Inline image must not be empty")
+        attachments.append(
+            MailOutgoingAttachment(
+                filename=filename,
+                content=content,
+                content_type=content_type,
+                content_id=content_id,
+                is_inline=True,
+            )
+        )
+    return attachments
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -1835,17 +1900,19 @@ async def send_message_multipart(
     draft_id: str = Form(""),
     retain_existing_attachments_json: str = Form(""),
     files: list[UploadFile] = File(default=[]),
+    inline_files: list[UploadFile] = File(default=[]),
+    inline_content_ids_json: str = Form("[]"),
     current_user: User = Depends(get_current_mail_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
     try:
-        attachments = []
-        for file in files:
-            content = await file.read()
-            if content:
-                attachments.append((file.filename or "attachment.bin", content))
+        attachments = await _read_compose_attachments(
+            files=files,
+            inline_files=inline_files,
+            inline_content_ids_json=inline_content_ids_json,
+        )
         
         to_list = [t.strip() for t in to.split(";") if t.strip()]
         cc_list = [t.strip() for t in cc.split(";") if t.strip()]
@@ -1887,7 +1954,7 @@ async def send_message_multipart(
             request_id,
             started_at,
             user_id=int(current_user.id),
-            files=len(files or []),
+            files=len(files or []) + len(inline_files or []),
             recipients=len([t for t in str(to or "").split(";") if t.strip()]),
             subject_len=len(str(subject or "")),
         )
@@ -1909,17 +1976,18 @@ async def upsert_mail_draft_multipart(
     forward_message_id: str = Form(""),
     retain_existing_attachments_json: str = Form("[]"),
     files: list[UploadFile] = File(default=[]),
+    inline_files: list[UploadFile] = File(default=[]),
+    inline_content_ids_json: str = Form("[]"),
     current_user: User = Depends(get_current_mail_user),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
     try:
-        attachments: list[tuple[str, bytes]] = []
-        for file in files:
-            content = await file.read()
-            if not content:
-                continue
-            attachments.append((file.filename or "attachment.bin", content))
+        attachments = await _read_compose_attachments(
+            files=files,
+            inline_files=inline_files,
+            inline_content_ids_json=inline_content_ids_json,
+        )
 
         try:
             retain_raw = json.loads(_normalize_text(retain_existing_attachments_json, "[]"))
@@ -1957,7 +2025,7 @@ async def upsert_mail_draft_multipart(
             request_id,
             started_at,
             user_id=int(current_user.id),
-            files=len(files or []),
+            files=len(files or []) + len(inline_files or []),
             recipients=len([t for t in str(to or "").split(";") if t.strip()]),
             subject_len=len(str(subject or "")),
         )

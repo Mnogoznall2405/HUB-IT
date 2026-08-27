@@ -686,6 +686,15 @@ export const getPersonStatusLine = (person) => {
   return username ? `@${username} • ${presenceText}` : presenceText;
 };
 
+export const getPersonContextLine = (person) => {
+  const workplace = [person?.job_title, person?.department, person?.city]
+    .map((value) => normalizeTrimmedChatText(value))
+    .filter(Boolean)
+    .join(' · ');
+  const status = getPersonStatusLine(person);
+  return workplace ? `${workplace} · ${status}` : status;
+};
+
 export const sortByName = (items) => (
   [...items].sort((left, right) => {
     const a = normalizeTrimmedChatText(left?.full_name || left?.username || left?.title).toLowerCase();

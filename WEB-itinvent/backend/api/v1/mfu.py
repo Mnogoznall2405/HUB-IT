@@ -217,6 +217,19 @@ def _resolve_device_hostname(device: Dict[str, Any], runtime: Dict[str, Any]) ->
     return _normalize_text(device_info.get("sys_name") if isinstance(device_info, dict) else "")
 
 
+def _sanitize_runtime_for_public_api(runtime: Any) -> Dict[str, Any]:
+    """Return the dashboard runtime without SNMP credentials."""
+    if not isinstance(runtime, dict):
+        return {}
+    public_runtime = dict(runtime)
+    snmp_state = runtime.get("snmp")
+    if isinstance(snmp_state, dict):
+        public_snmp = dict(snmp_state)
+        public_snmp.pop("used_community", None)
+        public_runtime["snmp"] = public_snmp
+    return public_runtime
+
+
 def _build_mfu_events_index(db_id: Optional[str], period_days: int) -> Dict[str, List[Dict[str, Any]]]:
     cache_key = f"{db_id or ''}|{period_days}"
     cached = _events_cache.get(cache_key)
@@ -367,15 +380,13 @@ async def get_mfu_devices(
         "snmp_active_ttl_sec": SNMP_ACTIVE_TTL_SEC,
     }
     now_utc = datetime.now(timezone.utc)
-    slow_devices: List[Dict[str, Any]] = []
-
     for device in normalized_devices:
         runtime = await mfu_runtime_monitor.get_snapshot(device["key"])
         maintenance = _collect_device_maintenance(device, events_index, recent_limit=recent_limit)
 
         payload = dict(device)
         payload["hostname"] = _resolve_device_hostname(device, runtime)
-        payload["runtime"] = runtime
+        payload["runtime"] = _sanitize_runtime_for_public_api(runtime)
         payload["maintenance"] = maintenance
 
         branch_name = _normalize_text(device.get("branch_name"), "Не указано")
@@ -409,44 +420,21 @@ async def get_mfu_devices(
         elif snmp_status not in {"ok", "no_data"}:
             totals["snmp_unknown"] += 1
 
-        timeout_total = int(snmp_state.get("timeout_total") or 0)
-        timeout_streak = int(snmp_state.get("timeout_streak") or 0)
         next_retry_at = _normalize_text(snmp_state.get("next_retry_at"))
         if next_retry_at:
             next_retry_dt = _parse_utc_datetime(next_retry_at)
             if next_retry_dt and next_retry_dt > now_utc:
                 totals["snmp_devices_in_backoff"] += 1
-        if timeout_total > 0 or timeout_streak > 0:
-            slow_devices.append(
-                {
-                    "key": device.get("key"),
-                    "host": device.get("inv_no") or device.get("serial_no") or device.get("model_name"),
-                    "ip_address": device.get("ip_address"),
-                    "model_name": device.get("model_name"),
-                    "timeout_total": timeout_total,
-                    "timeout_streak": timeout_streak,
-                    "next_retry_at": next_retry_at or None,
-                }
-            )
-
-    slow_devices.sort(
-        key=lambda item: (
-            -int(item.get("timeout_total") or 0),
-            -int(item.get("timeout_streak") or 0),
-            str(item.get("model_name") or ""),
-        )
-    )
-
     return _set_cached_mfu_devices_payload(cache_key, {
         "generated_at": _utc_now_iso(),
         "db_id": db_id,
         "totals": totals,
         "grouped": grouped,
-        "debug": {
+        "meta": {
+            "source_limit": int(limit),
             "raw_rows_count": len(rows),
             "matched_mfu_count": len(normalized_devices),
-            "dropped_count": max(0, len(rows) - len(normalized_devices)),
-            "snmp_slow_devices": slow_devices[:10],
+            "source_maybe_truncated": len(rows) >= int(limit),
         },
     })
 

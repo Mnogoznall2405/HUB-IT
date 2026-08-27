@@ -755,4 +755,80 @@ describe('desktopBridge', () => {
     subscribeDesktopBridgeReady(alreadyReady);
     expect(alreadyReady).toHaveBeenCalledTimes(1);
   });
+
+  it('opens only a strict compose route and resolves the native window status', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      requestDesktopMailComposeWindow,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['mail-compose-window'],
+    });
+
+    await expect(requestDesktopMailComposeWindow('/mail/compose?draft_id=draft-1#unsafe'))
+      .resolves.toEqual({ status: 'failed' });
+    await expect(requestDesktopMailComposeWindow('/mail/compose?draft_id=one&draft_id=two'))
+      .resolves.toEqual({ status: 'failed' });
+
+    const pending = requestDesktopMailComposeWindow('/mail/compose?draft_id=draft-1&mailbox_id=mb-1');
+    const openMessage = transport.postMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === 'mail.composeWindow.open');
+    expect(openMessage).toMatchObject({
+      version: 1,
+      route: '/mail/compose?draft_id=draft-1&mailbox_id=mb-1',
+    });
+    transport.emit({
+      type: 'mail.composeWindow.result',
+      version: 1,
+      requestId: openMessage.requestId,
+      status: 'opened',
+    });
+    await expect(pending).resolves.toEqual({ status: 'opened' });
+  });
+
+  it('completes the native close handshake and dispatches compose completion', async () => {
+    const transport = installTransport();
+    const {
+      DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT,
+      completeDesktopMailComposeClose,
+      initializeDesktopBridge,
+      subscribeDesktopMailComposeCloseRequested,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    const closeListener = vi.fn();
+    const completedListener = vi.fn();
+    const unsubscribe = subscribeDesktopMailComposeCloseRequested(closeListener);
+    window.addEventListener(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT, completedListener);
+
+    transport.emit({
+      type: 'mail.composeWindow.closeRequested',
+      version: 1,
+      requestId: 'close-1',
+    });
+    expect(closeListener).toHaveBeenCalledWith('close-1');
+    expect(completeDesktopMailComposeClose('close-1', { saved: true })).toBe(true);
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'mail.composeWindow.closeResult',
+      version: 1,
+      requestId: 'close-1',
+      status: 'saved',
+    });
+    expect(completeDesktopMailComposeClose('bad request', { saved: true })).toBe(false);
+
+    transport.emit({ type: 'mail.composeWindow.completed', version: 1 });
+    expect(completedListener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    window.removeEventListener(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT, completedListener);
+  });
 });

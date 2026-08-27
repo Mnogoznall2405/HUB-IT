@@ -44,6 +44,8 @@ vi.mock('./MailComposeDialog', () => ({
     onCancelComposeUpload,
     onClose,
     onComposeBodyChange,
+    onOpenDesktopWindow,
+    onPasteInlineImages,
     onSendCompose,
   }) => (open ? (
     <div
@@ -78,6 +80,21 @@ vi.mock('./MailComposeDialog', () => ({
       </button>
       <button type="button" data-testid="mail-compose-host-change-body" onClick={() => onComposeBodyChange?.('<p>Latest body</p>')}>
         change-body
+      </button>
+      <button
+        type="button"
+        data-testid="mail-compose-host-paste-inline"
+        onClick={() => {
+          const [descriptor] = onPasteInlineImages?.([
+            new File(['image'], 'pasted.png', { type: 'image/png' }),
+          ]) || [];
+          if (descriptor) onComposeBodyChange?.(`<p>Image</p><img src="cid:${descriptor.contentId}">`);
+        }}
+      >
+        paste-inline
+      </button>
+      <button type="button" data-testid="mail-compose-host-open-desktop" onClick={() => onOpenDesktopWindow?.()}>
+        open-desktop
       </button>
     </div>
   ) : null),
@@ -425,6 +442,126 @@ describe('MailComposeHost', () => {
         draft_id: 'draft-1',
         retain_existing_attachments: ['token-1', 'att-2'],
       }));
+    });
+  });
+
+  it('autosaves a pasted inline image as a CID attachment', async () => {
+    vi.useFakeTimers();
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const createObjectUrl = vi.fn(() => 'blob:pasted-image');
+    URL.createObjectURL = createObjectUrl;
+    URL.revokeObjectURL = vi.fn();
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-inline', attachments: [] });
+    try {
+      renderHost();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByTestId('mail-compose-host-paste-inline'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      expect(mockSaveDraftMultipart).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.stringContaining('src="cid:hubit-inline-'),
+        inlineFiles: [expect.objectContaining({ name: 'pasted.png', type: 'image/png' })],
+        inlineContentIds: [expect.stringMatching(/^hubit-inline-.+@hubit\.local$/)],
+      }));
+      expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalCreateObjectUrl) URL.createObjectURL = originalCreateObjectUrl;
+      else delete URL.createObjectURL;
+      if (originalRevokeObjectUrl) URL.revokeObjectURL = originalRevokeObjectUrl;
+      else delete URL.revokeObjectURL;
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let an inline image satisfy the missing file warning', async () => {
+    const onComposeWarning = vi.fn();
+    renderHost({
+      onComposeWarning,
+      session: {
+        id: 11,
+        initialState: {
+          composeToValues: ['person@example.com'],
+          composeSubject: 'Attachment',
+          composeBody: '<p>Прикрепил файл</p><img src="cid:inline-1@hubit.local">',
+          composeInlineFiles: [{
+            file: new File(['image'], 'pasted.png', { type: 'image/png' }),
+            contentId: 'inline-1@hubit.local',
+            previewUrl: 'blob:inline-1',
+          }],
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(onComposeWarning).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'missing_attachment',
+      }));
+    });
+  });
+
+  it('saves every file before opening the native compose window', async () => {
+    const onOpenDesktopWindow = vi.fn().mockResolvedValue(undefined);
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-transfer', attachments: [] });
+    renderHost({
+      onOpenDesktopWindow,
+      session: {
+        id: 12,
+        initialState: {
+          composeToValues: ['person@example.com'],
+          composeSubject: 'Transfer',
+          composeBody: '<p>Body</p>',
+          composeFiles: [new File(['report'], 'report.txt', { type: 'text/plain' })],
+        },
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('mail-compose-host-open-desktop'));
+
+    await waitFor(() => {
+      expect(mockSaveDraftMultipart).toHaveBeenCalledWith(expect.objectContaining({
+        files: [expect.objectContaining({ name: 'report.txt' })],
+      }));
+      expect(onOpenDesktopWindow).toHaveBeenCalledWith({
+        draftId: 'draft-transfer',
+        mailboxId: 'mb-2',
+      });
+    });
+    expect(mockSaveDraftMultipart.mock.invocationCallOrder[0])
+      .toBeLessThan(onOpenDesktopWindow.mock.invocationCallOrder[0]);
+  });
+
+  it('creates an empty draft before opening the native compose window', async () => {
+    const onOpenDesktopWindow = vi.fn().mockResolvedValue(undefined);
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-empty', attachments: [] });
+    renderHost({
+      onOpenDesktopWindow,
+      session: {
+        id: 13,
+        initialState: {
+          composeToValues: [],
+          composeSubject: '',
+          composeBody: '',
+        },
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('mail-compose-host-open-desktop'));
+
+    await waitFor(() => {
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(1);
+      expect(onOpenDesktopWindow).toHaveBeenCalledWith({
+        draftId: 'draft-empty',
+        mailboxId: 'mb-2',
+      });
     });
   });
 

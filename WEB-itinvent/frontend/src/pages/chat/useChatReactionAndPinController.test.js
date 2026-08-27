@@ -6,6 +6,7 @@ import useChatReactionAndPinController from './useChatReactionAndPinController';
 vi.mock('../../api/client', () => ({
   chatAPI: {
     toggleReaction: vi.fn(),
+    setPinnedMessage: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -81,5 +82,6 @@ describe('useChatReactionAndPinController', () => {
     });
 
     expect(persistPinnedMessage).toHaveBeenCalledWith(null);
+    expect(chatAPI.setPinnedMessage).toHaveBeenCalledWith('conv-1', null);
   });
 });

@@ -25,6 +25,8 @@ export const mailComposeAPI = {
     forwardMessageId,
     retainExistingAttachments,
     files,
+    inlineFiles,
+    inlineContentIds,
     onUploadProgress,
     signal,
   }) => {
@@ -46,6 +48,8 @@ export const mailComposeAPI = {
         formData.append('files', file);
       });
     }
+    (inlineFiles || []).forEach((file) => formData.append('inline_files', file));
+    formData.append('inline_content_ids_json', JSON.stringify(inlineContentIds || []));
     const response = await apiClient.post('/mail/drafts/upsert-multipart', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -82,6 +86,8 @@ export const mailComposeAPI = {
     body,
     isHtml,
     files,
+    inlineFiles,
+    inlineContentIds,
     retainExistingAttachments,
     replyToMessageId,
     forwardMessageId,
@@ -107,6 +113,8 @@ export const mailComposeAPI = {
         formData.append('files', file);
       });
     }
+    (inlineFiles || []).forEach((file) => formData.append('inline_files', file));
+    formData.append('inline_content_ids_json', JSON.stringify(inlineContentIds || []));
     const headers = withMailSendIdempotencyHeaders(
       { 'Content-Type': 'multipart/form-data' },
       idempotencyKey,

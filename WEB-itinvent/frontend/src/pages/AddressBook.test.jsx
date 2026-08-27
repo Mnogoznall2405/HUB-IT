@@ -69,6 +69,7 @@ const samplePayload = {
       department_location: 'Tyumen',
       position: 'Lead specialist',
       age: 36,
+      hire_date: '2021-05-17',
       work_phones: [{ kind: 'Рабочий телефон', value: '83452384202', normalized: '73452384202' }],
       personal_phones: [{ kind: 'Мобильный телефон', value: '89312250556', normalized: '79312250556' }],
       work_emails: [{ kind: 'Корпоративный E-mail', value: 'ivanov@zsgp.ru', normalized: 'ivanov@zsgp.ru' }],
@@ -146,6 +147,7 @@ describe('AddressBook page', () => {
     expect(await screen.findByTestId('address-book-entry-list')).toBeInTheDocument();
     expect(screen.getByTestId('address-book-entry-detail')).toBeInTheDocument();
     expect(screen.getByTestId('address-book-person-meta')).toHaveTextContent('Lead specialist · 36 лет');
+    expect(screen.getByTestId('address-book-hire-date')).toHaveTextContent('Дата приёма: 17.05.2021');
     expect(screen.getAllByText('Ivanov Ivan Ivanovich').length).toBeGreaterThan(0);
     expect(screen.getByText('Рабочий телефон')).toBeInTheDocument();
     expect(screen.getAllByText('83452384202').length).toBeGreaterThan(0);

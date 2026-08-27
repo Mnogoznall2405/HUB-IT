@@ -123,6 +123,7 @@ export default function TasksDetailWorkspace({
   onBack,
   onBackFromChecklist,
   onCopyLink,
+  onShareLink,
   onOpenEditTask,
   onDeleteTask,
   onOpenTaskDiscussion,
@@ -156,11 +157,12 @@ export default function TasksDetailWorkspace({
   const actionMenuItems = useMemo(() => {
     if (!task) return [];
     return [
+      onShareLink ? { key: 'share', label: 'Поделиться' } : null,
       { key: 'copy', label: 'Копировать ссылку' },
       canEditTask(task) ? { key: 'edit', label: 'Редактировать' } : null,
       canDeleteTask(task) ? { key: 'delete', label: 'Удалить', tone: 'danger' } : null,
     ].filter(Boolean);
-  }, [canDeleteTask, canEditTask, task]);
+  }, [canDeleteTask, canEditTask, onShareLink, task]);
 
   const mobileActionState = useMemo(() => {
     if (!task) return null;
@@ -249,6 +251,10 @@ export default function TasksDetailWorkspace({
         }
         if (key === 'copy') {
           void onCopyLink();
+          return;
+        }
+        if (key === 'share') {
+          void onShareLink?.();
         }
       }}
       taskDiscussionEnabled={taskDiscussionChatEnabled}

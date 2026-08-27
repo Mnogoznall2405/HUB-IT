@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -35,6 +36,34 @@ def _raw_user(user_id: int, username: str, full_name: str, role: str, *, active:
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
+
+
+def _reset_chat_db_state() -> None:
+    engines = {
+        id(engine): engine
+        for cache in (chat_db_module._engines, chat_db_module._read_engines)
+        for engine in cache.values()
+    }
+    for engine in engines.values():
+        engine.dispose()
+
+    chat_db_module._engine = None
+    chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
+    chat_db_module._engines.clear()
+    chat_db_module._session_factories.clear()
+    chat_db_module._read_engines.clear()
+    chat_db_module._read_session_factories.clear()
+
+
+def _enqueue_and_apply_delivery_state(service, created: dict) -> None:
+    from backend.chat.event_outbox_service import chat_event_outbox_service
+
+    deferred = created.pop("_deferred_delivery_outbox", None)
+    if isinstance(deferred, dict) and deferred:
+        assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
+    assert service.apply_delivery_state_for_message(message_id=created["id"]) is True
 
 
 @pytest.fixture
@@ -73,8 +102,7 @@ def chat_env(temp_dir, monkeypatch):
     hub_service = hub_service_module.HubService()
     monkeypatch.setattr(chat_service_module, "hub_service", hub_service)
 
-    chat_db_module._engine = None
-    chat_db_module._session_factory = None
+    _reset_chat_db_state()
     monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
     monkeypatch.setattr(chat_db_module.config.chat, "database_url", f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}", raising=False)
     monkeypatch.setattr(chat_db_module.config.chat, "pool_size", 5, raising=False)
@@ -90,8 +118,7 @@ def chat_env(temp_dir, monkeypatch):
         "group": group,
     }
 
-    chat_db_module._engine = None
-    chat_db_module._session_factory = None
+    _reset_chat_db_state()
 
 
 def test_presence_is_included_for_users_and_conversations(chat_env, monkeypatch):
@@ -137,6 +164,7 @@ def test_presence_is_included_for_users_and_conversations(chat_env, monkeypatch)
             if int(item["user_id"]) in {int(user_id) for user_id in list(user_ids or [])}
         ],
     )
+    service._presence_cache.clear()
 
     users = service.list_available_users(current_user_id=1, limit=20)
     by_id = {item["id"]: item for item in users}
@@ -226,6 +254,8 @@ def test_direct_read_receipts_change_from_sent_to_read(chat_env):
         body="Проверь, пожалуйста",
     )
 
+    _enqueue_and_apply_delivery_state(service, created)
+
     messages_before = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
     assert messages_before["items"][0]["id"] == created["id"]
     assert messages_before["items"][0]["delivery_status"] == "sent"
@@ -239,9 +269,12 @@ def test_direct_read_receipts_change_from_sent_to_read(chat_env):
         message_id=created["id"],
     )
 
-    messages_after = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
-    assert messages_after["items"][0]["delivery_status"] == "read"
-    assert messages_after["items"][0]["read_by_count"] == 1
+    read_delta = service.get_message_read_delta(
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert read_delta["delivery_status"] == "read"
+    assert read_delta["read_by_count"] == 1
 
     reads = service.get_message_reads(current_user_id=1, message_id=created["id"])
     assert [item["user"]["id"] for item in reads["items"]] == [2]
@@ -285,6 +318,8 @@ def test_unread_summaries_and_batched_conversation_summaries_use_new_counters(ch
         conversation_id=conversation["id"],
         body="Unread counter probe",
     )
+
+    _enqueue_and_apply_delivery_state(service, created)
 
     unread_by_user = service.get_unread_summaries(user_ids=[1, 2, 3])
     assert unread_by_user[1] == {
@@ -330,6 +365,72 @@ def test_unread_summaries_and_batched_conversation_summaries_use_new_counters(ch
     )
     assert read_delta_after["read_by_count"] == 1
     assert read_delta_after["delivery_status"] == "read"
+
+
+@pytest.mark.parametrize("departure", ["removed", "left"])
+def test_departed_group_member_does_not_keep_phantom_unread(chat_env, departure):
+    service = chat_env["service"]
+    conversation = chat_env["group"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Unread before departure",
+    )
+    _enqueue_and_apply_delivery_state(service, created)
+    assert service.get_unread_summaries(user_ids=[2])[2]["messages_unread_total"] == 1
+
+    if departure == "removed":
+        service.remove_group_member(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            target_user_id=2,
+        )
+    else:
+        service.leave_group(current_user_id=2, conversation_id=conversation["id"])
+
+    with chat_db_module.chat_session() as session:
+        state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        assert state.unread_count == 0
+        assert state.last_read_seq == conversation_row.last_message_seq
+
+        # Reproduce a legacy/runtime residue like the production row that held 61.
+        state.unread_count = 61
+        state.last_read_seq = 0
+
+    visible_ids = {
+        item["id"]
+        for item in service.list_conversations(current_user_id=2, limit=20)["items"]
+    }
+    assert conversation["id"] not in visible_ids
+    assert service.get_unread_summaries(user_ids=[2])[2] == {
+        "messages_unread_total": 0,
+        "conversations_unread": 0,
+    }
+
+    service.add_group_members(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        member_user_ids=[2],
+    )
+    with chat_db_module.chat_session() as session:
+        state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+        assert state.unread_count == 1
+    assert service.get_unread_summaries(user_ids=[2])[2] == {
+        "messages_unread_total": 1,
+        "conversations_unread": 1,
+    }
 
 
 def test_latest_pagination_is_stable_when_messages_share_created_at(chat_env):
@@ -379,6 +480,8 @@ def test_after_cursor_missing_does_not_fall_back_to_old_history(chat_env):
         body="Cursor invalid after probe",
     )
 
+    _enqueue_and_apply_delivery_state(service, created)
+
     payload = service.get_messages(
         current_user_id=1,
         conversation_id=conversation["id"],
@@ -403,6 +506,8 @@ def test_before_cursor_missing_does_not_fall_back_to_old_history(chat_env):
         conversation_id=conversation["id"],
         body="Cursor invalid before probe",
     )
+
+    _enqueue_and_apply_delivery_state(service, created)
 
     payload = service.get_messages(
         current_user_id=1,

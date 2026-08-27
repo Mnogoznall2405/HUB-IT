@@ -1,7 +1,8 @@
 import React from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
-import { chatTokens } from '../../theme/chatTokens';
+import { StyleSheet, Text, View } from 'react-native';
+import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { API_V1_BASE } from '../../api/config';
+import { ChatAuthenticatedImage } from './ChatAuthenticatedImage';
 
 function resolveAvatarUrl(url?: string | null): string | undefined {
   const raw = String(url || '').trim();
@@ -29,22 +30,33 @@ export function PresenceAvatar({
   size?: number;
   online?: boolean;
 }) {
+  const chatTokens = useChatTokens();
+  const styles = React.useMemo(() => createStyles(chatTokens), [chatTokens]);
   const uri = resolveAvatarUrl(avatarUrl);
+  const fallback = (
+    <View style={[styles.fallback, { width: size, height: size, borderRadius: size / 2 }]}>
+      <Text style={[styles.initials, { fontSize: size * 0.34 }]}>{initialsFromLabel(label)}</Text>
+    </View>
+  );
   return (
     <View style={{ width: size, height: size }}>
       {uri ? (
-        <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
+        <ChatAuthenticatedImage
+          uri={uri}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+          accessible={false}
+          loadingFallback={fallback}
+          errorFallback={fallback}
+        />
       ) : (
-        <View style={[styles.fallback, { width: size, height: size, borderRadius: size / 2 }]}>
-          <Text style={[styles.initials, { fontSize: size * 0.34 }]}>{initialsFromLabel(label)}</Text>
-        </View>
+        fallback
       )}
       {online ? <View style={[styles.dot, { right: 0, bottom: 0 }]} /> : null}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   fallback: {
     backgroundColor: chatTokens.sidebarRowSoftActive,
     alignItems: 'center',
@@ -58,6 +70,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: '#3a8f35',
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: chatTokens.panelBg,
   },
 });

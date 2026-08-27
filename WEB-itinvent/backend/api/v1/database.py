@@ -133,21 +133,26 @@ def resolve_current_database_id(
     request_hint: Optional[str] = None,
     legacy_cookie: Optional[str] = None,
     include_default: bool = True,
+    prefer_request_hint: bool = False,
 ) -> tuple[Optional[str], str]:
-    """Resolve the effective database using server-owned selection first.
+    """Resolve the effective database with an optional request-scoped override.
 
-    Client values are request hints only. They cannot override a persisted
-    server-side selection or a non-admin fixed assignment.
+    A non-admin fixed assignment always wins. Normal selection endpoints keep
+    the persisted server-side value authoritative; explicitly request-scoped
+    data endpoints may opt into a validated header before that persisted value.
     """
     assigned_db = normalize_database_id(_get_assigned_db(current_user))
     if assigned_db and current_user and current_user.role != "admin":
         return assigned_db, "assigned"
 
+    hint_db = normalize_database_id(request_hint)
+    if prefer_request_hint and hint_db:
+        return hint_db, "request_hint"
+
     persisted_db = _get_persisted_user_database(current_user)
     if persisted_db:
         return persisted_db, "user_selection"
 
-    hint_db = normalize_database_id(request_hint)
     if hint_db:
         return hint_db, "request_hint"
 
@@ -257,13 +262,15 @@ async def switch_database(
     set_user_database(user_id, requested_db, username)
     logger.info(f"Set database {requested_db} for user id={user_id}, username={username}")
 
-    # Get database config to verify connection
-    db_config = get_database_config(requested_db)
-
     payload = {
         "success": True,
         "message": f"Переключено на {db_info['name']}. База данных применена немедленно.",
-        "database": {**db_info, **db_config},
+        # Never expose connection settings (host, username, password) to clients.
+        "database": {
+            "id": db_info["id"],
+            "name": db_info["name"],
+            "access": db_info["access"],
+        },
         "user_id": user_id
     }
     response = JSONResponse(content=payload)

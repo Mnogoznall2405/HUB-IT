@@ -6,6 +6,8 @@ describe('buildChatPageDialogsLayerProps', () => {
   it('maps dialog layer inputs to ChatDialogs prop names', () => {
     const onCloseThreadMenu = vi.fn();
     const onForwardMessageToConversation = vi.fn();
+    const onApplyImageEdit = vi.fn();
+    const onResetImageEdit = vi.fn();
 
     const props = buildChatPageDialogsLayerProps({
       theme: {},
@@ -51,6 +53,9 @@ describe('buildChatPageDialogsLayerProps', () => {
       fileDialogOpen: false,
       onCloseFileDialog: vi.fn(),
       selectedFiles: [],
+      imageEdits: [],
+      onApplyImageEdit,
+      onResetImageEdit,
       fileCaption: '',
       onFileCaptionChange: vi.fn(),
       preparingFiles: false,
@@ -132,5 +137,7 @@ describe('buildChatPageDialogsLayerProps', () => {
     expect(props.onCloseThreadMenu).toBe(onCloseThreadMenu);
     expect(props.onForwardMessageToConversation).toBe(onForwardMessageToConversation);
     expect(props.forwardSelectionCount).toBe(0);
+    expect(props.onApplyImageEdit).toBe(onApplyImageEdit);
+    expect(props.onResetImageEdit).toBe(onResetImageEdit);
   });
 });

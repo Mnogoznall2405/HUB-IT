@@ -61,6 +61,7 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
     expect(addressBookGroup?.permissions).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: 'address_book.read', alwaysGranted: true }),
       expect.objectContaining({ value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' }),
+      expect.objectContaining({ value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' }),
       expect.objectContaining({ value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' }),
       expect.objectContaining({ value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' }),
     ]));

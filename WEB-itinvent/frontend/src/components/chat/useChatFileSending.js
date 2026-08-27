@@ -4,6 +4,7 @@ import { chatAPI } from '../../api/client';
 import {
   buildChatUploadSignature,
   isChatMediaFile,
+  prepareChatUploadFile,
   prepareChatUploadFiles,
 } from './chatUploadPrep';
 import {
@@ -16,11 +17,12 @@ import {
 const CHAT_ARCHIVE_UPLOAD_WARNING = 'Архивы (.zip, .rar, .7z, .tar, .gz) нельзя отправлять в чат.';
 const CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES = 25 * 1024 * 1024;
 const CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING = 'Суммарный размер оригиналов превышает 25 МБ.';
+const CHAT_EDITED_MEDIA_ORIGINAL_WARNING = 'Сбросьте изменения фотографии, чтобы отправить оригинал.';
 
 export const buildChatSendUploadItems = (items, sendMediaAsFiles = false) => (
   (Array.isArray(items) ? items : []).map((item) => {
     const originalFile = item?.originalFile || item?.file || null;
-    if (!sendMediaAsFiles || !isChatMediaFile(originalFile)) return item;
+    if (!sendMediaAsFiles || item?.imageEdit || !isChatMediaFile(originalFile)) return item;
     const originalSize = Number(originalFile?.size || 0);
     return {
       ...item,
@@ -201,6 +203,10 @@ export default function useChatFileSending({
     if (preparingFiles || sendingFiles) return false;
     const checked = Boolean(nextValue);
     if (checked) {
+      if (selectedUploadItems.some((item) => Boolean(item?.imageEdit))) {
+        notifyWarning?.(CHAT_EDITED_MEDIA_ORIGINAL_WARNING);
+        return false;
+      }
       if (getChatUploadItemsOriginalTotalBytes(selectedUploadItems) > CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES) {
         notifyWarning?.(CHAT_SEND_MEDIA_AS_FILES_SIZE_WARNING);
         return false;
@@ -214,6 +220,90 @@ export default function useChatFileSending({
     selectedUploadItems,
     sendingFiles,
     setSendMediaAsFiles,
+  ]);
+
+  const applySelectedImageEdit = useCallback(async (fileIndex, payload = {}) => {
+    if (preparingFiles || sendingFiles || !payload?.file) return false;
+    const normalizedIndex = Number(fileIndex);
+    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
+    const currentItem = selectedUploadItems[normalizedIndex];
+    if (!currentItem) return false;
+
+    setPreparingFiles(true);
+    try {
+      const preparedEditedItem = await prepareChatUploadFile(payload.file);
+      const nextItems = selectedUploadItems.map((item, index) => {
+        if (index !== normalizedIndex) return item;
+        return {
+          ...preparedEditedItem,
+          signature: item?.signature || preparedEditedItem?.signature,
+          originalFile: item?.originalFile || item?.file || payload.file,
+          originalSize: Number(item?.originalSize || item?.originalFile?.size || item?.file?.size || 0),
+          imageEdit: {
+            recipe: payload?.recipe || { version: 1, operations: [] },
+            revision: Number(item?.imageEdit?.revision || 0) + 1,
+          },
+        };
+      });
+      if (getChatUploadItemsTotalBytes(nextItems) > CHAT_MAX_FILE_BYTES) {
+        notifyWarning?.(`Суммарный размер файлов после редактирования превышает ${formatFileSize(CHAT_MAX_FILE_BYTES)}.`);
+        return false;
+      }
+      setSelectedUploadItems(nextItems);
+      setSendMediaAsFiles(false);
+      return true;
+    } catch {
+      notifyWarning?.('Не удалось подготовить отредактированное фото к отправке.');
+      return false;
+    } finally {
+      setPreparingFiles(false);
+    }
+  }, [
+    notifyWarning,
+    preparingFiles,
+    selectedUploadItems,
+    sendingFiles,
+    setPreparingFiles,
+    setSendMediaAsFiles,
+    setSelectedUploadItems,
+  ]);
+
+  const resetSelectedImageEdit = useCallback(async (fileIndex) => {
+    if (preparingFiles || sendingFiles) return false;
+    const normalizedIndex = Number(fileIndex);
+    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
+    const currentItem = selectedUploadItems[normalizedIndex];
+    const originalFile = currentItem?.originalFile || null;
+    if (!currentItem || !originalFile) return false;
+
+    setPreparingFiles(true);
+    try {
+      const restoredItem = await prepareChatUploadFile(originalFile);
+      const nextItems = selectedUploadItems.map((item, index) => (
+        index === normalizedIndex
+          ? {
+            ...restoredItem,
+            signature: item?.signature || restoredItem?.signature,
+            originalFile,
+            originalSize: Number(originalFile?.size || 0),
+          }
+          : item
+      ));
+      setSelectedUploadItems(nextItems);
+      return true;
+    } catch {
+      notifyWarning?.('Не удалось восстановить исходное фото.');
+      return false;
+    } finally {
+      setPreparingFiles(false);
+    }
+  }, [
+    notifyWarning,
+    preparingFiles,
+    selectedUploadItems,
+    sendingFiles,
+    setPreparingFiles,
+    setSelectedUploadItems,
   ]);
 
   const handleSelectFiles = useCallback((event) => {
@@ -449,6 +539,7 @@ export default function useChatFileSending({
   ]);
 
   return {
+    applySelectedImageEdit,
     changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
@@ -457,6 +548,7 @@ export default function useChatFileSending({
     openMediaPicker,
     queueSelectedFiles,
     removeSelectedFile,
+    resetSelectedImageEdit,
     sendFiles,
   };
 }

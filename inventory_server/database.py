@@ -196,10 +196,17 @@ class InventoryQueueStore:
         }
 
     def vacuum(self) -> Dict[str, int]:
-        before_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
         with self._lock:
+            # In WAL mode recent pages can still live only in the sidecar. Measure
+            # the materialized database on both sides of VACUUM, otherwise a small
+            # queue can be reported as growing from 4 KiB to its real schema size.
+            with self._connect() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            before_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
             with self._connect() as conn:
                 conn.execute("VACUUM")
+            with self._connect() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         after_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
         return {"before_bytes": before_bytes, "after_bytes": after_bytes, "saved_bytes": max(0, before_bytes - after_bytes)}
 

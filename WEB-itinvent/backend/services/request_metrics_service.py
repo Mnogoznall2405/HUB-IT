@@ -314,6 +314,12 @@ class RequestMetricsService:
             payload["mail_sync"] = mail_status
         except Exception as exc:
             payload["mail_sync"] = {"status": "error", "error": type(exc).__name__}
+        try:
+            from backend.services.app_push_outbox_service import app_push_outbox_service
+
+            payload["app_push_outbox"] = app_push_outbox_service.get_backlog_snapshot()
+        except Exception as exc:
+            payload["app_push_outbox"] = {"status": "error", "error": type(exc).__name__}
         return payload
 
     def _build_hotspots(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:

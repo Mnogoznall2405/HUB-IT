@@ -44,6 +44,21 @@ def test_extract_reply_new_body_html_drops_quoted_block():
     assert "Старое письмо" not in new_body
 
 
+def test_build_outgoing_html_preserves_native_formatted_quote_marker():
+    body = outgoing_html.build_outgoing_html_body(
+        '<div data-mail-native-body="true"><p>New reply<br>Second line</p></div>'
+        '<div data-mail-native-quote="true" data-mail-quoted-history="true">'
+        '<div class="quoted-mail"><blockquote><strong>Formatted original</strong></blockquote></div>'
+        "</div>",
+        "<p>Signature</p>",
+        prefer_signature_before_quote=True,
+    )
+
+    assert 'data-mail-native-quote="true"' in body
+    assert "<strong>Formatted original</strong>" in body
+    assert body.index("Signature") < body.index("Formatted original")
+
+
 def test_extract_reply_new_body_html_keeps_plain_reply_without_quote():
     body = outgoing_html.build_outgoing_html_body("<p>Только ответ</p>", "")
     assert "Только ответ" in outgoing_html.extract_reply_new_body_html(body)

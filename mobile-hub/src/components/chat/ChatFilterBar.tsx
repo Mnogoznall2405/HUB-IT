@@ -1,5 +1,6 @@
+import { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
-import { chatTokens } from '../../theme/chatTokens';
+import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 
 export type ChatFilter = 'all' | 'unread' | 'direct' | 'group';
 
@@ -17,6 +18,8 @@ export function ChatFilterBar({
   value: ChatFilter;
   onChange: (next: ChatFilter) => void;
 }) {
+  const chatTokens = useChatTokens();
+  const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.scroll} contentContainerStyle={styles.row}>
       {FILTERS.map((filter) => {
@@ -26,6 +29,9 @@ export function ChatFilterBar({
             key={filter.value}
             onPress={() => onChange(filter.value)}
             style={[styles.chip, active && styles.chipActive]}
+            accessibilityRole="button"
+            accessibilityLabel={`Фильтр: ${filter.label}`}
+            accessibilityState={{ selected: active }}
           >
             <Text style={[styles.chipText, active && styles.chipTextActive]}>{filter.label}</Text>
           </Pressable>
@@ -35,10 +41,11 @@ export function ChatFilterBar({
   );
 }
 
-const styles = StyleSheet.create({
-  scroll: { maxHeight: 44 },
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
+  scroll: { maxHeight: 60 },
   row: { paddingHorizontal: 12, gap: 8, paddingVertical: 8 },
   chip: {
+    minHeight: 44,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 18,

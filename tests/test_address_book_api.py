@@ -45,6 +45,7 @@ def test_search_is_available_to_user_without_custom_permissions(monkeypatch):
     assert response.status_code == 200
     assert captured == {
         "include_age": False,
+        "include_hire_date": False,
         "include_personal_emails": False,
         "include_personal_phones": False,
     }
@@ -81,6 +82,7 @@ def test_search_enables_each_personal_field_only_with_explicit_permissions(monke
     monkeypatch.setattr(address_book_api.address_book_service, "search", search)
     client = _client_for(lambda: _make_user(permissions=[
         "address_book.age.read",
+        "address_book.hire_date.read",
         "address_book.personal_email.read",
         "address_book.personal_phone.read",
     ]))
@@ -90,6 +92,7 @@ def test_search_enables_each_personal_field_only_with_explicit_permissions(monke
     assert response.status_code == 200
     assert captured == {
         "include_age": True,
+        "include_hire_date": True,
         "include_personal_emails": True,
         "include_personal_phones": True,
     }

@@ -165,6 +165,8 @@ bot.log*
 .playwright-cli/
 WEB-itinvent/uploads/
 /*.xlsx
+/google-services.json
+/hub-it-mobile-firebase-adminsdk-fbsvc-89580c6a80.json
 
 # Local deployment rollback snapshots
 /deploy_backups/

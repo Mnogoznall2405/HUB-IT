@@ -22,6 +22,9 @@ public enum DesktopInboundMessageType
     CheckForUpdates,
     OpenCurrentInBrowser,
     VncPreflight,
+    OpenMailComposeWindow,
+    MailComposeWindowCloseResult,
+    MailComposeWindowSent,
 }
 
 public enum DesktopThemeMode
@@ -31,6 +34,7 @@ public enum DesktopThemeMode
 }
 
 public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
+public sealed record DesktopMailComposeWindowCommand(string RequestId, string Route = "", string Status = "");
 
 public sealed record DesktopInboundMessage(
     DesktopInboundMessageType Type,
@@ -38,7 +42,8 @@ public sealed record DesktopInboundMessage(
     DesktopThemeMode? ThemeMode = null,
     DesktopShellStatus? ShellStatus = null,
     IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
-    DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None);
+    DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
+    DesktopMailComposeWindowCommand? MailComposeWindow = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -77,6 +82,12 @@ public static class DesktopBridgeProtocol
     private const string SystemNetworkChangedMessageType = "desktop.network.changed";
     private const string CapabilitiesMessageType = "desktop.capabilities";
     private const string OpenCommandPaletteMessageType = "command.openPalette";
+    private const string MailComposeWindowOpenMessageType = "mail.composeWindow.open";
+    private const string MailComposeWindowResultMessageType = "mail.composeWindow.result";
+    private const string MailComposeWindowCloseRequestedMessageType = "mail.composeWindow.closeRequested";
+    private const string MailComposeWindowCloseResultMessageType = "mail.composeWindow.closeResult";
+    private const string MailComposeWindowSentMessageType = "mail.composeWindow.sent";
+    private const string MailComposeWindowCompletedMessageType = "mail.composeWindow.completed";
 
     public static bool TryParseInbound(string? json, out DesktopInboundMessage message)
     {
@@ -136,6 +147,12 @@ public static class DesktopBridgeProtocol
                     root,
                     DesktopInboundMessageType.VncPreflight,
                     out message),
+                MailComposeWindowOpenMessageType => TryParseMailComposeWindowOpen(root, out message),
+                MailComposeWindowCloseResultMessageType => TryParseMailComposeWindowCloseResult(root, out message),
+                MailComposeWindowSentMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.MailComposeWindowSent,
+                    out message),
                 _ => false,
             };
         }
@@ -187,6 +204,7 @@ public static class DesktopBridgeProtocol
                 "command-palette",
                 "desktop-actions",
                 "file-actions-v2",
+                "mail-compose-window",
                 "print",
                 "quick-routes",
                 "shell-status",
@@ -289,6 +307,43 @@ public static class DesktopBridgeProtocol
         });
     }
 
+    public static string CreateMailComposeWindowResultMessage(string requestId, string status)
+    {
+        if (!IsValidRequestId(requestId)
+            || status is not ("opened" or "activated" or "busy" or "failed"))
+        {
+            throw new ArgumentException("Invalid compose window result.");
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status,
+        });
+    }
+
+    public static string CreateMailComposeWindowCloseRequestedMessage(string requestId)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid compose close request id.", nameof(requestId));
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowCloseRequestedMessageType,
+            version = CurrentVersion,
+            requestId,
+        });
+    }
+
+    public static string CreateMailComposeWindowCompletedMessage() =>
+        JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowCompletedMessageType,
+            version = CurrentVersion,
+        });
+
     private static bool TryParseReady(JsonElement root, out DesktopInboundMessage message)
     {
         message = default!;
@@ -298,6 +353,40 @@ public static class DesktopBridgeProtocol
         }
 
         message = new DesktopInboundMessage(DesktopInboundMessageType.Ready);
+        return true;
+    }
+
+    private static bool TryParseMailComposeWindowOpen(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "route")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "route", MaximumRouteLength, out var route)
+            || !IsValidRequestId(requestId)
+            || !IsValidMailComposeRoute(route))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenMailComposeWindow,
+            MailComposeWindow: new DesktopMailComposeWindowCommand(requestId, route));
+        return true;
+    }
+
+    private static bool TryParseMailComposeWindowCloseResult(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "status")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "status", 8, out var status)
+            || !IsValidRequestId(requestId)
+            || status is not ("saved" or "failed"))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.MailComposeWindowCloseResult,
+            MailComposeWindow: new DesktopMailComposeWindowCommand(requestId, Status: status));
         return true;
     }
 
@@ -563,6 +652,10 @@ public static class DesktopBridgeProtocol
                 || character == '-');
     }
 
+    private static bool IsValidRequestId(string value) =>
+        value.Length is > 0 and <= 64
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
     private static string FormatDownloadedFileAction(DesktopDownloadedFileAction action) =>
         action switch
         {
@@ -592,5 +685,48 @@ public static class DesktopBridgeProtocol
             && !value.StartsWith("//", StringComparison.Ordinal)
             && !value.Contains('\\')
             && Uri.TryCreate(value, UriKind.Relative, out _);
+    }
+
+    public static bool IsValidMailComposeRoute([NotNullWhen(true)] string? value)
+    {
+        if (!IsValidInternalRoute(value) || value.Contains('#'))
+        {
+            return false;
+        }
+        var queryIndex = value.IndexOf('?');
+        var path = queryIndex >= 0 ? value[..queryIndex] : value;
+        if (!string.Equals(path, "/mail/compose", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var query = queryIndex >= 0 ? value[(queryIndex + 1)..] : string.Empty;
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var separator = pair.IndexOf('=');
+                if (separator <= 0)
+                {
+                    return false;
+                }
+                var key = Uri.UnescapeDataString(pair[..separator]);
+                var parameterValue = Uri.UnescapeDataString(pair[(separator + 1)..]);
+                if (key is not ("draft_id" or "mailbox_id")
+                    || parameterValue.Any(char.IsControl)
+                    || !parameters.TryAdd(key, parameterValue))
+                {
+                    return false;
+                }
+            }
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+        return parameters.TryGetValue("draft_id", out var draftId)
+            && !string.IsNullOrWhiteSpace(draftId)
+            && draftId.Length <= MaximumRouteLength
+            && (!parameters.TryGetValue("mailbox_id", out var mailboxId) || mailboxId.Length <= 256);
     }
 }

@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +47,71 @@ def test_resolve_device_hostname_prefers_inventory_name() -> None:
     )
 
     assert hostname == "PRINTER-INVENTORY-01"
+
+
+def test_public_runtime_drops_snmp_community_without_mutating_snapshot() -> None:
+    snapshot = {
+        "ping": {"status": "online"},
+        "snmp": {
+            "status": "ok",
+            "version": "2c",
+            "used_community": "private-value",
+            "supplies": [{"name": "Black", "percent": 50}],
+        },
+    }
+
+    public_runtime = mfu_api._sanitize_runtime_for_public_api(snapshot)
+
+    assert public_runtime["ping"] == {"status": "online"}
+    assert public_runtime["snmp"]["version"] == "2c"
+    assert public_runtime["snmp"]["supplies"] == [{"name": "Black", "percent": 50}]
+    assert "used_community" not in public_runtime["snmp"]
+    assert snapshot["snmp"]["used_community"] == "private-value"
+
+
+@pytest.mark.asyncio
+async def test_devices_response_omits_credentials_and_debug(monkeypatch) -> None:
+    with mfu_api._mfu_devices_cache_lock:
+        mfu_api._mfu_devices_cache.clear()
+    monkeypatch.setattr(
+        mfu_api,
+        "get_all_equipment_flat",
+        lambda **_kwargs: [{
+            "ID": 17,
+            "INV_NO": "10017",
+            "TYPE_NAME": "МФУ",
+            "MODEL_NAME": "Canon MF443",
+            "IP_ADDRESS": "10.20.30.40",
+        }],
+    )
+    monkeypatch.setattr(mfu_api.mfu_runtime_monitor, "register_devices", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        mfu_api.mfu_runtime_monitor,
+        "get_snapshot",
+        AsyncMock(return_value={
+            "ping": {"status": "online"},
+            "snmp": {"status": "ok", "version": "2c", "used_community": "private-value"},
+        }),
+    )
+    monkeypatch.setattr(mfu_api, "_build_mfu_events_index", lambda **_kwargs: {})
+
+    payload = await mfu_api.get_mfu_devices(
+        period_days=365,
+        recent_limit=8,
+        limit=1,
+        db_id="main",
+        _=object(),
+    )
+
+    device = payload["grouped"]["Не указано"]["Не указано"][0]
+    assert "used_community" not in device["runtime"]["snmp"]
+    assert "debug" not in payload
+    assert payload["meta"] == {
+        "source_limit": 1,
+        "raw_rows_count": 1,
+        "matched_mfu_count": 1,
+        "source_maybe_truncated": True,
+    }
 
 
 def _device(type_name: str, model_name: str, manufacturer: str = "HP", ip_address: str = "172.16.179.11") -> dict:

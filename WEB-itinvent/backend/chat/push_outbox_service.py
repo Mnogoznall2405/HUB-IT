@@ -11,10 +11,13 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 
 from backend.chat.db import chat_session
-from backend.chat.models import ChatConversationUserState, ChatMessage, ChatPushOutbox
+from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage, ChatPushOutbox
 from backend.chat.push_service import chat_push_service
 from backend.chat.utils import normalize_text as _normalize_text
-from backend.services.notification_preferences_service import notification_preferences_service
+from backend.services.notification_preferences_service import (
+    chat_notification_channel,
+    notification_preferences_service,
+)
 
 
 logger = logging.getLogger("backend.chat.push_outbox")
@@ -287,17 +290,22 @@ class ChatPushOutboxService:
         if not message_id or not conversation_id or recipient_user_id <= 0:
             return None
         try:
-            if not notification_preferences_service.is_enabled(
-                user_id=recipient_user_id, channel="chat"
-            ):
-                return "chat_notifications_disabled"
-        except Exception:
-            pass
-        try:
             with chat_session() as session:
                 message = session.get(ChatMessage, message_id)
                 if message is None or _normalize_text(message.conversation_id) != conversation_id:
                     return None
+                conversation = session.get(ChatConversation, conversation_id)
+                preference_channel = chat_notification_channel(
+                    getattr(conversation, "kind", None)
+                )
+                try:
+                    if not notification_preferences_service.is_enabled(
+                        user_id=recipient_user_id,
+                        channel=preference_channel,
+                    ):
+                        return f"{preference_channel}_notifications_disabled"
+                except Exception:
+                    pass
                 message_seq = int(getattr(message, "conversation_seq", 0) or 0)
                 state = session.execute(
                     select(ChatConversationUserState).where(

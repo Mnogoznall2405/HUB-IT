@@ -40,6 +40,7 @@ import UploadActDialog from './database/UploadActDialog';
 import ActionDialog from './database/ActionDialog';
 import DatabaseDataSections from './database/DatabaseDataSections';
 import DetailQrDialog from './database/DetailQrDialog';
+import { parseEquipmentQrLink } from './database/qrModel';
 import DeleteEquipmentDialog from './database/DeleteEquipmentDialog';
 import DeleteConsumableDialog from './database/DeleteConsumableDialog';
 import EditConsumableQtyDialog from './database/EditConsumableQtyDialog';
@@ -667,6 +668,7 @@ function Database() {
     closeActFilePreview,
   } = useDatabaseDetailRuntime({
     canDatabaseWrite,
+    databaseId: db_name || currentDb?.id || '',
     findEquipmentByInvNo,
     searchOwnersCached,
     getLocationsCached,
@@ -1276,6 +1278,7 @@ function Database() {
     warehouseRef: '',
     stackAboveParent: false,
   });
+  const [detailOpenedFromEmployee, setDetailOpenedFromEmployee] = useState(false);
 
   const handleOpenEmployee = useCallback(({ ownerNo, employeeName, warehouseRef = '' }) => {
     const normalizedEmployeeName = String(employeeName || '').trim();
@@ -1324,17 +1327,88 @@ function Database() {
       }
     }
 
-    // Close employee overlay so the equipment card is not hidden underneath it.
-    setEmployeeEquipmentDialog({
-      open: false,
-      ownerNo: null,
-      employeeName: '',
-      warehouseRef: '',
-      stackAboveParent: false,
-    });
     const item = findEquipmentByInvNo?.(normalized);
+    setDetailOpenedFromEmployee(true);
     openDetailView(item || normalized, { invNo: normalized, loading: !item });
   }, [currentDb?.id, db_name, findEquipmentByInvNo, notifyDatabaseError, openDetailView]);
+
+  const handleBackToEmployeeEquipment = useCallback(() => {
+    setDetailOpenedFromEmployee(false);
+    handleDetailClose();
+  }, [handleDetailClose]);
+
+  const handleCloseEquipmentDetail = useCallback(() => {
+    setDetailOpenedFromEmployee(false);
+    handleDetailClose();
+    if (detailOpenedFromEmployee) {
+      handleCloseEmployeeEquipmentDialog();
+    }
+  }, [detailOpenedFromEmployee, handleCloseEmployeeEquipmentDialog, handleDetailClose]);
+
+  useEffect(() => {
+    if (!detailModal.open) {
+      setDetailOpenedFromEmployee(false);
+    }
+  }, [detailModal.open]);
+
+  const equipmentDeepLinkHandledRef = useRef('');
+
+  useEffect(() => {
+    const deepLink = parseEquipmentQrLink(`${location.pathname}${location.search}`);
+    if (!deepLink) {
+      equipmentDeepLinkHandledRef.current = '';
+      return;
+    }
+
+    const signature = [deepLink.invNo, deepLink.databaseId, deepLink.tab].join('|');
+    if (equipmentDeepLinkHandledRef.current === signature) return;
+
+    const currentDatabaseId = normalizeDbId(
+      db_name || currentDb?.id || localStorage.getItem('selected_database') || ''
+    );
+    const targetDatabaseId = normalizeDbId(deepLink.databaseId);
+    if (targetDatabaseId && !currentDatabaseId) return;
+
+    equipmentDeepLinkHandledRef.current = signature;
+
+    const openLinkedEquipment = async () => {
+      const mustSwitchDatabase = Boolean(
+        targetDatabaseId && targetDatabaseId !== currentDatabaseId
+      );
+
+      try {
+        if (mustSwitchDatabase) {
+          await databaseAPI.switchDatabase(targetDatabaseId);
+          localStorage.setItem('selected_database', targetDatabaseId);
+          window.dispatchEvent(new CustomEvent('database-changed', {
+            detail: { databaseId: targetDatabaseId },
+          }));
+        }
+
+        const item = mustSwitchDatabase ? null : findEquipmentByInvNo?.(deepLink.invNo);
+        openDetailView(item || deepLink.invNo, {
+          invNo: deepLink.invNo,
+          loading: !item,
+          initialTab: deepLink.tab,
+        });
+      } catch (error) {
+        console.error('Failed to open equipment QR link:', error);
+        notifyDatabaseError?.(
+          error?.response?.data?.detail || 'Не удалось открыть карточку оборудования по QR-ссылке.'
+        );
+      }
+    };
+
+    void openLinkedEquipment();
+  }, [
+    currentDb?.id,
+    db_name,
+    findEquipmentByInvNo,
+    location.pathname,
+    location.search,
+    notifyDatabaseError,
+    openDetailView,
+  ]);
 
   useEffect(() => {
     const state = location.state;
@@ -1924,7 +1998,8 @@ function Database() {
             items: detailHistory,
             loading: detailHistoryLoading,
           }}
-          onClose={handleDetailClose}
+          onClose={handleCloseEquipmentDetail}
+          onBack={detailOpenedFromEmployee ? handleBackToEmployeeEquipment : null}
           onKeyDown={handleDetailEditKeyDown}
           onTabChange={setDetailTab}
           onFormPatch={patchDetailForm}
@@ -1943,7 +2018,8 @@ function Database() {
           formatHistoryTransition={formatHistoryTransition}
           onOpenEmployee={handleOpenEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}
-          disableEnforceFocus={employeeEquipmentDialog.open}
+          disableEnforceFocus={employeeEquipmentDialog.open && !detailOpenedFromEmployee}
+          stackAboveParent={detailOpenedFromEmployee}
         />
 
         <EmployeeEquipmentDialog
@@ -1954,6 +2030,7 @@ function Database() {
           canViewWarehouse1C={canViewWarehouse1C}
           allowCrossDatabase={isAdmin}
           stackAboveParent={employeeEquipmentDialog.stackAboveParent}
+          disableEnforceFocus={detailOpenedFromEmployee}
           onClose={handleCloseEmployeeEquipmentDialog}
           onOpenInvNo={handleOpenEquipmentFromEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}
@@ -2004,11 +2081,11 @@ function Database() {
           open={detailQrOpen}
           onClose={() => setDetailQrOpen(false)}
           isMobile={isMobile}
-          borderColor={ui.borderSoft}
           loading={detailQrUrlLoading}
           url={detailQrUrl}
           text={detailQrText}
           fileName={detailQrFileName}
+          equipment={detailModal.data}
         />
 
         <DeleteEquipmentDialog

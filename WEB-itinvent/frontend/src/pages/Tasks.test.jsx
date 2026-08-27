@@ -293,6 +293,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   window.sessionStorage.clear();
+  delete window.__HUBIT_MOBILE_APP__;
+  delete window.__HUBIT_MOBILE_INCOMING_SHARE__;
   installMatchMedia();
   chatFeatureFlags.chat = false;
   chatFeatureFlags.taskDiscussion = false;
@@ -442,6 +444,24 @@ afterEach(() => {
 });
 
 describe('Tasks page detail workspace', () => {
+  it('opens the modern create-style dialog when editing a task', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const editButton = await screen.findByRole('button', { name: 'Редактировать' });
+    fireEvent.click(editButton);
+
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 4000 });
+    expect(within(dialog).getByDisplayValue(taskSummary.title)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Сохранить изменения' })).toBeEnabled();
+    expect(within(dialog).queryByText('Редактирование задачи')).not.toBeInTheDocument();
+  });
+
   it('lets a non-admin task creator delete from the desktop task list', async () => {
     authState.user = {
       id: 3,
@@ -494,6 +514,34 @@ describe('Tasks page detail workspace', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location-probe').textContent).not.toContain('create=1');
     });
+  });
+
+  it('opens a task draft from an Android text share without auto-submitting it', async () => {
+    window.__HUBIT_MOBILE_APP__ = true;
+    window.__HUBIT_MOBILE_INCOMING_SHARE__ = {
+      schemaVersion: 1,
+      id: 'share-task-1',
+      target: 'task',
+      text: 'https://example.com/report',
+      subject: 'Проверить отчёт',
+      receivedAt: 1_787_400_000_000,
+    };
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?create=android-share&android_share_id=share-task-1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole(
+      'textbox',
+      { name: 'Что нужно сделать' },
+      { timeout: 4000 },
+    )).toHaveValue('Проверить отчёт');
+    expect(hubTasksAPI.createTask).not.toHaveBeenCalled();
+    expect(window.__HUBIT_MOBILE_INCOMING_SHARE__).toBeUndefined();
   });
 
   it('opens the create dialog from a pending create flag stored during navigation', async () => {

@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import and_, func, or_, select
 
-from backend.chat.chat_formatting import _iso
+from backend.chat.chat_formatting import _display_user_name, _iso, _strip_markdown_preview, _truncate_text
 from backend.chat.db import chat_read_session as chat_session
+from backend.chat.folder_unread import conversation_search_title
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
@@ -541,6 +542,11 @@ class ChatThreadReadStore:
             )
             payload["initial_anchor_mode"] = initial_anchor_mode
             payload["initial_anchor_message_id"] = initial_anchor_message_id
+            payload["pinned_message_id"] = _normalize_text(getattr(conversation, "pinned_message_id", None)) or None
+            payload["pinned_message"] = self._service._serialize_pinned_message_preview(
+                session,
+                conversation,
+            )
             self._service._cache_set(
                 user_id=int(current_user_id),
                 bucket="thread_bootstrap",
@@ -827,6 +833,81 @@ class ChatThreadReadStore:
                 query=normalized_query or None,
             )
             return payload
+
+    def search_messages_global(
+        self,
+        *,
+        current_user_id: int,
+        q: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        normalized_query = _normalize_text(q).lower()
+        page_size = max(1, min(int(limit), 50))
+        if not normalized_query:
+            return {"items": [], "has_more": False}
+
+        user_id = int(current_user_id)
+        with chat_session() as session:
+            search_query = (
+                select(ChatMessage, ChatConversation)
+                .join(ChatConversation, ChatConversation.id == ChatMessage.conversation_id)
+                .join(
+                    ChatMember,
+                    and_(
+                        ChatMember.conversation_id == ChatConversation.id,
+                        ChatMember.user_id == user_id,
+                        ChatMember.left_at.is_(None),
+                    ),
+                )
+                .outerjoin(
+                    ChatMessageAttachment,
+                    ChatMessageAttachment.message_id == ChatMessage.id,
+                )
+                .where(
+                    ChatMessage.is_deleted.is_(False),
+                    or_(
+                        func.lower(ChatMessage.body).contains(normalized_query),
+                        func.lower(ChatMessageAttachment.file_name).contains(normalized_query),
+                    ),
+                )
+                .distinct()
+                .order_by(*self._service._message_order_desc())
+                .limit(page_size + 1)
+            )
+            rows = list(session.execute(search_query).all())
+            has_more = len(rows) > page_size
+            rows = rows[:page_size]
+            sender_ids = {
+                int(getattr(message, "sender_user_id", 0) or 0)
+                for message, _conversation in rows
+                if int(getattr(message, "sender_user_id", 0) or 0) > 0
+            }
+            users_by_id = self._service._get_users_map(presence_map={}, user_ids=sender_ids) if sender_ids else {}
+            items = []
+            for message, conversation in rows:
+                sender = users_by_id.get(int(getattr(message, "sender_user_id", 0) or 0))
+                preview = _truncate_text(_strip_markdown_preview(getattr(message, "body", None)), 160)
+                if not preview:
+                    preview = "Сообщение"
+                items.append(
+                    {
+                        "conversation_id": conversation.id,
+                        "conversation_title": conversation_search_title(conversation),
+                        "conversation_kind": _normalize_text(getattr(conversation, "kind", None)) or "group",
+                        "message_id": message.id,
+                        "created_at": _iso(getattr(message, "created_at", None)) or "",
+                        "sender_name": _display_user_name(sender),
+                        "preview": preview,
+                    }
+                )
+            self._service._set_request_meta(
+                route="search_global",
+                cache_hit=False,
+                limit=page_size,
+                items_count=len(items),
+                query=normalized_query or None,
+            )
+            return {"items": items, "has_more": has_more}
 
     def get_message_reads(self, *, current_user_id: int, message_id: str) -> dict:
         normalized_message_id = _normalize_text(message_id)

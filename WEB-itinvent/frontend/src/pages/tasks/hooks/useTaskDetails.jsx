@@ -7,6 +7,7 @@ import hubTaskDiscussionAPI from '../../../api/hubTaskDiscussion';
 import TaskDetailChecklist from '../../../components/hub/tasks/TaskDetailChecklist';
 import { isTransferActUploadTask } from '../../../lib/hubTaskIntegrations';
 import { invalidateSWRCacheByPrefix } from '../../../lib/swrCache';
+import { isMobileAppWebViewRuntime, requestMobileAppCommand } from '../../../lib/mobileAppBridge';
 import {
   buildTaskDetailPath,
   getDefaultTaskDetailTab,
@@ -56,6 +57,8 @@ export default function useTaskDetails({
     const params = new URLSearchParams(location.search || '');
     return normalizeTaskDetailTab(params.get('task_tab'), taskDiscussionChatEnabled);
   }, [location.search, taskDiscussionChatEnabled]);
+
+  const nativeTaskShareAvailable = isMobileAppWebViewRuntime();
 
   const selectedMobileTaskView = useMemo(() => {
     const params = new URLSearchParams(location.search || '');
@@ -359,6 +362,26 @@ export default function useTaskDetails({
     }
   }, [setError, taskDiscussionChatEnabled]);
 
+  const handleShareTaskLink = useCallback(async (task, taskTab) => {
+    const normalizedId = String(task?.id || '').trim();
+    if (!normalizedId || !isMobileAppWebViewRuntime()) return;
+    const path = buildTaskDetailPath(normalizedId, {
+      tab: taskTab,
+      taskDiscussionEnabled: taskDiscussionChatEnabled,
+    });
+    const url = new URL(path, window.location.origin);
+    const title = String(task?.title || '').trim().slice(0, 200) || 'Задача HUB-IT';
+    try {
+      await requestMobileAppCommand('share.text', {
+        title,
+        text: `Задача HUB-IT: ${title}`,
+        url: url.toString(),
+      });
+    } catch {
+      setError('Не удалось открыть системное меню отправки.');
+    }
+  }, [setError, taskDiscussionChatEnabled]);
+
   const handleUploadAttachment = useCallback(async (taskId, file) => {
     if (!taskId || !file) return;
     setUploadingAttachment(true);
@@ -531,6 +554,7 @@ export default function useTaskDetails({
     selectedTaskId,
     selectedTaskTab,
     selectedMobileTaskView,
+    nativeTaskShareAvailable,
     closeTaskDetails,
     openTaskDetails,
     openMobileTaskChecklist,
@@ -540,6 +564,7 @@ export default function useTaskDetails({
     handleAddTaskComment,
     handleOpenTaskDiscussion,
     handleCopyTaskLink,
+    handleShareTaskLink,
     handleDownloadAttachment,
     handleDownloadReport,
     handleUploadAttachment,

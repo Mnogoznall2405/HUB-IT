@@ -35,6 +35,7 @@ const {
   mockChatSocketSubscribeInbox,
   mockChatSocketUnsubscribeInbox,
   mockChatSocketGetConnectionState,
+  mockIsChatConversationMuted,
   mockPreferences,
   mockPrefetchRouteByPath,
 } = vi.hoisted(() => ({
@@ -65,6 +66,7 @@ const {
   mockChatSocketSubscribeInbox: vi.fn(),
   mockChatSocketUnsubscribeInbox: vi.fn(),
   mockChatSocketGetConnectionState: vi.fn(() => 'disconnected'),
+  mockIsChatConversationMuted: vi.fn(() => false),
   mockPrefetchRouteByPath: vi.fn(async () => {}),
   mockPreferences: {
     mobile_bottom_nav_items: ['/dashboard', '/tasks', '/chat', '/mail'],
@@ -150,6 +152,7 @@ vi.mock('../../lib/chatSocket', () => ({
   CHAT_SOCKET_MESSAGE_CREATED_EVENT: 'chat-ws-message-created',
   CHAT_SOCKET_STATUS_EVENT: 'chat-ws-status',
   CHAT_SOCKET_UNREAD_SUMMARY_EVENT: 'chat-ws-unread-summary',
+  isChatConversationMuted: mockIsChatConversationMuted,
 }));
 
 vi.mock('../../lib/chatNotifications', () => {
@@ -356,6 +359,10 @@ describe('MainLayout hub Windows notifications', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.clear();
+    window.sessionStorage.clear();
+    delete window.__HUBIT_MOBILE_APP__;
+    delete window.__HUBIT_MOBILE_OFFLINE_SESSION__;
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY, '1');
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY, '1');
     visibilityState = 'hidden';
@@ -386,6 +393,8 @@ describe('MainLayout hub Windows notifications', () => {
     mockShouldSkipChatPushForegroundNotification.mockReset();
     mockNotificationSurfaceVisible.mockReset();
     mockNotificationSurfaceVisible.mockImplementation(() => visibilityState === 'visible');
+    mockIsChatConversationMuted.mockReset();
+    mockIsChatConversationMuted.mockReturnValue(false);
     mockSyncChatPushSubscription.mockReset();
     mockChatSocketRetain.mockClear();
     mockChatSocketSubscribeInbox.mockClear();
@@ -592,6 +601,7 @@ describe('MainLayout hub Windows notifications', () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
     vi.useRealTimers();
   });
 
@@ -864,6 +874,107 @@ describe('MainLayout hub Windows notifications', () => {
 
     expect(mockNotifyInfo).not.toHaveBeenCalled();
     expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it('suppresses browser and HUB Desktop notifications for a disabled chat category', async () => {
+    visibilityState = 'visible';
+    mockGetNotificationPreferences.mockResolvedValue({
+      channels: {
+        mail: true,
+        tasks: true,
+        task_email: true,
+        announcements: true,
+        chat: true,
+        chat_direct: true,
+        chat_group: false,
+        chat_task: true,
+      },
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-muted-group',
+          payload: {
+            id: 'msg-muted-group',
+            conversation_id: 'conv-muted-group',
+            conversation_kind: 'group',
+            body: 'Silent group message',
+            sender: { full_name: 'Colleague' },
+            is_own: false,
+          },
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it('suppresses notifications for a muted conversation except when the current user is mentioned', async () => {
+    mockIsChatConversationMuted.mockImplementation((conversationId) => conversationId === 'conv-muted');
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-muted',
+          payload: {
+            id: 'msg-muted-ordinary',
+            conversation_id: 'conv-muted',
+            conversation_kind: 'group',
+            body: 'Ordinary message',
+            sender: { full_name: 'Colleague' },
+            mentioned_user_ids: [],
+            is_own: false,
+          },
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-muted',
+          payload: {
+            id: 'msg-muted-mention',
+            conversation_id: 'conv-muted',
+            conversation_kind: 'group',
+            body: '@admin please check',
+            sender: { full_name: 'Colleague' },
+            mentioned_user_ids: [1],
+            is_own: false,
+          },
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(mockCreateChatSystemNotification).toHaveBeenCalledTimes(1);
+    expect(mockCreateChatSystemNotification).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'msg-muted-mention',
+      conversationId: 'conv-muted',
+    }));
   });
 
   it('shows a desktop chat notification when the host window is minimized but WebView reports visible', async () => {
@@ -1631,6 +1742,120 @@ describe('MainLayout hub Windows notifications', () => {
     expect(screen.queryByText('Разрешите уведомления браузера, чтобы получать новые задачи, сообщения и почту.')).toBeNull();
   });
 
+  it('shows the native offline snapshot time and cache-miss state without affecting the PWA', async () => {
+    window.__HUBIT_MOBILE_APP__ = true;
+    window.__HUBIT_MOBILE_OFFLINE_SESSION__ = {
+      user: { id: 7, username: 'mobile-test' },
+      cacheKey: 'a'.repeat(64),
+      readOnly: true,
+    };
+    window.localStorage.setItem('hubit:mobile-offline-last-sync:7', '1787400000000');
+    window.sessionStorage.setItem('hubit:mobile-offline-cache-miss:7', '1787400000100');
+
+    await act(async () => {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('status')).toHaveTextContent('Автономный режим');
+    expect(screen.getByRole('status')).toHaveTextContent('данные на');
+    expect(screen.getByRole('status')).toHaveTextContent('часть данных не загружена');
+    expect(screen.getByRole('status')).toHaveTextContent('изменения отключены');
+  });
+
+  it('replaces the offline status with a brief accessible recovery confirmation', async () => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Нет подключения · Показываем сохранённые данные, если они доступны.',
+    );
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Нет подключения · Показываем сохранённые данные, если они доступны.')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Подключение восстановлено · Обновляем данные.');
+
+    act(() => {
+      vi.advanceTimersByTime(4_200);
+    });
+
+    expect(screen.getByRole('status')).toHaveTextContent('Подключение восстановлено · Обновляем данные.');
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('uses an APK native-network event when WebView navigator.onLine is stale', async () => {
+    window.__HUBIT_MOBILE_APP__ = true;
+    window.__HUBIT_MOBILE_OFFLINE_SESSION__ = {
+      user: { id: 7, username: 'mobile-test' },
+      cacheKey: 'a'.repeat(64),
+      readOnly: false,
+    };
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      window.__HUBIT_MOBILE_OFFLINE_SESSION__.readOnly = true;
+      window.dispatchEvent(new CustomEvent('hubit:mobile-network-state', {
+        detail: { online: false, source: 'android' },
+      }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Автономный режим');
+
+    await act(async () => {
+      window.__HUBIT_MOBILE_OFFLINE_SESSION__.readOnly = false;
+      window.dispatchEvent(new CustomEvent('hubit:mobile-network-state', {
+        detail: { online: true, source: 'android' },
+      }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Подключение восстановлено');
+  });
+
+  it('ignores APK native-network events in the ordinary PWA', async () => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hubit:mobile-network-state', {
+        detail: { online: false, source: 'android' },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/Автономный режим|Нет подключения/)).toBeNull();
+  });
+
   it('auto-enables hub Windows notifications once when permission is already granted and no explicit choice exists', async () => {
     window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY);
     window.localStorage.removeItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY);
@@ -1939,6 +2164,7 @@ describe('MainLayout mobile bottom navigation', () => {
   });
 
   afterEach(() => {
+    delete window.__HUBIT_MOBILE_NATIVE_SHELL__;
     vi.useRealTimers();
   });
 
@@ -2112,6 +2338,30 @@ describe('MainLayout mobile bottom navigation', () => {
         'main-layout-mobile-bottom-nav-menu',
       ]);
       expect(screen.getByTestId('main-layout-mobile-bottom-nav-database')).toHaveClass('Mui-selected');
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('hides the web bottom bar in native shell but keeps the CSS height variable', async () => {
+    window.__HUBIT_MOBILE_NATIVE_SHELL__ = { bottomNav: 'native', bottomNavHeight: 64 };
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByTestId('main-layout-mobile-bottom-nav')).toBeNull();
+      expect(screen.getByTestId('main-layout-shell').style.getPropertyValue('--app-shell-mobile-bottom-nav-height'))
+        .toBe('calc(64px + env(safe-area-inset-bottom, 0px))');
     } finally {
       restoreMobileMatchMedia();
     }

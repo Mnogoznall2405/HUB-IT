@@ -311,6 +311,16 @@ def test_reads_recipients_endpoint_and_admin_only_delete(announcement_env):
     assert len(recipients_payload["users"]) >= 5
     assert any(item["value"] == "viewer" for item in recipients_payload["roles"])
 
+    bounded_response = client.get(
+        "/hub/users/announcement-recipients",
+        params={"q": "viewer", "limit": 1, "user_ids": "[2]"},
+    )
+    assert bounded_response.status_code == 200
+    bounded_payload = bounded_response.json()
+    assert [int(item["id"]) for item in bounded_payload["users"]] == [2, 3]
+    assert bounded_payload["total"] == 1
+    assert bounded_payload["limit"] == 1
+
     note = _create_announcement(
         client,
         title="Receipts Note",
@@ -459,6 +469,33 @@ def test_feed_uses_first_image_attachment_as_cover(announcement_env):
     assert [attachment["file_name"] for attachment in item_with_body["attachments"]] == ["cover.png"]
 
 
+def test_announcement_attachment_upload_is_idempotent(announcement_env):
+    client = announcement_env["client"]
+    post = _create_announcement(client, title="Idempotent attachment")
+    endpoint = f"/hub/announcements/{post['id']}/attachments"
+    upload = {
+        "data": {"client_upload_id": "native-upload-1"},
+        "files": {"file": ("plan.pdf", b"same-content", "application/pdf")},
+    }
+
+    first = client.post(endpoint, **upload)
+    second = client.post(endpoint, **upload)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    detail = client.get(f"/hub/announcements/{post['id']}")
+    assert detail.status_code == 200
+    assert [item["file_name"] for item in detail.json()["attachments"]] == ["plan.pdf"]
+
+    conflict = client.post(
+        endpoint,
+        data={"client_upload_id": "native-upload-1"},
+        files={"file": ("other.pdf", b"other-content", "application/pdf")},
+    )
+    assert conflict.status_code == 409
+
+
 def test_announcement_fanout_does_not_wait_for_each_push_delivery(announcement_env, monkeypatch):
     service = announcement_env["service"]
     actor = announcement_env["raw_users"][1]
@@ -489,7 +526,7 @@ def test_announcement_fanout_does_not_wait_for_each_push_delivery(announcement_e
         time.sleep(0.002)
         push_calls.append(int(payload["recipient_user_id"]))
 
-    monkeypatch.setattr(hub_service_module.app_push_service, "send_notification", slow_push)
+    monkeypatch.setattr(hub_service_module.app_push_service, "enqueue_notification", slow_push)
 
     started_at = time.perf_counter()
     created = service.create_announcement(
@@ -601,6 +638,69 @@ def test_replies_soft_delete_reactions_and_bookmarks(announcement_env):
     assert len(replies_after_delete) == 1
 
 
+def test_native_create_draft_and_comment_requests_are_idempotent(announcement_env):
+    client = announcement_env["client"]
+    set_user = announcement_env["set_user"]
+
+    create_data = {
+        "title": "Idempotent native post",
+        "body": "Same mobile payload",
+        "client_request_id": "native-create-1",
+    }
+    first = client.post(
+        "/hub/announcements",
+        data=create_data,
+        files={"files": ("plan.txt", b"same", "text/plain")},
+    )
+    second = client.post(
+        "/hub/announcements",
+        data=create_data,
+        files={"files": ("plan.txt", b"same", "text/plain")},
+    )
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    assert len(second.json()["attachments"]) == 1
+
+    changed = client.post(
+        "/hub/announcements",
+        json={**create_data, "body": "Different payload"},
+    )
+    assert changed.status_code == 400
+
+    draft_payload = {
+        "title": "Idempotent native draft",
+        "body": "Draft body",
+        "client_request_id": "native-draft-1",
+    }
+    draft_first = client.post("/hub/announcements/drafts", json=draft_payload)
+    draft_second = client.post("/hub/announcements/drafts", json=draft_payload)
+    assert draft_first.status_code == 200, draft_first.text
+    assert draft_second.status_code == 200, draft_second.text
+    assert draft_second.json()["id"] == draft_first.json()["id"]
+
+    set_user(2)
+    post_id = first.json()["id"]
+    comment_data = {"body": "Idempotent comment", "client_request_id": "native-comment-1"}
+    comment_first = client.post(
+        f"/hub/announcements/{post_id}/comments",
+        data=comment_data,
+        files={"files": ("proof.txt", b"same", "text/plain")},
+    )
+    comment_second = client.post(
+        f"/hub/announcements/{post_id}/comments",
+        data=comment_data,
+        files={"files": ("proof.txt", b"same", "text/plain")},
+    )
+    assert comment_first.status_code == 200, comment_first.text
+    assert comment_second.status_code == 200, comment_second.text
+    assert comment_second.json()["id"] == comment_first.json()["id"]
+    assert len(comment_second.json()["attachments"]) == 1
+
+    comments = client.get(f"/hub/announcements/{post_id}/comments", params={"sort": "oldest"}).json()
+    assert comments["comments_total"] == 1
+
+
 def test_announcement_poll_vote_changes_choice_and_locks_options(announcement_env):
     client = announcement_env["client"]
     set_user = announcement_env["set_user"]
@@ -650,6 +750,33 @@ def test_announcement_poll_vote_changes_choice_and_locks_options(announcement_en
         json={"poll": {"question": "Новый вопрос", "options": ["Да", "Нет"]}},
     )
     assert changed_options.status_code == 400
+
+
+def test_native_reaction_and_analytics_pages_are_bounded_without_changing_web_shape(announcement_env):
+    client = announcement_env["client"]
+    set_user = announcement_env["set_user"]
+    post_id = _create_announcement(client, title="Paged feed analytics")["id"]
+
+    set_user(2)
+    assert client.put(f"/hub/announcements/{post_id}/reaction", json={"reaction_type": "like"}).status_code == 200
+    set_user(3)
+    assert client.put(f"/hub/announcements/{post_id}/reaction", json={"reaction_type": "love"}).status_code == 200
+
+    unpaged = client.get(f"/hub/announcements/{post_id}/reactions")
+    assert unpaged.status_code == 200
+    assert set(unpaged.json()) == {"items"}
+
+    first_page = client.get(f"/hub/announcements/{post_id}/reactions", params={"limit": 1, "offset": 0})
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 2
+    assert len(first_page.json()["items"]) == 1
+    assert first_page.json()["next_offset"] == 1
+
+    set_user(1)
+    analytics = client.get(f"/hub/announcements/{post_id}/analytics", params={"limit": 1, "offset": 0})
+    assert analytics.status_code == 200, analytics.text
+    assert analytics.json()["items_total"] >= 1
+    assert len(analytics.json()["items"]) == 1
 
 
 def test_incomplete_poll_is_allowed_in_draft_but_not_on_publish(announcement_env):

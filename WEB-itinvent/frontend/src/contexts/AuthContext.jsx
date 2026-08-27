@@ -5,9 +5,15 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { authAPI } from '../api/client';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
+import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
 
 const AuthContext = createContext(null);
-const alwaysGrantedPermissions = ['address_book.read', 'announcements.read'];
+const alwaysGrantedPermissions = [
+  'address_book.read',
+  'announcements.read',
+  'chat.read',
+  'chat.write',
+];
 const rolePermissionFallback = {
   viewer: [
     'dashboard.read',
@@ -89,6 +95,7 @@ const rolePermissionFallback = {
     'tickets.personal_data.read',
     'address_book.read',
     'address_book.age.read',
+    'address_book.hire_date.read',
     'address_book.personal_phone.read',
     'address_book.personal_email.read',
     'company_structure.read',
@@ -533,6 +540,7 @@ export const AuthProvider = ({ children }) => {
       } catch (err) {
         console.error('Logout error:', err);
       } finally {
+        await clearMobileOfflineCache().catch(() => 0);
         const lastUsername = String(user?.username || '').trim();
         if (lastUsername) {
           localStorage.setItem('hubit.login.last-username', lastUsername);

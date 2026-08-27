@@ -2084,6 +2084,7 @@ describe('mailComposeAPI contract', () => {
     const { mailComposeAPI } = await importMailComposeAPI();
     const firstFile = new File(['draft-a'], 'draft-a.txt', { type: 'text/plain' });
     const secondFile = new File(['draft-b'], 'draft-b.txt', { type: 'text/plain' });
+    const inlineFile = new File(['image'], 'pasted.png', { type: 'image/png' });
     const onUploadProgress = vi.fn();
     const signal = new AbortController().signal;
 
@@ -2101,6 +2102,8 @@ describe('mailComposeAPI contract', () => {
       forwardMessageId: 'msg-2',
       retainExistingAttachments: ['att-1', 'att-2'],
       files: [firstFile, secondFile],
+      inlineFiles: [inlineFile],
+      inlineContentIds: ['hubit-inline-1@hubit.local'],
       onUploadProgress,
       signal,
     })).resolves.toEqual({ id: 'sent-1' });
@@ -2122,6 +2125,9 @@ describe('mailComposeAPI contract', () => {
     expect(JSON.parse(String(body.get('retain_existing_attachments_json') || '[]')))
       .toEqual(['att-1', 'att-2']);
     expect(body.getAll('files')).toEqual([firstFile, secondFile]);
+    expect(body.getAll('inline_files')).toEqual([inlineFile]);
+    expect(JSON.parse(String(body.get('inline_content_ids_json') || '[]')))
+      .toEqual(['hubit-inline-1@hubit.local']);
     expect(config).toEqual({
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -2149,6 +2155,7 @@ describe('mailComposeAPI contract', () => {
       body: '<p>Hello</p>',
     };
     const file = new File(['report'], 'report.txt', { type: 'text/plain' });
+    const inlineFile = new File(['image'], 'pasted.png', { type: 'image/png' });
     const onUploadProgress = vi.fn();
     const signal = new AbortController().signal;
 
@@ -2169,6 +2176,8 @@ describe('mailComposeAPI contract', () => {
       body: '<p>Body</p>',
       isHtml: false,
       files: [file],
+      inlineFiles: [inlineFile],
+      inlineContentIds: ['hubit-inline-2@hubit.local'],
       replyToMessageId: 'reply/1',
       forwardMessageId: 'forward/2',
       draftId: 'draft/3',
@@ -2190,6 +2199,9 @@ describe('mailComposeAPI contract', () => {
     expect(body.get('forward_message_id')).toBe('forward/2');
     expect(body.get('draft_id')).toBe('draft/3');
     expect(body.getAll('files')).toEqual([file]);
+    expect(body.getAll('inline_files')).toEqual([inlineFile]);
+    expect(JSON.parse(String(body.get('inline_content_ids_json') || '[]')))
+      .toEqual(['hubit-inline-2@hubit.local']);
     expect(config).toEqual({
       timeout: 115000,
       headers: {
@@ -3203,7 +3215,6 @@ describe('chatConversationsAPI contract', () => {
     });
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/chat/conversations', { params });
-    expect(apiClientMock.get.mock.calls[0][1].params).toBe(params);
     expect(apiClientMock.post).toHaveBeenCalledWith('/chat/conversations/direct', {
       peer_user_id: 42,
     });
@@ -3248,6 +3259,7 @@ describe('chatConversationDetailsAPI contract', () => {
   const conversationDetailMethods = [
     'getConversation',
     'updateConversationSettings',
+    'setPinnedMessage',
     'deleteConversation',
   ];
 
@@ -3256,6 +3268,9 @@ describe('chatConversationDetailsAPI contract', () => {
     apiClientMock.get.mockResolvedValue({ data: { id: 'conv/1 A', title: 'Ops' } });
     apiClientMock.patch = vi.fn().mockResolvedValue({
       data: { id: 'conv/1 A', notifications_enabled: false },
+    });
+    apiClientMock.put = vi.fn().mockResolvedValue({
+      data: { id: 'conv/1 A', pinned_message_id: 'msg-1' },
     });
     apiClientMock.delete = vi.fn().mockResolvedValue({
       data: { ok: true, conversation_id: 'conv/1 A' },
@@ -3278,6 +3293,8 @@ describe('chatConversationDetailsAPI contract', () => {
       .resolves.toEqual({ id: 'conv/1 A', notifications_enabled: false });
     await expect(chatConversationDetailsAPI.deleteConversation('conv/1 A'))
       .resolves.toEqual({ ok: true, conversation_id: 'conv/1 A' });
+    await expect(chatConversationDetailsAPI.setPinnedMessage('conv/1 A', 'msg-1'))
+      .resolves.toEqual({ id: 'conv/1 A', pinned_message_id: 'msg-1' });
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A', {
       signal: controller.signal,
@@ -3288,6 +3305,10 @@ describe('chatConversationDetailsAPI contract', () => {
     );
     expect(apiClientMock.patch.mock.calls[0][1]).toBe(payload);
     expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A');
+    expect(apiClientMock.put).toHaveBeenCalledWith(
+      '/chat/conversations/conv%2F1%20A/pinned-message',
+      { message_id: 'msg-1' },
+    );
   });
 
   it('keeps client chat conversation detail methods compatible with the dedicated module and re-export', async () => {
@@ -3550,6 +3571,7 @@ describe('chatThreadMessagesAPI contract', () => {
     'getThreadBootstrap',
     'getMessages',
     'searchMessages',
+    'searchMessagesGlobal',
     'getMessageReads',
     'markRead',
   ];
@@ -3577,6 +3599,8 @@ describe('chatThreadMessagesAPI contract', () => {
     })).resolves.toEqual({ items: [] });
     await expect(chatThreadMessagesAPI.searchMessages('conv/1 A', searchParams))
       .resolves.toEqual({ items: [] });
+    await expect(chatThreadMessagesAPI.searchMessagesGlobal({ q: 'disk', limit: 20 }))
+      .resolves.toEqual({ items: [] });
 
     expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/chat/conversations/conv%2F1%20A/thread-bootstrap', {
       params: bootstrapParams,
@@ -3588,6 +3612,9 @@ describe('chatThreadMessagesAPI contract', () => {
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(3, '/chat/conversations/conv%2F1%20A/messages/search', {
       params: searchParams,
+    });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(4, '/chat/messages/search', {
+      params: { q: 'disk', limit: 20 },
     });
   });
 

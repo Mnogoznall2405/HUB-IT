@@ -202,6 +202,14 @@ public partial class App : Application
                     webViewEnvironmentProvider,
                     window.CreateSecondaryWindowPlacement(),
                     route));
+            windowManager.ConfigureMailComposeFactory(route =>
+                new MailComposeWindow(
+                    options,
+                    notifications,
+                    windowManager,
+                    webViewEnvironmentProvider,
+                    window,
+                    route));
 
             _singleInstance.ActivationRequested += (_, eventArgs) =>
                 Dispatcher.BeginInvoke(() => HandleLaunchRequest(window, eventArgs.Request));

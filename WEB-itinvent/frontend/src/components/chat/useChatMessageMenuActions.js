@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 
+import { chatAPI } from '../../api/client';
 import { getMessagePreview } from './chatHelpers';
 
 export default function useChatMessageMenuActions({
@@ -145,12 +146,23 @@ export default function useChatMessageMenuActions({
     const nextPinnedMessage = buildPinnedMessagePayload(message);
     if (!nextPinnedMessage) return;
     const currentPinnedMessageId = String(pinnedMessage?.id || '').trim();
+    const conversationId = String(activeConversationIdRef.current || '').trim();
     if (currentPinnedMessageId && currentPinnedMessageId === nextPinnedMessage.id) {
       persistPinnedMessage(null);
+      if (conversationId && typeof chatAPI.setPinnedMessage === 'function') {
+        void chatAPI.setPinnedMessage(conversationId, null).catch(() => {
+          notifyWarning('Не удалось открепить сообщение на сервере.');
+        });
+      }
       return;
     }
     persistPinnedMessage(nextPinnedMessage);
-  }, [buildPinnedMessagePayload, closeMessageMenu, persistPinnedMessage, pinnedMessage?.id]);
+    if (conversationId && typeof chatAPI.setPinnedMessage === 'function') {
+      void chatAPI.setPinnedMessage(conversationId, nextPinnedMessage.id).catch(() => {
+        notifyWarning('Не удалось закрепить сообщение на сервере.');
+      });
+    }
+  }, [activeConversationIdRef, buildPinnedMessagePayload, closeMessageMenu, notifyWarning, persistPinnedMessage, pinnedMessage?.id]);
 
   const handleReportMessageFromMenu = useCallback(async (message) => {
     closeMessageMenu();

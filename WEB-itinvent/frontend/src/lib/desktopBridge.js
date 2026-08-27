@@ -25,6 +25,12 @@ const SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE = 'desktop.network.changed';
 const OPEN_COMMAND_PALETTE_MESSAGE_TYPE = 'command.openPalette';
 const VNC_PREFLIGHT_MESSAGE_TYPE = 'remote.vncPreflight';
 const VNC_PREFLIGHT_RESULT_MESSAGE_TYPE = 'remote.vncPreflightResult';
+const MAIL_COMPOSE_WINDOW_OPEN_MESSAGE_TYPE = 'mail.composeWindow.open';
+const MAIL_COMPOSE_WINDOW_RESULT_MESSAGE_TYPE = 'mail.composeWindow.result';
+const MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE = 'mail.composeWindow.closeRequested';
+const MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE = 'mail.composeWindow.closeResult';
+const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
+const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1000;
 const OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS = 600;
 const VNC_PREFLIGHT_RESULT_TIMEOUT_MS = 1000;
@@ -43,6 +49,7 @@ const MAXIMUM_QUICK_ROUTES = 12;
 const MAXIMUM_QUICK_ROUTE_ID_LENGTH = 32;
 const MAXIMUM_QUICK_ROUTE_LABEL_LENGTH = 48;
 const NOTIFICATION_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
+const MAIL_COMPOSE_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
 const CAPABILITY_PATTERN = /^[a-z][a-z0-9-]*$/u;
 const DESKTOP_DOWNLOADED_FILE_ACTIONS = new Set(['open', 'print', 'copy', 'saveAs']);
 const QUICK_ROUTE_ID_PATTERN = /^[a-z][a-z0-9-]*$/u;
@@ -60,6 +67,8 @@ let pendingDesktopQuickRoutes = null;
 let pendingOpenDownloadedFileRequest = null;
 let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
+let pendingMailComposeWindowRequest = null;
+const mailComposeCloseListeners = new Set();
 let legacyOpenIntentBusyUntil = 0;
 const navigationListeners = new Set();
 const lifecycleListeners = new Set();
@@ -69,6 +78,7 @@ let pendingLifecycleEvent = null;
 export const DESKTOP_WINDOW_STATE_CHANGED_EVENT = 'itinvent:desktop-window-state-changed';
 export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command-palette';
 export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
+export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
 export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
 export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
 
@@ -413,6 +423,62 @@ const dispatchDesktopNavigation = (route) => {
   navigationListeners.forEach((listener) => listener(route));
 };
 
+const isValidMailComposeRoute = (route) => {
+  if (!isValidRoute(route)) return false;
+  try {
+    const url = new URL(route, 'https://hubit.invalid');
+    if (url.pathname !== '/mail/compose' || url.hash) return false;
+    const entries = [...url.searchParams.entries()];
+    const keys = entries.map(([key]) => key);
+    if (
+      keys.some((key) => key !== 'draft_id' && key !== 'mailbox_id')
+      || new Set(keys).size !== keys.length
+      || entries.some(([, value]) => /[\u0000-\u001f\u007f]/u.test(value))
+    ) return false;
+    const draftId = String(url.searchParams.get('draft_id') || '').trim();
+    const mailboxId = String(url.searchParams.get('mailbox_id') || '').trim();
+    return draftId.length > 0 && draftId.length <= 1024 && mailboxId.length <= 256;
+  } catch {
+    return false;
+  }
+};
+
+const isValidMailComposeWindowResult = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === MAIL_COMPOSE_WINDOW_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['opened', 'activated', 'busy', 'failed'].includes(message.status);
+};
+
+const isValidMailComposeCloseRequested = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && message.type === MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId);
+};
+
+const isValidMailComposeCompleted = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 2
+    && message.type === MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION;
+};
+
 export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS } = {}) {
   if (bridgeReady) return Promise.resolve(true);
   if (initializationPromise) return initializationPromise;
@@ -516,6 +582,26 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
             status: message.status,
           });
         }
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeWindowResult(message)) {
+        const pending = pendingMailComposeWindowRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingMailComposeWindowRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({ status: message.status });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeCloseRequested(message)) {
+        mailComposeCloseListeners.forEach((listener) => listener(message.requestId));
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeCompleted(message)) {
+        window.dispatchEvent(new CustomEvent(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT));
         return;
       }
 
@@ -836,4 +922,71 @@ export function requestDesktopVncPreflight() {
       resolve({ available: false, status: 'unavailable' });
     }
   });
+}
+
+export function requestDesktopMailComposeWindow(route) {
+  if (!isDesktopCapabilityAvailable('mail-compose-window') || !isValidMailComposeRoute(route)) {
+    return Promise.resolve({ status: 'failed' });
+  }
+  if (pendingMailComposeWindowRequest) return Promise.resolve({ status: 'busy' });
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `compose-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'failed' });
+        return;
+      }
+      const timeoutId = window.setTimeout(() => {
+        if (pendingMailComposeWindowRequest?.requestId !== requestId) return;
+        pendingMailComposeWindowRequest = null;
+        resolve({ status: 'failed' });
+      }, 2000);
+      pendingMailComposeWindowRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: MAIL_COMPOSE_WINDOW_OPEN_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        route,
+      });
+    } catch {
+      pendingMailComposeWindowRequest = null;
+      resolve({ status: 'failed' });
+    }
+  });
+}
+
+export function subscribeDesktopMailComposeCloseRequested(listener) {
+  if (typeof listener !== 'function') return () => {};
+  mailComposeCloseListeners.add(listener);
+  return () => mailComposeCloseListeners.delete(listener);
+}
+
+export function completeDesktopMailComposeClose(requestId, { saved = false } = {}) {
+  if (!isValidBoundedText(requestId, 64) || !MAIL_COMPOSE_REQUEST_ID_PATTERN.test(requestId)) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      requestId,
+      status: saved ? 'saved' : 'failed',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function notifyDesktopMailComposeSent() {
+  if (!isDesktopCapabilityAvailable('mail-compose-window')) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({ type: MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE, version: DESKTOP_BRIDGE_PROTOCOL_VERSION });
+    return true;
+  } catch {
+    return false;
+  }
 }

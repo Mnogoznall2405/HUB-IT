@@ -40,7 +40,13 @@ export default function useChatReactionAndPinController({
 
   const handleUnpinPinnedMessage = useCallback(() => {
     persistPinnedMessage(null);
-  }, [persistPinnedMessage]);
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (conversationId && typeof chatAPI.setPinnedMessage === 'function') {
+      void chatAPI.setPinnedMessage(conversationId, null).catch((error) => {
+        notifyApiError(error, 'Не удалось открепить сообщение.');
+      });
+    }
+  }, [activeConversationIdRef, notifyApiError, persistPinnedMessage]);
 
   return {
     handleOpenPinnedMessage,

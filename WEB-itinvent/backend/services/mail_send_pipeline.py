@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from backend.services.mail_compose_orchestration import build_reply_forward_reference_headers
 from backend.services.mail_outgoing_html import extract_reply_new_body_html
+from backend.services.mail_outgoing_attachment import exchange_attachment_kwargs
 
 
 def _normalize_text(value: Any, default: str = "") -> str:
@@ -14,6 +15,10 @@ def _normalize_text(value: Any, default: str = "") -> str:
     except Exception:
         return default
     return text or default
+
+
+def _has_prepared_native_reply_quote(body: Any) -> bool:
+    return "data-mail-native-quote=" in _normalize_text(body).lower()
 
 
 class MailSendPipelineError(Exception):
@@ -74,6 +79,7 @@ class MailSendPipeline:
         item_message_id: Callable[[Any], str],
         resolve_attachment_id: Callable[[str], str],
         validate_attachments: Callable[[list[tuple[str, bytes]]], None],
+        collect_draft_attachments: Callable[..., list[Any]] | None = None,
     ) -> Any:
         HTMLBody, Mailbox, Message, FileAttachment = self.exchange_classes_factory()
         outgoing_attachments = list(attachments or [])
@@ -117,8 +123,9 @@ class MailSendPipeline:
                 )
             except Exception as exc:
                 raise MailSendPipelineError(f"Draft source message not found: {exc}") from exc
+            draft_attachment_collector = collect_draft_attachments or collect_forwarded_attachments
             outgoing_attachments.extend(
-                collect_forwarded_attachments(
+                draft_attachment_collector(
                     item=draft_item,
                     account=account,
                     retain_attachment_ids=retain_attachment_ids,
@@ -185,8 +192,8 @@ class MailSendPipeline:
                     msg.message_id = internet_message_id
                 except Exception:
                     pass
-            for filename, content in outgoing_attachments:
-                msg.attach(FileAttachment(name=filename, content=content))
+            for attachment in outgoing_attachments:
+                msg.attach(FileAttachment(**exchange_attachment_kwargs(attachment)))
             msg.send_and_save()
             return msg
         except MailSendPipelineError:
@@ -209,6 +216,10 @@ class MailSendPipeline:
         if reply_item is None or not send_plan.reply_to_message_id:
             return None
         if send_plan.draft_id or send_plan.forward_message_id or outgoing_attachments:
+            return None
+        # Native replies already contain the original formatted HTML. ReplyToItem
+        # would discard it and rebuild a flattened "Original Message" history.
+        if send_plan.is_html and _has_prepared_native_reply_quote(send_plan.body):
             return None
         create_reply = getattr(reply_item, "create_reply", None)
         if not callable(create_reply):

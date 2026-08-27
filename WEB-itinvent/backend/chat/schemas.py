@@ -10,6 +10,13 @@ class ChatUserSummary(BaseModel):
     id: int
     username: str
     full_name: Optional[str] = None
+    department: Optional[str] = None
+    job_title: Optional[str] = None
+    city: Optional[str] = None
+    corporate_email: Optional[str] = None
+    corporate_phone: Optional[str] = None
+    work_profile_source: Optional[Literal["zup", "hub"]] = None
+    work_profile_updated_at: Optional[str] = None
     role: str = "viewer"
     is_active: bool = True
     avatar_url: Optional[str] = None
@@ -110,6 +117,7 @@ class ChatConversationSummary(BaseModel):
     is_pinned: bool = False
     is_muted: bool = False
     is_archived: bool = False
+    pinned_message_id: Optional[str] = None
     viewer_member_role: Optional[str] = None
     member_preview: list[ChatMemberResponse] = Field(default_factory=list)
     direct_peer: Optional[ChatUserSummary] = None
@@ -137,9 +145,18 @@ class ChatMessageListResponse(BaseModel):
     viewer_last_read_at: Optional[str] = None
 
 
+class ChatPinnedMessagePreview(BaseModel):
+    id: str
+    sender_name: str = ""
+    preview: str = ""
+    created_at: str = ""
+
+
 class ChatThreadBootstrapResponse(ChatMessageListResponse):
     initial_anchor_mode: Literal["bottom", "message", "first_unread"] = "bottom"
     initial_anchor_message_id: Optional[str] = None
+    pinned_message_id: Optional[str] = None
+    pinned_message: Optional[ChatPinnedMessagePreview] = None
 
 
 class ChatThreadHydrateItem(BaseModel):
@@ -155,6 +172,21 @@ class ChatThreadHydrateResponse(BaseModel):
 
 class ChatMessageSearchResponse(BaseModel):
     items: list[ChatMessageResponse] = Field(default_factory=list)
+    has_more: bool = False
+
+
+class ChatGlobalMessageSearchHit(BaseModel):
+    conversation_id: str
+    conversation_title: str
+    conversation_kind: str
+    message_id: str
+    created_at: str
+    sender_name: str = ""
+    preview: str = ""
+
+
+class ChatGlobalMessageSearchResponse(BaseModel):
+    items: list[ChatGlobalMessageSearchHit] = Field(default_factory=list)
     has_more: bool = False
 
 
@@ -355,6 +387,16 @@ class UpdateConversationSettingsRequest(BaseModel):
     is_archived: Optional[bool] = None
 
 
+class ChatPinnedMessageRequest(BaseModel):
+    message_id: Optional[str] = None
+
+    @field_validator("message_id", mode="before")
+    @classmethod
+    def _normalize_message_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
 class ChatShareableTasksResponse(BaseModel):
     items: list[ChatTaskPreview] = Field(default_factory=list)
 
@@ -372,6 +414,7 @@ class ChatAttachmentResponse(BaseModel):
     original_url: Optional[str] = None
     download_url: Optional[str] = None
     variant_urls: dict[str, str] = Field(default_factory=dict)
+    preview_url: Optional[str] = None
     created_at: str
 
 
@@ -389,6 +432,7 @@ class ChatConversationAttachmentItemResponse(BaseModel):
     original_url: Optional[str] = None
     download_url: Optional[str] = None
     variant_urls: dict[str, str] = Field(default_factory=dict)
+    preview_url: Optional[str] = None
     created_at: str
 
 
@@ -609,6 +653,7 @@ class ChatFolderSummary(BaseModel):
 class ChatFolderListResponse(BaseModel):
     items: list[ChatFolderSummary] = Field(default_factory=list)
     conversation_ids_by_folder: dict[str, list[str]] = Field(default_factory=dict)
+    folder_unread_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ChatFolderCreateRequest(BaseModel):

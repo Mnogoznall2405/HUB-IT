@@ -34,13 +34,13 @@ async def dispatch_chat_ws_command(
     if message_type == "chat.subscribe_inbox":
         chat_api.chat_realtime.subscribe_inbox(connection_id)
         snapshot = await chat_api._run_chat_call(
-            chat_api.chat_service.get_unread_summary,
+            chat_api.chat_service.get_realtime_snapshot,
             current_user_id=int(current_user.id),
         )
         await chat_api.chat_realtime.send_to_connection(
             connection_id,
             event_type="chat.snapshot",
-            payload={"unread_summary": snapshot},
+            payload=snapshot,
             request_id=request_id,
         )
         return

@@ -543,11 +543,15 @@ def looks_like_hostname_query(value: Any) -> bool:
 
     Avoid treating hyphenated file basenames (e.g. unique-secret-name) as hosts:
     require a digit, a dot (FQDN), or a short site-style prefix (TMN-PC…).
+    IPv4 text and partial IPv4 prefixes must stay on the general search path,
+    where Scan Center also checks the resolved IP address.
     """
     text = str(value or "").strip()
     if len(text) < 3 or len(text) > 63:
         return False
     if not _HOSTNAME_LIKE_QUERY_RE.fullmatch(text):
+        return False
+    if "." in text and all(ch.isdigit() or ch == "." for ch in text):
         return False
     if any(ch.isdigit() for ch in text) or "." in text:
         return True

@@ -31,17 +31,25 @@ from backend.chat.lean_ack import (
 from backend.chat.models import ChatConversation, ChatConversationUserState, ChatEventOutbox, ChatMessage, ChatMessageAttachment
 from backend.chat.utils import normalize_text as _normalize_text
 
-CLIENT_MESSAGE_DEDUP_CONSTRAINT = "uq_chat_messages_conversation_sender_client_message"
+CLIENT_MESSAGE_DEDUP_CONSTRAINTS = {
+    "uq_chat_messages_conversation_sender_client_message",
+    "idx_chat_messages_conversation_sender_client_message",
+}
 
 
 def is_expected_client_message_dedup_violation(exc: BaseException) -> bool:
     """True only for the client_message_id unique constraint (not seq uniqueness)."""
     chunks: list[str] = []
+    constraint_names: set[str] = set()
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         chunks.append(str(current))
+        diag = getattr(current, "diag", None)
+        constraint_name = getattr(diag, "constraint_name", None) or getattr(current, "constraint_name", None)
+        if constraint_name:
+            constraint_names.add(str(constraint_name).lower())
         orig = getattr(current, "orig", None)
         if isinstance(orig, BaseException):
             chunks.append(str(orig))
@@ -49,9 +57,12 @@ def is_expected_client_message_dedup_violation(exc: BaseException) -> bool:
             continue
         current = current.__cause__ if isinstance(current.__cause__, BaseException) else None
     text = " ".join(chunks).lower()
-    if CLIENT_MESSAGE_DEDUP_CONSTRAINT in text:
+    if CLIENT_MESSAGE_DEDUP_CONSTRAINTS.intersection(constraint_names):
         return True
-    if "unique" in text and "client_message_id" in text and "conversation_seq" not in text:
+    if any(constraint_name in text for constraint_name in CLIENT_MESSAGE_DEDUP_CONSTRAINTS):
+        return True
+    error_text = text.split("[sql:", 1)[0]
+    if "unique" in error_text and "client_message_id" in error_text and "conversation_seq" not in error_text:
         return True
     return False
 

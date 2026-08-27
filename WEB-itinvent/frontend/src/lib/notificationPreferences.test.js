@@ -22,6 +22,9 @@ describe('notificationPreferences', () => {
       task_email: false,
       announcements: false,
       chat: true,
+      chat_direct: true,
+      chat_group: true,
+      chat_task: true,
     });
   });
 
@@ -31,6 +34,9 @@ describe('notificationPreferences', () => {
     [{ channel: 'feed' }, 'announcements'],
     [{ channel: 'chat' }, 'chat'],
     [{ channel: 'mention' }, 'chat'],
+    [{ channel: 'chat', conversation_kind: 'direct' }, 'chat_direct'],
+    [{ channel: 'chat', conversation_kind: 'group' }, 'chat_group'],
+    [{ channel: 'mention', conversation_kind: 'task' }, 'chat_task'],
     [{ entity_type: 'task' }, 'tasks'],
     [{ entity_type: 'announcement' }, 'announcements'],
   ])('maps %j to the existing %s preference', (notification, disabledKey) => {
@@ -62,7 +68,19 @@ describe('notificationPreferences', () => {
       task_email: true,
       announcements: true,
       chat: true,
+      chat_direct: true,
+      chat_group: true,
+      chat_task: true,
     });
     window.removeEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, listener);
+  });
+
+  it('inherits a legacy disabled chat switch for all new chat categories', () => {
+    expect(normalizeNotificationPreferences({ chat: false })).toEqual(expect.objectContaining({
+      chat: false,
+      chat_direct: false,
+      chat_group: false,
+      chat_task: false,
+    }));
   });
 });

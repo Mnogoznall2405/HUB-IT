@@ -420,6 +420,30 @@ class ChatConversationReadStore:
         self._service._cache_set(user_id=int(current_user_id), bucket="unread_summary", value=result, ttl_sec=5)
         return result
 
+    def get_muted_conversation_ids(self, *, current_user_id: int) -> list[str]:
+        normalized_user_id = int(current_user_id)
+        with chat_session() as session:
+            conversation_ids = session.execute(
+                select(ChatConversationUserState.conversation_id)
+                .join(
+                    ChatMember,
+                    and_(
+                        ChatMember.conversation_id == ChatConversationUserState.conversation_id,
+                        ChatMember.user_id == normalized_user_id,
+                        ChatMember.left_at.is_(None),
+                    ),
+                )
+                .where(
+                    ChatConversationUserState.user_id == normalized_user_id,
+                    ChatConversationUserState.is_muted.is_(True),
+                )
+            ).scalars()
+            return sorted({
+                normalized_id
+                for item in conversation_ids
+                if (normalized_id := _normalize_text(item))
+            })
+
     def get_unread_summaries(
         self,
         *,
@@ -446,10 +470,25 @@ class ChatConversationReadStore:
                     ChatConversationUserState.user_id,
                     func.coalesce(func.sum(ChatConversationUserState.unread_count), 0),
                     func.count(ChatConversationUserState.conversation_id),
-                ).where(
+                )
+                .select_from(ChatConversationUserState)
+                .join(
+                    ChatMember,
+                    and_(
+                        ChatMember.conversation_id == ChatConversationUserState.conversation_id,
+                        ChatMember.user_id == ChatConversationUserState.user_id,
+                        ChatMember.left_at.is_(None),
+                    ),
+                )
+                .join(
+                    ChatConversation,
+                    ChatConversation.id == ChatConversationUserState.conversation_id,
+                )
+                .where(
                     ChatConversationUserState.user_id.in_(normalized_user_ids),
                     ChatConversationUserState.unread_count > 0,
                     ChatConversationUserState.is_archived.is_(False),
+                    ChatConversation.is_archived.is_(False),
                 ).group_by(ChatConversationUserState.user_id)
             ).all()
         for user_id, messages_unread_total, conversations_unread in unread_rows:
@@ -708,5 +747,3 @@ class ChatConversationReadStore:
                 "has_more": has_more,
                 "next_before_attachment_id": visible_rows[-1].id if has_more and visible_rows else None,
             }
-
-

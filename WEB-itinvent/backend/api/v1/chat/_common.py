@@ -274,6 +274,22 @@ def _raise_chat_http_error(exc: Exception) -> None:
         raise
     except Exception:
         pass
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        sqlstate = str(getattr(current, "sqlstate", None) or getattr(current, "pgcode", None) or "")
+        if sqlstate == "57014" or current.__class__.__name__.lower() in {"querycanceled", "querycancelederror"}:
+            raise HTTPException(
+                status_code=503,
+                detail="Chat database query timed out",
+                headers={"Retry-After": "1"},
+            ) from exc
+        original = getattr(current, "orig", None)
+        if isinstance(original, BaseException) and id(original) not in seen:
+            current = original
+            continue
+        current = current.__cause__ if isinstance(current.__cause__, BaseException) else None
     if isinstance(exc, PermissionError):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if isinstance(exc, LookupError):

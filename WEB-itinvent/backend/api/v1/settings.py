@@ -17,6 +17,7 @@ from backend.services.app_settings_service import app_settings_service
 from backend.services.env_settings_service import env_settings_service
 from backend.services.settings_service import settings_service
 from backend.services.app_push_service import app_push_service
+from backend.services.app_push_outbox_service import app_push_outbox_service
 from backend.services.native_push_service import native_push_service
 from backend.services.notification_preferences_service import notification_preferences_service
 
@@ -145,6 +146,12 @@ class NativePushRuntimeStatusResponse(BaseModel):
     storage_available: bool = False
     project_id_present: bool = False
     service_account_present: bool = False
+    outbox_enabled: bool = False
+    outbox_queued: int = 0
+    outbox_ready: int = 0
+    outbox_processing: int = 0
+    outbox_failed: int = 0
+    outbox_oldest_queued_age_sec: float = 0.0
 
 
 class NotificationPushDebugPayload(BaseModel):
@@ -155,6 +162,7 @@ class NotificationPushDebugPayload(BaseModel):
 class NotificationPreferencesResponse(BaseModel):
     user_id: int
     channels: dict[str, bool] = Field(default_factory=dict)
+    quiet_hours: dict[str, object] = Field(default_factory=dict)
 
 
 class NotificationPreferencesPatchRequest(BaseModel):
@@ -163,6 +171,13 @@ class NotificationPreferencesPatchRequest(BaseModel):
     task_email: Optional[bool] = None
     announcements: Optional[bool] = None
     chat: Optional[bool] = None
+    chat_direct: Optional[bool] = None
+    chat_group: Optional[bool] = None
+    chat_task: Optional[bool] = None
+    quiet_hours_enabled: Optional[bool] = None
+    quiet_hours_start: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    quiet_hours_end: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    quiet_hours_timezone: Optional[str] = Field(default=None, min_length=1, max_length=80)
 
 
 @router.get("/me", response_model=UserSettingsResponse)
@@ -254,7 +269,23 @@ async def get_native_push_status(
     current_user: User = Depends(get_current_active_user),
 ):
     _ = current_user
-    return NativePushRuntimeStatusResponse(**native_push_service.get_runtime_status())
+    payload = native_push_service.get_runtime_status()
+    try:
+        outbox = await run_in_threadpool(app_push_outbox_service.get_backlog_snapshot)
+    except Exception:
+        logger.warning("Failed to read app push outbox status", exc_info=True)
+        outbox = {}
+    payload.update(
+        {
+            "outbox_enabled": bool(outbox.get("enabled", False)),
+            "outbox_queued": int(outbox.get("queued", 0) or 0),
+            "outbox_ready": int(outbox.get("ready", 0) or 0),
+            "outbox_processing": int(outbox.get("processing", 0) or 0),
+            "outbox_failed": int(outbox.get("failed", 0) or 0),
+            "outbox_oldest_queued_age_sec": float(outbox.get("oldest_queued_age_sec", 0.0) or 0.0),
+        }
+    )
+    return NativePushRuntimeStatusResponse(**payload)
 
 
 @router.put("/notifications/native-push-token", response_model=NativePushTokenStatusResponse)
@@ -305,11 +336,14 @@ async def patch_notification_preferences(
     current_user: User = Depends(get_current_active_user),
 ):
     payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-    data = await run_in_threadpool(
-        notification_preferences_service.update_preferences,
-        user_id=int(current_user.id),
-        patch=payload_data or {},
-    )
+    try:
+        data = await run_in_threadpool(
+            notification_preferences_service.update_preferences,
+            user_id=int(current_user.id),
+            patch=payload_data or {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return NotificationPreferencesResponse(**data)
 
 

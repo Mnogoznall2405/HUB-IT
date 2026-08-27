@@ -8,6 +8,8 @@ import {
 } from './mailComposeState';
 import { getMailPersonEmail } from './mailPeople';
 import { splitQuotedHistoryHtml } from './mailQuotedHistory';
+import { consumeMobileIncomingShare } from '../../lib/mobileIncomingShare';
+import { plainTextToComposeHtml } from '../../lib/mailComposePrefill';
 
 const getDefaultStorage = () => {
   if (typeof window === 'undefined') return null;
@@ -29,6 +31,7 @@ export default function useMailComposeSessionController({
   locationSearch = '',
   navigate,
   storage = getDefaultStorage(),
+  consumeIncomingShare = consumeMobileIncomingShare,
 } = {}) {
   const [composeSession, setComposeSession] = useState(null);
   const composeSessionCounterRef = useRef(0);
@@ -62,6 +65,22 @@ export default function useMailComposeSessionController({
 
   useEffect(() => {
     const searchParams = new URLSearchParams(locationSearch || '');
+    if (searchParams.get('compose') === 'android-share') {
+      const share = consumeIncomingShare('mail');
+      if (share) {
+        openComposeSession({
+          composeMode: 'new',
+          composeFromMailboxId: resolveComposeMailboxId(),
+          subject: share.subject,
+          composeBody: plainTextToComposeHtml(share.text),
+        });
+      }
+      searchParams.delete('compose');
+      searchParams.delete('android_share_id');
+      const nextQuery = searchParams.toString();
+      navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
+      return;
+    }
     if (searchParams.get('compose') === 'new') {
       openCompose();
       searchParams.delete('compose');
@@ -79,7 +98,7 @@ export default function useMailComposeSessionController({
     searchParams.delete('compose_to');
     const nextQuery = searchParams.toString();
     navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
-  }, [locationSearch, navigate, openCompose, openComposeSession, resolveComposeMailboxId]);
+  }, [consumeIncomingShare, locationSearch, navigate, openCompose, openComposeSession, resolveComposeMailboxId]);
 
   const openComposeFromMessage = useCallback((mode) => {
     if (!selectedMessage) return;

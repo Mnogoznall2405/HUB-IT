@@ -134,6 +134,8 @@ def test_enable_postgres_dual_node_is_validate_by_default_and_has_rollback():
     assert "ecosystem.chat.scale.config.js" in source
     assert "delete itinvent-backend" not in source
     assert "Remove-Pm2ProcessIfPresent" in source
+    assert "& $Pm2Command pid $Name" in source
+    assert "if ($processIds.Count -eq 0)" in source
     assert "Name 'itinvent-chat'" in source
     assert "Name 'itinvent-chat-preview-worker'" in source
     assert "CHAT_REALTIME_TRANSPORT" in source
@@ -167,9 +169,11 @@ def test_chat_scale_pool_capacity_matches_cluster_budget():
     process_count = _env_int("CHAT_PROCESS_COUNT")
     cluster_budget = _env_int("CHAT_DB_CONNECTION_BUDGET")
 
-    # Each node also owns dedicated PostgreSQL publisher and LISTEN
+    # Each node also owns dedicated PostgreSQL publisher, LISTEN and presence
     # connections outside the SQLAlchemy data pools.
-    realtime_connections_per_node = 2
+    realtime_connections_per_node = _env_int(
+        "CHAT_POSTGRES_REALTIME_DEDICATED_CONNECTIONS"
+    )
     effective_cluster_capacity = process_count * (
         write_capacity + read_capacity + realtime_connections_per_node
     )
@@ -189,11 +193,13 @@ def test_postgres_scale_restart_is_rolling_and_cannot_activate_cluster():
     assert "CHAT_REALTIME_TRANSPORT') -ne 'postgres'" in source
     assert "CHAT_REALTIME_REQUIRED') -ne '1'" in source
     assert "Refusing to activate scale mode from a restart script" in source
-    assert "pid $requiredName" in source
+    assert "describe $requiredName" in source
     assert "ConvertFrom-Json" not in source
     assert source.index("Name = 'itinvent-chat-a'") < source.index("Name = 'itinvent-chat-b'")
     assert "127.0.0.1:8002/health/ready" in source
     assert "127.0.0.1:8004/health/ready" in source
+    assert "Stop-ChatNodeForRestart" in source
+    assert "taskkill /PID $listenerPid /T /F" in source
     assert "realtime_subscriber_ready -eq $true" in source
     assert "pid 'itinvent-chat-preview-worker'" in source
     assert "delete 'itinvent-chat-preview-worker'" in source

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getCurrentUserMock = vi.fn();
 const clearAllMailRecentCacheMock = vi.fn();
 const disableChatPushSubscriptionMock = vi.fn();
+const clearMobileOfflineCacheMock = vi.fn();
 const logoutMock = vi.fn();
 
 vi.mock('../api/client', () => ({
@@ -22,6 +23,10 @@ vi.mock('../lib/chatNotifications', () => ({
   disableChatPushSubscription: (...args) => disableChatPushSubscriptionMock(...args),
 }));
 
+vi.mock('../lib/mobileOfflineCache', () => ({
+  clearMobileOfflineCache: (...args) => clearMobileOfflineCacheMock(...args),
+}));
+
 import { AuthProvider, useAuth } from './AuthContext';
 
 function AuthProbe() {
@@ -34,6 +39,9 @@ function AuthProbe() {
       <div data-testid="can-task-create">{String(hasPermission('tasks.create'))}</div>
       <div data-testid="can-tickets">{String(hasPermission('tickets.read'))}</div>
       <div data-testid="can-address-book">{String(hasPermission('address_book.read'))}</div>
+      <div data-testid="can-address-book-hire-date">{String(hasPermission('address_book.hire_date.read'))}</div>
+      <div data-testid="can-chat-read">{String(hasPermission('chat.read'))}</div>
+      <div data-testid="can-chat-write">{String(hasPermission('chat.write'))}</div>
       <div data-testid="can-ai-sandbox">{String(hasPermission('chat.ai.sandbox'))}</div>
       <button type="button" onClick={() => refreshSession({ suppressAuthRequired: true })}>
         refresh
@@ -59,6 +67,7 @@ describe('AuthProvider startup', () => {
     vi.clearAllMocks();
     logoutMock.mockResolvedValue({ ok: true });
     disableChatPushSubscriptionMock.mockResolvedValue(undefined);
+    clearMobileOfflineCacheMock.mockResolvedValue(0);
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
@@ -248,6 +257,7 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
     expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
     expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-address-book-hire-date')).toHaveTextContent('false');
     expect(screen.getByTestId('can-ai-sandbox')).toHaveTextContent('false');
   });
 
@@ -257,6 +267,7 @@ describe('AuthProvider startup', () => {
 
     await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('admin'));
     expect(screen.getByTestId('can-ai-sandbox')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-address-book-hire-date')).toHaveTextContent('true');
   });
 
   it('grants sandbox access to a pilot user with an explicit server permission', async () => {
@@ -284,9 +295,10 @@ describe('AuthProvider startup', () => {
       expect(localStorage.getItem('hubit.login.last-username')).toBe('ivanov');
     });
     expect(localStorage.getItem('user')).toBeNull();
+    expect(clearMobileOfflineCacheMock).toHaveBeenCalledTimes(1);
   });
 
-  it('always grants basic address-book access when the server permission list is empty', async () => {
+  it('always grants basic address-book and chat access when the server permission list is empty', async () => {
     getCurrentUserMock.mockResolvedValue({ id: 10, username: 'custom', role: 'viewer', permissions: [] });
 
     renderAuth('/dashboard');
@@ -295,5 +307,7 @@ describe('AuthProvider startup', () => {
       expect(screen.getByTestId('username')).toHaveTextContent('custom');
     });
     expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-chat-read')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-chat-write')).toHaveTextContent('true');
   });
 });

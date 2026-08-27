@@ -1,46 +1,41 @@
 #!/usr/bin/env python3
-"""Generate minimal HUB-IT launcher icons for Expo prebuild."""
+"""Generate Expo assets from the existing HUB-IT brand mark."""
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1] / "assets"
-PRIMARY = (25, 118, 210)  # #1976d2
-WHITE = (255, 255, 255)
+MOBILE_ROOT = Path(__file__).resolve().parents[1]
+ASSETS_ROOT = MOBILE_ROOT / "assets"
+SOURCE = MOBILE_ROOT.parent / "WEB-itinvent" / "frontend" / "scripts" / "icon-source.png"
+NAVY = (7, 29, 48, 255)
+TRANSPARENT = (0, 0, 0, 0)
 
 
-def make_icon(size: int) -> Image.Image:
-    img = Image.new("RGBA", (size, size), PRIMARY + (255,))
-    draw = ImageDraw.Draw(img)
-    margin = size // 6
-    draw.rounded_rectangle(
-        (margin, margin, size - margin, size - margin),
-        radius=size // 5,
-        fill=WHITE,
-    )
-    font_size = size // 2
-    try:
-        from PIL import ImageFont
+def load_mark() -> Image.Image:
+    if not SOURCE.exists():
+        raise FileNotFoundError(f"HUB-IT brand source was not found: {SOURCE}")
+    mark = Image.open(SOURCE).convert("RGBA")
+    alpha_box = mark.getchannel("A").getbbox()
+    return mark.crop(alpha_box) if alpha_box else mark
 
-        font = ImageFont.truetype("arial.ttf", font_size)
-    except OSError:
-        font = ImageFont.load_default()
-    text = "H"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(((size - tw) / 2, (size - th) / 2 - size * 0.05), text, fill=PRIMARY, font=font)
-    return img
+
+def compose(mark: Image.Image, size: int, fraction: float, background: tuple[int, ...]) -> Image.Image:
+    canvas = Image.new("RGBA", (size, size), background)
+    target = int(size * fraction)
+    logo = mark.copy()
+    logo.thumbnail((target, target), Image.Resampling.LANCZOS)
+    origin = ((size - logo.width) // 2, (size - logo.height) // 2)
+    canvas.alpha_composite(logo, origin)
+    return canvas
 
 
 def main() -> None:
-    ROOT.mkdir(parents=True, exist_ok=True)
-    make_icon(1024).save(ROOT / "icon.png")
-    make_icon(1024).save(ROOT / "adaptive-icon.png")
-    splash = Image.new("RGBA", (1284, 2778), (245, 247, 250, 255))
-    icon = make_icon(512)
-    splash.paste(icon, ((1284 - 512) // 2, (2778 - 512) // 2), icon)
-    splash.save(ROOT / "splash.png")
-    print(f"Wrote icons to {ROOT}")
+    ASSETS_ROOT.mkdir(parents=True, exist_ok=True)
+    mark = load_mark()
+    compose(mark, 1024, 0.68, NAVY).save(ASSETS_ROOT / "icon.png")
+    compose(mark, 1024, 0.56, TRANSPARENT).save(ASSETS_ROOT / "adaptive-icon.png")
+    compose(mark, 1024, 0.62, TRANSPARENT).save(ASSETS_ROOT / "splash.png")
+    print(f"Wrote HUB-IT assets to {ASSETS_ROOT}")
 
 
 if __name__ == "__main__":

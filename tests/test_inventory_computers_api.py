@@ -577,6 +577,52 @@ def test_search_list_items_are_trimmed_and_detail_endpoint_is_full(monkeypatch):
     assert isinstance(detail.get("monitors"), list)
 
 
+def test_mobile_computers_contract_is_allowlisted_and_path_free(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+
+    page = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        search_fields="",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=0,
+        include_summary=False,
+        mobile_safe=True,
+    )
+    list_item = page["items"][0]
+    assert set(list_item) <= set(inventory._MOBILE_COMPUTER_LIST_FIELDS) | {"logical_disks", "storage"}
+    assert "user_profile_sizes" not in list_item
+    assert "outlook_active_path" not in list_item
+    assert "network_link" not in list_item
+
+    detail = inventory.get_computer_detail(
+        mac_address=list_item["mac_address"],
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        mobile_safe=True,
+    )
+    assert set(detail) <= set(inventory._MOBILE_COMPUTER_DETAIL_FIELDS) | {"logical_disks", "storage", "network"}
+    assert "user_profile_sizes" not in detail
+    assert "outlook_active_path" not in detail
+    assert "recent_changes" not in detail
+    assert "network_link" not in detail
+    assert set(detail["network"]) == {"devices"}
+    assert all(
+        set(device) <= set(inventory._MOBILE_NETWORK_DEVICE_FIELDS)
+        for device in detail["network"]["devices"]
+    )
+
+
 def test_is_vm_only_172_host_rule():
     assert inventory._is_vm_only_172_host({"ip_list": ["172.16.1.10", "172.31.0.2"]}) is True
     assert inventory._is_vm_only_172_host({"ip_primary": "172.20.0.5", "ip_list": []}) is True
@@ -658,6 +704,40 @@ def test_hide_unhide_requires_app_store(monkeypatch):
     assert restored["ok"] is True
     assert restored["is_hidden"] is False
     assert [item["hidden"] for item in fake.calls] == [True, False]
+
+
+def test_hide_unhide_reject_custom_read_only_user_before_store_access(monkeypatch):
+    read_only_user = inventory.User(
+        id=2,
+        username="operator",
+        role="operator",
+        permissions=["computers.read"],
+        use_custom_permissions=True,
+        custom_permissions=["computers.read"],
+    )
+    monkeypatch.setattr(
+        inventory,
+        "_get_inventory_app_store",
+        lambda: (_ for _ in ()).throw(AssertionError("store must not be reached")),
+    )
+
+    for action in (
+        lambda: inventory.hide_computer(
+            mac_address="AA-BB-CC-DD-EE-01",
+            current_user=read_only_user,
+            reason="noise",
+        ),
+        lambda: inventory.unhide_computer(
+            mac_address="AA-BB-CC-DD-EE-01",
+            current_user=read_only_user,
+        ),
+    ):
+        try:
+            action()
+            assert False, "expected 403"
+        except inventory.HTTPException as exc:
+            assert exc.status_code == 403
+            assert "computers.manage" in str(exc.detail)
 
 
 def test_upsert_host_does_not_clear_soft_hide(monkeypatch):

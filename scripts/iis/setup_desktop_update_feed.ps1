@@ -44,21 +44,21 @@ $webConfig = @'
         </rule>
       </rules>
       <outboundRules>
-        <rule name="Immutable versioned Desktop Setup" preCondition="DesktopSetupResponse">
+        <rule name="Immutable versioned application package" preCondition="VersionedApplicationPackageResponse">
           <match serverVariable="RESPONSE_Cache_Control" pattern=".*" />
           <action type="Rewrite" value="public, max-age=31536000, immutable" />
         </rule>
-        <rule name="Do not browser-cache latest Desktop manifest" preCondition="DesktopLatestResponse">
+        <rule name="Do not browser-cache latest application manifest" preCondition="LatestApplicationManifestResponse">
           <match serverVariable="RESPONSE_Cache_Control" pattern=".*" />
           <action type="Rewrite" value="public, max-age=0, s-maxage=60, must-revalidate" />
         </rule>
         <preConditions>
-          <preCondition name="DesktopSetupResponse">
-            <add input="{REQUEST_URI}" pattern="^/desktop-updates/stable/[0-9]+\.[0-9]+\.[0-9]+/HUB-Desktop-Setup-[0-9]+\.[0-9]+\.[0-9]+-win-x64\.exe$" />
+          <preCondition name="VersionedApplicationPackageResponse">
+            <add input="{REQUEST_URI}" pattern="^/desktop-updates/(stable/[0-9]+\.[0-9]+\.[0-9]+/HUB-Desktop-Setup-[0-9]+\.[0-9]+\.[0-9]+-win-x64\.exe|mobile/preview/[0-9]+\.[0-9]+\.[0-9]+/HUB-IT-Mobile-Preview-[0-9]+\.[0-9]+\.[0-9]+\.apk)$" />
             <add input="{RESPONSE_STATUS}" pattern="^(200|206)$" />
           </preCondition>
-          <preCondition name="DesktopLatestResponse">
-            <add input="{REQUEST_URI}" pattern="^/desktop-updates/stable/latest\.json$" />
+          <preCondition name="LatestApplicationManifestResponse">
+            <add input="{REQUEST_URI}" pattern="^/desktop-updates/(stable|mobile/preview)/latest\.json$" />
             <add input="{RESPONSE_STATUS}" pattern="^200$" />
           </preCondition>
         </preConditions>
@@ -69,6 +69,8 @@ $webConfig = @'
       <mimeMap fileExtension=".json" mimeType="application/json" />
       <remove fileExtension=".exe" />
       <mimeMap fileExtension=".exe" mimeType="application/octet-stream" />
+      <remove fileExtension=".apk" />
+      <mimeMap fileExtension=".apk" mimeType="application/vnd.android.package-archive" />
       <clientCache cacheControlMode="UseMaxAge" cacheControlMaxAge="365.00:00:00" />
     </staticContent>
     <httpProtocol>
@@ -79,6 +81,13 @@ $webConfig = @'
     </httpProtocol>
   </system.webServer>
   <location path="stable/latest.json">
+    <system.webServer>
+      <staticContent>
+        <clientCache cacheControlMode="UseMaxAge" cacheControlMaxAge="00.00:00:00" />
+      </staticContent>
+    </system.webServer>
+  </location>
+  <location path="mobile/preview/latest.json">
     <system.webServer>
       <staticContent>
         <clientCache cacheControlMode="UseMaxAge" cacheControlMaxAge="00.00:00:00" />

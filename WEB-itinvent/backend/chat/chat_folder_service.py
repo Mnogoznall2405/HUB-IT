@@ -24,6 +24,7 @@ from backend.chat.folder_mutations import (
     serialize_chat_folder,
     sum_unread_for_conversations,
 )
+from backend.chat.folder_unread import compute_system_folder_unread_counts
 from backend.chat.models import ChatFolder, ChatFolderConversation
 from backend.chat.utils import normalize_text as _normalize_text
 
@@ -82,7 +83,11 @@ class ChatFolderService:
                         unread_count=sum(unread_by_conversation.get(conv_id, 0) for conv_id in folder_conversation_ids),
                     )
                 )
-            payload = {"items": items, "conversation_ids_by_folder": conversation_ids_by_folder}
+            payload = {
+                "items": items,
+                "conversation_ids_by_folder": conversation_ids_by_folder,
+                "folder_unread_counts": compute_system_folder_unread_counts(session, user_id=user_id),
+            }
         self._service._cache_set(user_id=user_id, bucket="folders", extra="", value=payload)
         return payload
 

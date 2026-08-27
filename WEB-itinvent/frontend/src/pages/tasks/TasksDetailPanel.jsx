@@ -48,6 +48,9 @@ export default function TasksDetailPanel() {
       onBack={detail.closeTaskDetails}
       onBackFromChecklist={detail.closeMobileTaskChecklist}
       onCopyLink={() => void detail.handleCopyTaskLink(detail.detailsTask?.id, detail.selectedTaskTab)}
+      onShareLink={detail.nativeTaskShareAvailable
+        ? () => void detail.handleShareTaskLink(detail.detailsTask, detail.selectedTaskTab)
+        : undefined}
       onOpenEditTask={detail.openEditTask}
       onDeleteTask={(task) => void detail.handleDeleteTask(task)}
       onOpenTaskDiscussion={detail.handleOpenTaskDiscussion}

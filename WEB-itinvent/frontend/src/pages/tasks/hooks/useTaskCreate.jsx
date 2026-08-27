@@ -6,6 +6,10 @@ import useTaskEditForm from './useTaskEditForm';
 import useTaskWorkflowActions from './useTaskWorkflowActions';
 import { PENDING_TASK_CREATE_STORAGE_KEY } from '../taskUrlState';
 import { toDateTimeInput } from '../taskFormatters';
+import {
+  buildTaskDraftFromMobileIncomingShare,
+  consumeMobileIncomingShare,
+} from '../../../lib/mobileIncomingShare';
 
 export default function useTaskCreate({
   canCreateTasks,
@@ -121,10 +125,18 @@ export default function useTaskCreate({
 
   useEffect(() => {
     const params = new URLSearchParams(location.search || '');
-    const hasCreateQuery = params.get('create') === '1';
+    const createQuery = params.get('create');
+    const hasCreateQuery = createQuery === '1' || createQuery === 'android-share';
     const hasCreateState = Boolean(location.state?.openCreate);
 
     if (!hasCreateQuery && !hasCreateState) return;
+
+    if (createQuery === 'android-share') {
+      const draft = buildTaskDraftFromMobileIncomingShare(consumeMobileIncomingShare('task'));
+      if (draft) {
+        setCreateData((prev) => ({ ...prev, ...draft }));
+      }
+    }
 
     try {
       sessionStorage.setItem(PENDING_TASK_CREATE_STORAGE_KEY, '1');
@@ -134,6 +146,7 @@ export default function useTaskCreate({
 
     if (hasCreateQuery) {
       params.delete('create');
+      params.delete('android_share_id');
       const nextSearch = params.toString();
       const { openCreate, ...restState } = location.state || {};
       navigate(
@@ -160,7 +173,7 @@ export default function useTaskCreate({
         state: restState,
       },
     );
-  }, [location.pathname, location.search, location.state, navigate]);
+  }, [location.pathname, location.search, location.state, navigate, setCreateData]);
 
   useEffect(() => {
     if (!canCreateTasks) return;

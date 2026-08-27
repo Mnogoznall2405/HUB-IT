@@ -208,6 +208,30 @@ describe('useMailComposeSessionController', () => {
     expect(result.current.composeSession.initialState.composeToValues).toEqual(['boss@example.com']);
   });
 
+  it('opens an explicit APK text share as a draft without sending it', () => {
+    const navigate = vi.fn();
+    const consumeIncomingShare = vi.fn(() => ({
+      id: 'share-1',
+      target: 'mail',
+      subject: 'Отчёт',
+      text: 'Ссылка: https://example.com/report',
+      receivedAt: Date.now(),
+    }));
+    const { result } = renderComposeHook({
+      locationSearch: '?folder=inbox&compose=android-share&android_share_id=share-1',
+      navigate,
+      consumeIncomingShare,
+    });
+
+    expect(consumeIncomingShare).toHaveBeenCalledWith('mail');
+    expect(result.current.composeSession.initialState).toMatchObject({
+      composeMode: 'new',
+      composeSubject: 'Отчёт',
+    });
+    expect(result.current.composeSession.initialState.composeBody).toContain('https://example.com/report');
+    expect(navigate).toHaveBeenCalledWith('/mail?folder=inbox', { replace: true });
+  });
+
   it('closes the compose session', () => {
     const { result } = renderComposeHook();
 

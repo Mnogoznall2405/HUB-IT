@@ -89,9 +89,12 @@ def test_send_message_adds_source_message_attachments_when_forwarding(monkeypatc
             self.email_address = email_address
 
     class FakeFileAttachment:
-        def __init__(self, *, name, content):
+        def __init__(self, *, name, content, content_type="", content_id="", is_inline=False):
             self.name = name
             self.content = content
+            self.content_type = content_type
+            self.content_id = content_id
+            self.is_inline = is_inline
 
     class FakeMessage:
         def __init__(self, **kwargs):
@@ -201,9 +204,12 @@ def test_send_message_retains_selected_draft_attachments(monkeypatch):
             self.email_address = email_address
 
     class FakeFileAttachment:
-        def __init__(self, *, name, content):
+        def __init__(self, *, name, content, content_type="", content_id="", is_inline=False):
             self.name = name
             self.content = content
+            self.content_type = content_type
+            self.content_id = content_id
+            self.is_inline = is_inline
 
     class FakeMessage:
         def __init__(self, **kwargs):

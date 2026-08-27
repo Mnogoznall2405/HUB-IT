@@ -101,12 +101,16 @@ function Set-CanonicalHostInWebConfig {
     }
 
     $content = Get-Content -LiteralPath $WebConfigPath -Raw
-    if ($content -notlike '*__HUBIT_CANONICAL_HOST__*') {
-        throw "web.config canonical host marker is missing: $WebConfigPath"
+    $expectedRedirect = "https://$normalizedHost/{R:1}"
+    if ($content -like '*__HUBIT_CANONICAL_HOST__*') {
+        $content.Replace('__HUBIT_CANONICAL_HOST__', $normalizedHost) |
+            Set-Content -LiteralPath $WebConfigPath -Encoding utf8
+        return
     }
 
-    $content.Replace('__HUBIT_CANONICAL_HOST__', $normalizedHost) |
-        Set-Content -LiteralPath $WebConfigPath -Encoding utf8
+    if ($content -notlike "*$expectedRedirect*") {
+        throw "web.config canonical redirect is unexpected: $WebConfigPath"
+    }
 }
 
 Add-ProjectNodeToPath -Root $ProjectRoot

@@ -1,6 +1,7 @@
 """Authenticated API for personal 1C Document Management access."""
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Literal
 from urllib.parse import quote

@@ -61,6 +61,9 @@ class ChatConversation(Base):
     last_message_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pinned_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pinned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ChatMember(Base):

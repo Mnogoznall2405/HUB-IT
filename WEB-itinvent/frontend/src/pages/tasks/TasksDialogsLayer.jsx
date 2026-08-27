@@ -12,7 +12,6 @@ import {
 const TasksCreateDialog = lazy(() => import('../../components/hub/tasks/TasksCreateDialog'));
 const TasksTaxonomyDialog = lazy(() => import('../../components/hub/tasks/TasksTaxonomyDialog'));
 const TasksCreateMobileSheet = lazy(() => import('../../components/hub/tasks/TasksCreateMobileSheet'));
-const TasksEditDialog = lazy(() => import('../../components/hub/tasks/TasksEditDialog'));
 const TaskReviewDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReviewDialog })));
 const TaskReopenDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReopenDialog })));
 const TaskCloseDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskCloseDialog })));
@@ -212,7 +211,8 @@ export default function TasksDialogsLayer() {
         />
 
         {create.editOpen ? (
-          <TasksEditDialog
+          <TasksCreateDialog
+            mode="edit"
             open={create.editOpen}
             onClose={create.handleCloseEdit}
             isMobile={ui.isMobile}
@@ -248,6 +248,7 @@ export default function TasksDialogsLayer() {
             onEditDueCustomOpenChange={create.setEditDueCustomOpen}
             onSelectEditDuePreset={create.handleSelectEditDuePreset}
             onEditDueAtChange={create.handleEditDueAtChange}
+            renderTaskUserTags={ui.renderTaskUserTags}
             taskEmailDeadlineDefaultHours={list.taskEmailDeadlineDefaultHours}
           />
         ) : null}

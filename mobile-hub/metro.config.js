@@ -1,36 +1,9 @@
 const { getDefaultConfig } = require('expo/metro-config');
 const https = require('https');
-const path = require('path');
 const { URL } = require('url');
 
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
-
-const RNGH_FORCE_TOUCH_JS = path.join(
-  __dirname,
-  'node_modules/react-native-gesture-handler/lib/module/handlers/ForceTouchGestureHandler.js',
-);
-const RNGH_FORCE_TOUCH_WEB = path.join(__dirname, 'src/shims/ForceTouchGestureHandler.web.js');
-
-const previousResolveRequest = config.resolver.resolveRequest;
-config.resolver.resolveRequest = (context, moduleName, platform) => {
-  const isForceTouch =
-    moduleName === './ForceTouchGestureHandler' ||
-    moduleName.endsWith('/ForceTouchGestureHandler') ||
-    moduleName.endsWith('\\ForceTouchGestureHandler');
-
-  if (isForceTouch) {
-    return {
-      type: 'sourceFile',
-      filePath: platform === 'web' ? RNGH_FORCE_TOUCH_WEB : RNGH_FORCE_TOUCH_JS,
-    };
-  }
-
-  if (previousResolveRequest) {
-    return previousResolveRequest(context, moduleName, platform);
-  }
-  return context.resolveRequest(context, moduleName, platform);
-};
 
 const API_ORIGIN = (process.env.EXPO_PUBLIC_API_PROXY_TARGET || 'https://hubit.zsgp.ru').replace(
   /\/$/,

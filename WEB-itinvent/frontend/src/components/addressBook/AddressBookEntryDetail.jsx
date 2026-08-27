@@ -8,7 +8,14 @@ import { isValidEmailRecipient } from '../mail/mailComposeState';
 import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import { EmailActions, PhoneActions } from './AddressBookContactActions';
 import HighlightText from './HighlightText';
-import { absenceChipColor, formatAbsenceLabel, formatAge, pickPrimaryEmail, pickPrimaryPhone } from './addressBookUtils';
+import {
+  absenceChipColor,
+  formatAbsenceLabel,
+  formatAge,
+  formatDate,
+  pickPrimaryEmail,
+  pickPrimaryPhone,
+} from './addressBookUtils';
 
 export default function AddressBookEntryDetail({
   item,
@@ -50,6 +57,7 @@ export default function AddressBookEntryDetail({
   const primaryEmail = pickPrimaryEmail(item);
   const absenceLabel = formatAbsenceLabel(item?.absence);
   const ageLabel = formatAge(item?.age);
+  const hireDateLabel = formatDate(item?.hire_date);
   const canCall = enableTelLinks && Boolean(primaryPhone?.telHref);
   const canTelegram = primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits);
   const canMail = primaryEmail?.value && isValidEmailRecipient(primaryEmail.value);
@@ -73,6 +81,11 @@ export default function AddressBookEntryDetail({
             {item.position ? <HighlightText value={item.position} query={query} /> : 'Должность не указана'}
             {ageLabel ? ` · ${ageLabel}` : null}
           </Typography>
+          {hireDateLabel ? (
+            <Typography variant="body2" color="text.secondary" data-testid="address-book-hire-date">
+              Дата приёма: {hireDateLabel}
+            </Typography>
+          ) : null}
           {absenceLabel ? (
             <Chip
               size="small"

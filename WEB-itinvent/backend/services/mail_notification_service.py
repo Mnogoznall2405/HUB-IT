@@ -271,9 +271,11 @@ class MailNotificationService:
             pop_request_session_id(token)
 
     def _send_notification_sync(self, **kwargs):
-        return app_push_service.send_notification(**kwargs)
+        return app_push_service.enqueue_notification(**kwargs)
 
     def _delivery_succeeded(self, result) -> bool:
+        if bool(getattr(result, "accepted", False)):
+            return True
         sent = int(getattr(result, "sent", 0) or 0)
         return sent > 0
 

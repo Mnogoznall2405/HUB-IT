@@ -42,6 +42,12 @@ const groupConversation = {
         id: 1,
         full_name: 'Иван Петров',
         username: 'ivan.petrov',
+        department: 'ИТ',
+        job_title: 'Системный администратор',
+        city: 'Тюмень',
+        corporate_email: 'ivan.petrov@zsgp.ru',
+        corporate_phone: '+7 (3452) 12-34-56',
+        work_profile_source: 'zup',
         presence: { is_online: true, status_text: 'В сети' },
       },
     },
@@ -71,8 +77,26 @@ const directConversation = {
     full_name: 'Андрей Петров',
     username: 'andrey.petrov',
     role: 'operator',
+    department: 'Проектный офис',
+    job_title: 'Руководитель проекта',
+    city: 'Москва',
+    corporate_email: 'andrey.petrov@zsgp.ru',
+    corporate_phone: '+7 (495) 123-45-67',
+    work_profile_source: 'zup',
     presence: { is_online: false, status_text: 'Был(а) недавно' },
   },
+  members: [],
+};
+
+const taskConversation = {
+  id: 'conv-task-1',
+  title: 'Согласование макета',
+  kind: 'task',
+  task_id: 'task-42',
+  member_count: 3,
+  is_pinned: false,
+  is_muted: false,
+  is_archived: false,
   members: [],
 };
 
@@ -145,6 +169,26 @@ describe('ChatContextPanel', () => {
       has_more: false,
       next_before_attachment_id: null,
     });
+  });
+
+  it.each([
+    ['личном чате', directConversation, false, { is_muted: false }],
+    ['беседе', groupConversation, true, { is_muted: true }],
+    ['диалоге задачи', taskConversation, true, { is_muted: true }],
+  ])('переключает уведомления прямо в %s', async (_, activeConversation, initiallyChecked, expectedUpdate) => {
+    const onUpdateConversationSettings = vi.fn();
+
+    renderWithTheme(buildProps({
+      activeConversation,
+      onUpdateConversationSettings,
+    }));
+
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith(activeConversation.id));
+    const toggle = screen.getByRole('checkbox', { name: 'Уведомления для этого чата' });
+
+    expect(toggle).toHaveProperty('checked', initiallyChecked);
+    fireEvent.click(toggle);
+    expect(onUpdateConversationSettings).toHaveBeenCalledWith(expectedUpdate);
   });
 
   it('loads media browser data and opens image preview', async () => {
@@ -259,9 +303,26 @@ describe('ChatContextPanel', () => {
     }));
 
     await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-2'));
-    expect(screen.getAllByText('@andrey.petrov').length).toBeGreaterThan(0);
-    expect(screen.getByText('Имя пользователя')).toBeInTheDocument();
+    expect(screen.getByText('Корпоративная почта')).toBeInTheDocument();
+    expect(screen.getByText('andrey.petrov@zsgp.ru')).toBeInTheDocument();
+    expect(screen.getByText('Корпоративный телефон')).toBeInTheDocument();
+    expect(screen.getByText('+7 (495) 123-45-67')).toBeInTheDocument();
+    expect(screen.getByText('Руководитель проекта')).toBeInTheDocument();
+    expect(screen.getByText('Проектный офис')).toBeInTheDocument();
+    expect(screen.getByText('Москва')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Показать всех/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть карточку Андрей Петров' }));
+    const profileDialog = screen.getByRole('dialog', { name: 'Карточка сотрудника' });
+    expect(within(profileDialog).getByText('Руководитель проекта')).toBeInTheDocument();
+    expect(within(profileDialog).getByText('Проектный офис')).toBeInTheDocument();
+    expect(within(profileDialog).getByText('Москва')).toBeInTheDocument();
+    expect(within(profileDialog).getByText('andrey.petrov@zsgp.ru')).toBeInTheDocument();
+    expect(within(profileDialog).getByText('+7 (495) 123-45-67')).toBeInTheDocument();
+    expect(within(profileDialog).queryByText('Учётная запись')).not.toBeInTheDocument();
+    expect(within(profileDialog).queryByText('Источник данных')).not.toBeInTheDocument();
+    expect(within(profileDialog).queryByText('1С:ЗУП')).not.toBeInTheDocument();
+    fireEvent.click(within(profileDialog).getByRole('button', { name: 'Закрыть карточку сотрудника' }));
 
     fireEvent.click(screen.getByText(/^Задачи/));
     fireEvent.click(screen.getByText(/Согласовать макет/i));
@@ -308,7 +369,8 @@ describe('ChatContextPanel', () => {
     await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-2'));
     expect(screen.getByLabelText('Закрыть информацию')).toBeInTheDocument();
     expect(screen.getByText('Информация')).toBeInTheDocument();
-    expect(screen.getAllByText('Уведомления').length).toBeGreaterThan(0);
+    expect(screen.getByRole('checkbox', { name: 'Уведомления для этого чата' })).not.toBeChecked();
+    expect(screen.getByText('Выключены, кроме личных упоминаний')).toBeInTheDocument();
     expect(screen.getByText(/Фото/)).toBeInTheDocument();
     expect(screen.getByText('Файлы')).toBeInTheDocument();
     expect(screen.getByText('Ссылки')).toBeInTheDocument();
@@ -393,6 +455,25 @@ describe('ChatContextPanel', () => {
     fireEvent.click(screen.getAllByText(/^Участники/)[1]);
     expect(screen.queryByText('Person 10')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Показать всех/i })).toBeInTheDocument();
+  });
+
+  it('opens a group participant card with workplace context', async () => {
+    renderWithTheme(buildProps());
+
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-1'));
+    fireEvent.click(screen.getAllByText(/^Участники/)[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть карточку Иван Петров' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Карточка участника' });
+    expect(within(dialog).getByText('Иван Петров')).toBeInTheDocument();
+    expect(within(dialog).getByText('Системный администратор')).toBeInTheDocument();
+    expect(within(dialog).getByText('ИТ')).toBeInTheDocument();
+    expect(within(dialog).getByText('Тюмень')).toBeInTheDocument();
+    expect(within(dialog).getByText('ivan.petrov@zsgp.ru')).toBeInTheDocument();
+    expect(within(dialog).getByText('+7 (3452) 12-34-56')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Учётная запись')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Источник данных')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('1С:ЗУП')).not.toBeInTheDocument();
   });
 
   it('switches mobile profile sections with horizontal swipes', async () => {

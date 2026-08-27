@@ -303,12 +303,35 @@ class SessionService:
             return True
         return False
 
+    def _has_active_mobile_biometric_trust(self, session: dict, *, db_session=None) -> bool:
+        """APK installations with an enrolled fingerprint get the trusted idle window."""
+        try:
+            user_id = int(session.get("user_id") or 0)
+        except (TypeError, ValueError):
+            return False
+        device_hash = str(session.get("client_device_key_hash") or "").strip().lower()
+        if not user_id or not device_hash:
+            return False
+        # Lazy import: mobile_biometric_session_service imports hash helpers from this module.
+        from backend.services.mobile_biometric_session_service import mobile_biometric_session_service
+
+        return bool(
+            mobile_biometric_session_service.has_active_credential_for_device(
+                user_id=user_id,
+                client_device_key_hash=device_hash,
+                db_session=db_session,
+            )
+        )
+
     def _idle_timeout_delta(self, session: dict | None = None, *, db_session=None) -> timedelta:
         # Internal must never fall through to the 30-minute external password idle.
         if session is not None and self._is_internal_login_session(session):
             days = max(7, int(getattr(config.session, "idle_timeout_internal_days", 7) or 7))
             return timedelta(days=days)
         if session is not None and self._effective_trusted_device_id(session, db_session=db_session):
+            days = max(7, int(getattr(config.session, "idle_timeout_trusted_days", 7) or 7))
+            return timedelta(days=days)
+        if session is not None and self._has_active_mobile_biometric_trust(session, db_session=db_session):
             days = max(7, int(getattr(config.session, "idle_timeout_trusted_days", 7) or 7))
             return timedelta(days=days)
         return timedelta(minutes=max(1, int(config.session.idle_timeout_minutes)))
@@ -1257,12 +1280,20 @@ class SessionService:
             "trusted_device_id": item.get("trusted_device_id"),
             "idle_timeout_days": (
                 int(self._idle_timeout_delta(item).total_seconds() // 86400)
-                if self._is_internal_login_session(item) or self._effective_trusted_device_id(item)
+                if (
+                    self._is_internal_login_session(item)
+                    or self._effective_trusted_device_id(item)
+                    or self._has_active_mobile_biometric_trust(item)
+                )
                 else None
             ),
             "idle_timeout_minutes": (
                 None
-                if self._is_internal_login_session(item) or self._effective_trusted_device_id(item)
+                if (
+                    self._is_internal_login_session(item)
+                    or self._effective_trusted_device_id(item)
+                    or self._has_active_mobile_biometric_trust(item)
+                )
                 else int(self._idle_timeout_delta(item).total_seconds() // 60)
             ),
             "policy": {

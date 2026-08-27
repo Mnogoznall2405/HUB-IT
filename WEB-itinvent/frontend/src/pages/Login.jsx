@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
 import DesktopInstallerDownload from '../components/desktop/DesktopInstallerDownload';
+import MobileInstallerDownload from '../components/mobile/MobileInstallerDownload';
 import { useAuth } from '../contexts/AuthContext';
 import {
   encodeCredential,
@@ -2111,7 +2112,10 @@ function Login() {
           </div>
 
           {!isMobileMinimalStep ? (
-            <DesktopInstallerDownload variant="login" />
+            <div className="grid gap-2">
+              <MobileInstallerDownload variant="login" />
+              <DesktopInstallerDownload variant="login" />
+            </div>
           ) : null}
 
           {!isMobileMinimalStep ? (

@@ -3,11 +3,13 @@ import QRCode from 'qrcode';
 
 import {
   buildEquipmentQrDataUrl,
+  buildEquipmentQrLink,
   buildEquipmentQrText,
   getQrScannerErrorMessage,
   getQrboxDimensions,
   isIgnorableQrFrameError,
   parseInvNoFromQrText,
+  parseEquipmentQrLink,
   stopQrScannerInstance,
 } from './qrModel';
 
@@ -39,6 +41,31 @@ describe('qrModel', () => {
     expect(parseInvNoFromQrText(' 2002 ')).toBe('2002');
     expect(parseInvNoFromQrText('INV_NO: -\nMODEL: none')).toBeNull();
     expect(parseInvNoFromQrText('SERIAL_NO: SN-1\nMODEL: OptiPlex')).toBeNull();
+  });
+
+  it('builds and parses a browser-safe equipment link with database scope', () => {
+    const link = buildEquipmentQrLink(
+      { INV_NO: 'INV/7' },
+      { origin: 'https://hubit.zsgp.ru', databaseId: 'OBJ-ITINVENT' },
+    );
+
+    expect(link).toBe('https://hubit.zsgp.ru/database?inv_no=INV%2F7&db_id=OBJ-ITINVENT');
+    expect(parseEquipmentQrLink(link)).toEqual({
+      invNo: 'INV/7',
+      databaseId: 'OBJ-ITINVENT',
+      tab: 'general',
+    });
+    expect(parseInvNoFromQrText(link)).toBe('INV/7');
+  });
+
+  it('accepts the app scheme while rejecting unrelated URLs', () => {
+    expect(parseEquipmentQrLink('hubit://database?inv_no=1001&db_id=main&tab=history')).toEqual({
+      invNo: '1001',
+      databaseId: 'main',
+      tab: 'history',
+    });
+    expect(parseEquipmentQrLink('https://example.com/tasks?inv_no=1001')).toBeNull();
+    expect(parseInvNoFromQrText('https://example.com/tasks?inv_no=1001')).toBeNull();
   });
 
   it('generates a QR data URL only for non-empty payloads', async () => {

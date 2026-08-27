@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { cpSync, createReadStream, statSync } from 'node:fs'
 import { dirname, extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { canonicalWebConfig } from './scripts/canonical-web-config.mjs'
+import { stampServiceWorker } from './scripts/stamp-service-worker.mjs'
 
 const PDFJS_ASSET_DIRECTORIES = ['cmaps', 'standard_fonts', 'wasm', 'iccs'];
 
@@ -54,6 +56,14 @@ const pdfjsStaticAssets = (currentDir) => {
   };
 };
 
+const stampedServiceWorker = (currentDir) => ({
+  name: 'hubit-stamped-service-worker',
+  apply: 'build',
+  closeBundle() {
+    stampServiceWorker(resolve(currentDir, 'dist'));
+  },
+});
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +73,7 @@ export default defineConfig(({ mode }) => {
   const backendPort = env.VITE_BACKEND_PORT || '8001';
   const backendTarget = `http://${backendHost}:${backendPort}`;
   const scanBackendTarget = env.VITE_SCAN_BACKEND_TARGET || 'http://localhost:8011';
+  const canonicalHost = env.VITE_CANONICAL_HOST || undefined;
   // In production default to absolute root paths to avoid /route/assets/* requests on refresh.
   // If app is deployed to a virtual directory, override with VITE_BASE_PATH (example: /itinvent/).
   const normalizeBasePath = (value) => {
@@ -77,7 +88,13 @@ export default defineConfig(({ mode }) => {
   return {
     envDir,
     base: basePath,
-    plugins: [react(), tailwindcss(), pdfjsStaticAssets(currentDir)],
+    plugins: [
+      react(),
+      tailwindcss(),
+      pdfjsStaticAssets(currentDir),
+      canonicalWebConfig(currentDir, canonicalHost),
+      stampedServiceWorker(currentDir),
+    ],
     test: {
       environment: 'jsdom',
       globals: true,

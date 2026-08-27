@@ -4,6 +4,7 @@ import {
   collectAddressBookChatLookup,
   formatAge,
   formatAbsenceLabel,
+  formatDate,
   pickPrimaryEmail,
   pickPrimaryPhone,
   pickQuickActionPhone,
@@ -16,6 +17,12 @@ describe('addressBookUtils', () => {
     expect(formatAge(45)).toBe('45 лет');
     expect(formatAge(11)).toBe('11 лет');
     expect(formatAge(null)).toBe('');
+  });
+
+  it('formatDate renders a ZUP date without timezone shifts', () => {
+    expect(formatDate('2021-05-17')).toBe('17.05.2021');
+    expect(formatDate('2021-02-30')).toBe('');
+    expect(formatDate(null)).toBe('');
   });
 
   it('formatAbsenceLabel shows return date from ZUP', () => {

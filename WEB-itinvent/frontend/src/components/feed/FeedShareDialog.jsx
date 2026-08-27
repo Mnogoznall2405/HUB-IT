@@ -26,6 +26,7 @@ import { chatDirectoryAPI } from '../../api/chatDirectory';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { stashChatComposePrefill } from '../../lib/chatComposePrefill';
 import { buildTelegramShareUrl } from '../../lib/messengerLinks';
+import { isMobileAppWebViewRuntime, requestMobileAppCommand } from '../../lib/mobileAppBridge';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx } from '../../theme/officeUiTokens';
 import { buildFeedShareMessage } from './feedUtils';
 
@@ -46,7 +47,9 @@ export default function FeedShareDialog({ open, post, url, onClose, notifySucces
   const [loading, setLoading] = useState(false);
   const shareMessage = useMemo(() => buildFeedShareMessage(post, url), [post, url]);
   const telegramUrl = useMemo(() => buildTelegramShareUrl({ url, text: post?.title || '' }), [post?.title, url]);
-  const nativeShareAvailable = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const apkShareAvailable = isMobileAppWebViewRuntime();
+  const nativeShareAvailable = apkShareAvailable
+    || (typeof navigator !== 'undefined' && typeof navigator.share === 'function');
 
   useEffect(() => {
     if (!open) {
@@ -101,7 +104,9 @@ export default function FeedShareDialog({ open, post, url, onClose, notifySucces
 
   const shareNative = async () => {
     try {
-      await navigator.share({ title: post?.title || 'Публикация', text: post?.preview || '', url });
+      const payload = { title: post?.title || 'Публикация', text: post?.preview || '', url };
+      if (apkShareAvailable) await requestMobileAppCommand('share.text', payload);
+      else await navigator.share(payload);
       onClose?.();
     } catch (error) {
       if (error?.name !== 'AbortError') notifyWarning?.('Не удалось открыть системное меню отправки.');
@@ -183,4 +188,3 @@ export default function FeedShareDialog({ open, post, url, onClose, notifySucces
     </Dialog>
   );
 }
-

@@ -38,6 +38,7 @@ import {
 import MailBulkActionBar from '../components/mail/MailBulkActionBar';
 import MailConversationReader from '../components/mail/MailConversationReader';
 import MailFolderRail from '../components/mail/MailFolderRail';
+import MailDedicatedComposeLoadingState from '../components/mail/MailDedicatedComposeLoadingState';
 import MailInitialLoadingState from '../components/mail/MailInitialLoadingState';
 import MailMessageList from '../components/mail/MailMessageList';
 import MailPaneResizeHandle from '../components/mail/MailPaneResizeHandle';
@@ -87,6 +88,15 @@ import MailAiConsentDialog from '../components/mail/MailAiConsentDialog';
 import { createMailTrashUndoNotifier } from '../components/mail/mailTrashUndo';
 import { createMailMoveUndoNotifier } from '../components/mail/mailMoveUndo';
 import { formatMailFolderCountCaption } from '../components/mail/mailPlural';
+import {
+  DESKTOP_CAPABILITIES_CHANGED_EVENT,
+  DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT,
+  isDesktopCapabilityAvailable,
+  requestDesktopMailComposeWindow,
+  subscribeDesktopMailComposeCloseRequested,
+  completeDesktopMailComposeClose,
+  notifyDesktopMailComposeSent,
+} from '../lib/desktopBridge';
 import {
   getMailQuickReplyPlaceholder,
   getMailSelectedReplyMode,
@@ -1117,6 +1127,80 @@ function Mail() {
     locationSearch: location.search,
     navigate,
   });
+  const [composeExpanded, setComposeExpanded] = useState(false);
+  const nativeComposeSaveHandlerRef = useRef(null);
+  const dedicatedDraftLoadedRef = useRef('');
+  const dedicatedCompose = location.pathname === '/mail/compose';
+  const [desktopComposeAvailable, setDesktopComposeAvailable] = useState(
+    () => isDesktopCapabilityAvailable('mail-compose-window'),
+  );
+
+  useEffect(() => {
+    const update = () => setDesktopComposeAvailable(isDesktopCapabilityAvailable('mail-compose-window'));
+    window.addEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, update);
+    update();
+    return () => window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, update);
+  }, []);
+
+  useEffect(() => {
+    if (!composeOpen) setComposeExpanded(false);
+  }, [composeOpen]);
+
+  useEffect(() => {
+    if (!dedicatedCompose) return undefined;
+    const searchParams = new URLSearchParams(location.search || '');
+    const draftId = String(searchParams.get('draft_id') || '').trim();
+    const mailboxId = String(searchParams.get('mailbox_id') || '').trim();
+    if (!draftId || dedicatedDraftLoadedRef.current === draftId) return undefined;
+    dedicatedDraftLoadedRef.current = draftId;
+    const controller = new AbortController();
+    mailAPI.getMessage(draftId, { mailboxId, signal: controller.signal })
+      .then((message) => openComposeFromDraftMessage(message))
+      .catch((requestError) => {
+        if (requestError?.name !== 'AbortError') {
+          dedicatedDraftLoadedRef.current = '';
+          setError(getMailErrorDetail(requestError, 'Не удалось открыть черновик.'));
+        }
+      });
+    return () => controller.abort();
+  }, [dedicatedCompose, getMailErrorDetail, location.search, openComposeFromDraftMessage]);
+
+  useEffect(() => {
+    if (!dedicatedCompose) return undefined;
+    return subscribeDesktopMailComposeCloseRequested(async (requestId) => {
+      const saved = await nativeComposeSaveHandlerRef.current?.();
+      completeDesktopMailComposeClose(requestId, { saved: saved === true });
+    });
+  }, [dedicatedCompose]);
+
+  useEffect(() => {
+    if (dedicatedCompose) return undefined;
+    const onCompleted = async () => {
+      invalidateMailClientCache();
+      await Promise.allSettled([refreshList(), refreshFolderSummary()]);
+      notifyMailSuccess('Письмо отправлено из отдельного окна.');
+    };
+    window.addEventListener(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT, onCompleted);
+    return () => window.removeEventListener(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT, onCompleted);
+  }, [dedicatedCompose, invalidateMailClientCache, notifyMailSuccess, refreshFolderSummary, refreshList]);
+
+  const openDesktopComposeWindow = useCallback(async ({ draftId, mailboxId }) => {
+    const query = new URLSearchParams({ draft_id: draftId });
+    if (mailboxId) query.set('mailbox_id', mailboxId);
+    const result = await requestDesktopMailComposeWindow(`/mail/compose?${query.toString()}`);
+    if (result.status === 'opened' || result.status === 'activated') {
+      closeComposeSession();
+      return;
+    }
+    notifyMailComposeWarning({
+      id: 'desktop_compose_window_failed',
+      severity: 'warning',
+      title: result.status === 'busy' ? 'Редактор уже открыт' : 'Не удалось открыть окно',
+      message: result.status === 'busy'
+        ? 'Завершите письмо в уже открытом отдельном окне.'
+        : 'Черновик сохранён. Продолжите редактирование в текущем окне.',
+    });
+  }, [closeComposeSession, notifyMailComposeWarning]);
 
   const handleComposeSent = useMailComposeSentAction({
     closeComposeSession,
@@ -1904,11 +1988,15 @@ function Mail() {
       ) : null}
     </Box>
   );
+  const dedicatedComposeLoading = <MailDedicatedComposeLoadingState ui={ui} />;
   const previewContent = composeOpen && !isMobile ? (
-    <Suspense fallback={null}>
+    <Suspense fallback={dedicatedCompose ? dedicatedComposeLoading : null}>
       <MailComposeHost
         session={composeSession}
-        layoutMode="desktop-inline"
+        layoutMode={dedicatedCompose || composeExpanded ? 'desktop-fullscreen' : 'desktop-inline'}
+        expanded={dedicatedCompose || composeExpanded}
+        onToggleExpanded={!dedicatedCompose && !desktopComposeAvailable ? () => setComposeExpanded((value) => !value) : undefined}
+        onOpenDesktopWindow={!dedicatedCompose && desktopComposeAvailable ? openDesktopComposeWindow : undefined}
         activeMailboxId={activeMailboxId}
         composeFromOptions={composeFromOptions}
         composeDraftKey={composeDraftKey}
@@ -1925,8 +2013,12 @@ function Mail() {
         onOpenSignatureEditor={openSignatureEditor}
         onCloseSession={closeComposeSession}
         onRegisterCloseHandler={(handler) => { composeCloseRequestRef.current = handler; }}
-        onSendSuccess={handleComposeSent}
+        onSendSuccess={dedicatedCompose ? async () => {
+          await handleComposeSent();
+          notifyDesktopMailComposeSent();
+        } : handleComposeSent}
         onDraftSaved={handleComposeDraftSaved}
+        onRegisterNativeSaveHandler={dedicatedCompose ? (handler) => { nativeComposeSaveHandlerRef.current = handler; } : undefined}
         onComposeWarning={notifyMailComposeWarning}
         handleMailCredentialsRequired={handleMailCredentialsRequired}
         getMailErrorDetail={getMailErrorDetail}
@@ -2194,6 +2286,70 @@ function Mail() {
       ) : null}
     </Box>
   );
+  if (dedicatedCompose) {
+    return (
+      <Box
+        data-testid="mail-dedicated-compose-route"
+        sx={{
+          ...getMailUiFontScopeSx(),
+          width: '100vw',
+          height: '100dvh',
+          minWidth: 0,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          bgcolor: ui.panelBg,
+          '--mail-shell-bg': ui.shellBg,
+          '--mail-panel-bg': ui.panelBg,
+          '--mail-panel-solid': ui.panelSolid,
+          '--mail-divider': ui.borderSoft,
+          '--mail-radius-sm': ui.radiusSm,
+          '--mail-radius-md': ui.radiusMd,
+          '--mail-radius-lg': ui.radiusLg,
+        }}
+      >
+        {error ? (
+          <Alert severity="error" onClose={() => setError('')} sx={{ borderRadius: 0 }}>
+            {error}
+          </Alert>
+        ) : null}
+        {composeOpen ? previewContent : dedicatedComposeLoading}
+
+        <MailCredentialsDialog
+          open={mailCredentialsOpen}
+          reason={mailCredentialsReason}
+          ui={ui}
+          login={mailCredentialsLogin}
+          email={mailCredentialsEmail}
+          password={mailCredentialsPassword}
+          error={mailCredentialsError}
+          saving={mailCredentialsSaving}
+          loginPlaceholder={mailboxInfo?.effective_mailbox_login}
+          emailPlaceholder={mailboxInfo?.mailbox_email}
+          onLoginChange={setMailCredentialsLogin}
+          onEmailChange={setMailCredentialsEmail}
+          onPasswordChange={setMailCredentialsPassword}
+          onSave={handleSaveMailCredentials}
+        />
+
+        {signatureOpen ? (
+          <Suspense fallback={null}>
+            <MailSignatureDialog
+              open={signatureOpen}
+              onClose={closeSignatureEditor}
+              signatureHtml={signatureHtml}
+              onSignatureChange={setSignatureHtml}
+              signatureSaving={signatureSaving}
+              onClear={clearSignature}
+              onSave={handleSaveSignature}
+            />
+          </Suspense>
+        ) : null}
+      </Box>
+    );
+  }
+
   const previewPanel = (
     <Box
       data-testid="mail-preview-panel"

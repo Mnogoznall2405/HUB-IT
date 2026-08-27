@@ -2962,6 +2962,86 @@ describe('Mail read-state behavior', () => {
     });
   });
 
+  it('loads a protected dedicated compose route from its saved draft', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'draft-77',
+      folder: 'drafts',
+      mailbox_id: 'shared',
+      to: ['person@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Dedicated draft',
+      body_html: '<p>Draft body</p>',
+      attachments: [],
+      draft_context: { compose_mode: 'draft', mailbox_id: 'shared' },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/mail/compose?draft_id=draft-77&mailbox_id=shared']}>
+        <Routes>
+          <Route path="/mail/compose" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMessage).toHaveBeenCalledWith('draft-77', expect.objectContaining({
+        mailboxId: 'shared',
+        signal: expect.any(AbortSignal),
+      }));
+      expect(screen.getByTestId('mail-compose-dialog')).toBeTruthy();
+    });
+    expect(screen.getByTestId('mail-compose-subject-field')).toHaveValue('Dedicated draft');
+    expect(screen.getByTestId('mail-compose-body-field').value).toContain('Draft body');
+  });
+
+  it('shows only the compose loading surface while a dedicated draft is loading', async () => {
+    let resolveDraft;
+    mockGetMessage.mockReturnValue(new Promise((resolve) => {
+      resolveDraft = resolve;
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail/compose?draft_id=draft-78&mailbox_id=shared']}>
+        <Routes>
+          <Route path="/mail/compose" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMessage).toHaveBeenCalledWith('draft-78', expect.objectContaining({
+        mailboxId: 'shared',
+        signal: expect.any(AbortSignal),
+      }));
+    });
+
+    expect(screen.getByTestId('mail-dedicated-compose-loading')).toBeTruthy();
+    expect(screen.queryByTestId('mail-toolbar')).toBeNull();
+    expect(screen.queryByTestId('mail-folder-rail')).toBeNull();
+    expect(screen.queryByTestId('mail-list-panel')).toBeNull();
+
+    await act(async () => {
+      resolveDraft({
+        id: 'draft-78',
+        folder: 'drafts',
+        mailbox_id: 'shared',
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: 'Direct compose',
+        body_html: '<p>Ready</p>',
+        attachments: [],
+        draft_context: { compose_mode: 'draft', mailbox_id: 'shared' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-dialog')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('mail-dedicated-compose-loading')).toBeNull();
+  });
+
   it('saves the active mailbox signature from the compose flow', async () => {
     mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
       mailboxInfo: {

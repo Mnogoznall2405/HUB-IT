@@ -10,7 +10,13 @@ import os
 import re
 import threading
 
-from backend.api.deps import get_current_active_user, get_current_admin_user, get_current_database_id, require_permission
+from backend.api.deps import (
+    get_current_active_user,
+    get_current_admin_user,
+    get_current_database_id,
+    get_request_scoped_database_id,
+    require_permission,
+)
 from backend.database import queries
 from backend.database.connection import get_db
 from backend.database.equipment_db import invalidate_equipment_cache
@@ -741,7 +747,7 @@ async def search_universal(
     q: str = Query(..., min_length=1, description="Search term"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -902,7 +908,7 @@ async def get_recent_equipment_cards(
 @router.post("/recent-cards/touch", response_model=EquipmentRecentCardResponse)
 async def touch_recent_equipment_card(
     payload: EquipmentRecentCardTouchRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Upsert a current-user recent equipment card event."""
@@ -1259,7 +1265,7 @@ async def get_consumables_lookup(
     loc_no: Optional[str] = Query(None),
     only_positive_qty: bool = Query(True),
     limit: int = Query(300, ge=1, le=1000),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """Lookup consumables with branch and location metadata."""
@@ -2319,7 +2325,7 @@ async def list_latest_equipment_acts(
 async def search_equipment_acts(
     q: str = Query("", description="Search by act number or employee surname/name"),
     limit: int = Query(50, ge=1, le=50, description="Maximum number of documents to return"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -2336,7 +2342,7 @@ async def download_equipment_act_file(
     item_id: Optional[int] = Query(None, description="Optional ITEM_ID for precise file lookup"),
     inv_no: Optional[str] = Query(None, description="Optional INV_NO for fallback item lookup"),
     db_override: Optional[str] = Query(None, alias="db_id", description="Admin-only DB override"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """
@@ -2424,7 +2430,7 @@ async def inspect_equipment_act_file(
 @router.get("/{inv_no}/acts")
 async def get_equipment_acts(
     inv_no: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -2451,7 +2457,7 @@ async def get_equipment_acts(
 @router.get("/{inv_no}/history")
 async def get_equipment_history(
     inv_no: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """Get transfer history linked to an equipment item by inventory number."""
@@ -2514,7 +2520,7 @@ async def download_transfer_act(
 @router.get("/{inv_no}", response_model=dict)
 async def get_equipment_by_inv(
     inv_no: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """

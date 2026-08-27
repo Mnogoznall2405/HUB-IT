@@ -497,6 +497,7 @@ Production по умолчанию только read-only. Отсутствие 
 | Hub / задачи | `WEB-itinvent/backend/api/v1/hub.py`, `WEB-itinvent/backend/services/hub_service.py`, `WEB-itinvent/frontend/src/api/hub*.js` |
 | Почта | `WEB-itinvent/backend/api/v1/mail.py`, `WEB-itinvent/backend/services/mail_*.py` |
 | Чат / AI | `shared/llm/`, `WEB-itinvent/backend/chat/`, `WEB-itinvent/backend/ai_chat/`, `WEB-itinvent/frontend/src/api/chat*.js` |
+| Нативный Chat / жесты / папки | `mobile-hub/src/screens/chat/`, `mobile-hub/src/components/chat/`, [MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md](./documentation/technical/MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md) |
 | Scan Center | `WEB-itinvent/frontend/src/pages/ScanCenter.jsx`, `WEB-itinvent/frontend/src/api/scan*.js`, `scan_server/`, `documentation/technical/SCAN_ARCHITECTURE.md` |
 | 1С / склад | `integrations/1c/`, `documentation/technical/ONE_C_INTEGRATION.md`, `documentation/technical/DOCFLOW_1C_INTEGRATION.md` |
 | Telegram сценарий | `bot/handlers/<name>.py` |
@@ -529,6 +530,7 @@ Production по умолчанию только read-only. Отсутствие 
 | [documentation/technical/SCAN_POSTGRES_MIGRATION.md](./documentation/technical/SCAN_POSTGRES_MIGRATION.md) | Scan PostgreSQL cutover и rollback |
 | [documentation/technical/AUTH_SECURITY_STACK.md](./documentation/technical/AUTH_SECURITY_STACK.md) | Auth / 2FA / passkeys |
 | [documentation/technical/CHAT_BACKEND_ARCHITECTURE.md](./documentation/technical/CHAT_BACKEND_ARCHITECTURE.md) | Chat backend и realtime |
+| [documentation/technical/MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md](./documentation/technical/MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md) | Native Chat: разрыв с web, жесты, папки, viewer |
 | [documentation/technical/CHAT_PERF_OBSERVABILITY.md](./documentation/technical/CHAT_PERF_OBSERVABILITY.md) | Chat метрики и performance |
 | [documentation/technical/IIS_DEPLOYMENT_WEB.md](./documentation/technical/IIS_DEPLOYMENT_WEB.md) | IIS reverse proxy и frontend deployment |
 | [documentation/technical/MOBILE_HUB_CHECKLIST.md](./documentation/technical/MOBILE_HUB_CHECKLIST.md) | Mobile-hub checklist |

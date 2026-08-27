@@ -38,7 +38,7 @@ describe('BrowserNotificationsSettingsCard in HUB Desktop', () => {
   it('explains hidden-window delivery and the persistent fallback without a second channel model', () => {
     render(<BrowserNotificationsSettingsCard />);
 
-    expect(screen.getByText('Windows-уведомления')).toBeInTheDocument();
+    expect(screen.getByText('Системные уведомления на этом устройстве')).toBeInTheDocument();
     expect(screen.getByText(/окно открыто, свёрнуто или скрыто в tray/i)).toBeInTheDocument();
     expect(screen.getByText(/закреплённую плашку/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Разрешить уведомления' })).not.toBeInTheDocument();

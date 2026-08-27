@@ -14,7 +14,6 @@ from backend.chat.models import (
     ChatMessageAttachment,
     ChatMessageRead,
     ChatMessageReaction,
-    ChatPushSubscription,
 )
 import logging
 import time
@@ -28,6 +27,10 @@ from backend.chat.hub_bell_events import (
 )
 from backend.chat.notification_planner import build_chat_notification_recipient_plans
 from backend.chat.utils import normalize_text as _normalize_text
+from backend.services.notification_preferences_service import (
+    chat_notification_channel,
+    notification_preferences_service,
+)
 from backend.services.user_service import user_service
 
 logger = logging.getLogger('backend.chat.service')
@@ -132,21 +135,25 @@ class ChatNotificationOrchestrator:
                     ).scalars()
                 ) if member_ids else []
                 states_by_user_id = {int(item.user_id): item for item in states}
-                active_push_user_ids: set[int] = set()
-                if enqueue_push and member_ids:
-                    subscription_rows = list(
-                        session.execute(
-                            select(ChatPushSubscription.user_id).where(
-                                ChatPushSubscription.user_id.in_(member_ids),
-                                ChatPushSubscription.is_active.is_(True),
-                            )
-                        ).scalars()
+                preference_channel = chat_notification_channel(conversation.kind)
+                candidate_recipient_ids = {
+                    int(member_id)
+                    for member_id in member_ids
+                    if int(member_id) > 0 and int(member_id) != int(sender_user_id)
+                }
+                try:
+                    enabled_recipient_ids = notification_preferences_service.enabled_user_ids(
+                        user_ids=candidate_recipient_ids,
+                        channel=preference_channel,
                     )
-                    active_push_user_ids = {
-                        int(getattr(item, "user_id", item))
-                        for item in subscription_rows
-                        if int(getattr(item, "user_id", item) or 0) > 0
-                    }
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve chat notification preferences: conversation_id=%s channel=%s",
+                        normalized_conversation_id,
+                        preference_channel,
+                        exc_info=True,
+                    )
+                    enabled_recipient_ids = set(candidate_recipient_ids)
                 stats["prep_ms"] = round((time.perf_counter() - stage_started_at) * 1000.0, 1)
                 stats["member_count"] = len(member_ids)
 
@@ -161,7 +168,7 @@ class ChatNotificationOrchestrator:
                     sender_user_id=int(sender_user_id),
                     conversation_kind=conversation.kind,
                     conversation_title=conversation.title,
-                    member_ids=member_ids,
+                    member_ids=sorted(enabled_recipient_ids),
                     states_by_user_id=states_by_user_id,
                     sender_name=sender_name,
                     event_type=event_type,
@@ -218,7 +225,7 @@ class ChatNotificationOrchestrator:
                     if getattr(plan, "body", None):
                         current_body = _normalize_text(plan.body) or current_body
 
-                    if int(member_id) in active_push_user_ids:
+                    if enqueue_push:
                         push_jobs.append(
                             {
                                 "recipient_user_id": int(member_id),
@@ -277,6 +284,7 @@ class ChatNotificationOrchestrator:
                                     message_id=normalized_message_id,
                                     title=str(job["title"]),
                                     body=str(job["body"]),
+                                    preference_channel=preference_channel,
                                 )
                                 stats["push_count"] += 1
                             except Exception:

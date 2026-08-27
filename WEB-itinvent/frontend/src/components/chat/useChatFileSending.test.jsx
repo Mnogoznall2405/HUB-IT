@@ -43,7 +43,13 @@ function Harness({
     [selectedUploadItems],
   );
 
-  const { changeSendMediaAsFiles, queueSelectedFiles, sendFiles } = useChatFileSending({
+  const {
+    applySelectedImageEdit,
+    changeSendMediaAsFiles,
+    queueSelectedFiles,
+    resetSelectedImageEdit,
+    sendFiles,
+  } = useChatFileSending({
     activeConversation: { id: 'conversation-1', kind: 'ai', title: 'AI' },
     activeConversationId: 'conversation-1',
     applyOutgoingThreadMessage,
@@ -87,7 +93,19 @@ function Harness({
       <button type="button" onClick={sendFiles}>send files</button>
       <button type="button" onClick={() => changeSendMediaAsFiles(true)}>send original</button>
       <button type="button" onClick={() => queueSelectedFiles(queuedFiles, { sendMediaAsFiles: true })}>drop original</button>
+      <button
+        type="button"
+        onClick={() => applySelectedImageEdit(0, {
+          file: new File(['edited'], 'photo-edited.jpg', { type: 'image/jpeg' }),
+          recipe: { version: 1, operations: [{ type: 'rotate', turns: 1 }] },
+        })}
+      >
+        apply edit
+      </button>
+      <button type="button" onClick={() => resetSelectedImageEdit(0)}>reset edit</button>
       <output aria-label="send mode">{sendMediaAsFiles ? 'file' : 'media'}</output>
+      <output aria-label="edit state">{selectedUploadItems[0]?.imageEdit ? 'edited' : 'original'}</output>
+      <output aria-label="selected file name">{selectedUploadItems[0]?.file?.name || ''}</output>
     </>
   );
 }
@@ -163,6 +181,19 @@ describe('useChatFileSending', () => {
       imageWasPrepared: false,
     }));
     expect(preservedDocumentItem).toBe(documentItem);
+  });
+
+  it('never replaces an edited image with the original payload', () => {
+    const originalFile = new File(['original-image'], 'photo.jpg', { type: 'image/jpeg' });
+    const editedFile = new File(['edited-image'], 'photo-edited.jpg', { type: 'image/jpeg' });
+    const editedItem = {
+      originalFile,
+      file: editedFile,
+      transferFile: editedFile,
+      imageEdit: { recipe: { operations: [{ type: 'rotate', turns: 1 }] } },
+    };
+
+    expect(buildChatSendUploadItems([editedItem], true)[0]).toBe(editedItem);
   });
 
   it('enables original-media mode when files are dropped on the no-compression zone', async () => {
@@ -246,6 +277,40 @@ describe('useChatFileSending', () => {
 
     expect(notifyWarning).toHaveBeenCalledWith('Суммарный размер оригиналов превышает 25 МБ.');
     expect(document.querySelector('output')).toHaveTextContent('media');
+  });
+
+  it('applies and resets an image edit while preserving the immutable original', async () => {
+    const notifyWarning = vi.fn();
+    const originalFile = new File(['original'], 'photo.jpg', { type: 'image/jpeg' });
+    const preparedFile = new File(['prepared'], 'photo.jpg', { type: 'image/jpeg' });
+    render(
+      <Harness
+        applyOutgoingThreadMessage={vi.fn()}
+        initialSendMediaAsFiles
+        initialUploadItems={[{
+          originalFile,
+          originalSize: originalFile.size,
+          file: preparedFile,
+          transferFile: preparedFile,
+          transferSize: preparedFile.size,
+        }]}
+        notifyWarning={notifyWarning}
+        patchThreadMessage={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'apply edit' }));
+    await waitFor(() => expect(screen.getByLabelText('edit state')).toHaveTextContent('edited'));
+    expect(screen.getByLabelText('send mode')).toHaveTextContent('media');
+    expect(screen.getByLabelText('selected file name')).toHaveTextContent('photo-edited.jpg');
+
+    fireEvent.click(screen.getByRole('button', { name: 'send original' }));
+    expect(notifyWarning).toHaveBeenCalledWith('Сбросьте изменения фотографии, чтобы отправить оригинал.');
+    expect(screen.getByLabelText('send mode')).toHaveTextContent('media');
+
+    fireEvent.click(screen.getByRole('button', { name: 'reset edit' }));
+    await waitFor(() => expect(screen.getByLabelText('edit state')).toHaveTextContent('original'));
+    expect(screen.getByLabelText('selected file name')).toHaveTextContent('photo.jpg');
   });
 
   it('rechecks the 25 MB original-media limit immediately before sending', () => {

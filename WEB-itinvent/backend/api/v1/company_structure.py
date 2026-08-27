@@ -166,7 +166,10 @@ async def delete_company_structure_node_photo(
 
 
 @router.get("/nodes/{node_id}/photo")
-async def get_company_structure_node_photo(node_id: str):
+async def get_company_structure_node_photo(
+    node_id: str,
+    _: User = Depends(require_permission(PERM_COMPANY_STRUCTURE_READ)),
+):
     service = _service()
     try:
         path = await run_in_threadpool(service.get_node_photo_path, node_id)
@@ -177,7 +180,7 @@ async def get_company_structure_node_photo(node_id: str):
         path=str(path),
         media_type="image/jpeg",
         headers={
-            "Cache-Control": "public, max-age=0, must-revalidate",
+            "Cache-Control": "private, max-age=0, must-revalidate",
             "ETag": f'"{int(stat.st_mtime)}-{stat.st_size}"',
         },
     )

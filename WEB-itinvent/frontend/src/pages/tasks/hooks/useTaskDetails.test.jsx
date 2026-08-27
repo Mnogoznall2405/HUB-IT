@@ -90,6 +90,20 @@ describe('useTaskDetails canCloseTask', () => {
       capabilities: { can_close: true },
     })).toBe(true);
   });
+
+  it('allows an administrator to close another user\'s open task from list data', () => {
+    const { result } = renderUseTaskDetails({
+      user: { id: 5, role: 'admin' },
+      canManageAllTasks: true,
+    });
+
+    expect(result.current.canCloseTask({
+      id: 'task-admin-close',
+      status: 'in_progress',
+      created_by_user_id: 1,
+      assignee_user_id: 2,
+    })).toBe(true);
+  });
 });
 
 describe('useTaskDetails canDeleteTask', () => {

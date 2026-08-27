@@ -423,6 +423,45 @@ def test_list_hosts_table_filters_and_aggregates_host_context(temp_dir):
     assert ack_hosts["items"][0]["hostname"] == "HOST-01"
 
 
+def test_scan_table_search_finds_agent_and_host_by_ip_address(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-ip-search",
+            "hostname": "HOST-IP-SEARCH",
+            "branch": "Test",
+            "ip_address": "10.77.88.99",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-ip-search",
+        hostname="HOST-IP-SEARCH",
+        branch="Test",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\ip-search.txt",
+        file_name="ip-search.txt",
+        source_kind="text",
+        severity="high",
+        created_at=now_ts,
+    )
+
+    for query in ("10.77", "10.77.88.99"):
+        agents = store.list_agents_table(q=query, limit=10, offset=0)
+        hosts = store.list_hosts_table(q=query, limit=10, offset=0)
+
+        assert agents["total"] == 1
+        assert agents["items"][0]["agent_id"] == "agent-ip-search"
+        assert hosts["total"] == 1
+        assert hosts["items"][0]["hostname"] == "HOST-IP-SEARCH"
+
+
 def test_list_incident_inbox_groups_returns_host_file_groups(temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())

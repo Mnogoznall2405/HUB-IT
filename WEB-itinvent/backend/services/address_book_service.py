@@ -480,6 +480,7 @@ def employee_query() -> str:
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник КАК FullName,
     Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ДатаПриема КАК HireDate,
     ЕСТЬNULL(
         История.Подразделение,
         ЕСТЬNULL(
@@ -931,6 +932,7 @@ class AddressBookService:
         limit: int = 50,
         *,
         include_age: bool = True,
+        include_hire_date: bool = False,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
     ) -> dict[str, Any]:
@@ -973,6 +975,7 @@ class AddressBookService:
                     item,
                     personal_by_code,
                     include_age=include_age,
+                    include_hire_date=include_hire_date,
                     include_personal_emails=include_personal_emails,
                     include_personal_phones=include_personal_phones,
                 )
@@ -990,6 +993,7 @@ class AddressBookService:
         personal_by_code: dict[str, Any],
         *,
         include_age: bool = True,
+        include_hire_date: bool = False,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
     ) -> dict[str, Any]:
@@ -997,6 +1001,7 @@ class AddressBookService:
         for key in PERSONAL_CACHE_KEYS:
             public_item.pop(key, None)
         public_item.pop("age", None)
+        public_item.pop("hire_date", None)
         if not include_personal_emails:
             public_item["personal_emails"] = []
         if not include_personal_phones:
@@ -1008,6 +1013,10 @@ class AddressBookService:
             age = calculate_age(personal.get("date_of_birth"))
             if age is not None:
                 public_item["age"] = age
+        if include_hire_date:
+            hire_date = normalize_text(item.get("hire_date"))[:10]
+            if hire_date:
+                public_item["hire_date"] = hire_date
         return public_item
 
     def _matches_query(
@@ -1450,6 +1459,7 @@ class AddressBookService:
                 {
                     "full_name": one_c_text(connection, selection.FullName),
                     "_employee_code": one_c_text(connection, selection.EmployeeCode),
+                    "hire_date": one_c_date_iso(connection, selection.HireDate),
                     "department": one_c_text(connection, selection.Department),
                     "department_code": one_c_text(connection, selection.DepartmentCode),
                     "department_location": one_c_text(connection, selection.DepartmentLocation),

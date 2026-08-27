@@ -22,6 +22,7 @@ from backend.chat.schemas import (
     ChatUnreadSummaryResponse,
     DirectConversationRequest,
     GroupConversationRequest,
+    ChatPinnedMessageRequest,
     UpdateConversationProfileRequest,
     UpdateConversationSettingsRequest,
 )
@@ -118,6 +119,29 @@ async def update_chat_conversation_settings(
             reason="settings",
         )
         await chat_api()._publish_unread_summary(int(current_user.id))
+        return conversation
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.put("/conversations/{conversation_id}/pinned-message", response_model=ChatConversationSummary)
+async def set_chat_pinned_message(
+    conversation_id: str,
+    payload: ChatPinnedMessageRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await chat_api()._run_chat_call(
+            chat_api().chat_service.set_pinned_message,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=payload.message_id,
+        )
+        await chat_api()._publish_conversation_updated(
+            conversation_id=conversation["id"],
+            user_id=int(current_user.id),
+            reason="pinned_message",
+        )
         return conversation
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)

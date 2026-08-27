@@ -50,6 +50,15 @@ export default function useChatUploadsController({
     () => summarizePreparedChatUploadItems(selectedUploadItems),
     [selectedUploadItems],
   );
+  const selectedImageEdits = useMemo(
+    () => selectedUploadItems.map((item) => ({
+      edited: Boolean(item?.imageEdit),
+      recipe: item?.imageEdit?.recipe || null,
+      revision: Number(item?.imageEdit?.revision || 0),
+      sourceFile: item?.originalFile || item?.file || null,
+    })),
+    [selectedUploadItems],
+  );
 
   useEffect(() => () => {
     try {
@@ -60,6 +69,7 @@ export default function useChatUploadsController({
   }, []);
 
   const {
+    applySelectedImageEdit,
     changeSendMediaAsFiles,
     clearSelectedFiles,
     closeFileDialog,
@@ -68,6 +78,7 @@ export default function useChatUploadsController({
     openMediaPicker,
     queueSelectedFiles,
     removeSelectedFile,
+    resetSelectedImageEdit,
     sendFiles,
   } = useChatFileSending({
     activeConversation,
@@ -162,6 +173,7 @@ export default function useChatUploadsController({
   }, [queueSelectedFiles]);
 
   return {
+    applySelectedImageEdit,
     cancelVoiceRecording,
     changeSendMediaAsFiles,
     clearSelectedFiles,
@@ -181,8 +193,10 @@ export default function useChatUploadsController({
     preparingFiles,
     queueSelectedFiles,
     removeSelectedFile,
+    resetSelectedImageEdit,
     selectedFiles,
     selectedFilesSummary,
+    selectedImageEdits,
     selectedUploadItems,
     sendMediaAsFiles,
     sendFiles,

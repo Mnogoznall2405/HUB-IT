@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import filecmp
 from io import BytesIO
 import logging
 import os
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 _PACK_LINK_RE = re.compile(
     r"^(?:(?:https?://)?(?:t\.me|telegram\.me)/(?:addstickers|addemoji)/)?"
     r"([A-Za-z0-9_]{1,128})/?(?:\?.*)?$",
+    re.IGNORECASE,
+)
+_LEGACY_MESSAGE_STICKER_RE = re.compile(
+    r"^sticker-(?P<pack_short_name>[A-Za-z0-9_]{1,128})\.(?:tgs|webm|webp)$",
     re.IGNORECASE,
 )
 _MAX_STICKERS_PER_PACK = 200
@@ -744,6 +749,47 @@ class TelegramStickerService:
             return "image/webp"
         return "application/octet-stream"
 
+    def find_legacy_message_attachment_preview(
+        self,
+        *,
+        session,
+        source_path: Path,
+        file_name: str,
+        mime_type: str,
+        file_size: int,
+    ) -> dict[str, Any] | None:
+        match = _LEGACY_MESSAGE_STICKER_RE.fullmatch(Path(str(file_name or "")).name)
+        if match is None or not source_path.is_file():
+            return None
+        statement = (
+            select(ChatSticker, ChatStickerPack)
+            .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+            .where(ChatStickerPack.short_name == match.group("pack_short_name"))
+        )
+        normalized_mime = str(mime_type or "").strip().lower()
+        if normalized_mime:
+            statement = statement.where(ChatSticker.mime_type == normalized_mime)
+        expected_size = max(0, int(file_size or 0))
+        if expected_size:
+            statement = statement.where(ChatSticker.file_size == expected_size)
+        for sticker, pack in session.execute(statement).all():
+            original_path = self._storage_root / Path(pack.id).name / Path(sticker.storage_name).name
+            preview_path = self._preview_path(pack_id=pack.id, sticker_id=sticker.id)
+            try:
+                if (
+                    original_path.is_file()
+                    and preview_path.is_file()
+                    and filecmp.cmp(source_path, original_path, shallow=False)
+                ):
+                    return {
+                        "path": str(preview_path),
+                        "file_name": preview_path.name,
+                        "mime_type": self._preview_mime_type(preview_path),
+                    }
+            except OSError:
+                continue
+        return None
+
     def get_sticker_preview(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
         original = self.get_sticker_file(
             current_user_id=int(current_user_id),
@@ -833,7 +879,10 @@ class TelegramStickerService:
 
         attachment_id = str(uuid4())
         extension = source_path.suffix.lower() or ".bin"
-        file_name = f"sticker-{sticker_snapshot['pack_short_name']}{extension}"
+        file_name = (
+            f"sticker-{sticker_snapshot['id']}--"
+            f"{sticker_snapshot['pack_short_name']}{extension}"
+        )
         storage_name = f"{attachment_id}_{file_name}"
         conversation_dir = chat_service._attachments_root / normalized_conversation_id
         conversation_dir.mkdir(parents=True, exist_ok=True)

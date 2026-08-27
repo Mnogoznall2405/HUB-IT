@@ -31,7 +31,13 @@ _PYTEST_USE_LIVE_APP_DB = str(os.getenv("PYTEST_USE_LIVE_APP_DATABASE") or "").s
 if not _PYTEST_USE_LIVE_APP_DB:
     _pytest_runtime = Path(__file__).resolve().parent.parent / ".pytest_runtime"
     _pytest_runtime.mkdir(parents=True, exist_ok=True)
-    os.environ["APP_DATABASE_URL"] = f"sqlite:///{(_pytest_runtime / 'pytest_app.sqlite3').as_posix()}"
+    _pytest_app_db = _pytest_runtime / f"pytest_app_{os.getpid()}.sqlite3"
+    os.environ["APP_DATABASE_URL"] = f"sqlite:///{_pytest_app_db.as_posix()}"
+    # inventory_server.app creates its queue store while tests are collected.
+    # Never let that import open the live runtime database used by PM2.
+    _pytest_inventory_runtime = _pytest_runtime / f"inventory_server_{os.getpid()}"
+    os.environ["INVENTORY_SERVER_DATA_DIR"] = str(_pytest_inventory_runtime)
+    os.environ["INVENTORY_SERVER_DB_PATH"] = str(_pytest_inventory_runtime / "queue.sqlite3")
 
 
 @pytest.fixture
@@ -49,6 +55,49 @@ def temp_dir():
 def temp_json_file(temp_dir):
     """Временный JSON файл"""
     return Path(temp_dir) / "test_data.json"
+
+
+def _reset_chat_db_test_caches():
+    """Drop cached test engines so read/write sessions never cross DB fixtures."""
+    chat_db = sys.modules.get("backend.chat.db")
+    if chat_db is None:
+        return
+    seen_engines: set[int] = set()
+    for mapping_name in ("_engines", "_read_engines"):
+        mapping = getattr(chat_db, mapping_name, None)
+        if not isinstance(mapping, dict):
+            continue
+        for engine in mapping.values():
+            engine_id = id(engine)
+            if engine_id in seen_engines:
+                continue
+            seen_engines.add(engine_id)
+            dispose = getattr(engine, "dispose", None)
+            if callable(dispose):
+                dispose()
+    for mapping_name in ("_engines", "_session_factories", "_read_engines", "_read_session_factories"):
+        mapping = getattr(chat_db, mapping_name, None)
+        if isinstance(mapping, dict):
+            mapping.clear()
+    for name in ("_engine", "_session_factory", "_read_engine", "_read_session_factory"):
+        if hasattr(chat_db, name):
+            setattr(chat_db, name, None)
+
+
+def _reset_local_store_test_singleton():
+    """Keep JSON fallback stores scoped to the data_dir selected by each test."""
+    local_store = sys.modules.get("local_store")
+    if local_store is not None and hasattr(local_store, "_STORE_SINGLETON"):
+        local_store._STORE_SINGLETON = None
+
+
+@pytest.fixture(autouse=True)
+def isolate_chat_db_engines():
+    _reset_chat_db_test_caches()
+    _reset_local_store_test_singleton()
+    yield
+    _reset_chat_db_test_caches()
+    _reset_local_store_test_singleton()
 
 
 @pytest.fixture

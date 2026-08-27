@@ -185,7 +185,7 @@ def test_mail_service_marks_conversation_read_and_unread(temp_dir, monkeypatch):
     })
     monkeypatch.setattr(service, "_create_account", lambda **kwargs: object())
     monkeypatch.setattr(service, "_search_target_folders", lambda account, folder="inbox", folder_scope="current": [(object(), "inbox")])
-    monkeypatch.setattr(service, "_folder_queryset", lambda folder_obj, folder_key: items)
+    monkeypatch.setattr(service, "_folder_queryset", lambda folder_obj, folder_key, **_kwargs: items)
     monkeypatch.setattr(service, "_item_conversation_key", lambda item: item.conversation_key)
 
     read_result = service.mark_conversation_as_read(

@@ -36,6 +36,7 @@ export const createComposeInitialState = (overrides = {}) => ({
   composeBody: String(overrides.composeBody ?? overrides.body ?? ''),
   composeQuotedOriginalHtml: String(overrides.composeQuotedOriginalHtml ?? overrides.quotedOriginalHtml ?? ''),
   composeFiles: Array.isArray(overrides.composeFiles) ? [...overrides.composeFiles] : [],
+  composeInlineFiles: Array.isArray(overrides.composeInlineFiles) ? [...overrides.composeInlineFiles] : [],
   composeDraftAttachments: Array.isArray(overrides.composeDraftAttachments ?? overrides.draftAttachments)
     ? [...(overrides.composeDraftAttachments ?? overrides.draftAttachments)]
     : [],
@@ -66,6 +67,7 @@ export const composeStateHasContent = (state) => Boolean(
   || String(state?.composeSubject || '').trim()
   || String(getComposeCombinedBody(state) || '').replace(/<[^>]*>/g, '').trim()
   || Array.isArray(state?.composeFiles) && state.composeFiles.length > 0
+  || Array.isArray(state?.composeInlineFiles) && state.composeInlineFiles.length > 0
   || Array.isArray(state?.composeDraftAttachments) && state.composeDraftAttachments.length > 0
 );
 

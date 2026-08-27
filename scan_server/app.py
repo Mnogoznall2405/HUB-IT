@@ -46,6 +46,61 @@ def _parse_scan_list_view(value: Optional[str], *, default: str) -> str:
             detail=str(exc) or "view must be 'summary' or 'detail'",
         ) from exc
 
+
+def _parse_scan_projection(value: Optional[str], *, default: str) -> tuple[str, bool]:
+    """Return the store projection plus a fail-closed mobile redaction flag."""
+    if str(value or "").strip().lower() == "mobile":
+        return ScanListView.summary.value, True
+    return _parse_scan_list_view(value, default=default), False
+
+
+_MOBILE_SCAN_FIELDS: Dict[str, tuple[str, ...]] = {
+    "incident": (
+        "id", "hostname", "branch", "file_name", "file_ext", "source_kind",
+        "status", "severity", "category", "short_reason", "user_login",
+        "user_full_name", "created_at",
+    ),
+    "review": (
+        "id", "job_id", "agent_id", "hostname", "branch", "file_name",
+        "source_kind", "status", "reason", "summary", "error_text",
+        "created_at", "updated_at", "finished_at",
+    ),
+    "agent": (
+        "agent_id", "hostname", "branch", "ip_address", "resolved_branch",
+        "resolved_ip_address", "version", "status", "is_online", "last_seen_at",
+        "updated_at", "queue_size", "queue_pending", "outbox_depth",
+        "dead_letter_depth", "last_ingest_ok_at",
+    ),
+    "host": (
+        "hostname", "branch", "ip_address", "incidents_total", "incidents_new",
+        "top_severity", "last_incident_at", "top_exts", "top_source_kinds",
+    ),
+}
+
+
+def _mobile_scan_page(payload: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """Allowlist list data before it reaches a native process or its caches."""
+    allowed = _MOBILE_SCAN_FIELDS[kind]
+    items: List[Dict[str, Any]] = []
+    for raw in payload.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        item = {key: raw.get(key) for key in allowed if key in raw}
+        if kind == "agent":
+            active = raw.get("active_task") if isinstance(raw.get("active_task"), dict) else None
+            if active:
+                item["active_task"] = {
+                    key: active.get(key)
+                    for key in ("command", "status")
+                    if key in active
+                }
+        items.append(item)
+    return {
+        key: value
+        for key, value in payload.items()
+        if key != "items"
+    } | {"items": items, "view": "mobile"}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -1097,8 +1152,8 @@ def incidents(
     view: Optional[str] = Query(None),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    resolved_view = _parse_scan_list_view(view, default="detail")
-    return store.list_incidents(
+    resolved_view, mobile_projection = _parse_scan_projection(view, default="detail")
+    payload = store.list_incidents(
         status=status_value,
         severity=severity,
         branch=branch,
@@ -1116,6 +1171,7 @@ def incidents(
         offset=offset,
         view=resolved_view,
     )
+    return _mobile_scan_page(payload, "incident") if mobile_projection else payload
 
 
 @app.get("/api/v1/scan/incidents/inbox-groups")
@@ -1286,8 +1342,9 @@ def review_items(
     view: Optional[str] = Query("summary"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    resolved_view = _parse_scan_list_view(view, default=ScanListView.summary.value)
-    return store.list_incomplete_jobs(limit=limit, offset=offset, view=resolved_view)
+    resolved_view, mobile_projection = _parse_scan_projection(view, default=ScanListView.summary.value)
+    payload = store.list_incomplete_jobs(limit=limit, offset=offset, view=resolved_view)
+    return _mobile_scan_page(payload, "review") if mobile_projection else payload
 
 
 @app.get("/api/v1/scan/patterns")
@@ -1330,9 +1387,13 @@ def agents_table(
     offset: int = Query(0, ge=0),
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
+    view: Optional[str] = Query("summary"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.list_agents_table(
+    resolved_view, mobile_projection = _parse_scan_projection(view, default=ScanListView.summary.value)
+    if resolved_view != ScanListView.summary.value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="agents table supports summary or mobile view")
+    payload = store.list_agents_table(
         q=q,
         branch=branch,
         online=online,
@@ -1342,6 +1403,7 @@ def agents_table(
         sort_by=sort_by,
         sort_dir=sort_dir,
     )
+    return _mobile_scan_page(payload, "agent") if mobile_projection else payload
 
 
 @app.get("/api/v1/scan/hosts")
@@ -1372,9 +1434,13 @@ def hosts_table(
     offset: int = Query(0, ge=0),
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
+    view: Optional[str] = Query("summary"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.list_hosts_table(
+    resolved_view, mobile_projection = _parse_scan_projection(view, default=ScanListView.summary.value)
+    if resolved_view != ScanListView.summary.value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="hosts table supports summary or mobile view")
+    payload = store.list_hosts_table(
         q=q,
         branch=branch,
         status=status_value,
@@ -1384,6 +1450,7 @@ def hosts_table(
         sort_by=sort_by,
         sort_dir=sort_dir,
     )
+    return _mobile_scan_page(payload, "host") if mobile_projection else payload
 
 
 @app.get("/api/v1/scan/tasks")

@@ -3639,6 +3639,39 @@ class MailService:
                 forwarded_attachments.append((filename, content))
         return forwarded_attachments
 
+    def _collect_draft_attachments(
+        self,
+        *,
+        item: Any,
+        account: Any,
+        retain_attachment_ids: set[str] | None = None,
+    ) -> list[Any]:
+        from backend.services.mail_outgoing_attachment import MailOutgoingAttachment
+
+        retained: list[Any] = []
+        for attachment in (getattr(item, "attachments", None) or []):
+            attachment_id = self._extract_attachment_raw_id(attachment)
+            if retain_attachment_ids is not None and attachment_id not in retain_attachment_ids:
+                continue
+            if not self._is_downloadable_attachment(attachment):
+                continue
+            payload = self._build_attachment_download_payload(attachment=attachment, account=account)
+            if payload is None:
+                continue
+            filename, content_type, content = payload
+            if not content:
+                continue
+            retained.append(
+                MailOutgoingAttachment(
+                    filename=filename,
+                    content=content,
+                    content_type=content_type,
+                    content_id=self._normalize_attachment_content_id(getattr(attachment, "content_id", None)),
+                    is_inline=bool(getattr(attachment, "is_inline", False)),
+                )
+            )
+        return retained
+
     def get_message_source(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> tuple[str, bytes]:
         context = self._get_message_context(
             user_id=int(user_id),
@@ -4740,6 +4773,7 @@ class MailService:
                 resolve_folder=self._resolve_folder,
                 locate_message_item=self._locate_message_item,
                 collect_forwarded_attachments=self._collect_forwarded_attachments,
+                collect_draft_attachments=self._collect_draft_attachments,
                 item_message_id=self._item_message_id,
                 resolve_attachment_id=self.resolve_attachment_id,
                 validate_attachments=self._validate_outgoing_attachments_dynamic,

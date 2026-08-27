@@ -1,8 +1,17 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { API_V1_BASE, CLIENT_DEVICE_HEADER, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
 import * as tokenStore from '../auth/tokenStore';
+import { publishSessionExpired } from '../auth/sessionEvents';
+import {
+  createNativeOfflineReadOnlyError,
+  isNativeOfflineMutationBlocked,
+} from '../offline/nativeOfflinePolicy';
 
 type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+
+const AUTH_REFRESH_TIMEOUT_MS = 30_000;
+const MAIL_EXCHANGE_TIMEOUT_MS = 120_000;
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 const apiClient = axios.create({
   baseURL: API_V1_BASE,
@@ -11,6 +20,30 @@ const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use(async (config) => {
+  if (isNativeOfflineMutationBlocked(config.method)) {
+    throw createNativeOfflineReadOnlyError();
+  }
+  // Let RN/axios set multipart boundary. A bare "multipart/form-data" header
+  // without boundary makes FastAPI see zero files and reject chat uploads.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    const headers = config.headers;
+    if (headers?.delete) {
+      headers.delete('Content-Type');
+      headers.delete('content-type');
+    } else if (headers?.set) {
+      headers.set('Content-Type', undefined as unknown as string);
+      headers.set('content-type', undefined as unknown as string);
+    } else if (headers) {
+      delete (headers as Record<string, unknown>)['Content-Type'];
+      delete (headers as Record<string, unknown>)['content-type'];
+    }
+  }
+  if (
+    String(config.url || '').split('?')[0].startsWith('/mail/')
+    && Number(config.timeout || 0) < MAIL_EXCHANGE_TIMEOUT_MS
+  ) {
+    config.timeout = MAIL_EXCHANGE_TIMEOUT_MS;
+  }
   const accessToken = await tokenStore.getAccessToken();
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
@@ -19,8 +52,41 @@ apiClient.interceptors.request.use(async (config) => {
 });
 
 let refreshPromise: Promise<string | null> | null = null;
+let expireSessionPromise: Promise<void> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+function isAuthRequestWithoutRefresh(url: string | undefined): boolean {
+  const normalized = String(url || '').split('?')[0];
+  return [
+    '/auth/login',
+    '/auth/enable-2fa',
+    '/auth/verify-2fa',
+    '/auth/verify-2fa-login',
+    '/auth/mobile-biometric/session',
+    '/auth/refresh',
+    '/auth/logout',
+  ].some((path) => normalized.endsWith(path));
+}
+
+async function expireSession(): Promise<void> {
+  if (!expireSessionPromise) {
+    expireSessionPromise = tokenStore.clearTokens()
+      .finally(() => {
+        publishSessionExpired();
+      })
+      .finally(() => {
+        expireSessionPromise = null;
+      });
+  }
+  await expireSessionPromise;
+}
+
+function boundedRefreshTimeout(timeoutMs?: number): number {
+  const requested = Number(timeoutMs || 0);
+  if (!Number.isFinite(requested) || requested <= 0) return AUTH_REFRESH_TIMEOUT_MS;
+  return Math.min(AUTH_REFRESH_TIMEOUT_MS, Math.max(1_000, Math.trunc(requested)));
+}
+
+async function refreshAccessToken(timeoutMs?: number): Promise<string | null> {
   const refreshToken = await tokenStore.getRefreshToken();
   if (!refreshToken) return null;
   const clientDeviceId = await tokenStore.getClientDeviceId();
@@ -28,6 +94,7 @@ async function refreshAccessToken(): Promise<string | null> {
     `${API_V1_BASE}/auth/refresh`,
     { refresh_token: refreshToken },
     {
+      timeout: boundedRefreshTimeout(timeoutMs),
       headers: {
         'Content-Type': 'application/json',
         [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE,
@@ -42,6 +109,58 @@ async function refreshAccessToken(): Promise<string | null> {
   return access;
 }
 
+function accessTokenExpiresSoon(accessToken: string): boolean {
+  const payload = String(accessToken || '').split('.')[1];
+  if (!payload || typeof globalThis.atob !== 'function') return false;
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = globalThis.atob(`${normalized}${'='.repeat(-normalized.length & 3)}`);
+    const parsed = JSON.parse(decoded) as { exp?: unknown };
+    const expiresAt = Number(parsed.exp || 0) * 1000;
+    return Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now() + ACCESS_TOKEN_REFRESH_SKEW_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function sharedRefreshAccessToken(timeoutMs?: number): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken(timeoutMs).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+export async function getAuthenticatedAccessToken(
+  options: {
+    forceRefresh?: boolean;
+    preserveSessionOnRefreshFailure?: boolean;
+    refreshTimeoutMs?: number;
+  } = {},
+): Promise<string> {
+  const currentAccessToken = String((await tokenStore.getAccessToken()) || '').trim();
+  const shouldRefresh = Boolean(options.forceRefresh) || !currentAccessToken || accessTokenExpiresSoon(currentAccessToken);
+  if (!shouldRefresh) return currentAccessToken;
+
+  let refreshedAccessToken: string | null = null;
+  try {
+    refreshedAccessToken = await sharedRefreshAccessToken(options.refreshTimeoutMs);
+  } catch (refreshError) {
+    if (axios.isAxiosError(refreshError) && !refreshError.response) {
+      if (currentAccessToken && !options.forceRefresh) return currentAccessToken;
+      throw refreshError;
+    }
+    if (!options.preserveSessionOnRefreshFailure) await expireSession();
+    throw refreshError;
+  }
+  if (!refreshedAccessToken) {
+    if (!options.preserveSessionOnRefreshFailure) await expireSession();
+    throw new Error('Authenticated mobile session expired');
+  }
+  return refreshedAccessToken;
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
@@ -49,18 +168,20 @@ apiClient.interceptors.response.use(
     if (!config || config._retry || error.response?.status !== 401) {
       return Promise.reject(error);
     }
-    if (String(config.url || '').includes('/auth/login')) {
+    if (isAuthRequestWithoutRefresh(config.url)) {
       return Promise.reject(error);
     }
     config._retry = true;
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
+    let newAccess: string | null = null;
+    try {
+      newAccess = await getAuthenticatedAccessToken({
+        forceRefresh: true,
+        refreshTimeoutMs: Number(config.timeout || 0) || undefined,
       });
-    }
-    const newAccess = await refreshPromise;
-    if (!newAccess) {
-      await tokenStore.clearTokens();
+    } catch (refreshError) {
+      if (axios.isAxiosError(refreshError) && !refreshError.response) {
+        return Promise.reject(refreshError);
+      }
       return Promise.reject(error);
     }
     config.headers.Authorization = `Bearer ${newAccess}`;

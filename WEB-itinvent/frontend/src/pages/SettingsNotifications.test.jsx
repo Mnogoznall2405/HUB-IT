@@ -46,7 +46,7 @@ describe('BrowserNotificationsSettingsCard', () => {
   it('shows permission request flow and stores the local toggle', async () => {
     render(<BrowserNotificationsSettingsCard />);
 
-    expect(screen.getByText('Windows-уведомления')).toBeInTheDocument();
+    expect(screen.getByText('Системные уведомления на этом устройстве')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Разрешить уведомления' })).toBeInTheDocument();
 
     const toggle = screen.getByRole('checkbox');

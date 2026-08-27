@@ -645,6 +645,7 @@ def _ensure_chat_user_state_columns(engine) -> None:
         if engine.dialect.name == "postgresql":
             message_table = _qualified_table("chat_messages", engine=engine)
             conversation_table = _qualified_table("chat_conversations", engine=engine)
+            member_table = _qualified_table("chat_members", engine=engine)
             connection.execute(
                 text(
                     f"UPDATE {table_name} state "
@@ -658,7 +659,13 @@ def _ensure_chat_user_state_columns(engine) -> None:
             connection.execute(
                 text(
                     f"UPDATE {table_name} state "
-                    "SET unread_count = GREATEST(COALESCE(conv.last_message_seq, 0) - COALESCE(state.last_read_seq, 0), 0) "
+                    "SET unread_count = CASE WHEN EXISTS ("
+                    f"SELECT 1 FROM {member_table} member "
+                    "WHERE member.conversation_id = state.conversation_id "
+                    "AND member.user_id = state.user_id "
+                    "AND member.left_at IS NULL"
+                    ") THEN GREATEST(COALESCE(conv.last_message_seq, 0) - COALESCE(state.last_read_seq, 0), 0) "
+                    "ELSE 0 END "
                     f"FROM {conversation_table} conv "
                     "WHERE conv.id = state.conversation_id"
                 )

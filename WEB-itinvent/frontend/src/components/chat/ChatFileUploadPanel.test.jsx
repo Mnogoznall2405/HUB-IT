@@ -53,6 +53,44 @@ afterEach(() => {
 });
 
 describe('ChatFileUploadPanel media preview', () => {
+  it('sends the caption on plain Enter and keeps Shift+Enter or IME composition as text input', () => {
+    const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
+    const onSend = vi.fn();
+    renderPanel({ files: [image], caption: 'Подпись', onSend });
+
+    const caption = screen.getByRole('textbox', { name: 'Подпись' });
+    fireEvent.keyDown(caption, { key: 'Enter', shiftKey: true });
+    fireEvent.keyDown(caption, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(caption, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the editor for a static image and marks an edited image', () => {
+    const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
+    const onEditImage = vi.fn();
+    renderPanel({
+      files: [image],
+      imageEdits: [{ edited: true, recipe: { version: 1, operations: [{ type: 'rotate', turns: 1 }] } }],
+      onEditImage,
+      originalModeDisabledReason: 'Сбросьте изменения, чтобы отправить оригинал.',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Редактировать photo.jpg' }));
+    expect(onEditImage).toHaveBeenCalledWith(0);
+    expect(screen.getByTestId('file-dialog-edited-0')).toHaveTextContent('Изменено');
+    expect(screen.getByRole('checkbox', { name: 'Отправить как файл' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Сбросьте изменения');
+  });
+
+  it('does not offer the raster editor for animated GIF files', () => {
+    const image = new File(['gif'], 'animation.gif', { type: 'image/gif' });
+    renderPanel({ files: [image], onEditImage: vi.fn() });
+
+    expect(screen.queryByRole('button', { name: 'Редактировать animation.gif' })).not.toBeInTheDocument();
+  });
+
   it('renders a large image preview and the send-as-file control', async () => {
     const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
     const onSendMediaAsFilesChange = vi.fn();

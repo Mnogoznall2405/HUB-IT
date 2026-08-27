@@ -87,6 +87,41 @@ function Invoke-PostgresConnectionBudgetCheck {
     }
 }
 
+function Get-PortListenerPids {
+    param([int]$ListenPort)
+
+    $pids = @()
+    $lines = netstat -ano | Select-String ":$ListenPort\s+.*LISTENING"
+    foreach ($line in $lines) {
+        $parts = ($line -split '\s+') | Where-Object { $_ }
+        if ($parts.Count -ge 1 -and $parts[-1] -match '^\d+$') {
+            $pids += [int]$parts[-1]
+        }
+    }
+    return @($pids | Sort-Object -Unique)
+}
+
+function Stop-ChatNodeForRestart {
+    param(
+        [string]$Pm2Command,
+        [string]$Name,
+        [int]$Port
+    )
+
+    & $Pm2Command stop $Name 2>$null | Out-Null
+    Start-Sleep -Seconds 2
+    foreach ($listenerPid in (Get-PortListenerPids -ListenPort $Port)) {
+        Write-Host "Stopping stale $Name listener on port $Port (PID $listenerPid)..." -ForegroundColor Yellow
+        taskkill /PID $listenerPid /T /F 2>$null | Out-Null
+    }
+    Start-Sleep -Seconds 1
+    $remaining = Get-PortListenerPids -ListenPort $Port
+    if ($remaining.Count -gt 0) {
+        throw "Port $Port is still in use after stopping ${Name}: $($remaining -join ', ')"
+    }
+    & $Pm2Command delete $Name 2>$null | Out-Null
+}
+
 if (-not (Test-Path -LiteralPath $envPath)) {
     throw ".env not found at $envPath"
 }
@@ -100,24 +135,24 @@ $pm2Cmd = Resolve-Pm2Command
 # check after each rolling restart prevents consuming the maintenance reserve.
 Invoke-PostgresConnectionBudgetCheck -Projected
 foreach ($requiredName in @('itinvent-chat-a', 'itinvent-chat-b')) {
-    # Parsing `pm2 jlist` is not safe on Windows PowerShell 5.1 because its
-    # environment objects can contain case-only duplicate keys. `pm2 pid` is
-    # stable and returns 0 when the process is not registered/running.
-    $pidOutput = @(& $pm2Cmd pid $requiredName 2>$null)
-    $registeredPid = $pidOutput | Where-Object { "$_" -match '^\d+$' } | Select-Object -Last 1
-    if (-not $registeredPid -or [int]$registeredPid -le 0) {
+    # `pm2 describe` distinguishes an already configured but failed node from a
+    # missing node. That lets this restart script recover `waiting restart`
+    # without becoming an activation path for a cluster that was never enabled.
+    & $pm2Cmd describe $requiredName 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
         throw "$requiredName is not registered in PM2. Refusing to activate scale mode from a restart script."
     }
 }
 
 $nodes = @(
-    [pscustomobject]@{ Name = 'itinvent-chat-a'; ReadyUrl = 'http://127.0.0.1:8002/health/ready' },
-    [pscustomobject]@{ Name = 'itinvent-chat-b'; ReadyUrl = 'http://127.0.0.1:8004/health/ready' }
+    [pscustomobject]@{ Name = 'itinvent-chat-a'; Port = 8002; ReadyUrl = 'http://127.0.0.1:8002/health/ready' },
+    [pscustomobject]@{ Name = 'itinvent-chat-b'; Port = 8004; ReadyUrl = 'http://127.0.0.1:8004/health/ready' }
 )
 
 # Restart one node at a time so the other node can keep existing WebSockets.
 foreach ($node in $nodes) {
     Write-Host "Reloading $($node.Name)..." -ForegroundColor Cyan
+    Stop-ChatNodeForRestart -Pm2Command $pm2Cmd -Name $node.Name -Port $node.Port
     & $pm2Cmd start $chatScaleConfig --only $node.Name --update-env | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "PM2 failed to reload $($node.Name) (exit $LASTEXITCODE)."

@@ -57,8 +57,23 @@ def _png_1x1() -> bytes:
     )
 
 
+def _set_ordinary_hub_notifications(monkeypatch, *, enabled: bool) -> None:
+    for target in (
+        "backend.chat.hub_bell_events.hub_ordinary_write_enabled",
+        "backend.chat.latency_profile.hub_ordinary_write_enabled",
+        "backend.chat.hub_bell_events.hub_ordinary_notifications_enabled",
+        "backend.chat.latency_profile.hub_ordinary_notifications_enabled",
+        "backend.chat.hub_bell_events.hub_ordinary_read_visible",
+        "backend.chat.latency_profile.hub_ordinary_read_visible",
+    ):
+        monkeypatch.setattr(target, lambda: bool(enabled))
+
+
 @pytest.fixture
 def chat_env(temp_dir, monkeypatch):
+    # Keep service tests independent from production feature flags loaded via
+    # the root .env. Tests that verify the disabled mode override this below.
+    _set_ordinary_hub_notifications(monkeypatch, enabled=True)
     raw_users = {
         1: _raw_user(1, "author", "Task Author", "operator"),
         2: _raw_user(2, "assignee", "Task Assignee", "operator"),
@@ -825,6 +840,18 @@ def test_send_message_notifications_use_targeted_sender_lookup(chat_env, monkeyp
         body="Targeted sender lookup",
         defer_push_notifications=True,
     )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
 
     polled = hub_service.poll_notifications(user_id=2, limit=20)
     chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
@@ -876,6 +903,8 @@ def test_send_message_mention_notifies_muted_group_member(chat_env, monkeypatch)
     )
     deferred = dict(created.get("_deferred_chat_notifications") or {})
     assert deferred
+    realtime_message = dict((created.get("_deferred_realtime_publish") or {}).get("message") or {})
+    assert realtime_message["mentioned_user_ids"] == [2]
     service._create_chat_notifications(
         sender_user_id=int(deferred["sender_user_id"]),
         conversation_id=str(deferred["conversation_id"]),
@@ -916,7 +945,7 @@ def test_send_message_mention_notifies_muted_group_member(chat_env, monkeypatch)
     assert "Ops" in jobs[0].title
 
 
-def test_send_message_ack_uses_targeted_message_presence_lookup(chat_env, monkeypatch):
+def test_send_message_ack_defers_targeted_message_presence_lookup(chat_env, monkeypatch):
     service = chat_env["service"]
     conversation = chat_env["direct"]
     captured_user_id_sets: list[list[int]] = []
@@ -942,6 +971,9 @@ def test_send_message_ack_uses_targeted_message_presence_lookup(chat_env, monkey
     )
 
     assert created["conversation_id"] == conversation["id"]
+    assert captured_user_id_sets == []
+
+    service.get_messages_for_users(message_id=created["id"], user_ids=[1, 2])
     assert captured_user_id_sets == [[1]]
 
 
@@ -1014,6 +1046,7 @@ def test_send_message_client_message_id_is_idempotent_for_same_sender(chat_env):
 
     assert repeated["id"] == created["id"]
     assert repeated["client_message_id"] == "client-msg-1"
+    _enqueue_and_apply_delivery_state(service, created)
 
     with chat_db_module.chat_session() as session:
         message_count = session.execute(
@@ -1083,14 +1116,14 @@ def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
         body="First persisted message",
         defer_push_notifications=True,
     )
-    assert service.apply_delivery_state_for_message(message_id=first["id"]) is True
+    _enqueue_and_apply_delivery_state(service, first)
     second = service.send_message(
         current_user_id=1,
         conversation_id=conversation["id"],
         body="Second persisted message",
         defer_push_notifications=True,
     )
-    assert service.apply_delivery_state_for_message(message_id=second["id"]) is True
+    _enqueue_and_apply_delivery_state(service, second)
 
     with chat_db_module.chat_session() as session:
         conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
@@ -1332,30 +1365,7 @@ def test_group_avatar_file_path_requires_group_membership(chat_env):
 
 
 def _disable_ordinary_hub_notifications(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "backend.chat.hub_bell_events.hub_ordinary_write_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "backend.chat.latency_profile.hub_ordinary_write_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "backend.chat.hub_bell_events.hub_ordinary_notifications_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "backend.chat.latency_profile.hub_ordinary_notifications_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "backend.chat.hub_bell_events.hub_ordinary_read_visible",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "backend.chat.latency_profile.hub_ordinary_read_visible",
-        lambda: False,
-    )
+    _set_ordinary_hub_notifications(monkeypatch, enabled=False)
 
 
 def test_ordinary_message_creates_no_hub_rows_when_ordinary_disabled(chat_env, monkeypatch):
@@ -1383,10 +1393,22 @@ def test_ordinary_message_creates_no_hub_rows_when_ordinary_disabled(chat_env, m
         mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
     )
     assert int(stats.get("hub_count") or 0) == 0
-    # No browser push subscription exists in chat_env, so do not create a
-    # queued outbox row that the worker can only mark no_subscriptions later.
-    assert int(stats.get("push_count") or 0) == 0
+    # Native Android recipients do not require a browser subscription at
+    # enqueue time; the worker resolves every available push transport later.
+    assert int(stats.get("push_count") or 0) == 1
     assert int(stats.get("ordinary_hub_rows_skipped") or 0) >= 1
+
+    with chat_db_module.chat_session() as session:
+        push_jobs = list(
+            session.execute(
+                select(chat_models_module.ChatPushOutbox).where(
+                    chat_models_module.ChatPushOutbox.message_id == created["id"],
+                )
+            ).scalars()
+        )
+    assert len(push_jobs) == 1
+    assert push_jobs[0].recipient_user_id == 2
+    assert push_jobs[0].status == "queued"
 
     polled = hub_service.poll_notifications(user_id=2, limit=50)
     chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]

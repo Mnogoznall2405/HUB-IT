@@ -283,6 +283,28 @@ def test_creator_can_close_task_and_assignee_cannot(task_env):
     assert ("new", "done") in transitions
 
 
+def test_admin_can_close_task_created_by_another_user(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    created = _create_task(client, title="Close By Admin")
+    task_id = created["id"]
+
+    set_user(5)
+    admin_detail = client.get(f"/hub/tasks/{task_id}")
+    assert admin_detail.status_code == 200
+    assert admin_detail.json()["capabilities"]["can_close"] is True
+
+    closed = client.post(f"/hub/tasks/{task_id}/complete", json={"comment": "Closed by admin"})
+    assert closed.status_code == 200, closed.text
+    payload = closed.json()
+    assert payload["status"] == "done"
+    assert payload["reviewer_user_id"] == 5
+    assert payload["review_comment"] == "Closed by admin"
+    assert payload["capabilities"]["can_close"] is False
+
+
 def test_reopen_completed_task_denied_for_outsider(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]
@@ -403,6 +425,45 @@ def test_create_task_detail_access_and_role_scopes(task_env):
     set_user(4)
     denied = client.get(f"/hub/tasks/{task_id}")
     assert denied.status_code == 403
+
+
+def test_create_task_provisions_discussion_before_first_open(task_env, monkeypatch):
+    client = task_env["client"]
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(hub, "is_task_discussion_chat_enabled", lambda: True)
+
+    def _ensure_discussion(*, task_id: str, actor_user_id: int) -> dict:
+        calls.append(("ensure", task_id, actor_user_id))
+        return {"conversation_id": "task-conversation", "created": True}
+
+    async def _publish_discussion(*, task_id: str, task: dict) -> None:
+        calls.append(("publish", task_id, task["id"]))
+
+    monkeypatch.setattr(hub, "ensure_task_discussion", _ensure_discussion)
+    monkeypatch.setattr(hub, "publish_task_discussion_updated", _publish_discussion)
+
+    created = _create_task(client, title="Visible Task Discussion")
+
+    assert calls == [
+        ("ensure", created["id"], 1),
+        ("publish", created["id"], created["id"]),
+    ]
+
+
+def test_create_task_survives_discussion_provision_failure(task_env, monkeypatch):
+    client = task_env["client"]
+
+    monkeypatch.setattr(hub, "is_task_discussion_chat_enabled", lambda: True)
+
+    def _fail_discussion(*, task_id: str, actor_user_id: int) -> dict:
+        raise RuntimeError("chat unavailable")
+
+    monkeypatch.setattr(hub, "ensure_task_discussion", _fail_discussion)
+
+    created = _create_task(client, title="Task Without Chat Side Effect")
+
+    assert created["title"] == "Task Without Chat Side Effect"
 
 
 def test_create_only_user_can_create_task_without_taxonomy_management(task_env):

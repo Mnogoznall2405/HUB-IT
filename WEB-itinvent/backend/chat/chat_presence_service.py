@@ -22,14 +22,16 @@ from backend.chat.chat_formatting import _iso, _parse_dt, _utc_now
 from backend.chat.utils import normalize_text as _normalize_text
 from backend.services.session_service import session_service
 from backend.services.user_service import user_service
+from backend.services.zup_user_profile_service import zup_user_profile_service
 
 if TYPE_CHECKING:
     from backend.chat.service import ChatService
 
 
 class ChatPresenceService:
-    def __init__(self, service: "ChatService") -> None:
+    def __init__(self, service: "ChatService", *, work_profile_resolver: Any = None) -> None:
         self._service = service
+        self._work_profile_resolver = work_profile_resolver or zup_user_profile_service
 
     def get_presence(self, *, user_id: int) -> dict:
         normalized_user_id = int(user_id or 0)
@@ -319,10 +321,24 @@ class ChatPresenceService:
 
     def _serialize_user(self, item: dict, *, presence_map: Optional[dict[int, dict]] = None) -> dict:
         user_id = int(item.get("id", 0) or 0)
+        work_profile = self._work_profile_resolver.resolve_user(item) or {}
+        department = _normalize_text(work_profile.get("department")) or _normalize_text(item.get("department"))
+        job_title = _normalize_text(work_profile.get("job_title")) or _normalize_text(item.get("job_title"))
+        city = _normalize_text(work_profile.get("city"))
+        corporate_email = _normalize_text(work_profile.get("corporate_email"))
+        corporate_phone = _normalize_text(work_profile.get("corporate_phone"))
+        work_profile_source = "zup" if work_profile else ("hub" if department or job_title else None)
         return {
             "id": user_id,
             "username": _normalize_text(item.get("username")),
             "full_name": _normalize_text(item.get("full_name")) or None,
+            "department": department or None,
+            "job_title": job_title or None,
+            "city": city or None,
+            "corporate_email": corporate_email or None,
+            "corporate_phone": corporate_phone or None,
+            "work_profile_source": work_profile_source,
+            "work_profile_updated_at": _normalize_text(work_profile.get("updated_at")) or None,
             "role": _normalize_text(item.get("role")) or "viewer",
             "is_active": bool(item.get("is_active", True)),
             "avatar_url": (_normalize_text(item.get("avatar_url")) or None),

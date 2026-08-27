@@ -64,6 +64,11 @@ export const chatThreadMessagesAPI = {
     return response.data;
   },
 
+  searchMessagesGlobal: async (params = {}) => {
+    const response = await apiClient.get('/chat/messages/search', { params });
+    return response.data;
+  },
+
   getMessageReads: async (messageId) => {
     const response = await apiClient.get(`/chat/messages/${encodeURIComponent(messageId)}/reads`);
     return response.data;

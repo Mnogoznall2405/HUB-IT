@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 def test_disabled_dev_auto_create_uses_alembic_without_create_all(monkeypatch):
     appdb = importlib.import_module("backend.appdb.db")
+    db_migrations = importlib.import_module("backend.db_migrations")
     fake_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
     upgraded: list[tuple[str, str]] = []
 
@@ -14,7 +15,7 @@ def test_disabled_dev_auto_create_uses_alembic_without_create_all(monkeypatch):
     monkeypatch.setattr(appdb, "get_app_engine", lambda _url=None: fake_engine)
     monkeypatch.setattr(appdb, "_postgres_has_alembic_version", lambda _engine: True)
     monkeypatch.setattr(
-        appdb,
+        db_migrations,
         "upgrade_internal_database",
         lambda database_url, *, scope: upgraded.append((database_url, scope)),
     )

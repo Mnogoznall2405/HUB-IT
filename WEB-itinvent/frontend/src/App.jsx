@@ -24,6 +24,7 @@ import DesktopProtocolHandoff from './components/layout/DesktopProtocolHandoff';
 import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
 import DesktopLifecycleBootstrap from './components/layout/DesktopLifecycleBootstrap';
 import DesktopMemoryPressureBootstrap from './components/layout/DesktopMemoryPressureBootstrap';
+import NativeMobileShellBridge from './components/layout/NativeMobileShellBridge';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
 import {
@@ -551,6 +552,7 @@ function AuthenticatedAppShell() {
       <DesktopMemoryPressureBootstrap />
       <AppPushBootstrap />
       <ChatSocketBootstrap />
+      <NativeMobileShellBridge />
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
         <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
@@ -631,6 +633,10 @@ function AuthenticatedAppShell() {
                 />
                 <Route
                   path="/mail"
+                  element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
+                />
+                <Route
+                  path="/mail/compose"
                   element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
                 />
                 <Route

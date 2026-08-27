@@ -251,7 +251,7 @@ describe('chatSocket client lifecycle', () => {
   });
 
   it('resolves subscribeInbox when the server answers with chat.snapshot', async () => {
-    const { chatSocket } = await loadChatSocket();
+    const { chatSocket, isChatConversationMuted } = await loadChatSocket();
     const release = chatSocket.retain();
     const socket = MockWebSocket.instances[0];
 
@@ -268,13 +268,28 @@ describe('chatSocket client lifecycle', () => {
         request_id: sentPayload.request_id,
         payload: {
           unread_summary: { conversations_unread: 2 },
+          muted_conversation_ids: ['conv-muted'],
         },
       }),
     });
 
     await expect(pending).resolves.toEqual({
       unread_summary: { conversations_unread: 2 },
+      muted_conversation_ids: ['conv-muted'],
     });
+    expect(isChatConversationMuted('conv-muted')).toBe(true);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.conversation.updated',
+        conversation_id: 'conv-muted',
+        payload: {
+          conversation: { id: 'conv-muted', is_muted: false },
+          reason: 'settings',
+        },
+      }),
+    });
+    expect(isChatConversationMuted('conv-muted')).toBe(false);
 
     release();
     chatSocket.close(true);

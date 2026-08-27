@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { equipmentAPI } from '../../api/client';
+import apiClient, { equipmentAPI } from '../../api/client';
 import { useDatabaseDetailRuntime } from './useDatabaseDetailRuntime';
 
 vi.mock('qrcode', () => ({
@@ -11,6 +11,9 @@ vi.mock('qrcode', () => ({
 }));
 
 vi.mock('../../api/client', () => ({
+  default: {
+    get: vi.fn(),
+  },
   API_V1_BASE: '/api/v1',
   equipmentAPI: {
     getByInvNos: vi.fn(),
@@ -100,6 +103,13 @@ describe('useDatabaseDetailRuntime', () => {
     equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [] });
     equipmentAPI.getEquipmentHistory.mockResolvedValue({ history: [] });
     equipmentAPI.updateByInvNo.mockResolvedValue(updatedItem);
+    apiClient.get.mockResolvedValue({
+      data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="act-77.pdf"',
+      },
+    });
   });
 
   it('opens detail view and resets transient detail state for the next item', async () => {
@@ -245,32 +255,45 @@ describe('useDatabaseDetailRuntime', () => {
     expect(event.stopPropagation).not.toHaveBeenCalled();
   });
 
-  it('opens equipment act file with item, inventory and database URL params', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue({});
+  it('loads equipment act file with item, inventory and database params into preview', async () => {
     window.localStorage.setItem('selected_database', ' main-db ');
     const { result } = renderDetailHook();
     await openLoadedDetail(result);
 
-    act(() => {
-      result.current.handleOpenEquipmentActFile({
+    await act(async () => {
+      await result.current.handleOpenEquipmentActFile({
         DOC_NO: 'DOC 77',
         ITEM_ID: '42',
       });
     });
 
-    expect(openSpy).toHaveBeenCalledWith(
-      expect.any(String),
-      '_blank',
-      'noopener,noreferrer'
-    );
-    const openedUrl = new URL(openSpy.mock.calls[0][0]);
-    expect(openedUrl.pathname).toBe('/api/v1/equipment/acts/DOC%2077/file');
-    expect(openedUrl.searchParams.get('item_id')).toBe('42');
-    expect(openedUrl.searchParams.get('inv_no')).toBe('1001');
-    expect(openedUrl.searchParams.get('db_id')).toBe('main-db');
+    expect(apiClient.get).toHaveBeenCalledWith('/equipment/acts/DOC 77/file', {
+      params: {
+        item_id: 42,
+        inv_no: '1001',
+        db_id: 'main-db',
+      },
+      responseType: 'blob',
+    });
+    expect(result.current.actFilePreview).toMatchObject({
+      open: true,
+      loading: false,
+      error: '',
+      title: 'act-77.pdf',
+      kind: 'pdf',
+    });
     expect(result.current.detailActsError).toBe('');
     expect(result.current.detailActOpeningDocNo).toBe('');
+  });
 
-    openSpy.mockRestore();
+  it('generates an equipment QR link with the active database', async () => {
+    const { result } = renderDetailHook({ databaseId: 'OBJ-ITINVENT' });
+    await openLoadedDetail(result);
+
+    await waitFor(() => expect(result.current.detailQrText).toContain('/database?'));
+    const link = new URL(result.current.detailQrText);
+    expect(link.origin).toBe(window.location.origin);
+    expect(link.searchParams.get('inv_no')).toBe('1001');
+    expect(link.searchParams.get('db_id')).toBe('OBJ-ITINVENT');
   });
 });

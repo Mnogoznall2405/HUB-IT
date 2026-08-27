@@ -26,9 +26,12 @@ class FakeMailbox:
 
 
 class FakeFileAttachment:
-    def __init__(self, *, name: str, content: bytes):
+    def __init__(self, *, name: str, content: bytes, content_type: str = "", content_id: str = "", is_inline: bool = False):
         self.name = name
         self.content = content
+        self.content_type = content_type
+        self.content_id = content_id
+        self.is_inline = is_inline
 
 
 class FakeMessage:
@@ -93,6 +96,36 @@ def test_send_pipeline_attaches_files_and_saves_to_sent():
     assert msg.message_id == "<id@example.com>"
     assert [box.email_address for box in msg.kwargs["to_recipients"]] == ["to@example.com"]
     assert [box.email_address for box in msg.kwargs["cc_recipients"]] == ["cc@example.com"]
+
+
+def test_send_pipeline_attaches_inline_image_with_exchange_metadata():
+    from backend.services.mail_outgoing_attachment import MailOutgoingAttachment
+
+    msg = _pipeline().send(
+        account=SimpleNamespace(sent="sent-folder"),
+        send_plan=_plan(),
+        attachments=[
+            MailOutgoingAttachment(
+                filename="paste.png",
+                content=b"png",
+                content_type="image/png",
+                content_id="hubit-inline-2@hubit.local",
+                is_inline=True,
+            )
+        ],
+        decode_message_id=lambda _token: ("inbox", "ex-1"),
+        resolve_folder=lambda *_args: (SimpleNamespace(), "inbox"),
+        locate_message_item=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no locate")),
+        collect_forwarded_attachments=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no collect")),
+        item_message_id=lambda _item: "",
+        resolve_attachment_id=lambda token: token,
+        validate_attachments=lambda _attachments: None,
+    )
+
+    inline = msg.attachments[0]
+    assert inline.content_type == "image/png"
+    assert inline.content_id == "hubit-inline-2@hubit.local"
+    assert inline.is_inline is True
 
 
 def test_send_pipeline_forwards_source_attachments():
@@ -219,6 +252,38 @@ def test_send_pipeline_reply_uses_exchange_create_reply_without_attachments():
     assert "Согласен" in str(msg.kwargs["body"])
     assert "Старое" not in str(msg.kwargs["body"])
     assert FakeMessage.created == []
+
+
+def test_send_pipeline_native_reply_preserves_prepared_html_quote():
+    source = FakeReplySource()
+    prepared_body = (
+        '<div data-mail-outgoing="true">'
+        '<div data-mail-native-body="true"><p>Новый ответ<br>Вторая строка</p></div>'
+        '<div data-mail-quoted-block="true">'
+        '<div data-mail-native-quote="true" data-mail-quoted-history="true">'
+        '<div class="quoted-mail"><blockquote><strong>Форматированный исходный текст</strong></blockquote></div>'
+        "</div></div></div>"
+    )
+
+    msg = _pipeline().send(
+        account=SimpleNamespace(sent="sent-folder"),
+        send_plan=_plan(reply_to_message_id="encoded-reply", body=prepared_body),
+        attachments=[],
+        decode_message_id=lambda token: ("inbox", "reply-ex") if token == "encoded-reply" else ("inbox", "other"),
+        resolve_folder=lambda *_args: (SimpleNamespace(), "inbox"),
+        locate_message_item=lambda *_args, **_kwargs: (object(), "inbox", source),
+        collect_forwarded_attachments=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no collect")),
+        item_message_id=lambda item: item.message_id,
+        resolve_attachment_id=lambda token: token,
+        validate_attachments=lambda _attachments: None,
+    )
+
+    assert source.calls == []
+    assert msg is FakeMessage.created[0]
+    assert msg.sent is True
+    assert msg.kwargs["in_reply_to"] == "<reply@example.com>"
+    assert "Новый ответ<br>Вторая строка" in str(msg.kwargs["body"])
+    assert "<strong>Форматированный исходный текст</strong>" in str(msg.kwargs["body"])
 
 
 def test_send_pipeline_reply_keeps_new_message_path_when_attachments_present():

@@ -136,4 +136,16 @@ describe('TasksDetailWorkspace', () => {
     expect(screen.getByTestId('task-mobile-checklist-screen')).toBeInTheDocument();
     expect(screen.getByTestId('task-detail-mobile-title')).toHaveTextContent('Чек-лист');
   });
+
+  it('offers Android share in the task action menu when the native callback is available', () => {
+    const onShareLink = vi.fn();
+    renderWorkspace({
+      isMobile: true,
+      onShareLink,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Действия задачи' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Поделиться' }));
+    expect(onShareLink).toHaveBeenCalledTimes(1);
+  });
 });

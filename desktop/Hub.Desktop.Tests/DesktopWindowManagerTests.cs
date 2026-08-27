@@ -141,6 +141,45 @@ public sealed class DesktopWindowManagerTests
         Assert.Equal(3, aggregate.ChatUnread);
     }
 
+    [Fact]
+    public void OpensDedicatedComposeWindowWithoutConsumingSecondarySlot()
+    {
+        var primary = new FakeHubWindow();
+        var secondary = new FakeHubWindow();
+        var compose = new FakeHubWindow();
+        var manager = new DesktopWindowManager(BaseUri);
+        manager.RegisterPrimary(primary);
+        manager.ConfigureSecondaryFactory(_ => secondary);
+        manager.ConfigureMailComposeFactory(_ => compose);
+
+        Assert.Equal(
+            DesktopMailComposeWindowOpenResult.Opened,
+            manager.OpenMailComposeWindow("/mail/compose?draft_id=draft-1&mailbox_id=mb-1"));
+        Assert.True(manager.CanOpenSecondary);
+        Assert.Equal(2, manager.WindowCount);
+        Assert.Equal(DesktopSecondaryWindowOpenResult.Opened, manager.OpenSecondaryFrom(primary));
+        Assert.Equal(3, manager.WindowCount);
+    }
+
+    [Fact]
+    public void ActivatesSameComposeDraftAndReportsBusyForAnotherDraft()
+    {
+        var primary = new FakeHubWindow();
+        var compose = new FakeHubWindow();
+        var manager = new DesktopWindowManager(BaseUri);
+        manager.RegisterPrimary(primary);
+        manager.ConfigureMailComposeFactory(_ => compose);
+        manager.OpenMailComposeWindow("/mail/compose?draft_id=draft-1");
+
+        Assert.Equal(
+            DesktopMailComposeWindowOpenResult.ActivatedExisting,
+            manager.OpenMailComposeWindow("/mail/compose?draft_id=draft-1"));
+        Assert.Equal(
+            DesktopMailComposeWindowOpenResult.Busy,
+            manager.OpenMailComposeWindow("/mail/compose?draft_id=draft-2"));
+        Assert.Equal(2, compose.ActivationCount);
+    }
+
     private sealed class FakeHubWindow : IDesktopHubWindow
     {
         public bool IsVisible { get; private set; } = true;

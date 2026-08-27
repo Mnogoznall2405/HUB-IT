@@ -597,3 +597,49 @@ def test_revoked_trusted_device_recalculates_idle_to_thirty_minutes(isolated_ses
     )
     assert session.get("trusted_device_id") is None
     assert session["status"] == "expired_idle"
+
+
+def test_mobile_biometric_session_idle_expires_in_seven_days(isolated_session_service, monkeypatch):
+    session_service_module = importlib.import_module("backend.services.session_service")
+    active = {"value": True}
+
+    monkeypatch.setattr(
+        session_service_module.SessionService,
+        "_has_active_mobile_biometric_trust",
+        lambda self, session, db_session=None: bool(active["value"]) and bool(session.get("client_device_key_hash")),
+    )
+
+    created = isolated_session_service.create_session(
+        session_id="session-mobile-biometric",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="203.0.113.10",
+        user_agent="HUB-IT-Mobile/1.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+        login_network_zone="external",
+        client_device_id="mobile-test-device-1234567890",
+    )
+
+    idle_expires_at = datetime.fromisoformat(created["idle_expires_at"])
+    expected = datetime.now(timezone.utc) + timedelta(days=7)
+    assert abs((idle_expires_at - expected).total_seconds()) < 5
+    assert created.get("client_device_key_hash")
+
+    sessions = isolated_session_service._load_sessions()
+    sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(minutes=-45))
+    isolated_session_service._save_sessions(sessions)
+    isolated_session_service._cache_invalidate("session-mobile-biometric")
+
+    assert isolated_session_service.is_session_active("session-mobile-biometric") is True
+
+    active["value"] = False
+    isolated_session_service._cache_invalidate("session-mobile-biometric")
+    assert isolated_session_service.is_session_active("session-mobile-biometric") is False
+
+    session = next(
+        item
+        for item in isolated_session_service.list_sessions(active_only=False)
+        if item["session_id"] == "session-mobile-biometric"
+    )
+    assert session["status"] == "expired_idle"

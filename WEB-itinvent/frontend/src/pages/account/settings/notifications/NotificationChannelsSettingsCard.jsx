@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Chip,
   FormControlLabel,
   FormGroup,
   Paper,
@@ -8,41 +7,40 @@ import {
   Switch,
   Typography,
 } from '@mui/material';
-import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import { useTheme } from '@mui/material/styles';
 import { settingsAPI } from '../../../../api/client';
-import { getChatNotificationState, subscribeChatNotificationState } from '../../../../lib/chatNotifications';
-import { dispatchNotificationPreferencesChanged } from '../../../../lib/notificationPreferences';
+import {
+  dispatchNotificationPreferencesChanged,
+  normalizeNotificationPreferences,
+} from '../../../../lib/notificationPreferences';
 import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../../theme/officeUiTokens';
 import SectionCard from '../../shared/SectionCard';
 
-export function NotificationChannelsSettingsCard() {
+const PRIMARY_NOTIFICATION_CHANNELS = [
+  ['mail', 'Почта'],
+  ['tasks', 'Задачи'],
+  ['task_email', 'Email по задачам'],
+  ['announcements', 'Лента компании'],
+];
+
+const CHAT_NOTIFICATION_CHANNELS = [
+  ['chat_direct', 'Личные сообщения'],
+  ['chat_group', 'Групповые беседы'],
+  ['chat_task', 'Диалоги задач'],
+];
+
+export function NotificationChannelsSettingsCard({ embedded = false }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [chatNotificationState, setChatNotificationState] = useState(() => getChatNotificationState());
-  const [channels, setChannels] = useState({
-    mail: true,
-    tasks: true,
-    task_email: true,
-    announcements: true,
-    chat: true,
-  });
-
-  useEffect(() => subscribeChatNotificationState(setChatNotificationState), []);
+  const [channels, setChannels] = useState(() => normalizeNotificationPreferences());
 
   const loadPreferences = useCallback(async () => {
     setLoading(true);
     try {
       const data = await settingsAPI.getNotificationPreferences();
-      const nextChannels = {
-        mail: Boolean(data?.channels?.mail ?? true),
-        tasks: Boolean(data?.channels?.tasks ?? true),
-        task_email: Boolean(data?.channels?.task_email ?? true),
-        announcements: Boolean(data?.channels?.announcements ?? true),
-        chat: Boolean(data?.channels?.chat ?? true),
-      };
+      const nextChannels = normalizeNotificationPreferences(data?.channels);
       setChannels(nextChannels);
       dispatchNotificationPreferencesChanged(nextChannels);
     } finally {
@@ -55,17 +53,20 @@ export function NotificationChannelsSettingsCard() {
   }, [loadPreferences]);
 
   const handleToggle = useCallback(async (key, value) => {
-    setChannels((prev) => ({ ...prev, [key]: Boolean(value) }));
+    const enabled = Boolean(value);
+    const optimisticPatch = key === 'chat'
+      ? {
+        chat: enabled,
+        chat_direct: enabled,
+        chat_group: enabled,
+        chat_task: enabled,
+      }
+      : { [key]: enabled };
+    setChannels((prev) => ({ ...prev, ...optimisticPatch }));
     setSaving(true);
     try {
-      const data = await settingsAPI.updateNotificationPreferences({ [key]: Boolean(value) });
-      const nextChannels = {
-        mail: Boolean(data?.channels?.mail ?? true),
-        tasks: Boolean(data?.channels?.tasks ?? true),
-        task_email: Boolean(data?.channels?.task_email ?? true),
-        announcements: Boolean(data?.channels?.announcements ?? true),
-        chat: Boolean(data?.channels?.chat ?? true),
-      };
+      const data = await settingsAPI.updateNotificationPreferences({ [key]: enabled });
+      const nextChannels = normalizeNotificationPreferences(data?.channels);
       setChannels(nextChannels);
       dispatchNotificationPreferencesChanged(nextChannels);
     } finally {
@@ -73,10 +74,13 @@ export function NotificationChannelsSettingsCard() {
     }
   }, []);
 
+  const chatEnabled = CHAT_NOTIFICATION_CHANNELS.some(([key]) => Boolean(channels[key]));
+
   return (
     <SectionCard
-      title="Каналы уведомлений"
-      description="Один push/browser-permission для сайта и отдельные переключатели каналов: почта, задачи, объявления, chat."
+      title={embedded ? 'Какие уведомления получать' : 'Уведомления'}
+      description="Настройки сохраняются для учётной записи и одинаково действуют в браузере и HUB Desktop."
+      sx={embedded ? { border: 0, borderRadius: 0, bgcolor: 'transparent' } : undefined}
       contentSx={{ p: 1.5 }}
     >
       <Stack spacing={1.1}>
@@ -88,44 +92,72 @@ export function NotificationChannelsSettingsCard() {
             bgcolor: ui.panelInset,
           })}
         >
-          <FormGroup>
-            {[
-              ['mail', 'Почта'],
-              ['tasks', 'Задачи'],
-              ['task_email', 'Email по задачам'],
-              ['announcements', 'Лента компании'],
-              ['chat', 'Chat'],
-            ].map(([key, label]) => (
+          <Stack spacing={1.6}>
+            <Stack spacing={0.45}>
               <FormControlLabel
-                key={key}
                 control={(
                   <Switch
-                    checked={Boolean(channels[key])}
-                    onChange={(event) => handleToggle(key, event?.target?.checked)}
+                    name="chat"
+                    checked={chatEnabled}
+                    onChange={(event) => handleToggle('chat', event?.target?.checked)}
                     disabled={loading || saving}
                   />
                 )}
-                label={label}
+                label="Получать уведомления о чатах"
+                sx={{ m: 0, minHeight: 44, '& .MuiFormControlLabel-label': { fontWeight: 800 } }}
               />
-            ))}
-          </FormGroup>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
-            Если разрешение браузера уже выдано, desktop/pwa push будет приходить только по включённым каналам.
-            Почта использует ту же push-подписку браузера, что и chat.
-          </Typography>
-          <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" sx={{ mt: 0.75 }}>
-            <Chip
-              size="small"
-              icon={<NotificationsActiveOutlinedIcon sx={{ fontSize: '14px !important' }} />}
-              label={chatNotificationState.pushSubscribed
-                ? 'Push подключен'
-                : chatNotificationState.permission === 'granted'
-                  ? 'Разрешение выдано, push не активен'
-                  : 'Push не подключен'}
-              color={chatNotificationState.pushSubscribed ? 'success' : 'default'}
-              variant={chatNotificationState.pushSubscribed ? 'filled' : 'outlined'}
-            />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ pl: { xs: 0, sm: 6.5 }, lineHeight: 1.45 }}
+              >
+                Общий выключатель для личных сообщений, групповых бесед и диалогов задач.
+              </Typography>
+              <FormGroup sx={{ pl: { xs: 0.5, sm: 5.5 } }}>
+                {CHAT_NOTIFICATION_CHANNELS.map(([key, label]) => (
+                  <FormControlLabel
+                    key={key}
+                    control={(
+                      <Switch
+                        name={key}
+                        checked={Boolean(channels[key])}
+                        onChange={(event) => handleToggle(key, event?.target?.checked)}
+                        disabled={loading || saving || !chatEnabled}
+                      />
+                    )}
+                    label={label}
+                    sx={{ m: 0, minHeight: 40 }}
+                  />
+                ))}
+              </FormGroup>
+            </Stack>
+
+            <Stack spacing={0.35}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                Другие события
+              </Typography>
+              <FormGroup>
+                {PRIMARY_NOTIFICATION_CHANNELS.map(([key, label]) => (
+                  <FormControlLabel
+                    key={key}
+                    control={(
+                      <Switch
+                        name={key}
+                        checked={Boolean(channels[key])}
+                        onChange={(event) => handleToggle(key, event?.target?.checked)}
+                        disabled={loading || saving}
+                      />
+                    )}
+                    label={label}
+                    sx={{ m: 0, minHeight: 40 }}
+                  />
+                ))}
+              </FormGroup>
+            </Stack>
           </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
+            Отключение уведомлений не скрывает диалоги и счётчики непрочитанных сообщений.
+          </Typography>
         </Paper>
       </Stack>
     </SectionCard>

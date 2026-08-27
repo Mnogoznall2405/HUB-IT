@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import hashlib
 import logging
+import secrets
 import urllib.parse
 import uuid
 
@@ -30,6 +31,13 @@ from backend.models.auth import (
     ChangePasswordRequest,
     RefreshResponse,
     MobileRefreshRequest,
+    MobileBiometricEnrollRequest,
+    MobileBiometricEnrollResponse,
+    MobileBiometricSessionRequest,
+    MobileWebSessionRequest,
+    MobileWebSessionResponse,
+    MobileWebSessionConsumeRequest,
+    MobileWebSessionConsumeResponse,
     LogoutRequest,
     TwoFactorSetupStartRequest,
     TwoFactorSetupResponse,
@@ -61,6 +69,10 @@ from backend.services.mail_service import mail_service
 from backend.services.user_service import user_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.auth_security_service import AuthSecurityError, auth_security_service
+from backend.services.mobile_biometric_session_service import (
+    MobileBiometricSessionError,
+    mobile_biometric_session_service,
+)
 from backend.services.ad_sync_service import run_ad_sync
 from backend.services.authorization_service import (
     PERM_SETTINGS_SESSIONS_MANAGE,
@@ -76,6 +88,9 @@ from backend.utils.request_network import build_request_network_context, resolve
 router = APIRouter()
 security_optional = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+_MOBILE_WEB_SESSION_NAMESPACE = "mobile_web_session"
+_MOBILE_WEB_SESSION_TTL_SECONDS = 60
 
 
 class SessionTelemetryRequest(BaseModel):
@@ -408,6 +423,15 @@ def _resolve_client_device_id(request: Request) -> str:
     return normalize_client_device_id(raw_value) or new_client_device_id()
 
 
+def _require_mobile_client_device_id(request: Request) -> str:
+    if not _is_mobile_auth_client(request):
+        raise HTTPException(status_code=404, detail="Not found")
+    client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
+    if not client_device_id:
+        raise HTTPException(status_code=400, detail="Mobile device identifier is required")
+    return client_device_id
+
+
 def _deliver_client_device_id(
     request: Request,
     response: Response,
@@ -486,6 +510,28 @@ def _build_login_response(
         available_second_factors=list(login_result.get("available_second_factors") or []),
         trusted_devices_available=bool(login_result.get("trusted_devices_available")),
         client_device_id=body_client_device_id,
+        biometric_enrollment_code=(
+            str(login_result.get("biometric_enrollment_code") or "").strip() or None
+            if _is_mobile_auth_client(request)
+            else None
+        ),
+    )
+
+
+async def _issue_mobile_biometric_enrollment_code(
+    *,
+    request: Request,
+    user_id: int,
+    client_device_id: str,
+    session_id: str | None,
+) -> str | None:
+    if not _is_mobile_auth_client(request):
+        return None
+    return await run_in_threadpool(
+        mobile_biometric_session_service.issue_enrollment_code,
+        user_id=int(user_id),
+        client_device_id=client_device_id,
+        session_id=session_id,
     )
 
 
@@ -948,6 +994,14 @@ async def logout(
         refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
         if refresh_data and refresh_data.jti:
             auth_runtime_store_service.consume_refresh_token(refresh_data.jti)
+    if _is_mobile_auth_client(request):
+        client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
+        if client_device_id:
+            await run_in_threadpool(
+                mobile_biometric_session_service.revoke_device,
+                user_id=int(current_user.id),
+                client_device_id=client_device_id,
+            )
     if not _is_mobile_auth_client(request):
         _clear_auth_cookies(response)
     return {"message": "Successfully logged out", "username": current_user.username}
@@ -991,6 +1045,7 @@ async def change_password(
         )
     closed_sessions = session_service.close_user_sessions(int(current_user.id))
     revoked_devices = trusted_device_service.revoke_all_user_devices(int(current_user.id))
+    revoked_biometric_credentials = mobile_biometric_session_service.revoke_all_user_credentials(int(current_user.id))
     for item in session_service.list_sessions(active_only=False):
         if int(item.get("user_id", 0) or 0) == int(current_user.id):
             session_auth_context_service.delete_session_context(item.get("session_id"))
@@ -998,6 +1053,7 @@ async def change_password(
         "message": "Password changed successfully",
         "closed_sessions": closed_sessions,
         "revoked_devices": revoked_devices,
+        "revoked_biometric_credentials": revoked_biometric_credentials,
     }
 
 
@@ -1038,6 +1094,12 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    biometric_enrollment_code = await _issue_mobile_biometric_enrollment_code(
+        request=request,
+        user_id=int(result["user"].get("id") or 0),
+        client_device_id=str(result.get("client_device_id") or client_device_id),
+        session_id=result.get("session_id"),
+    )
     login_response = _build_login_response(
         request,
         response,
@@ -1050,6 +1112,7 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
             "user": result["user"],
             "session_id": result.get("session_id"),
             "client_device_id": result.get("client_device_id") or client_device_id,
+            "biometric_enrollment_code": biometric_enrollment_code,
         },
     )
     await run_in_threadpool(_apply_default_database, result["user"])
@@ -1061,6 +1124,7 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
         user=login_response.user,
         session_id=login_response.session_id,
         client_device_id=login_response.client_device_id,
+        biometric_enrollment_code=login_response.biometric_enrollment_code,
         backup_codes=list(result.get("backup_codes") or []),
     )
 
@@ -1087,6 +1151,12 @@ async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Requ
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await run_in_threadpool(_apply_default_database, result["user"])
+    biometric_enrollment_code = await _issue_mobile_biometric_enrollment_code(
+        request=request,
+        user_id=int(result["user"].get("id") or 0),
+        client_device_id=str(result.get("client_device_id") or client_device_id),
+        session_id=result.get("session_id"),
+    )
     return _build_login_response(
         request,
         response,
@@ -1099,8 +1169,90 @@ async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Requ
             "user": result["user"],
             "session_id": result.get("session_id"),
             "client_device_id": result.get("client_device_id") or client_device_id,
+            "biometric_enrollment_code": biometric_enrollment_code,
         },
     )
+
+
+@router.post("/mobile-biometric/enroll", response_model=MobileBiometricEnrollResponse)
+async def enroll_mobile_biometric_session(
+    payload: MobileBiometricEnrollRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_mobile_biometric_enroll",
+        key=f"{int(current_user.id)}:{hashlib.sha256(client_device_id.encode('utf-8')).hexdigest()}",
+        limit=5,
+        window_seconds=10 * 60,
+        request=request,
+    )
+    try:
+        renewal_token = await run_in_threadpool(
+            mobile_biometric_session_service.enroll,
+            enrollment_code=payload.enrollment_code,
+            user_id=int(current_user.id),
+            client_device_id=client_device_id,
+        )
+    except MobileBiometricSessionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MobileBiometricEnrollResponse(renewal_token=renewal_token)
+
+
+@router.post("/mobile-biometric/session", response_model=LoginResponse)
+async def renew_mobile_biometric_session(
+    payload: MobileBiometricSessionRequest,
+    request: Request,
+    response: Response,
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_mobile_biometric_session",
+        key=f"{network_context.client_ip}:{hashlib.sha256(client_device_id.encode('utf-8')).hexdigest()}",
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        credential = await run_in_threadpool(
+            mobile_biometric_session_service.authenticate,
+            renewal_token=payload.renewal_token,
+            client_device_id=client_device_id,
+        )
+        user = await run_in_threadpool(user_service.get_by_id, int(credential["user_id"]))
+        if not user:
+            raise MobileBiometricSessionError("User not found")
+        result = await run_in_threadpool(
+            auth_security_service.complete_mobile_biometric_login,
+            user=user,
+            credential_id=str(credential["credential_id"]),
+            client_device_id=client_device_id,
+            ip_address=str(network_context.client_ip or ""),
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+        )
+    except (MobileBiometricSessionError, AuthSecurityError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return _build_login_response(request, response, result)
+
+
+@router.delete("/mobile-biometric")
+async def revoke_mobile_biometric_session(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    revoked = await run_in_threadpool(
+        mobile_biometric_session_service.revoke_device,
+        user_id=int(current_user.id),
+        client_device_id=client_device_id,
+    )
+    return {"revoked": int(revoked)}
 
 
 @router.post("/refresh", response_model=RefreshResponse)
@@ -1222,6 +1374,240 @@ async def refresh_auth_tokens(
     )
     await run_in_threadpool(auth_runtime_store_service.revoke_jti, token_data.jti, ttl_seconds=token_ttl_seconds(token_data))
     return await _deliver_refresh_payload(refreshed, metric_name="refresh_success")
+
+
+def _normalize_mobile_web_next_path(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw or not raw.startswith("/") or raw.startswith("//") or "\\" in raw:
+        return "/dashboard"
+    if any(ord(char) < 32 for char in raw):
+        return "/dashboard"
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return "/dashboard"
+    path = parsed.path or "/dashboard"
+    if path == "/login" or path.startswith("/api/"):
+        return "/dashboard"
+    return urllib.parse.urlunsplit(("", "", path, parsed.query, parsed.fragment))
+
+
+def _mobile_web_exchange_key(code: str) -> str:
+    return hashlib.sha256(str(code or "").encode("utf-8")).hexdigest()
+
+
+def _validate_mobile_web_refresh_proof(
+    *,
+    credentials: Optional[HTTPAuthorizationCredentials],
+    refresh_token: str,
+    current_user: User,
+) -> tuple[Any, dict[str, Any]]:
+    access_raw = str(getattr(credentials, "credentials", "") or "").strip()
+    if not access_raw:
+        raise HTTPException(status_code=401, detail="Mobile bearer token is required")
+    access_data = decode_access_token(access_raw, expected_token_type="access")
+    refresh_data = decode_access_token(str(refresh_token or ""), expected_token_type="refresh")
+    if (
+        access_data is None
+        or refresh_data is None
+        or not refresh_data.jti
+        or not access_data.session_id
+        or not refresh_data.session_id
+    ):
+        raise HTTPException(status_code=401, detail="Mobile session proof is invalid")
+    if (
+        int(access_data.user_id or 0) != int(current_user.id)
+        or int(refresh_data.user_id or 0) != int(current_user.id)
+        or str(access_data.session_id) != str(refresh_data.session_id)
+        or str(access_data.device_id or "") != str(refresh_data.device_id or "")
+    ):
+        raise HTTPException(status_code=401, detail="Mobile session proof does not match")
+    if auth_runtime_store_service.is_jti_revoked(refresh_data.jti):
+        raise HTTPException(status_code=401, detail="Mobile refresh token has been revoked")
+    refresh_state = auth_runtime_store_service.get_json("refresh", refresh_data.jti)
+    if not isinstance(refresh_state, dict):
+        raise HTTPException(status_code=401, detail="Mobile refresh token is expired or already used")
+    if (
+        int(refresh_state.get("user_id") or 0) != int(current_user.id)
+        or str(refresh_state.get("session_id") or "") != str(refresh_data.session_id)
+        or str(refresh_state.get("device_id") or "") != str(refresh_data.device_id or "")
+    ):
+        raise HTTPException(status_code=401, detail="Mobile refresh token state does not match")
+    return access_data, refresh_state
+
+
+@router.post("/mobile-web-session", response_model=MobileWebSessionResponse)
+async def create_mobile_web_session(
+    payload: MobileWebSessionRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+):
+    """Create a short-lived, one-time bridge from native auth to HttpOnly web cookies."""
+    if not _is_mobile_auth_client(request):
+        raise HTTPException(status_code=403, detail="Mobile auth client is required")
+    access_data, _refresh_state = await run_in_threadpool(
+        _validate_mobile_web_refresh_proof,
+        credentials=credentials,
+        refresh_token=payload.refresh_token,
+        current_user=current_user,
+    )
+    session_id = str(access_data.session_id or "").strip()
+    if not session_id or not await run_in_threadpool(session_service.is_session_active, session_id):
+        raise HTTPException(status_code=401, detail="Mobile session is no longer active")
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="mobile_web_session_create",
+        key=f"{int(current_user.id)}:{session_id}",
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
+
+    code = secrets.token_urlsafe(32)
+    await run_in_threadpool(
+        auth_runtime_store_service.set_json,
+        _MOBILE_WEB_SESSION_NAMESPACE,
+        _mobile_web_exchange_key(code),
+        {
+            "user_id": int(current_user.id),
+            "session_id": session_id,
+            "device_id": str(access_data.device_id or f"session:{session_id}"),
+            "next_path": _normalize_mobile_web_next_path(payload.next_path),
+        },
+        _MOBILE_WEB_SESSION_TTL_SECONDS,
+    )
+    encoded_code = urllib.parse.quote(code, safe="")
+    return MobileWebSessionResponse(
+        bootstrap_path=f"/api/v1/auth/mobile-web-session/bootstrap#code={encoded_code}",
+        expires_in_seconds=_MOBILE_WEB_SESSION_TTL_SECONDS,
+    )
+
+
+@router.get("/mobile-web-session/bootstrap", response_class=HTMLResponse)
+async def mobile_web_session_bootstrap() -> HTMLResponse:
+    nonce = secrets.token_urlsafe(16)
+    html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>HUB-IT</title>
+  <style nonce="{nonce}">
+    html,body{{height:100%;margin:0;background:#f7f6f4;color:#1f2937;font:16px system-ui,sans-serif}}
+    body{{display:grid;place-items:center}}
+    main{{padding:24px;text-align:center}}
+  </style>
+</head>
+<body>
+  <main><p id="status" role="status">Подключаем HUB-IT…</p></main>
+  <script nonce="{nonce}">
+    (async () => {{
+      const code = new URLSearchParams(location.hash.slice(1)).get('code') || '';
+      history.replaceState(null, '', location.pathname);
+      if (!code) throw new Error('missing_code');
+      const controller = new AbortController();
+      const requestTimeout = setTimeout(() => controller.abort(), 15000);
+      let response;
+      try {{
+        response = await fetch('/api/v1/auth/mobile-web-session/consume', {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{code}}),
+          signal: controller.signal,
+        }});
+      }} finally {{
+        clearTimeout(requestTimeout);
+      }}
+      if (!response.ok) throw new Error('exchange_failed');
+      const result = await response.json();
+      const nextPath = result.next_path || '/dashboard';
+      if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {{
+        window.ReactNativeWebView.postMessage(JSON.stringify({{
+          type: 'hubit-mobile-web-session-ready',
+          next_path: nextPath,
+        }}));
+        setTimeout(() => location.replace(nextPath), 3000);
+        return;
+      }}
+      location.replace(nextPath);
+    }})().catch(() => {{
+      document.getElementById('status').textContent = 'Не удалось открыть HUB-IT. Вернитесь в приложение и повторите попытку.';
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": (
+                "default-src 'none'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                f"style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'"
+            ),
+        },
+    )
+
+
+@router.post("/mobile-web-session/consume", response_model=MobileWebSessionConsumeResponse)
+async def consume_mobile_web_session(
+    payload: MobileWebSessionConsumeRequest,
+    request: Request,
+    response: Response,
+):
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="mobile_web_session_consume",
+        key=str(network_context.client_ip or ""),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+    exchange = await run_in_threadpool(
+        auth_runtime_store_service.pop_json,
+        _MOBILE_WEB_SESSION_NAMESPACE,
+        _mobile_web_exchange_key(payload.code),
+    )
+    if not isinstance(exchange, dict):
+        raise HTTPException(status_code=401, detail="Mobile web session code is invalid or expired")
+
+    session_id = str(exchange.get("session_id") or "").strip()
+    user_id = int(exchange.get("user_id") or 0)
+    device_id = str(exchange.get("device_id") or f"session:{session_id}")
+    if not session_id or not user_id or not await run_in_threadpool(session_service.is_session_active, session_id):
+        raise HTTPException(status_code=401, detail="Mobile session is no longer active")
+    user = await run_in_threadpool(user_service.get_by_id, user_id)
+    if not user or not bool(user.get("is_active", True)):
+        raise HTTPException(status_code=401, detail="User is not active")
+    if not await run_in_threadpool(
+        trusted_device_service.is_token_device_valid,
+        user_id=user_id,
+        token_device_id=device_id,
+    ):
+        raise HTTPException(status_code=401, detail="Mobile device is no longer trusted")
+
+    await run_in_threadpool(session_service.touch_session, session_id)
+    issued = await run_in_threadpool(
+        auth_security_service.issue_tokens,
+        user=user,
+        session_id=session_id,
+        device_id=device_id,
+    )
+    _set_auth_cookies(
+        response,
+        access_token=str(issued.get("access_token") or ""),
+        refresh_token=str(issued.get("refresh_token") or ""),
+        access_ttl_seconds=int(issued.get("access_ttl_seconds") or 0),
+        refresh_ttl_seconds=int(issued.get("refresh_ttl_seconds") or 0),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return MobileWebSessionConsumeResponse(
+        next_path=_normalize_mobile_web_next_path(exchange.get("next_path")),
+    )
 
 
 @router.post("/session-telemetry")
@@ -1712,6 +2098,8 @@ async def update_user(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
+    if payload_data.get("password") is not None or payload_data.get("is_active") is False:
+        mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
     return User(**updated)
 
 
@@ -1723,7 +2111,8 @@ async def delete_user(
     """Delete a user. Cannot delete the default admin (id=1)."""
     if str(user_id) == str(current_user.id):
         raise HTTPException(status_code=400, detail="Cannot delete your own account.")
-        
+
+    mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
     deleted = user_service.delete_user(user_id)
     if not deleted:
         if user_id == 1:

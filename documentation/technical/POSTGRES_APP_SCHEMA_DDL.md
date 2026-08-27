@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-20 13:24 UTC_  
+_Сгенерировано: 2026-08-27 05:22 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (135 tables)
+## Schema `app` (137 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -1736,6 +1736,30 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.mobile_biometric_credentials`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `client_device_key_hash` | varchar(64) | no | `` |
+| `token_hash` | varchar(64) | no | `` |
+| `is_active` | boolean | no | `true` |
+| `created_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `last_used_at` | timestamptz | yes | `` |
+| `revoked_at` | timestamptz | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mobile_biometric_credentials_client_device_key_hash`: (client_device_key_hash)
+  - `ix_app_mobile_biometric_credentials_is_active`: (is_active)
+  - `ix_app_mobile_biometric_credentials_user_id`: (user_id)
+  - `ix_app_mobile_biometric_user_active`: (user_id, is_active)
+  - `uq_app_mobile_biometric_token_hash` UNIQUE: (token_hash)
+  - `uq_app_mobile_biometric_user_device` UNIQUE: (user_id, client_device_key_hash)
+
+---
+
 ### `app.my_file_audit`
 
 | Column | Type | Nullable | Default |
@@ -2553,6 +2577,44 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_password_vault_groups_active_sort`: (is_active, sort_order, name)
   - `uq_app_password_vault_groups_name` UNIQUE: (name)
+
+---
+
+### `app.push_outbox`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.push_outbox_id_seq'::regclass)` |
+| `dedupe_key` | varchar(64) | no | `` |
+| `recipient_user_id` | integer | no | `` |
+| `channel` | varchar(32) | no | `'system'::character varying` |
+| `title` | varchar(255) | no | `` |
+| `body` | text | no | `` |
+| `route` | varchar(1024) | no | `'/'::character varying` |
+| `tag` | varchar(255) | no | `''::character varying` |
+| `icon` | varchar(255) | no | `'/pwa-192.png'::character varying` |
+| `badge` | varchar(255) | no | `'/hubit-badge.svg'::character varying` |
+| `data_json` | text | no | `'{}'::text` |
+| `ttl_seconds` | integer | no | `86400` |
+| `app_badge_count` | integer | yes | `` |
+| `status` | varchar(32) | no | `'queued'::character varying` |
+| `attempt_count` | integer | no | `0` |
+| `next_attempt_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `expires_at` | timestamptz | no | `` |
+| `last_error` | text | yes | `` |
+| `created_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `updated_at` | timestamptz | no | `CURRENT_TIMESTAMP` |
+| `delivered_at` | timestamptz | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_push_outbox_channel`: (channel)
+  - `ix_app_push_outbox_recipient_status`: (recipient_user_id, status)
+  - `ix_app_push_outbox_recipient_user_id`: (recipient_user_id)
+  - `ix_app_push_outbox_status`: (status)
+  - `ix_app_push_outbox_status_next_attempt`: (status, next_attempt_at)
+  - `ix_app_push_outbox_updated_at`: (updated_at)
+  - `uq_app_push_outbox_dedupe_key` UNIQUE: (dedupe_key)
 
 ---
 

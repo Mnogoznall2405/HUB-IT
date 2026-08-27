@@ -85,4 +85,42 @@ describe('TasksCreateDialog', () => {
     fireEvent.click(screen.getByTestId('create-due-open'));
     expect(onOpenDuePicker).toHaveBeenCalledTimes(1);
   });
+
+  it('uses the same modern form in edit mode and saves changes', () => {
+    const onSave = vi.fn();
+    renderDialog({
+      mode: 'edit',
+      editData: {
+        id: 'task-1',
+        title: 'Задача для редактирования',
+        description: 'Текущее описание',
+        assignee_user_id: '1',
+        observer_user_ids: [],
+        controller_user_id: '',
+        project_id: 'project-1',
+        object_id: '',
+        protocol_date: '2026-06-01',
+        due_at: '',
+        priority: 'normal',
+        department_id: '',
+        visibility_scope: 'private',
+        email_deadline_remind_mode: 'default',
+        email_deadline_remind_hours: 24,
+      },
+      setEditData: noop,
+      onSave,
+      onEditDescriptionDraftChange: noop,
+      selectedEditAssignee: { id: '1', full_name: 'Иван Иванов' },
+      editDueLabel: 'Без срока',
+      createDuePresets: [],
+    });
+
+    expect(screen.getByDisplayValue('Задача для редактирования')).toBeInTheDocument();
+    const saveButton = screen.getByRole('button', { name: 'Сохранить изменения' });
+    expect(saveButton).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /^Создать/ })).not.toBeInTheDocument();
+
+    fireEvent.click(saveButton);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
 });

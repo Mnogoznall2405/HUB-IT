@@ -20,6 +20,12 @@ export const API_V1_BASE = trimTrailingSlash(
     'https://hubit.zsgp.ru/api/v1',
 );
 
+export const HUB_WEB_ORIGIN = trimTrailingSlash(
+  process.env.EXPO_PUBLIC_WEB_URL ||
+    (Constants.expoConfig?.extra?.webUrl as string | undefined) ||
+    API_V1_BASE.replace(/\/api\/v1$/, ''),
+);
+
 export const MOBILE_AUTH_HEADER = 'X-Auth-Client';
 export const MOBILE_AUTH_VALUE = 'mobile';
 export const CLIENT_DEVICE_HEADER = 'X-Client-Device-ID';

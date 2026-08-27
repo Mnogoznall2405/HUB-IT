@@ -42,6 +42,20 @@ const dispatchWindowEvent = (eventName, detail) => {
 
 const normalizeConversationId = (value) => String(value || '').trim();
 
+const mutedConversationIds = new Set();
+
+const replaceMutedConversationIds = (values) => {
+  mutedConversationIds.clear();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const conversationId = normalizeConversationId(value);
+    if (conversationId) mutedConversationIds.add(conversationId);
+  });
+};
+
+export const isChatConversationMuted = (conversationId) => (
+  mutedConversationIds.has(normalizeConversationId(conversationId))
+);
+
 // Survives Chat page unmount so sidebar can paint who just wrote after navigation.
 const inboxMessagePreviewByConversation = new Map();
 const INBOX_PREVIEW_TTL_MS = 10 * 60 * 1000;
@@ -446,6 +460,7 @@ class ChatSocketClient {
     this.resumeRecoverInFlight = false;
     if (manual) {
       this.authBlocked = false;
+      mutedConversationIds.clear();
     }
     this.messageQueue = [];
     this.pendingConversationSubscriptions.clear();
@@ -548,6 +563,9 @@ class ChatSocketClient {
       return;
     }
     if (eventType === 'chat.snapshot') {
+      if (Array.isArray(payload?.muted_conversation_ids)) {
+        replaceMutedConversationIds(payload.muted_conversation_ids);
+      }
       this.resolvePendingRequest(requestId, payload);
       dispatchWindowEvent(CHAT_SOCKET_SNAPSHOT_EVENT, envelope);
       if (payload?.unread_summary) {
@@ -597,10 +615,21 @@ class ChatSocketClient {
       return;
     }
     if (eventType === 'chat.conversation.updated') {
+      const conversation = payload?.conversation || {};
+      const conversationId = normalizeConversationId(
+        conversation?.id || envelope?.conversation_id,
+      );
+      if (conversationId && typeof conversation?.is_muted === 'boolean') {
+        if (conversation.is_muted) mutedConversationIds.add(conversationId);
+        else mutedConversationIds.delete(conversationId);
+      }
       dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, envelope);
       return;
     }
     if (eventType === 'chat.conversation.removed') {
+      mutedConversationIds.delete(normalizeConversationId(
+        envelope?.conversation_id || payload?.conversation_id,
+      ));
       dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_REMOVED_EVENT, envelope);
       return;
     }

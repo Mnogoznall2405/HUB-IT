@@ -21,6 +21,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 
@@ -410,6 +411,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   acts = {},
   history = {},
   onClose,
+  onBack = null,
   onKeyDown,
   onTabChange,
   onFormPatch,
@@ -429,6 +431,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   onOpenEmployee = null,
   buildWarehouseReturnContext = null,
   disableEnforceFocus = false,
+  stackAboveParent = false,
 }) {
   const showGeneralActions = Boolean(data) && tab === 'general';
 
@@ -493,14 +496,29 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
       scroll="paper"
       disableEnforceFocus={disableEnforceFocus}
       sx={{
+        ...(stackAboveParent ? {
+          zIndex: (theme) => `${theme.zIndex.modal + 2} !important`,
+        } : {}),
         '& .MuiDialog-paper': {
           height: isMobile ? '100%' : '88vh',
           maxHeight: isMobile ? '100%' : '88vh',
         },
       }}
     >
-      <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 2, py: 1.5 }}>
-        <Box>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.5 }}>
+        {typeof onBack === 'function' ? (
+          <Button
+            type="button"
+            color="inherit"
+            size="small"
+            startIcon={<ArrowBackIcon />}
+            onClick={onBack}
+            sx={{ flexShrink: 0 }}
+          >
+            Назад
+          </Button>
+        ) : null}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography component="span" variant="h6">
             {readFirst(data, ['MODEL_NAME', 'model_name'], 'Карточка оборудования')}
           </Typography>
@@ -508,7 +526,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
             Инв. № {readFirst(data, ['INV_NO', 'inv_no'], '-')} | ID {readFirst(data, ['ID', 'id'], '-')}
           </Typography>
         </Box>
-        <IconButton onClick={onClose} edge="end">
+        <IconButton aria-label="Закрыть карточку оборудования" onClick={onClose} edge="end">
           <CloseIcon />
         </IconButton>
       </DialogTitle>

@@ -96,6 +96,23 @@ Native clients do not use httpOnly cookies. Send `X-Auth-Client: mobile` on auth
 - `POST /api/v1/auth/refresh` — body `{ "refresh_token": "..." }` (cookie optional for web only).
 - `POST /api/v1/auth/logout` — `Authorization: Bearer` + optional body `{ "refresh_token": "..." }` to revoke refresh without cookies.
 - Store tokens in platform secure storage (Android Keystore), not plain AsyncStorage.
+- Full responsive web shell uses a one-time session bridge:
+  - native calls `POST /api/v1/auth/mobile-web-session` with Bearer access, `X-Auth-Client: mobile` and the refresh token in the JSON body;
+  - the backend verifies that access, refresh, runtime refresh state, user, device and `session_id` match, then stores only a hashed one-time code for 60 seconds;
+  - WebView opens the returned bootstrap path with the code in the URL fragment, so it is not sent in the HTTP request or referrer;
+  - `POST /api/v1/auth/mobile-web-session/consume` atomically consumes the code and issues separate HttpOnly web cookies bound to the same active session;
+  - logout in either native or web closes the shared server session and invalidates both clients.
+- Optional biometric login is an APK-only Android unlock backed by a revocable server credential:
+  - opt-in is offered only after password + successful 2FA;
+  - the successful mobile 2FA response includes a one-time five-minute enrollment code. `POST /api/v1/auth/mobile-biometric/enroll` consumes it and returns an opaque renewable device token once;
+  - the server stores only SHA-256 hashes of the renewable token and installation ID. The credential itself has no expiry, but it is bound to one user and one APK installation;
+  - after every fingerprint unlock, `POST /api/v1/auth/mobile-biometric/session` checks that the user is active and 2FA is still enabled, then issues ordinary finite access/refresh tokens. No JWT becomes infinite;
+  - while an APK installation keeps an active `mobile_biometric_credentials` row for the session's `user_id` + `client_device_key_hash`, that session uses the trusted idle window (`SESSION_IDLE_TIMEOUT_TRUSTED_DAYS`, default 7 days) instead of the 30-minute external password idle; revoke of the credential returns idle to the normal policy;
+  - logout, biometric disable, password change, 2FA reset, admin password replacement or user deactivation revoke the durable credential. A definitive `401/403` deletes its local copy;
+  - the offline cache encryption key and user snapshot are stored with `SecureStore.requireAuthentication=true` and become unreadable when the enrolled biometric set changes;
+  - a transport failure may open only the previously loaded mobile cache in read-only mode. GET responses are partitioned by user/database, encrypted with AES-GCM in IndexedDB, capped at 250 entries / 2 MiB per response and expire after 7 days;
+  - offline POST/PUT/PATCH/DELETE requests are rejected locally. Access/refresh tokens are never injected into WebView, and logout deletes the protected offline key;
+  - this path is enabled only by the native `__HUBIT_MOBILE_OFFLINE_SESSION__` marker. Browser/Desktop/PWA behavior is unchanged.
 
 ## IIS Boundary
 Recommended baseline:

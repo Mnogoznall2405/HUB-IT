@@ -619,6 +619,7 @@ function Computers() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { hasPermission } = useAuth();
   const canViewAllComputers = hasPermission('computers.read_all');
+  const canManageComputers = hasPermission('computers.manage');
 
   const [computers, setComputers] = useState([]);
   const [changes, setChanges] = useState({ totals: {}, daily: [] });
@@ -1598,7 +1599,7 @@ function Computers() {
                       <Chip size="small" color="warning" variant="outlined" label="Скрыт" />
                     ) : null}
                   </Stack>
-                  <Stack direction="row" spacing={0.8} sx={{ mb: 0.8 }}>
+                  {canManageComputers ? <Stack direction="row" spacing={0.8} sx={{ mb: 0.8 }}>
                     {selected.is_hidden || selected.hidden_at || hiddenOnly ? (
                       <Button
                         size="small"
@@ -1620,7 +1621,7 @@ function Computers() {
                         Скрыть
                       </Button>
                     )}
-                  </Stack>
+                  </Stack> : null}
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
                     Последняя активность: {formatTs(selected.last_seen_at || selected.timestamp)} · Возраст: {formatAge(selected.age_seconds)}
                   </Typography>

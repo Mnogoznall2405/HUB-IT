@@ -17,7 +17,7 @@ import {
   getSelectedOwnerOption,
 } from './databaseOptionModel';
 import { toInvNo, upsertItemInGrouped } from './equipmentModel';
-import { buildEquipmentQrDataUrl, buildEquipmentQrText } from './qrModel';
+import { buildEquipmentQrDataUrl, buildEquipmentQrLink } from './qrModel';
 import {
   ACT_DOC_NO_ERROR,
   useEquipmentActFilePreview,
@@ -56,6 +56,7 @@ const hasFullDetailFields = (item) => {
 
 export function useDatabaseDetailRuntime({
   canDatabaseWrite = false,
+  databaseId = '',
   findEquipmentByInvNo,
   searchOwnersCached,
   getLocationsCached,
@@ -422,8 +423,8 @@ export function useDatabaseDetailRuntime({
   );
 
   const detailQrText = useMemo(
-    () => (detailModal?.data ? buildEquipmentQrText(detailModal.data) : ''),
-    [detailModal?.data]
+    () => (detailModal?.data ? buildEquipmentQrLink(detailModal.data, { databaseId }) : ''),
+    [databaseId, detailModal?.data]
   );
 
   useEffect(() => {

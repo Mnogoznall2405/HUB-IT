@@ -11,14 +11,25 @@ public enum DesktopSecondaryWindowOpenResult
     Unavailable,
 }
 
+public enum DesktopMailComposeWindowOpenResult
+{
+    Opened,
+    ActivatedExisting,
+    Busy,
+    Unavailable,
+}
+
 public sealed class DesktopWindowManager
 {
     private readonly Uri _trustedBaseUri;
     private readonly Dictionary<IDesktopHubWindow, DesktopShellStatus> _shellStatuses = [];
     private readonly Dictionary<IDesktopHubWindow, IReadOnlyList<DesktopQuickRoute>> _quickRoutes = [];
     private Func<string?, IDesktopHubWindow>? _secondaryFactory;
+    private Func<string, IDesktopHubWindow>? _mailComposeFactory;
     private IDesktopHubWindow? _primary;
     private IDesktopHubWindow? _secondary;
+    private IDesktopHubWindow? _mailCompose;
+    private string? _mailComposeRoute;
     private IDesktopHubWindow? _lastActive;
     private DesktopSystemLifecycleBroadcaster? _lifecycle;
 
@@ -34,9 +45,11 @@ public sealed class DesktopWindowManager
 
     public event EventHandler<DesktopQuickRoutesChangedEventArgs>? QuickRoutesChanged;
 
+    public event EventHandler? MailComposeSent;
+
     public bool CanOpenSecondary => _primary is not null && _secondary is null;
 
-    public int WindowCount => (_primary is null ? 0 : 1) + (_secondary is null ? 0 : 1);
+    public int WindowCount => (_primary is null ? 0 : 1) + (_secondary is null ? 0 : 1) + (_mailCompose is null ? 0 : 1);
 
     public void AttachLifecycleBroadcaster(DesktopSystemLifecycleBroadcaster broadcaster)
     {
@@ -71,6 +84,11 @@ public sealed class DesktopWindowManager
         {
             action(_secondary);
         }
+
+        if (_mailCompose is not null)
+        {
+            action(_mailCompose);
+        }
     }
 
     public void RegisterPrimary(IDesktopHubWindow window)
@@ -90,6 +108,39 @@ public sealed class DesktopWindowManager
     public void ConfigureSecondaryFactory(Func<string?, IDesktopHubWindow> factory)
     {
         _secondaryFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+    }
+
+    public void ConfigureMailComposeFactory(Func<string, IDesktopHubWindow> factory)
+    {
+        _mailComposeFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+    }
+
+    public DesktopMailComposeWindowOpenResult OpenMailComposeWindow(string route)
+    {
+        if (_primary is null || _mailComposeFactory is null || !DesktopBridgeProtocol.IsValidMailComposeRoute(route))
+        {
+            return DesktopMailComposeWindowOpenResult.Unavailable;
+        }
+        if (_mailCompose is not null)
+        {
+            if (string.Equals(_mailComposeRoute, route, StringComparison.Ordinal))
+            {
+                _mailCompose.ShowAndActivate();
+                return DesktopMailComposeWindowOpenResult.ActivatedExisting;
+            }
+            return DesktopMailComposeWindowOpenResult.Busy;
+        }
+        _mailCompose = _mailComposeFactory(route);
+        _mailComposeRoute = route;
+        Subscribe(_mailCompose);
+        WindowAvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        _mailCompose.ShowAndActivate();
+        return DesktopMailComposeWindowOpenResult.Opened;
+    }
+
+    public void NotifyMailComposeSent()
+    {
+        MailComposeSent?.Invoke(this, EventArgs.Empty);
     }
 
     public DesktopSecondaryWindowOpenResult OpenSecondaryFrom(IDesktopHubWindow source)
@@ -205,7 +256,10 @@ public sealed class DesktopWindowManager
             return;
         }
 
-        _lastActive = window;
+        if (!ReferenceEquals(window, _mailCompose))
+        {
+            _lastActive = window;
+        }
         var owner = ResolveQuickRouteOwner();
         if (owner is not null && _quickRoutes.TryGetValue(owner, out var routes))
         {
@@ -229,6 +283,11 @@ public sealed class DesktopWindowManager
         if (ReferenceEquals(window, _secondary))
         {
             _secondary = null;
+        }
+        else if (ReferenceEquals(window, _mailCompose))
+        {
+            _mailCompose = null;
+            _mailComposeRoute = null;
         }
         else if (ReferenceEquals(window, _primary))
         {
@@ -269,7 +328,9 @@ public sealed class DesktopWindowManager
     }
 
     private bool IsRegistered(IDesktopHubWindow window) =>
-        ReferenceEquals(window, _primary) || ReferenceEquals(window, _secondary);
+        ReferenceEquals(window, _primary)
+        || ReferenceEquals(window, _secondary)
+        || ReferenceEquals(window, _mailCompose);
 
     private IDesktopHubWindow? ResolveQuickRouteOwner()
     {

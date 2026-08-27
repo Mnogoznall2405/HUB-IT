@@ -1,6 +1,16 @@
 import React from 'react';
 import { TextInput, type TextInputProps } from 'react-native-paper';
 
-export function HubTextField(props: TextInputProps) {
-  return <TextInput mode="outlined" {...props} />;
-}
+export type HubTextFieldHandle = {
+  focus: () => void;
+};
+
+export const HubTextField = React.forwardRef<HubTextFieldHandle, TextInputProps>(
+  function HubTextField(props, ref) {
+    const inputRef = React.useRef<{ focus?: () => void } | null>(null);
+    React.useImperativeHandle(ref, () => ({
+      focus: () => inputRef.current?.focus?.(),
+    }), []);
+    return <TextInput ref={inputRef as never} mode="outlined" {...props} />;
+  },
+);

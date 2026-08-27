@@ -17,11 +17,12 @@ import {
   setWindowsNotificationsEnabled,
   WINDOWS_NOTIFICATIONS_CHANGED_EVENT,
 } from '../../../../lib/windowsNotifications';
+import { refreshChatNotificationState } from '../../../../lib/chatNotifications';
 import { isNativeShellRuntime } from '../../../../lib/platform';
 import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../../theme/officeUiTokens';
 import SectionCard from '../../shared/SectionCard';
 
-export function BrowserNotificationsSettingsCard() {
+export function BrowserNotificationsSettingsCard({ embedded = false }) {
   const nativeShell = isNativeShellRuntime();
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -58,6 +59,7 @@ export function BrowserNotificationsSettingsCard() {
       } else if (permission === 'denied') {
         setWindowsNotificationsEnabled(false);
       }
+      refreshChatNotificationState();
       syncNotificationState();
     } finally {
       setRequestingPermission(false);
@@ -80,10 +82,10 @@ export function BrowserNotificationsSettingsCard() {
 
   return (
     <SectionCard
-      title="Windows-уведомления"
+      title={embedded ? 'На этом устройстве' : 'Системные уведомления на этом устройстве'}
       description={nativeShell
-        ? 'Системные уведомления HUB Desktop. Общий переключатель хранится только в текущем Desktop-профиле, а каналы берутся из настроек HUB ниже.'
-        : 'Системные уведомления браузера для hub-событий. Настройка хранится локально в текущем браузере на этой машине.'}
+        ? 'Разрешите HUB Desktop показывать системные уведомления. Какие события получать, определяется настройками выше.'
+        : 'Разрешите этому браузеру показывать системные уведомления. Какие события получать, определяется настройками выше.'}
       action={(
         <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" justifyContent="flex-end">
           <Chip
@@ -96,6 +98,7 @@ export function BrowserNotificationsSettingsCard() {
           <Chip size="small" label={permissionChip.label} color={permissionChip.color} variant="outlined" />
         </Stack>
       )}
+      sx={embedded ? { border: 0, borderRadius: 0, bgcolor: 'transparent' } : undefined}
       contentSx={{ p: 1.5 }}
     >
       <Stack spacing={1.2}>
@@ -110,12 +113,13 @@ export function BrowserNotificationsSettingsCard() {
           <FormControlLabel
             control={(
               <Switch
+                name="system_notifications"
                 checked={enabled}
                 onChange={handleToggleEnabled}
                 disabled={!supported}
               />
             )}
-            label={enabled ? 'Показывать Windows-уведомления для hub-событий' : 'Windows-уведомления отключены'}
+            label="Показывать системные уведомления"
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
             {nativeShell

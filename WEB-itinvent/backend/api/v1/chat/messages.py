@@ -12,6 +12,7 @@ from backend.api.deps import ensure_user_permission, get_current_database_id, re
 from backend.chat.schemas import (
     ChatConversationAssetsSummaryResponse,
     ChatConversationAttachmentsResponse,
+    ChatGlobalMessageSearchResponse,
     ChatMessageListResponse,
     ChatMessageResponse,
     ChatMessageSearchResponse,
@@ -279,6 +280,38 @@ async def hydrate_chat_thread_messages(
         )
 
 
+@router.get("/messages/search", response_model=ChatGlobalMessageSearchResponse)
+async def search_chat_messages_global(
+    request: Request,
+    q: str = Query("", min_length=0),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    started_at = time.perf_counter()
+    request_id = chat_api()._request_id_from_headers(request)
+    meta: dict[str, Any] = {}
+    try:
+        response, meta = await chat_api()._run_chat_read_call_with_meta(
+            chat_api().chat_service.search_messages_global,
+            current_user_id=int(current_user.id),
+            q=q,
+            limit=int(limit),
+        )
+        return response
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+    finally:
+        chat_api()._log_request_timing(
+            "search_global",
+            request_id,
+            started_at,
+            user_id=int(current_user.id),
+            q_len=len(str(q or "")),
+            limit=int(limit),
+            items_count=meta.get("items_count"),
+        )
+
+
 @router.get("/conversations/{conversation_id}/messages/search", response_model=ChatMessageSearchResponse)
 async def search_chat_messages(
     request: Request,
@@ -518,6 +551,7 @@ async def send_chat_files(
     request: Request,
     conversation_id: str,
     body: Optional[str] = Form(None, max_length=12000),
+    client_message_id: Optional[str] = Form(None, max_length=128),
     reply_to_message_id: Optional[str] = Form(None),
     files_meta_json: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
@@ -552,6 +586,7 @@ async def send_chat_files(
             body=body,
             uploads=files,
             files_meta=files_meta,
+            client_message_id=chat_api()._normalize_text(client_message_id) or None,
             reply_to_message_id=reply_to_message_id,
             defer_push_notifications=True,
         )

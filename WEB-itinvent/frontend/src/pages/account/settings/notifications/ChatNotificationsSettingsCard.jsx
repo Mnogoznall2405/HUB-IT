@@ -3,11 +3,8 @@ import {
   Alert,
   Button,
   Chip,
-  CircularProgress,
-  FormControlLabel,
   Paper,
   Stack,
-  Switch,
   Typography,
 } from '@mui/material';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
@@ -17,8 +14,6 @@ import { useNotification } from '../../../../contexts/NotificationContext';
 import {
   getChatNotificationState,
   refreshChatNotificationState,
-  requestChatNotificationPermission,
-  setChatNotificationsEnabled,
   subscribeChatNotificationState,
   syncChatPushSubscription,
 } from '../../../../lib/chatNotifications';
@@ -28,7 +23,7 @@ import { CHAT_FOREGROUND_DIAGNOSTIC_LABELS, CHAT_FOREGROUND_ONLY_REASON_LABELS }
 import { formatDateTime } from '../../accountUserModel';
 import SectionCard from '../../shared/SectionCard';
 
-export function ChatNotificationsSettingsCard() {
+export function ChatNotificationsSettingsCard({ embedded = false }) {
   if (isNativeShellRuntime()) return null;
 
   const theme = useTheme();
@@ -78,34 +73,7 @@ export function ChatNotificationsSettingsCard() {
     }
   }, [notifyInfo, notifySuccess, notifyWarning, user]);
 
-  const handleToggleEnabled = useCallback(async (event) => {
-    const enabled = setChatNotificationsEnabled(Boolean(event?.target?.checked));
-    if (!enabled) {
-      refreshChatNotificationState();
-      return;
-    }
-    refreshChatNotificationState();
-    if (chatNotificationState.permission === 'granted' && user) {
-      await handleSyncSubscription();
-    }
-  }, [chatNotificationState.permission, handleSyncSubscription, user]);
-
-  const handleRequestPermission = useCallback(async () => {
-    setBusy(true);
-    try {
-      const permission = await requestChatNotificationPermission();
-      if (permission === 'granted' && user) {
-        await handleSyncSubscription();
-      } else {
-        refreshChatNotificationState();
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [handleSyncSubscription, user]);
-
   const permission = String(chatNotificationState?.permission || 'unsupported');
-  const enabled = Boolean(chatNotificationState?.enabled);
   const foregroundOnlyReason = String(chatNotificationState?.foregroundOnlyReason || '').trim();
   const foregroundDiagnostic = String(chatNotificationState?.foregroundDiagnostic || '').trim();
   const lastDeliveryMode = String(chatNotificationState?.lastDeliveryMode || '').trim();
@@ -122,70 +90,40 @@ export function ChatNotificationsSettingsCard() {
         ? 'Только во вкладке'
         : foregroundOnlyReason === 'server_not_configured'
           ? 'Сервер push не настроен'
-          : enabled
-            ? 'Ожидание'
-            : 'Выключено';
+          : permission === 'denied'
+            ? 'Заблокировано браузером'
+            : 'Не подключено';
 
   return (
     <SectionCard
-      title="Chat-уведомления"
-      description="Новые сообщения чата: системные уведомления во вкладке и web-push в фоне, если браузер поддерживает этот режим."
+      title="Фоновая доставка чатов"
+      description="Здесь настраивается только доставка на этом устройстве. Типы чатов включаются одним блоком выше."
       action={(
         <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" justifyContent="flex-end">
           <Chip
             size="small"
             icon={<NotificationsActiveOutlinedIcon sx={{ fontSize: '14px !important' }} />}
             label={statusLabel}
-            color={chatNotificationState.pushSubscribed ? 'success' : enabled ? 'primary' : 'default'}
-            variant={chatNotificationState.pushSubscribed || enabled ? 'filled' : 'outlined'}
+            color={chatNotificationState.pushSubscribed ? 'success' : permission === 'granted' ? 'primary' : 'default'}
+            variant={chatNotificationState.pushSubscribed || permission === 'granted' ? 'filled' : 'outlined'}
           />
         </Stack>
       )}
+      sx={embedded ? { border: 0, borderRadius: 0, bgcolor: 'transparent' } : undefined}
       contentSx={{ p: 1.5 }}
     >
       <Stack spacing={1.2}>
-        <Paper
-          variant="outlined"
-          sx={getOfficeSubtlePanelSx(ui, {
-            p: 1.2,
-            borderRadius: '12px',
-            bgcolor: ui.panelInset,
-          })}
-        >
-          <FormControlLabel
-            control={(
-              <Switch
-                checked={enabled}
-                onChange={handleToggleEnabled}
-                disabled={!chatNotificationState.supported || busy}
-              />
-            )}
-            label={enabled ? 'Разрешать chat-уведомления в этом браузере' : 'Chat-уведомления отключены'}
-          />
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
-            На desktop Chromium и Android Chromium возможна фоновая web-push доставка. На iPhone нужен запуск из установленной PWA.
-          </Typography>
-        </Paper>
-
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-          <Button
-            variant={permission === 'granted' ? 'outlined' : 'contained'}
-            onClick={handleRequestPermission}
-            disabled={!chatNotificationState.supported || busy || permission === 'granted'}
-            startIcon={busy ? <CircularProgress color="inherit" size={14} /> : <NotificationsActiveOutlinedIcon fontSize="small" />}
-          >
-            {busy && permission !== 'granted' ? 'Запрос...' : permission === 'granted' ? 'Разрешение выдано' : 'Разрешить уведомления'}
-          </Button>
           <Button
             variant="outlined"
             onClick={handleSyncSubscription}
-            disabled={!enabled || permission !== 'granted' || busy || !user}
+            disabled={permission !== 'granted' || busy || !user}
           >
             {busy && permission === 'granted'
               ? 'Обновление...'
               : chatNotificationState.yandexLimited
                 ? 'Проверить состояние'
-                : 'Обновить подписку'}
+                : 'Обновить фоновую доставку'}
           </Button>
         </Stack>
 
@@ -197,7 +135,7 @@ export function ChatNotificationsSettingsCard() {
 
         {permission === 'default' ? (
           <Alert severity="info">
-            Браузер ещё не получил разрешение на chat-уведомления. Разрешение общее для сайта и используется и на Windows, и на мобильных устройствах.
+            Сначала разрешите системные уведомления в разделе «На этом устройстве» ниже.
           </Alert>
         ) : null}
 
@@ -219,13 +157,13 @@ export function ChatNotificationsSettingsCard() {
           </Alert>
         ) : null}
 
-        {enabled && permission === 'granted' && chatNotificationState.pushSubscribed ? (
+        {permission === 'granted' && chatNotificationState.pushSubscribed ? (
           <Alert severity="success">
             Фоновая push-подписка активна. Новые сообщения чата будут приходить и вне открытой вкладки на поддерживаемых устройствах.
           </Alert>
         ) : null}
 
-        {enabled && permission === 'granted' && !chatNotificationState.pushSubscribed ? (
+        {permission === 'granted' && !chatNotificationState.pushSubscribed ? (
           <Alert severity={chatNotificationState.pushConfigured ? 'info' : 'warning'}>
             {CHAT_FOREGROUND_ONLY_REASON_LABELS[foregroundOnlyReason]
               || (
@@ -236,7 +174,7 @@ export function ChatNotificationsSettingsCard() {
           </Alert>
         ) : null}
 
-        {enabled && permission === 'granted' && foregroundDiagnostic ? (
+        {permission === 'granted' && foregroundDiagnostic ? (
           <Alert severity={foregroundDiagnostic === 'chat_socket_unavailable' ? 'warning' : 'info'}>
             {CHAT_FOREGROUND_DIAGNOSTIC_LABELS[foregroundDiagnostic] || 'Состояние chat-уведомлений обновлено.'}
           </Alert>

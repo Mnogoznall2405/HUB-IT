@@ -26,7 +26,24 @@ logger = logging.getLogger(__name__)
 
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 FCM_TOKEN_URI = "https://oauth2.googleapis.com/token"
-FCM_ANDROID_CHANNEL_ID = "hubit_default"
+FCM_ANDROID_CHANNEL_IDS = {
+    "chat": "hubit_chat",
+    "tasks": "hubit_tasks",
+    "hub": "hubit_tasks",
+    "announcements": "hubit_tasks",
+    "mail": "hubit_mail",
+    "system": "hubit_system",
+}
+FCM_ANDROID_FALLBACK_CHANNEL_ID = "hubit_default"
+FCM_CHAT_CATEGORY_ID = "hubit_chat_message"
+FCM_MAIL_CATEGORY_ID = "hubit_mail_message"
+FCM_ANDROID_PACKAGE_NAME = "ru.zsgp.hubit.mobile"
+FCM_ANDROID_TTL_SECONDS = {
+    "chat": 24 * 60 * 60,
+    "tasks": 7 * 24 * 60 * 60,
+    "mail": 3 * 24 * 60 * 60,
+    "system": 24 * 60 * 60,
+}
 
 
 def _utc_now() -> datetime:
@@ -68,6 +85,17 @@ def _string_data(payload: dict[str, Any]) -> dict[str, str]:
         else:
             result[normalized_key] = _normalize_text(value)
     return result
+
+
+def _android_notification_tag(*, logical_channel: str, data: dict[str, str], fallback: str) -> str:
+    """Use a stable Android drawer tag only when a newer event supersedes the older one."""
+    entity_type = _normalize_text(data.get("entity_type")).lower()
+    entity_id = _normalize_text(data.get("entity_id"))
+    if logical_channel in {"tasks", "hub"} and entity_type == "task" and entity_id:
+        return f"tasks:{entity_id}"[:255]
+    if logical_channel == "announcements" and entity_type == "announcement" and entity_id:
+        return f"announcements:{entity_id}"[:255]
+    return (_normalize_text(fallback) or logical_channel or "hubit")[:255]
 
 
 @dataclass
@@ -320,28 +348,63 @@ class NativePushService:
         body: str,
         data: dict[str, Any],
         tag: str,
+        notification_count: int | None = None,
     ) -> None:
         access_token = self._get_access_token(service_account)
         endpoint = f"https://fcm.googleapis.com/v1/projects/{urllib.parse.quote(project_id)}/messages:send"
         string_data = _string_data(data)
-        message = {
-            "message": {
-                "token": token,
-                "notification": {
-                    "title": _normalize_text(title) or "HUB-IT",
-                    "body": _normalize_text(body) or "Open HUB-IT to view details.",
-                },
-                "data": string_data,
-                "android": {
-                    "priority": "HIGH",
-                    "notification": {
-                        "channel_id": FCM_ANDROID_CHANNEL_ID,
-                        "click_action": "OPEN_HUBIT",
-                        "tag": _normalize_text(tag) or _normalize_text(string_data.get("channel")) or "hubit",
-                    },
-                },
-            }
+        logical_channel = _normalize_text(string_data.get("channel")).lower() or "system"
+        channel_id = FCM_ANDROID_CHANNEL_IDS.get(logical_channel, FCM_ANDROID_FALLBACK_CHANNEL_ID)
+        canonical_channel = {
+            "hubit_chat": "chat",
+            "hubit_tasks": "tasks",
+            "hubit_mail": "mail",
+        }.get(channel_id, "system")
+        ttl_seconds = FCM_ANDROID_TTL_SECONDS[canonical_channel]
+        collapse_key = f"hubit-{canonical_channel}"
+        resolved_tag = _android_notification_tag(
+            logical_channel=logical_channel,
+            data=string_data,
+            fallback=tag,
+        )
+        title_text = _normalize_text(title) or "HUB-IT"
+        body_text = _normalize_text(body) or "Open HUB-IT to view details."
+        string_data["channelId"] = channel_id
+        string_data["tag"] = resolved_tag
+        string_data["ttlSeconds"] = str(ttl_seconds)
+        string_data["collapseKey"] = collapse_key
+        string_data["title"] = title_text
+        # Expo data-only notifications read the visible body from `message`, not `body`.
+        string_data["message"] = body_text
+        if logical_channel == "chat":
+            string_data["categoryId"] = FCM_CHAT_CATEGORY_ID
+        elif logical_channel == "mail":
+            string_data["categoryId"] = FCM_MAIL_CATEGORY_ID
+        android_config = {
+            "priority": "HIGH",
+            "ttl": f"{ttl_seconds}s",
+            "collapse_key": collapse_key,
+            "restricted_package_name": FCM_ANDROID_PACKAGE_NAME,
         }
+        message_payload: dict[str, Any] = {
+            "token": token,
+            "data": string_data,
+            "android": android_config,
+        }
+        if logical_channel != "chat":
+            android_notification = {
+                "channel_id": channel_id,
+                "visibility": "PRIVATE",
+                "tag": resolved_tag,
+            }
+            if notification_count is not None:
+                android_notification["notification_count"] = min(999, max(0, int(notification_count)))
+            message_payload["notification"] = {
+                "title": title_text,
+                "body": body_text,
+            }
+            android_config["notification"] = android_notification
+        message = {"message": message_payload}
         raw_payload = json.dumps(message, ensure_ascii=False, default=str).encode("utf-8")
         request = urllib.request.Request(
             endpoint,
@@ -392,6 +455,7 @@ class NativePushService:
         route: str = "/",
         tag: str = "",
         data: Optional[dict[str, Any]] = None,
+        app_badge_count: Optional[int] = None,
         **_: Any,
     ) -> NativePushSendResult:
         tokens = self._active_tokens(user_id=int(recipient_user_id))
@@ -407,9 +471,10 @@ class NativePushService:
             return result
 
         payload_data = {
+            **({} if not isinstance(data, dict) else data),
             "route": _normalize_text(route) or "/",
             "channel": _normalize_text(channel) or "system",
-            **({} if not isinstance(data, dict) else data),
+            "recipient_user_id": str(int(recipient_user_id)),
         }
 
         for token_row in tokens:
@@ -422,6 +487,7 @@ class NativePushService:
                     body=body,
                     data=payload_data,
                     tag=tag,
+                    notification_count=app_badge_count,
                 )
                 self._mark_sent(int(token_row.id))
                 result.sent += 1

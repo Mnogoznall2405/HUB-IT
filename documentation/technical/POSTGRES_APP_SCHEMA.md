@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-08-20 13:24 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-08-27 05:22 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **135** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **137** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **9** | — |
@@ -29,7 +29,7 @@ _Обновлено: 2026-08-20 13:24 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (135 таблиц)
+## Схема `app` (137 таблиц)
 
 ### Auth и пользователи
 
@@ -192,6 +192,7 @@ _Обновлено: 2026-08-20 13:24 UTC_ · инстанс `127.0.0.1:5432/hub
 | `mailbox_quota_snapshots` | — |
 | `max_probe_chats` | — |
 | `max_probe_media` | — |
+| `mobile_biometric_credentials` | — |
 | `my_file_audit` | — |
 | `my_file_blobs` | — |
 | `my_file_download_grants` | — |
@@ -212,6 +213,7 @@ _Обновлено: 2026-08-20 13:24 UTC_ · инстанс `127.0.0.1:5432/hub
 | `password_vault_audit` | — |
 | `password_vault_entries` | — |
 | `password_vault_groups` | — |
+| `push_outbox` | — |
 | `telegram_probe_chats` | — |
 | `telegram_probe_media` | — |
 | `telegram_probe_reports` | — |
@@ -341,7 +343,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-08-20:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 135, `chat` 4, `system` 8).
+- **2026-08-27:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 137, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

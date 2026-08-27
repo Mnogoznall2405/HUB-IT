@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { DrawerContentScrollView, DrawerItem, type DrawerContentComponentProps } from '@react-navigation/drawer';
 import { router } from 'expo-router';
+import { DrawerContentScrollView, DrawerItem, type DrawerContentComponentProps } from 'expo-router/drawer';
 import { StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../../auth/AuthContext';
 import { filterNavItems } from '../../navigation/navItems';

@@ -104,7 +104,18 @@ function Remove-Pm2ProcessIfPresent {
         [string]$Name
     )
 
-    & $Pm2Command delete $Name 2>$null | Out-Null
+    $pidOutput = & $Pm2Command pid $Name 2>$null
+    $processIds = @($pidOutput) |
+        ForEach-Object { "$_".Trim() } |
+        Where-Object { $_ -match '^\d+$' -and $_ -ne '0' }
+    if ($processIds.Count -eq 0) {
+        return
+    }
+
+    & $Pm2Command delete $Name | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "PM2 failed to delete $Name (exit $LASTEXITCODE)."
+    }
 }
 
 function Wait-PostgresChatReady {

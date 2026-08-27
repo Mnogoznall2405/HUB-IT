@@ -184,6 +184,9 @@ describe('pickChatPageLayoutSections', () => {
       fileInputRef: { current: null },
       fileDialogOpen: false,
       closeFileDialog: () => {},
+      selectedImageEdits: [{ recipe: { operations: [] } }],
+      applySelectedImageEdit: () => {},
+      resetSelectedImageEdit: () => {},
       setFileCaption: () => {},
       sendMediaAsFiles: true,
       changeSendMediaAsFiles: () => {},
@@ -253,5 +256,8 @@ describe('pickChatPageLayoutSections', () => {
     expect(sections.dialogs.searchOpen).toBe(false);
     expect(sections.dialogs.sendMediaAsFiles).toBe(true);
     expect(sections.dialogs.changeSendMediaAsFiles).toBe(input.changeSendMediaAsFiles);
+    expect(sections.dialogs.selectedImageEdits).toBe(input.selectedImageEdits);
+    expect(sections.dialogs.applySelectedImageEdit).toBe(input.applySelectedImageEdit);
+    expect(sections.dialogs.resetSelectedImageEdit).toBe(input.resetSelectedImageEdit);
   });
 });

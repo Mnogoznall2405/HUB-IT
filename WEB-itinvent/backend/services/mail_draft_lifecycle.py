@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from backend.services.mail_outgoing_attachment import exchange_attachment_kwargs
+
 
 def _normalize_text(value: Any, default: str = "") -> str:
     if value is None:
@@ -92,8 +94,8 @@ class MailDraftLifecycle:
                     cc_recipients=cc_recipients,
                     bcc_recipients=bcc_recipients,
                 )
-                for filename, content in attachments:
-                    draft_item.attach(FileAttachment(name=filename, content=content))
+                for attachment in attachments:
+                    draft_item.attach(FileAttachment(**exchange_attachment_kwargs(attachment)))
                 draft_item.save()
                 return draft_item
 
@@ -112,8 +114,8 @@ class MailDraftLifecycle:
                     attachment.detach()
                 except Exception:
                     pass
-            for filename, content in attachments:
-                draft_item.attach(FileAttachment(name=filename, content=content))
+            for attachment in attachments:
+                draft_item.attach(FileAttachment(**exchange_attachment_kwargs(attachment)))
             draft_item.save(update_fields=["subject", "body", "to_recipients", "cc_recipients", "bcc_recipients"])
             return draft_item
         except MailDraftLifecycleError:

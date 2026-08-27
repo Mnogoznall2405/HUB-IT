@@ -183,6 +183,27 @@ describe('EquipmentDetailDialog', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a back action only when the equipment card has a parent dialog', () => {
+    const onBack = vi.fn();
+    const { rerender } = renderDialog({ onBack });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Назад' }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <EquipmentDetailDialog
+        open
+        data={data}
+        form={form}
+        tab="general"
+        options={options}
+        onClose={() => {}}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: 'Назад' })).not.toBeInTheDocument();
+  });
+
   it('renders acts and history tabs through focused detail panels', () => {
     const onOpenActFields = vi.fn();
     const onOpenActFile = vi.fn();

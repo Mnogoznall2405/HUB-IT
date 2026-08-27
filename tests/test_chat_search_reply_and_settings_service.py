@@ -326,6 +326,10 @@ def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(c
     assert conversations[0]["is_muted"] is True
     assert conversations[0]["is_archived"] is True
 
+    realtime_snapshot = service.get_realtime_snapshot(current_user_id=1)
+    assert realtime_snapshot["unread_summary"]["messages_unread_total"] == 0
+    assert realtime_snapshot["muted_conversation_ids"] == [conversation["id"]]
+
     service.send_message(
         current_user_id=2,
         conversation_id=conversation["id"],
@@ -434,3 +438,87 @@ def test_task_and_ai_conversations_cannot_be_deleted_directly(chat_env):
         service.delete_conversation(current_user_id=1, conversation_id=task_conversation.id)
     with pytest.raises(ValueError, match="AI conversations"):
         service.delete_conversation(current_user_id=1, conversation_id=ai_conversation.id)
+
+
+def test_list_chat_folders_includes_system_unread_counts(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Склад",
+        member_user_ids=[2],
+    )
+
+    def _set_unread(conversation_id: str, unread_count: int) -> None:
+        with chat_db_module.chat_session() as session:
+            state = session.execute(
+                select(chat_models_module.ChatConversationUserState).where(
+                    chat_models_module.ChatConversationUserState.conversation_id == conversation_id,
+                    chat_models_module.ChatConversationUserState.user_id == 1,
+                )
+            ).scalar_one_or_none()
+            if state is None:
+                session.add(chat_models_module.ChatConversationUserState(
+                    conversation_id=conversation_id,
+                    user_id=1,
+                    unread_count=unread_count,
+                ))
+            else:
+                state.unread_count = unread_count
+
+    _set_unread(conversation["id"], 3)
+    _set_unread(group["id"], 2)
+
+    folders = service.list_chat_folders(current_user_id=1)
+    assert folders["folder_unread_counts"]["personal"] == 3
+    assert folders["folder_unread_counts"]["groups"] == 2
+    assert folders["folder_unread_counts"]["tasks"] == 0
+    assert folders["folder_unread_counts"]["archived"] == 0
+
+
+def test_search_messages_global_finds_matches_across_memberships(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    original = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Нужно обсудить договор по поставке",
+        defer_push_notifications=True,
+    )
+    search = service.search_messages_global(current_user_id=1, q="договор", limit=10)
+    found_ids = [item["message_id"] for item in search["items"]]
+    assert original["id"] in found_ids
+    assert search["items"][0]["conversation_id"] == conversation["id"]
+    assert "договор" in search["items"][0]["preview"].lower()
+
+
+def test_set_pinned_message_is_shared_on_conversation(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    message = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Закрепите это",
+        defer_push_notifications=True,
+    )
+
+    pinned = service.set_pinned_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        message_id=message["id"],
+    )
+    assert pinned["pinned_message_id"] == message["id"]
+    peer_view = service.get_conversation(current_user_id=2, conversation_id=conversation["id"])
+    assert peer_view["pinned_message_id"] == message["id"]
+
+    bootstrap = service.get_thread_bootstrap(current_user_id=2, conversation_id=conversation["id"])
+    assert bootstrap["pinned_message_id"] == message["id"]
+    assert bootstrap["pinned_message"]["id"] == message["id"]
+
+    service.delete_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        message_id=message["id"],
+    )
+    after_delete = service.get_conversation(current_user_id=2, conversation_id=conversation["id"])
+    assert after_delete["pinned_message_id"] is None

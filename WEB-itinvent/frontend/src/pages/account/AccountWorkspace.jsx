@@ -5,6 +5,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   Stack,
   Typography,
 } from '@mui/material';
@@ -12,6 +13,9 @@ import MainLayout from '../../components/layout/MainLayout';
 import PageShell from '../../components/layout/PageShell';
 import AccountCategoryLayout from '../../components/account/AccountCategoryLayout';
 import DesktopInstallerDownload from '../../components/desktop/DesktopInstallerDownload';
+import MobileInstallerDownload from '../../components/mobile/MobileInstallerDownload';
+import { isMobileAppWebViewRuntime } from '../../lib/mobileAppBridge';
+import { isNativeShellRuntime } from '../../lib/platform';
 import About from '../About';
 import { PERSONAL_SETTINGS_SECTIONS } from '../../components/account/accountNavigationConfig';
 import AdUsers from '../AdUsers';
@@ -24,13 +28,18 @@ import { useAccountSectionData } from './hooks/useAccountSectionData';
 import { ProfileTab } from './profile/ProfileTab';
 import AppearanceTab from './settings/AppearanceTab';
 import HubItPwaSettingsCard from './settings/HubItPwaSettingsCard';
+import MobileNativeAppSettingsCard from './settings/MobileNativeAppSettingsCard';
 import SecurityTab from './settings/SecurityTab';
 import { BrowserNotificationsSettingsCard } from './settings/notifications/BrowserNotificationsSettingsCard';
 import { ChatNotificationsSettingsCard } from './settings/notifications/ChatNotificationsSettingsCard';
 import { NotificationChannelsSettingsCard } from './settings/notifications/NotificationChannelsSettingsCard';
+import { MobileNativeNotificationsSettingsCard } from './settings/notifications/MobileNativeNotificationsSettingsCard';
+import SectionCard from './shared/SectionCard';
 
 function AccountWorkspace({ area = 'settings' }) {
   const data = useAccountSectionData(area);
+  const nativeShell = isNativeShellRuntime();
+  const mobileApp = isMobileAppWebViewRuntime();
 
   const blockingErrorNode = data.blockingError ? (
     <Alert severity="error" onClose={() => data.setBlockingError('')}>
@@ -188,17 +197,25 @@ function AccountWorkspace({ area = 'settings' }) {
       );
     } else if (data.activeSection === 'notifications') {
       settingsContent = (
-        <Stack spacing={1.1}>
-          <NotificationChannelsSettingsCard />
-          <ChatNotificationsSettingsCard />
-          <BrowserNotificationsSettingsCard />
-        </Stack>
+        <SectionCard
+          title="Уведомления"
+          description="Единое место для уведомлений в личных чатах, беседах, диалогах задач и других разделах HUB."
+          contentSx={{ p: 0 }}
+        >
+          <Stack divider={<Divider flexItem />}>
+            <NotificationChannelsSettingsCard embedded />
+            {mobileApp ? <MobileNativeNotificationsSettingsCard embedded /> : null}
+            {!nativeShell && !mobileApp ? <ChatNotificationsSettingsCard embedded /> : null}
+            {!mobileApp ? <BrowserNotificationsSettingsCard embedded /> : null}
+          </Stack>
+        </SectionCard>
       );
     } else if (data.activeSection === 'security') {
       settingsContent = securityContent;
     } else if (data.activeSection === 'app') {
       settingsContent = (
         <Stack spacing={1.1}>
+          {mobileApp ? <MobileNativeAppSettingsCard /> : <MobileInstallerDownload variant="settings" />}
           <DesktopInstallerDownload variant="settings" />
           <HubItPwaSettingsCard />
         </Stack>

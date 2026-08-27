@@ -1,34 +1,43 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text } from 'react-native';
 import { useAuth } from '../../src/auth/AuthContext';
 import { formatApiError } from '../../src/api/formatError';
-import { filterNavItems, firstNavRoute } from '../../src/navigation/navItems';
 import { HubButton } from '../../src/components/ui/HubButton';
 import { HubCard } from '../../src/components/ui/HubCard';
 import { HubTextField } from '../../src/components/ui/HubTextField';
 import { HubScreen } from '../../src/components/ui/HubScreen';
-import { hubTheme } from '../../src/theme/hubTheme';
+import { type FluentTokens, useAppFluentTokens } from '../../src/theme/fluentTokens';
 
 export default function TwoFactorScreen() {
-  const { verifyTwoFactor, loginChallengeId, hasPermission, user } = useAuth();
+  const tokens = useAppFluentTokens();
+  const styles = useMemo(() => createStyles(tokens), [tokens]);
+  const { verifyTwoFactor, loginChallengeId } = useAuth();
   const [code, setCode] = useState('');
   const [useBackup, setUseBackup] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const verificationInProgressRef = useRef(false);
 
-  if (!loginChallengeId) {
-    router.replace('/(auth)/login');
-  }
+  useEffect(() => {
+    if (!loginChallengeId && !verificationInProgressRef.current) {
+      router.replace('/(auth)/login');
+    }
+  }, [loginChallengeId]);
 
   const onSubmit = async () => {
+    if (!code.trim()) {
+      setError(useBackup ? 'Введите резервный код' : 'Введите код из приложения');
+      return;
+    }
     setError('');
     setSubmitting(true);
+    verificationInProgressRef.current = true;
     try {
       await verifyTwoFactor(code.trim(), useBackup);
-      const home = firstNavRoute(filterNavItems(hasPermission, user?.role));
-      router.replace(home as never);
+      router.replace('/(auth)/biometric-opt-in');
     } catch (e: unknown) {
+      verificationInProgressRef.current = false;
       setError(formatApiError(e, 'Неверный код'));
     } finally {
       setSubmitting(false);
@@ -36,20 +45,35 @@ export default function TwoFactorScreen() {
   };
 
   return (
-    <HubScreen>
+    <HubScreen scroll keyboardAvoiding>
       <HubCard>
-        <Text style={styles.title}>Двухфакторная аутентификация</Text>
+        <Text style={styles.title} accessibilityRole="header">Двухфакторная аутентификация</Text>
         <HubTextField
           label={useBackup ? 'Резервный код' : 'Код из приложения'}
           value={code}
           onChangeText={setCode}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType={useBackup ? 'default' : 'number-pad'}
+          textContentType={useBackup ? 'none' : 'oneTimeCode'}
+          autoComplete={useBackup ? 'off' : 'one-time-code'}
+          returnKeyType="done"
+          onSubmitEditing={() => void onSubmit()}
           style={styles.field}
         />
-        <HubButton mode="text" onPress={() => setUseBackup((v) => !v)}>
+        <HubButton
+          mode="text"
+          onPress={() => setUseBackup((v) => !v)}
+          accessibilityHint="Меняет способ подтверждения, введённый код не отправляется"
+        >
           {useBackup ? 'Использовать TOTP' : 'Использовать резервный код'}
         </HubButton>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <HubButton mode="contained" onPress={onSubmit} loading={submitting}>
+        {error ? (
+          <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+            {error}
+          </Text>
+        ) : null}
+        <HubButton mode="contained" onPress={onSubmit} loading={submitting} disabled={submitting}>
           Подтвердить
         </HubButton>
       </HubCard>
@@ -57,8 +81,8 @@ export default function TwoFactorScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  title: { fontSize: 20, fontWeight: '600', marginBottom: 12, color: hubTheme.textPrimary },
+const createStyles = (tokens: FluentTokens) => StyleSheet.create({
+  title: { fontSize: 20, fontWeight: '600', marginBottom: 12, color: tokens.textPrimary },
   field: { marginBottom: 12 },
-  error: { color: hubTheme.error, marginBottom: 8 },
+  error: { color: tokens.error, marginBottom: 8 },
 });

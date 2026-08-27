@@ -269,6 +269,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
+        _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
         ApplyWebViewMemoryUsageTarget(core);
     }
 
@@ -436,6 +437,19 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private void DesktopBridge_OpenCurrentInBrowserRequested(object? sender, EventArgs e) =>
         OpenCurrentPageInBrowser();
+
+    private void DesktopBridge_MailComposeWindowRequested(
+        object? sender,
+        DesktopMailComposeWindowRequestedEventArgs e)
+    {
+        e.Status = _windowManager.OpenMailComposeWindow(e.Route) switch
+        {
+            DesktopMailComposeWindowOpenResult.Opened => "opened",
+            DesktopMailComposeWindowOpenResult.ActivatedExisting => "activated",
+            DesktopMailComposeWindowOpenResult.Busy => "busy",
+            _ => "failed",
+        };
+    }
 
     private void Core_DownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs e)
     {
@@ -1009,6 +1023,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
+        _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
         _desktopBridge.Dispose();
         _desktopBridge = null;
     }

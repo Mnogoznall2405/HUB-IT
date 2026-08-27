@@ -619,31 +619,24 @@ function TaskWorkspacePanel({
             boxShadow: `0 -10px 30px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.18 : 0.06)}`,
           }}
         >
-          <Stack spacing={0.7}>
-            <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.8 }}>
-              {canOpenTransferActUpload(task) ? (
-                <Button variant="contained" onClick={openTransferUpload} sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none' }}>Загрузить акт</Button>
-              ) : null}
-              {primaryActions.map((action) => (
-                <Tooltip key={action.key} title={action.enabled ? '' : action.reason} disableHoverListener={action.enabled}>
-                  <span>
-                    <Button
-                      variant={action.variant}
-                      color={action.color}
-                      disabled={Boolean(busyAction) || !action.enabled}
-                      onClick={() => runPrimaryAction(action)}
-                      sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none', minHeight: 40 }}
-                    >
-                      {action.label}
-                    </Button>
-                  </span>
-                </Tooltip>
-              ))}
-            </Stack>
-            {primaryActions.filter((action) => !action.enabled).map((action) => (
-              <Typography key={`${action.key}-reason`} sx={{ color: ui.subtleText, fontSize: '0.78rem' }}>
-                {action.label}: {action.reason}
-              </Typography>
+          <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.8 }}>
+            {canOpenTransferActUpload(task) ? (
+              <Button variant="contained" onClick={openTransferUpload} sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none' }}>Загрузить акт</Button>
+            ) : null}
+            {primaryActions.map((action) => (
+              <Tooltip key={action.key} title={action.enabled ? '' : action.reason} disableHoverListener={action.enabled}>
+                <span>
+                  <Button
+                    variant={action.variant}
+                    color={action.color}
+                    disabled={Boolean(busyAction) || !action.enabled}
+                    onClick={() => runPrimaryAction(action)}
+                    sx={{ fontWeight: 800, boxShadow: 'none', textTransform: 'none', minHeight: 40 }}
+                  >
+                    {action.label}
+                  </Button>
+                </span>
+              </Tooltip>
             ))}
           </Stack>
         </Box>

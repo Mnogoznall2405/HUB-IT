@@ -130,8 +130,13 @@ def test_chat_event_outbox_dispatcher_publishes_enqueued_message_side_effects(ch
         rows = list(session.execute(select(chat_models_module.ChatEventOutbox)).scalars())
 
     assert inserted == len(jobs)
-    assert result["claimed"] == len(jobs)
-    assert result["delivered"] == len(jobs)
+    # poll_once also repairs the deferred delivery-state job for the fresh
+    # message before claiming the realtime jobs.
+    assert int(result["recovered"]) == 1
+    assert result["claimed"] == len(rows)
+    assert result["delivered"] == len(rows)
+    assert len(rows) == len(jobs) + 1
+    assert sum(str(row.event_type) == "chat.message.delivery_state" for row in rows) == 1
     assert published_events
     assert any(item[1]["event_type"] == "chat.message.created" for item in published_events)
     assert all(str(row.status) == "delivered" for row in rows)

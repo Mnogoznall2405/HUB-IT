@@ -47,6 +47,7 @@ const createProps = (overrides = {}) => ({
   setError: vi.fn(),
   formatFullDate: (value) => String(value || ''),
   downloadBlobFileImpl: vi.fn(),
+  requestMobilePrint: vi.fn(() => false),
   openWindow: vi.fn(() => createPrintWindow()),
   ...overrides,
 });
@@ -100,6 +101,23 @@ describe('useMailMessageFileActions', () => {
     expect(selectedPrintWindow.document.write).toHaveBeenCalledWith(expect.stringContaining('<p>Rendered</p>'));
     expect(props.getMessageDetailForListAction).toHaveBeenCalledWith({ id: 'msg-list', mailbox_id: 'mb-1' });
     expect(listPrintWindow.document.write).toHaveBeenCalledWith(expect.stringContaining('List message'));
+  });
+
+  it('hands print jobs to the Android host without opening a browser popup', () => {
+    const requestMobilePrint = vi.fn(() => true);
+    const openWindow = vi.fn();
+    const props = createProps({ requestMobilePrint, openWindow });
+    const { result } = renderHook(() => useMailMessageFileActions(props));
+
+    act(() => {
+      expect(result.current.handlePrintSelectedMessage()).toBe(true);
+    });
+
+    expect(requestMobilePrint).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Hello',
+      html: expect.stringContaining('<p>Rendered</p>'),
+    }));
+    expect(openWindow).not.toHaveBeenCalled();
   });
 
   it('opens attachment previews and keeps the loaded blob for dialog download', async () => {

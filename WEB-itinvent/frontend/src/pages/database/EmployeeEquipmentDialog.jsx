@@ -566,6 +566,7 @@ export default function EmployeeEquipmentDialog({
   canViewWarehouse1C = false,
   allowCrossDatabase = false,
   stackAboveParent = false,
+  disableEnforceFocus = false,
   onClose,
   onOpenInvNo = null,
   buildWarehouseReturnContext = null,
@@ -876,6 +877,7 @@ export default function EmployeeEquipmentDialog({
       fullWidth
       fullScreen={isMobile}
       scroll="paper"
+      disableEnforceFocus={disableEnforceFocus}
       sx={stackAboveParent ? {
         // Keep above EquipmentDetailDialog (and beat ModalManager inline z-index).
         zIndex: (t) => `${t.zIndex.modal + 2} !important`,

@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   Autocomplete,
   Avatar,
@@ -5,6 +6,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  CircularProgress,
   Collapse,
   Dialog,
   DialogActions,
@@ -40,31 +42,34 @@ import {
 import { getFileIdentity } from '../../../pages/tasks/taskApiHelpers';
 import { formatFileSize, formatShortDate, priorityMeta } from '../../../pages/tasks/taskFormatters';
 import { getOfficeDialogPaperSx, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
+import CreateDuePickerPanel from '../CreateDuePickerPanel';
 import EmailDeadlineRemindFields from './EmailDeadlineRemindFields';
 import LocalTaskDescriptionField from './LocalTaskDescriptionField';
 import { TaskDueFields, TaskPeopleFields, TaskProjectFields } from './TaskCreateFormSections';
+import { formatEmailRemindSummary } from '../../../pages/tasks/taskEmailRemindUtils';
 
 export default function TasksCreateDialog({
+  mode = 'create',
   open = false,
   onClose,
   isMobile = false,
   ui,
-  createData,
-  setCreateData,
-  createSaving = false,
-  onCreate,
-  onCreateDescriptionDraftChange,
-  onOpenOptionalSection,
-  createDescriptionSummary = '',
-  createAssigneeSummary = '',
-  createEmailRemindSummary = '',
-  createDueLabel = 'Без срока',
-  createDueAnchorRef,
-  onOpenDuePicker,
-  selectedCreateAssignees = [],
-  selectedCreateController = null,
-  selectedCreateObservers = [],
-  selectedCreateDepartment = null,
+  createData: createDataProp,
+  setCreateData: setCreateDataProp,
+  createSaving: createSavingProp = false,
+  onCreate: onCreateProp,
+  onCreateDescriptionDraftChange: onCreateDescriptionDraftChangeProp,
+  onOpenOptionalSection: onOpenOptionalSectionProp,
+  createDescriptionSummary: createDescriptionSummaryProp = '',
+  createAssigneeSummary: createAssigneeSummaryProp = '',
+  createEmailRemindSummary: createEmailRemindSummaryProp = '',
+  createDueLabel: createDueLabelProp = 'Без срока',
+  createDueAnchorRef: createDueAnchorRefProp,
+  onOpenDuePicker: onOpenDuePickerProp,
+  selectedCreateAssignees: selectedCreateAssigneesProp = [],
+  selectedCreateController: selectedCreateControllerProp = null,
+  selectedCreateObservers: selectedCreateObserversProp = [],
+  selectedCreateDepartment: selectedCreateDepartmentProp = null,
   getAssigneePickerOptions,
   onChangeAssigneeIds,
   onChangeObserverIds,
@@ -78,9 +83,9 @@ export default function TasksCreateDialog({
   controllers = [],
   departments = [],
   activeTaskProjects = [],
-  effectiveCreateProjectId = '',
-  effectiveCreateProject = null,
-  createOptionalSections = {},
+  effectiveCreateProjectId: effectiveCreateProjectIdProp = '',
+  effectiveCreateProject: effectiveCreateProjectProp = null,
+  createOptionalSections: createOptionalSectionsProp = {},
   createFiles = [],
   createChecklistItems = [],
   createProjectName = '',
@@ -95,8 +100,142 @@ export default function TasksCreateDialog({
   taskUsersLoading = false,
   taskUsersLoadError = '',
   taskEmailDeadlineDefaultHours = 24,
+  editData,
+  setEditData,
+  editSaving = false,
+  editLoading = false,
+  onSave,
+  onEditDescriptionDraftChange,
+  selectedEditAssignee = null,
+  selectedEditController = null,
+  selectedEditObservers = [],
+  selectedEditDepartment = null,
+  editProjectObjects = [],
+  editDueLabel = 'Без срока',
+  editDueCustomOpen = false,
+  onEditDueCustomOpenChange,
+  onSelectEditDuePreset,
+  onEditDueAtChange,
+  createDuePresets = [],
 }) {
   const theme = useTheme();
+  const isEditing = mode === 'edit';
+  const [editOptionalSections, setEditOptionalSections] = useState({});
+  const [editDuePickerOpen, setEditDuePickerOpen] = useState(false);
+  const editDueAnchorRef = useRef(null);
+  const editAssigneeId = String(editData?.assignee_user_id || '').trim();
+  const createData = isEditing
+    ? {
+      id: '',
+      title: '',
+      description: '',
+      observer_user_ids: [],
+      controller_user_id: '',
+      project_id: '',
+      object_id: '',
+      protocol_date: '',
+      due_at: '',
+      priority: 'normal',
+      department_id: '',
+      visibility_scope: 'private',
+      email_deadline_remind_mode: 'default',
+      email_deadline_remind_hours: 24,
+      ...(editData || {}),
+      assignee_user_ids: editAssigneeId ? [editAssigneeId] : [],
+    }
+    : createDataProp;
+  const setCreateData = isEditing
+    ? (updater) => setEditData?.((previous) => {
+      const previousAssigneeId = String(previous?.assignee_user_id || '').trim();
+      const compatiblePrevious = {
+        ...previous,
+        assignee_user_ids: previousAssigneeId ? [previousAssigneeId] : [],
+      };
+      const next = typeof updater === 'function' ? updater(compatiblePrevious) : updater;
+      const assigneeIds = Array.isArray(next?.assignee_user_ids) ? next.assignee_user_ids : [];
+      const { assignee_user_ids: _ignoredAssigneeIds, ...rest } = next || {};
+      return {
+        ...rest,
+        assignee_user_id: String(assigneeIds.at(-1) || ''),
+      };
+    })
+    : setCreateDataProp;
+  const createSaving = isEditing ? editSaving : createSavingProp;
+  const createLoading = isEditing ? editLoading : false;
+  const onCreate = isEditing ? onSave : onCreateProp;
+  const onCreateDescriptionDraftChange = isEditing
+    ? onEditDescriptionDraftChange
+    : onCreateDescriptionDraftChangeProp;
+  const selectedCreateAssignees = isEditing
+    ? [selectedEditAssignee].filter(Boolean)
+    : selectedCreateAssigneesProp;
+  const selectedCreateController = isEditing ? selectedEditController : selectedCreateControllerProp;
+  const selectedCreateObservers = isEditing ? selectedEditObservers : selectedCreateObserversProp;
+  const selectedCreateDepartment = isEditing ? selectedEditDepartment : selectedCreateDepartmentProp;
+  const effectiveCreateProjectId = isEditing
+    ? String(createData?.project_id || '')
+    : effectiveCreateProjectIdProp;
+  const effectiveCreateProject = isEditing
+    ? activeTaskProjects.find((item) => String(item?.id || '') === effectiveCreateProjectId) || null
+    : effectiveCreateProjectProp;
+  const createOptionalSections = isEditing ? editOptionalSections : createOptionalSectionsProp;
+  const createDescriptionSummary = isEditing
+    ? String(createData?.description || '').trim()
+    : createDescriptionSummaryProp;
+  const createAssigneeSummary = isEditing
+    ? selectedCreateAssignees.map(getTaskUserLabel).filter(Boolean).join(', ')
+    : createAssigneeSummaryProp;
+  const createEmailRemindSummary = isEditing
+    ? formatEmailRemindSummary(
+      createData?.email_deadline_remind_mode,
+      createData?.email_deadline_remind_hours,
+      taskEmailDeadlineDefaultHours,
+    )
+    : createEmailRemindSummaryProp;
+  const createDueLabel = isEditing ? editDueLabel : createDueLabelProp;
+  const createDueAnchorRef = isEditing ? editDueAnchorRef : createDueAnchorRefProp;
+  const onOpenDuePicker = isEditing
+    ? () => setEditDuePickerOpen((current) => !current)
+    : onOpenDuePickerProp;
+  const onChangeAssigneeIdsEffective = isEditing
+    ? (ids) => setCreateData((previous) => ({ ...previous, assignee_user_ids: ids.slice(-1) }))
+    : onChangeAssigneeIds;
+  const onChangeObserverIdsEffective = isEditing
+    ? (ids) => setCreateData((previous) => ({ ...previous, observer_user_ids: ids }))
+    : onChangeObserverIds;
+  const usesMobileSheets = isMobile && !isEditing;
+  const onOpenOptionalSection = isEditing
+    ? (key) => setEditOptionalSections((previous) => {
+      if (key === 'priority') {
+        return { ...previous, advanced: true, schedule: true };
+      }
+      if (key === 'advanced') {
+        const nextAdvanced = !previous.advanced;
+        return {
+          ...previous,
+          advanced: nextAdvanced,
+          schedule: nextAdvanced,
+          access: nextAdvanced,
+          project: nextAdvanced ? true : previous.project,
+          controller: nextAdvanced ? true : previous.controller,
+        };
+      }
+      return { ...previous, [key]: !previous[key] };
+    })
+    : onOpenOptionalSectionProp;
+
+  useEffect(() => {
+    if (!open || !isEditing) return;
+    setEditOptionalSections({});
+    setEditDuePickerOpen(false);
+  }, [editData?.id, isEditing, open]);
+
+  const visibleCreateOptionalSectionOptions = usesMobileSheets
+    ? createOptionalSectionOptions
+    : createOptionalSectionOptions.filter((option) => option.key !== 'observers');
+  const supportedOptionalSectionOptions = isEditing
+    ? visibleCreateOptionalSectionOptions.filter((option) => !['files', 'checklist'].includes(option.key))
+    : visibleCreateOptionalSectionOptions;
 
   return (
         <Dialog
@@ -107,8 +246,23 @@ export default function TasksCreateDialog({
           maxWidth="sm"
           PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}
         >
-          <DialogContent sx={{ px: { xs: 1.2, sm: 2.2 }, py: { xs: 1.2, sm: 1.8 } }}>
-            <Stack spacing={1.35}>
+          <DialogContent sx={{ px: { xs: 1.2, sm: 2.2 }, py: { xs: 1.2, sm: 1.8 }, position: 'relative' }}>
+            {createLoading ? (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  bgcolor: alpha(ui.panelSolid, 0.74),
+                }}
+              >
+                <CircularProgress size={28} />
+              </Box>
+            ) : null}
+            <Stack spacing={1.35} sx={{ opacity: createLoading ? 0.55 : 1, pointerEvents: createLoading ? 'none' : 'auto' }}>
               <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1.2, sm: 1.6 }, borderRadius: '16px' }) }}>
                 <Stack direction="row" alignItems="flex-start" spacing={1}>
                   <TextField
@@ -142,8 +296,8 @@ export default function TasksCreateDialog({
                       <IconButton
                         size="small"
                         onClick={onClose}
-                        disabled={createSaving}
-                        aria-label="Закрыть создание задачи"
+                        disabled={createSaving || createLoading}
+                        aria-label={isEditing ? 'Закрыть редактирование задачи' : 'Закрыть создание задачи'}
                         sx={{ mt: 0.1, width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}
                       >
                         <CloseIcon fontSize="small" />
@@ -152,7 +306,7 @@ export default function TasksCreateDialog({
                   </Tooltip>
                 </Stack>
 
-                {isMobile ? (
+                {usesMobileSheets ? (
                   <Button
                     type="button"
                     fullWidth
@@ -192,7 +346,7 @@ export default function TasksCreateDialog({
                   <LocalTaskDescriptionField
                     initialValue={createData.description}
                     onDraftChange={onCreateDescriptionDraftChange}
-                    resetKey={open ? 'open' : 'closed'}
+                    resetKey={isEditing ? String(createData.id || '') : (open ? 'open' : 'closed')}
                     fullWidth
                     multiline
                     minRows={2}
@@ -211,13 +365,13 @@ export default function TasksCreateDialog({
 
                 <Stack spacing={1.05} sx={{ mt: 1.2 }}>
                   <TaskPeopleFields
-                    isMobile={isMobile}
+                    isMobile={usesMobileSheets}
                     ui={ui}
                     assigneeSummary={createAssigneeSummary}
                     selectedAssignees={selectedCreateAssignees}
                     titleTrimmed={createData.title.trim()}
                     getAssigneePickerOptions={getAssigneePickerOptions}
-                    onChangeAssigneeIds={onChangeAssigneeIds}
+                    onChangeAssigneeIds={onChangeAssigneeIdsEffective}
                     onOpenAssignees={() => onOpenOptionalSection('assignees')}
                     renderTaskUserOptionMultiple={renderTaskUserOptionMultiple}
                     renderTaskUserTags={renderTaskUserTags}
@@ -239,12 +393,29 @@ export default function TasksCreateDialog({
                     compact
                     ui={ui}
                   />
+                  {isEditing ? (
+                    <Collapse in={editDuePickerOpen} unmountOnExit>
+                      <CreateDuePickerPanel
+                        presets={createDuePresets}
+                        dueAt={createData.due_at}
+                        customOpen={editDueCustomOpen}
+                        onCustomOpenChange={onEditDueCustomOpenChange}
+                        onSelectPreset={(value) => {
+                          onSelectEditDuePreset?.(value);
+                          setEditDuePickerOpen(false);
+                        }}
+                        onDueAtChange={onEditDueAtChange}
+                        onClose={() => setEditDuePickerOpen(false)}
+                        testIdPrefix="edit-due"
+                      />
+                    </Collapse>
+                  ) : null}
                 </Stack>
 
                 <Divider sx={{ my: 1.25, borderColor: ui.borderSoft }} />
 
                 <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
-                  {createOptionalSectionOptions.map((option) => {
+                  {supportedOptionalSectionOptions.map((option) => {
                     const selected = option.key === 'priority'
                       ? createData.priority !== 'normal'
                       : Boolean(createOptionalSections[option.key]);
@@ -299,7 +470,7 @@ export default function TasksCreateDialog({
                 </Stack>
               </Box>
 
-              <Collapse in={Boolean(!isMobile && (createOptionalSections.controller || createOptionalSections.advanced))} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && (createOptionalSections.controller || createOptionalSections.advanced))} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Autocomplete
                     fullWidth
@@ -330,7 +501,7 @@ export default function TasksCreateDialog({
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.observers)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile || isEditing)} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px', mt: 1 }) }}>
                   <Autocomplete
                     fullWidth
@@ -338,7 +509,7 @@ export default function TasksCreateDialog({
                     size="small"
                     options={getAssigneePickerOptions(selectedCreateObservers)}
                     value={selectedCreateObservers}
-                    onChange={(_, value) => onChangeObserverIds(
+                    onChange={(_, value) => onChangeObserverIdsEffective(
                       Array.isArray(value) ? value.map((item) => String(item?.id || '')).filter(Boolean) : [],
                     )}
                     getOptionLabel={getTaskUserLabel}
@@ -354,14 +525,14 @@ export default function TasksCreateDialog({
                         {...params}
                         label="Наблюдатели"
                         placeholder="Фамилия или логин"
-                        helperText="Наблюдатели видят задачу и могут писать в чат, но не меняют статус"
+                        helperText="Наблюдатели видят задачу и участвуют в обсуждении. Ответственный остаётся один; при необходимости его можно переназначить."
                       />
                     )}
                   />
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.checklist)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && createOptionalSections.checklist)} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Stack spacing={0.9}>
                     <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
@@ -408,7 +579,7 @@ export default function TasksCreateDialog({
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.files)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && createOptionalSections.files)} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                     <Typography sx={{ fontWeight: 900 }}>Файлы к задаче</Typography>
@@ -485,7 +656,7 @@ export default function TasksCreateDialog({
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.schedule)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && createOptionalSections.schedule)} unmountOnExit>
                 <Grid container spacing={1.2}>
                   <Grid item xs={12} md={4}>
                     <TextField
@@ -509,7 +680,7 @@ export default function TasksCreateDialog({
                 </Grid>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.project)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && createOptionalSections.project)} unmountOnExit>
                 <TaskProjectFields
                   projectId={effectiveCreateProjectId}
                   projects={activeTaskProjects}
@@ -519,15 +690,19 @@ export default function TasksCreateDialog({
                     object_id: '',
                   }))}
                   labelId="create-project-label"
-                  showCreateRow
+                  showCreateRow={!isEditing}
                   projectName={createProjectName}
                   onProjectNameChange={setCreateProjectName}
                   onCreateProject={onCreateProject}
                   createProjectSaving={createProjectSaving}
+                  showObject={isEditing}
+                  objectId={String(createData.object_id || '')}
+                  objects={editProjectObjects}
+                  onObjectChange={(nextObjectId) => setCreateData((prev) => ({ ...prev, object_id: nextObjectId }))}
                 />
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile && createOptionalSections.access)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && createOptionalSections.access)} unmountOnExit>
                 <Grid container spacing={1.2}>
                   <Grid item xs={12} md={6}>
                     <Autocomplete
@@ -574,7 +749,7 @@ export default function TasksCreateDialog({
           </DialogContent>
 
           <DialogActions sx={{ px: { xs: 1, sm: 2.2 }, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: { xs: 'sticky', sm: 'static' }, bottom: 0, bgcolor: ui.pageBg, flexDirection: { xs: 'column-reverse', sm: 'row' }, gap: { xs: 0.8, sm: 0 }, '& > :not(style)': { m: 0, width: { xs: '100%', sm: 'auto' } } }}>
-            <Button onClick={onClose} disabled={createSaving} sx={{ textTransform: 'none', fontWeight: 700 }}>
+            <Button onClick={onClose} disabled={createSaving || createLoading} sx={{ textTransform: 'none', fontWeight: 700 }}>
               Отмена
             </Button>
             <Button
@@ -582,14 +757,21 @@ export default function TasksCreateDialog({
               onClick={onCreate}
               disabled={
                 createSaving
+                || createLoading
                 || String(createData.title || '').trim().length < 3
-                || createData.assignee_user_ids.length === 0
-                || !effectiveCreateProjectId
-                || !String(createData.protocol_date || '').trim()
+                || (!isEditing && createData.assignee_user_ids.length === 0)
+                || (!isEditing && !effectiveCreateProjectId)
+                || (!isEditing && !String(createData.protocol_date || '').trim())
               }
               sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
             >
-              {createSaving ? 'Создание...' : `Создать${(Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids.length : 0) > 1 ? ` (${createData.assignee_user_ids.length})` : ''}`}
+              {createLoading
+                ? 'Загрузка...'
+                : (createSaving
+                  ? (isEditing ? 'Сохранение...' : 'Создание...')
+                  : (isEditing
+                    ? 'Сохранить изменения'
+                    : `Создать${(Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids.length : 0) > 1 ? ` (${createData.assignee_user_ids.length})` : ''}`))}
             </Button>
           </DialogActions>
         </Dialog>

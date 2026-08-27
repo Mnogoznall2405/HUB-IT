@@ -80,6 +80,14 @@ vi.mock('../components/desktop/DesktopInstallerDownload', () => ({
   ),
 }));
 
+vi.mock('../components/mobile/MobileInstallerDownload', () => ({
+  default: ({ variant }) => (
+    <div data-testid="mobile-installer-download" data-variant={variant}>
+      Скачать HUB-IT для Android
+    </div>
+  ),
+}));
+
 vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -260,10 +268,11 @@ describe('Login hybrid internal/external flow', () => {
     expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
   });
 
-  it('shows the compact Desktop download entry under the browser login form', async () => {
+  it('shows compact Android and Desktop download entries under the browser login form', async () => {
     render(<Login />);
 
     await ensurePasswordFormVisible();
+    expect(screen.getByTestId('mobile-installer-download')).toHaveAttribute('data-variant', 'login');
     expect(screen.getByTestId('desktop-installer-download')).toHaveAttribute('data-variant', 'login');
     expect(screen.queryByRole('link', { name: 'О HUB-IT' })).not.toBeInTheDocument();
   });

@@ -44,6 +44,11 @@ from backend.services.warehouse_1c_service import (
 
 router = APIRouter()
 
+_SENSITIVE_FILE_HEADERS = {
+    "Cache-Control": "private, no-store, max-age=0",
+    "X-Content-Type-Options": "nosniff",
+}
+
 
 async def _run_or_raise(coro):
     try:
@@ -390,6 +395,7 @@ async def download_movement_file(
                 f"filename*=UTF-8''{utf8_name}"
             ),
             "Content-Length": str(int(payload.get("size") or len(payload["content"]))),
+            **_SENSITIVE_FILE_HEADERS,
         },
     )
 
@@ -445,8 +451,7 @@ async def download_movement_file_preview_pdf(
         media_type="application/pdf",
         content_disposition_type="inline",
         headers={
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
+            **_SENSITIVE_FILE_HEADERS,
             "X-Warehouse-Preview-Source-Kind": str(preview.get("source_kind") or ""),
             "X-Warehouse-Preview-Page-Count": str(int(preview.get("page_count") or 0)),
         },

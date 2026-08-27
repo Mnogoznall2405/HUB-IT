@@ -62,6 +62,13 @@ import { scanOverviewAPI } from './scanOverview';
 import { scanReviewAPI } from './scanReview';
 import { scanTasksAPI } from './scanTasks';
 import { workspaceDiscoveryAPI } from './workspaceDiscovery';
+import {
+  cacheMobileGetResponse,
+  createMobileOfflineReadOnlyError,
+  getCachedMobileGetResponse,
+  isMobileOfflineMutationBlocked,
+  markMobileOfflineCacheMiss,
+} from '../lib/mobileOfflineCache';
 
 const rawBase = String(import.meta.env.BASE_URL || '/');
 const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
@@ -236,6 +243,9 @@ function reportAuthSessionTelemetry({ event, detail, path } = {}) {
  */
 apiClient.interceptors.request.use(
   (config) => {
+    if (isMobileOfflineMutationBlocked(config)) {
+      throw createMobileOfflineReadOnlyError(config);
+    }
     // For multipart uploads let the browser set boundary automatically.
     if (typeof FormData !== 'undefined' && config?.data instanceof FormData) {
       if (config.headers?.delete) {
@@ -291,6 +301,7 @@ apiClient.interceptors.response.use(
         durationMs: Math.max(0, Date.now() - Number(metadata.startedAt || Date.now())),
       });
     }
+    void cacheMobileGetResponse(response);
     return response;
   },
   async (error) => {
@@ -305,6 +316,9 @@ apiClient.interceptors.response.use(
         message: String(error?.message || 'request failed'),
       });
     }
+    const cachedResponse = await getCachedMobileGetResponse(error);
+    if (cachedResponse) return cachedResponse;
+
     if (error.response?.status === 401) {
       const requestUrl = String(error.config?.url || '');
       if (isMyFilesPublicRequestUrl(requestUrl)) {
@@ -376,7 +390,7 @@ apiClient.interceptors.response.use(
         window.dispatchEvent(new CustomEvent('auth-required', { detail: { requestUrl } }));
       }
     }
-    return Promise.reject(error);
+    return Promise.reject(markMobileOfflineCacheMiss(error));
   }
 );
 
@@ -702,6 +716,10 @@ export const chatAPI = {
     return chatConversationDetailsAPI.updateConversationSettings;
   },
 
+  get setPinnedMessage() {
+    return chatConversationDetailsAPI.setPinnedMessage;
+  },
+
   get deleteConversation() {
     return chatConversationDetailsAPI.deleteConversation;
   },
@@ -768,6 +786,10 @@ export const chatAPI = {
 
   get searchMessages() {
     return chatThreadMessagesAPI.searchMessages;
+  },
+
+  get searchMessagesGlobal() {
+    return chatThreadMessagesAPI.searchMessagesGlobal;
   },
 
   get getShareableTasks() {

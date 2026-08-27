@@ -25,9 +25,12 @@ class FakeMailbox:
 
 
 class FakeFileAttachment:
-    def __init__(self, *, name: str, content: bytes):
+    def __init__(self, *, name: str, content: bytes, content_type: str = "", content_id: str = "", is_inline: bool = False):
         self.name = name
         self.content = content
+        self.content_type = content_type
+        self.content_id = content_id
+        self.is_inline = is_inline
 
 
 class FakeAttachment:
@@ -115,6 +118,33 @@ def test_draft_lifecycle_creates_new_draft_with_recipients_and_attachments():
     assert [mailbox.email_address for mailbox in draft.to_recipients] == ["to@example.com"]
     assert [attachment.name for attachment in draft.attachments] == ["file.txt"]
     assert draft.saved_update_fields is None
+
+
+def test_draft_lifecycle_preserves_inline_attachment_metadata():
+    from backend.services.mail_outgoing_attachment import MailOutgoingAttachment
+
+    FakeMessage.created = []
+    account = SimpleNamespace(drafts=FakeDrafts())
+    lifecycle = MailDraftLifecycle(exchange_classes_factory=_factory)
+
+    draft = lifecycle.upsert_draft(
+        account=account,
+        draft_plan=_plan(),
+        attachments=[
+            MailOutgoingAttachment(
+                filename="screenshot.png",
+                content=b"png",
+                content_type="image/png",
+                content_id="hubit-inline-1@hubit.local",
+                is_inline=True,
+            )
+        ],
+    )
+
+    inline = draft.attachments[0]
+    assert inline.content_type == "image/png"
+    assert inline.content_id == "hubit-inline-1@hubit.local"
+    assert inline.is_inline is True
 
 
 def test_draft_lifecycle_updates_existing_draft_and_detaches_unretained_attachments():

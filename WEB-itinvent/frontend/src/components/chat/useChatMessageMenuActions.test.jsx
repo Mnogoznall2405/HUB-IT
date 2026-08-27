@@ -4,6 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import useChatMessageMenuActions from './useChatMessageMenuActions';
 
+vi.mock('../../api/client', () => ({
+  chatAPI: {
+    setPinnedMessage: vi.fn().mockResolvedValue({}),
+  },
+}));
+
+import { chatAPI } from '../../api/client';
+
 function Harness({
   activeConversationIdRef = { current: 'conv-active' },
   clipboardWriteText = vi.fn().mockResolvedValue(undefined),
@@ -91,6 +99,7 @@ describe('useChatMessageMenuActions', () => {
 
     fireEvent.click(document.querySelectorAll('button')[1]);
     expect(persistPinnedMessage).toHaveBeenCalledWith({ id: 'msg-2', preview: 'Pinned' });
+    expect(chatAPI.setPinnedMessage).toHaveBeenCalledWith('conv-active', 'msg-2');
 
     rerender(
       <Harness

@@ -19,11 +19,11 @@ import { alpha, useTheme } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
-import FormatBoldRoundedIcon from '@mui/icons-material/FormatBoldRounded';
-import FormatItalicRoundedIcon from '@mui/icons-material/FormatItalicRounded';
-import FormatUnderlinedRoundedIcon from '@mui/icons-material/FormatUnderlinedRounded';
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import CloseFullscreenRoundedIcon from '@mui/icons-material/CloseFullscreenRounded';
+import OpenInFullRoundedIcon from '@mui/icons-material/OpenInFullRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -34,6 +34,7 @@ import {
   getMailTextFieldSx,
 } from './mailUiTokens';
 import MailRichTextEditor from './MailRichTextEditor';
+import MailComposeToolbar from './MailComposeToolbar';
 import FileActionsContextMenu from '../fileActions/FileActionsContextMenu';
 import { buildComposeMailPreviewHtml } from './mailOutgoingPreview';
 import { sanitizeMailHtmlFragment } from './mailHtmlContent';
@@ -134,6 +135,7 @@ function ToolbarIcon({ label, icon, onClick, active = false, tokens }) {
   return (
     <IconButton
       aria-label={label}
+      aria-pressed={active ? 'true' : undefined}
       size="small"
       onClick={onClick}
       sx={getMailIconButtonSx(tokens || {}, {
@@ -147,15 +149,6 @@ function ToolbarIcon({ label, icon, onClick, active = false, tokens }) {
       {icon}
     </IconButton>
   );
-}
-
-function applyQuillFormat(quillRef, format) {
-  const editor = quillRef.current?.getEditor?.();
-  if (!editor) return;
-  editor.focus();
-  const range = editor.getSelection?.(true) || { index: editor.getLength?.() || 0, length: 0 };
-  const currentFormats = editor.getFormat?.(range) || {};
-  editor.format(format, !currentFormats?.[format]);
 }
 
 function ComposerContent({
@@ -195,7 +188,8 @@ function ComposerContent({
   composeSignatureHtml,
   composeDraftAttachments,
   composeFiles,
-  onComposePasteFiles,
+  inlineSourcesByCid,
+  onPasteInlineImages,
   onSendComposeShortcut,
   formatFileSize,
   sumFilesSize,
@@ -208,6 +202,9 @@ function ComposerContent({
   onOpenSignatureEditor,
   onSendCompose,
   onRegisterFlushHandler,
+  onToggleExpanded,
+  onOpenDesktopWindow,
+  desktopFullScreen,
   mobile,
   desktopInline,
 }) {
@@ -221,6 +218,7 @@ function ComposerContent({
   const [showMeta, setShowMeta] = useState(false);
   const [showFormatting, setShowFormatting] = useState(false);
   const [editorFocused, setEditorFocused] = useState(false);
+  const [inlineImagePreset, setInlineImagePreset] = useState('');
   const [attachmentMenu, setAttachmentMenu] = useState({ item: null, anchorEl: null });
   const [quoteExpanded, setQuoteExpanded] = useState(false);
   const [recipientInputs, setRecipientInputs] = useState({ to: '', cc: '', bcc: '' });
@@ -239,10 +237,11 @@ function ComposerContent({
     () => sanitizeMailHtmlFragment(quotedOriginalHtml),
     [quotedOriginalHtml],
   );
-  const attachmentCount = composeFiles.length + composeDraftAttachments.length;
+  const regularDraftAttachments = composeDraftAttachments.filter((attachment) => !attachment?.is_inline);
+  const attachmentCount = composeFiles.length + regularDraftAttachments.length;
   const attachmentSize = useMemo(
-    () => formatFileSize(sumFilesSize(composeFiles) + sumAttachmentSize(composeDraftAttachments)),
-    [composeDraftAttachments, composeFiles, formatFileSize, sumAttachmentSize, sumFilesSize],
+    () => formatFileSize(sumFilesSize(composeFiles) + sumAttachmentSize(regularDraftAttachments)),
+    [composeFiles, formatFileSize, regularDraftAttachments, sumAttachmentSize, sumFilesSize],
   );
   const canSelectMailbox = Array.isArray(composeFromOptions) && composeFromOptions.length > 0;
   const recipientSummary = composeToValues.length > 0
@@ -260,7 +259,7 @@ function ComposerContent({
   const customToolbarVisible = desktopInline || editorFocused || showFormatting;
   const showFinalPreview = !desktopInline && Boolean(finalPreviewHtml);
   const attachmentChips = [
-    ...composeDraftAttachments.map((attachment, index) => ({
+    ...regularDraftAttachments.map((attachment, index) => ({
       key: `draft_${attachment.id || attachment.name || index}`,
       name: attachment.name || 'Вложение',
       label: `${attachment.name || 'Вложение'} • сервер`,
@@ -280,6 +279,7 @@ function ComposerContent({
       committedRecipientValuesRef.current = { to: null, cc: null, bcc: null };
       setShowFormatting(false);
       setEditorFocused(false);
+      setInlineImagePreset('');
       setQuoteExpanded(false);
       setShowMeta(false);
       setAttachmentMenu({ item: null, anchorEl: null });
@@ -380,7 +380,7 @@ function ComposerContent({
     const recipients = commitAllRecipientInputs({ commitInvalid: true });
     let nextBody = composeBody;
     try {
-      const html = quillRef.current?.getEditor?.()?.root?.innerHTML;
+      const html = quillRef.current?.getSemanticHtml?.();
       if (typeof html === 'string') {
         nextBody = html;
         onComposeBodyChange?.(html);
@@ -618,6 +618,26 @@ function ComposerContent({
             >
               Отменить
             </Button>
+            {onOpenDesktopWindow ? (
+              <IconButton
+                aria-label="Открыть письмо в отдельном окне"
+                onClick={onOpenDesktopWindow}
+                disabled={composeSending}
+                sx={getMailIconButtonSx(tokens, { width: 40, height: 40 })}
+              >
+                <OpenInNewRoundedIcon fontSize="small" />
+              </IconButton>
+            ) : null}
+            {onToggleExpanded ? (
+              <IconButton
+                aria-label={desktopFullScreen ? 'Свернуть редактор' : 'Развернуть редактор'}
+                aria-pressed={desktopFullScreen}
+                onClick={onToggleExpanded}
+                sx={getMailIconButtonSx(tokens, { width: 40, height: 40 })}
+              >
+                {desktopFullScreen ? <CloseFullscreenRoundedIcon fontSize="small" /> : <OpenInFullRoundedIcon fontSize="small" />}
+              </IconButton>
+            ) : null}
             <Box sx={{ minWidth: 0, flex: 1 }} />
             <Box sx={{ minWidth: 0 }}>
               <Typography noWrap sx={{ fontWeight: 800, fontSize: '0.96rem', textAlign: 'right' }}>
@@ -1095,16 +1115,35 @@ function ComposerContent({
                 fontSize: '14px',
                 lineHeight: 1.55,
               },
-            }}
-            onPaste={(event) => {
-              const files = Array.from(event.clipboardData?.files || []);
-              if (files.length > 0) onComposePasteFiles?.(files);
+              '& .ql-editor table': {
+                width: '100%',
+                maxWidth: '100%',
+                borderCollapse: 'collapse',
+              },
+              '& .ql-editor td, & .ql-editor th': {
+                border: '1px solid',
+                borderColor: tokens.surfaceBorder,
+                padding: '6px 8px',
+                verticalAlign: 'top',
+              },
+              '& .ql-editor img': {
+                maxWidth: '100%',
+                height: 'auto',
+                cursor: 'pointer',
+              },
+              '& .ql-editor img[data-mail-inline-selected="true"]': {
+                outline: `2px solid ${theme.palette.primary.main}`,
+                outlineOffset: 2,
+              },
             }}
           >
             <MailRichTextEditor
               ref={quillRef}
               value={composeBody}
               onChange={onComposeBodyChange}
+              inlineSourcesByCid={inlineSourcesByCid}
+              onPasteInlineImages={onPasteInlineImages}
+              onInlineImageSelected={setInlineImagePreset}
               onFocus={() => setEditorFocused(true)}
               onBlur={() => {
                 window.setTimeout(() => {
@@ -1119,6 +1158,40 @@ function ComposerContent({
                   : 'Напишите письмо'}
             />
           </Box>
+
+          {inlineImagePreset ? (
+            <Stack
+              direction="row"
+              spacing={0.5}
+              alignItems="center"
+              flexWrap="wrap"
+              useFlexGap
+              role="group"
+              aria-label="Размер изображения в письме"
+            >
+              <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700, mr: 0.5 })}>
+                Размер изображения
+              </Typography>
+              {[
+                ['small', 'Маленькая'],
+                ['medium', 'Средняя'],
+                ['full', 'По ширине'],
+                ['original', 'Исходная'],
+              ].map(([preset, label]) => (
+                <Button
+                  key={preset}
+                  size="small"
+                  aria-pressed={inlineImagePreset === preset}
+                  onClick={() => {
+                    if (quillRef.current?.setSelectedInlineImageSize?.(preset)) setInlineImagePreset(preset);
+                  }}
+                  sx={{ textTransform: 'none' }}
+                >
+                  {label}
+                </Button>
+              ))}
+            </Stack>
+          ) : null}
 
           {quotePresent ? (
             <Button
@@ -1243,26 +1316,7 @@ function ComposerContent({
                   transition={{ duration: 0.15 }}
                   sx={{ overflow: 'hidden' }}
                 >
-                  <Stack direction="row" spacing={0.6} sx={{ px: 0.25, pb: 0.7 }}>
-                    <ToolbarIcon
-                      label="Жирный"
-                      icon={<FormatBoldRoundedIcon fontSize="small" />}
-                      onClick={() => applyQuillFormat(quillRef, 'bold')}
-                      tokens={tokens}
-                    />
-                    <ToolbarIcon
-                      label="Курсив"
-                      icon={<FormatItalicRoundedIcon fontSize="small" />}
-                      onClick={() => applyQuillFormat(quillRef, 'italic')}
-                      tokens={tokens}
-                    />
-                    <ToolbarIcon
-                      label="Подчеркивание"
-                      icon={<FormatUnderlinedRoundedIcon fontSize="small" />}
-                      onClick={() => applyQuillFormat(quillRef, 'underline')}
-                      tokens={tokens}
-                    />
-                  </Stack>
+                  <MailComposeToolbar editorRef={quillRef} mobile={mobile} />
                 </Box>
               ) : null}
             </AnimatePresence>
@@ -1320,7 +1374,8 @@ export default function MailComposeDialog(props) {
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const mobile = props.layoutMode === 'mobile';
   const desktopInline = props.layoutMode === 'desktop-inline';
-  const content = <ComposerContent {...props} mobile={mobile} desktopInline={desktopInline} />;
+  const desktopFullScreen = props.layoutMode === 'desktop-fullscreen';
+  const content = <ComposerContent {...props} mobile={mobile} desktopInline={desktopInline || desktopFullScreen} desktopFullScreen={desktopFullScreen} />;
 
   if (mobile) {
     return (
@@ -1358,6 +1413,27 @@ export default function MailComposeDialog(props) {
       >
         {content}
       </Box>
+    );
+  }
+
+  if (desktopFullScreen) {
+    return (
+      <Dialog
+        open={props.open}
+        onClose={props.onClose}
+        fullScreen
+        PaperProps={{
+          'data-testid': 'mail-compose-desktop-fullscreen-paper',
+          sx: {
+            ...tokens.typographyVars,
+            bgcolor: tokens.panelBg,
+            color: tokens.textPrimary,
+            backgroundImage: 'none',
+          },
+        }}
+      >
+        {content}
+      </Dialog>
     );
   }
 

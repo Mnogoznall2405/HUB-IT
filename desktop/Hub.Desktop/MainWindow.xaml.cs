@@ -1203,6 +1203,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
+        _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
+        _windowManager.MailComposeSent += WindowManager_MailComposeSent;
         ApplyWebViewMemoryUsageTarget(core);
         if (DesktopPerfBench.IsEnabled)
         {
@@ -1429,6 +1431,24 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void DesktopBridge_OpenCurrentInBrowserRequested(object? sender, EventArgs e) =>
         OpenCurrentPageInBrowser();
+
+    private void DesktopBridge_MailComposeWindowRequested(
+        object? sender,
+        DesktopMailComposeWindowRequestedEventArgs e)
+    {
+        e.Status = _windowManager.OpenMailComposeWindow(e.Route) switch
+        {
+            DesktopMailComposeWindowOpenResult.Opened => "opened",
+            DesktopMailComposeWindowOpenResult.ActivatedExisting => "activated",
+            DesktopMailComposeWindowOpenResult.Busy => "busy",
+            _ => "failed",
+        };
+    }
+
+    private void WindowManager_MailComposeSent(object? sender, EventArgs e)
+    {
+        _desktopBridge?.TryPostMailComposeWindowCompleted();
+    }
 
     private void Core_DownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs e)
     {
@@ -1802,6 +1822,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
+        _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
+        _windowManager.MailComposeSent -= WindowManager_MailComposeSent;
         _desktopBridge.Dispose();
         _desktopBridge = null;
     }
@@ -2439,15 +2461,17 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         SaveWindowPlacement();
-        if (DesktopPerfBench.IsEnabled)
+        var closeAction = DesktopClosePolicy.Resolve(
+            _applicationController.ExitRequested,
+            DesktopPerfBench.IsEnabled);
+        if (closeAction == DesktopCloseAction.Exit)
         {
-            DesktopPerfBench.MarkOnce("window_closing_shutdown");
-            Application.Current?.Shutdown(0);
-            return;
-        }
+            if (DesktopPerfBench.IsEnabled)
+            {
+                DesktopPerfBench.MarkOnce("window_closing_shutdown");
+                Application.Current?.Shutdown(0);
+            }
 
-        if (_applicationController.ExitRequested)
-        {
             return;
         }
 
@@ -2455,7 +2479,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         if (_notificationSettings.CloseBehavior == DesktopCloseBehavior.AskOnce)
         {
             var confirmation = System.Windows.MessageBox.Show(
-                "Скрыть HUB в область уведомлений? Приложение продолжит получать сообщения.",
+                "Свернуть HUB в панель задач? Приложение продолжит получать сообщения.",
                 "HUB Desktop",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Information,
@@ -2481,9 +2505,9 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             _trayHintShown = true;
         }
 
-        Hide();
+        WindowState = WindowState.Minimized;
         SendDesktopWindowForegroundState();
-        DesktopLog.Info("Main window hidden to tray");
+        DesktopLog.Info("Main window minimized to taskbar");
 
         if (_trayHintShown)
         {
@@ -2494,7 +2518,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _trayIcon.ShowBalloonTip(
             3000,
             "HUB Desktop",
-            "HUB продолжает работать в области уведомлений.",
+            "HUB продолжает работать и остаётся на панели задач.",
             Forms.ToolTipIcon.Info);
     }
 

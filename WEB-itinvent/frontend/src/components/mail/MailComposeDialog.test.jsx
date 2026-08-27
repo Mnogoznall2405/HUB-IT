@@ -246,6 +246,31 @@ describe('MailComposeDialog', () => {
     expect(screen.queryByTestId('mail-compose-final-preview')).toBeNull();
   });
 
+  it('renders the expanded desktop compose mode in a full-screen dialog', () => {
+    const onToggleExpanded = vi.fn();
+    renderWithTheme(<MailComposeDialog {...buildProps({
+      layoutMode: 'desktop-fullscreen',
+      desktopFullScreen: true,
+      onToggleExpanded,
+    })} />);
+
+    expect(screen.getByTestId('mail-compose-desktop-fullscreen-paper')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть редактор' }));
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides inline CID images from the ordinary attachment list', () => {
+    renderWithTheme(<MailComposeDialog {...buildProps({
+      composeDraftAttachments: [
+        { id: 'inline-1', name: 'pasted.png', is_inline: true, size: 15 },
+        { id: 'file-1', name: 'report.pdf', is_inline: false, size: 30 },
+      ],
+    })} />);
+
+    expect(screen.queryByText(/pasted\.png/)).toBeNull();
+    expect(screen.getByText(/report\.pdf/)).toBeTruthy();
+  });
+
   it('commits a typed external recipient on mobile blur without Enter', () => {
     const props = buildProps({ composeToValues: [] });
     renderWithTheme(<MailComposeDialog {...props} />);

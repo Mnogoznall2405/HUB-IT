@@ -17,6 +17,14 @@ export const chatConversationDetailsAPI = {
     return response.data;
   },
 
+  setPinnedMessage: async (conversationId, messageId) => {
+    const response = await apiClient.put(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/pinned-message`,
+      { message_id: messageId || null },
+    );
+    return response.data;
+  },
+
   deleteConversation: async (conversationId) => {
     const response = await apiClient.delete(
       `/chat/conversations/${encodeURIComponent(conversationId)}`,

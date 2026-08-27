@@ -429,3 +429,26 @@ async def get_current_database_id(
         include_default=False,
     )
     return database_id
+
+
+async def get_request_scoped_database_id(
+    x_database_id: Optional[str] = Header(None, alias="X-Database-ID"),
+    selected_database: Optional[str] = Cookie(None),
+    current_user: User = Depends(get_current_active_user),
+) -> Optional[str]:
+    """Resolve a database for one request without mutating the user's selection.
+
+    A fixed non-admin assignment remains authoritative. Otherwise a validated
+    ``X-Database-ID`` wins over mutable per-user state, preventing concurrent
+    clients from changing the database underneath an in-flight operation.
+    """
+    from backend.api.v1.database import resolve_current_database_id
+
+    database_id, _source = resolve_current_database_id(
+        current_user,
+        request_hint=x_database_id,
+        legacy_cookie=selected_database,
+        include_default=False,
+        prefer_request_hint=True,
+    )
+    return database_id

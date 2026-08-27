@@ -192,7 +192,9 @@ describe('Docflow page', () => {
 
     fireEvent.click(screen.getByText('Согласовать служебную записку').closest('[role="button"]'));
     expect(await screen.findByText('Проверьте сумму и основание платежа.')).toBeInTheDocument();
-    expect(docflowAPI.getTask).toHaveBeenCalledTimes(1);
+    expect(docflowAPI.getTask).toHaveBeenCalledTimes(2);
+    expect(docflowAPI.getTask).toHaveBeenNthCalledWith(1, 'task-ref-1', { includeRelated: false });
+    expect(docflowAPI.getTask).toHaveBeenNthCalledWith(2, 'task-ref-1', { includeRelated: true });
   });
 
   it('creates a pilot assignment with one idempotent request', async () => {
@@ -347,7 +349,7 @@ describe('Docflow page', () => {
     expect(screen.getByText('Укажите понятное название поручения для исполнителя.')).toBeInTheDocument();
   });
 
-  it('loads full detail once on open, caches it, and opens an attached Office file in the shared preview', async () => {
+  it('loads core and enriched detail once on open, caches them, and opens an attached Office file in the shared preview', async () => {
     const taskRef = '11111111-1111-1111-1111-111111111111';
     const fileRef = '22222222-2222-2222-2222-222222222222';
     docflowAPI.getProfile.mockResolvedValue({
@@ -420,7 +422,9 @@ describe('Docflow page', () => {
     expect(screen.getByText('Служебная записка на согласование')).toBeInTheDocument();
     expect(screen.queryByText('DMIncomingDocument')).not.toBeInTheDocument();
     expect(screen.queryByText('Номер')).not.toBeInTheDocument();
-    expect(docflowAPI.getTask).toHaveBeenCalledTimes(1);
+    expect(docflowAPI.getTask).toHaveBeenCalledTimes(2);
+    expect(docflowAPI.getTask).toHaveBeenNthCalledWith(1, taskRef, { includeRelated: false });
+    expect(docflowAPI.getTask).toHaveBeenNthCalledWith(2, taskRef, { includeRelated: true });
 
     fireEvent.click(screen.getByRole('button', { name: /^Договор\.docx/ }));
     expect(await screen.findByTestId('docflow-file-preview')).toHaveTextContent('Договор.docx');
@@ -434,7 +438,7 @@ describe('Docflow page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть карточку задания' }));
     fireEvent.click(screen.getByText('Согласовать договор').closest('[role="button"]'));
     await screen.findByText('Полный текст задания из 1С.');
-    expect(docflowAPI.getTask).toHaveBeenCalledTimes(1);
+    expect(docflowAPI.getTask).toHaveBeenCalledTimes(2);
   });
 
   it('uses compact full-width controls and a bottom task surface on mobile', async () => {

@@ -18,6 +18,7 @@ import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
 import { openOriginalWithDesktopApplication } from '../documentPreview/desktopOfficeOpen';
 import { formatMailPersonWithEmail } from './mailPeople';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
+import { requestMobileAppPrint } from '../../lib/mobileAppBridge';
 
 const HEADERS_LOADING_ITEMS = {
   items: [{ name: '\u0421\u0442\u0430\u0442\u0443\u0441', value: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u043e\u0432...' }],
@@ -36,6 +37,7 @@ export default function useMailMessageFileActions({
   setError,
   formatFullDate,
   downloadBlobFileImpl = downloadBlobFile,
+  requestMobilePrint = requestMobileAppPrint,
   openWindow = (...args) => window.open(...args),
   openOfficeWithDesktopApplication = openOriginalWithDesktopApplication,
 } = {}) {
@@ -129,22 +131,29 @@ export default function useMailMessageFileActions({
       ).html
       || '<p>\u041d\u0435\u0442 \u0441\u043e\u0434\u0435\u0440\u0436\u0438\u043c\u043e\u0433\u043e</p>',
     );
+    const printHtml = buildPrintMailDocumentHtml({
+      subject: messageDetail?.subject,
+      senderLine,
+      dateLine: formatFullDate?.(messageDetail?.received_at),
+      html,
+    });
+    if (requestMobilePrint?.({
+      title: String(messageDetail?.subject || 'Письмо'),
+      html: printHtml,
+    })) {
+      return true;
+    }
     const printWindow = openWindow('', '_blank', 'noopener,noreferrer,width=920,height=720');
     if (!printWindow) {
       reportError('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u043e\u043a\u043d\u043e \u043f\u0435\u0447\u0430\u0442\u0438.');
       return false;
     }
-    printWindow.document.write(buildPrintMailDocumentHtml({
-      subject: messageDetail?.subject,
-      senderLine,
-      dateLine: formatFullDate?.(messageDetail?.received_at),
-      html,
-    }));
+    printWindow.document.write(printHtml);
     printWindow.document.close();
     printWindow.focus();
     printWindow.print();
     return true;
-  }, [formatFullDate, openWindow, reportError]);
+  }, [formatFullDate, openWindow, reportError, requestMobilePrint]);
 
   const handleOpenHeaders = useCallback(() => (
     openHeadersForMessage(selectedMessage)

@@ -8,6 +8,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   IconButton,
   InputBase,
   Menu,
@@ -15,6 +16,7 @@ import {
   Paper,
   Skeleton,
   Stack,
+  Switch,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -42,6 +44,9 @@ import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import CakeRoundedIcon from '@mui/icons-material/CakeRounded';
+import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded';
+import LocationOnOutlinedIcon from '@mui/icons-material/LocationOnOutlined';
+import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
 
 import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
 import ChatRightPanelHeader from './ChatRightPanelHeader';
@@ -53,6 +58,7 @@ import {
   formatFileSize,
   formatFullDate,
   formatPresenceText,
+  getPersonContextLine,
   getPriorityMeta,
   getStatusMeta,
   getTaskAssignee,
@@ -593,6 +599,90 @@ function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = n
   );
 }
 
+function ConversationNotificationsToggle({ muted, disabled, onChange }) {
+  const enabled = !Boolean(muted);
+  const toggleDisabled = Boolean(disabled) || typeof onChange !== 'function';
+
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 2.1,
+        width: '100%',
+        minHeight: 56,
+        px: 2.8,
+        py: 0.75,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+      }}
+    >
+      <Box
+        aria-hidden="true"
+        sx={{
+          width: 32,
+          minWidth: 32,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--chat-sheet-panel-icon)',
+        }}
+      >
+        <NotificationsOutlinedIcon sx={{ fontSize: 22 }} />
+      </Box>
+      <FormControlLabel
+        labelPlacement="start"
+        disabled={toggleDisabled}
+        control={(
+          <Switch
+            checked={enabled}
+            onChange={(_, checked) => onChange?.({ is_muted: !checked })}
+            inputProps={{ 'aria-label': 'Уведомления для этого чата' }}
+          />
+        )}
+        label={(
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              sx={{
+                color: 'var(--chat-sheet-panel-text)',
+                fontSize: '1rem',
+                lineHeight: 1.22,
+                wordBreak: 'break-word',
+              }}
+            >
+              Уведомления для этого чата
+            </Typography>
+            <Typography
+              sx={{
+                mt: 0.2,
+                color: 'var(--chat-sheet-panel-soft)',
+                fontSize: '0.84rem',
+                lineHeight: 1.2,
+              }}
+            >
+              {enabled ? 'Включены' : 'Выключены, кроме личных упоминаний'}
+            </Typography>
+          </Box>
+        )}
+        sx={{
+          m: 0,
+          minWidth: 0,
+          minHeight: 44,
+          flex: 1,
+          gap: 1,
+          justifyContent: 'space-between',
+          '& .MuiFormControlLabel-label': {
+            minWidth: 0,
+            flex: 1,
+          },
+          '& .MuiSwitch-root': {
+            flexShrink: 0,
+          },
+        }}
+      />
+    </Box>
+  );
+}
+
 function MobileProfileTabButton({ label, active, onClick, count = 0 }) {
   return (
     <ButtonBase
@@ -921,7 +1011,7 @@ function ParticipantRow({ person }) {
 // Компоненты для диалога добавления участников
 function AddMemberUserRow({ item, ui, checked, onToggle, accentColor }) {
   const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const statusLine = formatPresenceText(item?.presence) || (item?.role || 'Участник');
+  const statusLine = getPersonContextLine(item) || (item?.role || 'Участник');
   return (
     <Paper
       elevation={0}
@@ -1184,7 +1274,6 @@ export default function ChatContextPanel({
   const [summaryError, setSummaryError] = useState('');
   const [assetKind, setAssetKind] = useState('media');
   const [mediaSubKind, setMediaSubKind] = useState('image');
-  const [notifyMenuAnchor, setNotifyMenuAnchor] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
   const [attachmentsLoadingMore, setAttachmentsLoadingMore] = useState(false);
@@ -1193,6 +1282,7 @@ export default function ChatContextPanel({
   const [attachmentsCursor, setAttachmentsCursor] = useState('');
   const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_PAGE_SIZE);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
+  const [participantProfile, setParticipantProfile] = useState(null);
   const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState(null);
   const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
   const [memberActionTarget, setMemberActionTarget] = useState(null);
@@ -1431,6 +1521,7 @@ export default function ChatContextPanel({
 
   useEffect(() => {
     setParticipantsExpanded(false);
+    setParticipantProfile(null);
   }, [conversationId]);
 
   const closeMemberActionMenu = useCallback(() => {
@@ -1670,9 +1761,17 @@ export default function ChatContextPanel({
     && memberActionUserId !== currentUserId
     && memberActionRole !== 'owner'
     && (currentMemberRole === 'owner' || memberActionRole === 'member');
-  const subjectPhone = String(subject?.phone || '').trim();
-  const subjectUsername = String(subject?.username || '').trim();
+  const subjectCorporateEmail = String(subject?.corporate_email || '').trim();
+  const subjectCorporatePhone = String(subject?.corporate_phone || '').trim();
   const subjectBirthday = String(subject?.birth_date || subject?.birthday || '').trim();
+  const subjectName = String(subject?.full_name || subject?.username || activeConversation?.title || 'сотрудника').trim();
+  const profileDialogTitle = isGroup ? 'Карточка участника' : 'Карточка сотрудника';
+  const closeProfileLabel = isGroup ? 'Закрыть карточку участника' : 'Закрыть карточку сотрудника';
+  const openDirectProfile = () => {
+    if (isDirect && subject) {
+      setParticipantProfile({ user: subject });
+    }
+  };
 
   const memberActionsMenu = (
     <Menu
@@ -1818,7 +1917,12 @@ export default function ChatContextPanel({
           }}
         >
           <Box
+            component={isDirect ? ButtonBase : 'div'}
+            type={isDirect ? 'button' : undefined}
+            aria-label={isDirect ? `Открыть карточку ${subjectName}` : undefined}
+            onClick={isDirect ? openDirectProfile : undefined}
             sx={{
+              width: '100%',
               px: 2.5,
               pt: 2.25,
               pb: 2,
@@ -1826,6 +1930,11 @@ export default function ChatContextPanel({
               flexDirection: 'column',
               alignItems: 'center',
               textAlign: 'center',
+              borderRadius: 2,
+              '&:focus-visible': {
+                outline: '2px solid var(--chat-sheet-accent)',
+                outlineOffset: -2,
+              },
             }}
           >
             <ConversationAvatar
@@ -1861,18 +1970,39 @@ export default function ChatContextPanel({
           <Box sx={{ pb: 1.2 }}>
             {isDirect ? (
               <>
-                {subjectPhone ? (
-                  <MobileProfileInfoRow
-                    icon={<PhoneRoundedIcon sx={{ fontSize: 22 }} />}
-                    label="Телефон"
-                    value={subjectPhone}
-                  />
-                ) : null}
-                {subjectUsername ? (
+                {subject?.job_title ? (
                   <MobileProfileInfoRow
                     icon={<PersonOutlineRoundedIcon sx={{ fontSize: 22 }} />}
-                    label="Имя пользователя"
-                    value={subjectUsername}
+                    label="Должность"
+                    value={subject.job_title}
+                  />
+                ) : null}
+                {subject?.department ? (
+                  <MobileProfileInfoRow
+                    icon={<BusinessRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Подразделение"
+                    value={subject.department}
+                  />
+                ) : null}
+                {subject?.city ? (
+                  <MobileProfileInfoRow
+                    icon={<LocationOnOutlinedIcon sx={{ fontSize: 22 }} />}
+                    label="Город"
+                    value={subject.city}
+                  />
+                ) : null}
+                {subjectCorporateEmail ? (
+                  <MobileProfileInfoRow
+                    icon={<MailOutlineRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Корпоративная почта"
+                    value={subjectCorporateEmail}
+                  />
+                ) : null}
+                {subjectCorporatePhone ? (
+                  <MobileProfileInfoRow
+                    icon={<PhoneRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Корпоративный телефон"
+                    value={subjectCorporatePhone}
                   />
                 ) : null}
                 {subjectBirthday ? (
@@ -1906,11 +2036,10 @@ export default function ChatContextPanel({
               </>
             )}
 
-            <MobileProfileInfoRow
-              icon={<NotificationsOutlinedIcon sx={{ fontSize: 22 }} />}
-              label="Уведомления"
-              value={activeConversation?.is_muted ? 'Отключены' : 'Все сообщения'}
-              onClick={(event) => setNotifyMenuAnchor(event.currentTarget)}
+            <ConversationNotificationsToggle
+              muted={activeConversation?.is_muted}
+              disabled={settingsUpdating}
+              onChange={onUpdateConversationSettings}
             />
           </Box>
 
@@ -2149,43 +2278,59 @@ export default function ChatContextPanel({
                         key={`${conversationId}-person-${person.id}`}
                         sx={{
                           px: 2.6,
-                          py: 1.3,
+                          py: 0.35,
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 1.35,
+                          gap: 0.6,
                         }}
                       >
-                        <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={44} />
-                        <Box sx={{ minWidth: 0, flex: 1 }}>
-                          <Stack direction="row" alignItems="center" spacing={0.8} sx={{ minWidth: 0 }}>
-                            <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
-                              {person?.full_name || person?.username || 'Пользователь'}
+                        <ButtonBase
+                          aria-label={`Открыть карточку ${person?.full_name || person?.username || 'пользователя'}`}
+                          onClick={() => setParticipantProfile(member)}
+                          sx={{
+                            minWidth: 0,
+                            minHeight: 48,
+                            flex: 1,
+                            gap: 1.35,
+                            justifyContent: 'flex-start',
+                            borderRadius: 1.5,
+                            textAlign: 'left',
+                            '&.Mui-focusVisible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: 2 },
+                          }}
+                        >
+                          <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={44} />
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.8} sx={{ minWidth: 0 }}>
+                              <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
+                                {person?.full_name || person?.username || 'Пользователь'}
+                              </Typography>
+                              {role !== 'member' ? (
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    px: 0.75,
+                                    py: 0.2,
+                                    borderRadius: 999,
+                                    bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-card)',
+                                    color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {GROUP_ROLE_LABELS[role]}
+                                </Box>
+                              ) : null}
+                            </Stack>
+                            <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
+                              {getPersonContextLine(person)}
                             </Typography>
-                            {role !== 'member' ? (
-                              <Box
-                                component="span"
-                                sx={{
-                                  px: 0.75,
-                                  py: 0.2,
-                                  borderRadius: 999,
-                                  bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-card)',
-                                  color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
-                                  fontSize: '0.68rem',
-                                  fontWeight: 800,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {GROUP_ROLE_LABELS[role]}
-                              </Box>
-                            ) : null}
-                          </Stack>
-                          <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
-                            {formatPresenceText(person?.presence)}
-                          </Typography>
-                        </Box>
+                          </Box>
+                        </ButtonBase>
                         {canOpenActions ? (
                           <IconButton
                             size="small"
+                            aria-label={`Действия участника ${person?.full_name || person?.username || ''}`}
                             onClick={(event) => handleOpenMemberActions(event, member)}
                             disabled={groupActionBusy}
                             sx={{ color: 'var(--chat-sheet-panel-soft)' }}
@@ -2248,9 +2393,6 @@ export default function ChatContextPanel({
           <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_pinned: !activeConversation?.is_pinned }); }}>
             {activeConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
           </MenuItem>
-          <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_muted: !activeConversation?.is_muted }); }}>
-            {activeConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
-          </MenuItem>
           <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_archived: !activeConversation?.is_archived }); }}>
             {activeConversation?.is_archived ? 'Вернуть из архива' : 'Переместить в архив'}
           </MenuItem>
@@ -2264,18 +2406,6 @@ export default function ChatContextPanel({
               Покинуть беседу
             </MenuItem>
           ) : null}
-        </Menu>
-        <Menu
-          anchorEl={notifyMenuAnchor}
-          open={Boolean(notifyMenuAnchor)}
-          onClose={() => setNotifyMenuAnchor(null)}
-        >
-          <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: false }); }}>
-            Все сообщения
-          </MenuItem>
-          <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: true }); }}>
-            Отключить
-          </MenuItem>
         </Menu>
         {memberActionsMenu}
       </Box>
@@ -2310,7 +2440,26 @@ export default function ChatContextPanel({
       />
 
       {/* Профиль */}
-      <Box sx={{ px: 2, py: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+      <Box
+        component={isDirect ? ButtonBase : 'div'}
+        type={isDirect ? 'button' : undefined}
+        aria-label={isDirect ? `Открыть карточку ${subjectName}` : undefined}
+        onClick={isDirect ? openDirectProfile : undefined}
+        sx={{
+          width: '100%',
+          px: 2,
+          py: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 1,
+          borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+          '&:focus-visible': {
+            outline: '2px solid var(--chat-sheet-accent)',
+            outlineOffset: -2,
+          },
+        }}
+      >
         <ConversationAvatar
           conversation={activeConversation}
           online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
@@ -2369,18 +2518,39 @@ export default function ChatContextPanel({
         {/* Информация о пользователе */}
         {isDirect ? (
           <>
-            {String(subject?.phone || '').trim() ? (
-              <InfoRowTelegram
-                icon={<PhoneRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
-                label="Телефон"
-                value={subject.phone}
-              />
-            ) : null}
-            {String(subject?.username || '').trim() ? (
+            {String(subject?.job_title || '').trim() ? (
               <InfoRowTelegram
                 icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
-                label="Имя пользователя"
-                value={`@${subject.username}`}
+                label="Должность"
+                value={subject.job_title}
+              />
+            ) : null}
+            {String(subject?.department || '').trim() ? (
+              <InfoRowTelegram
+                icon={<BusinessRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Подразделение"
+                value={subject.department}
+              />
+            ) : null}
+            {String(subject?.city || '').trim() ? (
+              <InfoRowTelegram
+                icon={<LocationOnOutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Город"
+                value={subject.city}
+              />
+            ) : null}
+            {String(subject?.corporate_email || '').trim() ? (
+              <InfoRowTelegram
+                icon={<MailOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Корпоративная почта"
+                value={subject.corporate_email}
+              />
+            ) : null}
+            {String(subject?.corporate_phone || '').trim() ? (
+              <InfoRowTelegram
+                icon={<PhoneRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Корпоративный телефон"
+                value={subject.corporate_phone}
               />
             ) : null}
           </>
@@ -2420,36 +2590,11 @@ export default function ChatContextPanel({
           </>
         )}
 
-        {/* Уведомления */}
-        <Box
-          component="button"
-          type="button"
-          onClick={(event) => setNotifyMenuAnchor(event.currentTarget)}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            width: '100%',
-            px: 3,
-            py: 2,
-            border: 0,
-            bgcolor: 'transparent',
-            color: 'inherit',
-            cursor: 'pointer',
-            minHeight: 44,
-            borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
-          }}
-        >
-          <Stack direction="row" spacing={2} alignItems="center">
-            <NotificationsOutlinedIcon sx={{ fontSize: 22, color: 'var(--chat-sheet-panel-icon)' }} />
-            <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '1rem' }}>
-              Уведомления
-            </Typography>
-          </Stack>
-          <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontWeight: 700 }}>
-            {activeConversation?.is_muted ? 'Отключены' : 'Все сообщения'}
-          </Typography>
-        </Box>
+        <ConversationNotificationsToggle
+          muted={activeConversation?.is_muted}
+          disabled={settingsUpdating}
+          onChange={onUpdateConversationSettings}
+        />
 
         {/* Медиа и содержимое — табы как в Telegram */}
         <Box sx={{ borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
@@ -2686,44 +2831,62 @@ export default function ChatContextPanel({
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 1.2,
-                          px: 1.5,
-                          py: 1.15,
+                          gap: 0.5,
+                          px: 0.65,
+                          py: 0.3,
                           borderRadius: 1.2,
                           bgcolor: 'var(--chat-sheet-panel-card)',
                         }}
                       >
-                        <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={40} />
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                          <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
-                            <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700 }} noWrap>
-                              {person?.full_name || person?.username || 'Пользователь'}
+                        <ButtonBase
+                          aria-label={`Открыть карточку ${person?.full_name || person?.username || 'пользователя'}`}
+                          onClick={() => setParticipantProfile(member)}
+                          sx={{
+                            minWidth: 0,
+                            minHeight: 48,
+                            flex: 1,
+                            gap: 1.2,
+                            px: 0.8,
+                            justifyContent: 'flex-start',
+                            borderRadius: 1.2,
+                            textAlign: 'left',
+                            '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+                            '&.Mui-focusVisible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: 1 },
+                          }}
+                        >
+                          <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={40} />
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+                              <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700 }} noWrap>
+                                {person?.full_name || person?.username || 'Пользователь'}
+                              </Typography>
+                              {role !== 'member' ? (
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-bg-strong)',
+                                    color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {GROUP_ROLE_LABELS[role]}
+                                </Box>
+                              ) : null}
+                            </Stack>
+                            <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
+                              {getPersonContextLine(person)}
                             </Typography>
-                            {role !== 'member' ? (
-                              <Box
-                                component="span"
-                                sx={{
-                                  px: 0.7,
-                                  py: 0.15,
-                                  borderRadius: 999,
-                                  bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-bg-strong)',
-                                  color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
-                                  fontSize: '0.66rem',
-                                  fontWeight: 800,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {GROUP_ROLE_LABELS[role]}
-                              </Box>
-                            ) : null}
-                          </Stack>
-                          <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
-                            {formatPresenceText(person?.presence)}
-                          </Typography>
-                        </Box>
+                          </Box>
+                        </ButtonBase>
                         {canOpenActions ? (
                           <IconButton
                             size="small"
+                            aria-label={`Действия участника ${person?.full_name || person?.username || ''}`}
                             onClick={(event) => handleOpenMemberActions(event, member)}
                             disabled={groupActionBusy}
                             sx={{ color: 'var(--chat-sheet-panel-icon)' }}
@@ -2755,6 +2918,97 @@ export default function ChatContextPanel({
           </Button>
         </Box>
       ) : null}
+
+      <Dialog
+        open={Boolean(participantProfile)}
+        onClose={() => setParticipantProfile(null)}
+        fullWidth
+        maxWidth="xs"
+        aria-labelledby="chat-participant-profile-title"
+        PaperProps={{
+          sx: {
+            bgcolor: ui.panelBg || ui.drawerBg,
+            color: ui.textStrong,
+            borderRadius: 2.5,
+          },
+        }}
+      >
+        <DialogTitle
+          id="chat-participant-profile-title"
+          sx={{ px: 2.2, py: 1.6, display: 'flex', alignItems: 'center', gap: 1 }}
+        >
+          <Typography component="span" variant="subtitle1" sx={{ fontWeight: 800, flex: 1 }}>
+            {profileDialogTitle}
+          </Typography>
+          <IconButton
+            aria-label={closeProfileLabel}
+            onClick={() => setParticipantProfile(null)}
+            size="small"
+          >
+            <CloseRoundedIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ px: 2.2, pb: 2.2 }}>
+          <Stack alignItems="center" spacing={1.1} sx={{ pb: 2 }}>
+            <PresenceAvatar
+              item={participantProfile?.user}
+              online={Boolean(participantProfile?.user?.presence?.is_online)}
+              size={72}
+            />
+            <Typography sx={{ fontSize: '1.12rem', fontWeight: 850, textAlign: 'center' }}>
+              {participantProfile?.user?.full_name || participantProfile?.user?.username || 'Пользователь'}
+            </Typography>
+            <Typography sx={{ color: ui.textSecondary, fontSize: '0.84rem', textAlign: 'center' }}>
+              {formatPresenceText(participantProfile?.user?.presence)}
+            </Typography>
+          </Stack>
+          <Stack spacing={1.35}>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Должность</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.job_title || 'Не указана'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Подразделение</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.department || 'Не указано'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Город</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.city || 'Не указан'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Корпоративная почта</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.corporate_email || 'Не указана'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Корпоративный телефон</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.corporate_phone || 'Не указан'}
+              </Typography>
+            </Box>
+            {isGroup ? (
+              <Box>
+                <Typography variant="caption" sx={{ color: ui.textSecondary }}>Роль в группе</Typography>
+                <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                  {GROUP_ROLE_LABELS[normalizeGroupRole(participantProfile?.member_role)]}
+                </Typography>
+              </Box>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.2, pb: 1.8 }}>
+          <Button onClick={() => setParticipantProfile(null)} sx={{ textTransform: 'none', fontWeight: 750 }}>
+            Закрыть
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Диалог добавления участников */}
       <Dialog
@@ -2912,18 +3166,6 @@ export default function ChatContextPanel({
       </Dialog>
 
       {memberActionsMenu}
-      <Menu
-        anchorEl={notifyMenuAnchor}
-        open={Boolean(notifyMenuAnchor)}
-        onClose={() => setNotifyMenuAnchor(null)}
-      >
-        <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: false }); }}>
-          Все сообщения
-        </MenuItem>
-        <MenuItem onClick={() => { setNotifyMenuAnchor(null); onUpdateConversationSettings?.({ is_muted: true }); }}>
-          Отключить
-        </MenuItem>
-      </Menu>
     </Box>
   );
 }

@@ -73,6 +73,7 @@ class LoginResponse(BaseModel):
     available_second_factors: list[str] = Field(default_factory=list)
     trusted_devices_available: bool = False
     client_device_id: Optional[str] = None
+    biometric_enrollment_code: Optional[str] = None
 
 
 class LoginModeResponse(BaseModel):
@@ -138,6 +139,36 @@ class RefreshResponse(BaseModel):
 
 class MobileRefreshRequest(BaseModel):
     refresh_token: str = Field(..., min_length=1)
+
+
+class MobileBiometricEnrollRequest(BaseModel):
+    enrollment_code: str = Field(..., min_length=32, max_length=256)
+
+
+class MobileBiometricEnrollResponse(BaseModel):
+    renewal_token: str = Field(..., min_length=32, max_length=512)
+
+
+class MobileBiometricSessionRequest(BaseModel):
+    renewal_token: str = Field(..., min_length=32, max_length=512)
+
+
+class MobileWebSessionRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=1)
+    next_path: str = Field(default="/dashboard", min_length=1, max_length=2048)
+
+
+class MobileWebSessionResponse(BaseModel):
+    bootstrap_path: str
+    expires_in_seconds: int
+
+
+class MobileWebSessionConsumeRequest(BaseModel):
+    code: str = Field(..., min_length=32, max_length=256)
+
+
+class MobileWebSessionConsumeResponse(BaseModel):
+    next_path: str
 
 
 class LogoutRequest(BaseModel):

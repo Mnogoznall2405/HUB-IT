@@ -20,5 +20,12 @@ class AppPushService:
     def send_notification(self, **payload: Any):
         return chat_push_service.send_notification(**payload)
 
+    def enqueue_notification(self, **payload: Any):
+        # Lazy import keeps the delivery worker free to call the low-level
+        # sender without creating an app_push_service import cycle.
+        from backend.services.app_push_outbox_service import app_push_outbox_service
+
+        return app_push_outbox_service.enqueue_notification(**payload)
+
 
 app_push_service = AppPushService()

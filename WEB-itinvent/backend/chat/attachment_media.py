@@ -4,9 +4,11 @@ from __future__ import annotations
 import gzip
 import io
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import quote
 from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
@@ -20,6 +22,14 @@ _VARIANT_MAX_DIMENSIONS = {
     "thumb": 320,
     "preview": 1280,
 }
+
+_STICKER_ATTACHMENT_NAME = re.compile(
+    r"^sticker-(?P<sticker_id>[0-9a-fA-F-]{36})--(?P<pack_short_name>[^.]+)\.[^.]+$",
+)
+_LEGACY_STICKER_ATTACHMENT_NAME = re.compile(
+    r"^sticker-(?P<pack_short_name>[A-Za-z0-9_]{1,128})\.(?:tgs|webm|webp)$",
+    re.IGNORECASE,
+)
 
 
 
@@ -76,6 +86,33 @@ class ChatAttachmentMedia:
                 ),
             }
         return {}
+
+    @staticmethod
+    def build_sticker_preview_url(attachment: ChatMessageAttachment) -> str | None:
+        if _normalize_text(getattr(attachment, "media_kind", None)).lower() != "sticker":
+            return None
+        match = _STICKER_ATTACHMENT_NAME.fullmatch(
+            Path(_normalize_text(getattr(attachment, "file_name", None))).name,
+        )
+        if match is not None:
+            pack_name = quote(match.group("pack_short_name"), safe="")
+            sticker_id = quote(match.group("sticker_id"), safe="")
+            return (
+                f"/api/v1/chat/sticker-packs/preview/{pack_name}"
+                f"/stickers/{sticker_id}/preview"
+            )
+        if _LEGACY_STICKER_ATTACHMENT_NAME.fullmatch(
+            Path(_normalize_text(getattr(attachment, "file_name", None))).name,
+        ) is None:
+            return None
+        message_id = quote(_normalize_text(getattr(attachment, "message_id", None)), safe="")
+        attachment_id = quote(_normalize_text(getattr(attachment, "id", None)), safe="")
+        if not message_id or not attachment_id:
+            return None
+        return (
+            f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/file"
+            "?inline=1&variant=preview"
+        )
 
     def resolve_variant_path(self, *, conversation_id: str, attachment_id: str, variant: str) -> Path:
         root = self._attachments_root().resolve()
@@ -259,6 +296,7 @@ class ChatAttachmentMedia:
             "original_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id, inline=True) if message_id and attachment_id else None,
             "download_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id) if message_id and attachment_id else None,
             "variant_urls": self.build_variant_urls(attachment),
+            "preview_url": self.build_sticker_preview_url(attachment),
             "created_at": _iso(attachment.created_at) or "",
         }
 
@@ -326,6 +364,7 @@ class ChatAttachmentMedia:
             "original_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id, inline=True) if message_id and attachment_id else None,
             "download_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id) if message_id and attachment_id else None,
             "variant_urls": self.build_variant_urls(attachment),
+            "preview_url": self.build_sticker_preview_url(attachment),
             "created_at": _iso(attachment.created_at) or "",
         }
 

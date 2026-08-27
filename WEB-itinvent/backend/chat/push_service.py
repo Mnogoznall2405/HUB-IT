@@ -13,10 +13,13 @@ from typing import Any, Optional
 from sqlalchemy import select
 
 from backend.chat.db import chat_session
-from backend.chat.models import ChatPushSubscription
+from backend.chat.models import ChatConversation, ChatPushSubscription
 from backend.chat.utils import normalize_text as _normalize_text
 from backend.config import config
-from backend.services.notification_preferences_service import notification_preferences_service
+from backend.services.notification_preferences_service import (
+    chat_notification_channel,
+    notification_preferences_service,
+)
 from cryptography.hazmat.primitives import serialization
 
 try:
@@ -457,6 +460,16 @@ class ChatPushService:
         app_badge_count: Optional[int] = None,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
+        if notification_preferences_service.is_quiet_hours_active(
+            user_id=int(recipient_user_id),
+            channel=normalized_channel,
+        ):
+            logger.info(
+                "APP_PUSH_SKIP quiet_hours user_id=%s channel=%s",
+                int(recipient_user_id),
+                normalized_channel,
+            )
+            return ChatPushSendResult()
         if normalized_channel == "mail":
             try:
                 if not notification_preferences_service.is_enabled(
@@ -510,28 +523,29 @@ class ChatPushService:
             )
         web_sent = int(result.sent or 0)
         native_tokens = 0
-        skip_native_push = normalized_channel == "chat" and (web_sent > 0 or web_subscription_count > 0)
-        if not skip_native_push:
-            try:
-                from backend.services.native_push_service import native_push_service
+        # Browser/PWA and native registrations are independent clients. A browser
+        # subscription must not silence FCM on the user's Android devices.
+        try:
+            from backend.services.native_push_service import native_push_service
 
-                native_result = native_push_service.send_notification(
-                    recipient_user_id=int(recipient_user_id),
-                    title=payload["title"],
-                    body=payload["body"],
-                    channel=normalized_channel,
-                    route=normalized_route,
-                    tag=normalized_tag,
-                    data=payload_data,
-                    ttl=ttl,
-                )
-                native_tokens = int(getattr(native_result, "tokens", 0) or 0)
-                result.sent += int(getattr(native_result, "sent", 0) or 0)
-                result.disabled += int(getattr(native_result, "disabled", 0) or 0)
-                result.failed += int(getattr(native_result, "failed", 0) or 0)
-            except Exception:
-                logger.warning("Native push send failed", exc_info=True)
-                result.failed += 1
+            native_result = native_push_service.send_notification(
+                recipient_user_id=int(recipient_user_id),
+                title=payload["title"],
+                body=payload["body"],
+                channel=normalized_channel,
+                route=normalized_route,
+                tag=normalized_tag,
+                data=payload_data,
+                ttl=ttl,
+                app_badge_count=payload.get("app_badge_count"),
+            )
+            native_tokens = int(getattr(native_result, "tokens", 0) or 0)
+            result.sent += int(getattr(native_result, "sent", 0) or 0)
+            result.disabled += int(getattr(native_result, "disabled", 0) or 0)
+            result.failed += int(getattr(native_result, "failed", 0) or 0)
+        except Exception:
+            logger.warning("Native push send failed", exc_info=True)
+            result.failed += 1
 
         subscription_count = web_subscription_count + native_tokens
         logger.info(
@@ -555,6 +569,7 @@ class ChatPushService:
         message_id: str,
         title: str,
         body: str,
+        preference_channel: Optional[str] = None,
     ) -> ChatPushSendResult:
         normalized_conversation_id = _normalize_text(conversation_id)
         normalized_message_id = _normalize_text(message_id)
@@ -570,9 +585,20 @@ class ChatPushService:
                 normalized_message_id,
             )
             return ChatPushSendResult(sent=1)
+        resolved_preference_channel = _normalize_text(preference_channel)
+        if not resolved_preference_channel:
+            try:
+                with chat_session() as session:
+                    conversation = session.get(ChatConversation, normalized_conversation_id)
+                    resolved_preference_channel = chat_notification_channel(
+                        getattr(conversation, "kind", None)
+                    )
+            except Exception:
+                resolved_preference_channel = "chat"
         try:
             if not notification_preferences_service.is_enabled(
-                user_id=int(recipient_user_id), channel="chat"
+                user_id=int(recipient_user_id),
+                channel=resolved_preference_channel or "chat",
             ):
                 return ChatPushSendResult()
         except Exception:

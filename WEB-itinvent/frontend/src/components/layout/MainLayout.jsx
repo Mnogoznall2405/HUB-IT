@@ -39,6 +39,8 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import GroupIcon from '@mui/icons-material/Group';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded';
+import WifiRoundedIcon from '@mui/icons-material/WifiRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -77,6 +79,7 @@ import {
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
   CHAT_SOCKET_STATUS_EVENT,
   CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
+  isChatConversationMuted,
 } from '../../lib/chatSocket';
 import {
   buildChatNotificationRoute,
@@ -121,9 +124,20 @@ import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
+import {
+  isNativeShellBottomNav,
+  nativeShellBottomNavHeight,
+  postNativeShellBottomNavState,
+} from '../../lib/nativeShell';
 import { AccountAvatar, AccountIdentity } from '../account/AccountIdentity';
 import AccountMenu from '../account/AccountMenu';
 import { canAccessAdminArea } from '../account/accountNavigationConfig';
+import {
+  getMobileOfflineCacheMeta,
+  getMobileOfflineState,
+  MOBILE_NATIVE_NETWORK_STATE_EVENT,
+  MOBILE_OFFLINE_CACHE_META_EVENT,
+} from '../../lib/mobileOfflineCache';
 import {
   getMailNavigationBadgeMeta,
   getNavigationBadgeCount,
@@ -143,6 +157,53 @@ const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
 // Was 90s — new mail badge / mail-needs-refresh waited almost a minute+.
 const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
+const CONNECTION_RESTORED_STATUS_MS = 4_200;
+const CONNECTION_RESTORED_MARKER_MAX_AGE_MS = 15_000;
+const CONNECTION_RESTORED_STORAGE_KEY = 'hubit:connection-restored-at';
+
+const consumeConnectionRestoredMarker = () => {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.onLine) return false;
+  try {
+    const restoredAt = Number(window.sessionStorage.getItem(CONNECTION_RESTORED_STORAGE_KEY) || 0);
+    window.sessionStorage.removeItem(CONNECTION_RESTORED_STORAGE_KEY);
+    return restoredAt > 0
+      && Date.now() >= restoredAt
+      && Date.now() - restoredAt <= CONNECTION_RESTORED_MARKER_MAX_AGE_MS;
+  } catch {
+    return false;
+  }
+};
+
+const persistConnectionRestoredMarker = () => {
+  try {
+    window.sessionStorage.setItem(CONNECTION_RESTORED_STORAGE_KEY, String(Date.now()));
+  } catch {
+    // Session storage is optional in hardened WebViews and private browser modes.
+  }
+};
+
+const clearConnectionRestoredMarker = () => {
+  try {
+    window.sessionStorage.removeItem(CONNECTION_RESTORED_STORAGE_KEY);
+  } catch {
+    // Session storage is optional in hardened WebViews and private browser modes.
+  }
+};
+
+const formatOfflineLastSync = (value) => {
+  const timestamp = Number(value || 0);
+  if (!timestamp || !Number.isFinite(timestamp)) return '';
+  try {
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(timestamp));
+  } catch {
+    return '';
+  }
+};
 
 const groupItemsByRelativeDate = (items, dateKey) => {
   const now = new Date();
@@ -239,6 +300,9 @@ function MainLayout({
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
+  const [connectionRestored, setConnectionRestored] = useState(consumeConnectionRestoredMarker);
+  const [offlineCacheMeta, setOfflineCacheMeta] = useState(getMobileOfflineCacheMeta);
+  const offlineWasObservedRef = useRef(isOffline || getMobileOfflineState().readOnly);
   const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(
     () => isNotificationPermissionBannerDismissed(),
   );
@@ -415,8 +479,10 @@ function MainLayout({
     }),
     [hasPermission, preferences.mobile_bottom_nav_items, user],
   );
+  const nativeShellBottomNav = isNativeShellBottomNav();
   const showMobileBottomNavigation = Boolean(
     isPhone
+    && !nativeShellBottomNav
     && mobileBottomNavMode !== 'hidden'
     && visibleMobileNavigationItems.length > 0
   );
@@ -424,6 +490,9 @@ function MainLayout({
     isPhone && visibleMobileNavigationItems.length > 0
   );
   const mobileBottomNavHidden = mobileBottomNavMode === 'hidden';
+  useEffect(() => {
+    postNativeShellBottomNavState(mobileBottomNavHidden);
+  }, [mobileBottomNavHidden]);
   const mobileBottomNavTransition = useMemo(
     () => theme.transitions.create(['padding-bottom', 'transform'], {
       duration: mobileBottomNavTransitionMs,
@@ -453,7 +522,17 @@ function MainLayout({
     && windowsNotificationState?.permission === 'default'
     && !notificationPermissionBannerDismissed
   );
-  const showOfflineBanner = Boolean(isOffline);
+  const mobileOfflineReadOnly = getMobileOfflineState().readOnly;
+  const offlineLastSyncLabel = formatOfflineLastSync(offlineCacheMeta.lastSyncAt);
+  const showOfflineBanner = Boolean(isOffline || mobileOfflineReadOnly);
+  const connectionBannerState = connectionRestored
+    ? 'restored'
+    : showOfflineBanner
+      ? 'offline'
+      : null;
+  const lastConnectionBannerStateRef = useRef('offline');
+  if (connectionBannerState) lastConnectionBannerStateRef.current = connectionBannerState;
+  const renderedConnectionBannerState = connectionBannerState || lastConnectionBannerStateRef.current;
   const showPwaUpdateBanner = Boolean(pwaState?.updateAvailable);
   const isStandaloneShell = Boolean(pwaState?.installed);
   const isWindowControlsOverlay = Boolean(
@@ -528,14 +607,52 @@ function MainLayout({
   }, [location.pathname, pendingNavigation]);
 
   useEffect(() => {
-    const syncOnlineState = () => setIsOffline(!navigator.onLine);
+    const syncCacheMeta = () => setOfflineCacheMeta(getMobileOfflineCacheMeta());
+    window.addEventListener(MOBILE_OFFLINE_CACHE_META_EVENT, syncCacheMeta);
+    return () => window.removeEventListener(MOBILE_OFFLINE_CACHE_META_EVENT, syncCacheMeta);
+  }, []);
+
+  useEffect(() => {
+    const syncOnlineState = (event) => {
+      const isNativeEvent = event?.type === MOBILE_NATIVE_NETWORK_STATE_EVENT;
+      if (isNativeEvent && (
+        window.__HUBIT_MOBILE_APP__ !== true
+        || event?.detail?.source !== 'android'
+        || typeof event?.detail?.online !== 'boolean'
+      )) return;
+      const offline = isNativeEvent ? !event.detail.online : !navigator.onLine;
+      setIsOffline(offline);
+      if (offline) {
+        offlineWasObservedRef.current = true;
+        clearConnectionRestoredMarker();
+        setConnectionRestored(false);
+        return;
+      }
+
+      const mobileReadOnly = getMobileOfflineState().readOnly;
+      if (!offlineWasObservedRef.current && !mobileReadOnly) return;
+      offlineWasObservedRef.current = false;
+      if (!mobileReadOnly) persistConnectionRestoredMarker();
+      setConnectionRestored(true);
+    };
     window.addEventListener('online', syncOnlineState);
     window.addEventListener('offline', syncOnlineState);
+    window.addEventListener(MOBILE_NATIVE_NETWORK_STATE_EVENT, syncOnlineState);
     return () => {
       window.removeEventListener('online', syncOnlineState);
       window.removeEventListener('offline', syncOnlineState);
+      window.removeEventListener(MOBILE_NATIVE_NETWORK_STATE_EVENT, syncOnlineState);
     };
   }, []);
+
+  useEffect(() => {
+    if (!connectionRestored) return undefined;
+    const timer = window.setTimeout(() => {
+      clearConnectionRestoredMarker();
+      setConnectionRestored(false);
+    }, CONNECTION_RESTORED_STATUS_MS);
+    return () => window.clearTimeout(timer);
+  }, [connectionRestored]);
 
   useEffect(() => {
     const updateBannerOffset = () => {
@@ -553,7 +670,7 @@ function MainLayout({
       observer.disconnect();
       window.removeEventListener('resize', updateBannerOffset);
     };
-  }, [showNotificationPermissionBanner, showOfflineBanner, showPwaUpdateBanner]);
+  }, [connectionBannerState, showNotificationPermissionBanner, showPwaUpdateBanner]);
 
   useEffect(() => {
     if (hiddenHeader) {
@@ -894,6 +1011,16 @@ function MainLayout({
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
       const messageId = String(message?.id || '').trim();
       if (!messageId || !conversationId || Boolean(message?.is_own)) return;
+      const currentUserId = Number(user?.id || 0);
+      const isCurrentUserMentioned = (
+        currentUserId > 0
+        && Array.isArray(message?.mentioned_user_ids)
+        && message.mentioned_user_ids.some((item) => Number(item) === currentUserId)
+      );
+      if (isChatConversationMuted(conversationId) && !isCurrentUserMentioned) {
+        setChatForegroundDiagnostic('conversation_muted');
+        return;
+      }
       if (!claimChatMessageNotification(messageId)) return;
 
       const isActiveVisibleConversation = (
@@ -908,6 +1035,13 @@ function MainLayout({
       }
       if (isMobileChatRoute && isVisible) {
         setChatForegroundDiagnostic('mobile_chat_route_visible');
+        return;
+      }
+      if (!isNotificationChannelEnabled({
+        channel: 'chat',
+        conversation_kind: message?.conversation_kind,
+      }, notificationPreferencesRef.current)) {
+        setChatForegroundDiagnostic('notifications_disabled');
         return;
       }
 
@@ -927,14 +1061,6 @@ function MainLayout({
       }
 
       const currentChatNotificationState = getChatNotificationState();
-      if (!isNotificationChannelEnabled({ channel: 'chat' }, notificationPreferencesRef.current)) {
-        setChatForegroundDiagnostic('notifications_disabled');
-        return;
-      }
-      if (!currentChatNotificationState.enabled) {
-        setChatForegroundDiagnostic('notifications_disabled');
-        return;
-      }
       if (currentChatNotificationState.permission !== 'granted') {
         setChatForegroundDiagnostic('permission_not_granted');
         return;
@@ -979,7 +1105,7 @@ function MainLayout({
     return () => {
       window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleChatMessageCreated);
     };
-  }, [activeChatConversationId, hasChatPermission, location.pathname, navigate]);
+  }, [activeChatConversationId, hasChatPermission, location.pathname, navigate, user?.id]);
 useEffect(() => {
   const handleToastActionExecute = (event) => {
     const action = normalizeToastAction(event?.detail);
@@ -2150,7 +2276,7 @@ useEffect(() => {
     <MainLayoutShellContext.Provider value={shellValue}>
       <DesktopShellSync
         authenticated={Boolean(user)}
-        online={!isOffline}
+        online={!isOffline && !mobileOfflineReadOnly}
         unreadTotal={unreadCounts?.notifications_unread_total}
         chatUnread={unreadCounts?.chat_messages_unread_total}
         mailUnread={unreadCounts?.mail_unread}
@@ -2177,7 +2303,7 @@ useEffect(() => {
               : 'var(--app-shell-header-offset)',
           '--app-shell-top-offset': 'calc(var(--app-shell-safe-top-offset) + var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
           '--app-shell-mobile-bottom-nav-height': hasMobileBottomNavigation && !mobileBottomNavHidden
-            ? 'calc(64px + env(safe-area-inset-bottom, 0px))'
+            ? `calc(${nativeShellBottomNav ? nativeShellBottomNavHeight() : 64}px + env(safe-area-inset-bottom, 0px))`
             : '0px',
         }}
         sx={{
@@ -2245,18 +2371,77 @@ useEffect(() => {
           </Alert>
         ) : null}
 
-        {showOfflineBanner ? (
-          <Alert
-            severity="warning"
-            variant="filled"
-            sx={{
-              borderRadius: 0,
-              alignItems: 'center',
-            }}
-          >
-            Нет сети. HUB-IT откроет оболочку приложения, а данные загрузятся после восстановления подключения.
-          </Alert>
-        ) : null}
+        <Collapse
+          in={Boolean(connectionBannerState)}
+          timeout={prefersReducedMotion ? 0 : { enter: 180, exit: 140 }}
+          appear={false}
+          unmountOnExit
+          sx={{ pointerEvents: 'none' }}
+        >
+          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, pb: 0.25 }}>
+            <Alert
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              severity={renderedConnectionBannerState === 'restored' ? 'success' : 'warning'}
+              variant="outlined"
+              icon={renderedConnectionBannerState === 'restored'
+                ? <WifiRoundedIcon fontSize="inherit" />
+                : <CloudOffRoundedIcon fontSize="inherit" />}
+              sx={{
+                width: 'fit-content',
+                maxWidth: 'min(720px, 100%)',
+                mx: 'auto',
+                py: 0.25,
+                px: 1.25,
+                color: theme.palette.text.primary,
+                bgcolor: alpha(
+                  renderedConnectionBannerState === 'restored'
+                    ? theme.palette.success.main
+                    : theme.palette.warning.main,
+                  theme.palette.mode === 'dark' ? 0.16 : 0.08,
+                ),
+                borderColor: alpha(
+                  renderedConnectionBannerState === 'restored'
+                    ? theme.palette.success.main
+                    : theme.palette.warning.main,
+                  theme.palette.mode === 'dark' ? 0.42 : 0.3,
+                ),
+                borderRadius: 2.5,
+                alignItems: 'center',
+                pointerEvents: 'none',
+                boxShadow: `0 5px 18px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.2 : 0.08)}`,
+                transition: prefersReducedMotion
+                  ? 'none'
+                  : theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
+                    duration: 160,
+                  }),
+                '& .MuiAlert-icon': {
+                  py: 0.25,
+                  mr: 0.75,
+                  fontSize: '1.1rem',
+                },
+                '& .MuiAlert-message': {
+                  py: 0.25,
+                  fontSize: '0.8125rem',
+                  lineHeight: 1.35,
+                  fontWeight: 600,
+                },
+              }}
+            >
+              {renderedConnectionBannerState === 'restored'
+                ? 'Подключение восстановлено · Обновляем данные.'
+                : mobileOfflineReadOnly
+                  ? [
+                    'Автономный режим',
+                    offlineLastSyncLabel ? `данные на ${offlineLastSyncLabel}` : 'доступны сохранённые данные',
+                    offlineCacheMeta.cacheMiss ? 'часть данных не загружена' : null,
+                    'изменения отключены',
+                  ].filter(Boolean).join(' · ')
+                  : 'Нет подключения · Показываем сохранённые данные, если они доступны.'}
+            </Alert>
+          </Box>
+        </Collapse>
 
         {showPwaUpdateBanner ? (
           <Alert
@@ -2675,7 +2860,7 @@ useEffect(() => {
         ) : null}
       </Box>
 
-      {hasMobileBottomNavigation ? (
+      {hasMobileBottomNavigation && !nativeShellBottomNav ? (
         <Box
           data-testid="main-layout-mobile-bottom-nav"
           data-mobile-bottom-nav-hidden={mobileBottomNavHidden ? 'true' : 'false'}

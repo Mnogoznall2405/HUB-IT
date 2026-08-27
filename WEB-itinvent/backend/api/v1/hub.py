@@ -141,6 +141,28 @@ async def _safe_publish_task_discussion_updated(*, task_id: str, task: dict, ope
         )
 
 
+async def _safe_provision_task_discussion(*, task: dict, actor_user_id: int) -> None:
+    """Create and publish a task chat without rolling back the committed Hub task."""
+    if not is_task_discussion_chat_enabled():
+        return
+    task_id = _normalize_text((task or {}).get("id"))
+    if not task_id:
+        return
+    try:
+        await run_in_threadpool(
+            ensure_task_discussion,
+            task_id=task_id,
+            actor_user_id=int(actor_user_id),
+        )
+        await publish_task_discussion_updated(task_id=task_id, task=task)
+    except Exception:
+        note_side_effect_failure(operation="create", target_status=str((task or {}).get("status") or ""))
+        logger.exception(
+            "hub.task.discussion_provision_failed task_id=%s (task already committed)",
+            task_id,
+        )
+
+
 async def _require_notifications_access(
     current_user: User = Depends(get_current_active_user),
 ) -> User:
@@ -472,7 +494,7 @@ async def get_announcement(
         item = hub_service.get_announcement(
             announcement_id,
             user_id=int(current_user.id),
-            is_admin=_is_admin_user(current_user),
+            is_admin=_can_moderate_announcements(current_user),
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -515,6 +537,7 @@ async def create_announcement(
             category_id = _normalize_text(form.get("category_id"))
             tags = _coerce_json_list(form.get("tags"))
             poll = _coerce_json_object(form.get("poll"))
+            client_request_id = _normalize_text(form.get("client_request_id"))
             form_files = form.getlist("files")
             for form_file in form_files:
                 if form_file is None or not hasattr(form_file, "read"):
@@ -558,6 +581,7 @@ async def create_announcement(
             category_id = _normalize_text(payload.get("category_id"))
             tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
             poll = payload.get("poll") if isinstance(payload.get("poll"), dict) else None
+            client_request_id = _normalize_text(payload.get("client_request_id"))
         return hub_service.create_announcement(
             payload={
                 "title": title,
@@ -579,6 +603,7 @@ async def create_announcement(
                 "category_id": category_id,
                 "tags": tags,
                 "poll": poll,
+                "client_request_id": client_request_id,
             },
             actor=_actor_dict(current_user),
             attachments=attachments,
@@ -617,7 +642,7 @@ async def patch_announcement(
             announcement_id,
             payload or {},
             actor_user_id=int(current_user.id),
-            is_admin=_is_admin_user(current_user),
+            is_admin=_can_moderate_announcements(current_user),
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -689,9 +714,21 @@ async def delete_announcement_reaction(
 async def list_announcement_reactions(
     announcement_id: str,
     reaction_type: str = Query(""),
+    limit: int | None = Query(None, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     _: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
-    return {"items": await run_in_threadpool(hub_service.list_announcement_reaction_users, announcement_id=announcement_id, reaction_type=reaction_type)}
+    items = await run_in_threadpool(
+        hub_service.list_announcement_reaction_users,
+        announcement_id=announcement_id,
+        reaction_type=reaction_type,
+    )
+    total = len(items)
+    if limit is None:
+        return {"items": items}
+    page = items[offset:offset + limit]
+    next_offset = offset + len(page) if offset + len(page) < total else None
+    return {"items": page, "total": total, "next_offset": next_offset}
 
 
 @router.put("/announcements/{announcement_id}/bookmark")
@@ -734,6 +771,8 @@ async def vote_announcement_poll(
 @router.get("/announcements/{announcement_id}/analytics")
 async def get_announcement_analytics(
     announcement_id: str,
+    limit: int | None = Query(None, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_active_user),
 ):
     _require_announcement_manager(current_user)
@@ -742,13 +781,25 @@ async def get_announcement_analytics(
         raise HTTPException(status_code=404, detail="Announcement not found")
     if not detail.get("can_manage") and not _can_moderate_announcements(current_user):
         raise HTTPException(status_code=403, detail="Analytics are available only to the author or moderator")
-    return await run_in_threadpool(hub_service.get_announcement_analytics, announcement_id=announcement_id)
+    payload = await run_in_threadpool(hub_service.get_announcement_analytics, announcement_id=announcement_id)
+    if limit is None:
+        return payload
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    total = len(items)
+    page = items[offset:offset + limit]
+    return {
+        **payload,
+        "items": page,
+        "items_total": total,
+        "next_offset": offset + len(page) if offset + len(page) < total else None,
+    }
 
 
 @router.post("/announcements/{announcement_id}/attachments")
 async def upload_announcement_attachment(
     announcement_id: str,
     file: UploadFile = File(...),
+    client_upload_id: str = Form(""),
     current_user: User = Depends(get_current_active_user),
 ):
     _require_announcement_manager(current_user)
@@ -756,9 +807,19 @@ async def upload_announcement_attachment(
     file_bytes = await file.read()
     _validate_upload(file_name=file_name, payload_size=len(file_bytes), max_bytes=MAX_ANNOUNCEMENT_FILE_BYTES, context="Announcement attachment")
     try:
-        return await run_in_threadpool(hub_service.add_announcement_attachment, announcement_id=announcement_id, user=_actor_dict(current_user), file_name=file_name, file_bytes=file_bytes, file_mime=_normalize_text(file.content_type))
+        return await run_in_threadpool(
+            hub_service.add_announcement_attachment,
+            announcement_id=announcement_id,
+            user=_actor_dict(current_user),
+            file_name=file_name,
+            file_bytes=file_bytes,
+            file_mime=_normalize_text(file.content_type),
+            client_upload_id=_normalize_text(client_upload_id),
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.patch("/announcements/{announcement_id}/attachments/order")
@@ -1036,6 +1097,7 @@ async def create_announcement_comment(
             body = _normalize_text(form.get("body"))
             parent_comment_id = _normalize_text(form.get("parent_comment_id"))
             mentioned_user_ids = _coerce_json_list(form.get("mentioned_user_ids"))
+            client_request_id = _normalize_text(form.get("client_request_id"))
             for form_file in form.getlist("files"):
                 if form_file is None or not hasattr(form_file, "read"):
                     continue
@@ -1058,6 +1120,7 @@ async def create_announcement_comment(
             body = _normalize_text(payload.get("body"))
             parent_comment_id = _normalize_text(payload.get("parent_comment_id"))
             mentioned_user_ids = payload.get("mentioned_user_ids") if isinstance(payload.get("mentioned_user_ids"), list) else []
+            client_request_id = _normalize_text(payload.get("client_request_id"))
         return hub_service.add_announcement_comment(
             announcement_id=announcement_id,
             user=_actor_dict(current_user),
@@ -1065,6 +1128,7 @@ async def create_announcement_comment(
             parent_comment_id=parent_comment_id,
             mentioned_user_ids=mentioned_user_ids,
             attachments=attachments,
+            client_request_id=client_request_id,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -1300,9 +1364,22 @@ async def patch_task_object(
 
 @router.get("/users/announcement-recipients")
 async def get_announcement_recipient_users(
+    q: str = Query("", max_length=200),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    user_ids: str = Query("", max_length=2000),
     _: User = Depends(require_permission(PERM_ANNOUNCEMENTS_WRITE)),
 ):
-    return await run_in_threadpool(hub_service.list_announcement_recipients)
+    parsed_user_ids = [
+        int(value)
+        for value in _coerce_json_list(user_ids)[:100]
+        if str(value).isdigit() and int(value) > 0
+    ]
+    return await run_in_threadpool(
+        hub_service.list_announcement_recipients,
+        q=q,
+        limit=limit,
+        user_ids=parsed_user_ids,
+    )
 
 
 @router.post("/markdown/transform")
@@ -1495,6 +1572,11 @@ async def create_task(
                     observer_user_ids=observer_ids,
                     actor=_actor_dict(current_user),
                 )
+            )
+        for created_task in created_items:
+            await _safe_provision_task_discussion(
+                task=created_task,
+                actor_user_id=int(current_user.id),
             )
         return {
             "items": transfer_act_reminder_service.enrich_tasks(created_items),

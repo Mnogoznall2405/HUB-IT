@@ -200,6 +200,7 @@ public sealed class DesktopBridgeProtocolTests
                 "command-palette",
                 "desktop-actions",
                 "file-actions-v2",
+                "mail-compose-window",
                 "print",
                 "quick-routes",
                 "shell-status",
@@ -210,6 +211,48 @@ public sealed class DesktopBridgeProtocolTests
                 .Select(item => item.GetString()!)
                 .ToArray());
         Assert.Equal(3, root.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void ParsesOnlyStrictMailComposeWindowRoutes()
+    {
+        const string json = """{"type":"mail.composeWindow.open","version":1,"requestId":"req-1","route":"/mail/compose?draft_id=draft-1&mailbox_id=mb-1"}""";
+
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(json, out var message));
+        Assert.Equal(DesktopInboundMessageType.OpenMailComposeWindow, message.Type);
+        Assert.Equal("req-1", message.MailComposeWindow?.RequestId);
+        Assert.Equal("/mail/compose?draft_id=draft-1&mailbox_id=mb-1", message.MailComposeWindow?.Route);
+
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"mail.composeWindow.open","version":1,"requestId":"req-2","route":"/mail?draft_id=draft-1"}""",
+            out _));
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"mail.composeWindow.open","version":1,"requestId":"req-3","route":"/mail/compose?draft_id=draft-1&extra=x"}""",
+            out _));
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"mail.composeWindow.open","version":1,"requestId":"req-4","route":"/mail/compose?draft_id=draft-1#unsafe"}""",
+            out _));
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"mail.composeWindow.open","version":1,"requestId":"req-5","route":"/mail/compose?draft_id=draft%0A1"}""",
+            out _));
+    }
+
+    [Fact]
+    public void ParsesComposeCloseResultAndCreatesHostMessages()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"mail.composeWindow.closeResult","version":1,"requestId":"close-1","status":"saved"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.MailComposeWindowCloseResult, message.Type);
+        Assert.Equal("saved", message.MailComposeWindow?.Status);
+
+        using var result = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateMailComposeWindowResultMessage("req-1", "opened"));
+        Assert.Equal("opened", result.RootElement.GetProperty("status").GetString());
+
+        using var close = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateMailComposeWindowCloseRequestedMessage("close-1"));
+        Assert.Equal("mail.composeWindow.closeRequested", close.RootElement.GetProperty("type").GetString());
     }
 
     [Fact]

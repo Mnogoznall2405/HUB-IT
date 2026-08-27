@@ -51,6 +51,9 @@ function buildMinimalArgs(overrides = {}) {
     fileDialogOpen: false,
     closeFileDialog: noop,
     selectedFiles: [],
+    selectedImageEdits: [],
+    applySelectedImageEdit: noop,
+    resetSelectedImageEdit: noop,
     fileCaption: '',
     setFileCaption: noop,
     sendMediaAsFiles: false,
@@ -140,6 +143,9 @@ describe('useChatPageDialogsLayerProps', () => {
     expect(result.current.forwardSelectionCount).toBe(0);
     expect(result.current.sendMediaAsFiles).toBe(false);
     expect(result.current.onSendMediaAsFilesChange).toBe(args.changeSendMediaAsFiles);
+    expect(result.current.imageEdits).toBe(args.selectedImageEdits);
+    expect(result.current.onApplyImageEdit).toBe(args.applySelectedImageEdit);
+    expect(result.current.onResetImageEdit).toBe(args.resetSelectedImageEdit);
   });
 
   it('uses mobile info panel open state on phone', () => {

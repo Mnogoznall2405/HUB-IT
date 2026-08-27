@@ -1326,7 +1326,7 @@ function Mfu() {
                     Последний успешный опрос: {formatDateTime(selectedDevice?.runtime?.snmp?.last_success_at)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Community: {selectedDevice?.runtime?.snmp?.used_community || '-'}; Версия: {selectedDevice?.runtime?.snmp?.version || '-'}
+                    Версия SNMP: {selectedDevice?.runtime?.snmp?.version || '-'}
                   </Typography>
                   {selectedDevice?.runtime?.snmp?.error ? (
                     <Typography variant="caption" color="warning.main">

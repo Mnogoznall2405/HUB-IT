@@ -24,6 +24,10 @@ export function formatApiError(error: unknown, fallback = 'Произошла о
     }
     const detail = error.response?.data?.detail;
     if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      const message = String((detail as { message?: unknown }).message || '').trim();
+      if (message) return message;
+    }
     if (Array.isArray(detail)) {
       return detail
         .map((item) => {

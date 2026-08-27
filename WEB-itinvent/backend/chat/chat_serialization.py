@@ -342,9 +342,37 @@ class ChatSerialization:
             "is_pinned": bool(getattr(state, "is_pinned", False)),
             "is_muted": bool(getattr(state, "is_muted", False)),
             "is_archived": bool(getattr(state, "is_archived", False)),
+            "pinned_message_id": _normalize_text(getattr(conversation, "pinned_message_id", None)) or None,
             "viewer_member_role": viewer_member_role,
             "member_preview": member_preview,
             "direct_peer": direct_peer,
+        }
+
+    def _serialize_pinned_message_preview(
+        self,
+        session,
+        conversation: ChatConversation,
+        *,
+        users_by_id: Optional[dict[int, dict]] = None,
+    ) -> Optional[dict[str, Any]]:
+        pinned_id = _normalize_text(getattr(conversation, "pinned_message_id", None))
+        if not pinned_id:
+            return None
+        message = session.get(ChatMessage, pinned_id)
+        if message is None or message.conversation_id != conversation.id or bool(getattr(message, "is_deleted", False)):
+            return None
+        sender_id = int(getattr(message, "sender_user_id", 0) or 0)
+        resolved_users = users_by_id or {}
+        sender = resolved_users.get(sender_id)
+        if sender is None and sender_id > 0:
+            resolved_users = self._service._get_users_map(presence_map={}, user_ids={sender_id})
+            sender = resolved_users.get(sender_id)
+        preview = _truncate_text(_strip_markdown_preview(getattr(message, "body", None)), 160) or "Сообщение"
+        return {
+            "id": message.id,
+            "sender_name": _display_user_name(sender),
+            "preview": preview,
+            "created_at": _iso(getattr(message, "created_at", None)) or "",
         }
 
     def _collect_message_payload_user_ids(
@@ -432,6 +460,7 @@ class ChatSerialization:
         return {
             "id": message.id,
             "conversation_id": message.conversation_id,
+            "conversation_kind": _normalize_text(conversation_kind, "direct") or "direct",
             "conversation_seq": max(0, int(getattr(message, "conversation_seq", 0) or 0)),
             "kind": message_kind,
             "body_format": _normalize_text(getattr(message, "body_format", None), "plain") or "plain",

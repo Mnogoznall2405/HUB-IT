@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,37 @@ def _balance(*, qty: float, series: str) -> dict:
         "qty_balance": qty,
         "cost_balance": qty * 10,
     }
+
+
+def test_connect_decodes_ascii_unicode_escapes_in_username(monkeypatch):
+    captured = {}
+
+    class FakeConnector:
+        def Connect(self, connection_string):
+            captured["connection_string"] = connection_string
+            return object()
+
+    client_module = types.ModuleType("win32com.client")
+    client_module.Dispatch = lambda _name: FakeConnector()
+    win32com_module = types.ModuleType("win32com")
+    win32com_module.client = client_module
+    monkeypatch.setitem(sys.modules, "win32com", win32com_module)
+    monkeypatch.setitem(sys.modules, "win32com.client", client_module)
+    monkeypatch.setenv("BUH20_1C_SERVER", "server")
+    monkeypatch.setenv("BUH20_1C_REF", "buh20")
+    monkeypatch.setenv(
+        "BUH20_1C_USER",
+        r"\u041a\u043e\u0437\u043b\u043e\u0432\u0441\u043a\u0438\u0439\u041c\u0415",
+    )
+    monkeypatch.setenv("BUH20_1C_PASSWORD", "password")
+
+    service = Warehouse1CService(enable_process_bridge=False)
+    try:
+        service._connect()
+    finally:
+        service.shutdown()
+
+    assert 'Usr="КозловскийМЕ";' in captured["connection_string"]
 
 
 def test_batch_balances_sum_series_in_one_bridge_call(monkeypatch):

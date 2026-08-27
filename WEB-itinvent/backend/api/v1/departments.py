@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
-from backend.api.deps import require_permission
+from backend.api.deps import require_any_permission, require_permission
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_DEPARTMENTS_MANAGE, PERM_SETTINGS_READ
 from backend.services.department_service import department_service
@@ -17,7 +17,7 @@ router = APIRouter()
 @router.get("")
 async def list_departments(
     include_inactive: bool = False,
-    current_user: User = Depends(require_permission(PERM_SETTINGS_READ)),
+    current_user: User = Depends(require_any_permission((PERM_SETTINGS_READ, PERM_DEPARTMENTS_MANAGE))),
 ):
     def _build_response() -> dict:
         manager_department_ids = set(department_service.get_user_department_ids(current_user.model_dump(), roles=["manager"]))
@@ -37,7 +37,7 @@ async def list_departments(
 @router.get("/{department_id}/members")
 async def list_department_members(
     department_id: str,
-    _: User = Depends(require_permission(PERM_SETTINGS_READ)),
+    _: User = Depends(require_any_permission((PERM_SETTINGS_READ, PERM_DEPARTMENTS_MANAGE))),
 ):
     department = department_service.get_department(department_id)
     if not department:

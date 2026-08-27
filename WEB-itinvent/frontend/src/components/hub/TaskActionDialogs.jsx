@@ -23,11 +23,17 @@ import AttachFileIcon from '@mui/icons-material/AttachFile';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MarkdownEditor from './MarkdownEditor';
 import CreateDuePickerPanel from './CreateDuePickerPanel';
+import TasksCreateDialog from './tasks/TasksCreateDialog';
 import { getOfficeDialogPaperSx, getOfficeHeaderBandSx } from '../../theme/officeUiTokens';
 import { hubAPI } from '../../api/client';
 import useDebounce from '../../hooks/useDebounce';
 import { mergeTaskAssigneeOptions, TASK_ASSIGNEE_SEARCH_MIN_CHARS } from '../../hooks/useTaskAssigneeDirectory';
-import { buildCreateDuePresets } from '../../pages/tasksViewModel';
+import { buildCreateDuePresets, formatCreateDueLabel } from '../../pages/tasksViewModel';
+import {
+  applyDueAtChange,
+  fromApiEmailDeadlineRemindHours,
+  toApiEmailDeadlineRemindHours,
+} from '../../pages/tasks/taskEmailRemindUtils';
 
 const PRIORITY_OPTIONS = [
   { value: 'low', label: 'Низкий' },
@@ -68,6 +74,7 @@ const userInitials = (item) => {
 };
 
 export function TaskEditDialog({
+  variant = 'modern',
   open,
   task,
   references,
@@ -90,11 +97,14 @@ export function TaskEditDialog({
   const debouncedObserverSearchInput = useDebounce(observerSearchInput, 300);
   const [observerLoading, setObserverLoading] = useState(false);
   const [observerSearchError, setObserverSearchError] = useState('');
+  const [dueCustomOpen, setDueCustomOpen] = useState(false);
 
   useEffect(() => {
     if (!open || !task) return;
     const assigneeId = String(task.assignee_user_id || '').trim();
+    const emailRemind = fromApiEmailDeadlineRemindHours(task.email_deadline_remind_hours);
     setDraft({
+      id: String(task.id || ''),
       title: String(task.title || ''),
       description: String(task.description || ''),
       assignee_user_id: assigneeId,
@@ -109,7 +119,10 @@ export function TaskEditDialog({
       protocol_date: toDateInput(task.protocol_date),
       due_at: toDateTimeInput(task.due_at),
       priority: String(task.priority || 'normal'),
+      email_deadline_remind_mode: emailRemind.mode,
+      email_deadline_remind_hours: emailRemind.hours,
     });
+    setDueCustomOpen(false);
     if (assigneeId) {
       const assigneeSnapshot = {
         id: assigneeId,
@@ -237,23 +250,113 @@ export function TaskEditDialog({
     String(item?.project_id || '') === draft.project_id
     && (item?.is_active !== false || String(item?.id || '') === draft.object_id)
   ));
+  const duePresets = useMemo(() => buildCreateDuePresets(new Date()), [open]);
+  const dueLabel = useMemo(() => formatCreateDueLabel(draft.due_at, new Date()), [draft.due_at]);
+  const getAssigneePickerOptions = useCallback((selected = []) => (
+    mergeTaskAssigneeOptions(selected, [...assigneeOptions, ...observerOptions])
+  ), [assigneeOptions, observerOptions]);
+  const assigneeAutocompleteProps = {
+    filterOptions: (options) => options,
+    inputValue: String(assigneeSearchInput || '').trim()
+      ? assigneeSearchInput
+      : (selectedAssignee ? userLabel(selectedAssignee) : ''),
+    onInputChange: (_, value, reason) => {
+      if (reason === 'input') {
+        setAssigneeSearchInput(value);
+      } else if (reason === 'reset' || reason === 'clear') {
+        setAssigneeSearchInput('');
+      }
+    },
+    loading: referencesLoading || assigneeLoading,
+    noOptionsText: String(assigneeSearchInput || '').trim().length < TASK_ASSIGNEE_SEARCH_MIN_CHARS
+      ? 'Введите фамилию или логин'
+      : (assigneeSearchError || 'Ничего не найдено'),
+  };
+  const observerAutocompleteProps = {
+    filterOptions: (options) => options,
+    inputValue: observerSearchInput,
+    onInputChange: (_, value, reason) => {
+      if (reason === 'input') {
+        setObserverSearchInput(value);
+      } else if (reason === 'reset' || reason === 'clear') {
+        setObserverSearchInput('');
+      }
+    },
+    loading: referencesLoading || observerLoading,
+    noOptionsText: String(observerSearchInput || '').trim().length < TASK_ASSIGNEE_SEARCH_MIN_CHARS
+      ? 'Введите фамилию или логин'
+      : (observerSearchError || 'Ничего не найдено'),
+  };
+  const handleEditDescriptionDraftChange = useCallback((description) => {
+    setDraft((current) => (
+      current.description === description ? current : { ...current, description }
+    ));
+  }, []);
 
-  const submit = () => onSave?.({
-    title: String(draft.title || '').trim(),
-    description: String(draft.description || '').trim(),
-    assignee_user_id: Number(draft.assignee_user_id || 0) || null,
-    controller_user_id: Number(draft.controller_user_id || 0) || null,
-    observer_user_ids: (Array.isArray(draft.observer_user_ids) ? draft.observer_user_ids : [])
-      .map(Number)
-      .filter((value) => Number.isInteger(value) && value > 0),
-    department_id: String(draft.department_id || '').trim() || null,
-    visibility_scope: String(draft.visibility_scope || 'private').trim() || 'private',
-    project_id: String(draft.project_id || '').trim() || null,
-    object_id: String(draft.object_id || '').trim() || null,
-    protocol_date: String(draft.protocol_date || '').trim() || null,
-    due_at: String(draft.due_at || '').trim() || null,
-    priority: String(draft.priority || 'normal'),
-  });
+  const submit = () => {
+    const dueAt = String(draft.due_at || '').trim() || null;
+    onSave?.({
+      title: String(draft.title || '').trim(),
+      description: String(draft.description || '').trim(),
+      assignee_user_id: Number(draft.assignee_user_id || 0) || null,
+      controller_user_id: Number(draft.controller_user_id || 0) || null,
+      observer_user_ids: (Array.isArray(draft.observer_user_ids) ? draft.observer_user_ids : [])
+        .map(Number)
+        .filter((value) => Number.isInteger(value) && value > 0),
+      department_id: String(draft.department_id || '').trim() || null,
+      visibility_scope: String(draft.visibility_scope || 'private').trim() || 'private',
+      project_id: String(draft.project_id || '').trim() || null,
+      object_id: String(draft.object_id || '').trim() || null,
+      protocol_date: String(draft.protocol_date || '').trim() || null,
+      due_at: dueAt,
+      ...(dueAt ? {
+        email_deadline_remind_hours: toApiEmailDeadlineRemindHours(
+          draft.email_deadline_remind_mode,
+          draft.email_deadline_remind_hours,
+        ),
+      } : {}),
+      priority: String(draft.priority || 'normal'),
+    });
+  };
+
+  if (variant === 'modern') {
+    return (
+      <TasksCreateDialog
+        mode="edit"
+        open={open}
+        onClose={saving ? undefined : onClose}
+        isMobile={fullScreen}
+        ui={ui}
+        editData={draft}
+        setEditData={setDraft}
+        editSaving={saving}
+        editLoading={referencesLoading}
+        onSave={submit}
+        onEditDescriptionDraftChange={handleEditDescriptionDraftChange}
+        selectedEditAssignee={selectedAssignee}
+        selectedEditController={selectedController}
+        selectedEditObservers={selectedObservers}
+        selectedEditDepartment={selectedDepartment}
+        getAssigneePickerOptions={getAssigneePickerOptions}
+        controllers={controllers}
+        departments={departments}
+        activeTaskProjects={activeProjects}
+        editProjectObjects={projectObjects}
+        assigneeAutocompleteProps={assigneeAutocompleteProps}
+        observerAutocompleteProps={observerAutocompleteProps}
+        taskUserAutocompleteSlotProps={{}}
+        createDuePresets={duePresets}
+        editDueLabel={dueLabel}
+        editDueCustomOpen={dueCustomOpen}
+        onEditDueCustomOpenChange={setDueCustomOpen}
+        onSelectEditDuePreset={(value) => {
+          setDraft((current) => applyDueAtChange(current, String(value || '')));
+          setDueCustomOpen(false);
+        }}
+        onEditDueAtChange={(value) => setDraft((current) => applyDueAtChange(current, String(value || '')))}
+      />
+    );
+  }
 
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>

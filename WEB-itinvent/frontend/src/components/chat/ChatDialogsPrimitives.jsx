@@ -4,7 +4,7 @@ import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 
 import { PresenceAvatar } from './ChatCommon';
-import { formatFullDate, getPersonStatusLine, getSearchResultPreview } from './chatHelpers';
+import { formatFullDate, getPersonContextLine, getSearchResultPreview } from './chatHelpers';
 import { CHAT_FONT_FAMILY } from './chatUiTokens';
 
 function DialogSkeletonLine({ ui, width = '100%', height = 14, radius = 999, sx }) {
@@ -154,7 +154,7 @@ function GroupUserRow({
           {item?.full_name || item?.username || 'Пользователь'}
         </Typography>
         <Typography variant="body2" sx={{ color: ui.textSecondary, fontSize: '0.82rem', lineHeight: 1.3 }} noWrap>
-          {getPersonStatusLine(item)}
+          {getPersonContextLine(item)}
         </Typography>
       </Box>
     </Paper>

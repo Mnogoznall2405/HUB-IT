@@ -11,6 +11,7 @@
 - [Chat backend architecture](./CHAT_BACKEND_ARCHITECTURE.md)
 - [Support chat architecture](./SUPPORT_CHAT_ARCHITECTURE.md)
 - [Chat performance и observability](./CHAT_PERF_OBSERVABILITY.md)
+- [Native Chat gap roadmap](./MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md) — web ↔ native ↔ жесты/папки Telegram
 - [Scan architecture](./SCAN_ARCHITECTURE.md) и [Scan PostgreSQL migration](./SCAN_POSTGRES_MIGRATION.md)
 - [IIS deployment](./IIS_DEPLOYMENT_WEB.md)
 - [Request metrics](./REQUEST_METRICS.md)

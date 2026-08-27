@@ -8,6 +8,76 @@ const readFirst = (data, keys, fallback = '') => {
   return fallback;
 };
 
+const EQUIPMENT_PATH = '/database';
+const EQUIPMENT_QUERY_KEYS = ['inv_no', 'invNo', 'equipment'];
+
+const firstQueryValue = (searchParams, keys) => {
+  for (const key of keys) {
+    const value = String(searchParams.get(key) || '').trim();
+    if (value) return value;
+  }
+  return '';
+};
+
+const parseEquipmentLink = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(text, 'https://hubit.invalid');
+  } catch {
+    return null;
+  }
+
+  const isWebLink = ['http:', 'https:'].includes(parsed.protocol)
+    && parsed.pathname.replace(/\/+$/, '') === EQUIPMENT_PATH;
+  const isAppLink = parsed.protocol === 'hubit:'
+    && parsed.hostname === 'database';
+  if (!isWebLink && !isAppLink) return null;
+
+  const invNo = firstQueryValue(parsed.searchParams, EQUIPMENT_QUERY_KEYS);
+  if (!invNo || invNo.length > 200) return null;
+
+  const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
+  if (databaseId.length > 100) return null;
+
+  const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
+  const tab = ['general', 'acts', 'history', 'warehouse1c'].includes(requestedTab)
+    ? requestedTab
+    : 'general';
+
+  return {
+    invNo,
+    databaseId,
+    tab,
+  };
+};
+
+export const buildEquipmentQrLink = (item, {
+  databaseId = '',
+  origin = typeof window !== 'undefined' ? window.location.origin : '',
+} = {}) => {
+  const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim();
+  if (!invNo) return '';
+
+  const resolvedDatabaseId = String(
+    databaseId || readFirst(item, ['DB_ID', 'db_id', 'database_id'], '') || ''
+  ).trim();
+
+  try {
+    const url = new URL(EQUIPMENT_PATH, origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    url.searchParams.set('inv_no', invNo);
+    if (resolvedDatabaseId) url.searchParams.set('db_id', resolvedDatabaseId);
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
+export const parseEquipmentQrLink = (value) => parseEquipmentLink(value);
+
 export const buildEquipmentQrText = (item) => {
   const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim();
   const serialNo = String(readFirst(item, ['SERIAL_NO', 'serial_no'], '') || '').trim();
@@ -25,6 +95,10 @@ export const buildEquipmentQrText = (item) => {
 export const parseInvNoFromQrText = (qrText) => {
   const text = String(qrText || '').trim();
   if (!text) return null;
+
+  const link = parseEquipmentLink(text);
+  if (link) return link.invNo;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
 
   const invNoMatch = text.match(/^INV_NO:\s*(.+)$/m);
   if (invNoMatch) {

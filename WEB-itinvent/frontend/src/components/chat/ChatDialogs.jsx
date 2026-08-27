@@ -54,8 +54,6 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import ShareIcon from '@mui/icons-material/Share';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
-import VolumeOffIcon from '@mui/icons-material/VolumeOff';
-import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 
 import ChatContextPanel from './ChatContextPanel';
 import AiConversationContextPanel from './AiConversationContextPanel';
@@ -158,6 +156,9 @@ export default function ChatDialogs({
   fileDialogOpen,
   onCloseFileDialog,
   selectedFiles,
+  imageEdits,
+  onApplyImageEdit,
+  onResetImageEdit,
   fileCaption,
   onFileCaptionChange,
   sendMediaAsFiles = false,
@@ -549,15 +550,6 @@ export default function ChatDialogs({
           {activeConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
         </MenuItem>
 
-        <MenuItem onClick={toggleConversationSetting({ is_muted: !activeConversation?.is_muted })} disabled={!activeConversationId || settingsUpdating}>
-          {activeConversation?.is_muted ? (
-            <VolumeUpIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
-          ) : (
-            <VolumeOffIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
-          )}
-          {activeConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
-        </MenuItem>
-
         <MenuItem onClick={runThreadMenuAction(onOpenShare)} disabled={!activeConversationId}>
           <ShareIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           Поделиться задачей
@@ -947,10 +939,13 @@ export default function ChatDialogs({
         fileInputRef={fileInputRef}
         mediaFileInputRef={mediaFileInputRef}
         files={selectedFiles}
+        imageEdits={imageEdits}
+        onApplyImageEdit={onApplyImageEdit}
         onCaptionChange={onFileCaptionChange}
         onClearFiles={onClearSelectedFiles}
         onClose={onCloseFileDialog}
         onRemoveFile={onRemoveSelectedFile}
+        onResetImageEdit={onResetImageEdit}
         onSend={onSendFiles}
         onSendMediaAsFilesChange={onSendMediaAsFilesChange}
         open={fileDialogOpen}

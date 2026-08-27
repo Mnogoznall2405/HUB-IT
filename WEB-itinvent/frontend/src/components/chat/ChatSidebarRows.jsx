@@ -21,7 +21,7 @@ import {
   formatSidebarConversationTime,
   getConversationDisplayTitle,
   getConversationStatusLine,
-  getPersonStatusLine,
+  getPersonContextLine,
   getStatusMeta,
   getTaskConversationMetaLine,
   isCompletedTaskConversation,
@@ -576,7 +576,7 @@ function PersonSearchRow({
           className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}
           style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
         >
-          {getPersonStatusLine(person)}
+          {getPersonContextLine(person)}
         </p>
       </div>
       {opening ? <CircularProgress size={18} /> : null}

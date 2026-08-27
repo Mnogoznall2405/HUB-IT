@@ -321,6 +321,7 @@ class UserService:
             for delegate_user_id, row in existing_by_delegate_id.items():
                 if delegate_user_id not in incoming_delegate_ids:
                     session.delete(row)
+        self._invalidate_delegate_links_cache()
 
     def _delete_task_delegate_links_for_user_in_app_db(self, user_id: int) -> None:
         normalized_user_id = int(user_id or 0)
@@ -333,6 +334,7 @@ class UserService:
                     | (AppTaskDelegateUserLink.delegate_user_id == normalized_user_id)
                 )
             )
+        self._invalidate_delegate_links_cache()
 
     @staticmethod
     def _row_to_user_dict(row: AppUser) -> dict:

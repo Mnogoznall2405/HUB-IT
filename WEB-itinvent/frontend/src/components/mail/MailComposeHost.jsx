@@ -15,12 +15,32 @@ import {
 } from './mailComposeState';
 import { createMailSendIdempotencyKey } from './mailSendIdempotency';
 import { getMailSendErrorMessage } from './mailSendOutcome';
+import { buildPortableComposeHtml } from './mailComposeHtml';
 
 export const loadMailComposeDialog = () => import('./MailComposeDialog');
 const MailComposeDialog = lazy(loadMailComposeDialog);
 
 const normalizeMailboxId = (value) => String(value || '').trim();
 const getMailboxEntryId = (value) => normalizeMailboxId(value?.id || value?.mailbox_id);
+const normalizeContentId = (value) => String(value || '')
+  .trim()
+  .replace(/^cid:/i, '')
+  .replace(/^<+|>+$/g, '')
+  .toLowerCase();
+const bodyReferencesContentId = (body, contentId) => String(body || '')
+  .toLowerCase()
+  .includes(`cid:${normalizeContentId(contentId)}`);
+const getRetainedAttachmentTokens = (state) => (
+  (Array.isArray(state?.composeDraftAttachments) ? state.composeDraftAttachments : [])
+    .filter((item) => !item?.is_inline || bodyReferencesContentId(getComposeCombinedBody(state), item?.content_id))
+    .map((item) => item?.download_token || item?.id)
+    .filter(Boolean)
+);
+const getReferencedInlineFiles = (state) => (
+  (Array.isArray(state?.composeInlineFiles) ? state.composeInlineFiles : [])
+    .filter((item) => bodyReferencesContentId(getComposeCombinedBody(state), item?.contentId))
+);
+const getPortableComposeBody = (state) => buildPortableComposeHtml(getComposeCombinedBody(state));
 
 export default function MailComposeHost({
   session,
@@ -41,9 +61,13 @@ export default function MailComposeHost({
   onOpenSignatureEditor,
   onCloseSession,
   onRegisterCloseHandler,
+  onRegisterNativeSaveHandler,
   onSendSuccess,
   onDraftSaved,
   onComposeWarning,
+  expanded,
+  onToggleExpanded,
+  onOpenDesktopWindow,
   handleMailCredentialsRequired,
   getMailErrorDetail,
 }) {
@@ -59,6 +83,7 @@ export default function MailComposeHost({
   const draftSaveInFlightRef = useRef(null);
   const draftSaveQueuedRef = useRef(false);
   const draftSaveIncludeFilesRef = useRef(false);
+  const draftSaveForceCreateRef = useRef(false);
   const notifiedComposeWarningsRef = useRef(new Set());
   const mountedRef = useRef(true);
   const lastWrittenSavedAtRef = useRef('');
@@ -66,6 +91,7 @@ export default function MailComposeHost({
   const pendingAfterCloseRef = useRef(null);
   const composeFlushHandlerRef = useRef(null);
   const closeFlowLockRef = useRef(false);
+  const inlinePreviewUrlsRef = useRef(new Set());
   const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
 
   useEffect(() => {
@@ -75,6 +101,8 @@ export default function MailComposeHost({
         composeUploadAbortRef.current.abort();
         composeUploadAbortRef.current = null;
       }
+      inlinePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL?.(url));
+      inlinePreviewUrlsRef.current.clear();
     };
   }, []);
 
@@ -183,6 +211,7 @@ export default function MailComposeHost({
       composeState.composeCcValues,
       composeState.composeDraftAttachments,
       composeState.composeFiles,
+      composeState.composeInlineFiles,
       composeState.composeQuotedOriginalHtml,
       composeState.composeSubject,
       composeState.composeToValues,
@@ -199,9 +228,8 @@ export default function MailComposeHost({
     body: String(getComposeCombinedBody(composeState) || ''),
     replyToMessageId: String(composeState.composeReplyToMessageId || ''),
     forwardMessageId: String(composeState.composeForwardMessageId || ''),
-    retainedAttachments: composeState.composeDraftAttachments
-      .map((item) => item?.download_token || item?.id)
-      .filter(Boolean),
+    retainedAttachments: getRetainedAttachmentTokens(composeState),
+    inlineContentIds: composeState.composeInlineFiles.map((item) => item?.contentId).filter(Boolean),
   }), [
     composeState.composeBccValues,
     composeState.composeBody,
@@ -210,6 +238,7 @@ export default function MailComposeHost({
     composeState.composeForwardMessageId,
     composeState.composeFromMailboxId,
     composeState.composeMode,
+    composeState.composeInlineFiles,
     composeState.composeQuotedOriginalHtml,
     composeState.composeReplyToMessageId,
     composeState.composeSubject,
@@ -233,6 +262,38 @@ export default function MailComposeHost({
     signatureMailboxId,
     signatureOpen,
   ]);
+
+  const inlineSourcesByCid = useMemo(() => {
+    const sources = {};
+    composeState.composeDraftAttachments.forEach((attachment) => {
+      if (!attachment?.is_inline) return;
+      const contentId = normalizeContentId(attachment?.content_id);
+      const source = String(attachment?.inline_src || attachment?.inline_data_url || '');
+      if (contentId && source) sources[contentId] = source;
+    });
+    composeState.composeInlineFiles.forEach((item) => {
+      const contentId = normalizeContentId(item?.contentId);
+      if (contentId && item?.previewUrl) sources[contentId] = item.previewUrl;
+    });
+    return sources;
+  }, [composeState.composeDraftAttachments, composeState.composeInlineFiles]);
+
+  const handlePasteInlineImages = useCallback((files) => {
+    const descriptors = (Array.isArray(files) ? files : Array.from(files || [])).map((file) => {
+      const uniquePart = globalThis.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const contentId = `hubit-inline-${uniquePart}@hubit.local`;
+      const previewUrl = URL.createObjectURL?.(file) || '';
+      if (previewUrl) inlinePreviewUrlsRef.current.add(previewUrl);
+      return { file, contentId, previewUrl };
+    }).filter((item) => item.previewUrl);
+    if (descriptors.length > 0) {
+      patchComposeState((current) => ({
+        composeInlineFiles: [...current.composeInlineFiles, ...descriptors],
+      }));
+    }
+    return descriptors;
+  }, [patchComposeState]);
 
   const composeWarnings = useMemo(() => {
     const recipientValues = [
@@ -266,7 +327,8 @@ export default function MailComposeHost({
     }
     const plainBody = String(composeState.composeBody || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
     const attachmentMentioned = /(влож|прикреп|attach|attachment|файл)/i.test(plainBody);
-    if (attachmentMentioned && composeState.composeFiles.length === 0 && composeState.composeDraftAttachments.length === 0) {
+    const regularDraftAttachmentCount = composeState.composeDraftAttachments.filter((item) => !item?.is_inline).length;
+    if (attachmentMentioned && composeState.composeFiles.length === 0 && regularDraftAttachmentCount === 0) {
       warnings.push({
         id: 'missing_attachment',
         severity: 'warning',
@@ -382,19 +444,23 @@ export default function MailComposeHost({
     return () => window.removeEventListener('storage', onStorage);
   }, [composeDraftKey, patchComposeState, resolveComposeMailboxId]);
 
-  const flushComposeDraft = useCallback(({ includeFiles = false } = {}) => {
+  const flushComposeDraft = useCallback(({ includeFiles = false, forceCreate = false } = {}) => {
     draftSaveQueuedRef.current = true;
     if (includeFiles) draftSaveIncludeFilesRef.current = true;
+    if (forceCreate) draftSaveForceCreateRef.current = true;
     if (draftSaveInFlightRef.current) return draftSaveInFlightRef.current;
 
     const drainDraftSaveQueue = async () => {
       let lastResult = null;
       while (draftSaveQueuedRef.current) {
         const shouldIncludeFiles = draftSaveIncludeFilesRef.current;
+        const shouldForceCreate = draftSaveForceCreateRef.current;
         draftSaveQueuedRef.current = false;
         draftSaveIncludeFilesRef.current = false;
+        draftSaveForceCreateRef.current = false;
         const state = composeStateRef.current;
-        if (!composeStateHasContent(state) && !state.composeDraftId) continue;
+        if (!shouldForceCreate && !composeStateHasContent(state) && !state.composeDraftId) continue;
+        const referencedInlineFiles = shouldIncludeFiles ? getReferencedInlineFiles(state) : [];
 
         patchComposeState({ draftSyncState: 'saving' });
         try {
@@ -406,17 +472,20 @@ export default function MailComposeHost({
             cc: toRecipientEmails(state.composeCcValues),
             bcc: toRecipientEmails(state.composeBccValues),
             subject: String(state.composeSubject || ''),
-            body: String(getComposeCombinedBody(state) || ''),
+            body: getPortableComposeBody(state),
             isHtml: true,
             replyToMessageId: state.composeReplyToMessageId,
             forwardMessageId: state.composeForwardMessageId,
-            retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
+            retainExistingAttachments: getRetainedAttachmentTokens(state),
             files: shouldIncludeFiles ? state.composeFiles : [],
+            inlineFiles: referencedInlineFiles.map((item) => item.file),
+            inlineContentIds: referencedInlineFiles.map((item) => item.contentId),
           });
           patchComposeState((current) => ({
             composeDraftId: String(data?.draft_id || current.composeDraftId || ''),
             composeDraftAttachments: Array.isArray(data?.attachments) ? data.attachments : current.composeDraftAttachments,
             composeFiles: shouldIncludeFiles && current.composeFiles.length > 0 ? [] : current.composeFiles,
+            composeInlineFiles: shouldIncludeFiles ? [] : current.composeInlineFiles,
             draftSavedAt: String(data?.saved_at || new Date().toISOString()),
             draftSyncState: 'synced',
           }));
@@ -425,6 +494,7 @@ export default function MailComposeHost({
         } catch (requestError) {
           draftSaveQueuedRef.current = false;
           draftSaveIncludeFilesRef.current = false;
+          draftSaveForceCreateRef.current = false;
           persistLocalComposeDraft(composeStateRef.current);
           patchComposeState({ draftSyncState: 'local_only' });
           throw requestError;
@@ -456,10 +526,10 @@ export default function MailComposeHost({
   useEffect(() => {
     if (composeState.composeSending || (!hasComposeContent && !composeState.composeDraftId)) return undefined;
     const timer = setTimeout(() => {
-      flushComposeDraft({ includeFiles: false }).catch(() => {});
+      flushComposeDraft({ includeFiles: composeState.composeInlineFiles.length > 0 }).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [composeAutosaveKey, composeState.composeSending, flushComposeDraft, hasComposeContent]);
+  }, [composeAutosaveKey, composeState.composeInlineFiles.length, composeState.composeSending, flushComposeDraft, hasComposeContent]);
 
   const finishCloseCompose = useCallback(() => {
     const afterClose = pendingAfterCloseRef.current;
@@ -579,6 +649,34 @@ export default function MailComposeHost({
     return () => onRegisterCloseHandler(null);
   }, [onRegisterCloseHandler]);
 
+  useEffect(() => {
+    if (!onRegisterNativeSaveHandler) return undefined;
+    onRegisterNativeSaveHandler(async () => {
+      flushPendingComposeState();
+      try {
+        await flushComposeDraft({ includeFiles: true });
+        await notifyDraftSaved();
+        return true;
+      } catch (requestError) {
+        onComposeWarning?.({
+          id: 'desktop_compose_close_save_failed',
+          severity: 'warning',
+          title: 'Черновик не сохранён',
+          message: getMailErrorDetail?.(requestError, 'Не удалось сохранить черновик. Окно оставлено открытым.'),
+        });
+        return false;
+      }
+    });
+    return () => onRegisterNativeSaveHandler(null);
+  }, [
+    flushComposeDraft,
+    flushPendingComposeState,
+    getMailErrorDetail,
+    notifyDraftSaved,
+    onComposeWarning,
+    onRegisterNativeSaveHandler,
+  ]);
+
   const handleSendCompose = useCallback(async (submitOverrides = {}) => {
     const recipientOverrides = {};
     if (Array.isArray(submitOverrides?.composeToValues)) {
@@ -631,7 +729,8 @@ export default function MailComposeHost({
       composeUploadProgress: 0,
     });
     try {
-      if (state.composeFiles.length > 0) {
+      const referencedInlineFiles = getReferencedInlineFiles(state);
+      if (state.composeFiles.length > 0 || referencedInlineFiles.length > 0) {
         const controller = new AbortController();
         composeUploadAbortRef.current = controller;
         await mailAPI.sendMessageMultipart({
@@ -640,13 +739,15 @@ export default function MailComposeHost({
           cc,
           bcc,
           subject: String(state.composeSubject || ''),
-          body: String(getComposeCombinedBody(state) || ''),
+          body: getPortableComposeBody(state),
           isHtml: true,
           replyToMessageId: state.composeReplyToMessageId,
           forwardMessageId: state.composeForwardMessageId,
           draftId: state.composeDraftId,
-          retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
+          retainExistingAttachments: getRetainedAttachmentTokens(state),
           files: state.composeFiles,
+          inlineFiles: referencedInlineFiles.map((item) => item.file),
+          inlineContentIds: referencedInlineFiles.map((item) => item.contentId),
           idempotencyKey,
           signal: controller.signal,
           onUploadProgress: (event) => {
@@ -668,12 +769,12 @@ export default function MailComposeHost({
           cc,
           bcc,
           subject: String(state.composeSubject || ''),
-          body: String(getComposeCombinedBody(state) || ''),
+          body: getPortableComposeBody(state),
           is_html: true,
           reply_to_message_id: state.composeReplyToMessageId,
           forward_message_id: state.composeForwardMessageId,
           draft_id: state.composeDraftId,
-          retain_existing_attachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
+          retain_existing_attachments: getRetainedAttachmentTokens(state),
           idempotencyKey,
         });
       }
@@ -702,6 +803,37 @@ export default function MailComposeHost({
     notifyComposeWarning,
     onSendSuccess,
     patchComposeState,
+    resolveComposeMailboxId,
+  ]);
+
+  const handleOpenDesktopCompose = useCallback(async () => {
+    if (!onOpenDesktopWindow) return;
+    flushPendingComposeState();
+    try {
+      const data = await flushComposeDraft({ includeFiles: true, forceCreate: true });
+      const draftId = String(data?.draft_id || composeStateRef.current.composeDraftId || '');
+      if (!draftId) throw new Error('Draft id is missing after save');
+      await onOpenDesktopWindow({
+        draftId,
+        mailboxId: resolveComposeMailboxId(composeStateRef.current.composeFromMailboxId),
+      });
+    } catch (requestError) {
+      onComposeWarning?.({
+        id: 'desktop_compose_transfer_failed',
+        severity: 'warning',
+        title: 'Не удалось открыть отдельное окно',
+        message: getMailErrorDetail?.(
+          requestError,
+          'Черновик не удалось сохранить. Редактор оставлен в текущем окне.',
+        ),
+      });
+    }
+  }, [
+    flushComposeDraft,
+    flushPendingComposeState,
+    getMailErrorDetail,
+    onComposeWarning,
+    onOpenDesktopWindow,
     resolveComposeMailboxId,
   ]);
 
@@ -767,12 +899,8 @@ export default function MailComposeHost({
         composeSignatureHtml={composeSignaturePreviewHtml}
         composeDraftAttachments={composeState.composeDraftAttachments}
         composeFiles={composeState.composeFiles}
-        onComposePasteFiles={(files) => {
-          const incoming = Array.isArray(files) ? files : Array.from(files || []);
-          patchComposeState((current) => ({
-            composeFiles: incoming.length > 0 ? [...current.composeFiles, ...incoming] : current.composeFiles,
-          }));
-        }}
+        inlineSourcesByCid={inlineSourcesByCid}
+        onPasteInlineImages={handlePasteInlineImages}
         onSendComposeShortcut={handleSendCompose}
         formatFileSize={formatFileSize}
         sumFilesSize={sumFilesSize}
@@ -791,6 +919,9 @@ export default function MailComposeHost({
         onOpenSignatureEditor={() => onOpenSignatureEditor?.(composeState.composeFromMailboxId)}
         onSendCompose={handleSendCompose}
         onRegisterFlushHandler={(handler) => { composeFlushHandlerRef.current = handler; }}
+        desktopFullScreen={Boolean(expanded)}
+        onToggleExpanded={onToggleExpanded}
+        onOpenDesktopWindow={onOpenDesktopWindow ? handleOpenDesktopCompose : undefined}
         layoutMode={layoutMode}
       />
       <Dialog open={closeDraftPromptOpen} onClose={handleKeepEditingCompose} maxWidth="xs" fullWidth>

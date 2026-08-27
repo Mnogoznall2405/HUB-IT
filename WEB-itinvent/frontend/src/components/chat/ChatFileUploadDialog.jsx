@@ -12,6 +12,7 @@ import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 import ChatFileUploadPanel from './ChatFileUploadPanel';
+import ChatImageEditorDialog from './ChatImageEditorDialog';
 import { isChatMediaFile } from './chatUploadPrep';
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
@@ -32,10 +33,13 @@ export default function ChatFileUploadDialog({
   fileInputRef,
   mediaFileInputRef,
   files = [],
+  imageEdits = [],
+  onApplyImageEdit,
   onCaptionChange,
   onClearFiles,
   onClose,
   onRemoveFile,
+  onResetImageEdit,
   onSend,
   onSendMediaAsFilesChange,
   open = false,
@@ -48,6 +52,7 @@ export default function ChatFileUploadDialog({
 }) {
   const [actionsAnchorEl, setActionsAnchorEl] = useState(null);
   const [captionEmojiAnchorEl, setCaptionEmojiAnchorEl] = useState(null);
+  const [editingImageIndex, setEditingImageIndex] = useState(null);
   const selectedFiles = Array.isArray(files) ? files : [];
   const busy = Boolean(preparing || sending);
   const normalizedUploadProgress = Math.max(0, Math.min(100, Math.round(Number(uploadProgress || 0))));
@@ -67,6 +72,7 @@ export default function ChatFileUploadDialog({
     if (!open) {
       setActionsAnchorEl(null);
       setCaptionEmojiAnchorEl(null);
+      setEditingImageIndex(null);
     }
   }, [open]);
 
@@ -105,6 +111,21 @@ export default function ChatFileUploadDialog({
     onCaptionChange?.(`${String(caption || '')}${nextEmoji}`);
   }, [caption, onCaptionChange]);
 
+  const activeImageFile = Number.isInteger(editingImageIndex)
+    ? (imageEdits?.[editingImageIndex]?.sourceFile || selectedFiles[editingImageIndex])
+    : null;
+  const activeImageRecipe = Number.isInteger(editingImageIndex)
+    ? imageEdits?.[editingImageIndex]?.recipe
+    : null;
+
+  const applyImageEdit = useCallback(async (payload) => {
+    if (!Number.isInteger(editingImageIndex)) return;
+    const completed = payload?.reset
+      ? await onResetImageEdit?.(editingImageIndex)
+      : await onApplyImageEdit?.(editingImageIndex, payload);
+    if (completed !== false) setEditingImageIndex(null);
+  }, [editingImageIndex, onApplyImageEdit, onResetImageEdit]);
+
   const dialogPaperSx = useMemo(() => ({
     m: 1.5,
     width: {
@@ -141,11 +162,16 @@ export default function ChatFileUploadDialog({
           onAdd={triggerFilePicker}
           onCancel={clearFiles}
           onCaptionChange={onCaptionChange}
+          onEditImage={setEditingImageIndex}
           onOpenEmoji={openCaptionEmojiPicker}
           onOpenMenu={openActionsMenu}
           onRemoveFile={onRemoveFile}
           onSend={onSend}
           onSendMediaAsFilesChange={onSendMediaAsFilesChange}
+          imageEdits={imageEdits}
+          originalModeDisabledReason={imageEdits.some((item) => Boolean(item?.edited))
+            ? 'Сбросьте изменения, чтобы отправить оригинал.'
+            : ''}
           preparing={preparing}
           sending={sending}
           sendMediaAsFiles={sendMediaAsFiles}
@@ -154,6 +180,14 @@ export default function ChatFileUploadDialog({
           uploadProgress={normalizedUploadProgress}
         />
       </Dialog>
+
+      <ChatImageEditorDialog
+        file={activeImageFile}
+        initialRecipe={activeImageRecipe}
+        onApply={applyImageEdit}
+        onClose={() => setEditingImageIndex(null)}
+        open={Boolean(open && activeImageFile)}
+      />
 
       <Popover
         open={Boolean(captionEmojiAnchorEl)}

@@ -12,6 +12,7 @@ import {
   getConversationDisplayTitle,
   getConversationHeaderSubtitle,
   getConversationStatusLine,
+  getPersonContextLine,
   getTaskConversationMetaLine,
   getAttachmentKind,
   getMessagePreview,
@@ -25,6 +26,25 @@ import {
   pickBlobAttachmentUrl,
   sortSidebarConversations,
 } from './chatHelpers';
+
+describe('getPersonContextLine', () => {
+  it('prioritises job title and department while keeping account status', () => {
+    expect(getPersonContextLine({
+      username: 'ivan.petrov',
+      job_title: 'Системный администратор',
+      department: 'ИТ',
+      city: 'Тюмень',
+      presence: { is_online: true, status_text: 'В сети' },
+    })).toBe('Системный администратор · ИТ · Тюмень · @ivan.petrov • В сети');
+  });
+
+  it('falls back to username and presence when workplace context is empty', () => {
+    expect(getPersonContextLine({
+      username: 'm.sokolova',
+      presence: { is_online: false, status_text: 'Была недавно' },
+    })).toBe('@m.sokolova • Была недавно');
+  });
+});
 
 describe('formatMessageTime', () => {
   beforeEach(() => {

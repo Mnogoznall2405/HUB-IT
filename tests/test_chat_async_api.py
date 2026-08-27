@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sys
 from contextvars import ContextVar
+from io import BytesIO
 from pathlib import Path
 
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
 
 
@@ -106,6 +109,54 @@ def test_send_chat_message_route_uses_async_boundary_and_background_publish(monk
     assert scheduled_labels == ["after_send_side_effects"]
 
 
+def test_send_chat_files_route_passes_client_message_id_for_idempotent_retry(monkeypatch):
+    current_user = _build_chat_user()
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/chat/conversations/conv-1/messages/files",
+        "headers": [],
+        "query_string": b"",
+    })
+    calls = []
+
+    def _direct(*args, **kwargs):
+        raise AssertionError("send_files should not be called directly")
+
+    async def _fake_run_chat_call_with_meta(func, *args, **kwargs):
+        calls.append({"func": func, "args": args, "kwargs": kwargs})
+        return ({
+            "id": "msg-files-1",
+            "conversation_id": "conv-1",
+            "kind": "file",
+            "attachments": [],
+            "client_message_id": "mobile-files-1",
+        }, {"conversation_kind": "direct"})
+
+    monkeypatch.setattr(chat_api_module.chat_service, "send_files", _direct)
+    monkeypatch.setattr(chat_api_module, "_run_chat_call_with_meta", _fake_run_chat_call_with_meta)
+    monkeypatch.setattr(chat_api_module, "_schedule_chat_message_side_effects", lambda **_kwargs: None)
+    monkeypatch.setattr(chat_api_module, "_schedule_ai_run_for_message", lambda **_kwargs: None)
+
+    response = asyncio.run(chat_api_module.send_chat_files(
+        request=request,
+        conversation_id="conv-1",
+        body="Files",
+        client_message_id="mobile-files-1",
+        reply_to_message_id=None,
+        files_meta_json=None,
+        files=[UploadFile(filename="one.txt", file=BytesIO(b"one"))],
+        db_id=None,
+        current_user=current_user,
+    ))
+
+    assert response["id"] == "msg-files-1"
+    assert len(calls) == 1
+    assert calls[0]["func"] is _direct
+    assert calls[0]["kwargs"]["client_message_id"] == "mobile-files-1"
+    assert calls[0]["kwargs"]["uploads"][0].filename == "one.txt"
+
+
 def test_ai_run_is_scheduled_only_for_ai_conversations(monkeypatch):
     scheduled_labels = []
 
@@ -179,7 +230,12 @@ def test_forward_chat_message_route_passes_body_format(monkeypatch):
     assert async_boundary_calls[0]["func"] is _direct
     assert async_boundary_calls[0]["kwargs"]["source_message_id"] == "msg-source"
     assert async_boundary_calls[0]["kwargs"]["body_format"] == "markdown"
-    assert scheduled == [{"conversation_id": "conv-1", "message_id": "msg-forward"}]
+    assert scheduled == [{
+        "conversation_id": "conv-1",
+        "message_id": "msg-forward",
+        "deferred_notifications": None,
+        "deferred_realtime_publish": None,
+    }]
 
 
 def test_realtime_broadcast_does_not_wait_for_slow_socket():
@@ -188,6 +244,7 @@ def test_realtime_broadcast_does_not_wait_for_slow_socket():
             self.accepted = False
             self.started = asyncio.Event()
             self.release = asyncio.Event()
+            self.delivered = asyncio.Event()
             self.sent = []
 
         async def accept(self) -> None:
@@ -197,6 +254,10 @@ def test_realtime_broadcast_does_not_wait_for_slow_socket():
             self.started.set()
             await self.release.wait()
             self.sent.append(envelope)
+            self.delivered.set()
+
+        async def send_text(self, payload: str) -> None:
+            await self.send_json(json.loads(payload))
 
     class FastWebSocket:
         def __init__(self) -> None:
@@ -210,6 +271,9 @@ def test_realtime_broadcast_does_not_wait_for_slow_socket():
         async def send_json(self, envelope: dict) -> None:
             self.sent.append(envelope)
             self.delivered.set()
+
+        async def send_text(self, payload: str) -> None:
+            await self.send_json(json.loads(payload))
 
     async def _exercise_broadcast() -> None:
         manager = chat_realtime_module.ChatRealtimeManager()
@@ -232,9 +296,10 @@ def test_realtime_broadcast_does_not_wait_for_slow_socket():
         assert fast_socket.sent[0]["type"] == "chat.test"
         assert fast_socket.sent[0]["payload"] == {"ok": True}
         assert slow_socket.sent == []
+        await asyncio.wait_for(publish_task, timeout=0.5)
 
         slow_socket.release.set()
-        await asyncio.wait_for(publish_task, timeout=0.5)
+        await asyncio.wait_for(slow_socket.delivered.wait(), timeout=0.5)
         assert len(slow_socket.sent) == 1
 
     asyncio.run(_exercise_broadcast())
@@ -376,7 +441,11 @@ def test_get_chat_messages_logs_request_meta_from_threadpool(monkeypatch):
     )
 
     assert response["items"] == []
-    assert log_calls == [{
+    assert len(log_calls) == 1
+    log_call = log_calls[0]
+    assert float(log_call.pop("db_ms")) >= 0.0
+    assert float(log_call.pop("executor_wait_ms")) >= 0.0
+    assert log_call == {
         "name": "messages",
         "user_id": 100,
         "conversation_id": "conv-1",
@@ -387,7 +456,7 @@ def test_get_chat_messages_logs_request_meta_from_threadpool(monkeypatch):
         "items_count": 2,
         "direction": "before",
         "cursor_invalid": 0,
-    }]
+    }
 
 
 def test_get_chat_conversation_route_uses_async_boundary(monkeypatch):

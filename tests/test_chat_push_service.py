@@ -175,6 +175,7 @@ def test_send_notification_omits_app_badge_count_for_chat_channel(monkeypatch):
 def test_send_notification_respects_explicit_app_badge_count_override(monkeypatch):
     service = ChatPushService()
     captured: dict[str, object] = {}
+    native_captured: dict[str, object] = {}
 
     monkeypatch.setattr(
         service,
@@ -191,6 +192,10 @@ def test_send_notification_respects_explicit_app_badge_count_override(monkeypatc
         "_send_payload_to_subscriptions",
         lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
     )
+    monkeypatch.setattr(
+        "backend.services.native_push_service.native_push_service.send_notification",
+        lambda **kwargs: native_captured.update(kwargs) or NativePushSendResult(),
+    )
 
     service.send_notification(
         recipient_user_id=7,
@@ -202,6 +207,7 @@ def test_send_notification_respects_explicit_app_badge_count_override(monkeypatc
     )
 
     assert captured["payload"]["app_badge_count"] == 3
+    assert native_captured["app_badge_count"] == 3
 
 
 def test_compute_app_badge_count_sums_hub_and_mail_unread(monkeypatch):
@@ -296,6 +302,39 @@ def test_send_chat_message_notification_uses_android_friendly_ttl_and_high_urgen
     assert isinstance(payload["timestamp"], int)
 
 
+def test_send_chat_message_notification_respects_specific_chat_preference(monkeypatch):
+    service = ChatPushService()
+    preference_calls: list[dict[str, object]] = []
+    subscription_calls: list[int] = []
+
+    def _is_enabled(**kwargs):
+        preference_calls.append(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        "backend.chat.push_service.notification_preferences_service.is_enabled",
+        _is_enabled,
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: subscription_calls.append(1) or [object()],
+    )
+
+    result = service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-group",
+        message_id="msg-group-disabled",
+        title="Group title",
+        body="Group body",
+        preference_channel="chat_group",
+    )
+
+    assert result.sent == 0
+    assert preference_calls == [{"user_id": 7, "channel": "chat_group"}]
+    assert subscription_calls == []
+
+
 def test_send_chat_message_notification_skips_duplicate_delivery_within_idempotency_window(monkeypatch):
     service = ChatPushService()
     send_calls: list[dict[str, object]] = []
@@ -369,7 +408,7 @@ def test_send_chat_message_notification_uses_all_distinct_subscriptions(monkeypa
     assert [item.id for item in subscriptions] == [2, 1]
 
 
-def test_send_chat_message_notification_skips_native_when_web_subscriptions_exist(monkeypatch):
+def test_send_chat_message_notification_fans_out_to_web_and_native_subscriptions(monkeypatch):
     service = ChatPushService()
     native_calls: list[dict[str, object]] = []
 
@@ -381,20 +420,49 @@ def test_send_chat_message_notification_skips_native_when_web_subscriptions_exis
     monkeypatch.setattr(
         service,
         "_send_payload_to_subscriptions",
-        lambda **_: ChatPushSendResult(failed=1),
+        lambda **_: ChatPushSendResult(sent=1),
     )
     monkeypatch.setattr(
         "backend.services.native_push_service.native_push_service.send_notification",
-        lambda **kwargs: native_calls.append(kwargs) or NativePushSendResult(tokens=1, sent=1),
+        lambda **kwargs: native_calls.append(kwargs) or NativePushSendResult(tokens=2, sent=2),
     )
 
     result = service.send_chat_message_notification(
         recipient_user_id=7,
         conversation_id="conv-1",
-        message_id="msg-native-skip",
+        message_id="msg-native-fanout",
         title="Chat title",
         body="Chat body",
     )
 
+    assert result.sent == 3
+    assert len(native_calls) == 1
+    assert native_calls[0]["recipient_user_id"] == 7
+    assert native_calls[0]["route"] == "/chat?conversation=conv-1&message=msg-native-fanout"
+
+
+def test_send_notification_skips_non_system_push_during_quiet_hours(monkeypatch):
+    import backend.chat.push_service as push_service_module
+
+    service = ChatPushService()
+    monkeypatch.setattr(
+        push_service_module.notification_preferences_service,
+        "is_quiet_hours_active",
+        lambda **kwargs: kwargs["channel"] == "chat",
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: (_ for _ in ()).throw(AssertionError("delivery lookup must be skipped")),
+    )
+
+    result = service.send_notification(
+        recipient_user_id=7,
+        title="Chat",
+        body="Message",
+        channel="chat",
+        route="/chat",
+    )
+
     assert result.sent == 0
-    assert native_calls == []
+    assert result.failed == 0

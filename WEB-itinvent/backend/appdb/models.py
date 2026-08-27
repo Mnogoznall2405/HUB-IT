@@ -385,6 +385,31 @@ class AppTrustedDevice(AppBase):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
 
 
+class AppMobileBiometricCredential(AppBase):
+    """Revocable APK-only credential unlocked by Android biometrics."""
+
+    __tablename__ = "mobile_biometric_credentials"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "client_device_key_hash",
+            name="uq_app_mobile_biometric_user_device",
+        ),
+        UniqueConstraint("token_hash", name="uq_app_mobile_biometric_token_hash"),
+        Index("ix_app_mobile_biometric_user_active", "user_id", "is_active"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    client_device_key_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AppUserSetting(AppBase):
     __tablename__ = "user_settings"
     __table_args__ = _table_args(schema=APP_SCHEMA)
@@ -707,6 +732,39 @@ class AppNativePushToken(AppBase):
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AppPushOutbox(AppBase):
+    __tablename__ = "push_outbox"
+    __table_args__ = _table_args(
+        UniqueConstraint("dedupe_key", name="uq_app_push_outbox_dedupe_key"),
+        Index("ix_app_push_outbox_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_app_push_outbox_recipient_status", "recipient_user_id", "status"),
+        Index("ix_app_push_outbox_updated_at", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipient_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="system", index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    route: Mapped[str] = mapped_column(String(1024), nullable=False, default="/")
+    tag: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    icon: Mapped[str] = mapped_column(String(255), nullable=False, default="/pwa-192.png")
+    badge: Mapped[str] = mapped_column(String(255), nullable=False, default="/hubit-badge.svg")
+    data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    app_badge_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AppAiBot(AppBase):

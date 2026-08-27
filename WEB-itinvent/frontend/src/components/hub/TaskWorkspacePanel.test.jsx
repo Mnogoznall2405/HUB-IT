@@ -167,7 +167,7 @@ describe('TaskWorkspacePanel', () => {
     expect(within(actions).getByRole('button', { name: 'В работу' })).toBeInTheDocument();
     expect(within(actions).getByRole('button', { name: 'Отправить на проверку' })).toBeDisabled();
     expect(within(actions).getByRole('button', { name: 'Закрыть' })).toBeEnabled();
-    expect(screen.getByText(/Недоступно: вы являетесь постановщиком/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Недоступно: вы являетесь постановщиком/i)).not.toBeInTheDocument();
     expect(hubAPI.getTask).toHaveBeenCalledWith('task-1');
   });
 
@@ -288,6 +288,32 @@ describe('TaskWorkspacePanel', () => {
       expect(hubAPI.getTaskProjects).toHaveBeenCalledWith({ include_inactive: true });
       expect(hubAPI.getTaskObjects).toHaveBeenCalledWith({ include_inactive: true });
     });
-    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByDisplayValue(task.title)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Сохранить изменения' })).toBeEnabled();
+    expect(within(dialog).queryByText('Редактирование задачи')).not.toBeInTheDocument();
+  });
+
+  it('saves workspace edits from the modern task form', async () => {
+    renderPanel();
+    await openMoreMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Изменить' }));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByDisplayValue(task.title), {
+      target: { value: 'Обновлённое рабочее место' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить изменения' }));
+
+    await waitFor(() => {
+      expect(hubAPI.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        title: 'Обновлённое рабочее место',
+        assignee_user_id: 2,
+        controller_user_id: 3,
+        project_id: 'project-1',
+        object_id: 'object-1',
+        priority: 'high',
+      }));
+    });
   });
 });

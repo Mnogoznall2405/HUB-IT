@@ -16,6 +16,7 @@ const mockApi = vi.hoisted(() => ({
     getEquipmentHistory: vi.fn(),
     getEquipmentActs: vi.fn(),
     getRecentCards: vi.fn(),
+    getRecentActs: vi.fn(),
     touchRecentCard: vi.fn(),
     removeRecentCard: vi.fn(),
     clearRecentCards: vi.fn(),
@@ -30,6 +31,10 @@ const mockApi = vi.hoisted(() => ({
     getMySettings: vi.fn(),
     updateMySettings: vi.fn(),
   },
+  equipmentSearchAPI: {
+    searchByEmployee: vi.fn(),
+    getEmployeeEquipment: vi.fn(),
+  },
 }));
 
 vi.mock('../api/client', () => ({
@@ -41,6 +46,10 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../api/database', () => ({
   databaseAPI: mockApi.databaseAPI,
+}));
+
+vi.mock('../api/equipmentSearch', () => ({
+  equipmentSearchAPI: mockApi.equipmentSearchAPI,
 }));
 
 vi.mock('../api/json_client', () => ({
@@ -122,9 +131,9 @@ import {
   UPLOAD_ACT_MAX_SIZE_MB,
 } from './Database';
 
-function renderDatabase() {
+function renderDatabase(initialEntry = '/database') {
   return render(
-    <MemoryRouter initialEntries={['/database']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Database />
     </MemoryRouter>,
   );
@@ -193,6 +202,7 @@ beforeEach(() => {
         type_name: 'PC',
         model_name: 'OptiPlex',
         employee_name: 'Current Holder',
+        empl_no: 42,
         branch_name: 'HQ',
         location: 'Office',
         status: 'Active',
@@ -203,6 +213,7 @@ beforeEach(() => {
   });
   mockApi.equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [], total: 0 });
   mockApi.equipmentAPI.getRecentCards.mockResolvedValue({ items: [] });
+  mockApi.equipmentAPI.getRecentActs.mockResolvedValue({ items: [] });
   mockApi.equipmentAPI.touchRecentCard.mockResolvedValue({
     inv_no: '1001',
     db_id: 'main',
@@ -237,6 +248,15 @@ beforeEach(() => {
     success: false,
     message: 'not found',
   });
+  mockApi.equipmentSearchAPI.searchByEmployee.mockResolvedValue({ employees: [] });
+  mockApi.equipmentSearchAPI.getEmployeeEquipment.mockResolvedValue({
+    equipment: [{
+      INV_NO: '1001',
+      MODEL_NAME: 'OptiPlex',
+      SERIAL_NO: 'SN-1001',
+      PART_NO: 'PN-1001',
+    }],
+  });
   mockApi.equipmentAPI.getAllEquipmentGrouped.mockImplementation(async ({ page = 1 } = {}) => {
     if (page === 1) {
       return {
@@ -250,6 +270,7 @@ beforeEach(() => {
             PART_NO: 'PN-1001',
             TYPE_NAME: 'ПК',
             MODEL_NAME: 'OptiPlex',
+            EMPL_NO: 42,
             OWNER_DISPLAY_NAME: 'Иванов И.И.',
             STATUS_NAME: 'В работе',
             BRANCH_NAME: 'HQ',
@@ -329,6 +350,20 @@ beforeEach(() => {
 });
 
 describe('Database equipment row helpers', () => {
+  it('opens a database-scoped equipment QR link directly on the requested tab', async () => {
+    mockApi.databaseAPI.getCurrentDatabase.mockImplementation(async () => {
+      const id = localStorage.getItem('selected_database') || 'main';
+      return { id, name: id };
+    });
+    renderDatabase('/database?inv_no=1001&db_id=archive&tab=history');
+
+    await waitFor(() => {
+      expect(mockApi.databaseAPI.switchDatabase).toHaveBeenCalledWith('archive');
+    });
+    expect(await screen.findByRole('tab', { name: 'История перемещений' })).toHaveAttribute('aria-selected', 'true');
+    expect(localStorage.getItem('selected_database')).toBe('archive');
+  });
+
   it('shows database selector in the main layout header', async () => {
     renderDatabase();
 
@@ -722,6 +757,26 @@ describe('Database equipment row helpers', () => {
     fireEvent.click(historyTab);
 
     expect(await screen.findByText('История перемещений для этого оборудования пока пустая.')).toBeInTheDocument();
+  });
+
+  it('returns from an equipment card to the employee dialog without resetting its search', async () => {
+    await openFirstEquipmentDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Иванов И.И.' }));
+
+    const employeeDialog = await screen.findByRole('dialog', { name: 'Оборудование сотрудника' });
+    const searchInput = await screen.findByRole('textbox', { name: 'Поиск' });
+    fireEvent.change(searchInput, { target: { value: 'OptiPlex' } });
+    fireEvent.click(await screen.findByRole('button', { name: '1001' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Назад' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Назад' })).not.toBeInTheDocument();
+    });
+    expect(employeeDialog).toBeInTheDocument();
+    expect(await screen.findByRole('textbox', { name: 'Поиск' })).toHaveValue('OptiPlex');
+    expect(mockApi.equipmentSearchAPI.getEmployeeEquipment).toHaveBeenCalledTimes(1);
   });
 
   it('adds delete action only for admins in equipment mode', () => {

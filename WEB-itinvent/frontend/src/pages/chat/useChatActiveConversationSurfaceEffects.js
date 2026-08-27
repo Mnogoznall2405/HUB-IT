@@ -43,6 +43,22 @@ export function parseStoredPinnedMessage(storedPinnedMessage) {
   };
 }
 
+export function resolveInitialPinnedMessage(serverPinnedMessageId, storedPinnedMessage) {
+  if (serverPinnedMessageId === undefined) {
+    return parseStoredPinnedMessage(storedPinnedMessage);
+  }
+  const serverId = String(serverPinnedMessageId || '').trim();
+  if (!serverId) return null;
+  const stored = parseStoredPinnedMessage(storedPinnedMessage);
+  if (stored && stored.id === serverId) return stored;
+  return {
+    id: serverId,
+    senderName: '',
+    preview: '',
+    createdAt: '',
+  };
+}
+
 export function shouldSkipPinnedMessageReconcile(pinnedMessage, nextPinnedMessage) {
   if (!nextPinnedMessage) return true;
   return (
@@ -99,6 +115,7 @@ export default function useChatActiveConversationSurfaceEffects({
   persistPinnedMessage,
   pinnedMessage,
   pinnedMessageStorageKey,
+  serverPinnedMessageId,
   setAiStatusByConversation,
   setPinnedMessage,
   showContextPanel,
@@ -141,14 +158,16 @@ export default function useChatActiveConversationSurfaceEffects({
   }, [isMobile, showContextPanel, showTaskPanel]);
 
   useEffect(() => {
-    if (!pinnedMessageStorageKey) {
+    if (!pinnedMessageStorageKey && serverPinnedMessageId === undefined) {
       setPinnedMessage(null);
       return undefined;
     }
-    const storedPinnedMessage = readLocalStorageJsonObject(pinnedMessageStorageKey);
-    setPinnedMessage(parseStoredPinnedMessage(storedPinnedMessage));
+    const storedPinnedMessage = pinnedMessageStorageKey
+      ? readLocalStorageJsonObject(pinnedMessageStorageKey)
+      : null;
+    setPinnedMessage(resolveInitialPinnedMessage(serverPinnedMessageId, storedPinnedMessage));
     return undefined;
-  }, [pinnedMessageStorageKey, setPinnedMessage]);
+  }, [pinnedMessageStorageKey, serverPinnedMessageId, setPinnedMessage]);
 
   useEffect(() => {
     const pinnedMessageId = String(pinnedMessage?.id || '').trim();

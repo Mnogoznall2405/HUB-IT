@@ -169,6 +169,23 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+_ASCII_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})")
+
+
+def decode_ascii_unicode_escapes(value: Any) -> str:
+    """Decode explicit Unicode escapes while preserving ordinary env values."""
+    text = normalize_text(value)
+
+    def replace_escape(match: re.Match[str]) -> str:
+        code_point = int(match.group(1) or match.group(2), 16)
+        try:
+            return chr(code_point)
+        except ValueError:
+            return match.group(0)
+
+    return _ASCII_UNICODE_ESCAPE_RE.sub(replace_escape, text)
+
+
 def is_meaningful_1c_ref(value: Any) -> bool:
     text = normalize_text(value).lower()
     return bool(text) and text != EMPTY_1C_REF
@@ -902,7 +919,7 @@ class Warehouse1CService:
 
         server = normalize_text(os.getenv("BUH20_1C_SERVER")) or DEFAULT_1C_SERVER
         ref = normalize_text(os.getenv("BUH20_1C_REF")) or DEFAULT_1C_REF
-        user = normalize_text(os.getenv("BUH20_1C_USER"))
+        user = decode_ascii_unicode_escapes(os.getenv("BUH20_1C_USER"))
         password = normalize_text(os.getenv("BUH20_1C_PASSWORD"))
         if not user or not password:
             raise Warehouse1CQueryError("BUH20_1C_USER и BUH20_1C_PASSWORD не заданы в .env")
