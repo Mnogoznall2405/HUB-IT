@@ -1,13 +1,30 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 import { API_V1_BASE } from '../api/config';
+import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { sanitizeNativeFileName } from '../files/filePolicy';
 
 function databaseCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, 'hubit-database');
+  const directory = new Directory(Paths.document, 'hubit-database');
   directory.create({ intermediates: true, idempotent: true });
   return directory;
+}
+
+async function databaseCacheFile(fileName: string): Promise<File> {
+  const userId = Number(await getSessionUserId());
+  if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
+  return new File(databaseCacheDirectory(), `${userId}-${fileName}`);
+}
+
+export function clearNativeDatabaseFileCache(): void {
+  for (const entry of databaseCacheDirectory().list()) entry.delete();
+}
+
+export function getNativeDatabaseFileCacheSize(): number {
+  return databaseCacheDirectory().list().reduce((total, entry) => (
+    entry instanceof File && entry.exists ? total + Math.max(0, Number(entry.size || 0)) : total
+  ), 0);
 }
 
 export async function downloadEquipmentAct(
@@ -24,7 +41,7 @@ export async function downloadEquipmentAct(
   const suffix = query.toString();
   const sourceUrl = `${API_V1_BASE}/equipment/acts/${encodeURIComponent(String(docNo))}/file${suffix ? `?${suffix}` : ''}`;
   const fileName = sanitizeNativeFileName(options.fileName || `act-${docNo}.pdf`);
-  const destination = new File(databaseCacheDirectory(), `${docNo}-${fileName}`);
+  const destination = await databaseCacheFile(`${docNo}-${fileName}`);
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
 
@@ -53,7 +70,7 @@ export async function downloadGeneratedTransferAct(
   const sourceUrl = `${API_V1_BASE}/equipment/transfer/act/${encodeURIComponent(normalizedActId)}`;
   const extension = options.fileType === 'docx' ? 'docx' : 'pdf';
   const fileName = sanitizeNativeFileName(options.fileName || `transfer-${normalizedActId}.${extension}`);
-  const destination = new File(databaseCacheDirectory(), `${normalizedActId}-${fileName}`);
+  const destination = await databaseCacheFile(`${normalizedActId}-${fileName}`);
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
 

@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-08-27 05:22 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-09-04 08:06 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **137** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **141** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **9** | — |
@@ -29,7 +29,7 @@ _Обновлено: 2026-08-27 05:22 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (137 таблиц)
+## Схема `app` (141 таблиц)
 
 ### Auth и пользователи
 
@@ -71,6 +71,7 @@ _Обновлено: 2026-08-27 05:22 UTC_ · инстанс `127.0.0.1:5432/hub
 | `hub_notifications` | **Hub notification** |
 | `hub_task_attachment_previews` | — |
 | `hub_task_attachments` | Вложения к задаче |
+| `hub_task_canvases` | — |
 | `hub_task_comment_reads` | Прочитанность комментариев |
 | `hub_task_comments` | Комментарии |
 | `hub_task_email_outbox` | — |
@@ -179,6 +180,9 @@ _Обновлено: 2026-08-27 05:22 UTC_ · инстанс `127.0.0.1:5432/hub
 |---------|------------|
 | `browser_probe_media` | — |
 | `browser_probe_visits` | — |
+| `construction_object_1c_groups` | — |
+| `construction_object_role_assignments` | — |
+| `construction_objects` | — |
 | `desktop_presence` | — |
 | `docflow_audit_events` | — |
 | `docflow_commands` | — |
@@ -305,7 +309,7 @@ python scripts/introspect_pg_schema.py
 ```text
 app.users ──┬── app.sessions
             ├── app.department_memberships ── app.departments
-            ├── app.hub_tasks (assignee / controller / creator)
+            ├── app.hub_tasks (assignees / controller / creator; assignee_user_id is the compatibility primary)
             ├── app.ticket_requests ── items / comments / attachments
             ├── app.inventory_hosts ── inventory_host_sql_contexts
             └── (chat) chat_members ── chat_conversations ── chat_messages  [если развёрнуто]
@@ -343,7 +347,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-08-27:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 137, `chat` 4, `system` 8).
+- **2026-09-04:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 141, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

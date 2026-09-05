@@ -69,6 +69,8 @@ class ChatReactionToggleResponse(BaseModel):
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
+    conversation_kind: Optional[Literal["direct", "group", "ai", "notes", "task"]] = None
+    task_id: Optional[str] = None
     conversation_seq: int = 0
     kind: Literal["text", "task_share", "file", "system"] = "text"
     body_format: Literal["plain", "markdown"] = "plain"

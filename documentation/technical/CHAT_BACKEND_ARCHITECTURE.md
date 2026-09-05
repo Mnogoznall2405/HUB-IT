@@ -45,6 +45,17 @@ upload_*, attachment_media, realtime   Infra (existing)
 | `api/v1/chat/link_preview.py` | Thin HTTP route → `link_preview_service` |
 | `api/v1/chat/_common.py` | Re-exports from `realtime_publisher` (backward compat for tests) |
 
+## Task canvas realtime
+
+Совместная доска задачи использует существующий Chat realtime runtime и не требует отдельного процесса:
+
+- WebSocket: `/api/v1/chat/task-canvas/ws?task_id=<id>`;
+- доменная проверка доступа и валидация сцен: `backend/task_canvas/realtime.py`;
+- транспорт, комнаты, bounded outbound queues и межпроцессный relay: `backend/chat/realtime.py`;
+- долговременное состояние и optimistic revision остаются в Hub REST API и `hub_task_canvases`.
+
+Комнаты имеют вид `task-canvas:<task_id>`. Протокол передаёт presence/cursor как volatile-события, а сцены объединяются на клиентах через Excalidraw reconciliation. После reconnect клиент сначала получает сохранённый snapshot, затем запрашивает актуальную сцену у участников комнаты. Если realtime недоступен, доска продолжает работать через REST-автосохранение без курсоров.
+
 ## Regression gate
 
 ```powershell

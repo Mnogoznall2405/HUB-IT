@@ -1,4 +1,5 @@
-import apiClient from './client';
+import * as tokenStore from '../auth/tokenStore';
+import apiClient, { withMobileAuthHeaders } from './client';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -23,6 +24,19 @@ export type PasswordVaultList = {
   groups: string[];
   tags: string[];
   unlocked_until: string;
+};
+
+export type PasswordVaultRevealResult = {
+  password: string;
+  unlocked_until: string;
+};
+
+export type PasswordVaultEntryUpdate = {
+  group: string;
+  tags: string[];
+  login: string;
+  description: string;
+  password?: string;
 };
 
 function asRecord(value: unknown): UnknownRecord {
@@ -98,4 +112,51 @@ export async function listPasswordVaultEntries(options: {
     tags: asStringArray(source.tags, 500, 64),
     unlocked_until: asString(source.unlocked_until),
   };
+}
+
+export async function unlockPasswordVaultWithBiometrics(renewalToken: string): Promise<{ unlocked_until: string }> {
+  const clientDeviceId = await tokenStore.getOrCreateClientDeviceId();
+  const response = await apiClient.post('/passwords/unlock/mobile-biometric', {
+    renewal_token: String(renewalToken || '').trim(),
+  }, {
+    headers: withMobileAuthHeaders(clientDeviceId),
+  });
+  return { unlocked_until: asString(asRecord(response.data).unlocked_until) };
+}
+
+export async function revealPasswordVaultEntry(
+  entryId: string,
+  purpose: 'show' | 'copy',
+): Promise<PasswordVaultRevealResult> {
+  const response = await apiClient.post(
+    `/passwords/${encodeURIComponent(asString(entryId))}/reveal`,
+    { purpose },
+  );
+  const source = asRecord(response.data);
+  return {
+    password: String(source.password ?? ''),
+    unlocked_until: asString(source.unlocked_until),
+  };
+}
+
+export async function updatePasswordVaultEntry(
+  entryId: string,
+  payload: PasswordVaultEntryUpdate,
+): Promise<PasswordVaultEntry> {
+  const clientDeviceId = await tokenStore.getOrCreateClientDeviceId();
+  const normalizedPayload: PasswordVaultEntryUpdate = {
+    group: asString(payload.group).slice(0, 120),
+    tags: asStringArray(payload.tags.map((tag) => asString(tag).replace(/^#+/, '')), 20, 64),
+    login: asString(payload.login).slice(0, 255),
+    description: asString(payload.description).slice(0, 4_000),
+    ...(payload.password !== undefined ? { password: String(payload.password).slice(0, 4_096) } : {}),
+  };
+  const response = await apiClient.patch(
+    `/passwords/${encodeURIComponent(asString(entryId))}`,
+    normalizedPayload,
+    { headers: withMobileAuthHeaders(clientDeviceId) },
+  );
+  const entry = normalizeEntry(response.data);
+  if (!entry) throw new Error('Сервер вернул некорректную запись пароля');
+  return entry;
 }

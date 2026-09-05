@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import type { HubUser } from '../api/types';
 import { clearNativeSnapshots } from '../cache/nativeSnapshotCache';
+import { clearNativeMyFilesOffline } from '../myFiles/nativeMyFilesOfflineStore';
 
 const ACCESS_KEY = 'hubit_access_token';
 const REFRESH_KEY = 'hubit_refresh_token';
@@ -110,15 +111,23 @@ export async function setTokens(accessToken: string, refreshToken: string): Prom
   notifyAccessTokenChanges(accessToken);
 }
 
-export async function clearTokens(): Promise<void> {
+export async function clearTokens(options: { clearOfflineData?: boolean } = {}): Promise<void> {
   const sessionUserId = await getSessionUserId().catch(() => null);
-  await Promise.allSettled([
+  const cleanup: Promise<unknown>[] = [
     deleteItem(ACCESS_KEY),
     deleteItem(REFRESH_KEY),
     deleteItem(SESSION_USER_ID_KEY),
     deleteItem(SESSION_USER_CACHE_KEY),
-    sessionUserId ? clearNativeSnapshots(sessionUserId) : Promise.resolve(),
-  ]);
+  ];
+  // A server-side session can expire while the user still owns a valid encrypted
+  // offline snapshot. Only an explicit logout is allowed to erase that data.
+  if (options.clearOfflineData && sessionUserId) {
+    cleanup.push(
+      clearNativeSnapshots(sessionUserId),
+      clearNativeMyFilesOffline(sessionUserId),
+    );
+  }
+  await Promise.allSettled(cleanup);
   notifyAccessTokenChanges(null);
 }
 

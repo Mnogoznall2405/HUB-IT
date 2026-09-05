@@ -120,6 +120,8 @@ class ChatRealtimeConnection:
     id: str
     user_id: int
     websocket: WebSocket
+    receive_user_events: bool = True
+    track_presence: bool = True
     inbox_subscribed: bool = False
     conversation_ids: set[str] = field(default_factory=set)
     presence_watch_user_ids: set[int] = field(default_factory=set)
@@ -602,13 +604,28 @@ class ChatRealtimeManager:
             envelope["request_id"] = normalized_request_id
         return envelope
 
-    async def connect(self, websocket: WebSocket, *, user_id: int) -> tuple[str, bool]:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        *,
+        user_id: int,
+        receive_user_events: bool = True,
+        track_presence: bool = True,
+    ) -> tuple[str, bool]:
         await websocket.accept()
         connection_id = str(uuid4())
         normalized_user_id = int(user_id)
         stale_connection_ids: list[str] = []
         with self._lock:
-            existing = self._user_connection_ids.setdefault(normalized_user_id, set())
+            if receive_user_events:
+                existing = self._user_connection_ids.setdefault(normalized_user_id, set())
+            else:
+                existing = {
+                    item.id
+                    for item in self._connections.values()
+                    if int(item.user_id) == normalized_user_id
+                    and not bool(item.receive_user_events)
+                }
             if len(existing) >= _CHAT_WS_MAX_CONNECTIONS_PER_USER:
                 overflow = len(existing) - _CHAT_WS_MAX_CONNECTIONS_PER_USER + 1
                 stale_connection_ids = list(existing)[:overflow]
@@ -618,6 +635,8 @@ class ChatRealtimeManager:
             id=connection_id,
             user_id=normalized_user_id,
             websocket=websocket,
+            receive_user_events=bool(receive_user_events),
+            track_presence=bool(track_presence),
             last_presence_touch_at=_ts_now(),
         )
         connection.sender_task = asyncio.create_task(
@@ -626,14 +645,23 @@ class ChatRealtimeManager:
         )
         with self._lock:
             self._connections[connection_id] = connection
-            existing = self._user_connection_ids.setdefault(normalized_user_id, set())
-            first_connection = len(existing) == 0
-            existing.add(connection_id)
-        self._schedule_presence_record(
-            user_id=normalized_user_id,
-            connection_id=connection_id,
-            reason="connect",
-        )
+            if receive_user_events:
+                existing = self._user_connection_ids.setdefault(normalized_user_id, set())
+                first_connection = len(existing) == 0
+                existing.add(connection_id)
+            else:
+                first_connection = not any(
+                    item.id != connection_id
+                    and int(item.user_id) == normalized_user_id
+                    and not bool(item.receive_user_events)
+                    for item in self._connections.values()
+                )
+        if track_presence:
+            self._schedule_presence_record(
+                user_id=normalized_user_id,
+                connection_id=connection_id,
+                reason="connect",
+            )
         return connection_id, first_connection
 
     async def _evict_connection(self, connection_id: str, *, reason: str = "connection replaced") -> None:
@@ -701,19 +729,28 @@ class ChatRealtimeManager:
             ]
             for stale_key in stale_typing_keys:
                 self._typing_started_sent_at.pop(stale_key, None)
-            user_ids = self._user_connection_ids.get(int(connection.user_id), set())
-            user_ids.discard(normalized_connection_id)
-            last_connection = len(user_ids) == 0
-            if last_connection:
-                self._user_connection_ids.pop(int(connection.user_id), None)
+            if connection.receive_user_events:
+                user_ids = self._user_connection_ids.get(int(connection.user_id), set())
+                user_ids.discard(normalized_connection_id)
+                last_connection = len(user_ids) == 0
+                if last_connection:
+                    self._user_connection_ids.pop(int(connection.user_id), None)
+            else:
+                last_connection = False
+            if connection.track_presence:
                 self._last_seen_by_user_id[int(connection.user_id)] = _utc_now()
+            if not any(
+                int(item.user_id) == int(connection.user_id)
+                for item in self._connections.values()
+            ):
                 self._ws_rate_limiters_by_user.pop(int(connection.user_id), None)
         if connection.sender_task is not None:
             connection.sender_task.cancel()
-        self._schedule_presence_clear(
-            user_id=int(connection.user_id),
-            connection_id=normalized_connection_id,
-        )
+        if connection.track_presence:
+            self._schedule_presence_clear(
+                user_id=int(connection.user_id),
+                connection_id=normalized_connection_id,
+            )
         return {
             "user_id": int(connection.user_id),
             "last_connection": last_connection,
@@ -852,6 +889,8 @@ class ChatRealtimeManager:
             snapshot = {}
         with self._lock:
             for connection in self._connections.values():
+                if not connection.track_presence:
+                    continue
                 if normalized_user_ids and int(connection.user_id) not in normalized_user_ids:
                     continue
                 snapshot[int(connection.user_id)] = _utc_now()
@@ -1122,12 +1161,14 @@ class ChatRealtimeManager:
         request_id: Optional[str] = None,
         distribute: bool = True,
         exclude_user_id: int = 0,
+        exclude_connection_id: str = "",
     ) -> int:
         """Broadcast one event to every local connection subscribed to the conversation."""
         normalized_conversation_id = str(conversation_id or "").strip()
         if not normalized_conversation_id:
             return 0
         excluded_user_id = int(exclude_user_id or 0)
+        excluded_connection_id = str(exclude_connection_id or "").strip()
         envelope = self.build_envelope(
             event_type=event_type,
             payload=payload,
@@ -1146,6 +1187,7 @@ class ChatRealtimeManager:
                 for connection in self._connections.values()
                 if normalized_conversation_id in connection.conversation_ids
                 and (excluded_user_id <= 0 or int(connection.user_id) != excluded_user_id)
+                and (not excluded_connection_id or connection.id != excluded_connection_id)
             ]
         await self._broadcast_local(
             target_connections=target_connections,
@@ -1162,6 +1204,7 @@ class ChatRealtimeManager:
                     "target_user_ids": [],
                     "watched_user_id": 0,
                     "exclude_user_id": excluded_user_id,
+                    "exclude_connection_id": excluded_connection_id,
                     "event_type": str(event_type or "").strip(),
                     "payload": payload or {},
                     "conversation_id": normalized_conversation_id,
@@ -1295,12 +1338,14 @@ class ChatRealtimeManager:
             return
         if distribution == "conversation_room":
             excluded_user_id = int(event.get("exclude_user_id") or 0)
+            excluded_connection_id = _normalize_text(event.get("exclude_connection_id"))
             with self._lock:
                 target_connections = [
                     connection
                     for connection in self._connections.values()
                     if conversation_id and conversation_id in connection.conversation_ids
                     and (excluded_user_id <= 0 or int(connection.user_id) != excluded_user_id)
+                    and (not excluded_connection_id or connection.id != excluded_connection_id)
                 ]
             await self._broadcast_local(
                 target_connections=target_connections,
@@ -1475,7 +1520,12 @@ class ChatRealtimeManager:
         """True for coalescible / non-durable events (not chat messages / ACK)."""
         if not _CHAT_WS_EVENT_COALESCE:
             normalized = _normalize_text(event_type)
-            return normalized.startswith("chat.typing.") or normalized == "chat.presence.updated"
+            return (
+                normalized.startswith("chat.typing.")
+                or normalized == "chat.presence.updated"
+                or normalized.startswith("task_canvas.")
+                or normalized.startswith("tasks.presence.")
+            )
         normalized_event_type = _normalize_text(event_type)
         if normalized_event_type.startswith("chat.typing."):
             return True
@@ -1484,6 +1534,10 @@ class ChatRealtimeManager:
         if normalized_event_type == "chat.conversation.updated":
             return True
         if normalized_event_type == "chat.unread.summary":
+            return True
+        if normalized_event_type.startswith("task_canvas."):
+            return True
+        if normalized_event_type.startswith("tasks.presence."):
             return True
         return False
 
@@ -1508,6 +1562,17 @@ class ChatRealtimeManager:
         if normalized_event_type == "chat.unread.summary":
             uid = int(target_user_id or 0 or int((payload or {}).get("user_id", 0) or 0))
             return f"inbox_meta:{uid}" if uid > 0 else "inbox_meta:0"
+        if normalized_event_type.startswith("task_canvas."):
+            connection_id = _normalize_text((payload or {}).get("connection_id"))
+            target_connection_id = _normalize_text((payload or {}).get("target_connection_id"))
+            suffix = connection_id or target_connection_id or "room"
+            return f"{normalized_event_type}:{_normalize_text(conversation_id)}:{suffix}"
+        if normalized_event_type.startswith("tasks.presence."):
+            connection_id = _normalize_text((payload or {}).get("connection_id"))
+            target_connection_id = _normalize_text((payload or {}).get("target_connection_id"))
+            task_id = _normalize_text((payload or {}).get("task_id"))
+            suffix = connection_id or target_connection_id or "room"
+            return f"{normalized_event_type}:{task_id}:{suffix}"
         return None
 
     async def _broadcast_local(

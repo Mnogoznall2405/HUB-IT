@@ -16,6 +16,7 @@ export default function useMailListItemSelection({
   openComposeFromDraftMessage,
   saveCurrentListScrollPosition,
   revalidateSelectedMailDetail,
+  performMailReadMutation,
   closeMobileNavigationIfNeeded,
   setSelectedItems,
   setDetailLoading,
@@ -78,9 +79,31 @@ export default function useMailListItemSelection({
           setSelectedConversation(null);
           setSelectedMessage(previewShell);
         }
+        if (item?.is_read === false && typeof performMailReadMutation === 'function') {
+          void performMailReadMutation({
+            mode: 'messages',
+            targetId: nextId,
+            nextIsRead: true,
+            currentUnreadCount: 1,
+            currentMessageCount: 1,
+            errorMessage: 'Не удалось отметить письмо как прочитанное.',
+          });
+        }
         if (String(selectedIdRef.current || '') === nextId) {
           void revalidateSelectedMailDetail({ force: true });
         }
+      }
+    } else if (viewMode === 'conversations') {
+      const unreadCount = Math.max(0, Number(item?.unread_count || 0));
+      if (nextId && unreadCount > 0 && typeof performMailReadMutation === 'function') {
+        void performMailReadMutation({
+          mode: 'conversations',
+          targetId: nextId,
+          nextIsRead: true,
+          currentUnreadCount: unreadCount,
+          currentMessageCount: Number(item?.messages_count || item?.items?.length || 1),
+          errorMessage: 'Не удалось отметить диалог как прочитанный.',
+        });
       }
     }
     selectedIdRef.current = nextId;
@@ -98,6 +121,7 @@ export default function useMailListItemSelection({
     getRecentMessageDetailSnapshot,
     isMobile,
     openComposeFromDraftMessage,
+    performMailReadMutation,
     revalidateSelectedMailDetail,
     saveCurrentListScrollPosition,
     selectedMessageIds,

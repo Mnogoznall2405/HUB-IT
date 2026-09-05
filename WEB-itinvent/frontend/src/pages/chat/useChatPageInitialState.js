@@ -67,7 +67,10 @@ function useChatMessageTextState(latestMessageTextRef) {
   return [messageText, store.setMessageText];
 }
 
-export default function useChatPageInitialState() {
+export default function useChatPageInitialState({
+  conversationIdOverride = '',
+  messageIdOverride = '',
+} = {}) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
@@ -105,8 +108,12 @@ export default function useChatPageInitialState() {
   const { closeDrawer } = useMainLayoutShell();
   const userCacheId = String(user?.id || 'guest').trim() || 'guest';
   const canUseAiChat = canUseAiChatPermission(hasPermission);
-  const requestedConversationId = String(new URLSearchParams(location.search).get('conversation') || '').trim();
-  const requestedMessageId = String(new URLSearchParams(location.search).get('message') || '').trim();
+  const requestedConversationId = String(
+    conversationIdOverride || new URLSearchParams(location.search).get('conversation') || '',
+  ).trim();
+  const requestedMessageId = String(
+    messageIdOverride || new URLSearchParams(location.search).get('message') || '',
+  ).trim();
   const composePrefillRequested = isChatComposePrefillRoute(location.search);
   const lastConversationSessionKey = buildChatLastConversationSessionKey(userCacheId);
   const lastMobileViewSessionKey = buildChatLastMobileViewSessionKey(userCacheId);

@@ -147,4 +147,24 @@ describe('useTasksPageController', () => {
 
     expect(result.current.dateSortDirection).toBe('asc');
   });
+
+  it('reconciles the task list after a HUB realtime invalidation', async () => {
+    renderHook(() => useTasksPageController(), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());
+    hubTasksAPI.getTasks.mockClear();
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-task-changed', {
+      detail: {
+        type: 'tasks.task.updated',
+        payload: { event_id: 'task-event-1', task_id: 'task-1', operation: 'updated' },
+      },
+    }));
+
+    await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());
+  });
 });

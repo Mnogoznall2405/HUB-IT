@@ -12,15 +12,24 @@ import {
   buildTaskDetailPath,
   getDefaultTaskDetailTab,
   normalizeTaskDetailTab,
+  normalizeTaskDetailView,
 } from '../../../lib/taskNavigation';
 import { createChecklistItemId } from '../taskChecklistUtils';
+
+const taskHasAssignee = (task, userId) => {
+  const normalizedUserId = Number(userId);
+  if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0) return false;
+  const assigneeIds = Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+    ? task.assignee_user_ids
+    : [task?.assignee_user_id];
+  return assigneeIds.some((value) => Number(value) === normalizedUserId);
+};
 
 export default function useTaskDetails({
   user,
   canManageAllTasks,
   canReviewTasks,
   taskDiscussionChatEnabled,
-  openTaskInChat = false,
   isMobile,
   ui,
   setError,
@@ -41,12 +50,18 @@ export default function useTaskDetails({
   const [detailsCommentSaving, setDetailsCommentSaving] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [discussionOpening, setDiscussionOpening] = useState(false);
+  const [discussionError, setDiscussionError] = useState('');
+  const [selectedDiscussionConversationId, setSelectedDiscussionConversationId] = useState('');
+  const [discussionRetryNonce, setDiscussionRetryNonce] = useState(0);
 
   const taskDetailHistorySeededRef = useRef(false);
   const mobileChecklistHistoryPushedRef = useRef(false);
   const loadTaskDetailsRequestRef = useRef(0);
   const checklistMutationRef = useRef(new Map());
   const loadedActivityRef = useRef({ taskId: '', comments: false, history: false });
+  const discussionConversationRef = useRef({ taskId: '', conversationId: '' });
+  const discussionProvisioningTaskRef = useRef('');
+  const discussionAttemptedTaskRef = useRef('');
 
   const selectedTaskId = useMemo(() => {
     const params = new URLSearchParams(location.search || '');
@@ -58,6 +73,17 @@ export default function useTaskDetails({
     return normalizeTaskDetailTab(params.get('task_tab'), taskDiscussionChatEnabled);
   }, [location.search, taskDiscussionChatEnabled]);
 
+  const selectedTaskViewParam = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    return String(params.get('task_detail_view') || '').trim().toLowerCase();
+  }, [location.search]);
+  const selectedTaskView = normalizeTaskDetailView(selectedTaskViewParam);
+
+  const selectedDiscussionMessageId = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    return String(params.get('message') || '').trim();
+  }, [location.search]);
+
   const nativeTaskShareAvailable = isMobileAppWebViewRuntime();
 
   const selectedMobileTaskView = useMemo(() => {
@@ -65,7 +91,24 @@ export default function useTaskDetails({
     return String(params.get('task_mobile_view') || '').trim() === 'checklist' ? 'checklist' : 'details';
   }, [location.search]);
 
-  const detailsOpen = Boolean(selectedTaskId) && !openTaskInChat;
+  const detailsOpen = Boolean(selectedTaskId);
+
+  const taskReturnTo = useMemo(() => {
+    const value = String(location.state?.taskReturnTo || '').trim();
+    return value.startsWith('/') && !value.startsWith('//') ? value : '';
+  }, [location.state]);
+
+  const taskBackLabel = useMemo(() => {
+    const explicitLabel = String(location.state?.taskReturnLabel || '').trim();
+    if (explicitLabel) return explicitLabel;
+    const params = new URLSearchParams(location.search || '');
+    const pageMode = String(params.get('task_mode') || '').trim().toLowerCase();
+    if (pageMode === 'board') return 'К доске';
+    if (pageMode === 'calendar') return 'К календарю';
+    if (pageMode === 'plan' || pageMode === 'gantt') return 'К плану';
+    if (pageMode === 'deadlines') return 'К срокам';
+    return 'К списку';
+  }, [location.search, location.state]);
 
   const updateSearch = useCallback((mutate, { replace = true } = {}) => {
     const params = new URLSearchParams(location.search || '');
@@ -75,9 +118,18 @@ export default function useTaskDetails({
     if (nextSearch === currentSearch) return;
     navigate(
       { pathname: location.pathname, search: nextSearch ? `?${nextSearch}` : '' },
-      { replace },
+      { replace, state: location.state },
     );
-  }, [location.pathname, location.search, navigate]);
+  }, [location.pathname, location.search, location.state, navigate]);
+
+  useEffect(() => {
+    if (!selectedTaskId || selectedTaskView !== 'overview' || !selectedTaskViewParam) return;
+    updateSearch((params) => {
+      params.delete('task_detail_view');
+      params.delete('message');
+      params.delete('conversation');
+    }, { replace: true });
+  }, [selectedTaskId, selectedTaskView, selectedTaskViewParam, updateSearch]);
 
   useEffect(() => {
     if (selectedMobileTaskView !== 'checklist') {
@@ -167,13 +219,13 @@ export default function useTaskDetails({
   }, [patchTaskItem, setError]);
 
   useEffect(() => {
-    if (isMobile || !detailsTask?.id) return;
+    if (isMobile || selectedTaskView !== 'overview' || !detailsTask?.id) return;
     const normalizedId = String(detailsTask.id || '').trim();
     if (!normalizedId || normalizedId !== String(selectedTaskId || '').trim()) return;
     void loadTaskActivity(normalizedId, selectedTaskTab, {
       hasUnread: selectedTaskTab === 'comments' && Boolean(detailsTask.has_unread_comments),
     });
-  }, [isMobile, detailsTask?.id, detailsTask?.has_unread_comments, selectedTaskId, selectedTaskTab, detailsLoadNonce, loadTaskActivity]);
+  }, [isMobile, detailsTask?.id, detailsTask?.has_unread_comments, selectedTaskId, selectedTaskTab, selectedTaskView, detailsLoadNonce, loadTaskActivity]);
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -184,12 +236,13 @@ export default function useTaskDetails({
       setDetailsStatusLog([]);
       setDetailsActivityLoading(false);
       setDetailsCommentBody('');
+      setDiscussionError('');
+      setSelectedDiscussionConversationId('');
+      discussionAttemptedTaskRef.current = '';
       return;
     }
-    if (isMobile || !taskDiscussionChatEnabled) {
-      void loadTaskDetails(selectedTaskId);
-    }
-  }, [isMobile, loadTaskDetails, selectedTaskId, taskDiscussionChatEnabled]);
+    void loadTaskDetails(selectedTaskId);
+  }, [loadTaskDetails, selectedTaskId]);
 
   useLayoutEffect(() => {
     if (!isMobile || !selectedTaskId || taskDetailHistorySeededRef.current || typeof window === 'undefined') return;
@@ -202,6 +255,9 @@ export default function useTaskDetails({
     listParams.delete('task');
     listParams.delete('task_tab');
     listParams.delete('task_mobile_view');
+    listParams.delete('task_detail_view');
+    listParams.delete('conversation');
+    listParams.delete('message');
     const listHref = `${location.pathname}${listParams.toString() ? `?${listParams.toString()}` : ''}`;
     const taskHref = `${location.pathname}${location.search || ''}`;
     if (listHref === taskHref) {
@@ -224,29 +280,53 @@ export default function useTaskDetails({
     setDetailsComments([]);
     setDetailsStatusLog([]);
     setDetailsCommentBody('');
+    setDiscussionError('');
+    setSelectedDiscussionConversationId('');
+    discussionAttemptedTaskRef.current = '';
     mobileChecklistHistoryPushedRef.current = false;
+    if (taskReturnTo) {
+      navigate(taskReturnTo, {
+        replace: true,
+        state: {
+          taskRestoreFocusId: String(location.state?.taskReturnFocusId || '').trim(),
+          taskRestoreScrollY: Number(location.state?.taskReturnScrollY || 0),
+        },
+      });
+      return;
+    }
     updateSearch((nextParams) => {
       nextParams.delete('task');
       nextParams.delete('task_tab');
       nextParams.delete('task_mobile_view');
+      nextParams.delete('task_detail_view');
+      nextParams.delete('conversation');
+      nextParams.delete('message');
     }, { replace: true });
-  }, [updateSearch]);
+  }, [location.state, navigate, taskReturnTo, updateSearch]);
 
-  const openTaskDetails = useCallback((task) => {
+  const openTaskDetails = useCallback((task, { view = '', replace = false } = {}) => {
     const id = String(task?.id || '').trim();
     if (!id) return;
+    const requestedView = String(view || '').trim();
     setDetailsLoading(true);
     setDetailsActivityLoading(true);
     setDetailsTask(null);
     setDetailsComments([]);
     setDetailsStatusLog([]);
+    setDiscussionError('');
+    setSelectedDiscussionConversationId('');
+    discussionAttemptedTaskRef.current = '';
     mobileChecklistHistoryPushedRef.current = false;
     updateSearch((params) => {
       params.set('task', id);
       if (taskDiscussionChatEnabled) params.delete('task_tab');
       else params.set('task_tab', getDefaultTaskDetailTab(false));
       params.delete('task_mobile_view');
-    }, { replace: false });
+      params.delete('conversation');
+      params.delete('message');
+      if (requestedView) params.set('task_detail_view', normalizeTaskDetailView(requestedView));
+      else params.delete('task_detail_view');
+    }, { replace });
   }, [taskDiscussionChatEnabled, updateSearch]);
 
   const openMobileTaskChecklist = useCallback(() => {
@@ -273,6 +353,32 @@ export default function useTaskDetails({
       if (selectedTaskId) params.set('task_tab', nextTab);
     }, { replace: false });
   }, [selectedTaskId, taskDiscussionChatEnabled, updateSearch]);
+
+  const setTaskDetailView = useCallback((view) => {
+    const nextView = normalizeTaskDetailView(view);
+    setDiscussionError('');
+    if (nextView === 'discussion' && selectedTaskView !== 'discussion') {
+      discussionAttemptedTaskRef.current = '';
+    }
+    updateSearch((params) => {
+      if (!selectedTaskId) return;
+      if (nextView !== 'overview') {
+        params.set('task_detail_view', nextView);
+        params.delete('task_mobile_view');
+      } else {
+        params.delete('task_detail_view');
+      }
+      if (nextView === 'discussion') {
+        const cached = discussionConversationRef.current;
+        if (cached.taskId === selectedTaskId && cached.conversationId) {
+          setSelectedDiscussionConversationId(cached.conversationId);
+        }
+      } else {
+        params.delete('message');
+      }
+      params.delete('conversation');
+    }, { replace: false });
+  }, [selectedTaskId, selectedTaskView, updateSearch]);
 
   const downloadBlob = useCallback((response, fileName) => {
     const blob = response?.data instanceof Blob
@@ -324,33 +430,119 @@ export default function useTaskDetails({
     }
   }, [detailsCommentBody, detailsTask?.id, refreshTasksAndDetails, setError]);
 
-  const handleOpenTaskDiscussion = useCallback(async (task = detailsTask, { replace = false, split = false } = {}) => {
-    const taskId = String(task?.id || '').trim();
-    if (!taskId || !taskDiscussionChatEnabled) return '';
+  const ensureTaskDiscussion = useCallback(async (taskId, { replace = true } = {}) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId || !taskDiscussionChatEnabled) return '';
+    if (discussionProvisioningTaskRef.current === normalizedTaskId) return '';
+    discussionProvisioningTaskRef.current = normalizedTaskId;
     setDiscussionOpening(true);
+    setDiscussionError('');
     try {
-      const response = await hubTaskDiscussionAPI.openTaskDiscussion(taskId);
+      const response = await hubTaskDiscussionAPI.openTaskDiscussion(normalizedTaskId);
       const conversationId = String(response?.conversation_id || '').trim();
-      if (!conversationId) throw new Error('Не удалось открыть чат по задаче');
+      if (!conversationId) throw new Error('Не удалось открыть обсуждение задачи');
+      discussionConversationRef.current = { taskId: normalizedTaskId, conversationId };
+      setSelectedDiscussionConversationId(conversationId);
       invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
-      const params = new URLSearchParams({ conversation: conversationId });
-      if (split) params.set('task_layout', 'split');
-      navigate(`/chat?${params.toString()}`, { replace });
+      updateSearch((params) => {
+        params.set('task', normalizedTaskId);
+        params.set('task_detail_view', 'discussion');
+        params.delete('conversation');
+        params.delete('task_mobile_view');
+      }, { replace });
       window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
       return conversationId;
     } catch (err) {
-      setError(err?.response?.data?.detail || err?.message || 'Ошибка открытия чата по задаче');
+      setDiscussionError(
+        err?.response?.data?.detail
+        || err?.message
+        || 'Не удалось открыть обсуждение задачи.',
+      );
       return '';
     } finally {
+      if (discussionProvisioningTaskRef.current === normalizedTaskId) {
+        discussionProvisioningTaskRef.current = '';
+      }
       setDiscussionOpening(false);
     }
-  }, [detailsTask, navigate, setError, taskDiscussionChatEnabled, user?.id]);
+  }, [taskDiscussionChatEnabled, updateSearch, user?.id]);
 
-  const handleCopyTaskLink = useCallback(async (taskId, taskTab) => {
+  useEffect(() => {
+    if (selectedTaskView !== 'discussion' || !selectedTaskId) return;
+    if (!detailsTask || String(detailsTask.id || '').trim() !== selectedTaskId) return;
+    if (!taskDiscussionChatEnabled || detailsTask?.capabilities?.can_open_discussion === false) {
+      setError('Обсуждение этой задачи недоступно.');
+      updateSearch((params) => {
+        params.delete('task_detail_view');
+        params.delete('conversation');
+        params.delete('message');
+      }, { replace: true });
+      return;
+    }
+    const cached = discussionConversationRef.current;
+    if (
+      cached.taskId === selectedTaskId
+      && cached.conversationId
+    ) {
+      if (selectedDiscussionConversationId !== cached.conversationId) {
+        setSelectedDiscussionConversationId(cached.conversationId);
+      }
+      return;
+    }
+    if (discussionAttemptedTaskRef.current === selectedTaskId) return;
+    discussionAttemptedTaskRef.current = selectedTaskId;
+    void ensureTaskDiscussion(selectedTaskId);
+  }, [
+    detailsTask?.id,
+    detailsTask?.capabilities?.can_open_discussion,
+    discussionRetryNonce,
+    ensureTaskDiscussion,
+    selectedDiscussionConversationId,
+    selectedTaskId,
+    selectedTaskView,
+    setError,
+    taskDiscussionChatEnabled,
+    updateSearch,
+  ]);
+
+  const handleOpenTaskDiscussion = useCallback(async (
+    task = detailsTask,
+    { replace = false, messageId = '' } = {},
+  ) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId || !taskDiscussionChatEnabled) return '';
+    setDiscussionError('');
+    const cached = discussionConversationRef.current;
+    updateSearch((params) => {
+      params.set('task', taskId);
+      params.set('task_detail_view', 'discussion');
+      params.delete('task_mobile_view');
+      params.delete('conversation');
+      const normalizedMessageId = String(messageId || '').trim();
+      if (normalizedMessageId) params.set('message', normalizedMessageId);
+      else params.delete('message');
+    }, { replace });
+    if (cached.taskId === taskId && cached.conversationId) {
+      setSelectedDiscussionConversationId(cached.conversationId);
+    }
+    return cached.taskId === taskId ? cached.conversationId : '';
+  }, [detailsTask, taskDiscussionChatEnabled, updateSearch]);
+
+  const retryTaskDiscussion = useCallback(() => {
+    discussionConversationRef.current = { taskId: '', conversationId: '' };
+    discussionProvisioningTaskRef.current = '';
+    discussionAttemptedTaskRef.current = '';
+    setDiscussionError('');
+    setSelectedDiscussionConversationId('');
+    setDiscussionRetryNonce((current) => current + 1);
+  }, []);
+
+  const handleCopyTaskLink = useCallback(async (taskId, taskTab, taskView) => {
     const normalizedId = String(taskId || '').trim();
     if (!normalizedId) return;
     const path = buildTaskDetailPath(normalizedId, {
       tab: taskTab,
+      view: taskView,
       taskDiscussionEnabled: taskDiscussionChatEnabled,
     });
     const url = new URL(path, window.location.origin);
@@ -362,11 +554,12 @@ export default function useTaskDetails({
     }
   }, [setError, taskDiscussionChatEnabled]);
 
-  const handleShareTaskLink = useCallback(async (task, taskTab) => {
+  const handleShareTaskLink = useCallback(async (task, taskTab, taskView) => {
     const normalizedId = String(task?.id || '').trim();
     if (!normalizedId || !isMobileAppWebViewRuntime()) return;
     const path = buildTaskDetailPath(normalizedId, {
       tab: taskTab,
+      view: taskView,
       taskDiscussionEnabled: taskDiscussionChatEnabled,
     });
     const url = new URL(path, window.location.origin);
@@ -418,9 +611,8 @@ export default function useTaskDetails({
     if (isTransferActUploadTask(task)) return false;
     if (!task?.id || String(task?.status || '').toLowerCase() !== 'review') return false;
     const userId = Number(user?.id);
-    const assigneeId = Number(task?.assignee_user_id);
     const creatorId = Number(task?.created_by_user_id);
-    if (userId > 0 && userId === assigneeId && userId !== creatorId) return false;
+    if (userId > 0 && taskHasAssignee(task, userId) && userId !== creatorId) return false;
     if (canManageAllTasks) return true;
     if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
     return Number(task?.created_by_user_id) === Number(user?.id)
@@ -438,17 +630,19 @@ export default function useTaskDetails({
     return Number(task?.created_by_user_id) === Number(user?.id);
   }, [canManageAllTasks, currentUserManagedDepartmentIds, user?.id]);
 
-  const canStartTask = useCallback((task) => (
-    !isTransferActUploadTask(task)
-    && Number(task?.assignee_user_id) === Number(user?.id)
-    && String(task?.status || '').toLowerCase() === 'new'
-  ), [user?.id]);
+  const canStartTask = useCallback((task) => {
+    if (typeof task?.capabilities?.can_start === 'boolean') return task.capabilities.can_start;
+    return !isTransferActUploadTask(task)
+      && taskHasAssignee(task, user?.id)
+      && String(task?.status || '').toLowerCase() === 'new';
+  }, [user?.id]);
 
-  const canSubmitTask = useCallback((task) => (
-    !isTransferActUploadTask(task)
-    && Number(task?.assignee_user_id) === Number(user?.id)
-    && ['new', 'in_progress'].includes(String(task?.status || '').toLowerCase())
-  ), [user?.id]);
+  const canSubmitTask = useCallback((task) => {
+    if (typeof task?.capabilities?.can_submit === 'boolean') return task.capabilities.can_submit;
+    return !isTransferActUploadTask(task)
+      && taskHasAssignee(task, user?.id)
+      && ['new', 'in_progress'].includes(String(task?.status || '').toLowerCase());
+  }, [user?.id]);
 
   const canReopenTask = useCallback((task) => {
     if (typeof task?.capabilities?.can_reopen === 'boolean') return task.capabilities.can_reopen;
@@ -458,31 +652,33 @@ export default function useTaskDetails({
     if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
     const actorId = Number(user?.id);
     return actorId > 0 && (
-      Number(task?.assignee_user_id) === actorId
+      taskHasAssignee(task, actorId)
       || Number(task?.created_by_user_id) === actorId
       || Number(task?.controller_user_id) === actorId
     );
   }, [canManageAllTasks, currentUserManagedDepartmentIds, user?.id]);
 
   const canUploadFiles = useCallback((task) => {
+    if (typeof task?.capabilities?.can_upload_files === 'boolean') return task.capabilities.can_upload_files;
     if (isTransferActUploadTask(task)) return false;
     if (!task?.id || String(task?.status || '').toLowerCase() === 'done') return false;
     if (canManageAllTasks) return true;
     const actorId = Number(user?.id);
     return actorId > 0 && (
-      Number(task?.assignee_user_id) === actorId
+      taskHasAssignee(task, actorId)
       || Number(task?.created_by_user_id) === actorId
       || Number(task?.controller_user_id) === actorId
     );
   }, [canManageAllTasks, user?.id]);
 
   const canUpdateTaskChecklist = useCallback((task) => {
+    if (typeof task?.capabilities?.can_update_checklist === 'boolean') return task.capabilities.can_update_checklist;
     if (!task?.id || String(task?.status || '').toLowerCase() === 'done') return false;
     if (canManageAllTasks) return true;
     if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
     const actorId = Number(user?.id);
     return actorId > 0 && (
-      Number(task?.assignee_user_id) === actorId
+      taskHasAssignee(task, actorId)
       || Number(task?.created_by_user_id) === actorId
       || Number(task?.controller_user_id) === actorId
     );
@@ -551,18 +747,26 @@ export default function useTaskDetails({
     detailsCommentSaving,
     uploadingAttachment,
     discussionOpening,
+    discussionError,
+    selectedDiscussionConversationId,
+    selectedDiscussionMessageId,
     selectedTaskId,
     selectedTaskTab,
+    selectedTaskView,
     selectedMobileTaskView,
     nativeTaskShareAvailable,
+    taskBackLabel,
+    taskReturnTo,
     closeTaskDetails,
     openTaskDetails,
     openMobileTaskChecklist,
     closeMobileTaskChecklist,
     setTaskDetailTab,
+    setTaskDetailView,
     setDetailsCommentBody,
     handleAddTaskComment,
     handleOpenTaskDiscussion,
+    retryTaskDiscussion,
     handleCopyTaskLink,
     handleShareTaskLink,
     handleDownloadAttachment,

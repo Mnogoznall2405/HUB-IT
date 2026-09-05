@@ -9,6 +9,8 @@ import { processNotificationAction } from '../notifications/notificationActions'
 import { syncNativePushToken } from '../notifications/nativePush';
 import { reconcileNativeBadge } from '../notifications/notificationBadge';
 import { drainOfflineCommandQueue } from '../offline/offlineCommandQueue';
+import { refreshNativeReadCaches } from '../offline/nativeReadCacheRefresh';
+import { refreshStaleNativeOfflineData } from '../offline/nativeOfflineBackgroundRefresh';
 import { ensureMobileBackgroundSyncRegistered, syncPendingNotificationReplies } from './mobileBackgroundSync';
 import { AppLifecycle } from './AppLifecycle';
 
@@ -25,6 +27,18 @@ jest.mock('../chat/chatSocket', () => ({
     disconnect: jest.fn(),
     resume: jest.fn(async () => undefined),
     suspend: jest.fn(),
+  },
+}));
+
+jest.mock('../realtime/hubRealtimeSocket', () => ({
+  hubRealtimeSocket: {
+    connect: jest.fn(async () => undefined),
+    disconnect: jest.fn(),
+    resume: jest.fn(async () => undefined),
+    suspend: jest.fn(),
+    on: jest.fn(() => jest.fn()),
+    onTaskChanged: jest.fn(() => jest.fn()),
+    onMailChanged: jest.fn(() => jest.fn()),
   },
 }));
 
@@ -53,6 +67,12 @@ jest.mock('../notifications/notificationBackgroundTask', () => ({
 
 jest.mock('../offline/offlineCommandQueue', () => ({
   drainOfflineCommandQueue: jest.fn(async () => undefined),
+}));
+jest.mock('../offline/nativeReadCacheRefresh', () => ({
+  refreshNativeReadCaches: jest.fn(async () => ({ refreshed: [], failed: [] })),
+}));
+jest.mock('../offline/nativeOfflineBackgroundRefresh', () => ({
+  refreshStaleNativeOfflineData: jest.fn(async () => ({ preparedModules: [], failedModules: [] })),
 }));
 
 jest.mock('./mobileBackgroundSync', () => ({
@@ -90,16 +110,30 @@ describe('AppLifecycle notification authentication', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    delete (global as Record<string, unknown>).requestIdleCallback;
+    delete (global as Record<string, unknown>).cancelIdleCallback;
   });
 
-  it('defers non-critical session synchronization until after the first interaction', async () => {
+  it('defers non-critical session synchronization until the first idle period', async () => {
     mockUser = signedInUser;
     const scheduled: Array<(timestamp: number) => void> = [];
+    const idleCallbacks: IdleRequestCallback[] = [];
     jest.spyOn(global, 'requestAnimationFrame').mockImplementation((callback) => {
       scheduled.push(callback);
       return scheduled.length;
     });
     jest.spyOn(global, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    Object.defineProperty(global, 'requestIdleCallback', {
+      configurable: true,
+      value: jest.fn((callback: IdleRequestCallback) => {
+        idleCallbacks.push(callback);
+        return idleCallbacks.length;
+      }),
+    });
+    Object.defineProperty(global, 'cancelIdleCallback', {
+      configurable: true,
+      value: jest.fn(() => undefined),
+    });
 
     await render(<AppLifecycle />);
 
@@ -108,16 +142,33 @@ describe('AppLifecycle notification authentication', () => {
     expect(drainOfflineCommandQueue).not.toHaveBeenCalled();
     expect(syncPendingNotificationReplies).not.toHaveBeenCalled();
     expect(ensureMobileBackgroundSyncRegistered).not.toHaveBeenCalled();
+    expect(refreshNativeReadCaches).not.toHaveBeenCalled();
+    expect(refreshStaleNativeOfflineData).not.toHaveBeenCalled();
 
     await act(async () => scheduled[0]?.(0));
     expect(syncNativePushToken).not.toHaveBeenCalled();
     await act(async () => scheduled[1]?.(16));
+    expect(syncNativePushToken).not.toHaveBeenCalled();
+    expect(idleCallbacks).toHaveLength(1);
+    await act(async () => idleCallbacks[0]?.({
+      didTimeout: false,
+      timeRemaining: () => 10,
+    }));
 
     expect(syncNativePushToken).toHaveBeenCalledWith({ requestPermission: false });
-    expect(reconcileNativeBadge).toHaveBeenCalledTimes(1);
+    expect(reconcileNativeBadge).not.toHaveBeenCalled();
     expect(drainOfflineCommandQueue).toHaveBeenCalledWith(7);
     expect(syncPendingNotificationReplies).toHaveBeenCalledWith(7);
     expect(ensureMobileBackgroundSyncRegistered).toHaveBeenCalledTimes(1);
+    expect(refreshNativeReadCaches).toHaveBeenCalledWith({
+      userId: 7,
+      permissions: ['tasks.read'],
+    });
+    await waitFor(() => expect(refreshStaleNativeOfflineData).toHaveBeenCalledWith({
+      userId: 7,
+      permissions: ['tasks.read'],
+      isAdmin: false,
+    }));
   });
 
   it('preserves a cold-start notification through authentication without a competing redirect', async () => {
@@ -187,5 +238,14 @@ describe('AppLifecycle notification authentication', () => {
 
     await waitFor(() => expect(drainOfflineCommandQueue).toHaveBeenCalledWith(7));
     expect(syncPendingNotificationReplies).toHaveBeenCalledWith(7);
+    expect(refreshNativeReadCaches).toHaveBeenCalledWith({
+      userId: 7,
+      permissions: ['tasks.read'],
+    });
+    await waitFor(() => expect(refreshStaleNativeOfflineData).toHaveBeenCalledWith({
+      userId: 7,
+      permissions: ['tasks.read'],
+      isAdmin: false,
+    }));
   });
 });

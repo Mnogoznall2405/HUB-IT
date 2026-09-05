@@ -1,5 +1,4 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useEffect } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, ProgressBar } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,12 +18,11 @@ export function MobileUpdateGate() {
     openInstallerSettings,
   } = useMobileUpdater();
 
-  useEffect(() => {
-    if (user) void checkForUpdate();
-  }, [checkForUpdate, user]);
-
   const visible = Boolean(user && state.required && state.feed);
   const busy = ['downloading', 'verifying', 'installing'].includes(state.status);
+  const actionLabel = state.status === 'paused'
+    ? 'Продолжить'
+    : state.status === 'ready' ? 'Установить' : 'Скачать и установить';
 
   return (
     <Modal
@@ -63,7 +61,7 @@ export function MobileUpdateGate() {
                 ))}
               </View>
             ) : null}
-            {state.status === 'downloading' ? (
+            {state.status === 'downloading' || state.status === 'paused' ? (
               <View
                 style={styles.progress}
                 accessible
@@ -77,7 +75,9 @@ export function MobileUpdateGate() {
                 }}
               >
                 <ProgressBar progress={state.progress} color={officeTokens.brand} />
-                <Text style={styles.progressText}>{Math.round(state.progress * 100)}%</Text>
+                <Text style={styles.progressText}>
+                  {Math.round(state.progress * 100)}% · {formatMobileUpdateSize(state.bytesWritten)} из {formatMobileUpdateSize(state.totalBytes)}
+                </Text>
               </View>
             ) : null}
             <Button
@@ -87,7 +87,7 @@ export function MobileUpdateGate() {
               loading={busy}
               disabled={busy}
             >
-              Скачать и установить
+              {actionLabel}
             </Button>
             {state.canOpenInstallerSettings ? (
               <Button mode="outlined" icon="cog-outline" onPress={() => { void openInstallerSettings(); }}>

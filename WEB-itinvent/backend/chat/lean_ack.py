@@ -83,6 +83,8 @@ def build_lean_message_payload(
     conversation_seq: int = 0,
     kind: str = "text",
     reply_to_message_id: Optional[str] = None,
+    conversation_kind: str = "direct",
+    task_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Minimal message shape safe for ACK and critical message.created fan-out."""
     sender_id = int(sender_user_id or 0)
@@ -95,6 +97,8 @@ def build_lean_message_payload(
     return {
         "id": _normalize_text(message_id),
         "conversation_id": _normalize_text(conversation_id),
+        "conversation_kind": _normalize_text(conversation_kind, "direct") or "direct",
+        "task_id": _normalize_text(task_id) or None,
         "kind": normalized_kind,
         "body_format": _normalize_body_format(body_format),
         "client_message_id": _normalize_text(client_message_id) or None,
@@ -125,6 +129,8 @@ def build_lean_message_payload_from_orm(
     *,
     message: Any,
     current_user_id: int,
+    conversation_kind: str = "direct",
+    task_id: Optional[str] = None,
 ) -> dict[str, Any]:
     return build_lean_message_payload(
         message_id=str(getattr(message, "id", "") or ""),
@@ -138,6 +144,8 @@ def build_lean_message_payload_from_orm(
         conversation_seq=int(getattr(message, "conversation_seq", 0) or 0),
         kind=_normalize_text(getattr(message, "kind", None), "text") or "text",
         reply_to_message_id=_normalize_text(getattr(message, "reply_to_message_id", None)) or None,
+        conversation_kind=conversation_kind,
+        task_id=task_id,
     )
 
 

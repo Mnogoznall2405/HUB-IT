@@ -13,6 +13,7 @@ export const hubTasksAPI = {
 
   /**
    * @param {object} payload
+   * @param {number[]} payload.assignee_user_ids
    * @param {number[]} [payload.observer_user_ids]
    */
   createTask: async (payload) => {
@@ -22,6 +23,7 @@ export const hubTasksAPI = {
 
   /**
    * @param {object} payload
+   * @param {number[]} [payload.assignee_user_ids]
    * @param {number[]} [payload.observer_user_ids]
    */
   updateTask: async (taskId, payload) => {

@@ -9,6 +9,7 @@ import {
   type FeedUploadFile,
 } from '../api/feedApi';
 import type { FeedAttachment } from './feedFormat';
+import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
 
@@ -29,9 +30,25 @@ function assertNativeRuntime(): void {
 }
 
 function feedCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, CACHE_DIRECTORY_NAME);
+  const directory = new Directory(Paths.document, CACHE_DIRECTORY_NAME);
   directory.create({ intermediates: true, idempotent: true });
   return directory;
+}
+
+async function feedCacheFile(fileName: string): Promise<File> {
+  const userId = Number(await getSessionUserId());
+  if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
+  return new File(feedCacheDirectory(), `${userId}-${fileName}`);
+}
+
+export function clearNativeFeedFileCache(): void {
+  for (const entry of feedCacheDirectory().list()) entry.delete();
+}
+
+export function getNativeFeedFileCacheSize(): number {
+  return feedCacheDirectory().list().reduce((total, entry) => (
+    entry instanceof File && entry.exists ? total + Math.max(0, Number(entry.size || 0)) : total
+  ), 0);
 }
 
 function cleanupFeedCache(preserveUri?: string): void {
@@ -41,7 +58,7 @@ function cleanupFeedCache(preserveUri?: string): void {
     uri: entry.uri,
     size: Math.max(0, Number(entry.size || 0)),
     modifiedAt: Number(entry.lastModified || entry.creationTime || 0),
-  })), { preserveUri }));
+  })), { preserveUri, maxAgeMs: Number.POSITIVE_INFINITY }));
   files.forEach((entry) => {
     if (evictions.has(entry.uri) && entry.exists) entry.delete();
   });
@@ -86,7 +103,7 @@ export async function downloadNativeFeedAttachment(
   const cacheKey = `${postId}-${commentId || 'post'}-${attachmentId}`
     .replace(/[^A-Za-z0-9_-]/g, '_')
     .slice(0, 160);
-  const destination = new File(feedCacheDirectory(), `${cacheKey}-${safeName}`);
+  const destination = await feedCacheFile(`${cacheKey}-${safeName}`);
   const expectedSize = Math.max(0, Number(attachment.file_size || 0));
   if (destination.exists && (!expectedSize || destination.size === expectedSize)) {
     cleanupFeedCache(destination.uri);

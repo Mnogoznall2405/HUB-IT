@@ -15,6 +15,9 @@ import { toDateTimeInput, toDateInput } from '../taskFormatters';
 function mapTaskToEditData(task) {
   const emailRemind = fromApiEmailDeadlineRemindHours(task?.email_deadline_remind_hours);
   const assigneeId = String(task?.assignee_user_id || '').trim();
+  const assigneeIds = (Array.isArray(task?.assignee_user_ids) ? task.assignee_user_ids : [assigneeId])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
   return {
     id: String(task?.id || ''),
     title: task?.title || '',
@@ -24,7 +27,7 @@ function mapTaskToEditData(task) {
     priority: task?.priority || 'normal',
     project_id: String(task?.project_id || ''),
     object_id: String(task?.object_id || ''),
-    assignee_user_id: assigneeId,
+    assignee_user_ids: [...new Set(assigneeIds)],
     controller_user_id: String(task?.controller_user_id || ''),
     observer_user_ids: (Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [])
       .map((value) => String(value || ''))
@@ -66,7 +69,7 @@ export default function useTaskEditForm({
     priority: 'normal',
     project_id: '',
     object_id: '',
-    assignee_user_id: '',
+    assignee_user_ids: [],
     controller_user_id: '',
     observer_user_ids: [],
     department_id: '',
@@ -87,10 +90,10 @@ export default function useTaskEditForm({
     [editData.due_at],
   );
 
-  const selectedEditAssignee = useMemo(
-    () => getAssigneeById(editData.assignee_user_id),
-    [getAssigneeById, editData.assignee_user_id],
-  );
+  const selectedEditAssignees = useMemo(() => {
+    const ids = Array.isArray(editData.assignee_user_ids) ? editData.assignee_user_ids : [];
+    return ids.map((value) => getAssigneeById(value)).filter(Boolean);
+  }, [getAssigneeById, editData.assignee_user_ids]);
 
   const selectedEditObservers = useMemo(() => {
     const ids = Array.isArray(editData.observer_user_ids) ? editData.observer_user_ids : [];
@@ -127,12 +130,24 @@ export default function useTaskEditForm({
     const next = mapTaskToEditData(task);
     setEditDueCustomOpen(false);
     setEditData(next);
-    if (next.assignee_user_id) {
-      mergeAssigneesIntoCache([{
-        id: next.assignee_user_id,
-        full_name: String(task?.assignee_full_name || '').trim(),
-        username: String(task?.assignee_username || '').trim(),
-      }]);
+    const assigneeIds = next.assignee_user_ids;
+    let assigneeSnapshots = (Array.isArray(task?.assignees) ? task.assignees : [])
+      .map((item) => ({
+        id: String(item?.user_id || ''),
+        full_name: String(item?.full_name || '').trim(),
+        username: String(item?.username || '').trim(),
+      }))
+      .filter((item) => item.id);
+    if (!assigneeSnapshots.length && assigneeIds.length) {
+      assigneeSnapshots = assigneeIds.map((id, index) => ({
+        id,
+        full_name: index === 0 ? String(task?.assignee_full_name || '').trim() : '',
+        username: index === 0 ? String(task?.assignee_username || '').trim() : '',
+      }));
+    }
+    if (assigneeSnapshots.length) {
+      mergeAssigneesIntoCache(assigneeSnapshots);
+      if (resolveAssigneesByIds) void resolveAssigneesByIds(assigneeIds);
     }
     resetTaskUserSearchInputs();
     const observerIds = next.observer_user_ids;
@@ -169,7 +184,7 @@ export default function useTaskEditForm({
       priority: 'normal',
       project_id: '',
       object_id: '',
-      assignee_user_id: '',
+      assignee_user_ids: [],
       controller_user_id: '',
       observer_user_ids: [],
       department_id: '',
@@ -232,7 +247,9 @@ export default function useTaskEditForm({
         priority: editData.priority || 'normal',
         project_id: String(editData.project_id || '').trim() || null,
         object_id: String(editData.object_id || '').trim() || null,
-        assignee_user_id: Number(editData.assignee_user_id || 0) || null,
+        assignee_user_ids: (Array.isArray(editData.assignee_user_ids) ? editData.assignee_user_ids : [])
+          .map(Number)
+          .filter((value) => Number.isInteger(value) && value > 0),
         controller_user_id: Number(editData.controller_user_id || 0) || null,
         observer_user_ids: (Array.isArray(editData.observer_user_ids) ? editData.observer_user_ids : [])
           .map(Number)
@@ -263,7 +280,7 @@ export default function useTaskEditForm({
     editDescriptionRef,
     editProjectObjects,
     editDueLabel,
-    selectedEditAssignee,
+    selectedEditAssignees,
     selectedEditController,
     selectedEditObservers,
     selectedEditDepartment,

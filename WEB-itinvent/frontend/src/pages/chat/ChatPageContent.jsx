@@ -87,9 +87,21 @@ import useChatPageRealtimeEffects from './useChatPageRealtimeEffects';
 import { syncChatPageCollectionRefs } from './syncChatPageCollectionRefs';
 import { persistChatRightPanelWidth, readStoredChatRightPanelWidth } from './chatRightPanelLayout';
 import { resolveActiveThreadRenderState } from './chatThreadMessages';
+import { buildTaskDetailPath } from '../../lib/taskNavigation';
+import { TASK_DISCUSSION_CHAT_ENABLED } from '../../lib/chatFeature';
 
-export function ChatPageContent() {
-  const pageState = useChatPageInitialState();
+export function ChatPageContent({
+  embedded = false,
+  embeddedTaskId = '',
+  embeddedConversationId = '',
+  embeddedMessageId = '',
+  embeddedBackLabel = 'К задаче',
+  onEmbeddedBack,
+} = {}) {
+  const pageState = useChatPageInitialState({
+    conversationIdOverride: embedded ? embeddedConversationId : '',
+    messageIdOverride: embedded ? embeddedMessageId : '',
+  });
   const {
     theme,
     ui,
@@ -175,7 +187,7 @@ export function ChatPageContent() {
     setDesktopRightPanelWidth(persistChatRightPanelWidth(next));
   }, []);
 
-  const taskSplitLayout = !isMobile
+  const taskSplitLayout = !embedded && !isMobile
     && new URLSearchParams(location.search || '').get('task_layout') === 'split';
 
   const {
@@ -551,6 +563,7 @@ export function ChatPageContent() {
     userId: user?.id,
     messagesRef,
     notifyApiError,
+    disableTaskPanel: true,
   });
 
   const mobileScreenTransition = buildChatMobileScreenTransition(mobileMotionDisabled);
@@ -594,6 +607,7 @@ export function ChatPageContent() {
     setMobileBottomNavHidden,
     setMobileTransitionDirection,
     setMobileView,
+    syncConversationInUrl: !embedded,
   });
 
   mobileNavRef.current = {
@@ -719,6 +733,7 @@ export function ChatPageContent() {
     messagesHasMore,
     messagesHasNewer,
     mobileView,
+    syncSessionState: !embedded,
     userCacheId,
     viewerLastReadAt,
     viewerLastReadMessageId,
@@ -1012,6 +1027,7 @@ export function ChatPageContent() {
     setMessageMenuMessage,
     setSelectedMessageIds,
     setThreadMenuAnchor,
+    syncMessageInUrl: !embedded,
   });
 
   useChatConversationDraftRestore({
@@ -1053,6 +1069,7 @@ export function ChatPageContent() {
     setActiveConversationId,
     setConversationBootstrapComplete,
     setMobileView,
+    syncConversationInUrl: !embedded,
     writeMobileHistoryState,
   });
 
@@ -1092,6 +1109,94 @@ export function ChatPageContent() {
     setOpeningPeerId,
     upsertConversation,
   });
+
+  const buildChatListReturnPath = useCallback(() => {
+    const params = new URLSearchParams(location.search || '');
+    params.delete('conversation');
+    params.delete('message');
+    params.delete('task_layout');
+    const search = params.toString();
+    return `${location.pathname}${search ? `?${search}` : ''}`;
+  }, [location.pathname, location.search]);
+
+  const openTaskDiscussionFromChat = useCallback((taskId, {
+    messageId = '',
+    replace = false,
+  } = {}) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) return;
+    navigate(buildTaskDetailPath(normalizedTaskId, {
+      view: TASK_DISCUSSION_CHAT_ENABLED ? 'discussion' : 'overview',
+      message: TASK_DISCUSSION_CHAT_ENABLED ? messageId : '',
+    }), {
+      replace,
+      state: {
+        taskReturnTo: buildChatListReturnPath(),
+        taskReturnLabel: 'Назад в чат',
+      },
+    });
+  }, [buildChatListReturnPath, navigate]);
+
+  const openConversationFromSidebar = useCallback((conversationId) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const conversation = (conversationsRef.current || []).find(
+      (item) => String(item?.id || '').trim() === normalizedConversationId,
+    );
+    const taskId = getTaskConversationTaskId(conversation);
+    if (taskId) {
+      openTaskDiscussionFromChat(taskId);
+      return;
+    }
+    openConversation(normalizedConversationId);
+  }, [conversationsRef, openConversation, openTaskDiscussionFromChat]);
+
+  useEffect(() => {
+    if (embedded || !location.pathname.startsWith('/chat') || !requestedConversationId) return;
+    const taskId = getTaskConversationTaskId(activeConversation);
+    if (!taskId) return;
+    openTaskDiscussionFromChat(taskId, {
+      messageId: requestedMessageId,
+      replace: true,
+    });
+  }, [
+    activeConversation,
+    embedded,
+    location.pathname,
+    openTaskDiscussionFromChat,
+    requestedConversationId,
+    requestedMessageId,
+  ]);
+
+  const handleThreadBack = embedded && typeof onEmbeddedBack === 'function'
+    ? onEmbeddedBack
+    : openMobileInboxView;
+  const handleThreadOpenTask = useCallback((taskId) => {
+    const normalizedTaskId = String(taskId || embeddedTaskId || '').trim();
+    if (
+      embedded
+      && normalizedTaskId === String(embeddedTaskId || '').trim()
+      && typeof onEmbeddedBack === 'function'
+    ) {
+      onEmbeddedBack();
+      return;
+    }
+    openTaskFromChat(normalizedTaskId);
+  }, [embedded, embeddedTaskId, onEmbeddedBack, openTaskFromChat]);
+  const navigateFromChat = useCallback((to, options = {}) => {
+    const target = String(to || '');
+    if (!target.startsWith('/tasks?task=')) {
+      navigate(to, options);
+      return;
+    }
+    navigate(to, {
+      ...options,
+      state: {
+        ...(options?.state || {}),
+        taskReturnTo: `${location.pathname}${location.search || ''}`,
+        taskReturnLabel: embedded ? 'Назад к обсуждению' : 'Назад в чат',
+      },
+    });
+  }, [embedded, location.pathname, location.search, navigate]);
 
   useChatComposePrefillBootstrap({
     focusComposer,
@@ -1411,7 +1516,7 @@ export function ChatPageContent() {
     onCloseEmoji: handleCloseEmojiPicker,
     onClearSelection: clearSelectedMessages,
     onClosePanels: handleClosePanelsOnEscape,
-    onCloseMobileThread: openMobileInboxView,
+    onCloseMobileThread: handleThreadBack,
     onCloseDesktopThread: handleCloseDesktopThreadOnEscape,
   });
 
@@ -1438,18 +1543,19 @@ export function ChatPageContent() {
         health, user, unreadTotal, sidebarQuery, setSidebarQuery, sidebarSearchActive, searchingSidebar,
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
         sidebarWorkspace, setSidebarWorkspace,
-        openConversation, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
+        openConversation: openConversationFromSidebar, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, handleActiveFolderChange: core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
         conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
         handleCreateAiBotConversation, handleCreateAiConversation,
         renameAiConversation,
-        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx,
+        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate: navigateFromChat, threadWallpaperSx,
         messages: activeThreadMessages, messagesLoading: activeThreadMessagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
-        threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
-        openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
+        threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView: handleThreadBack, handleOpenInfo,
+        openTaskFromChat: handleThreadOpenTask, mobileBackLabel: embeddedBackLabel,
+        openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
         openMessageMenu, confirmAiAction, cancelAiAction, editAiAction, selectedVisibleMessageIds, selectedMessageCount,
         canCopySelectedMessages, canDeleteSelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
         selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedDeleteSelectedMessages, selectedOpenForwardSelectedMessages,
@@ -1490,18 +1596,19 @@ export function ChatPageContent() {
         health, user, unreadTotal, sidebarQuery, setSidebarQuery, sidebarSearchActive, searchingSidebar,
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
         sidebarWorkspace, setSidebarWorkspace,
-        openConversation, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
+        openConversationFromSidebar, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
         conversationActionPendingId, aiSidebarRows, aiBots, aiBotsLoading, aiBotsError, canUseAiChat, handleOpenAiBot,
         handleCreateAiBotConversation, handleCreateAiConversation,
         renameAiConversation,
-        openingAiBotId, skipRowEnterAnimation, activeConversation, navigate, threadWallpaperSx,
+        openingAiBotId, skipRowEnterAnimation, activeConversation, navigateFromChat, threadWallpaperSx,
         activeThreadMessages, activeThreadMessagesLoading,
         effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
-        threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView, handleOpenInfo,
-        openTaskFromChat, openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
+        threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, handleThreadBack, handleOpenInfo,
+        handleThreadOpenTask, embeddedBackLabel,
+        openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
         openMessageMenu, confirmAiAction, cancelAiAction, editAiAction, selectedVisibleMessageIds, selectedMessageCount,
         canCopySelectedMessages, canDeleteSelectedMessages, toggleMessageSelection, startMessageSelection, clearSelectedMessages,
         selectedReplyToSelectedMessage, selectedCopySelectedMessages, selectedDeleteSelectedMessages, selectedOpenForwardSelectedMessages,
@@ -1549,6 +1656,7 @@ export function ChatPageContent() {
 
   return (
     <ChatShellLayout
+      embedded={embedded}
       headerMode={isPhone ? 'hidden' : 'default'}
       pageTitle={
         sidebarWorkspace === 'ai' || String(activeConversation?.kind || '').trim() === 'ai'
@@ -1569,7 +1677,7 @@ export function ChatPageContent() {
         overscrollBehaviorY: 'none',
       }}
     >
-      <Stack spacing={isPhone ? 0 : 1.5} sx={{ flex: 1, minHeight: 0 }}>
+      <Stack spacing={embedded || isPhone ? 0 : 1.5} sx={{ flex: 1, minHeight: 0 }}>
         <ChatPageMessageChrome
           isPhone={isPhone}
           fileInputRef={fileInputRef}
@@ -1585,20 +1693,21 @@ export function ChatPageContent() {
           isPhone={isPhone}
           ui={ui}
           theme={theme}
-          sidebarPane={sidebarPane}
+          sidebarPane={embedded ? null : sidebarPane}
           threadPane={threadPane}
-          desktopRightPanelContent={desktopRightPanelContent}
+          desktopRightPanelContent={embedded ? null : desktopRightPanelContent}
           desktopRightPanelWidth={desktopRightPanelWidth}
           onDesktopRightPanelWidthChange={handleDesktopRightPanelWidthChange}
+          gridTemplateColumns={embedded && !isMobile ? 'minmax(0, 1fr)' : undefined}
           taskSplitLayout={taskSplitLayout}
-          renderDesktopRightPanel={renderDesktopRightPanel}
-          renderPersistentRightPanel={renderPersistentRightPanel}
-          showTaskPanel={showTaskPanel}
+          renderDesktopRightPanel={embedded ? false : renderDesktopRightPanel}
+          renderPersistentRightPanel={embedded ? false : renderPersistentRightPanel}
+          showTaskPanel={embedded ? false : showTaskPanel}
           closeTaskPanel={closeTaskPanel}
           onCloseContextPanel={() => setContextPanelOpen(false)}
           contextPanelEnterDuration={contextPanelEnterDuration}
           contextPanelExitDuration={contextPanelExitDuration}
-          resolvedMobileView={resolvedMobileView}
+          resolvedMobileView={embedded ? 'thread' : resolvedMobileView}
           mobileTransitionDirection={mobileTransitionDirection}
           mobileMotionDisabled={mobileMotionDisabled}
           mobileScreenVariants={mobileScreenVariants}

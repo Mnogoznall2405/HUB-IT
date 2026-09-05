@@ -56,7 +56,8 @@ export async function pickMailAttachments(existing: MailUploadFile[] = []): Prom
 }
 
 function mailCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, 'hubit-mail');
+  // v2 invalidates files that older builds could leave partially downloaded.
+  const directory = new Directory(Paths.document, 'hubit-mail-v2');
   directory.create({ intermediates: true, idempotent: true });
   return directory;
 }

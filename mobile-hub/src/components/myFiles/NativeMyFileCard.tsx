@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { memo, type ComponentProps } from 'react';
+import { memo, useCallback, type ComponentProps } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { MyFileRecord } from '../../api/myFilesApi';
 import {
@@ -14,7 +14,7 @@ import {
 } from '../../myFiles/nativeMyFilesModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
-export type MyFileCardAction = 'preview' | 'open' | 'share-file' | 'share-link' | 'rotate' | 'revoke' | 'delete';
+export type MyFileCardAction = 'preview' | 'open' | 'share-file' | 'save-offline' | 'remove-offline' | 'share-link' | 'rotate' | 'revoke' | 'delete';
 
 export const NativeMyFileCard = memo(function NativeMyFileCard({
   item,
@@ -22,11 +22,14 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
   canWrite,
   canShare,
   offline,
+  availableOffline,
   actionsLocked,
   busyAction,
   onPreview,
   onOpen,
   onShareFile,
+  onSaveOffline,
+  onRemoveOffline,
   onShareLink,
   onRotate,
   onRevoke,
@@ -37,15 +40,18 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
   canWrite: boolean;
   canShare: boolean;
   offline: boolean;
+  availableOffline: boolean;
   actionsLocked: boolean;
   busyAction: MyFileCardAction | null;
-  onPreview: () => void;
-  onOpen: () => void;
-  onShareFile: () => void;
-  onShareLink: () => void;
-  onRotate: () => void;
-  onRevoke: () => void;
-  onDelete: () => void;
+  onPreview: (item: MyFileRecord) => void;
+  onOpen: (item: MyFileRecord) => void;
+  onShareFile: (item: MyFileRecord) => void;
+  onSaveOffline: (item: MyFileRecord) => void;
+  onRemoveOffline: (item: MyFileRecord) => void;
+  onShareLink: (item: MyFileRecord) => void;
+  onRotate: (item: MyFileRecord) => void;
+  onRevoke: (item: MyFileRecord) => void;
+  onDelete: (item: MyFileRecord) => void;
 }) {
   const ready = isMyFileReady(item);
   const previewKind = nativeMyFilePreviewKind(item);
@@ -57,6 +63,15 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
       ? tokens.success
       : tokens.warning;
   const fileName = myFileName(item);
+  const handlePreview = useCallback(() => onPreview(item), [item, onPreview]);
+  const handleOpen = useCallback(() => onOpen(item), [item, onOpen]);
+  const handleShareFile = useCallback(() => onShareFile(item), [item, onShareFile]);
+  const handleSaveOffline = useCallback(() => onSaveOffline(item), [item, onSaveOffline]);
+  const handleRemoveOffline = useCallback(() => onRemoveOffline(item), [item, onRemoveOffline]);
+  const handleShareLink = useCallback(() => onShareLink(item), [item, onShareLink]);
+  const handleRotate = useCallback(() => onRotate(item), [item, onRotate]);
+  const handleRevoke = useCallback(() => onRevoke(item), [item, onRevoke]);
+  const handleDelete = useCallback(() => onDelete(item), [item, onDelete]);
   return (
     <View
       testID={`native-my-file-${item.id}`}
@@ -75,6 +90,12 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
               <View style={[styles.sharedBadge, { backgroundColor: tokens.selected }]}>
                 <MaterialCommunityIcons name="link-variant" size={14} color={tokens.primary} />
                 <Text style={[styles.sharedText, { color: tokens.primary }]}>ссылка</Text>
+              </View>
+            ) : null}
+            {availableOffline ? (
+              <View style={[styles.offlineBadge, { backgroundColor: tokens.accentSoft }]}>
+                <MaterialCommunityIcons name="check-circle-outline" size={14} color={tokens.success} />
+                <Text style={[styles.offlineText, { color: tokens.success }]}>Офлайн</Text>
               </View>
             ) : null}
           </View>
@@ -105,8 +126,8 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             tokens={tokens}
             primary
             busy={busyAction === 'preview'}
-            disabled={offline || actionsLocked || busy}
-            onPress={onPreview}
+            disabled={actionsLocked || busy}
+            onPress={handlePreview}
           />
         ) : null}
         {ready ? (
@@ -117,8 +138,30 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             tokens={tokens}
             primary={!previewKind}
             busy={busyAction === 'open'}
-            disabled={offline || actionsLocked || busy}
-            onPress={onOpen}
+            disabled={actionsLocked || busy}
+            onPress={handleOpen}
+          />
+        ) : null}
+        {ready && !availableOffline ? (
+          <Action
+            testID={`native-my-file-save-offline-${item.id}`}
+            label="Сохранить офлайн"
+            icon="cloud-download-outline"
+            tokens={tokens}
+            busy={busyAction === 'save-offline'}
+            disabled={actionsLocked || busy}
+            onPress={handleSaveOffline}
+          />
+        ) : null}
+        {ready && availableOffline ? (
+          <Action
+            testID={`native-my-file-remove-offline-${item.id}`}
+            label="Удалить офлайн-копию"
+            icon="cloud-off-outline"
+            tokens={tokens}
+            busy={busyAction === 'remove-offline'}
+            disabled={actionsLocked || busy}
+            onPress={handleRemoveOffline}
           />
         ) : null}
         {ready ? (
@@ -127,8 +170,8 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             icon="share-variant-outline"
             tokens={tokens}
             busy={busyAction === 'share-file'}
-            disabled={offline || actionsLocked || busy}
-            onPress={onShareFile}
+            disabled={actionsLocked || busy}
+            onPress={handleShareFile}
           />
         ) : null}
         {ready && canShare ? (
@@ -139,7 +182,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             tokens={tokens}
             busy={busyAction === 'share-link'}
             disabled={offline || actionsLocked || busy}
-            onPress={onShareLink}
+            onPress={handleShareLink}
           />
         ) : null}
         {item.is_shared && canShare ? (
@@ -150,7 +193,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             tokens={tokens}
             busy={busyAction === 'rotate'}
             disabled={offline || actionsLocked || busy}
-            onPress={onRotate}
+            onPress={handleRotate}
           />
         ) : null}
         {item.is_shared && canShare ? (
@@ -160,7 +203,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             tokens={tokens}
             busy={busyAction === 'revoke'}
             disabled={offline || actionsLocked || busy}
-            onPress={onRevoke}
+            onPress={handleRevoke}
           />
         ) : null}
         {canWrite ? (
@@ -172,7 +215,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             danger
             busy={busyAction === 'delete'}
             disabled={offline || actionsLocked || busy}
-            onPress={onDelete}
+            onPress={handleDelete}
           />
         ) : null}
       </View>
@@ -237,6 +280,8 @@ const styles = StyleSheet.create({
   status: { flexShrink: 1, fontSize: 11, lineHeight: 15, fontWeight: '800' },
   sharedBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
   sharedText: { fontSize: 10, fontWeight: '800' },
+  offlineBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
+  offlineText: { fontSize: 10, fontWeight: '800' },
   metaRow: { flexDirection: 'row', gap: 12 },
   metaBlock: { flex: 1, minWidth: 0 },
   metaLabel: { fontSize: 10, lineHeight: 14 },

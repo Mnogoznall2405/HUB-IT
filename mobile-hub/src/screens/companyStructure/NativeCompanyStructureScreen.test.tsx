@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { useLocalSearchParams } from 'expo-router';
 import { Alert } from 'react-native';
 import * as companyApi from '../../api/companyStructureApi';
+import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import * as nativeFilePicker from '../../files/nativeFilePicker';
 import type { CompanyStructureNode, CompanyStructurePerson } from '../../api/companyStructureApi';
 import { NativeCompanyStructureScreen } from './NativeCompanyStructureScreen';
@@ -12,6 +13,7 @@ let mockOfflineMode = false;
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     offlineMode: mockOfflineMode,
+    user: { id: 17 },
     hasPermission: (permission: string) => mockPermissions.includes(permission),
   }),
 }));
@@ -41,6 +43,12 @@ jest.mock('../../api/companyStructureApi', () => ({
   importCompanyStructureFromZup: jest.fn(),
   uploadCompanyStructureNodePhoto: jest.fn(),
   deleteCompanyStructureNodePhoto: jest.fn(),
+}));
+jest.mock('../../cache/nativeSnapshotCache', () => ({
+  readNativeSnapshot: jest.fn(),
+  writeNativeSnapshot: jest.fn(async () => true),
+  readNativeEntitySnapshot: jest.fn(),
+  writeNativeEntitySnapshot: jest.fn(async () => true),
 }));
 
 const params = useLocalSearchParams as jest.Mock;
@@ -84,6 +92,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockPermissions = ['company_structure.read', 'company_structure.write'];
   mockOfflineMode = false;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue(null);
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
   department = node('dep-1', 'department', 'Поддержка');
   department.parent_id = 'block-1';
   secondDepartment = node('dep-2', 'department', 'Инфраструктура', [], 1);
@@ -168,6 +178,61 @@ it('opens a block, navigates to a leaf and renders its people inline', async () 
   });
 });
 
+it('stores the structure tree and opened node people for offline use', async () => {
+  const view = await render(<NativeCompanyStructureScreen />);
+  await waitFor(() => expect(view.getByText('Поддержка')).toBeTruthy());
+  expect(snapshotCache.writeNativeSnapshot).toHaveBeenCalledWith('company-structure-tree', 17, {
+    items: [root],
+    count: 1,
+  });
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'company-structure-people',
+    17,
+    'block-1',
+    expect.objectContaining({ node: expect.objectContaining({ id: 'block-1' }) }),
+  );
+});
+
+it('opens the cached structure and cached people offline without API requests', async () => {
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: { items: [root], count: 1 },
+  });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(async (_scope: string, _userId: number, nodeId: string) => ({
+    savedAt: 1,
+    data: {
+      node: nodeId === 'dep-1' ? department : block,
+      department_codes: [],
+      matched_by_title: false,
+      items: nodeId === 'dep-1' ? [employee] : [],
+      total: nodeId === 'dep-1' ? 1 : 0,
+    },
+  }));
+
+  const view = await render(<NativeCompanyStructureScreen />);
+  await waitFor(() => expect(view.getByText('Поддержка')).toBeTruthy());
+  fireEvent.press(view.getByLabelText('Поддержка, Отдел'));
+  await waitFor(() => expect(view.getByText('Иванов Иван')).toBeTruthy());
+
+  expect(companyApi.getCompanyStructureTree).not.toHaveBeenCalled();
+  expect(companyApi.getCompanyStructureNodePeople).not.toHaveBeenCalled();
+});
+
+it('searches cached structure nodes locally while offline', async () => {
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: { items: [root], count: 1 },
+  });
+
+  const view = await render(<NativeCompanyStructureScreen />);
+  await waitFor(() => expect(view.getByTestId('native-company-search').props.editable).toBe(true));
+  fireEvent.changeText(view.getByTestId('native-company-search'), 'Под');
+  await waitFor(() => expect(view.getByText('Поддержка')).toBeTruthy());
+  expect(companyApi.searchCompanyStructure).not.toHaveBeenCalled();
+});
+
 it('searches from two characters and opens the found person in the native people sheet', async () => {
   const view = await render(<NativeCompanyStructureScreen />);
   await waitFor(() => expect(view.getByTestId('native-company-search')).toBeTruthy());
@@ -230,7 +295,7 @@ it('does not start requests offline and exposes an explicit offline empty state'
   const view = await render(<NativeCompanyStructureScreen />);
   await waitFor(() => expect(view.getByText('Нет данных для автономного режима')).toBeTruthy());
   expect(companyApi.getCompanyStructureTree).not.toHaveBeenCalled();
-  expect(view.getByTestId('native-company-search').props.editable).toBe(false);
+  expect(view.getByTestId('native-company-search').props.editable).toBe(true);
   expect(view.getByTestId('native-company-open-hierarchy').props.accessibilityState.disabled).toBe(true);
 });
 

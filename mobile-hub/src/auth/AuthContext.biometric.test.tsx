@@ -2,6 +2,7 @@ import { act, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
 import { Text } from 'react-native';
 import * as authApi from '../api/authApi';
+import * as nativeConnectivity from '../network/nativeConnectivity';
 import * as biometricAuth from './biometricAuth';
 import * as tokenStore from './tokenStore';
 import { AuthProvider, useAuth } from './AuthContext';
@@ -97,6 +98,14 @@ describe('AuthProvider biometric unlock', () => {
     jest.mocked(tokenStore.hasSession).mockResolvedValue(false);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValue(null);
     jest.mocked(biometricAuth.isBiometricLoginEnabled).mockResolvedValue(true);
+    jest.mocked(nativeConnectivity.getNativeConnectivitySnapshot).mockResolvedValue({
+      available: false,
+      online: false,
+      connected: false,
+      transport: 'none',
+      metered: false,
+      changedAtMs: 0,
+    });
     jest.mocked(authApi.fetchMe).mockReset();
     jest.mocked(biometricAuth.unlockBiometricLogin).mockResolvedValue({
       version: 2,
@@ -123,6 +132,41 @@ describe('AuthProvider biometric unlock', () => {
 
     await act(async () => resolveFetch?.(cachedUser));
     await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
+  });
+
+  it('does not keep the startup loader waiting for a best-effort cached identity refresh', async () => {
+    jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
+    jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
+    jest.mocked(authApi.fetchMe).mockResolvedValueOnce(cachedUser);
+    let resolveCacheWrite: (() => void) | undefined;
+    jest.mocked(tokenStore.setCachedSessionUser).mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolveCacheWrite = resolve;
+    }));
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+
+    await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
+    expect(resolveCacheWrite).toBeDefined();
+    await act(async () => resolveCacheWrite?.());
+  });
+
+  it('skips the startup API timeout when Android already reports no network', async () => {
+    jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
+    jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
+    jest.mocked(nativeConnectivity.getNativeConnectivitySnapshot).mockResolvedValue({
+      available: true,
+      online: false,
+      connected: false,
+      transport: 'none',
+      metered: false,
+      changedAtMs: 10,
+    });
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+
+    await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
+    expect(view.getByTestId('offline-mode').props.children).toBe('offline');
+    expect(authApi.fetchMe).not.toHaveBeenCalled();
   });
 
   it('restores a live JWT session without asking for a fingerprint', async () => {
@@ -156,19 +200,26 @@ describe('AuthProvider biometric unlock', () => {
   });
 
   it('retries a live JWT session after a transient startup network failure', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(authApi.fetchMe)
-      .mockRejectedValueOnce(Object.assign(new Error('Network Error'), {
-        isAxiosError: true,
-        code: 'ERR_NETWORK',
-        response: undefined,
-      }))
+      .mockImplementationOnce(async () => {
+        now = 4_500;
+        throw Object.assign(new Error('Network Error'), {
+          isAxiosError: true,
+          code: 'ERR_NETWORK',
+          response: undefined,
+        });
+      })
       .mockResolvedValueOnce(cachedUser);
 
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
 
     await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
     expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
+    expect(authApi.fetchMe).toHaveBeenNthCalledWith(1, { timeoutMs: 5_000 });
+    expect(authApi.fetchMe).toHaveBeenNthCalledWith(2, { timeoutMs: 1_500 });
     expect(biometricAuth.unlockBiometricLogin).not.toHaveBeenCalled();
   });
 
@@ -188,6 +239,27 @@ describe('AuthProvider biometric unlock', () => {
     expect(view.getByTestId('offline-mode').props.children).toBe('offline');
   });
 
+  it('keeps the session online when HUB responds over an Android network that is not validated', async () => {
+    jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
+    jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
+    jest.mocked(authApi.fetchMe).mockResolvedValueOnce(cachedUser);
+    jest.mocked(nativeConnectivity.getNativeConnectivitySnapshot).mockResolvedValue({
+      available: true,
+      online: false,
+      connected: true,
+      transport: 'wifi',
+      metered: false,
+      changedAtMs: 10,
+    });
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+
+    await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+    expect(tokenStore.clearTokens).not.toHaveBeenCalled();
+  });
+
   it('keeps the login gate locked until biometric unlock when startup transport retries are exhausted', async () => {
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
@@ -205,7 +277,7 @@ describe('AuthProvider biometric unlock', () => {
     expect(tokenStore.clearTokens).not.toHaveBeenCalled();
   });
 
-  it('updates native offline mode immediately when Android connectivity changes', async () => {
+  it('does not override a recent successful HUB response with a stale Android offline event', async () => {
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
     jest.mocked(authApi.fetchMe).mockResolvedValueOnce(cachedUser);
@@ -217,10 +289,32 @@ describe('AuthProvider biometric unlock', () => {
     await act(async () => connectivityListener?.({
       available: true,
       online: false,
+      connected: true,
+      transport: 'wifi',
+      metered: false,
+      changedAtMs: 1,
+    }));
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+
+    await act(async () => connectivityListener?.({
+      available: true,
+      online: false,
       connected: false,
       transport: 'none',
       metered: false,
-      changedAtMs: 1,
+      changedAtMs: 2,
+    }));
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+
+    const afterGrace = Date.now() + 31_000;
+    jest.spyOn(Date, 'now').mockReturnValue(afterGrace);
+    await act(async () => connectivityListener?.({
+      available: true,
+      online: false,
+      connected: false,
+      transport: 'none',
+      metered: false,
+      changedAtMs: 3,
     }));
     expect(view.getByTestId('offline-mode').props.children).toBe('offline');
 
@@ -230,7 +324,7 @@ describe('AuthProvider biometric unlock', () => {
       connected: true,
       transport: 'wifi',
       metered: false,
-      changedAtMs: 2,
+      changedAtMs: 4,
     }));
     expect(view.getByTestId('offline-mode').props.children).toBe('online');
   });
@@ -245,7 +339,7 @@ describe('AuthProvider biometric unlock', () => {
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
 
     await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
-    expect(tokenStore.clearTokens).toHaveBeenCalledTimes(1);
+    expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: false });
     expect(view.getByTestId('offline-mode').props.children).toBe('online');
   });
 
@@ -277,6 +371,32 @@ describe('AuthProvider biometric unlock', () => {
     expect(biometricAuth.disableBiometricLogin).not.toHaveBeenCalled();
     expect(currentAuth?.biometricEnabled).toBe(true);
     expect(view.getByText('mobile-test')).toBeTruthy();
+  });
+
+  it('starts password authentication without waiting for the local biometric lookup', async () => {
+    let resolveBiometricUser: ((userId: number | null) => void) | undefined;
+    jest.mocked(biometricAuth.getBiometricLoginUserId).mockImplementationOnce(() => (
+      new Promise<number | null>((resolve) => {
+        resolveBiometricUser = resolve;
+      })
+    ));
+    jest.mocked(authApi.login).mockResolvedValueOnce({
+      status: 'authenticated',
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+      user: cachedUser,
+    });
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
+
+    await act(async () => {
+      const loginPromise = currentAuth?.login('mobile-test', 'password');
+      await Promise.resolve();
+      expect(authApi.login).toHaveBeenCalledWith('mobile-test', 'password');
+      resolveBiometricUser?.(cachedUser.id);
+      await loginPromise;
+    });
+    await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
   });
 
   it('removes an enrolled biometric credential after password login as another user', async () => {

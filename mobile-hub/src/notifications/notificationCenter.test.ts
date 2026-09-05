@@ -19,6 +19,8 @@ describe('native notification center model', () => {
     })).toBe('/chat?conversation=conversation-1&message=message-2');
     expect(hubNotificationPortalPath({ id: '4', entity_type: 'unknown', entity_id: 'x' }))
       .toBe('/dashboard');
+    expect(hubNotificationPortalPath({ id: '5', entity_type: 'docflow', entity_id: 'task-1' }))
+      .toBe('/docflow?task=task-1');
   });
 
   it('builds a mailbox-scoped web destination for mail', () => {

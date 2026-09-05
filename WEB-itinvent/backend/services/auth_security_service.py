@@ -470,7 +470,9 @@ class AuthSecurityService:
             client_device_id=client_device_id,
         )
 
-    def issue_tokens(self, *, user: dict, session_id: str, device_id: str) -> dict[str, Any]:
+    def issue_tokens(
+        self, *, user: dict, session_id: str, device_id: str, persist_refresh: bool = True,
+    ) -> dict[str, Any]:
         access_ttl = self._access_ttl()
         refresh_ttl = self._refresh_ttl()
         access_token = create_access_token(
@@ -500,20 +502,22 @@ class AuthSecurityService:
         refresh_token_data = decode_access_token(refresh_token, expected_token_type="refresh")
         if refresh_token_data is None or not refresh_token_data.jti:
             raise AuthSecurityError("Не удалось выпустить refresh-токен")
-        auth_runtime_store_service.save_refresh_token(
-            refresh_token_data.jti,
-            {
-                "user_id": int(user.get("id") or 0),
-                "session_id": session_id,
-                "device_id": device_id,
-            },
-            ttl_seconds=_ttl_seconds(refresh_ttl),
-        )
+        refresh_state = {
+            "user_id": int(user.get("id") or 0),
+            "session_id": session_id,
+            "device_id": device_id,
+        }
+        if persist_refresh:
+            auth_runtime_store_service.save_refresh_token(
+                refresh_token_data.jti, refresh_state, ttl_seconds=_ttl_seconds(refresh_ttl),
+            )
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "access_ttl_seconds": _ttl_seconds(access_ttl),
             "refresh_ttl_seconds": _ttl_seconds(refresh_ttl),
+            **({"_refresh_jti": refresh_token_data.jti, "_refresh_state": refresh_state}
+               if not persist_refresh else {}),
         }
 
     @staticmethod
@@ -734,6 +738,7 @@ class AuthSecurityService:
         device_id: str,
         network_zone: str = "external",
         twofa_policy: str | None = None,
+        persist_refresh: bool = True,
     ) -> dict[str, Any]:
         if not session_service.is_session_active(session_id):
             raise AuthSecurityError("Сессия больше не активна")
@@ -747,7 +752,9 @@ class AuthSecurityService:
                 twofa_required_for_current_request=is_twofa_required_for_zone(network_zone, policy=effective_policy),
             ),
             "session_id": session_id,
-            **self.issue_tokens(user=user, session_id=session_id, device_id=device_id),
+            **self.issue_tokens(
+                user=user, session_id=session_id, device_id=device_id, persist_refresh=persist_refresh,
+            ),
         }
 
     def reset_user_twofa(self, *, user_id: int) -> dict[str, Any]:

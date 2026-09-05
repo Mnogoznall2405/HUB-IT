@@ -24,14 +24,15 @@ import {
 } from './equipmentModel';
 import { readQty } from './databaseRecordModel';
 import { toItemId } from './detailModel';
+import { sortEquipmentItems } from './databaseListModel';
+import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 
-const textCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
 const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_MAX_HEIGHT = 520;
 const TABLE_WIDTHS = {
   consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 96 },
-  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, status: 110, actions: 56 },
-  equipmentMobile: { inv: 130, employee: 210, status: 110, actions: 56 },
+  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, act: 56, status: 110, actions: 56 },
+  equipmentMobile: { inv: 130, employee: 210, act: 56, status: 110, actions: 56 },
 };
 
 const EquipmentRow = memo(function EquipmentRow({
@@ -42,6 +43,8 @@ const EquipmentRow = memo(function EquipmentRow({
   onSelect,
   onAction,
   onOpenEmployee = null,
+  onOpenCurrentAct = null,
+  openingCurrentActDocNo = '',
   onEditConsumableQty = null,
   onDeleteConsumable = null,
   allowSelection = true,
@@ -201,6 +204,16 @@ const EquipmentRow = memo(function EquipmentRow({
           {`Отдел: ${employeeDept || '-'}`}
         </Typography>
       </TableCell>
+      <TableCell
+        align="center"
+        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
+      >
+        <EquipmentCurrentActIndicator
+          item={item}
+          onOpenAct={onOpenCurrentAct}
+          openingDocNo={openingCurrentActDocNo}
+        />
+      </TableCell>
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
         <StatusChip
           status={item.DESCR || item.status_name || item.status}
@@ -232,6 +245,8 @@ const EquipmentTable = memo(function EquipmentTable({
   onSelect,
   onAction,
   onOpenEmployee = null,
+  onOpenCurrentAct = null,
+  openingCurrentActDocNo = '',
   onEditConsumableQty = null,
   onDeleteConsumable = null,
   allowSelection = true,
@@ -243,57 +258,10 @@ const EquipmentTable = memo(function EquipmentTable({
   const [scrollTop, setScrollTop] = useState(0);
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
 
-  const getSortValue = useCallback((item, field) => {
-    switch (field) {
-      case 'id':
-        return toItemId(item);
-      case 'inv':
-        return toInvNo(item);
-      case 'serial':
-        return String(item?.SERIAL_NO || item?.serial_no || item?.HW_SERIAL_NO || item?.hw_serial_no || '').trim();
-      case 'partNo':
-        return String(item?.PART_NO || item?.part_no || '').trim();
-      case 'type':
-        return String(item?.TYPE_NAME || item?.type_name || '').trim();
-      case 'model':
-        return String(item?.MODEL_NAME || item?.model_name || '').trim();
-      case 'qty':
-        return readQty(item, 1);
-      case 'employee':
-        return String(item?.OWNER_DISPLAY_NAME || item?.employee_name || '').trim();
-      case 'status':
-        return String(item?.DESCR || item?.status_name || item?.status || '').trim();
-      default:
-        return '';
-    }
-  }, []);
-
-  const sortedItems = useMemo(() => {
-    const applySortDirection = (cmp) => (tableSort.direction === 'asc' ? cmp : -cmp);
-    return [...(items || [])].sort((a, b) => {
-      if (tableSort.field === 'qty') {
-        const qtyCmp = getSortValue(a, 'qty') - getSortValue(b, 'qty');
-        if (qtyCmp !== 0) {
-          return applySortDirection(qtyCmp);
-        }
-      }
-
-      const primaryCmp = textCollator.compare(
-        String(getSortValue(a, tableSort.field)),
-        String(getSortValue(b, tableSort.field))
-      );
-      if (primaryCmp !== 0) {
-        return applySortDirection(primaryCmp);
-      }
-
-      const invCmp = textCollator.compare(toInvNo(a), toInvNo(b));
-      if (invCmp !== 0) {
-        return applySortDirection(invCmp);
-      }
-
-      return applySortDirection(textCollator.compare(toItemId(a), toItemId(b)));
-    });
-  }, [items, tableSort, getSortValue]);
+  const sortedItems = useMemo(
+    () => sortEquipmentItems(items, tableSort),
+    [items, tableSort]
+  );
 
   const useVirtualization = sortedItems.length >= TABLE_VIRTUALIZE_THRESHOLD;
   const rowHeight = isMobile ? 44 : 52;
@@ -315,7 +283,7 @@ const EquipmentTable = memo(function EquipmentTable({
   const visibleItems = useVirtualization ? sortedItems.slice(startIndex, endIndex) : sortedItems;
   const topSpacerHeight = useVirtualization ? startIndex * rowHeight : 0;
   const bottomSpacerHeight = useVirtualization ? Math.max(0, (sortedItems.length - endIndex) * rowHeight) : 0;
-  const colSpan = isConsumablesMode ? 5 : (isMobile ? 4 : (allowSelection ? 8 : 7));
+  const colSpan = isConsumablesMode ? 5 : (isMobile ? 5 : (allowSelection ? 9 : 8));
   const tableMinWidth = isConsumablesMode
     ? (TABLE_WIDTHS.consumables.inv
       + TABLE_WIDTHS.consumables.type
@@ -325,6 +293,7 @@ const EquipmentTable = memo(function EquipmentTable({
     : isMobile
       ? (TABLE_WIDTHS.equipmentMobile.inv
         + TABLE_WIDTHS.equipmentMobile.employee
+        + TABLE_WIDTHS.equipmentMobile.act
         + TABLE_WIDTHS.equipmentMobile.status
         + TABLE_WIDTHS.equipmentMobile.actions)
       : ((allowSelection ? TABLE_WIDTHS.equipment.select : 0)
@@ -334,6 +303,7 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipment.type
         + TABLE_WIDTHS.equipment.model
         + TABLE_WIDTHS.equipment.employee
+        + TABLE_WIDTHS.equipment.act
         + TABLE_WIDTHS.equipment.status
         + TABLE_WIDTHS.equipment.actions);
 
@@ -477,6 +447,12 @@ const EquipmentTable = memo(function EquipmentTable({
                     Сотрудник
                   </TableSortLabel>
                 </TableCell>
+                <TableCell
+                  align="center"
+                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
+                >
+                  Акт
+                </TableCell>
                 <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
                   <TableSortLabel
                     active={tableSort.field === 'status'}
@@ -511,6 +487,8 @@ const EquipmentTable = memo(function EquipmentTable({
                 onSelect={onSelect}
                 onAction={onAction}
                 onOpenEmployee={onOpenEmployee}
+                onOpenCurrentAct={onOpenCurrentAct}
+                openingCurrentActDocNo={openingCurrentActDocNo}
                 onEditConsumableQty={onEditConsumableQty}
                 onDeleteConsumable={onDeleteConsumable}
                 allowSelection={allowSelection}

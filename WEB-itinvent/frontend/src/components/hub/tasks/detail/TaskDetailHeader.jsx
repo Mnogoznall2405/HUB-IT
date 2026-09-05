@@ -20,6 +20,7 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -32,7 +33,6 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import FlagIcon from '@mui/icons-material/Flag';
 import LocalFireDepartmentOutlinedIcon from '@mui/icons-material/LocalFireDepartmentOutlined';
 import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
@@ -74,13 +74,13 @@ export function TaskDetailHeader({
   isTransferReminder,
   mobileTitle = 'Задача',
   onBack,
+  backLabel = 'К списку',
   onCopyLink,
   mobile = false,
+  compact = false,
+  archiveComments = false,
   actionMenuItems = [],
   onActionMenuSelect,
-  taskDiscussionEnabled = false,
-  onOpenTaskDiscussion,
-  discussionOpening = false,
   ui,
   theme,
 }) {
@@ -130,12 +130,16 @@ export function TaskDetailHeader({
       {task?.has_unread_comments && (
         <Chip
           size="small"
-          label={getTaskUnreadBadgeLabel(taskDiscussionEnabled)}
+          label={getTaskUnreadBadgeLabel(archiveComments)}
           sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }}
         />
       )}
       {Number(task?.comments_count || 0) > 0 && (
-        <Chip size="small" label={`Комментарии: ${task.comments_count}`} sx={{ fontWeight: 700 }} />
+        <Chip
+          size="small"
+          label={`${archiveComments ? 'Архив' : 'Комментарии'}: ${task.comments_count}`}
+          sx={{ fontWeight: 700 }}
+        />
       )}
       {Number(task?.attachments_count || 0) > 0 && (
         <Chip size="small" label={`Файлы: ${task.attachments_count}`} sx={{ fontWeight: 700 }} />
@@ -162,7 +166,7 @@ export function TaskDetailHeader({
       >
         <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between" sx={{ position: 'relative', minHeight: 52 }}>
           <IconButton
-            aria-label="Назад"
+            aria-label={backLabel}
             onClick={onBack}
             sx={{
               width: 44,
@@ -216,6 +220,99 @@ export function TaskDetailHeader({
     );
   }
 
+  if (compact) {
+    return (
+      <Box
+        data-testid="task-detail-compact-header"
+        sx={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          px: { xs: 1, md: 1.25 },
+          py: 0.5,
+          borderBottom: '1px solid',
+          borderColor: ui.borderSoft,
+          bgcolor: alpha(ui.pageBg, 0.96),
+          backdropFilter: 'blur(10px)',
+        }}
+      >
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minHeight: 40 }}>
+          <Button
+            aria-label={backLabel}
+            variant="outlined"
+            size="small"
+            startIcon={<ArrowBackIcon />}
+            onClick={onBack}
+            sx={{
+              minHeight: 40,
+              px: 1,
+              textTransform: 'none',
+              fontWeight: 700,
+              borderRadius: '10px',
+              flexShrink: 0,
+            }}
+          >
+              {backLabel}
+          </Button>
+
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
+            <Typography
+              title={task?.title || 'Карточка задачи'}
+              noWrap
+              sx={{ minWidth: 0, fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.2 }}
+            >
+              {task?.title || 'Карточка задачи'}
+            </Typography>
+            <Chip
+              size="small"
+              label={statusMeta.label}
+              sx={{ flexShrink: 0, fontWeight: 800, bgcolor: statusMeta.bg, color: statusMeta.color }}
+            />
+            <Chip
+              size="small"
+              icon={<FlagIcon sx={{ fontSize: '12px !important', color: `${priority?.dotColor || ui.mutedText} !important` }} />}
+              label={priority?.label || 'Обычный'}
+              sx={{
+                flexShrink: 0,
+                display: { xs: 'none', lg: 'inline-flex' },
+                fontWeight: 800,
+                bgcolor: alpha(priority?.dotColor || ui.mutedText, 0.12),
+                color: priority?.dotColor || ui.mutedText,
+              }}
+            />
+          </Stack>
+
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+            <Tooltip title="Копировать ссылку">
+              <IconButton
+                aria-label="Копировать ссылку"
+                onClick={onCopyLink}
+                sx={{
+                  width: 40,
+                  height: 40,
+                  border: '1px solid',
+                  borderColor: ui.borderSoft,
+                  borderRadius: '10px',
+                  color: ui.textPrimary,
+                }}
+              >
+                <ContentCopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            {Array.isArray(actionMenuItems) && actionMenuItems.length > 0 ? (
+              <OverflowMenu
+                label="Действия задачи"
+                size="medium"
+                items={actionMenuItems}
+                onSelect={onActionMenuSelect}
+              />
+            ) : null}
+          </Stack>
+        </Stack>
+      </Box>
+    );
+  }
+
   return (
     <Box
       sx={{
@@ -239,7 +336,7 @@ export function TaskDetailHeader({
               onClick={onBack}
               sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', flexShrink: 0 }}
             >
-              Назад к доске
+              {backLabel}
             </Button>
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontWeight: 900, fontSize: { xs: '1.05rem', md: '1.3rem' }, lineHeight: 1.18 }}>
@@ -251,18 +348,6 @@ export function TaskDetailHeader({
             </Box>
           </Stack>
           <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexShrink: 0, flexWrap: 'wrap' }}>
-            {taskDiscussionEnabled ? (
-              <Button
-                data-testid="task-detail-open-chat"
-                variant="contained"
-                startIcon={<ForumOutlinedIcon />}
-                onClick={() => onOpenTaskDiscussion?.()}
-                disabled={discussionOpening}
-                sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', minHeight: 44 }}
-              >
-                {discussionOpening ? 'Открываем чат…' : 'Открыть чат'}
-              </Button>
-            ) : null}
             <Button
               variant="outlined"
               startIcon={<ContentCopyIcon />}
@@ -318,12 +403,16 @@ export function TaskDetailHeader({
           {task?.has_unread_comments && (
             <Chip
               size="small"
-              label={getTaskUnreadBadgeLabel(taskDiscussionEnabled)}
+              label={getTaskUnreadBadgeLabel(archiveComments)}
               sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }}
             />
           )}
           {Number(task?.comments_count || 0) > 0 && (
-            <Chip size="small" label={`Комментарии: ${task.comments_count}`} sx={{ fontWeight: 700 }} />
+            <Chip
+              size="small"
+              label={`${archiveComments ? 'Архив' : 'Комментарии'}: ${task.comments_count}`}
+              sx={{ fontWeight: 700 }}
+            />
           )}
           {Number(task?.attachments_count || 0) > 0 && (
             <Chip size="small" label={`Файлы: ${task.attachments_count}`} sx={{ fontWeight: 700 }} />

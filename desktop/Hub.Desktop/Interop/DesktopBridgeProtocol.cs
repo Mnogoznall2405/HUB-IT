@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Lifecycle;
+using Hub.Desktop.Printing;
 using Hub.Desktop.Shell;
 
 namespace Hub.Desktop.Interop;
@@ -17,6 +18,7 @@ public enum DesktopInboundMessageType
     UpdateShellStatus,
     UpdateQuickRoutes,
     PrintCurrentDocument,
+    PrintEquipmentQrBatch,
     OpenDownloads,
     OpenDiagnostics,
     CheckForUpdates,
@@ -35,6 +37,9 @@ public enum DesktopThemeMode
 
 public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
 public sealed record DesktopMailComposeWindowCommand(string RequestId, string Route = "", string Status = "");
+public sealed record DesktopEquipmentQrPrintCommand(
+    string RequestId,
+    DesktopEquipmentQrPrintMode Mode);
 
 public sealed record DesktopInboundMessage(
     DesktopInboundMessageType Type,
@@ -43,7 +48,8 @@ public sealed record DesktopInboundMessage(
     DesktopShellStatus? ShellStatus = null,
     IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
     DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
-    DesktopMailComposeWindowCommand? MailComposeWindow = null);
+    DesktopMailComposeWindowCommand? MailComposeWindow = null,
+    DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -67,6 +73,8 @@ public static class DesktopBridgeProtocol
     private const string ShellStatusMessageType = "shell.status";
     private const string QuickRoutesMessageType = "shell.quickRoutes";
     private const string PrintCurrentDocumentMessageType = "document.printCurrent";
+    private const string EquipmentQrPrintMessageType = "equipmentQr.print";
+    private const string EquipmentQrPrintResultMessageType = "equipmentQr.printResult";
     private const string OpenDownloadsMessageType = "desktop.openDownloads";
     private const string OpenDiagnosticsMessageType = "desktop.openDiagnostics";
     private const string CheckForUpdatesMessageType = "desktop.checkForUpdates";
@@ -127,6 +135,7 @@ public static class DesktopBridgeProtocol
                 ShellStatusMessageType => TryParseShellStatus(root, out message),
                 QuickRoutesMessageType => TryParseQuickRoutes(root, out message),
                 PrintCurrentDocumentMessageType => TryParsePrintCurrentDocument(root, out message),
+                EquipmentQrPrintMessageType => TryParseEquipmentQrPrint(root, out message),
                 OpenDownloadsMessageType => TryParseExactCommand(
                     root,
                     DesktopInboundMessageType.OpenDownloads,
@@ -203,6 +212,7 @@ public static class DesktopBridgeProtocol
             {
                 "command-palette",
                 "desktop-actions",
+                "equipment-qr-print",
                 "file-actions-v2",
                 "mail-compose-window",
                 "print",
@@ -304,6 +314,29 @@ public static class DesktopBridgeProtocol
             type = VncPreflightResultMessageType,
             version = CurrentVersion,
             status = available ? "available" : "missing",
+        });
+    }
+
+    public static string CreateEquipmentQrPrintResultMessage(
+        string requestId,
+        DesktopEquipmentQrPrintStatus status)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Request id is invalid.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = EquipmentQrPrintResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status = status switch
+            {
+                DesktopEquipmentQrPrintStatus.Succeeded => "succeeded",
+                DesktopEquipmentQrPrintStatus.DialogOpened => "dialog-opened",
+                _ => "failed",
+            },
         });
     }
 
@@ -561,6 +594,36 @@ public static class DesktopBridgeProtocol
         }
 
         message = new DesktopInboundMessage(DesktopInboundMessageType.PrintCurrentDocument);
+        return true;
+    }
+
+    private static bool TryParseEquipmentQrPrint(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "mode")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId)
+            || !TryGetBoundedString(root, "mode", 16, out var rawMode))
+        {
+            return false;
+        }
+
+        var mode = rawMode switch
+        {
+            "quick" => DesktopEquipmentQrPrintMode.Quick,
+            "dialog" => DesktopEquipmentQrPrintMode.Dialog,
+            _ => (DesktopEquipmentQrPrintMode?)null,
+        };
+        if (mode is null)
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.PrintEquipmentQrBatch,
+            EquipmentQrPrint: new DesktopEquipmentQrPrintCommand(requestId, mode.Value));
         return true;
     }
 

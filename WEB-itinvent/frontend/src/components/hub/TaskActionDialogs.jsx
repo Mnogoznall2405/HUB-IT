@@ -102,12 +102,16 @@ export function TaskEditDialog({
   useEffect(() => {
     if (!open || !task) return;
     const assigneeId = String(task.assignee_user_id || '').trim();
+    const assigneeIds = (Array.isArray(task.assignee_user_ids) ? task.assignee_user_ids : [assigneeId])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
     const emailRemind = fromApiEmailDeadlineRemindHours(task.email_deadline_remind_hours);
     setDraft({
       id: String(task.id || ''),
       title: String(task.title || ''),
       description: String(task.description || ''),
       assignee_user_id: assigneeId,
+      assignee_user_ids: [...new Set(assigneeIds)],
       controller_user_id: String(task.controller_user_id || ''),
       observer_user_ids: (Array.isArray(task.observer_user_ids) ? task.observer_user_ids : [])
         .map((value) => String(value || ''))
@@ -123,18 +127,22 @@ export function TaskEditDialog({
       email_deadline_remind_hours: emailRemind.hours,
     });
     setDueCustomOpen(false);
-    if (assigneeId) {
-      const assigneeSnapshot = {
+    let assigneeSnapshots = (Array.isArray(task.assignees) ? task.assignees : [])
+      .map((item) => ({
+        id: String(item?.user_id || ''),
+        full_name: String(item?.full_name || '').trim(),
+        username: String(item?.username || '').trim(),
+      }))
+      .filter((item) => item.id);
+    if (!assigneeSnapshots.length && assigneeId) {
+      assigneeSnapshots = [{
         id: assigneeId,
         full_name: String(task.assignee_full_name || '').trim(),
         username: String(task.assignee_username || '').trim(),
-      };
-      setAssigneeOptions(mergeTaskAssigneeOptions([], [assigneeSnapshot]));
-      setAssigneeSearchInput(userLabel(assigneeSnapshot));
-    } else {
-      setAssigneeOptions([]);
-      setAssigneeSearchInput('');
+      }];
     }
+    setAssigneeOptions(mergeTaskAssigneeOptions([], assigneeSnapshots));
+    setAssigneeSearchInput('');
     const observerSnapshots = (Array.isArray(task.observers) ? task.observers : [])
       .map((item) => ({
         id: String(item?.user_id || ''),
@@ -161,14 +169,14 @@ export function TaskEditDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    void resolveAssigneeById(draft.assignee_user_id).then((item) => {
-      if (!cancelled && item) {
-        setAssigneeOptions((prev) => mergeTaskAssigneeOptions(prev, [item]));
-        setAssigneeSearchInput((prev) => (String(prev || '').trim() ? prev : userLabel(item)));
+    const ids = Array.isArray(draft.assignee_user_ids) ? draft.assignee_user_ids : [];
+    void Promise.all(ids.map((id) => resolveAssigneeById(id))).then((items) => {
+      if (!cancelled) {
+        setAssigneeOptions((prev) => mergeTaskAssigneeOptions(prev, items.filter(Boolean)));
       }
     });
     return () => { cancelled = true; };
-  }, [draft.assignee_user_id, open, resolveAssigneeById]);
+  }, [draft.assignee_user_ids, open, resolveAssigneeById]);
 
   useEffect(() => {
     if (!open) return;
@@ -185,8 +193,11 @@ export function TaskEditDialog({
       .then((payload) => {
         if (cancelled) return;
         const items = Array.isArray(payload?.items) ? payload.items : [];
+        const selectedIds = new Set(
+          (Array.isArray(draft.assignee_user_ids) ? draft.assignee_user_ids : []).map((item) => String(item || '')),
+        );
         setAssigneeOptions((prev) => mergeTaskAssigneeOptions(
-          prev.filter((item) => String(item?.id || '') === String(draft.assignee_user_id || '')),
+          prev.filter((item) => selectedIds.has(String(item?.id || ''))),
           items,
         ));
       })
@@ -199,7 +210,7 @@ export function TaskEditDialog({
       });
 
     return () => { cancelled = true; };
-  }, [debouncedAssigneeSearchInput, draft.assignee_user_id, open]);
+  }, [debouncedAssigneeSearchInput, draft.assignee_user_ids, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -239,7 +250,12 @@ export function TaskEditDialog({
   const departments = references?.departments || [];
   const projects = references?.projects || [];
   const objects = references?.objects || [];
-  const selectedAssignee = assigneeOptions.find((item) => String(item?.id || '') === draft.assignee_user_id) || null;
+  const selectedAssignees = (Array.isArray(draft.assignee_user_ids) ? draft.assignee_user_ids : [])
+    .map((id) => assigneeOptions.find((item) => String(item?.id || '') === String(id || '')) || { id, full_name: '', username: '' })
+    .filter((item) => String(item?.id || '').trim());
+  const selectedAssignee = selectedAssignees[0]
+    || assigneeOptions.find((item) => String(item?.id || '') === String(draft.assignee_user_id || ''))
+    || null;
   const selectedController = controllers.find((item) => String(item?.id || '') === draft.controller_user_id) || null;
   const selectedObservers = (Array.isArray(draft.observer_user_ids) ? draft.observer_user_ids : [])
     .map((id) => observerOptions.find((item) => String(item?.id || '') === String(id || '')) || { id, full_name: '', username: '' })
@@ -257,9 +273,7 @@ export function TaskEditDialog({
   ), [assigneeOptions, observerOptions]);
   const assigneeAutocompleteProps = {
     filterOptions: (options) => options,
-    inputValue: String(assigneeSearchInput || '').trim()
-      ? assigneeSearchInput
-      : (selectedAssignee ? userLabel(selectedAssignee) : ''),
+    inputValue: assigneeSearchInput,
     onInputChange: (_, value, reason) => {
       if (reason === 'input') {
         setAssigneeSearchInput(value);
@@ -298,7 +312,11 @@ export function TaskEditDialog({
     onSave?.({
       title: String(draft.title || '').trim(),
       description: String(draft.description || '').trim(),
-      assignee_user_id: Number(draft.assignee_user_id || 0) || null,
+      assignee_user_ids: (variant === 'modern' && Array.isArray(draft.assignee_user_ids)
+        ? draft.assignee_user_ids
+        : [draft.assignee_user_id])
+        .map(Number)
+        .filter((value) => Number.isInteger(value) && value > 0),
       controller_user_id: Number(draft.controller_user_id || 0) || null,
       observer_user_ids: (Array.isArray(draft.observer_user_ids) ? draft.observer_user_ids : [])
         .map(Number)
@@ -333,7 +351,7 @@ export function TaskEditDialog({
         editLoading={referencesLoading}
         onSave={submit}
         onEditDescriptionDraftChange={handleEditDescriptionDraftChange}
-        selectedEditAssignee={selectedAssignee}
+        selectedEditAssignees={selectedAssignees}
         selectedEditController={selectedController}
         selectedEditObservers={selectedObservers}
         selectedEditDepartment={selectedDepartment}

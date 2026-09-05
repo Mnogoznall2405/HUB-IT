@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { invalidateSWRCacheByPrefix } from '../../lib/swrCache';
 import { patchTaskConversationFromTask } from './chatConversationModel';
 import { persistChatTaskPanelCollapsed, readStoredChatTaskPanelCollapsed } from './chatRightPanelLayout';
+import { buildTaskDetailPath } from '../../lib/taskNavigation';
 
 export const CONTEXT_PANEL_ENTER_MS = 220;
 export const CONTEXT_PANEL_EXIT_MS = 180;
@@ -61,8 +62,10 @@ export default function useChatPanelsController({
   setMessageMenuMessage,
   setThreadMenuAnchor,
   userId,
+  disableTaskPanel = false,
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [infoOpen, setInfoOpen] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
@@ -93,6 +96,11 @@ export default function useChatPanelsController({
 
   useEffect(() => {
     if (isMobile) return;
+    if (disableTaskPanel) {
+      setTaskPanelOpen(false);
+      setTaskPanelTaskId('');
+      return;
+    }
     setTaskPanelTaskId(activeTaskConversationTaskId);
     if (activeTaskConversationTaskId) {
       setContextPanelOpen(false);
@@ -103,7 +111,7 @@ export default function useChatPanelsController({
       return;
     }
     setTaskPanelOpen(false);
-  }, [activeTaskConversationTaskId, isMobile]);
+  }, [activeTaskConversationTaskId, disableTaskPanel, isMobile]);
 
   const openTaskInTasks = useCallback(() => {
     navigate('/tasks');
@@ -112,16 +120,13 @@ export default function useChatPanelsController({
   const openTaskFromChat = useCallback((taskId) => {
     const normalizedTaskId = String(taskId || '').trim();
     if (!normalizedTaskId) return;
-    if (isMobile) {
-      navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}`);
-      return;
-    }
-    void loadTaskWorkspacePanelModule();
-    persistChatTaskPanelCollapsed(false);
-    setContextPanelOpen(false);
-    setTaskPanelTaskId(normalizedTaskId);
-    setTaskPanelOpen(true);
-  }, [isMobile, navigate]);
+    navigate(buildTaskDetailPath(normalizedTaskId), {
+      state: {
+        taskReturnTo: `${location.pathname}${location.search || ''}`,
+        taskReturnLabel: 'Назад в чат',
+      },
+    });
+  }, [location.pathname, location.search, navigate]);
 
   const closeTaskPanel = useCallback(() => {
     persistChatTaskPanelCollapsed(true);
@@ -196,6 +201,10 @@ export default function useChatPanelsController({
     const isTaskConversation = String(activeConversation?.kind || '').trim() === 'task'
       || Boolean(String(activeTaskConversationTaskId || '').trim());
     if (isTaskConversation) {
+      if (disableTaskPanel) {
+        openTaskFromChat(activeTaskConversationTaskId || activeConversation?.task_id);
+        return;
+      }
       setContextPanelOpen(false);
       setTaskPanelOpen((current) => {
         const next = !current;
@@ -211,11 +220,13 @@ export default function useChatPanelsController({
     activeConversation,
     activeConversationIdRef,
     activeTaskConversationTaskId,
+    disableTaskPanel,
     getCurrentBrowserConversationId,
     getMobileNav,
     isMobile,
     loadChatDialogsModule,
     mobileHistoryReadyRef,
+    openTaskFromChat,
     setMessageMenuAnchor,
     setMessageMenuMessage,
     setThreadMenuAnchor,

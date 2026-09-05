@@ -71,10 +71,18 @@ class ChatRealtimePostgresBus:
 
     transport = "postgres"
 
-    def __init__(self, manager: Any, *, database_url: str, node_id: str) -> None:
+    def __init__(
+        self,
+        manager: Any,
+        *,
+        database_url: str,
+        node_id: str,
+        subscriber_enabled: bool = True,
+    ) -> None:
         self._manager = manager
         self._database_url = str(database_url or "").strip()
         self._node_id = str(node_id or "").strip()
+        self._subscriber_enabled = bool(subscriber_enabled)
         self._listener_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._reconnect_event: asyncio.Event | None = None
@@ -256,7 +264,7 @@ class ChatRealtimePostgresBus:
         worker = self._publish_worker_task
         return bool(
             self._accepting_publishes
-            and self._subscriber_ready
+            and (self._subscriber_ready or not self._subscriber_enabled)
             and self._publisher_ready
             and self._publish_worker_ready
             and worker is not None
@@ -410,10 +418,11 @@ class ChatRealtimePostgresBus:
             self._run_publish_worker(),
             name="chat-postgres-publisher",
         )
-        self._listener_task = asyncio.create_task(
-            self._run_listener(),
-            name="chat-postgres-listener",
-        )
+        if self._subscriber_enabled:
+            self._listener_task = asyncio.create_task(
+                self._run_listener(),
+                name="chat-postgres-listener",
+            )
 
     async def stop(self) -> None:
         self._accepting_publishes = False

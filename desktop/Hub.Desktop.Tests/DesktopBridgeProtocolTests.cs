@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
+using Hub.Desktop.Printing;
 using Hub.Desktop.Shell;
 using Xunit;
 
@@ -199,6 +200,7 @@ public sealed class DesktopBridgeProtocolTests
             {
                 "command-palette",
                 "desktop-actions",
+                "equipment-qr-print",
                 "file-actions-v2",
                 "mail-compose-window",
                 "print",
@@ -268,6 +270,34 @@ public sealed class DesktopBridgeProtocolTests
     [InlineData("{\"type\":\"document.printCurrent\",\"version\":1,\"html\":\"<p>x</p>\"}")]
     [InlineData("{\"type\":\"document.printCurrent\",\"version\":2}")]
     public void RejectsExpandedOrUnsupportedPrintCommands(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void ParsesStrictEquipmentQrPrintAndCreatesResult()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"equipmentQr.print","version":1,"requestId":"qr-1","mode":"quick"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.PrintEquipmentQrBatch, message.Type);
+        Assert.Equal("qr-1", message.EquipmentQrPrint?.RequestId);
+        Assert.Equal(DesktopEquipmentQrPrintMode.Quick, message.EquipmentQrPrint?.Mode);
+
+        using var result = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateEquipmentQrPrintResultMessage(
+                "qr-1",
+                DesktopEquipmentQrPrintStatus.Succeeded));
+        Assert.Equal("equipmentQr.printResult", result.RootElement.GetProperty("type").GetString());
+        Assert.Equal("succeeded", result.RootElement.GetProperty("status").GetString());
+        Assert.Equal(4, result.RootElement.EnumerateObject().Count());
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"equipmentQr.print\",\"version\":1,\"requestId\":\"qr-1\",\"mode\":\"silent\"}")]
+    [InlineData("{\"type\":\"equipmentQr.print\",\"version\":1,\"requestId\":\"bad id\",\"mode\":\"quick\"}")]
+    [InlineData("{\"type\":\"equipmentQr.print\",\"version\":1,\"requestId\":\"qr-1\",\"mode\":\"dialog\",\"printer\":\"unsafe\"}")]
+    public void RejectsMalformedEquipmentQrPrintCommands(string json)
     {
         Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
     }

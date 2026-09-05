@@ -239,6 +239,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   typingLine,
   contextPanelOpen,
   onBack,
+  backLabel = 'Назад к чатам',
   onOpenDrawer,
   onOpenInfo,
   onOpenTask,
@@ -392,7 +393,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               <IconButton
                 size="small"
                 onClick={onBack}
-                aria-label="Назад к чатам"
+                aria-label={backLabel}
                 sx={{
                   ml: -0.2,
                   width: compactMobile ? 44 : 38,
@@ -490,7 +491,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             <IconButton
               size="small"
               onClick={onBack}
-              aria-label="Назад к чатам"
+              aria-label={backLabel}
               sx={{
                 ml: -0.2,
                 width: compactMobile ? 44 : 38,

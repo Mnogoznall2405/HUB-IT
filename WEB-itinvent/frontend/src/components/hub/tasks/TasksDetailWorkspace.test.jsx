@@ -12,6 +12,17 @@ import {
   statusMeta,
 } from '../../../pages/tasks/taskFormatters';
 
+vi.mock('./TaskCanvasWorkspace', () => ({
+  default: () => <div data-testid="task-canvas-stub">canvas</div>,
+}));
+vi.mock('./TaskDiscussionWorkspace', () => ({
+  default: ({ conversationId, messageId }) => (
+    <div data-testid="task-discussion-stub" data-conversation-id={conversationId} data-message-id={messageId}>
+      discussion
+    </div>
+  ),
+}));
+
 const theme = createTheme();
 const ui = buildOfficeUiTokens(theme);
 
@@ -44,6 +55,7 @@ const renderWorkspace = (props = {}) => render(
       theme={theme}
       selectedMobileTaskView="detail"
       selectedTaskTab="comments"
+      selectedTaskView="overview"
       comments={[]}
       statusLog={[]}
       canEditTask={alwaysTrue}
@@ -75,6 +87,7 @@ const renderWorkspace = (props = {}) => render(
       onDownloadAttachment={noop}
       onDownloadReport={noop}
       onTabChange={noop}
+      onViewChange={noop}
       onCommentChange={noop}
       onAddComment={noop}
       onOpenMobileChecklist={noop}
@@ -96,6 +109,52 @@ describe('TasksDetailWorkspace', () => {
     expect(screen.getByText('Описание задачи')).toBeInTheDocument();
     expect(screen.getByText('Нужно сверить цифры')).toBeInTheDocument();
     expect(screen.getByTestId('task-checklist-stub')).toBeInTheDocument();
+  });
+
+  it('switches from the overview to the task canvas mode', () => {
+    const onViewChange = vi.fn();
+    renderWorkspace({ onViewChange });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Доска' }));
+
+    expect(onViewChange).toHaveBeenCalledWith('canvas');
+  });
+
+  it('uses the compact viewport-filling layout in canvas mode', async () => {
+    renderWorkspace({ selectedTaskView: 'canvas' });
+
+    expect(await screen.findByTestId('task-canvas-stub')).toBeInTheDocument();
+    expect(screen.getByTestId('task-detail-compact-header')).toBeInTheDocument();
+    expect(screen.getByTestId('task-detail-content')).toHaveAttribute('data-content-mode', 'fill');
+    expect(getComputedStyle(screen.getByTestId('task-detail-workspace-content')).overflow).toBe('hidden');
+    expect(screen.queryByText('Полная карточка задачи с обсуждением, файлами и историей статусов.')).not.toBeInTheDocument();
+  });
+
+  it('renders the existing chat surface inside the discussion tab', async () => {
+    renderWorkspace({
+      selectedTaskView: 'discussion',
+      taskDiscussionChatEnabled: true,
+      discussionConversationId: 'conversation-task-1',
+      discussionMessageId: 'message-4',
+    });
+
+    const discussion = await screen.findByTestId('task-discussion-stub');
+    expect(discussion).toHaveAttribute('data-conversation-id', 'conversation-task-1');
+    expect(discussion).toHaveAttribute('data-message-id', 'message-4');
+    expect(screen.getByTestId('task-detail-content')).toHaveAttribute('data-content-mode', 'fill');
+    expect(screen.queryByTestId('task-detail-open-chat')).not.toBeInTheDocument();
+  });
+
+  it('hides the discussion tab when the task capability disables it', () => {
+    renderWorkspace({
+      task: {
+        ...baseTask,
+        capabilities: { can_open_discussion: false },
+      },
+      taskDiscussionChatEnabled: true,
+    });
+
+    expect(screen.queryByRole('tab', { name: 'Обсуждение' })).not.toBeInTheDocument();
   });
 
   it('renders mobile detail screen and forwards checklist open', () => {

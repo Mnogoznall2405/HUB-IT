@@ -16,7 +16,7 @@ export const NativeDocflowTaskCard = memo(function NativeDocflowTaskCard({
 }: {
   task: DocflowTaskSummary;
   tokens: FluentTokens;
-  onPress: () => void;
+  onPress: (taskRef: string) => void;
 }) {
   const overdue = isDocflowTaskOverdue(task);
   const date = task.completed
@@ -25,7 +25,7 @@ export const NativeDocflowTaskCard = memo(function NativeDocflowTaskCard({
   return (
     <Pressable
       testID={`native-docflow-task-${task.ref}`}
-      onPress={onPress}
+      onPress={() => onPress(task.ref)}
       accessibilityRole="button"
       accessibilityLabel={`${task.title}, ${docflowTaskStatus(task)}`}
       style={({ pressed }) => [

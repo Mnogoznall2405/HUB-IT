@@ -87,6 +87,17 @@ def test_task_participant_user_ids_includes_assignee_creator_controller(particip
     assert participant_stub._task_participant_user_ids(task, include_delegates=False) == {1, 2, 3}
 
 
+def test_task_participant_user_ids_includes_every_assignee(participant_stub):
+    task = {
+        "assignee_user_id": 2,
+        "assignee_user_ids": [2, 4],
+        "created_by_user_id": 1,
+        "controller_user_id": 3,
+    }
+    assert participant_stub._task_participant_user_ids(task, include_delegates=False) == {1, 2, 3, 4}
+    assert participant_stub._task_participant_user_ids(task, include_delegates=True) == {1, 2, 3, 4, 102}
+
+
 def test_task_participant_user_ids_includes_delegates(participant_stub):
     task = {
         "assignee_user_id": 2,
@@ -118,6 +129,17 @@ def test_normalize_observer_user_ids_excludes_participants(participant_stub):
     assert normalized == [4]
 
 
+def test_normalize_observer_user_ids_excludes_all_assignees(participant_stub):
+    normalized = participant_stub._normalize_observer_user_ids(
+        [2, 4, 5],
+        creator_user_id=1,
+        assignee_user_id=2,
+        assignee_user_ids=[2, 4],
+        controller_user_id=0,
+    )
+    assert normalized == [5]
+
+
 def test_enrich_task_observer_fields(participant_stub):
     item = {"observer_user_ids": [4]}
     enriched = participant_stub._enrich_task_observer_fields(item)
@@ -130,4 +152,11 @@ def test_enrich_task_observer_fields(participant_stub):
 def test_observer_membership_clause_sqlite(participant_stub):
     clause, params = participant_stub._observer_membership_clause(7)
     assert "json_each" in clause
+    assert params == [7]
+
+
+def test_assignee_membership_clause_sqlite(participant_stub):
+    clause, params = participant_stub._assignee_membership_clause(7)
+    assert "json_each" in clause
+    assert "assignee_user_ids" in clause
     assert params == [7]

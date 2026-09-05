@@ -426,6 +426,67 @@ class AuthRuntimeStoreService:
             return payload
         return None
 
+    def complete_refresh_rotation(
+        self,
+        old_jti: str,
+        replacement: dict[str, Any],
+        *,
+        grace_ttl_seconds: int,
+        revoke_ttl_seconds: int,
+    ) -> dict[str, Any] | None:
+        """Commit one replacement, or return the concurrent winner's pair.
+
+        Token preparation happens before this short transaction. A failed
+        preparation/commit leaves the old refresh usable; no polling or lease
+        is needed because consumption and publication commit together.
+        """
+        payload = {key: replacement[key] for key in (
+            "access_token", "refresh_token", "access_ttl_seconds",
+            "refresh_ttl_seconds", "user", "session_id",
+        )}
+        entries = [
+            ("refresh", replacement["_refresh_jti"], json.dumps(replacement["_refresh_state"]),
+             int(replacement["refresh_ttl_seconds"])),
+            ("refresh_grace", old_jti, json.dumps(payload), int(grace_ttl_seconds)),
+            ("revoked_jti", old_jti, "1", int(revoke_ttl_seconds)),
+        ]
+        if self._use_database_backend():
+            with app_session(self._database_url) as session:
+                now = _utc_now()
+                # DELETE ... RETURNING also serializes competing writers on
+                # SQLite tests; SELECT FOR UPDATE alone would not do so.
+                consumed = session.execute(
+                    delete(AppAuthRuntimeItem).where(
+                        AppAuthRuntimeItem.namespace == "refresh",
+                        AppAuthRuntimeItem.item_key == old_jti,
+                        AppAuthRuntimeItem.expires_at > now,
+                    ).returning(AppAuthRuntimeItem.value_text)
+                ).scalar_one_or_none()
+                if consumed is None:
+                    winner = session.get(AppAuthRuntimeItem, {
+                        "namespace": "refresh_grace", "item_key": old_jti,
+                    })
+                    if winner is not None and not self._is_expired(winner.expires_at, now=now):
+                        return _json_dict(winner.value_text)
+                    return None
+                for namespace, key, value, ttl in entries:
+                    session.add(AppAuthRuntimeItem(
+                        namespace=namespace, item_key=key, value_text=value,
+                        expires_at=now + timedelta(seconds=max(1, ttl)),
+                        created_at=now, updated_at=now,
+                    ))
+            return payload
+        with self._lock:
+            self._prune_memory_locked()
+            old_key = self._full_key("refresh", old_jti)
+            if old_key not in self._memory:
+                return self.get_refresh_rotation_grace(old_jti)
+            now_ts = _utc_ts()
+            self._memory.pop(old_key)
+            for namespace, key, value, ttl in entries:
+                self._memory[self._full_key(namespace, key)] = (now_ts + max(1, ttl), value)
+            return payload
+
     def save_refresh_rotation_grace(self, old_jti: str, payload: dict[str, Any], ttl_seconds: int) -> None:
         """Store newly issued tokens so a parallel refresh with old_jti can reuse them."""
         normalized = str(old_jti or "").strip()

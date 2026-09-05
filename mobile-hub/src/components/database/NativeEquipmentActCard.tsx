@@ -16,7 +16,7 @@ export const NativeEquipmentActCard = memo(function NativeEquipmentActCard({
   tokens: FluentTokens;
   fileBusy?: boolean;
   onOpenEquipment?: (invNo: string) => void;
-  onOpenFile?: () => void;
+  onOpenFile?: (act: EquipmentAct) => void;
 }) {
   const firstInvNo = act.items.find((item) => item.inv_no)?.inv_no || '';
   return (
@@ -50,7 +50,7 @@ export const NativeEquipmentActCard = memo(function NativeEquipmentActCard({
             accessibilityLabel={`Открыть файл ${equipmentActTitle(act)}`}
             accessibilityState={{ disabled: fileBusy, busy: fileBusy }}
             disabled={fileBusy}
-            onPress={onOpenFile}
+            onPress={() => onOpenFile(act)}
             style={[styles.action, { backgroundColor: tokens.primary, opacity: fileBusy ? 0.55 : 1 }]}
           >
             {fileBusy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="file-download-outline" size={18} color="#fff" />}

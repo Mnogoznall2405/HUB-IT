@@ -1,12 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 
-import { TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
+import { TaskEditDialog, TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 
 const theme = createTheme();
 const ui = buildOfficeUiTokens(theme);
+
+const { mockGetAssignees } = vi.hoisted(() => ({ mockGetAssignees: vi.fn() }));
+
+vi.mock('../../api/client', () => ({
+  hubAPI: { getAssignees: mockGetAssignees },
+}));
+
+beforeEach(() => {
+  mockGetAssignees.mockReset();
+  mockGetAssignees.mockResolvedValue({ items: [] });
+});
 
 const task = { id: 'task-1', title: 'Проверить отчёт' };
 
@@ -15,6 +26,37 @@ const renderWithTheme = (uiNode) => render(
     {uiNode}
   </ThemeProvider>,
 );
+
+describe('TaskEditDialog', () => {
+  it('keeps every assignee when saving a shared task', async () => {
+    const onSave = vi.fn();
+    renderWithTheme(
+      <TaskEditDialog
+        open
+        task={{
+          id: 'task-shared',
+          title: 'Общая задача',
+          assignee_user_id: 2,
+          assignee_user_ids: [2, 4],
+          assignees: [
+            { user_id: 2, full_name: 'Иван Петров' },
+            { user_id: 4, full_name: 'Анна Смирнова' },
+          ],
+          observer_user_ids: [],
+          priority: 'normal',
+          visibility_scope: 'private',
+        }}
+        references={{ controllers: [], departments: [], projects: [], objects: [] }}
+        onClose={vi.fn()}
+        onSave={onSave}
+        ui={ui}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить изменения' }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ assignee_user_ids: [2, 4] }));
+  });
+});
 
 describe('TaskReviewDialog', () => {
   it('renders review actions and submits decision with comment', () => {

@@ -677,6 +677,23 @@ def _call_openrouter_act_parser(
     )
 
     last_exc: Optional[Exception] = None
+    partial_payload: dict[str, Any] = {}
+
+    def _merge_payload(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(current)
+        for key, value in incoming.items():
+            if key == "equipment_inv_nos":
+                incoming_inv_nos = _collect_inv_nos(value)[0]
+                current_inv_nos = _collect_inv_nos(merged.get(key))[0]
+                if incoming_inv_nos and not current_inv_nos:
+                    merged[key] = incoming_inv_nos
+                continue
+            if value in (None, "", []):
+                continue
+            if merged.get(key) in (None, "", []):
+                merged[key] = value
+        return merged
+
     logger.info(
         "Uploaded act parse: model candidates=%s prefer_images_first=%s text_len=%s",
         model_candidates,
@@ -724,8 +741,7 @@ def _call_openrouter_act_parser(
                 if not isinstance(payload, dict):
                     warnings.append("RouterAI вернул невалидный JSON.")
                     logger.warning("Uploaded act parse: RouterAI returned invalid JSON (file=%s)", file_name)
-                    continue
-                if not payload:
+                elif not payload:
                     warnings.append(
                         f"Модель {model} вернула пустой JSON, пробую следующий режим/модель."
                     )
@@ -735,18 +751,29 @@ def _call_openrouter_act_parser(
                         model,
                         use_images,
                     )
-                    continue
-                # Accept only payloads that look useful; otherwise keep trying.
-                has_inv = bool(payload.get("equipment_inv_nos"))
-                has_people = bool(str(payload.get("from_employee") or "").strip() or str(payload.get("to_employee") or "").strip())
-                has_date = bool(str(payload.get("doc_date") or "").strip())
-                if not (has_inv or has_people or has_date):
-                    warnings.append(
-                        f"Модель {model} вернула JSON без полезных полей, пробую следующий режим/модель."
+                else:
+                    # Inventory numbers are the critical result of act parsing.
+                    # Keep partial people/date fields, but continue with vision or
+                    # another model until equipment identifiers are available.
+                    has_inv = bool(_collect_inv_nos(payload.get("equipment_inv_nos"))[0])
+                    has_legacy_ids = bool(_normalize_item_ids_legacy(payload.get("equipment_item_ids")))
+                    has_people = bool(
+                        str(payload.get("from_employee") or "").strip()
+                        or str(payload.get("to_employee") or "").strip()
                     )
-                    continue
-                logger.info("Uploaded act parse: RouterAI JSON parsed successfully (file=%s)", file_name)
-                return payload, warnings
+                    has_date = bool(str(payload.get("doc_date") or "").strip())
+                    partial_payload = _merge_payload(partial_payload, payload)
+                    if has_inv or has_legacy_ids:
+                        logger.info("Uploaded act parse: RouterAI JSON parsed successfully (file=%s)", file_name)
+                        return partial_payload, warnings
+                    if has_people or has_date:
+                        warnings.append(
+                            f"Модель {model} вернула данные без INV_NO, пробую следующий режим/модель."
+                        )
+                    else:
+                        warnings.append(
+                            f"Модель {model} вернула JSON без полезных полей, пробую следующий режим/модель."
+                        )
             except OpenRouterClientError as exc:
                 last_exc = exc
                 if use_images and is_image_unsupported_error(exc):
@@ -788,6 +815,10 @@ def _call_openrouter_act_parser(
                 if image_urls and True not in attempt_modes[mode_index:]:
                     attempt_modes.append(True)
                     warnings.append("Текстовый режим не сработал — пробую vision OCR.")
+
+    if partial_payload:
+        warnings.append("Модели не определили INV_NO; сохранены остальные распознанные поля.")
+        return partial_payload, warnings
 
     detail = provider_error_text(last_exc) if last_exc else ""
     warnings.append(f"Ошибка RouterAI: {detail}" if detail else "Ошибка RouterAI: пустой ответ.")

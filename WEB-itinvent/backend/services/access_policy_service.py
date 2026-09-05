@@ -1,6 +1,7 @@
 """Resource access policy for department-scoped HUB data."""
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable
 
 from backend.services.authorization_service import (
@@ -141,6 +142,50 @@ def can_view_task(
     return False
 
 
+def can_edit_task_canvas(
+    user: Any,
+    task: dict[str, Any],
+    *,
+    participant_user_ids: Iterable[int],
+    observer_user_ids: Iterable[int],
+) -> bool:
+    """Allow task participants to edit an active task canvas.
+
+    Observer-only access stays read-only even when task visibility is broader.
+    """
+    if str((task or {}).get("integration_kind") or "").strip().lower() == "transfer_act_upload":
+        return False
+    if str((task or {}).get("status") or "").strip().lower() == "done":
+        return False
+    if user_can_manage_tasks_all(user):
+        return True
+
+    uid = _user_id(user)
+    if uid <= 0:
+        return False
+
+    def _normalized_ids(values: Iterable[int]) -> set[int]:
+        result: set[int] = set()
+        for item in list(values or []):
+            try:
+                parsed = int(item)
+            except Exception:
+                continue
+            if parsed > 0:
+                result.add(parsed)
+        return result
+
+    participant_ids = _normalized_ids(participant_user_ids)
+    observer_ids = _normalized_ids(observer_user_ids)
+    if uid in observer_ids and uid not in participant_ids:
+        return False
+    if uid in participant_ids:
+        return True
+
+    department_id = _resource_department_id(task)
+    return bool(department_id and user_is_department_manager(user, department_id))
+
+
 def can_create_task_for_department(
     user: Any,
     *,
@@ -157,13 +202,32 @@ def can_create_task_for_department(
     return _user_id(user) > 0 and _user_id(user) == _user_id(assignee) and user_is_department_member(user, target)
 
 
+def _task_assignee_ids(task: dict[str, Any]) -> set[int]:
+    raw = (task or {}).get("assignee_user_ids")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    values = raw if isinstance(raw, list) else []
+    values = [*values, (task or {}).get("assignee_user_id")]
+    result: set[int] = set()
+    for item in values:
+        try:
+            parsed = int(item)
+        except Exception:
+            continue
+        if parsed > 0:
+            result.add(parsed)
+    return result
+
+
 def _assignee_cannot_review_as_non_creator(user: Any, task: dict[str, Any]) -> bool:
     uid = _user_id(user)
     if uid <= 0:
         return False
-    assignee_id = int((task or {}).get("assignee_user_id") or 0)
     creator_id = int((task or {}).get("created_by_user_id") or 0)
-    return assignee_id > 0 and uid == assignee_id and uid != creator_id
+    return uid in _task_assignee_ids(task) and uid != creator_id
 
 
 def can_review_task(user: Any, task: dict[str, Any]) -> bool:

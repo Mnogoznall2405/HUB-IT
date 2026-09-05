@@ -28,6 +28,7 @@ const readSerialFields = (item) => ({
   serialNo: item?.SERIAL_NO || item?.serial_no || '',
   hwSerialNo: item?.HW_SERIAL_NO || item?.hw_serial_no || '',
   invNo: String(item?.INV_NO || item?.inv_no || '').trim(),
+  equipmentId: item?.ID ?? item?.id ?? item?.equipment_id ?? null,
 });
 
 const toWorkConsumableOptions = (rows) => (Array.isArray(rows) ? rows : [])
@@ -287,12 +288,17 @@ export function useDatabaseMaintenanceData({
       }
 
       try {
-        const { serialNo, hwSerialNo } = readSerialFields(item);
-        if (!serialNo && !hwSerialNo) {
+        const { serialNo, hwSerialNo, invNo, equipmentId } = readSerialFields(item);
+        if (!serialNo && !hwSerialNo && !invNo && !equipmentId) {
           setCleaningHistory({ ...EMPTY_MAINTENANCE_HISTORY });
           return;
         }
-        const response = await jsonAPI.getPcCleaningHistory(serialNo, hwSerialNo);
+        const response = await jsonAPI.getPcCleaningHistory(
+          serialNo,
+          hwSerialNo,
+          invNo,
+          equipmentId,
+        );
         setCleaningHistory(readHistoryResponse(response));
       } catch (error) {
         console.error('Error fetching cleaning history:', error);

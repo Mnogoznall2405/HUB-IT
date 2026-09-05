@@ -21,8 +21,8 @@ export const NativeCompanyNodeCard = memo(function NativeCompanyNodeCard({
   node: CompanyStructureNode;
   tokens: FluentTokens;
   selected?: boolean;
-  onSelect?: () => void;
-  onPeople: () => void;
+  onSelect?: (nodeId: string) => void;
+  onPeople: (nodeId: string) => void;
 }) {
   const title = companyNodeTitle(node);
   const leader = ['root', 'deputy'].includes(node.node_type)
@@ -40,7 +40,7 @@ export const NativeCompanyNodeCard = memo(function NativeCompanyNodeCard({
       ]}
     >
       <Pressable
-        onPress={onSelect}
+        onPress={() => onSelect?.(node.id)}
         disabled={!onSelect}
         accessibilityRole="button"
         accessibilityLabel={`${title}, ${companyNodeTypeLabel(node)}`}
@@ -73,7 +73,7 @@ export const NativeCompanyNodeCard = memo(function NativeCompanyNodeCard({
         <Text style={[styles.count, { color: tokens.textTertiary }]}>Подразделений: {node.child_node_count || node.children.length}</Text>
         <Pressable
           testID={`native-company-node-people-${node.id}`}
-          onPress={onPeople}
+          onPress={() => onPeople(node.id)}
           accessibilityRole="button"
           accessibilityLabel={`Сотрудники подразделения ${title}: ${node.subtree_people_count}`}
           style={styles.peopleAction}

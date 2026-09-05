@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { ListRenderItemInfo } from 'react-native';
 import {
   getComputersSummary,
   searchComputers,
@@ -225,6 +226,18 @@ export function NativeComputersScreen() {
     } as never);
   }, [scope]);
 
+  const refreshList = useCallback(() => {
+    void load({ reset: true, refresh: true });
+  }, [load]);
+
+  const loadNextPage = useCallback(() => {
+    if (hasMore && !busyRef.current) void load({ reset: false });
+  }, [hasMore, load]);
+
+  const renderComputer = useCallback(({ item }: ListRenderItemInfo<ComputerRecord>) => (
+    <NativeComputerCard computer={item} tokens={tokens} onPress={openDetail} />
+  ), [openDetail, tokens]);
+
   const summaryCards = useMemo(() => [
     { label: 'Всего', value: summary?.total || 0, color: tokens.primary },
     { label: 'В сети', value: summary?.statuses.online || 0, color: tokens.success },
@@ -288,7 +301,7 @@ export function NativeComputersScreen() {
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {total}</Text>
         <Pressable
-          onPress={() => { void load({ reset: true, refresh: true }); }}
+          onPress={refreshList}
           disabled={offlineMode || loading}
           accessibilityRole="button"
           accessibilityLabel="Обновить список"
@@ -321,10 +334,10 @@ export function NativeComputersScreen() {
         contentContainerStyle={items.length ? styles.list : styles.emptyList}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{query ? 'По запросу ничего не найдено.' : 'В выбранной базе пока нет данных от агентов.'}</Text> : null}
-        renderItem={({ item }) => <NativeComputerCard computer={item} tokens={tokens} onPress={() => openDetail(item)} />}
+        renderItem={renderComputer}
         refreshing={refreshing}
-        onRefresh={() => { void load({ reset: true, refresh: true }); }}
-        onEndReached={() => { if (hasMore && !busyRef.current) void load({ reset: false }); }}
+        onRefresh={refreshList}
+        onEndReached={loadNextPage}
         onEndReachedThreshold={0.35}
         ListFooterComponent={loadingMore ? <ActivityIndicator color={tokens.primary} style={styles.footerLoader} /> : null}
       />

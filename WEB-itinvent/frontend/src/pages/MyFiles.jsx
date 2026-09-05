@@ -315,7 +315,7 @@ export default function MyFiles() {
     try {
       for (const file of selected) {
         if (Number(file?.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
-          notifyWarning(`Файл «${file.name}» больше 1 ГБ и не может быть загружен.`, {
+          notifyWarning(`Файл «${file.name}» больше 4 ГБ и не может быть загружен.`, {
             source: 'my-files-upload',
             dedupeMode: 'none',
           });
@@ -340,7 +340,7 @@ export default function MyFiles() {
       const status = Number(error?.response?.status || 0);
       if (status === 413) {
         notifyWarning(
-          'Сервер отклонил загрузку: слишком большой файл для лимита IIS. После обновления web.config на сайте допустимо до 1 ГБ на файл. Обратитесь к администратору, если ошибка повторяется.',
+          'Сервер отклонил файл из-за ограничения размера. Проверьте доступную квоту или обратитесь к администратору.',
           { source: 'my-files-upload-413', dedupeMode: 'none', durationMs: 8000 },
         );
       } else {
@@ -369,7 +369,7 @@ export default function MyFiles() {
       }
       if (summary.totalBytes > MY_FILES_MAX_UPLOAD_BYTES) {
         notifyWarning(
-          `Папка «${summary.folderName}» больше 1 ГБ (${formatFileSize(summary.totalBytes)}) и не может быть загружена как архив.`,
+          `Папка «${summary.folderName}» больше 4 ГБ (${formatFileSize(summary.totalBytes)}) и не может быть загружена как архив.`,
           { source: 'my-files-upload', dedupeMode: 'none' },
         );
         resetFileInputs();
@@ -421,7 +421,7 @@ export default function MyFiles() {
           });
           if (Number(archive.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
             notifyWarning(
-              `Архив «${archive.name}» получился больше 1 ГБ и не может быть загружен.`,
+              `Архив «${archive.name}» получился больше 4 ГБ и не может быть загружен.`,
               { source: 'my-files-upload', dedupeMode: 'none' },
             );
             setPackingFolder(false);

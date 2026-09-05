@@ -154,6 +154,9 @@ async def lifespan(app: FastAPI):
     await chat_service.start()
     if chat_surface != "read":
         await chat_realtime.start()
+        from backend.realtime.hub import hub_realtime_publisher
+
+        await hub_realtime_publisher.start(realtime_manager=chat_realtime)
 
     from backend.chat.latency_profile import lag_probe_loop, note_main_thread
 
@@ -186,6 +189,9 @@ async def lifespan(app: FastAPI):
         pass
     try:
         if chat_surface != "read":
+            from backend.realtime.hub import hub_realtime_publisher
+
+            await hub_realtime_publisher.stop()
             await chat_realtime.stop()
         await chat_service.stop()
     except Exception:

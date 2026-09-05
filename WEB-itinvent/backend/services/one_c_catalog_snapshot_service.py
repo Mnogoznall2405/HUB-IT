@@ -62,6 +62,7 @@ DEFAULT_SOURCE_BASE = "buh20"
 _ENTRY_INSERT_CHUNK = 10_000
 _TOKEN_INSERT_CHUNK = 50_000
 _DELETE_REF_CHUNK = 2_000
+_LOOKUP_REF_CHUNK = 500
 
 _ENTRY_COPY_COLUMNS = (
     "source_base",
@@ -1071,6 +1072,60 @@ class OneCCatalogSnapshotStore:
         if kind == CATALOG_WAREHOUSES:
             return True, {"ref": str(row.ref), "name": str(row.name or "")}
         return True, {"ref": str(row.ref), "code": str(row.code or ""), "name": str(row.name or "")}
+
+    def lookup_nomenclature_refs(
+        self,
+        refs: Iterable[str],
+        *,
+        source_base: str = DEFAULT_SOURCE_BASE,
+    ) -> tuple[bool, dict[str, dict[str, str]]]:
+        """Resolve immutable nomenclature refs in bounded indexed batches."""
+        if not self._storage_enabled():
+            return False, {}
+        source = self._source_base(source_base)
+        normalized_refs = sorted(
+            {_text(value, maximum=64) for value in refs if _text(value, maximum=64)}
+        )
+        if not normalized_refs:
+            return True, {}
+        try:
+            with app_session(self._database_url) as session:
+                state = self._read_snapshot(session, source)
+                if state is None:
+                    return False, {}
+                rows = []
+                batch_size = (
+                    len(normalized_refs)
+                    if session.get_bind().dialect.name == "postgresql"
+                    else _LOOKUP_REF_CHUNK
+                )
+                for offset in range(0, len(normalized_refs), batch_size):
+                    batch = normalized_refs[offset : offset + batch_size]
+                    rows.extend(
+                        session.execute(
+                            select(
+                                AppOneCCatalogEntry.ref,
+                                AppOneCCatalogEntry.code,
+                                AppOneCCatalogEntry.name,
+                            ).where(
+                                AppOneCCatalogEntry.source_base == source,
+                                AppOneCCatalogEntry.generation == int(state.active_generation),
+                                AppOneCCatalogEntry.catalog_type == CATALOG_NOMENCLATURE,
+                                AppOneCCatalogEntry.ref.in_(batch),
+                            )
+                        ).all()
+                    )
+        except Exception as exc:
+            logger.warning("1C app catalogue refs lookup is unavailable: %s", exc)
+            return False, {}
+        return True, {
+            str(row.ref): {
+                "ref": str(row.ref),
+                "code": str(row.code or ""),
+                "name": str(row.name or ""),
+            }
+            for row in rows
+        }
 
     def lookup_nomenclature_codes(
         self,

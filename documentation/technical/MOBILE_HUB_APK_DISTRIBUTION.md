@@ -1,6 +1,6 @@
 # HUB-IT Mobile — публикация APK рядом с HUB Desktop
 
-Дата: 2026-08-23  
+Дата: 2026-09-04
 Канал текущего прототипа: `preview`
 
 ## Публичные адреса
@@ -8,11 +8,13 @@
 - manifest: `https://hubit.zsgp.ru/desktop-updates/mobile/preview/latest.json`;
 - APK: `https://hubit.zsgp.ru/desktop-updates/mobile/preview/<version>/HUB-IT-Mobile-Preview-<version>.apk`.
 
-Preview отделён от Desktop stable feed и будущего Android stable feed. Версия 1.1.8 опубликована 2026-08-23 и подписана тем же debug-сертификатом, что 1.1.3–1.1.7, только для совместимого внутреннего upgrade. Обычная команда сборки требует постоянный release keystore; после одноразовой миграции stable-канал должен всегда использовать один и тот же защищённый ключ.
+Preview отделён от Desktop stable feed и будущего Android stable feed. Версия 1.1.25 опубликована 2026-09-04 и подписана тем же debug-сертификатом, что предыдущие версии preview, только для совместимого внутреннего upgrade. Обычная команда сборки требует постоянный release keystore; после одноразовой миграции stable-канал должен всегда использовать один и тот же защищённый ключ.
 
-Source 1.1.8 по умолчанию отключает HTTPS App Links для preview/debug: production `/.well-known/assetlinks.json` ещё не опубликован и debug-сертификат не может быть ему делегирован. Флаг `HUBIT_ANDROID_ENABLE_APP_LINKS=1` допустим только при постоянной release-подписи и совпадающем production fingerprint.
+Единый источник версии сборки — `mobile-hub/package.json`: поле `version` задаёт `versionName`, а `hubit.androidVersionCode` — Android `versionCode`. `app.config.ts` читает оба значения оттуда. Локальная сборка до запуска Gradle проверяет совпадение generated `android/app/build.gradle` и `release-notes/<version>.json`; при `-SkipPrebuild` рассинхронизация останавливает сборку с требованием выполнить обычный Expo prebuild.
 
-Текущий опубликованный preview: `1.1.17`, `versionCode=19`, 64 328 778 байт, SHA-256 `53bc68720fd29cf92a98ba6487d45f3bce6ba4627674e4aefbc7e5310ac52802`. Публичный manifest и APK проверены: `200`, JSON/`application/vnd.android.package-archive`, размер и hash совпадают. Подпись остаётся debug-preview тем же сертификатом, что предыдущие версии канала, только для совместимого внутреннего upgrade.
+Source 1.1.25 по умолчанию отключает HTTPS App Links для preview/debug: production `/.well-known/assetlinks.json` ещё не опубликован и debug-сертификат не может быть ему делегирован. Флаг `HUBIT_ANDROID_ENABLE_APP_LINKS=1` допустим только при постоянной release-подписи и совпадающем production fingerprint.
+
+Текущий опубликованный preview: `1.1.25`, `versionCode=27`, 65 011 108 байт, SHA-256 `d57f4998eabb27fcb33c574303442dd01c43f7559dc7fc56e399c4ba1778fd81`. Публичный manifest и APK проверены: `200`, JSON/`application/vnd.android.package-archive`, размер и hash совпадают; Range-запрос проверен: `206`, 1024 байта. Подпись остаётся debug-preview тем же сертификатом, что предыдущие версии канала, только для совместимого внутреннего upgrade; предыдущий manifest 1.1.24 сохранён для rollback.
 
 ## Что показывает frontend
 

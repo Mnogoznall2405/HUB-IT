@@ -76,7 +76,12 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       const params = {};
       if (itemId !== null) params.item_id = itemId;
       if (invNo) params.inv_no = invNo;
-      const selectedDb = normalizeDbId(localStorage.getItem('selected_database') || '');
+      const selectedDb = normalizeDbId(
+        options.dbId
+        || readFirst(act, ['hub_db_id', 'HUB_DB_ID', 'db_id', 'DB_ID'], '')
+        || localStorage.getItem('selected_database')
+        || '',
+      );
       if (selectedDb) params.db_id = selectedDb;
 
       const response = await equipmentTransferActsAPI.downloadEquipmentActFile(docNo, params);

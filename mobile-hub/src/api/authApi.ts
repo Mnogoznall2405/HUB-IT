@@ -32,9 +32,13 @@ export async function verifyTwoFactorLogin(
 }
 
 export async function fetchMe(options: { timeoutMs?: number } = {}): Promise<HubUser> {
+  const timeoutMs = Number(options.timeoutMs || 0);
   const { data } = await apiClient.get<HubUser>('/auth/me', {
-    ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+    ...(timeoutMs > 0 ? {
+      timeout: timeoutMs,
+      hubitTotalTimeoutMs: timeoutMs,
+    } : {}),
+  } as never);
   return data;
 }
 

@@ -9,6 +9,7 @@
 - [HUB Desktop release runbook](./HUB_DESKTOP_RELEASE_RUNBOOK.md), [матрица совместимости](./HUB_DESKTOP_COMPATIBILITY_MATRIX.md) и [ротация ключа update manifest](./HUB_DESKTOP_UPDATE_KEY_ROTATION.md)
 - [PostgreSQL app/chat schema](./POSTGRES_APP_SCHEMA.md) и [DDL snapshot](./POSTGRES_APP_SCHEMA_DDL.md)
 - [Chat backend architecture](./CHAT_BACKEND_ARCHITECTURE.md)
+- [План развития WebSocket и realtime](./HUB_REALTIME_ROADMAP.md)
 - [Support chat architecture](./SUPPORT_CHAT_ARCHITECTURE.md)
 - [Chat performance и observability](./CHAT_PERF_OBSERVABILITY.md)
 - [Native Chat gap roadmap](./MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md) — web ↔ native ↔ жесты/папки Telegram

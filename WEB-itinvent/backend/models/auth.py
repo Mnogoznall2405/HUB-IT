@@ -55,6 +55,15 @@ class User(UserBase):
     mail_updated_at: Optional[str] = None
 
 
+class UserSearchResponse(BaseModel):
+    """Bounded admin user directory page."""
+    items: list[User] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+    has_more: bool = False
+
+
 class LoginRequest(BaseModel):
     """Login request model."""
     username: str = Field(..., min_length=3)

@@ -20,8 +20,8 @@ export const NativeEquipmentRow = memo(function NativeEquipmentRow({
 }: {
   item: EquipmentRecord;
   tokens: FluentTokens;
-  onPress: () => void;
-  onLongPress?: () => void;
+  onPress: (item: EquipmentRecord) => void;
+  onLongPress?: (item: EquipmentRecord) => void;
   selectionMode?: boolean;
   selected?: boolean;
 }) {
@@ -36,8 +36,8 @@ export const NativeEquipmentRow = memo(function NativeEquipmentRow({
       longPressHandledRef.current = false;
       return;
     }
-    onPress();
-  }, [onPress]);
+    onPress(item);
+  }, [item, onPress]);
 
   return (
     <Pressable
@@ -45,7 +45,7 @@ export const NativeEquipmentRow = memo(function NativeEquipmentRow({
       onPress={handlePress}
       onLongPress={onLongPress ? () => {
         longPressHandledRef.current = true;
-        onLongPress();
+        onLongPress(item);
       } : undefined}
       delayLongPress={420}
       accessibilityRole="button"
@@ -58,15 +58,17 @@ export const NativeEquipmentRow = memo(function NativeEquipmentRow({
           backgroundColor: selected ? tokens.selected : tokens.panelSolid,
           borderColor: selected ? accentColor : tokens.borderSoft,
           opacity: pressed ? 0.9 : 1,
+          transform: [{ scale: pressed ? 0.96 : 1 }],
         },
       ]}
     >
-      <View style={[styles.icon, { backgroundColor: tokens.accentSoft }]}>
-        <MaterialCommunityIcons name="desktop-tower-monitor" size={23} color={accentColor} />
-      </View>
       <View style={styles.body}>
-        <View style={[styles.invBadge, { backgroundColor: tokens.selected }]}>
-          <Text numberOfLines={1} style={[styles.invNo, { color: accentColor }]}>Инв. № {item.inv_no}</Text>
+        <View style={styles.headingRow}>
+          <View style={[styles.invBadge, { backgroundColor: tokens.selected }]}>
+            <MaterialCommunityIcons name="desktop-tower-monitor" size={16} color={accentColor} />
+            <Text numberOfLines={1} style={[styles.invNo, { color: accentColor }]}>Инв. № {item.inv_no}</Text>
+          </View>
+          <MaterialCommunityIcons name={selectionMode ? selected ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline' : 'chevron-right'} size={22} color={selected ? accentColor : tokens.iconMuted} />
         </View>
         <Text numberOfLines={2} style={[styles.title, { color: tokens.textPrimary }]}>{title}</Text>
         {subtitle ? (
@@ -84,21 +86,19 @@ export const NativeEquipmentRow = memo(function NativeEquipmentRow({
           <Text numberOfLines={2} style={[styles.location, { color: tokens.textTertiary }]}>{location}</Text>
         </View>
       </View>
-      <MaterialCommunityIcons style={styles.trailingIcon} name={selectionMode ? selected ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline' : 'chevron-right'} size={22} color={selected ? accentColor : tokens.iconMuted} />
     </Pressable>
   );
 });
 
 const styles = StyleSheet.create({
-  card: { minHeight: 124, borderRadius: 15, borderWidth: 1, padding: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 11, marginBottom: 8 },
-  icon: { width: 44, height: 44, marginTop: 2, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  body: { flex: 1, minWidth: 0, gap: 5 },
-  invBadge: { minHeight: 24, maxWidth: '100%', alignSelf: 'flex-start', borderRadius: 12, paddingHorizontal: 8, justifyContent: 'center' },
+  card: { minHeight: 118, borderRadius: 16, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'flex-start', marginBottom: 9 },
+  body: { flex: 1, minWidth: 0, gap: 6 },
+  headingRow: { minHeight: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  invBadge: { minHeight: 28, maxWidth: '88%', alignSelf: 'flex-start', borderRadius: 14, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 6 },
   invNo: { flexShrink: 1, fontSize: 12, lineHeight: 16, fontWeight: '900', fontVariant: ['tabular-nums'] },
-  title: { fontSize: 16, lineHeight: 21, fontWeight: '800' },
+  title: { fontSize: 17, lineHeight: 22, fontWeight: '800' },
   metaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   metaIcon: { width: 16, marginTop: 1 },
-  meta: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17 },
-  location: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17 },
-  trailingIcon: { alignSelf: 'center' },
+  meta: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18 },
+  location: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18 },
 });

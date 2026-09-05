@@ -1,7 +1,7 @@
 import type { Href } from 'expo-router';
 
 export function resolveNativeMfuEnabled(value: string | undefined): boolean {
-  return value === 'true';
+  return value !== 'false';
 }
 
 export const NATIVE_MFU_ENABLED = resolveNativeMfuEnabled(process.env.EXPO_PUBLIC_NATIVE_MFU_ENABLED);

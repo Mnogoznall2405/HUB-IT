@@ -3,24 +3,29 @@ import type { ExpoConfig } from 'expo/config';
 const { buildAndroidHttpsAppLinksConfig } = require('./android-app-links.cjs') as {
   buildAndroidHttpsAppLinksConfig: (value: string | undefined) => Partial<NonNullable<ExpoConfig['android']>>;
 };
+const { readMobileVersionMetadata } = require('./scripts/mobile-version.cjs') as {
+  readMobileVersionMetadata: () => { version: string; versionCode: number };
+};
 
 const googleServicesFile = String(process.env.EXPO_GOOGLE_SERVICES_FILE || '').trim();
 const easProjectId = String(process.env.EXPO_EAS_PROJECT_ID || '').trim();
 const androidHttpsAppLinks = buildAndroidHttpsAppLinksConfig(
   process.env.HUBIT_ANDROID_ENABLE_APP_LINKS,
 );
+const mobileVersion = readMobileVersionMetadata();
 
 const config: ExpoConfig = {
   name: 'HUB-IT',
   slug: 'mobile-hub',
-  version: '1.1.17',
+  version: mobileVersion.version,
   orientation: 'portrait',
   scheme: 'hubit',
   userInterfaceStyle: 'automatic',
   icon: './assets/icon.png',
   android: {
     package: 'ru.zsgp.hubit.mobile',
-    versionCode: 19,
+    versionCode: mobileVersion.versionCode,
+    softwareKeyboardLayoutMode: 'resize',
     ...androidHttpsAppLinks,
     permissions: ['android.permission.REQUEST_INSTALL_PACKAGES'],
     blockedPermissions: [
@@ -45,6 +50,7 @@ const config: ExpoConfig = {
     ],
     'expo-asset',
     'expo-font',
+    'expo-video',
     [
       'expo-camera',
       {

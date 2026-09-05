@@ -32,6 +32,7 @@ export function pickChatAttachmentPreviewUrl(attachment?: ChatAttachment | null)
   return String(
     attachment.variant_urls?.preview
     || attachment.variant_urls?.thumbnail
+    || attachment.variant_urls?.thumb
     || attachment.preview_url
     || attachment.original_url
     || attachment.url

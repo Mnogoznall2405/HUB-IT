@@ -61,6 +61,65 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
                 include_meta=bool(payload.get("include_meta")),
             )
         )
+    if operation == "it_requests":
+        raw_overdue = payload.get("overdue")
+        overdue = raw_overdue if isinstance(raw_overdue, bool) else None
+        return asyncio.run(
+            service.get_it_requests(
+                view=str(payload.get("view") or "active"),
+                search=str(payload.get("search") or ""),
+                stage=str(payload.get("stage") or ""),
+                overdue=overdue,
+                limit=int(payload.get("limit") or 25),
+                cursor=str(payload.get("cursor") or "") or None,
+                warehouse_ref=str(payload.get("warehouse_ref") or ""),
+                refresh=bool(payload.get("refresh")),
+            )
+        )
+    if operation == "it_request_detail":
+        return asyncio.run(
+            service.get_it_request_detail(str(payload.get("request_ref") or ""))
+        )
+    if operation == "construction_objects":
+        return asyncio.run(
+            service.get_construction_objects(
+                search=str(payload.get("search") or ""),
+                kind=str(payload.get("kind") or "all"),
+                limit=int(payload.get("limit") or 24),
+                cursor=str(payload.get("cursor") or "") or None,
+                refresh=bool(payload.get("refresh")),
+                managed_objects=list(payload.get("managed_objects") or []),
+            )
+        )
+    if operation == "construction_object_requests":
+        raw_group_refs = payload.get("group_refs")
+        if not isinstance(raw_group_refs, list):
+            raise ValueError("group_refs должен быть массивом")
+        raw_overdue = payload.get("overdue")
+        overdue = raw_overdue if isinstance(raw_overdue, bool) else None
+        return asyncio.run(
+            service.get_construction_object_requests(
+                group_refs=[str(value or "") for value in raw_group_refs],
+                view=str(payload.get("view") or "active"),
+                search=str(payload.get("search") or ""),
+                stage=str(payload.get("stage") or ""),
+                overdue=overdue,
+                warehouse_ref=str(payload.get("warehouse_ref") or ""),
+                limit=int(payload.get("limit") or 25),
+                cursor=str(payload.get("cursor") or "") or None,
+                refresh=bool(payload.get("refresh")),
+            )
+        )
+    if operation == "construction_object_request_detail":
+        raw_group_refs = payload.get("group_refs")
+        if not isinstance(raw_group_refs, list):
+            raise ValueError("group_refs должен быть массивом")
+        return asyncio.run(
+            service.get_construction_object_request_detail(
+                group_refs=[str(value or "") for value in raw_group_refs],
+                request_ref=str(payload.get("request_ref") or ""),
+            )
+        )
     if operation == "catalog_sync":
         return service.sync_catalog_from_1c()
     raise ValueError(f"Read operation {operation!r} is not implemented by the warehouse 1C dispatcher")

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import type { ChatConversationSummary } from '../../api/types';
 import {
@@ -11,7 +11,7 @@ import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { ChatConversationRow } from './ChatConversationRow';
 
-export function SwipeableConversationRow({
+export const SwipeableConversationRow = memo(function SwipeableConversationRow({
   item,
   active,
   onPress,
@@ -21,16 +21,16 @@ export function SwipeableConversationRow({
 }: {
   item: ChatConversationSummary;
   active?: boolean;
-  onPress: () => void;
-  onLongPress?: () => void;
-  onMute?: () => void;
-  onArchive?: () => void;
+  onPress: (item: ChatConversationSummary) => void;
+  onLongPress?: (item: ChatConversationSummary) => void;
+  onMute?: (item: ChatConversationSummary) => void;
+  onArchive?: (item: ChatConversationSummary) => void;
 }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
   const offset = useRef(new Animated.Value(0)).current;
 
-  const reset = () => {
+  const reset = useCallback(() => {
     if (reduceMotion) {
       offset.setValue(0);
       return;
@@ -41,7 +41,12 @@ export function SwipeableConversationRow({
       speed: 28,
       bounciness: 4,
     }).start();
-  };
+  }, [offset, reduceMotion]);
+
+  const handlePress = useCallback(() => onPress(item), [item, onPress]);
+  const handleLongPress = useCallback(() => onLongPress?.(item), [item, onLongPress]);
+  const handleMute = useCallback(() => onMute?.(item), [item, onMute]);
+  const handleArchive = useCallback(() => onArchive?.(item), [item, onArchive]);
 
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_, gesture) => (
@@ -57,13 +62,13 @@ export function SwipeableConversationRow({
     },
     onPanResponderRelease: (_, gesture) => {
       const action = inboxRowSwipeAction(gesture.dx);
-      if (action === 'mute') onMute?.();
-      if (action === 'archive') onArchive?.();
+      if (action === 'mute') handleMute();
+      if (action === 'archive') handleArchive();
       reset();
     },
     onPanResponderTerminate: reset,
     onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
-  }), [offset, onArchive, onMute, reduceMotion]);
+  }), [handleArchive, handleMute, offset, reduceMotion, reset]);
 
   const muteOpacity = offset.interpolate({
     inputRange: [0, INBOX_ROW_SWIPE_TRIGGER_DP],
@@ -92,13 +97,13 @@ export function SwipeableConversationRow({
         <ChatConversationRow
           item={item}
           active={active}
-          onPress={onPress}
-          onLongPress={onLongPress}
+          onPress={handlePress}
+          onLongPress={handleLongPress}
         />
       </Animated.View>
     </View>
   );
-}
+});
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   wrap: { position: 'relative', overflow: 'hidden' },

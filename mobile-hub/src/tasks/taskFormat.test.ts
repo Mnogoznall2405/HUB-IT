@@ -1,6 +1,7 @@
 import {
   normalizeDueDate,
   taskDiscussionConversationId,
+  taskPerson,
   taskPriorityLabel,
   todayProtocolDate,
 } from './taskFormat';
@@ -18,5 +19,15 @@ describe('taskFormat', () => {
     expect(taskPriorityLabel('urgent')).toBe('Срочный');
     expect(taskDiscussionConversationId({ conversation_id: 'chat-1' })).toBe('chat-1');
     expect(taskDiscussionConversationId({ conversation: { id: 'chat-2' } })).toBe('chat-2');
+  });
+
+  it('formats every assignee of a shared task', () => {
+    expect(taskPerson({
+      id: 'task-1',
+      assignees: [
+        { user_id: 7, full_name: 'Иван Петров' },
+        { user_id: 8, full_name: 'Анна Смирнова' },
+      ],
+    }, 'assignee')).toBe('Иван Петров, Анна Смирнова');
   });
 });

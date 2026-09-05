@@ -231,6 +231,7 @@ def test_resolve_model_purpose_chains(monkeypatch):
     monkeypatch.delenv("ROUTERAI_MODEL_CHAT", raising=False)
     monkeypatch.delenv("ROUTERAI_MODEL_MARKDOWN", raising=False)
     monkeypatch.delenv("ROUTERAI_MODEL_ACT", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_ACT_FALLBACK", raising=False)
     monkeypatch.delenv("ROUTERAI_MODEL_OCR", raising=False)
     monkeypatch.delenv("ROUTERAI_MODEL_DOC_CONVERT", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL_MAIL", raising=False)
@@ -249,6 +250,14 @@ def test_resolve_model_purpose_chains(monkeypatch):
     assert resolve_model("mail") == "google/gemini-3.6-flash"
     assert resolve_model("ocr") == "google/gemini-3.6-flash"
     assert resolve_model("doc_convert") == "google/gemini-3.6-flash"
+
+    monkeypatch.setenv("ACT_PARSE_MODEL", "google/gemini-3.6-flash")
+    monkeypatch.setenv("ROUTERAI_MODEL_ACT_FALLBACK", "mistralai/mistral-small-2603")
+    assert resolve_model_candidates("act") == [
+        "google/gemini-3.6-flash",
+        "mistralai/mistral-small-2603",
+        "ocr-model",
+    ]
 
 
 def test_routerai_configuration_takes_precedence_over_legacy_provider(monkeypatch):
@@ -440,6 +449,55 @@ def test_act_parser_empty_json_continues_to_next_model(monkeypatch):
     assert any("пустой JSON" in w for w in warnings)
     assert all(kwargs.get("response_healing") is True for kwargs in calls["kwargs"])
     assert all(kwargs.get("max_tokens") == act_upload_service._ACT_PARSE_MAX_TOKENS for kwargs in calls["kwargs"])
+
+
+def test_act_parser_partial_text_payload_retries_vision_and_merges_fields(monkeypatch):
+    from backend.services import act_upload_service
+
+    calls = []
+
+    def _fake_complete_json(**kwargs):
+        calls.append(kwargs)
+        if isinstance(kwargs.get("user_content"), str):
+            return {
+                "from_employee": "Ivanov",
+                "to_employee": "Petrov",
+                "doc_date": "2026-09-03",
+                "equipment_inv_nos": ["SERIAL-ABC"],
+            }, {"model": kwargs.get("model")}
+        return {
+            "from_employee": "",
+            "to_employee": "",
+            "doc_date": "",
+            "equipment_inv_nos": ["100887"],
+        }, {"model": kwargs.get("model")}
+
+    monkeypatch.setattr(act_upload_service, "resolve_model_candidates", lambda purpose="act": ["model-a"])
+    monkeypatch.setattr(act_upload_service.openrouter_client, "is_configured", lambda: True)
+    monkeypatch.setattr(act_upload_service.openrouter_client, "complete_json", _fake_complete_json)
+    monkeypatch.setattr(
+        act_upload_service,
+        "_extract_pdf_images_for_llm",
+        lambda file_bytes, max_pages=3: (["data:image/png;base64,aaa"], []),
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="act.pdf",
+        pdf_text=(
+            "Акт приема-передачи. Инвентарный номер 100887. "
+            "Сдал Иванов. Принял Петров."
+        ),
+        file_bytes=b"%PDF-1.4",
+    )
+
+    assert payload == {
+        "from_employee": "Ivanov",
+        "to_employee": "Petrov",
+        "doc_date": "2026-09-03",
+        "equipment_inv_nos": ["100887"],
+    }
+    assert [isinstance(call["user_content"], list) for call in calls] == [False, True]
+    assert any("без INV_NO" in warning for warning in warnings)
 
 
 def test_pdf_text_looks_weak_for_scan_filenames():

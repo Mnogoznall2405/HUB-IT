@@ -16,10 +16,12 @@ from backend.api.v1.chat import (
     conversations,
     folders,
     health,
+    hub_realtime_ws,
     link_preview,
     messages,
     push,
     stickers,
+    task_canvas_ws,
     uploads,
     users,
     ws,
@@ -169,5 +171,7 @@ router.include_router(attachments.router)
 # Diagnostic surfaces: read = HTTP-only (no WebSocket); realtime/full keep WS.
 if _CHAT_SURFACE != "read":
     router.include_router(ws.router)
+    router.include_router(task_canvas_ws.router)
+    router.include_router(hub_realtime_ws.router)
 
 __all__ = ["router", "chat_service", "chat_realtime", "run_in_threadpool"]

@@ -30,12 +30,14 @@ export async function downloadAuthenticatedFile(
   destination: File,
   options: AuthenticatedFileDownloadOptions = {},
 ): Promise<File> {
+  const pending = new File(`${destination.uri}.part`);
+  if (pending.exists) pending.delete();
   const attempt = async (forceRefresh: boolean): Promise<File> => {
     const authHeaders = await getAuthenticatedRequestHeaders(options.preserveSessionOnAuthFailure
       ? { forceRefresh, preserveSessionOnRefreshFailure: true }
       : { forceRefresh });
-    return File.downloadFileAsync(sourceUrl, destination, {
-      idempotent: options.idempotent,
+    return File.downloadFileAsync(sourceUrl, pending, {
+      idempotent: true,
       signal: options.signal,
       onProgress: options.onProgress,
       headers: {
@@ -46,10 +48,21 @@ export async function downloadAuthenticatedFile(
   };
 
   try {
-    return await attempt(false);
+    let downloaded: File;
+    try {
+      downloaded = await attempt(false);
+    } catch (error) {
+      if (options.signal?.aborted || !isUnauthorizedDownloadError(error)) throw error;
+      deletePartialFile(pending);
+      downloaded = await attempt(true);
+    }
+    if (!downloaded.exists || Number(downloaded.size || 0) <= 0) {
+      throw new Error('Downloaded file is empty');
+    }
+    await downloaded.move(destination, { overwrite: true });
+    return destination;
   } catch (error) {
-    if (options.signal?.aborted || !isUnauthorizedDownloadError(error)) throw error;
-    deletePartialFile(destination);
-    return attempt(true);
+    deletePartialFile(pending);
+    throw error;
   }
 }

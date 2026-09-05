@@ -161,6 +161,7 @@ def _create_task(
     client: TestClient,
     *,
     assignee_user_id: int = 2,
+    assignee_user_ids: list[int] | None = None,
     controller_user_id: int = 3,
     title: str = "Task Alpha",
     due_at: str | None = None,
@@ -179,7 +180,7 @@ def _create_task(
         json={
             "title": title,
             "description": "Task body",
-            "assignee_user_ids": [assignee_user_id],
+            "assignee_user_ids": assignee_user_ids or [assignee_user_id],
             "controller_user_id": controller_user_id,
             "project_id": project["id"],
             "protocol_date": "2026-03-01",
@@ -212,6 +213,93 @@ def _approve_task(client: TestClient, task_id: str, *, comment: str = "Approved"
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_task_canvas_persists_with_revision_and_enforces_read_only_access(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    task = _create_task(client, title="Canvas Task", observer_user_ids=[4])
+    task_id = task["id"]
+
+    empty = client.get(f"/hub/tasks/{task_id}/canvas")
+    assert empty.status_code == 200, empty.text
+    assert empty.json() == {
+        "task_id": task_id,
+        "revision": 0,
+        "scene": {"elements": [], "appState": {}, "files": {}},
+        "can_edit": True,
+        "max_scene_bytes": 2 * 1024 * 1024,
+        "updated_by_user_id": None,
+        "updated_by_username": "",
+        "updated_at": None,
+    }
+
+    scene = {
+        "elements": [{"id": "rect-1", "type": "rectangle", "x": 20, "y": 30}],
+        "appState": {"viewBackgroundColor": "#ffffff"},
+        "files": {},
+    }
+    saved = client.put(
+        f"/hub/tasks/{task_id}/canvas",
+        json={"revision": 0, "scene": scene},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["revision"] == 1
+    assert saved.json()["scene"] == scene
+    assert saved.json()["updated_by_user_id"] == 1
+
+    stale = client.put(
+        f"/hub/tasks/{task_id}/canvas",
+        json={"revision": 0, "scene": {"elements": [], "appState": {}, "files": {}}},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_revision"] == 1
+
+    set_user(4)
+    observer_view = client.get(f"/hub/tasks/{task_id}/canvas")
+    assert observer_view.status_code == 200, observer_view.text
+    assert observer_view.json()["can_edit"] is False
+    observer_save = client.put(
+        f"/hub/tasks/{task_id}/canvas",
+        json={"revision": 1, "scene": scene},
+    )
+    assert observer_save.status_code == 403
+
+    set_user(2)
+    participant_save = client.put(
+        f"/hub/tasks/{task_id}/canvas",
+        json={"revision": 1, "scene": scene},
+    )
+    assert participant_save.status_code == 200, participant_save.text
+    assert participant_save.json()["revision"] == 2
+
+    set_user(6)
+    outsider_view = client.get(f"/hub/tasks/{task_id}/canvas")
+    assert outsider_view.status_code == 403
+
+    set_user(1)
+    closed = client.post(f"/hub/tasks/{task_id}/complete", json={"comment": "Canvas locked"})
+    assert closed.status_code == 200, closed.text
+    closed_canvas = client.get(f"/hub/tasks/{task_id}/canvas")
+    assert closed_canvas.status_code == 200
+    assert closed_canvas.json()["can_edit"] is False
+    closed_save = client.put(
+        f"/hub/tasks/{task_id}/canvas",
+        json={"revision": 2, "scene": scene},
+    )
+    assert closed_save.status_code == 403
+
+    deleted = client.delete(f"/hub/tasks/{task_id}")
+    assert deleted.status_code == 200, deleted.text
+    with service._connect() as conn:
+        canvas_row = conn.execute(
+            f"SELECT task_id FROM {service._TASK_CANVAS_TABLE} WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert canvas_row is None
 
 
 def test_reopen_completed_task_by_participant(task_env):
@@ -545,6 +633,83 @@ def test_create_task_without_department_allows_cross_assignee(task_env):
     assert task.get("visibility_scope") == "private"
 
 
+def test_multiple_assignees_share_one_task_and_each_can_execute_it(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    task = _create_task(
+        client,
+        title="Shared Assignee Task",
+        assignee_user_ids=[2, 4],
+        observer_user_ids=[4, 7],
+    )
+    task_id = task["id"]
+
+    assert task["assignee_user_id"] == 2
+    assert task["assignee_user_ids"] == [2, 4]
+    assert [item["user_id"] for item in task["assignees"]] == [2, 4]
+    assert task["observer_user_ids"] == [7]
+
+    second_assignee_notifications = service.poll_notifications(user_id=4, limit=20)
+    assert any(
+        item.get("event_type") == "task.assigned" and item.get("entity_id") == task_id
+        for item in second_assignee_notifications.get("items", [])
+    )
+
+    set_user(4)
+    assigned = client.get("/hub/tasks", params={"scope": "my", "role_scope": "assignee"})
+    assert assigned.status_code == 200, assigned.text
+    assert [item["id"] for item in assigned.json()["items"]] == [task_id]
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_start"] is True
+    started = client.post(f"/hub/tasks/{task_id}/start")
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] == "in_progress"
+
+    set_user(2)
+    submitted = _submit_task(client, task_id, comment="Shared result")
+    assert submitted["status"] == "review"
+
+    set_user(5)
+    filtered = client.get(
+        "/hub/tasks",
+        params={"scope": "all", "assignee_user_id": 4},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [item["id"] for item in filtered.json()["items"]] == [task_id]
+    analytics = client.get("/hub/tasks/analytics")
+    assert analytics.status_code == 200, analytics.text
+    participant_totals = {
+        int(item["participant_user_id"]): int(item["total"])
+        for item in analytics.json()["by_participant"]
+    }
+    assert participant_totals == {2: 1, 4: 1}
+
+    set_user(1)
+    reassigned = client.patch(
+        f"/hub/tasks/{task_id}",
+        json={"assignee_user_ids": [2, 6]},
+    )
+    assert reassigned.status_code == 200, reassigned.text
+    assert reassigned.json()["assignee_user_ids"] == [2, 6]
+
+    set_user(4)
+    removed_detail = client.get(f"/hub/tasks/{task_id}")
+    assert removed_detail.status_code == 403
+
+    set_user(6)
+    added_detail = client.get(f"/hub/tasks/{task_id}")
+    assert added_detail.status_code == 200, added_detail.text
+    added_notifications = service.poll_notifications(user_id=6, limit=20)
+    assert any(
+        item.get("event_type") == "task.assigned" and item.get("entity_id") == task_id
+        for item in added_notifications.get("items", [])
+    )
+
+
 def test_assignee_can_update_task_checklist_only(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]
@@ -735,6 +900,34 @@ def test_assignee_controller_not_creator_cannot_review(task_env):
     denied_review = client.post(
         f"/hub/tasks/{task_id}/review",
         json={"decision": "approve", "comment": "Self-review blocked"},
+    )
+    assert denied_review.status_code == 403
+
+
+def test_secondary_assignee_controller_not_creator_cannot_review(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(
+        client,
+        title="Secondary Assignee Controller Conflict",
+        assignee_user_ids=[2, 3],
+        controller_user_id=3,
+    )
+    task_id = task["id"]
+
+    set_user(2)
+    submitted = _submit_task(client, task_id, comment="Shared task ready")
+    assert submitted["status"] == "review"
+
+    set_user(3)
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_review"] is False
+    denied_review = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": "Secondary self-review blocked"},
     )
     assert denied_review.status_code == 403
 
@@ -1550,10 +1743,19 @@ def test_list_tasks_returns_explicit_list_columns(task_env):
         assert forbidden not in listed
     assert listed["attachments_count"] == 0
     assert listed["reports_count"] == 0
+    assert listed["description_preview"] == "Task body"
     assert listed["project_name"]
     assert listed["checklist_total"] == detail["checklist_total"]
     assert listed["has_unread_comments"] is detail["has_unread_comments"]
     assert isinstance(listed["observer_user_ids"], list)
+    assert listed["assignee_user_ids"] == [2]
+    assert listed["assignees"][0]["user_id"] == 2
+
+    response = client.get("/hub/tasks", params={"scope": "my", "limit": 20})
+    assert response.status_code == 200, response.text
+    api_item = next(item for item in response.json()["items"] if item["id"] == created["id"])
+    assert api_item["description_preview"] == "Task body"
+    assert api_item["description"] == "Task body"
 
 
 def test_list_tasks_does_not_call_task_with_latest_report(task_env, monkeypatch):
@@ -1820,6 +2022,40 @@ def test_create_task_stores_custom_email_deadline_remind_hours(task_env):
         ).fetchone()
     assert row is not None
     assert int(row["email_deadline_remind_hours"]) == 48
+
+
+def test_get_tasks_for_user_batch_reuses_viewer_and_delegate_lookups(task_env, monkeypatch):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    first = _create_task(client, title="Batch lookup one", assignee_user_id=2)
+    second = _create_task(client, title="Batch lookup two", assignee_user_id=2)
+    third = _create_task(client, title="Batch lookup three", assignee_user_id=3)
+
+    get_by_id_calls: list[int] = []
+    delegate_calls: list[int] = []
+
+    def get_by_id(user_id):
+        get_by_id_calls.append(int(user_id))
+        return {"id": int(user_id), "username": f"user{user_id}", "role": "viewer"}
+
+    def get_delegate_user_ids(owner_user_id, active_only=True):
+        delegate_calls.append(int(owner_user_id))
+        return []
+
+    monkeypatch.setattr(hub_service_module.user_service, "get_by_id", get_by_id)
+    monkeypatch.setattr(hub_service_module.user_service, "get_delegate_user_ids", get_delegate_user_ids)
+
+    result = service.get_tasks_for_user_batch(
+        [first["id"], second["id"], third["id"]],
+        user_id=1,
+    )
+
+    assert set(result) == {first["id"], second["id"], third["id"]}
+    assert get_by_id_calls == [1]
+    assert sorted(delegate_calls) == [2, 3]
 
 
 def test_deadline_soon_email_respects_per_task_off_and_custom_hours(task_env, monkeypatch):

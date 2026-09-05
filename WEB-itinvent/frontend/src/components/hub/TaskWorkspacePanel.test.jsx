@@ -154,6 +154,16 @@ describe('TaskWorkspacePanel', () => {
     expect(onOpenInTasks).toHaveBeenCalledTimes(1);
   });
 
+  it('opens the task canvas from the chat workspace', async () => {
+    const onNavigate = vi.fn();
+    renderPanel({ onNavigate });
+
+    await openMoreMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Открыть доску' }));
+
+    expect(onNavigate).toHaveBeenCalledWith('/tasks?task=task-1&task_detail_view=canvas');
+  });
+
   it('loads and renders the complete task workspace', async () => {
     renderPanel();
 
@@ -308,7 +318,7 @@ describe('TaskWorkspacePanel', () => {
     await waitFor(() => {
       expect(hubAPI.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
         title: 'Обновлённое рабочее место',
-        assignee_user_id: 2,
+        assignee_user_ids: [2],
         controller_user_id: 3,
         project_id: 'project-1',
         object_id: 'object-1',

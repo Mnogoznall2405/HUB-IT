@@ -5,7 +5,10 @@ import {
   setAppLockSettings,
 } from '../auth/biometricAuth';
 import type { HubUser } from '../api/types';
-import { getNativeSnapshotInventory } from '../cache/nativeSnapshotCache';
+import {
+  getNativeSnapshotInventory,
+  getRequiredNativeOfflineScopes,
+} from '../cache/nativeSnapshotInventory';
 import {
   clearDiagnosticEvents,
   getDiagnosticEventCount,
@@ -13,6 +16,14 @@ import {
   shareDiagnosticReport,
 } from '../diagnostics/diagnostics';
 import { getAndroidProcessHealthSnapshot } from '../diagnostics/androidProcessHealth';
+import {
+  clearNativeDatabaseFileCache,
+  getNativeDatabaseFileCacheSize,
+} from '../database/nativeDatabaseFiles';
+import {
+  clearNativeFeedFileCache,
+  getNativeFeedFileCacheSize,
+} from '../feed/nativeFeedFiles';
 import {
   clearAttachmentCache,
   getAttachmentCacheSize,
@@ -27,7 +38,11 @@ import { getPendingChatReplyCount } from '../notifications/pendingNotificationRe
 import { performPortalHaptic } from '../native/haptics';
 import { getNativeConnectivitySnapshot } from '../network/nativeConnectivity';
 import { drainOfflineCommandQueue, getOfflineCommandCount } from '../offline/offlineCommandQueue';
-import { prepareNativeOfflineData } from '../offline/nativeOfflinePreparation';
+import { readNativeOfflineCoverage } from '../offline/nativeOfflineCoverage';
+import {
+  prepareNativeOfflineData,
+  type OfflinePreparationProgressListener,
+} from '../offline/nativeOfflinePreparation';
 import {
   clearNativeMyFilesCache,
   getNativeMyFilesCacheSize,
@@ -58,12 +73,18 @@ export type NativeCommandDeps = {
   updater: NativeCommandUpdater;
 };
 
+export type NativeCommandExecutionOptions = {
+  onOfflinePreparationProgress?: OfflinePreparationProgressListener;
+};
+
 export function updaterSnapshot(state: MobileUpdaterState) {
   return {
     status: state.status,
     currentVersion: state.currentVersion,
     currentBuild: state.currentBuild,
     progress: state.progress,
+    bytesWritten: state.bytesWritten,
+    totalBytes: state.totalBytes,
     message: state.message,
     canOpenInstallerSettings: state.canOpenInstallerSettings,
     required: state.required,
@@ -87,10 +108,12 @@ export function assertAppLockPayload(payload: Record<string, unknown>) {
 
 async function getOfflineState(user: HubUser | null) {
   if (!user) throw new Error('Authenticated user is required');
-  const [pendingReplies, pendingCommands, snapshots] = await Promise.all([
+  const requiredScopes = getRequiredNativeOfflineScopes(user.permissions);
+  const [pendingReplies, pendingCommands, snapshots, coverage] = await Promise.all([
     getPendingChatReplyCount(user.id),
     getOfflineCommandCount(user.id),
-    getNativeSnapshotInventory(user.id),
+    getNativeSnapshotInventory(user.id, requiredScopes),
+    readNativeOfflineCoverage(user.id),
   ]);
   return {
     pendingReplies,
@@ -99,10 +122,15 @@ async function getOfflineState(user: HubUser | null) {
       + getNativeMailCacheSize()
       + getNativeTaskFileCacheSize()
       + getNativeMyFilesCacheSize()
-      + getNativeDocflowCacheSize(),
+      + getNativeDocflowCacheSize()
+      + getNativeFeedFileCacheSize()
+      + getNativeDatabaseFileCacheSize(),
     snapshotReady: snapshots.ready,
     snapshotScopes: snapshots.scopes,
+    snapshotMissingScopes: snapshots.missingScopes,
     snapshotLastSyncAt: snapshots.lastSyncAt,
+    offlineCoverage: coverage ? Object.values(coverage.entries) : [],
+    offlineCoverageUpdatedAt: coverage?.updatedAt || null,
   };
 }
 
@@ -133,6 +161,7 @@ export async function executeNativeCommand(
   command: NativeCommandName,
   payload: Record<string, unknown>,
   deps: NativeCommandDeps,
+  executionOptions: NativeCommandExecutionOptions = {},
 ): Promise<unknown> {
   const { user, biometricEnabled, enableBiometrics, skipBiometrics, updater } = deps;
   switch (command) {
@@ -153,7 +182,9 @@ export async function executeNativeCommand(
     case 'update.install': {
       let nextState = updater.state;
       if (!nextState.feed) nextState = await updater.checkForUpdate();
-      if (!nextState.feed || nextState.status !== 'available') return updaterSnapshot(nextState);
+      if (!nextState.feed || nextState.status === 'current' || nextState.status === 'checking') {
+        return updaterSnapshot(nextState);
+      }
       return updaterSnapshot(await updater.installUpdate(nextState.feed));
     }
     case 'update.openInstallerSettings':
@@ -185,9 +216,17 @@ export async function executeNativeCommand(
         userId: user.id,
         isAdmin: String(user.role || '').trim().toLowerCase() === 'admin' || payload.tasksManageAll === true,
         dashboard: payload.dashboard === true,
+        feed: payload.feed === true,
         tasks: payload.tasks === true,
+        chat: payload.chat === true,
+        notifications: payload.notifications === true,
         mail: payload.mail === true,
-      });
+        docflow: payload.docflow === true,
+        addressBook: payload.addressBook === true,
+        database: payload.database === true,
+        myFiles: payload.myFiles === true,
+        companyStructure: payload.companyStructure === true,
+      }, executionOptions.onOfflinePreparationProgress);
       return { ...(await getOfflineState(user)), ...preparation };
     }
     case 'offline.retryQueues':
@@ -203,6 +242,8 @@ export async function executeNativeCommand(
       clearNativeTaskFileCache();
       clearNativeMyFilesCache();
       clearNativeDocflowCache();
+      clearNativeFeedFileCache();
+      clearNativeDatabaseFileCache();
       return getOfflineState(user);
     case 'network.getState':
       if (Object.keys(payload).length > 0) throw new Error('Invalid network state payload');

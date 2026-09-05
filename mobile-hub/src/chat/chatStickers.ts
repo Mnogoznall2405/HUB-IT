@@ -12,7 +12,39 @@ type StickerImageSource = {
   download_url?: string | null;
   url?: string | null;
   mime_type?: string | null;
+  format?: string | null;
+  file_name?: string | null;
 };
+
+export type StickerAnimationKind = 'tgs' | 'webm';
+
+function stickerSourceExtension(value?: string | null): string {
+  const normalized = String(value || '').trim().split('?', 1)[0].toLowerCase();
+  if (normalized.endsWith('.tgs')) return 'tgs';
+  if (normalized.endsWith('.webm')) return 'webm';
+  return '';
+}
+
+export function stickerAnimationKind(source?: StickerImageSource | null): StickerAnimationKind | null {
+  const mime = String(source?.mime_type || '').trim().toLowerCase();
+  if (mime.includes('tgsticker')) return 'tgs';
+  if (mime === 'video/webm') return 'webm';
+
+  const format = String(source?.format || '').trim().toLowerCase();
+  if (format === 'animated' || format === 'tgs') return 'tgs';
+  if (format === 'video' || format === 'webm') return 'webm';
+
+  const extension = [
+    source?.file_name,
+    source?.file_url,
+    source?.original_url,
+    source?.download_url,
+    source?.url,
+  ].map(stickerSourceExtension).find(Boolean);
+  if (extension === 'tgs' || extension === 'webm') return extension;
+  if (mime.startsWith('video/')) return 'webm';
+  return null;
+}
 
 export function isStickerChatAttachment(attachment?: ChatAttachment | null): boolean {
   if (!attachment) return false;
@@ -28,8 +60,7 @@ export function isStickerChatAttachment(attachment?: ChatAttachment | null): boo
 }
 
 export function isAnimatedStickerSource(source?: StickerImageSource | null): boolean {
-  const mime = String(source?.mime_type || '').toLowerCase();
-  return mime.includes('tgsticker') || mime.startsWith('video/');
+  return stickerAnimationKind(source) !== null;
 }
 
 export function stickerEmojiLabel(value?: string | null): string {
@@ -63,15 +94,36 @@ export function pickStickerImageUrl(sticker?: StickerImageSource | null): string
   return String(sticker?.file_url || sticker?.original_url || sticker?.download_url || sticker?.url || '').trim() || null;
 }
 
-export function stickerFromChatAttachment(attachment: ChatAttachment): Pick<ChatSticker, 'id' | 'emoji' | 'preview_url' | 'file_url' | 'mime_type'> {
+export function pickStickerPlaybackUrl(sticker?: StickerImageSource | null): string | null {
+  if (!isAnimatedStickerSource(sticker)) return null;
+  return String(
+    sticker?.file_url || sticker?.original_url || sticker?.download_url || sticker?.url || '',
+  ).trim() || null;
+}
+
+export function stickerFromChatAttachment(
+  attachment: ChatAttachment,
+): Pick<ChatSticker, 'id' | 'emoji' | 'preview_url' | 'file_url' | 'mime_type' | 'format'> & {
+  file_name?: string;
+} {
+  const animationKind = stickerAnimationKind({
+    file_name: attachment.file_name,
+    mime_type: attachment.mime_type,
+    original_url: attachment.original_url,
+    download_url: attachment.download_url,
+    url: attachment.url,
+  });
   return {
     id: attachment.id,
     emoji: stickerEmojiLabel(attachment.file_name),
     mime_type: attachment.mime_type || undefined,
+    format: animationKind === 'tgs' ? 'animated' : animationKind === 'webm' ? 'video' : 'static',
+    file_name: attachment.file_name,
     preview_url: pickStickerImageUrl({
       preview_url: attachment.preview_url,
       variant_urls: attachment.variant_urls,
       mime_type: attachment.mime_type,
+      file_name: attachment.file_name,
     }),
     file_url: String(
       attachment.original_url || attachment.download_url || attachment.url || '',

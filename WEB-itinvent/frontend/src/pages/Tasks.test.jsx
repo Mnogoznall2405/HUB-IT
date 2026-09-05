@@ -588,7 +588,7 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('button', { name: 'Назад к доске' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'К списку' })).toBeInTheDocument();
     expect(await screen.findByText(/rev-user/)).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task_tab=history');
 
@@ -597,10 +597,10 @@ describe('Tasks page detail workspace', () => {
     expect(await screen.findByText('акт-перемещения.pdf')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task_tab=files');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Назад к доске' }));
+    fireEvent.click(screen.getByRole('button', { name: 'К списку' }));
 
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Назад к доске' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'К списку' })).not.toBeInTheDocument();
     });
     expect(screen.getByRole('button', { name: 'Новая задача' })).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks');
@@ -694,7 +694,7 @@ describe('Tasks page detail workspace', () => {
     const row = await screen.findByTestId('tasks-list-row-task-1');
     fireEvent.click(row);
 
-    expect(await screen.findByRole('button', { name: 'Назад к доске' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'К списку' })).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
   });
 
@@ -1328,7 +1328,7 @@ describe('Tasks page detail workspace', () => {
     expect(mobileActionRail).toHaveTextContent('Отправить на проверку');
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
-    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'К списку' }));
     await waitFor(() => {
       expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
     });
@@ -1735,13 +1735,13 @@ describe('Tasks page detail workspace', () => {
       });
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'К задаче' }));
     await waitFor(() => {
       expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
       expect(screen.getByTestId('location-probe')).not.toHaveTextContent('task_mobile_view=checklist');
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'К списку' }));
     await waitFor(() => {
       expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
       expect(screen.queryByTestId('task-mobile-checklist-screen')).not.toBeInTheDocument();
@@ -1777,8 +1777,8 @@ describe('Tasks page detail workspace', () => {
     expect(screen.queryByTestId('task-mobile-checklist-summary')).not.toBeInTheDocument();
     expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 0');
     expect(screen.getByTestId('task-mobile-checklist-chip')).toHaveTextContent('Чек-лист');
-    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
-    expect(screen.getByTestId('task-mobile-open-chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-chat-floating')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
   });
 
   it('uses mobile list and compact detail flow on small screens', async () => {
@@ -1850,7 +1850,7 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('task-mobile-checklist-summary')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
-    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'К доске' }));
     await waitFor(() => {
       expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
     });
@@ -1858,15 +1858,9 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks');
   });
 
-  it('opens task discussion chat directly instead of the desktop detail page', async () => {
+  it('opens a task URL in the overview without provisioning discussion', async () => {
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
-      conversation_id: 'conv-task-1',
-      created: true,
-      kind: 'task',
-    });
-
     render(
       <MemoryRouter initialEntries={['/tasks?task=task-1']}>
         <Routes>
@@ -1879,37 +1873,45 @@ describe('Tasks page detail workspace', () => {
               </>
             )}
           />
-          <Route path="/chat" element={(<><div data-testid="chat-page" /><LocationProbe /></>)} />
         </Routes>
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1&task_layout=split');
-    });
+    expect(await screen.findByTestId('task-detail-content')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Задача' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Обсуждение' })).toBeInTheDocument();
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks?task=task-1');
+    expect(hubTaskDiscussionAPI.openTaskDiscussion).not.toHaveBeenCalled();
     expect(screen.queryByTestId('task-detail-open-chat')).not.toBeInTheDocument();
 
     chatFeatureFlags.chat = false;
     chatFeatureFlags.taskDiscussion = false;
   });
 
-  it('opens the task chat directly when a desktop task row is selected', async () => {
+  it('opens task overview without provisioning discussion when a desktop row is selected', async () => {
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
-      conversation_id: 'conv-task-row',
-      created: false,
-      kind: 'task',
-    });
-
     render(
       <MemoryRouter initialEntries={['/tasks']}>
         <Routes>
           <Route path="/tasks" element={<Tasks />} />
-          <Route path="/chat" element={<><div data-testid="chat-page" /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByTestId('tasks-list-row-task-1'));
+
+    expect(await screen.findByTestId('task-detail-content')).toBeInTheDocument();
+    expect(hubTaskDiscussionAPI.openTaskDiscussion).not.toHaveBeenCalled();
+  });
+
+  it('keeps the task card available when discussion has not been requested', async () => {
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<><Tasks /><LocationProbe /></>} />
         </Routes>
       </MemoryRouter>,
     );
@@ -1917,40 +1919,31 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(await screen.findByTestId('tasks-list-row-task-1'));
 
     await waitFor(() => {
-      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
-      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-row&task_layout=split');
+      expect(hubTasksAPI.getTask).toHaveBeenCalledWith('task-1');
     });
+    expect(await screen.findByTestId('task-detail-content')).toBeInTheDocument();
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
+    expect(hubTaskDiscussionAPI.openTaskDiscussion).not.toHaveBeenCalled();
   });
 
-  it('keeps the mobile task layout and exposes a direct chat button', async () => {
+  it('keeps the mobile task layout and exposes discussion as a tab', async () => {
     installMatchMedia({ mobile: true });
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
-      conversation_id: 'conv-task-mobile',
-      created: false,
-      kind: 'task',
-    });
-
     render(
       <MemoryRouter initialEntries={['/tasks?task=task-1']}>
         <Routes>
           <Route path="/tasks" element={<Tasks />} />
-          <Route path="/chat" element={<div data-testid="chat-page" />} />
         </Routes>
       </MemoryRouter>,
     );
 
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
     const checklistSummary = screen.getByTestId('task-mobile-checklist-summary');
-    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-chat-floating')).not.toBeInTheDocument();
     expect(within(checklistSummary).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
     expect(within(screen.getByTestId('task-mobile-action-rail')).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('task-mobile-open-chat'));
-
-    await waitFor(() => {
-      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
-      expect(screen.getByTestId('chat-page')).toBeInTheDocument();
-    });
+    expect(screen.getByRole('tab', { name: 'Обсуждение' })).toBeInTheDocument();
+    expect(hubTaskDiscussionAPI.openTaskDiscussion).not.toHaveBeenCalled();
   });
 });

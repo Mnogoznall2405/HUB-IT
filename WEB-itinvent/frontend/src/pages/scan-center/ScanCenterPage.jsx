@@ -48,6 +48,12 @@ import ReviewItemsSection from './ReviewItemsSection';
 import ScanCenterOverview from './ScanCenterOverview';
 import ScanCenterHeader from './ScanCenterHeader';
 import ScanCenterNavigation from './ScanCenterNavigation';
+import {
+  scanEvents,
+  SCAN_EVENTS_CONNECTED_EVENT,
+  SCAN_EVENTS_INVALIDATE_EVENT,
+  SCAN_EVENTS_STATUS_EVENT,
+} from '../../lib/scanEvents';
 
 const AUTO_REFRESH_MS = 30_000;
 const TASK_POLL_MS = 3_000;
@@ -608,6 +614,8 @@ function ScanCenterPage() {
   const [hostOverviewError, setHostOverviewError] = useState(false);
   const [hostOverviewExpandedHosts, setHostOverviewExpandedHosts] = useState({});
   const [hostOverviewFilesLoading, setHostOverviewFilesLoading] = useState({});
+  const [scanSseConnected, setScanSseConnected] = useState(false);
+  const [scanSsePulse, setScanSsePulse] = useState(0);
 
   const agentsRequestIdRef = useRef(0);
   const agentsAbortRef = useRef(null);
@@ -1184,6 +1192,39 @@ function ScanCenterPage() {
   });
 
   useEffect(() => {
+    let refreshTimer = null;
+    const handleConnected = () => {
+      setScanSseConnected(true);
+      setScanSsePulse((value) => value + 1);
+      refreshAllRef.current({ silent: true });
+    };
+    const handleStatus = (event) => {
+      setScanSseConnected(String(event?.detail?.status || '') === 'connected');
+    };
+    const handleInvalidate = (event) => {
+      const sections = Array.isArray(event?.detail?.sections) ? event.detail.sections : [];
+      setScanSsePulse((value) => value + 1);
+      if (sections.length === 1 && sections[0] === 'agents') return;
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        refreshAllRef.current({ silent: true });
+      }, 250);
+    };
+    window.addEventListener(SCAN_EVENTS_CONNECTED_EVENT, handleConnected);
+    window.addEventListener(SCAN_EVENTS_INVALIDATE_EVENT, handleInvalidate);
+    window.addEventListener(SCAN_EVENTS_STATUS_EVENT, handleStatus);
+    const release = scanEvents.retain();
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      window.removeEventListener(SCAN_EVENTS_CONNECTED_EVENT, handleConnected);
+      window.removeEventListener(SCAN_EVENTS_INVALIDATE_EVENT, handleInvalidate);
+      window.removeEventListener(SCAN_EVENTS_STATUS_EVENT, handleStatus);
+      release();
+    };
+  }, []);
+
+  useEffect(() => {
     // Cold open: dashboard + branches + optional review preview only.
     loadBranchOptions();
     loadDashboard({ silent: false });
@@ -1375,13 +1416,13 @@ function ScanCenterPage() {
     };
 
     tick();
-    const timer = window.setInterval(tick, TASK_POLL_MS);
+    const timer = scanSseConnected ? null : window.setInterval(tick, TASK_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monitoredAgentIdsKey]);
+  }, [monitoredAgentIdsKey, scanSseConnected, scanSsePulse]);
 
   const patchHostNewCount = (hostname, delta) => {
     const host = normalizeHost(hostname);

@@ -92,11 +92,14 @@ export default function TasksCalendarView({
                   return (
                     <Box
                       key={task.id}
+                      data-task-open-trigger={String(task.id)}
                       role="button"
                       tabIndex={0}
                       onClick={() => onOpenTask(task)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') onOpenTask(task);
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        onOpenTask(task);
                       }}
                       sx={{
                         borderLeft: '3px solid',
@@ -106,6 +109,11 @@ export default function TasksCalendarView({
                         px: 0.55,
                         py: 0.35,
                         cursor: 'pointer',
+                        '&:focus-visible': {
+                          outline: '2px solid',
+                          outlineColor: 'primary.main',
+                          outlineOffset: '2px',
+                        },
                       }}
                     >
                       <Typography variant="caption" sx={{ display: 'block', fontWeight: 800, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

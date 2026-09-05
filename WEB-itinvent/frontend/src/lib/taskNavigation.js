@@ -1,6 +1,7 @@
 import * as chatFeatureFlags from './chatFeature';
 
 export const TASK_DETAIL_TABS = ['comments', 'files', 'history'];
+export const TASK_DETAIL_VIEWS = ['overview', 'discussion', 'canvas'];
 
 function defaultTaskDiscussionEnabled() {
   return Boolean(chatFeatureFlags.TASK_DISCUSSION_CHAT_ENABLED);
@@ -19,10 +20,17 @@ export function normalizeTaskDetailTab(
   return getDefaultTaskDetailTab(taskDiscussionEnabled);
 }
 
+export function normalizeTaskDetailView(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return TASK_DETAIL_VIEWS.includes(normalized) ? normalized : 'overview';
+}
+
 export function buildTaskDetailPath(
   taskId,
   {
     tab,
+    view,
+    message,
     taskDiscussionEnabled = defaultTaskDiscussionEnabled(),
   } = {},
 ) {
@@ -31,6 +39,16 @@ export function buildTaskDetailPath(
 
   const params = new URLSearchParams();
   params.set('task', normalizedId);
+
+  const normalizedView = normalizeTaskDetailView(view);
+  if (normalizedView !== 'overview') {
+    params.set('task_detail_view', normalizedView);
+  }
+
+  const normalizedMessageId = String(message || '').trim();
+  if (normalizedView === 'discussion' && normalizedMessageId) {
+    params.set('message', normalizedMessageId);
+  }
 
   const explicitTab = tab != null && String(tab).trim() !== '';
   if (explicitTab) {

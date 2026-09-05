@@ -7,6 +7,8 @@ import { showReplyFailed, showReplySent } from '../notifications/notificationAct
 import { reconcileNativeBadge } from '../notifications/notificationBadge';
 import { drainPendingChatReplies } from '../notifications/pendingNotificationReplies';
 import { drainOfflineCommandQueue } from '../offline/offlineCommandQueue';
+import { refreshStaleNativeOfflineData } from '../offline/nativeOfflineBackgroundRefresh';
+import { refreshNativeReadCaches } from '../offline/nativeReadCacheRefresh';
 
 export const HUBIT_MOBILE_BACKGROUND_SYNC_TASK = 'hubit-mobile-background-sync-v1';
 
@@ -21,10 +23,22 @@ export async function runMobileBackgroundSync(): Promise<BackgroundTask.Backgrou
   const userId = await tokenStore.getSessionUserId();
   if (!userId) return BackgroundTask.BackgroundTaskResult.Success;
   try {
+    const cachedUser = await tokenStore.getCachedSessionUser().catch(() => null);
     await syncPendingNotificationReplies(userId);
     await drainOfflineCommandQueue(userId);
     await syncNativePushToken({ requestPermission: false });
     await reconcileNativeBadge();
+    if (cachedUser?.id === userId) {
+      await refreshNativeReadCaches({
+        userId,
+        permissions: cachedUser.permissions || [],
+      }).catch(() => undefined);
+      await refreshStaleNativeOfflineData({
+        userId,
+        permissions: cachedUser.permissions || [],
+        isAdmin: String(cachedUser.role || '').trim().toLowerCase() === 'admin',
+      }).catch(() => undefined);
+    }
     return BackgroundTask.BackgroundTaskResult.Success;
   } catch {
     return BackgroundTask.BackgroundTaskResult.Failed;

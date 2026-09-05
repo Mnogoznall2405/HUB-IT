@@ -540,6 +540,24 @@ it('opens a previously saved message without calling Exchange while offline', as
   expect(view.getByText(/Копия от/)).toBeTruthy();
 });
 
+it('shows a saved message immediately while refreshing it online', async () => {
+  await writeNativeEntitySnapshot('mail-message-details', 1, 'box-1:message-cached', {
+    ...message,
+    id: 'message-cached',
+    subject: 'Сохранённый план',
+    body_text: 'Текст из сохранённой копии',
+    is_read: true,
+  });
+  (mailApi.getMailMessage as jest.Mock).mockReturnValue(new Promise(() => undefined));
+  mockedParams.mockReturnValue({ messageId: 'message-cached', mailboxId: 'box-1', folder: 'inbox' });
+
+  const view = await render(<NativeMailMessageScreen />);
+
+  await waitFor(() => expect(view.getByTestId('native-mail-reader-subject')).toHaveTextContent('Сохранённый план'));
+  expect(view.getByText('Текст из сохранённой копии')).toBeTruthy();
+  expect(mailApi.getMailMessage).toHaveBeenCalledWith('message-cached', 'box-1');
+});
+
 it('opens a previously saved conversation without calling Exchange while offline', async () => {
   await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:thread-1', {
     conversation_id: 'thread-1',
@@ -557,6 +575,28 @@ it('opens a previously saved conversation without calling Exchange while offline
   await waitFor(() => expect(view.getAllByText('План работ').length).toBeGreaterThan(0));
   expect(mailApi.getMailConversation).not.toHaveBeenCalled();
   expect(view.getByText(/Копия от/)).toBeTruthy();
+});
+
+it('shows a saved conversation immediately while refreshing it online', async () => {
+  await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:thread-cached', {
+    conversation_id: 'thread-cached',
+    subject: 'Сохранённая переписка',
+    participants: ['ivan@example.com'],
+    messages_count: 1,
+    unread_count: 0,
+    items: [{ ...message, id: 'message-cached', subject: 'Сохранённая переписка', is_read: true }],
+  });
+  (mailApi.getMailConversation as jest.Mock).mockReturnValue(new Promise(() => undefined));
+  mockedParams.mockReturnValue({ conversationId: 'thread-cached', mailboxId: 'box-1', folder: 'inbox' });
+
+  const view = await render(<NativeMailConversationScreen />);
+
+  await waitFor(() => expect(view.getAllByText('Сохранённая переписка').length).toBeGreaterThan(0));
+  expect(mailApi.getMailConversation).toHaveBeenCalledWith('thread-cached', {
+    mailboxId: 'box-1',
+    folder: 'inbox',
+    folderScope: 'current',
+  });
 });
 
 it('rolls an opened message back to unread when automatic read fails', async () => {
@@ -799,6 +839,18 @@ it('sends a quick reply directly from a single opened message', async () => {
     replyToMessageId: 'message-1',
   }), expect.objectContaining({ idempotencyKey: expect.any(String) })));
   expect(await view.findByText('Ответ отправлен')).toBeTruthy();
+});
+
+it('keeps the conversation quick reply inside the shared keyboard host', async () => {
+  mockedParams.mockReturnValue({ conversationId: 'thread-1', mailboxId: 'box-1', folder: 'inbox' });
+  const view = await render(<NativeMailConversationScreen />);
+  expect(await view.findByTestId('native-mail-conversation-keyboard-host')).toBeTruthy();
+});
+
+it('keeps the single-message quick reply inside the shared keyboard host', async () => {
+  mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox', sequence: '["message-1"]' });
+  const view = await render(<NativeMailMessageScreen />);
+  expect(await view.findByTestId('native-mail-message-keyboard-host')).toBeTruthy();
 });
 
 it('loads raw message headers from the existing authenticated endpoint', async () => {

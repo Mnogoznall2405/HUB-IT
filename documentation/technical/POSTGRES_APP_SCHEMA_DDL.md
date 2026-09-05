@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-08-27 05:22 UTC_  
+_Сгенерировано: 2026-09-04 08:06 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (137 tables)
+## Schema `app` (141 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -437,6 +437,67 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_browser_probe_visits_category`: (category)
   - `ix_app_browser_probe_visits_computer_visited`: (computer_name, visited_at)
   - `uq_app_browser_probe_visits_host_visit` UNIQUE: (computer_name, browser, profile, visit_id)
+
+---
+
+### `app.construction_object_1c_groups`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_object_1c_groups_id_seq'::regclass)` |
+| `object_id` | varchar(64) | no | `` |
+| `group_ref` | varchar(64) | no | `` |
+| `group_name` | varchar(255) | no | `''::character varying` |
+| `created_by_user_id` | integer | no | `` |
+| `created_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_construction_object_1c_groups_object`: (object_id)
+  - `uq_app_construction_object_1c_group_ref` UNIQUE: (group_ref)
+
+---
+
+### `app.construction_object_role_assignments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_object_role_assignments_id_seq'::regclass)` |
+| `object_id` | varchar(64) | no | `` |
+| `role_key` | varchar(32) | no | `` |
+| `employee_code` | varchar(128) | no | `` |
+| `employee_name` | varchar(255) | no | `` |
+| `employee_position` | varchar(255) | no | `''::character varying` |
+| `employee_department` | varchar(255) | no | `''::character varying` |
+| `employee_department_location` | varchar(255) | no | `''::character varying` |
+| `valid_from` | timestamptz | no | `now()` |
+| `valid_to` | timestamptz | yes | `` |
+| `assigned_by_user_id` | integer | no | `` |
+| `created_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_construction_object_roles_employee`: (employee_code)
+  - `ix_app_construction_object_roles_object`: (object_id, role_key)
+  - `uq_app_construction_object_active_role` UNIQUE: (object_id, role_key)
+
+---
+
+### `app.construction_objects`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `name` | varchar(255) | no | `` |
+| `is_active` | boolean | no | `true` |
+| `created_by_user_id` | integer | no | `` |
+| `updated_by_user_id` | integer | no | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `updated_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_construction_objects_active_name`: (is_active, name)
 
 ---
 
@@ -1136,6 +1197,22 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.hub_task_canvases`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `task_id` **PK** | text | no | `` |
+| `scene_json` | text | no | `'{"elements":[],"appState":{},"files":{}}'::text` |
+| `revision` | integer | no | `0` |
+| `updated_by_user_id` | integer | yes | `` |
+| `updated_by_username` | text | no | `''::text` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+
+- **Primary key:** `task_id`
+
+---
+
 ### `app.hub_task_comment_reads`
 
 | Column | Type | Nullable | Default |
@@ -1308,6 +1385,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `checklist_items` | text | no | `'[]'::text` |
 | `email_deadline_remind_hours` | integer | yes | `` |
 | `observer_user_ids` | text | no | `'[]'::text` |
+| `assignee_user_ids` | text | no | `'[]'::text` |
 
 - **Primary key:** `id`
 - **Indexes:**

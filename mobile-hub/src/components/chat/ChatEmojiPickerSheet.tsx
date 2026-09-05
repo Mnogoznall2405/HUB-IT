@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { filterEmojiGroups } from '../../chat/chatEmoji';
 import { fetchChatGifs, type ChatGifItem } from '../../chat/chatGiphy';
+import { buildEmojiPickerRows, type EmojiPickerRow } from '../../chat/chatPickerRows';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
 
@@ -27,6 +28,26 @@ export function ChatEmojiPickerSheet({
   const [gifs, setGifs] = useState<ChatGifItem[]>([]);
   const [gifBusy, setGifBusy] = useState(false);
   const groups = useMemo(() => filterEmojiGroups(emojiQuery), [emojiQuery]);
+  const emojiRows = useMemo(() => buildEmojiPickerRows(groups), [groups]);
+
+  const renderEmojiRow = useCallback(({ item }: { item: EmojiPickerRow }) => {
+    if (item.kind === 'header') return <Text style={styles.groupTitle}>{item.title}</Text>;
+    return (
+      <View style={styles.grid}>
+        {item.emojis.map((emoji) => (
+          <Pressable
+            key={`${item.id}-${emoji}`}
+            onPress={() => onSelect(emoji)}
+            style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={`Вставить ${emoji}`}
+          >
+            <Text style={styles.emoji}>{emoji}</Text>
+          </Pressable>
+        ))}
+      </View>
+    );
+  }, [onSelect, styles]);
 
   useEffect(() => {
     if (!visible) {
@@ -97,10 +118,19 @@ export function ChatEmojiPickerSheet({
               {gifBusy ? (
                 <ActivityIndicator style={styles.loader} color={chatTokens.composerActionBg} />
               ) : (
-                <ScrollView contentContainerStyle={styles.gifGrid}>
-                  {gifs.map((gif) => (
+                <FlatList
+                  key="gif-grid"
+                  data={gifs}
+                  numColumns={3}
+                  keyExtractor={(gif) => gif.id}
+                  keyboardShouldPersistTaps="handled"
+                  initialNumToRender={9}
+                  maxToRenderPerBatch={6}
+                  windowSize={5}
+                  contentContainerStyle={styles.gifGrid}
+                  columnWrapperStyle={styles.gifRow}
+                  renderItem={({ item: gif }) => (
                     <Pressable
-                      key={gif.id}
                       onPress={() => onSelectGif(gif)}
                       style={({ pressed }) => [styles.gifButton, pressed && styles.pressed]}
                       accessibilityRole="button"
@@ -108,9 +138,9 @@ export function ChatEmojiPickerSheet({
                     >
                       <Image source={{ uri: gif.previewUrl }} style={styles.gif} />
                     </Pressable>
-                  ))}
-                  {!gifs.length ? <Text style={styles.empty}>GIF не найдены</Text> : null}
-                </ScrollView>
+                  )}
+                  ListEmptyComponent={<Text style={styles.empty}>GIF не найдены</Text>}
+                />
               )}
             </>
           ) : (
@@ -123,27 +153,19 @@ export function ChatEmojiPickerSheet({
                 style={styles.search}
                 accessibilityLabel="Поиск эмодзи"
               />
-              <ScrollView>
-                {groups.map((group) => (
-                  <View key={group.id} style={styles.group}>
-                    <Text style={styles.groupTitle}>{group.icon} {group.name}</Text>
-                    <View style={styles.grid}>
-                      {group.emojis.map((emoji) => (
-                        <Pressable
-                          key={`${group.id}-${emoji}`}
-                          onPress={() => onSelect(emoji)}
-                          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Вставить ${emoji}`}
-                        >
-                          <Text style={styles.emoji}>{emoji}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  </View>
-                ))}
-                {!groups.length ? <Text style={styles.empty}>Эмодзи не найдены</Text> : null}
-              </ScrollView>
+              <FlatList
+                key="emoji-grid"
+                testID="chat-emoji-picker-list"
+                data={emojiRows}
+                keyExtractor={(item) => item.id}
+                renderItem={renderEmojiRow}
+                keyboardShouldPersistTaps="handled"
+                initialNumToRender={6}
+                maxToRenderPerBatch={6}
+                updateCellsBatchingPeriod={32}
+                windowSize={5}
+                ListEmptyComponent={<Text style={styles.empty}>Эмодзи не найдены</Text>}
+              />
             </>
           )}
         </View>
@@ -178,10 +200,10 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     fontSize: 16,
   },
   loader: { marginVertical: 24 },
-  group: { marginBottom: 10 },
-  groupTitle: { marginBottom: 4, color: chatTokens.textSecondary, fontSize: 13, fontWeight: '700' },
+  groupTitle: { marginTop: 6, marginBottom: 4, color: chatTokens.textSecondary, fontSize: 13, fontWeight: '700' },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  gifGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  gifGrid: { paddingBottom: 12 },
+  gifRow: { gap: 8, marginBottom: 8 },
   gifButton: { width: '31%', aspectRatio: 1, borderRadius: 10, overflow: 'hidden' },
   gif: { width: '100%', height: '100%' },
   empty: { width: '100%', textAlign: 'center', color: chatTokens.textSecondary, marginTop: 16 },

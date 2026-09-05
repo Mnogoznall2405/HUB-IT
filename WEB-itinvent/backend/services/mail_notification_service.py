@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -11,6 +12,7 @@ from sqlalchemy import select
 
 from backend.chat.db import chat_session
 from backend.chat.models import ChatPushSubscription
+from backend.realtime.hub import HUB_MAIL_MESSAGE_RECEIVED_EVENT, hub_realtime_publisher
 from backend.services.app_push_service import app_push_service
 from backend.services.authorization_service import PERM_MAIL_ACCESS, authorization_service
 from backend.services.mail_service import MailServiceError, mail_service
@@ -385,6 +387,19 @@ class MailNotificationService:
                 mailbox_label = str(top_item.get("mailbox_label") or "").strip()
                 mailbox_email = str(top_item.get("mailbox_email") or "").strip()
                 folder = str(top_item.get("folder") or "inbox").strip() or "inbox"
+                message_event_key = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
+                hub_realtime_publisher.publish_user_event(
+                    recipient_user_id=user_id,
+                    event_type=HUB_MAIL_MESSAGE_RECEIVED_EVENT,
+                    event_id=f"mail-received:{user_id}:{message_event_key}",
+                    payload={
+                        "message_id": message_id,
+                        "mailbox_id": mailbox_id,
+                        "folder": folder,
+                        "received_at": current.last_received_at,
+                        "unread_count": int(current.unread_count or 0),
+                    },
+                )
                 mailbox_hint = mailbox_label or mailbox_email
                 body = f"{sender}: {body_preview or subject}" if sender else (body_preview or subject)
                 if mailbox_hint:

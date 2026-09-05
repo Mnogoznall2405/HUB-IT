@@ -1,4 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ComputerRecord } from '../../api/computersApi';
 import {
@@ -26,15 +27,16 @@ function Detail({ icon, value, tokens }: { icon: 'account-outline' | 'map-marker
   );
 }
 
-export function NativeComputerCard({
+export const NativeComputerCard = memo(function NativeComputerCard({
   computer,
   tokens,
   onPress,
 }: {
   computer: ComputerRecord;
   tokens: FluentTokens;
-  onPress: () => void;
+  onPress: (computer: ComputerRecord) => void;
 }) {
+  const handlePress = useCallback(() => onPress(computer), [computer, onPress]);
   const statusTone = computerStatusTone(computer.status);
   const diskWarnings = computerDiskWarningCount(computer);
   const user = computer.user_full_name || computer.user_login || computer.current_user;
@@ -48,7 +50,7 @@ export function NativeComputerCard({
   return (
     <Pressable
       testID={`native-computer-${computer.mac_address || computer.hostname}`}
-      onPress={onPress}
+      onPress={handlePress}
       accessibilityRole="button"
       accessibilityLabel={`${computer.hostname}. ${computerStatusLabel(computer.status)}. ${computer.ip_primary || 'IP не указан'}`}
       accessibilityHint="Открывает карточку компьютера"
@@ -85,7 +87,7 @@ export function NativeComputerCard({
       <MaterialCommunityIcons name="chevron-right" size={21} color={tokens.iconMuted} />
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: { minHeight: 116, borderWidth: 1, borderRadius: 16, padding: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 11 },

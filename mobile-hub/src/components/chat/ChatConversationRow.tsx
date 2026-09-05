@@ -7,7 +7,7 @@ import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { formatShortTime } from '../../utils/formatTime';
 import { PresenceAvatar } from './PresenceAvatar';
 
-export function ChatConversationRow({
+export const ChatConversationRow = React.memo(function ChatConversationRow({
   item,
   active,
   onPress,
@@ -64,7 +64,7 @@ export function ChatConversationRow({
       </View>
     </Pressable>
   );
-}
+});
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   row: {

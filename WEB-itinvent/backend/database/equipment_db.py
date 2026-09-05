@@ -8,6 +8,7 @@ import time
 from threading import RLock
 
 from backend.database.connection import get_db
+from backend.database.equipment_current_act_reads import enrich_equipment_current_acts
 
 logger = logging.getLogger(__name__)
 _equipment_payload_cache: Dict[str, Dict[str, Any]] = {}
@@ -111,6 +112,7 @@ def get_equipment_by_branch(branch_name: str, page: int = 1, limit: int = 10000,
             QUERY_GET_EQUIPMENT_BY_BRANCH,
             (branch_name, offset, limit)
         )
+        equipment = enrich_equipment_current_acts(equipment, db_id=db_id, get_db_fn=get_db)
 
         logger.info(f"Found {total} equipment items for branch {branch_name}")
 
@@ -166,6 +168,7 @@ def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] 
         QUERY_GET_EQUIPMENT_GROUPED,
         (offset, limit)
     )
+    equipment = enrich_equipment_current_acts(equipment, db_id=db_id, get_db_fn=get_db)
 
     grouped = _group_rows_by_branch_location(equipment)
 

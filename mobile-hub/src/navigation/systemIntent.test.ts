@@ -19,8 +19,10 @@ it.each([
   ['https://hubit.zsgp.ru/my-files', '/my-files'],
   ['https://hubit.zsgp.ru/company-structure?node=dep%2F1&block=block-1&view=focus', '/company-structure?nodeId=dep%2F1&blockId=block-1'],
   ['https://hubit.zsgp.ru/docflow', '/docflow'],
+  ['https://hubit.zsgp.ru/docflow?task=task-1', '/docflow?task=task-1'],
   ['https://hubit.zsgp.ru/warehouse-1c', '/menu'],
-  ['https://hubit.zsgp.ru/mfu', '/menu'],
+  ['https://hubit.zsgp.ru/passwords', '/passwords'],
+  ['https://hubit.zsgp.ru/mfu', '/mfu'],
   ['https://hubit.zsgp.ru/dashboard', '/dashboard'],
 ])('maps a trusted Android intent %s', (input, expected) => {
   expect(routeSystemIntentPath(input)).toBe(expected);
@@ -34,6 +36,11 @@ it.each([
 ])('rejects or neutralizes an unsafe Android intent: %s', (input) => {
   const result = routeSystemIntentPath(input);
   expect(['/', '/dashboard']).toContain(result);
+});
+
+it('rejects an oversized external intent before query parsing', () => {
+  const oversized = `hubit://portal?path=${'%E0%A4%A'.repeat(900)}`;
+  expect(routeSystemIntentPath(oversized)).toBe('/');
 });
 
 it('remembers the portal destination through login and consumes it once', () => {
@@ -72,9 +79,9 @@ it('remembers a native Company Structure focus through login as its portal path'
   expect(consumePendingPortalPath()).toBe('');
 });
 
-it('canonicalizes an internal native Docflow detail to the public list after login', () => {
+it('keeps an internal native Docflow detail through login', () => {
   rememberSystemIntentDestination('/docflow/task-1');
-  expect(consumePendingPortalPath()).toBe('/docflow');
+  expect(consumePendingPortalPath()).toBe('/docflow?task=task-1');
   expect(consumePendingPortalPath()).toBe('');
 });
 

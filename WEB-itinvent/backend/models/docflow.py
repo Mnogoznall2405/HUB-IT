@@ -110,6 +110,10 @@ class DocflowTaskDetail(DocflowTaskSummary):
 class DocflowTaskListResponse(BaseModel):
     items: list[DocflowTaskSummary] = Field(default_factory=list)
     returned: int = 0
+    offset: int = Field(default=0, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    has_more: bool = False
+    next_offset: int | None = Field(default=None, ge=0)
     scope: Literal["inbox", "completed", "all"] = "inbox"
     source: Literal["live_1c"] = "live_1c"
     as_of: datetime

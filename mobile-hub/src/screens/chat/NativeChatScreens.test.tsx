@@ -1,9 +1,11 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
-import { Alert, FlatList, Image, Platform } from 'react-native';
+import { Alert, FlatList, Image, Platform, StyleSheet } from 'react-native';
 import * as chatApi from '../../api/chatApi';
 import { chatSocket } from '../../chat/chatSocket';
 import * as nativeFilePicker from '../../files/nativeFilePicker';
+import * as nativeSnapshotCache from '../../cache/nativeSnapshotCache';
+import * as nativeChatInboxSnapshot from '../../chat/nativeChatInboxSnapshot';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
 import { NativeChatThreadScreen } from './NativeChatThreadScreen';
 
@@ -89,6 +91,17 @@ jest.mock('../../auth/AuthContext', () => ({
   }),
 }));
 
+jest.mock('../../cache/nativeSnapshotCache', () => ({
+  readNativeSnapshot: jest.fn(),
+  writeNativeSnapshot: jest.fn(),
+  readNativeEntitySnapshot: jest.fn(),
+  writeNativeEntitySnapshot: jest.fn(),
+}));
+jest.mock('../../chat/nativeChatInboxSnapshot', () => ({
+  readNativeChatInboxSnapshot: jest.fn(),
+  writeNativeChatInboxSnapshot: jest.fn(),
+}));
+
 jest.mock('../../chat/chatSocket', () => ({
   shouldUseChatHttpFallback: (status: string) => ['offline', 'error', 'reconnecting'].includes(status),
   chatSocket: {
@@ -114,6 +127,12 @@ describe('native Chat screens', () => {
     jest.clearAllMocks();
     mockSocketHandlers.clear();
     mockOfflineMode = false;
+    jest.mocked(nativeSnapshotCache.readNativeSnapshot).mockResolvedValue(null);
+    jest.mocked(nativeSnapshotCache.writeNativeSnapshot).mockResolvedValue(true);
+    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockResolvedValue(null);
+    jest.mocked(nativeSnapshotCache.writeNativeEntitySnapshot).mockResolvedValue(undefined);
+    jest.mocked(nativeChatInboxSnapshot.readNativeChatInboxSnapshot).mockResolvedValue(null);
+    jest.mocked(nativeChatInboxSnapshot.writeNativeChatInboxSnapshot).mockResolvedValue(true);
     mockedChatApi.getConversations.mockResolvedValue([{
       id: 'conversation-1',
       kind: 'direct',
@@ -326,6 +345,36 @@ describe('native Chat screens', () => {
     expect(mockedChatApi.listChatFolders).toHaveBeenCalledTimes(1);
   });
 
+  it('persists every loaded conversation page for the next offline start', async () => {
+    mockedChatApi.getConversationPage
+      .mockResolvedValueOnce({
+        items: [{ id: 'conversation-1', kind: 'direct', title: 'First' }],
+        has_more: true,
+        next_cursor: 'cursor-2',
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'conversation-2', kind: 'direct', title: 'Second' }],
+        has_more: false,
+        next_cursor: null,
+      });
+    const view = await render(<NativeChatInboxScreen />);
+    await waitFor(() => expect(view.getByText('First')).toBeTruthy());
+
+    await act(async () => {
+      fireEvent(view.getByTestId('native-chat-inbox-list'), 'onEndReached');
+    });
+
+    await waitFor(() => expect(view.getByText('Second')).toBeTruthy());
+    expect(nativeChatInboxSnapshot.writeNativeChatInboxSnapshot).toHaveBeenCalledWith(1, {
+      items: [
+        expect.objectContaining({ id: 'conversation-1' }),
+        expect.objectContaining({ id: 'conversation-2' }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    });
+  });
+
   it('finishes the initial state offline when no conversation snapshot exists', async () => {
     mockOfflineMode = true;
 
@@ -334,6 +383,49 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(view.getByText('Нет подключения и сохранённых диалогов.')).toBeTruthy());
     expect(mockedChatApi.getConversationPage).not.toHaveBeenCalled();
     expect(mockedChatApi.listChatFolders).not.toHaveBeenCalled();
+  });
+
+  it('opens previously loaded chat messages offline without HTTP or socket work', async () => {
+    mockOfflineMode = true;
+    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockResolvedValue({
+      savedAt: Date.now(),
+      data: {
+        conversation: { id: 'conversation-1', kind: 'direct', title: 'Мария Иванова' },
+        title: 'Мария Иванова',
+        messages: [{
+          id: 'message-offline',
+          conversation_id: 'conversation-1',
+          sender_user_id: 2,
+          body_text: 'Сохранённое сообщение',
+          created_at: '2026-08-30T08:00:00Z',
+        }],
+        hasOlder: false,
+        olderCursor: null,
+        hasNewer: false,
+        newerCursor: null,
+        unreadBoundaryId: null,
+        focusAnchorId: null,
+        pinnedMessageId: null,
+      },
+    });
+
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+
+    await waitFor(() => expect(view.getByText('Сохранённое сообщение')).toBeTruthy());
+    expect(mockedChatApi.getConversation).not.toHaveBeenCalled();
+    expect(mockedChatApi.getMessagesPage).not.toHaveBeenCalled();
+    expect(chatSocket.subscribeConversation).not.toHaveBeenCalled();
+    expect(chatSocket.connect).not.toHaveBeenCalled();
+
+    await fireEvent.press(view.getByLabelText('Поиск в диалоге'));
+    await fireEvent.changeText(view.getByLabelText('Поиск сообщений в диалоге'), 'сохранённое');
+    await fireEvent.press(view.getByLabelText('Найти сообщения'));
+    await waitFor(() => expect(view.getByLabelText('Перейти к сообщению: Сохранённое сообщение')).toBeTruthy());
+    expect(mockedChatApi.searchMessages).not.toHaveBeenCalled();
+
+    await fireEvent.press(view.getByLabelText('Закрыть поиск'));
+    await fireEvent.press(view.getByLabelText('Информация о чате Мария Иванова'));
+    expect(mockedChatApi.getConversation).not.toHaveBeenCalled();
   });
 
   async function openMessageActions(
@@ -433,10 +525,31 @@ describe('native Chat screens', () => {
       const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
       await waitFor(() => expect(view.getByLabelText('Текст сообщения')).toBeTruthy());
       expect(view.getByTestId('native-chat-thread-keyboard')).toBeTruthy();
-      expect(view.getByTestId('native-chat-message-list').props.keyboardDismissMode).toBe('on-drag');
+      const messageList = view.getByTestId('native-chat-message-list');
+      expect(messageList.props.keyboardDismissMode).toBe('on-drag');
+      expect(messageList.props.removeClippedSubviews).toBe(false);
     } finally {
       Object.defineProperty(Platform, 'OS', { configurable: true, get: () => originalOS });
     }
+  });
+
+  it('keeps the empty thread message upright inside the inverted list', async () => {
+    mockedChatApi.getMessagesPage.mockResolvedValueOnce({
+      items: [],
+      has_more: false,
+      has_older: false,
+      has_newer: false,
+      cursor_invalid: false,
+      older_cursor_message_id: null,
+      newer_cursor_message_id: null,
+      viewer_last_read_message_id: null,
+      viewer_last_read_at: null,
+    });
+
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    const emptyState = await waitFor(() => view.getByTestId('native-chat-empty-state'));
+
+    expect(StyleSheet.flatten(emptyState.props.style).transform).toEqual([{ scaleY: -1 }]);
   });
 
   it('loads a thread and sends text through the normalized Chat API', async () => {
@@ -1439,6 +1552,34 @@ describe('native Chat screens', () => {
     expect(view.getByLabelText('Закрыть стикеры')).toBeTruthy();
     await fireEvent.press(view.getByLabelText('Закрыть стикеры'));
     await waitFor(() => expect(view.queryByText('Офис')).toBeNull());
+  });
+
+  it('closes the sticker sheet immediately while the selected sticker is sending', async () => {
+    let completeSend: ((value: Awaited<ReturnType<typeof chatApi.sendSticker>>) => void) | undefined;
+    mockedChatApi.sendSticker.mockImplementationOnce(() => new Promise((resolve) => {
+      completeSend = resolve;
+    }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByLabelText('Открыть эмодзи')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Открыть эмодзи'));
+    await fireEvent.press(view.getByLabelText('Стикеры'));
+    await waitFor(() => expect(view.getByLabelText('Отправить стикер 📎')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Отправить стикер 📎'));
+
+    expect(mockedChatApi.sendSticker).toHaveBeenCalledWith('conversation-1', 'sticker-1', undefined);
+    expect(view.queryByText('Офис')).toBeNull();
+
+    await act(async () => {
+      completeSend?.({
+        id: 'sent-sticker',
+        conversation_id: 'conversation-1',
+        sender_user_id: 1,
+        body_text: '',
+        created_at: '2026-08-23T08:00:00Z',
+        attachments: [],
+      });
+      await Promise.resolve();
+    });
   });
 
   it('renders a sticker image instead of the attachment file name', async () => {

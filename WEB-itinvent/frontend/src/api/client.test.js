@@ -141,6 +141,24 @@ describe('apiClient auth response interceptor', () => {
     return call?.[1];
   };
 
+  it('shares one refresh between desktop recovery, silent refresh and an API 401', async () => {
+    const { authAPI } = await import('./client');
+    const completions = [];
+    apiClientMock.post.mockImplementation(() => new Promise((resolve) => { completions.push(resolve); }));
+    apiClientMock.request.mockResolvedValue({ data: { ok: true } });
+    const desktopRecovery = authAPI.refresh();
+    const silentRefresh = authAPI.refresh();
+    const protectedRequest = getRejectedHandler()({
+      response: { status: 401 }, config: { url: '/auth/me' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const refreshCount = apiClientMock.post.mock.calls.length;
+    completions.forEach((resolve) => resolve({ data: { session_id: 'session-1' } }));
+    expect(refreshCount).toBe(1);
+    await expect(Promise.all([desktopRecovery, silentRefresh, protectedRequest])).resolves.toHaveLength(3);
+    expect(apiClientMock.request).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the cached user when the retried scan service request still returns 401', async () => {
     const onAuthRequired = vi.fn();
     window.addEventListener('auth-required', onAuthRequired);

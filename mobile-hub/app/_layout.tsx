@@ -11,6 +11,7 @@ import { AppLockGate } from '../src/auth/AppLockGate';
 import { createPaperTheme } from '../src/theme/paperTheme';
 import { FluentThemeContext, useFluentTokens } from '../src/theme/fluentTokens';
 import { MobileUpdateGate } from '../src/updates/MobileUpdateGate';
+import { MobileUpdateProvider } from '../src/updates/useMobileUpdater';
 import { DiagnosticsErrorBoundary } from '../src/diagnostics/DiagnosticsErrorBoundary';
 import { ReleaseHealthTracker } from '../src/diagnostics/ReleaseHealthTracker';
 import { IncomingShareGate } from '../src/share/IncomingShareGate';
@@ -21,7 +22,9 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <PreferencesProvider>
-        <ThemedRoot />
+        <MobileUpdateProvider>
+          <ThemedRoot />
+        </MobileUpdateProvider>
       </PreferencesProvider>
     </AuthProvider>
   );

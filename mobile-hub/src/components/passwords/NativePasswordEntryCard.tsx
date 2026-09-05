@@ -1,21 +1,23 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { PasswordVaultEntry } from '../../api/passwordsApi';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
-export function NativePasswordEntryCard({
+export const NativePasswordEntryCard = memo(function NativePasswordEntryCard({
   entry,
   tokens,
   onPress,
 }: {
   entry: PasswordVaultEntry;
   tokens: FluentTokens;
-  onPress: () => void;
+  onPress: (entry: PasswordVaultEntry) => void;
 }) {
+  const handlePress = useCallback(() => onPress(entry), [entry, onPress]);
   return (
     <Pressable
       testID={`native-password-entry-${entry.id}`}
-      onPress={onPress}
+      onPress={handlePress}
       accessibilityRole="button"
       accessibilityLabel={`${entry.login}. Группа ${entry.group || 'не указана'}${entry.is_archived ? '. Архив' : ''}`}
       accessibilityHint="Открывает защищённую карточку записи"
@@ -43,7 +45,7 @@ export function NativePasswordEntryCard({
       <MaterialCommunityIcons name="chevron-right" size={21} color={tokens.iconMuted} />
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: { minHeight: 96, borderWidth: 1, borderRadius: 16, padding: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 11 },
@@ -57,4 +59,3 @@ const styles = StyleSheet.create({
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7 },
   tag: { overflow: 'hidden', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, fontSize: 10, lineHeight: 14, fontWeight: '800' },
 });
-

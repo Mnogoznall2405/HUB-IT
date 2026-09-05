@@ -4,6 +4,10 @@ import { Platform } from 'react-native';
 const mockFetchMobileUpdateFeed = jest.fn();
 const mockDownloadAndInstall = jest.fn();
 const mockOpenUnknownSourcesSettings = jest.fn();
+const mockInspectDownload = jest.fn();
+const mockInstallPrepared = jest.fn();
+const mockPauseDownload = jest.fn();
+const mockClearDownload = jest.fn();
 
 jest.mock('expo-application', () => ({
   applicationId: 'ru.zsgp.hubit.mobile',
@@ -22,10 +26,18 @@ jest.mock('./mobileUpdate', () => {
 jest.mock('./mobileUpdateInstaller', () => ({
   downloadAndInstallMobileUpdate: (...args: unknown[]) => mockDownloadAndInstall(...args),
   openUnknownSourcesSettings: (...args: unknown[]) => mockOpenUnknownSourcesSettings(...args),
+  inspectMobileUpdateDownload: (...args: unknown[]) => mockInspectDownload(...args),
+  installPreparedMobileUpdate: (...args: unknown[]) => mockInstallPrepared(...args),
+  pauseMobileUpdateDownload: (...args: unknown[]) => mockPauseDownload(...args),
+  clearMobileUpdateDownload: (...args: unknown[]) => mockClearDownload(...args),
 }));
 
-import { parseMobileUpdateManifest } from './mobileUpdate';
-import { useMobileUpdater } from './useMobileUpdater';
+import { MobileUpdateError, parseMobileUpdateManifest } from './mobileUpdate';
+import {
+  MOBILE_UPDATE_AUTO_CHECK_INTERVAL_MS,
+  shouldAutoCheckMobileUpdate,
+  useMobileUpdaterController,
+} from './useMobileUpdater';
 
 const feed = parseMobileUpdateManifest({
   schema_version: 1,
@@ -47,11 +59,16 @@ describe('useMobileUpdater', () => {
     mockFetchMobileUpdateFeed.mockReset();
     mockDownloadAndInstall.mockReset();
     mockOpenUnknownSourcesSettings.mockReset();
+    mockInspectDownload.mockReset();
+    mockInstallPrepared.mockReset();
+    mockPauseDownload.mockReset();
+    mockClearDownload.mockReset();
     mockFetchMobileUpdateFeed.mockResolvedValue(feed);
+    mockInspectDownload.mockResolvedValue({ kind: 'empty', bytesWritten: 0, totalBytes: feed.sizeBytes });
     mockDownloadAndInstall.mockImplementation(async (_feed, onProgress) => {
-      onProgress({ phase: 'downloading', progress: 0.5 });
-      onProgress({ phase: 'verifying', progress: 1 });
-      onProgress({ phase: 'installing', progress: 1 });
+      onProgress({ phase: 'downloading', progress: 0.5, bytesWritten: 50, totalBytes: 100 });
+      onProgress({ phase: 'verifying', progress: 1, bytesWritten: 100, totalBytes: 100 });
+      onProgress({ phase: 'installing', progress: 1, bytesWritten: 100, totalBytes: 100 });
     });
   });
 
@@ -60,7 +77,7 @@ describe('useMobileUpdater', () => {
   });
 
   it('moves from feed check to download, integrity verification and Android installer', async () => {
-    const { result } = await renderHook(() => useMobileUpdater());
+    const { result } = await renderHook(() => useMobileUpdaterController());
 
     await act(async () => {
       await result.current.checkForUpdate();
@@ -74,5 +91,70 @@ describe('useMobileUpdater', () => {
     expect(mockDownloadAndInstall).toHaveBeenCalledWith(feed, expect.any(Function));
     expect(result.current.state.status).toBe('installing');
     expect(result.current.state.message).toContain('системном установщике Android');
+  });
+
+  it('throttles automatic foreground checks for thirty minutes', () => {
+    expect(shouldAutoCheckMobileUpdate({
+      now: MOBILE_UPDATE_AUTO_CHECK_INTERVAL_MS - 1,
+      lastCheckedAt: 0,
+      hasUser: true,
+      offline: false,
+      status: 'current',
+    })).toBe(false);
+    expect(shouldAutoCheckMobileUpdate({
+      now: MOBILE_UPDATE_AUTO_CHECK_INTERVAL_MS,
+      lastCheckedAt: 0,
+      hasUser: true,
+      offline: false,
+      status: 'current',
+    })).toBe(true);
+    expect(shouldAutoCheckMobileUpdate({
+      now: MOBILE_UPDATE_AUTO_CHECK_INTERVAL_MS * 2,
+      lastCheckedAt: 0,
+      hasUser: true,
+      offline: true,
+      status: 'current',
+    })).toBe(false);
+  });
+
+  it('keeps a partial APK available for an explicit resume after a network interruption', async () => {
+    const { result } = await renderHook(() => useMobileUpdaterController());
+    await act(async () => {
+      await result.current.checkForUpdate();
+    });
+    mockDownloadAndInstall.mockRejectedValueOnce(new MobileUpdateError('download_paused'));
+    mockInspectDownload.mockResolvedValueOnce({
+      kind: 'paused',
+      bytesWritten: 40,
+      totalBytes: 100,
+    });
+
+    await act(async () => {
+      await result.current.installUpdate();
+    });
+
+    expect(result.current.state.status).toBe('paused');
+    expect(result.current.state.bytesWritten).toBe(40);
+    expect(result.current.state.message).toContain('Продолжить');
+  });
+
+  it('reopens a previously verified APK without downloading it again', async () => {
+    mockInspectDownload.mockResolvedValueOnce({
+      kind: 'ready',
+      bytesWritten: feed.sizeBytes,
+      totalBytes: feed.sizeBytes,
+    });
+    const { result } = await renderHook(() => useMobileUpdaterController());
+    await act(async () => {
+      await result.current.checkForUpdate();
+    });
+    expect(result.current.state.status).toBe('ready');
+
+    await act(async () => {
+      await result.current.installUpdate();
+    });
+
+    expect(mockInstallPrepared).toHaveBeenCalledWith(feed, expect.any(Function));
+    expect(mockDownloadAndInstall).not.toHaveBeenCalled();
   });
 });

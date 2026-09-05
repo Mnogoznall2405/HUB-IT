@@ -57,8 +57,8 @@ vi.mock('../lib/myFilesFolderZip', async () => {
 
 vi.mock('../api/myFiles', () => ({
   myFilesRetentionOptions: [1, 3, 7, 10, 30],
-  MY_FILES_MAX_UPLOAD_BYTES: 1024 * 1024 * 1024,
-  formatMyFilesUploadLimitLabel: () => '1 ГБ на файл, 5 ГБ всего',
+  MY_FILES_MAX_UPLOAD_BYTES: (2 ** 32) - 1,
+  formatMyFilesUploadLimitLabel: () => 'до 4 ГБ на файл, 5 ГБ всего',
   myFilesAPI: {
     listFiles: mockListFiles,
     getQuota: mockGetQuota,
@@ -234,6 +234,21 @@ describe('MyFiles page', () => {
         onUploadProgress: expect.any(Function),
       }));
     });
+  });
+
+  it('allows a file larger than the former one-gigabyte limit', async () => {
+    renderPage();
+    await screen.findByText('Мой диск');
+
+    const file = new File(['small-test-payload'], 'archive.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(file, 'size', { configurable: true, value: (1024 ** 3) + 1 });
+    fireEvent.change(screen.getByTestId('my-files-input'), { target: { files: [file] } });
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить' }));
+
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({ file })));
+    expect(mockNotifyWarning).not.toHaveBeenCalledWith(expect.stringContaining('1 ГБ'), expect.anything());
   });
 
   it('creates and displays a public share link for a ready file', async () => {

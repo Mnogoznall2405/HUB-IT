@@ -101,6 +101,11 @@ export type DocflowTaskDetail = DocflowTaskSummary & {
 export type DocflowTaskList = {
   items: DocflowTaskSummary[];
   returned: number;
+  /** Present on normalized API results; optional keeps existing typed fixtures source-compatible. */
+  offset?: number;
+  total?: number | null;
+  has_more?: boolean;
+  next_offset?: number | null;
   scope: DocflowScope;
   source: 'live_1c';
   as_of: string;
@@ -426,18 +431,29 @@ export async function deleteDocflowCredentials(): Promise<void> {
   await apiClient.delete('/docflow/profile/credentials');
 }
 
-export async function listDocflowTasks(options: { scope?: DocflowScope; q?: string; limit?: number } = {}): Promise<DocflowTaskList> {
+export async function listDocflowTasks(options: { scope?: DocflowScope; q?: string; limit?: number; offset?: number } = {}): Promise<DocflowTaskList> {
   const scope = SCOPES.has(options.scope || 'inbox') ? options.scope || 'inbox' : 'inbox';
   const q = text(options.q, 200);
   const limit = Math.min(100, Math.max(1, Math.trunc(options.limit ?? 50)));
-  const { data } = await apiClient.get('/docflow/tasks', { params: { scope, q, limit }, ...noStore });
+  const offset = Math.min(10_000, Math.max(0, Math.trunc(options.offset ?? 0)));
+  const { data } = await apiClient.get('/docflow/tasks', { params: { scope, q, limit, offset }, ...noStore });
   const row = record(data);
   const items = (Array.isArray(row.items) ? row.items : [])
     .map(normalizeDocflowTaskSummary)
     .filter((item): item is DocflowTaskSummary => Boolean(item));
+  const responseOffset = nonNegative(row.offset ?? offset);
+  const advertisedNextOffset = row.next_offset == null ? null : nonNegative(row.next_offset);
+  const nextOffset = advertisedNextOffset != null && advertisedNextOffset > responseOffset
+    ? advertisedNextOffset
+    : null;
+  const hasMore = row.has_more === true && nextOffset != null;
   return {
     items,
     returned: nonNegative(row.returned ?? items.length),
+    offset: responseOffset,
+    total: row.total == null ? null : nonNegative(row.total),
+    has_more: hasMore,
+    next_offset: hasMore ? nextOffset : null,
     scope,
     source: 'live_1c',
     as_of: text(row.as_of, 128),

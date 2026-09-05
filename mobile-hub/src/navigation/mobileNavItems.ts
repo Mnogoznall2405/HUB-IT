@@ -44,7 +44,7 @@ export const navigationItems: MobileNavItem[] = [
     group: 'main',
   }),
   ...whenNative(NATIVE_MAIL_ENABLED, { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: 'email-outline', permission: 'mail.access', group: 'main' }),
-  ...whenNative(NATIVE_DOCFLOW_ENABLED, { path: '/docflow', label: 'Документооборот', shortLabel: 'Документы', icon: 'file-document-outline', permission: 'docflow.read', group: 'main' }),
+  ...whenNative(NATIVE_DOCFLOW_ENABLED, { path: '/docflow', label: '1С ДО', shortLabel: '1С ДО', icon: 'file-document-outline', permission: 'docflow.read', group: 'main' }),
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: 'card-account-phone-outline', permission: 'address_book.read', group: 'tools' },
   ...whenNative(NATIVE_COMPANY_STRUCTURE_ENABLED, { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: 'file-tree-outline', permission: 'company_structure.read', group: 'tools' }),
   ...whenNative(NATIVE_PASSWORDS_ENABLED, { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: 'key-outline', permission: 'passwords.read', group: 'tools' }),

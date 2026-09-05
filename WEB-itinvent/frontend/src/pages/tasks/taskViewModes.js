@@ -326,7 +326,7 @@ export const buildMobileTaskActionState = (task, options = {}) => {
       key: 'waiting_assignee',
       stepLabel: 'Ожидает исполнителя',
       actionLabel: '',
-      hint: 'Исполнитель ещё не взял задачу в работу.',
+      hint: 'Задача ещё не взята в работу.',
       tone: 'neutral',
       passive: true,
     };
@@ -337,7 +337,7 @@ export const buildMobileTaskActionState = (task, options = {}) => {
       key: 'waiting_work',
       stepLabel: 'В работе у исполнителя',
       actionLabel: '',
-      hint: 'Исполнитель выполняет задачу. Ожидайте сдачи результата.',
+      hint: 'Задача выполняется. Ожидайте сдачи результата.',
       tone: 'neutral',
       passive: true,
     };

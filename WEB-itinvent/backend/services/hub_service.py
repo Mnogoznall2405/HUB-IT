@@ -33,6 +33,7 @@ from backend.services.access_policy_service import (
     VISIBILITY_PRIVATE,
     _assignee_cannot_review_as_non_creator,
     can_create_task_for_department,
+    can_edit_task_canvas,
     can_review_task,
     can_view_task,
     user_can_close_task,
@@ -43,6 +44,7 @@ from backend.services.access_policy_service import (
 )
 from backend.services.authorization_service import (
     PERM_ANNOUNCEMENTS_MODERATE,
+    PERM_TASKS_READ,
     PERM_TASKS_REVIEW,
     authorization_service,
 )
@@ -103,6 +105,61 @@ class _CountingSqliteConnection:
 
     def __exit__(self, exc_type, exc, tb) -> Any:
         return self._conn.__exit__(exc_type, exc, tb)
+
+
+class _AfterCommitConnection:
+    """Connection proxy that runs best-effort side effects only after commit."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self._after_commit: list[Callable[[], None]] = []
+
+    def add_after_commit(self, callback: Callable[[], None]) -> None:
+        if callable(callback):
+            self._after_commit.append(callback)
+
+    def commit(self) -> None:
+        self._conn.commit()
+        callbacks = self._after_commit
+        self._after_commit = []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logger.warning("HUB after-commit callback failed", exc_info=True)
+
+    def rollback(self) -> None:
+        self._after_commit = []
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._after_commit = []
+        self._conn.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> Any:
+        try:
+            result = self._conn.__exit__(exc_type, exc, tb)
+        except BaseException:
+            self._after_commit = []
+            raise
+        if exc_type is None:
+            callbacks = self._after_commit
+            self._after_commit = []
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logger.warning("HUB after-commit callback failed", exc_info=True)
+        else:
+            self._after_commit = []
+        return result
 
 
 def _utc_now_iso() -> str:
@@ -179,6 +236,7 @@ _HUB_REQUIRED_COLUMNS = {
         "due_at",
         "email_deadline_remind_hours",
         "assignee_user_id",
+        "assignee_user_ids",
         "assignee_username",
         "assignee_full_name",
         "controller_user_id",
@@ -231,6 +289,15 @@ _HUB_REQUIRED_COLUMNS = {
         "uploaded_by_user_id",
         "uploaded_by_username",
         "uploaded_at",
+    },
+    "hub_task_canvases": {
+        "task_id",
+        "scene_json",
+        "revision",
+        "updated_by_user_id",
+        "updated_by_username",
+        "created_at",
+        "updated_at",
     },
     "hub_announcement_likes": {
         "announcement_id",
@@ -331,12 +398,14 @@ _HUB_REQUIRED_COLUMNS = {
 _TASK_LIST_SELECT_COLUMNS = (
     "id",
     "title",
+    "SUBSTR(description, 1, 500) AS description_preview",
     "status",
     "due_at",
     "email_deadline_remind_hours",
     "priority",
     "checklist_items",
     "assignee_user_id",
+    "assignee_user_ids",
     "assignee_username",
     "assignee_full_name",
     "controller_user_id",
@@ -363,11 +432,14 @@ _TASK_LIST_SELECT_COLUMNS = (
 _TASK_LIST_PUBLIC_KEYS = frozenset({
     "id",
     "title",
+    "description_preview",
     "status",
     "priority",
     "due_at",
     "email_deadline_remind_hours",
     "assignee_user_id",
+    "assignee_user_ids",
+    "assignees",
     "assignee_username",
     "assignee_full_name",
     "controller_user_id",
@@ -421,6 +493,7 @@ _TASK_LIST_FORBIDDEN_KEYS = frozenset({
 _TASK_VISIBILITY_SELECT_COLUMNS = (
     "id",
     "assignee_user_id",
+    "assignee_user_ids",
     "created_by_user_id",
     "controller_user_id",
     "observer_user_ids",
@@ -431,6 +504,7 @@ _TASK_ANALYTICS_SELECT_COLUMNS = (
     "id",
     "status",
     "assignee_user_id",
+    "assignee_user_ids",
     "assignee_username",
     "assignee_full_name",
     "project_id",
@@ -496,6 +570,18 @@ class HubSchemaConfigurationError(RuntimeError):
     """Raised when production hub schema is not migration-ready."""
 
 
+class TaskCanvasRevisionConflict(RuntimeError):
+    """Raised when a task canvas was changed after the client loaded it."""
+
+    def __init__(self, current_revision: int) -> None:
+        self.current_revision = max(0, int(current_revision))
+        super().__init__("Task canvas revision conflict")
+
+
+class TaskCanvasTooLarge(ValueError):
+    """Raised when the serialized task canvas exceeds its storage limit."""
+
+
 class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     _DEFAULT_TASK_PROJECT_ID = "general-tasks"
     _DEFAULT_TASK_PROJECT_NAME = "Общие задачи"
@@ -531,6 +617,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     _TASK_OBJECTS_TABLE = "hub_task_objects"
     _TASK_REPORTS_TABLE = "hub_task_reports"
     _TASK_ATTACH_TABLE = "hub_task_attachments"
+    _TASK_CANVAS_TABLE = "hub_task_canvases"
     _TASK_ATTACHMENT_PREVIEWS_TABLE = "hub_task_attachment_previews"
     _TASK_COMMENT_READS_TABLE = "hub_task_comment_reads"
     _TASK_COMMENTS_TABLE = "hub_task_comments"
@@ -539,6 +626,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     _NOTIF_READS_TABLE = "hub_notification_reads"
     _TASK_EMAIL_OUTBOX_TABLE = "hub_task_email_outbox"
     _TASK_STATUSES = {"new", "in_progress", "review", "done"}
+    _TASK_CANVAS_MAX_BYTES = 2 * 1024 * 1024
+    _TASK_CANVAS_MAX_ELEMENTS = 2000
     _COMPLETED_AT_SOURCE_VALUES = {"explicit", "reviewed_at", "submitted_at", "updated_at", "backfill"}
     _TASK_EMAIL_EVENT_TYPES = {
         "task.assigned",
@@ -715,13 +804,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             observer_clause,
         ]
         participant_params: list[Any] = [normalized_user_id, normalized_user_id, *observer_params]
-        if delegate_owner_ids:
-            assignee_placeholders = ", ".join(["?"] * (len(delegate_owner_ids) + 1))
-            participant_parts.append(f"assignee_user_id IN ({assignee_placeholders})")
-            participant_params.extend([normalized_user_id, *delegate_owner_ids])
-        else:
-            participant_parts.append("assignee_user_id = ?")
-            participant_params.append(normalized_user_id)
+        assignee_clause, assignee_params = self._assignee_membership_any_clause(
+            [normalized_user_id, *delegate_owner_ids]
+        )
+        participant_parts.append(assignee_clause)
+        participant_params.extend(assignee_params)
         participant_sql = "(" + " OR ".join(participant_parts) + ")"
         department_ids = sorted(
             department_service.get_user_department_ids(
@@ -812,14 +899,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
 
     def _connect(self):
         if self._use_app_db and self._database_url:
-            return SqlAlchemyCompatConnection(
-                get_app_engine(self._database_url),
-                table_names=self._hub_table_names(),
-                schema=self._app_schema,
+            return _AfterCommitConnection(
+                SqlAlchemyCompatConnection(
+                    get_app_engine(self._database_url),
+                    table_names=self._hub_table_names(),
+                    schema=self._app_schema,
+                )
             )
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return _CountingSqliteConnection(conn)
+        return _AfterCommitConnection(_CountingSqliteConnection(conn))
 
     def _hub_table_names(self) -> set[str]:
         return {
@@ -844,6 +933,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             self._TASK_OBJECTS_TABLE,
             self._TASK_REPORTS_TABLE,
             self._TASK_ATTACH_TABLE,
+            self._TASK_CANVAS_TABLE,
             self._TASK_ATTACHMENT_PREVIEWS_TABLE,
             self._TASK_COMMENT_READS_TABLE,
             self._TASK_COMMENTS_TABLE,
@@ -1017,6 +1107,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
 
     def _ensure_task_extended_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._TASKS_TABLE)
+        if "assignee_user_ids" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN assignee_user_ids TEXT NOT NULL DEFAULT '[]'")
         if "project_id" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN project_id TEXT NULL")
         if "object_id" not in columns:
@@ -1035,6 +1127,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN email_deadline_remind_hours INTEGER NULL")
         if "observer_user_ids" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN observer_user_ids TEXT NOT NULL DEFAULT '[]'")
+        conn.execute(
+            f"""
+            UPDATE {self._TASKS_TABLE}
+            SET assignee_user_ids = '[' || assignee_user_id || ']'
+            WHERE assignee_user_id > 0
+              AND (assignee_user_ids IS NULL OR TRIM(assignee_user_ids) IN ('', '[]'))
+            """
+        )
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_project ON {self._TASKS_TABLE}(project_id, updated_at DESC)"
         )
@@ -1580,7 +1680,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 if participant_id != user_id:
                     self._invalidate_unread_counts_cache(participant_id)
             created = conn.execute(f"SELECT * FROM {self._TASK_COMMENTS_TABLE} WHERE id = ?", (comment_id,)).fetchone()
-            return dict(created) if created else None
+            result = dict(created) if created else None
+        self._publish_task_realtime(
+            task={**task, "updated_at": now_iso},
+            operation="comment_added",
+            actor_user_id=user_id,
+        )
+        return result
 
     def mark_task_comments_seen(
         self,
@@ -1694,6 +1800,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     status TEXT NOT NULL DEFAULT 'new',
                     due_at TEXT NULL,
                     assignee_user_id INTEGER NOT NULL,
+                    assignee_user_ids TEXT NOT NULL DEFAULT '[]',
                     assignee_username TEXT NOT NULL DEFAULT '',
                     assignee_full_name TEXT NOT NULL DEFAULT '',
                     controller_user_id INTEGER NOT NULL DEFAULT 0,
@@ -1735,6 +1842,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     uploaded_by_user_id INTEGER NOT NULL,
                     uploaded_by_username TEXT NOT NULL DEFAULT '',
                     uploaded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS {self._TASK_CANVAS_TABLE} (
+                    task_id TEXT PRIMARY KEY,
+                    scene_json TEXT NOT NULL DEFAULT '{{"elements":[],"appState":{{}},"files":{{}}}}',
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_by_user_id INTEGER NULL,
+                    updated_by_username TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS {self._ANN_LIKES_TABLE} (
                     announcement_id TEXT NOT NULL,
@@ -2093,9 +2209,119 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if bool(row.get("is_active", True)) and not is_hub_service_account_login(row.get("username"))
         ]
 
+    def realtime_recipient_user_ids(self, permission: str) -> set[int]:
+        """Active users allowed to receive one permission-scoped invalidation."""
+        normalized_permission = _normalize_text(permission)
+        if not normalized_permission:
+            return set()
+        recipients: set[int] = set()
+        for user in self._get_cached_user_directory("active_users", self._active_users):
+            user_id = self._as_int(user.get("id"))
+            if user_id <= 0:
+                continue
+            if authorization_service.has_permission(
+                user.get("role"),
+                normalized_permission,
+                use_custom_permissions=bool(user.get("use_custom_permissions", False)),
+                custom_permissions=user.get("custom_permissions", []),
+            ):
+                recipients.add(user_id)
+        return recipients
+
+    def publish_permission_realtime(
+        self,
+        *,
+        permission: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        event_id: str = "",
+    ) -> int:
+        from backend.realtime.hub import hub_realtime_publisher
+
+        published = 0
+        for recipient_user_id in self.realtime_recipient_user_ids(permission):
+            if hub_realtime_publisher.publish_user_event(
+                recipient_user_id=recipient_user_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+                event_id=event_id,
+            ):
+                published += 1
+        return published
+
     def _users_by_id(self) -> dict[int, dict[str, Any]]:
         users = self._get_cached_user_directory("active_users", self._active_users)
         return {self._as_int(row.get("id")): row for row in users}
+
+    @staticmethod
+    def _user_can_read_tasks(user: dict[str, Any]) -> bool:
+        return authorization_service.has_permission(
+            user.get("role"),
+            PERM_TASKS_READ,
+            use_custom_permissions=bool(user.get("use_custom_permissions", False)),
+            custom_permissions=user.get("custom_permissions", []),
+        )
+
+    def _task_realtime_recipient_user_ids(self, task: dict[str, Any] | None) -> set[int]:
+        if not isinstance(task, dict) or not _normalize_text(task.get("id")):
+            return set()
+        participant_user_ids = self._task_viewer_user_ids(task, include_delegates=True)
+        recipients: set[int] = set()
+        for user in self._get_cached_user_directory("active_users", self._active_users):
+            user_id = self._as_int(user.get("id"))
+            if user_id <= 0 or not self._user_can_read_tasks(user):
+                continue
+            if can_view_task(user, task, participant_user_ids=participant_user_ids):
+                recipients.add(user_id)
+        return recipients
+
+    def _publish_task_realtime(
+        self,
+        *,
+        task: dict[str, Any] | None,
+        operation: str,
+        previous_task: dict[str, Any] | None = None,
+        actor_user_id: int = 0,
+    ) -> int:
+        task_payload = task if isinstance(task, dict) else previous_task
+        task_id = _normalize_text((task_payload or {}).get("id"))
+        if not task_id:
+            return 0
+        recipients = self._task_realtime_recipient_user_ids(task)
+        recipients.update(self._task_realtime_recipient_user_ids(previous_task))
+        if not recipients:
+            return 0
+
+        from backend.realtime.hub import (
+            HUB_TASK_CREATED_EVENT,
+            HUB_TASK_DELETED_EVENT,
+            HUB_TASK_UPDATED_EVENT,
+            hub_realtime_publisher,
+        )
+
+        normalized_operation = _normalize_text(operation, "updated").lower()
+        event_type = {
+            "created": HUB_TASK_CREATED_EVENT,
+            "deleted": HUB_TASK_DELETED_EVENT,
+        }.get(normalized_operation, HUB_TASK_UPDATED_EVENT)
+        event_id = str(uuid.uuid4())
+        payload = {
+            "task_id": task_id,
+            "operation": normalized_operation,
+            "updated_at": _normalize_text((task_payload or {}).get("updated_at")),
+            "status": _normalize_text((task_payload or {}).get("status")),
+            "actor_user_id": self._as_int(actor_user_id),
+        }
+        return sum(
+            1
+            for recipient_user_id in recipients
+            if hub_realtime_publisher.publish_user_event(
+                recipient_user_id=recipient_user_id,
+                event_type=event_type,
+                event_id=event_id,
+                payload=payload,
+            )
+        )
 
     def _uses_postgresql(self) -> bool:
         if not self._use_app_db or not self._database_url:
@@ -2149,17 +2375,33 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 normalized_project_id = object_project_id
         return normalized_project_id, normalized_object_id
 
-    def _task_user_can_view(self, task: dict[str, Any], *, user_id: int, is_admin: bool = False) -> bool:
+    def _task_user_can_view(
+        self,
+        task: dict[str, Any],
+        *,
+        user_id: int,
+        is_admin: bool = False,
+        viewer: Optional[dict[str, Any]] = None,
+        delegate_user_ids_by_assignee: Optional[dict[int, list[int]]] = None,
+    ) -> bool:
         if is_admin:
             return True
         normalized_user_id = self._as_int(user_id)
         if normalized_user_id <= 0:
             return False
-        user = user_service.get_by_id(normalized_user_id) or {"id": normalized_user_id, "role": "viewer"}
+        user = viewer or user_service.get_by_id(normalized_user_id) or {"id": normalized_user_id, "role": "viewer"}
+        if delegate_user_ids_by_assignee is None:
+            participant_user_ids = self._task_viewer_user_ids(task, include_delegates=True)
+        else:
+            participant_user_ids = self._task_viewer_user_ids(task, include_delegates=False)
+            for assignee_user_id in self._task_assignee_user_ids(task):
+                if assignee_user_id not in delegate_user_ids_by_assignee:
+                    delegate_user_ids_by_assignee[assignee_user_id] = self._task_delegate_user_ids(assignee_user_id)
+                participant_user_ids.update(delegate_user_ids_by_assignee[assignee_user_id])
         return can_view_task(
             user,
             task,
-            participant_user_ids=self._task_viewer_user_ids(task, include_delegates=True),
+            participant_user_ids=participant_user_ids,
         )
 
     def _task_access_or_raise(
@@ -2442,6 +2684,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         projects_by_id: dict[str, dict[str, Any]],
         objects_by_id: dict[str, dict[str, Any]],
         departments_by_id: dict[str, Optional[dict[str, Any]]],
+        users_by_id: dict[int, dict[str, Any]],
     ) -> dict[str, Any]:
         raw = dict(task_row)
         task_id = _normalize_text(raw.get("id"))
@@ -2457,11 +2700,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         item = {
             "id": task_id,
             "title": _normalize_text(raw.get("title")),
+            "description_preview": _normalize_text(raw.get("description_preview")),
             "status": _normalize_text(raw.get("status")),
             "priority": _normalize_text(raw.get("priority"), "normal"),
             "due_at": _normalize_text(raw.get("due_at")) or None,
             "email_deadline_remind_hours": raw.get("email_deadline_remind_hours"),
             "assignee_user_id": self._as_int(raw.get("assignee_user_id")),
+            "assignee_user_ids": self._normalize_assignee_user_ids(
+                raw.get("assignee_user_ids"),
+                fallback_assignee_user_id=raw.get("assignee_user_id"),
+            ),
             "assignee_username": _normalize_text(raw.get("assignee_username")),
             "assignee_full_name": _normalize_text(raw.get("assignee_full_name")),
             "controller_user_id": self._as_int(raw.get("controller_user_id")),
@@ -2509,7 +2757,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         # Stable schema: never emit thick/detail-only keys from list DTO.
         for forbidden in _TASK_LIST_FORBIDDEN_KEYS:
             item.pop(forbidden, None)
-        return item
+        return self._enrich_task_assignee_fields(item, users_by_id=users_by_id)
 
     def _get_task_comment_summary(
         self,
@@ -2619,6 +2867,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             and self._parse_iso_datetime(item.get("due_at")) is None
         )
         item["observer_user_ids"] = self._normalize_observer_user_ids(item.get("observer_user_ids"))
+        self._enrich_task_assignee_fields(item)
         return self._enrich_task_observer_fields(item)
 
     def _announcement_users_for_roles(self, roles: list[str]) -> list[dict[str, Any]]:
@@ -3350,6 +3599,17 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             _normalize_text(entity_id),
             now_iso,
         )
+        notification = {
+            "id": notification_id,
+            "recipient_user_id": int(recipient_user_id or 0),
+            "event_type": row[2],
+            "title": row[3],
+            "body": row[4],
+            "entity_type": row[5],
+            "entity_id": row[6],
+            "created_at": now_iso,
+            "unread": 1,
+        }
         if conn is None:
             with self._lock, self._connect() as local_conn:
                 local_conn.execute(
@@ -3360,6 +3620,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     """,
                     row,
                 )
+                self._register_notification_realtime_after_commit(local_conn, notification)
                 local_conn.commit()
         else:
             conn.execute(
@@ -3370,6 +3631,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 """,
                 row,
             )
+            self._register_notification_realtime_after_commit(conn, notification)
         self._invalidate_unread_counts_cache(int(recipient_user_id))
         normalized_entity_type = _normalize_text(entity_type).lower()
         if int(recipient_user_id or 0) > 0 and normalized_entity_type != "chat":
@@ -3412,6 +3674,20 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                         )
         return notification_id
 
+    @staticmethod
+    def _register_notification_realtime_after_commit(conn: Any, notification: dict[str, Any]) -> bool:
+        add_after_commit = getattr(conn, "add_after_commit", None)
+        if not callable(add_after_commit):
+            return False
+
+        def _publish() -> None:
+            from backend.realtime.hub import hub_realtime_publisher
+
+            hub_realtime_publisher.publish_notification(dict(notification))
+
+        add_after_commit(_publish)
+        return True
+
     def create_notifications_batch(
         self,
         items: list[dict[str, Any]],
@@ -3421,6 +3697,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     ) -> int:
         """Insert many hub notifications in one round-trip. Used by chat fan-out."""
         rows: list[tuple[Any, ...]] = []
+        notifications: list[dict[str, Any]] = []
         recipient_ids: list[int] = []
         now_iso = _utc_now_iso()
         for item in items:
@@ -3431,18 +3708,28 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 normalized_recipient = 0
             if normalized_recipient <= 0:
                 continue
-            rows.append(
-                (
-                    _normalize_text(item.get("id")) or str(uuid.uuid4()),
-                    normalized_recipient,
-                    _normalize_text(item.get("event_type")),
-                    _normalize_text(item.get("title")),
-                    _normalize_text(item.get("body")),
-                    _normalize_text(item.get("entity_type")),
-                    _normalize_text(item.get("entity_id")),
-                    now_iso,
-                )
+            row = (
+                _normalize_text(item.get("id")) or str(uuid.uuid4()),
+                normalized_recipient,
+                _normalize_text(item.get("event_type")),
+                _normalize_text(item.get("title")),
+                _normalize_text(item.get("body")),
+                _normalize_text(item.get("entity_type")),
+                _normalize_text(item.get("entity_id")),
+                now_iso,
             )
+            rows.append(row)
+            notifications.append({
+                "id": row[0],
+                "recipient_user_id": normalized_recipient,
+                "event_type": row[2],
+                "title": row[3],
+                "body": row[4],
+                "entity_type": row[5],
+                "entity_id": row[6],
+                "created_at": now_iso,
+                "unread": 1,
+            })
             recipient_ids.append(normalized_recipient)
         if not rows:
             return 0
@@ -3459,9 +3746,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if conn is None:
             with self._db_conn(write=True) as local_conn:
                 local_conn.execute(sql, flat_params)
+                for notification in notifications:
+                    self._register_notification_realtime_after_commit(local_conn, notification)
                 local_conn.commit()
         else:
             conn.execute(sql, flat_params)
+            for notification in notifications:
+                self._register_notification_realtime_after_commit(conn, notification)
             if commit_external:
                 commit = getattr(conn, "commit", None)
                 if callable(commit):
@@ -5936,7 +6227,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             task = dict(row)
-            is_assignee = self._as_int(task.get("assignee_user_id")) == user_id
+            is_assignee = user_id in self._task_assignee_user_ids(task)
             is_creator = self._as_int(task.get("created_by_user_id")) == user_id
             is_controller = self._as_int(task.get("controller_user_id")) == user_id
             # Compatibility fallback for legacy tasks that might not have controller assigned yet.
@@ -5978,7 +6269,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 """,
                 (attachment_id,),
             ).fetchone()
-            return self._attachment_row_to_dict(created_row) if created_row else None
+            result = self._attachment_row_to_dict(created_row) if created_row else None
+        self._publish_task_realtime(
+            task={**task, "updated_at": now_iso},
+            operation="attachment_added",
+            actor_user_id=user_id,
+        )
+        return result
 
     def add_task_attachment_from_path(
         self,
@@ -6008,9 +6305,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         username = _normalize_text(uploaded_by_username, "system")
         now_iso = _utc_now_iso()
         with self._lock, self._connect() as conn:
-            row = conn.execute(f"SELECT id FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_task_id,)).fetchone()
+            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_task_id,)).fetchone()
             if row is None:
                 return None
+            task = dict(row)
             attachment_id = str(uuid.uuid4())
             stored_name, rel_path, file_size = self._store_attachment_file(
                 root=self.task_attachments_root,
@@ -6045,7 +6343,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 """,
                 (attachment_id,),
             ).fetchone()
-            return self._attachment_row_to_dict(created_row) if created_row else None
+            result = self._attachment_row_to_dict(created_row) if created_row else None
+        self._publish_task_realtime(
+            task={**task, "updated_at": now_iso},
+            operation="attachment_added",
+            actor_user_id=user_id,
+        )
+        return result
 
     def get_task_attachment(self, *, task_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
         normalized_task_id = _normalize_text(task_id)
@@ -6077,6 +6381,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         assignee_user_id: int,
         controller_user_id: int,
         due_at: Optional[str],
+        assignee_user_ids: Optional[list[int]] = None,
         project_id: Optional[str] = None,
         object_id: Optional[str] = None,
         protocol_date: Optional[str] = None,
@@ -6095,9 +6400,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         title_text = _normalize_text(title)
         if len(title_text) < 3:
             raise ValueError("Task title must contain at least 3 characters")
-        assignee = user_service.get_by_id(int(assignee_user_id))
-        if not assignee or not bool(assignee.get("is_active", True)):
-            raise ValueError("Assignee user is not available")
+        assignees = self._resolve_active_task_assignees(
+            assignee_user_ids,
+            fallback_assignee_user_id=assignee_user_id,
+        )
+        assignee = assignees[0]
         normalized_department_id = _normalize_text(department_id)
         if normalized_department_id and not department_service.get_department(normalized_department_id):
             raise ValueError("Department is not available")
@@ -6109,12 +6416,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 raise ValueError("Controller user is not available")
             if not (self._user_can_review_tasks(controller) or (normalized_department_id and user_is_department_manager(controller, normalized_department_id))):
                 raise ValueError("Controller must have tasks.review permission or be department manager")
-        if normalized_department_id and not can_create_task_for_department(
-            actor,
-            department_id=normalized_department_id,
-            assignee=assignee,
-        ):
-            raise PermissionError("Task cannot be assigned in the selected department")
+        if normalized_department_id:
+            for target_assignee in assignees:
+                if not can_create_task_for_department(
+                    actor,
+                    department_id=normalized_department_id,
+                    assignee=target_assignee,
+                ):
+                    raise PermissionError("Task cannot be assigned in the selected department")
 
         now_iso = _utc_now_iso()
         task_id = str(uuid.uuid4())
@@ -6130,12 +6439,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         stages["validate_ms"] = self._elapsed_ms(validate_started)
 
         assignee_id = self._as_int(assignee.get("id"))
+        normalized_assignee_ids = [self._as_int(item.get("id")) for item in assignees]
         actor_id = self._as_int(actor.get("id"))
         creator_id = actor_id
         normalized_observer_ids = self._normalize_observer_user_ids(
             observer_user_ids,
             creator_user_id=creator_id,
             assignee_user_id=assignee_id,
+            assignee_user_ids=normalized_assignee_ids,
             controller_user_id=controller_id,
         )
         db_started = time.perf_counter()
@@ -6155,15 +6466,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if normalized_due_at and email_deadline_remind_hours is not None:
                 normalized_email_deadline_remind_hours = _normalize_email_deadline_remind_hours(email_deadline_remind_hours)
             serialized_observer_user_ids = self._serialize_json_list(normalized_observer_ids)
+            serialized_assignee_user_ids = self._serialize_json_list(normalized_assignee_ids)
             conn.execute(
                 f"""
                 INSERT INTO {self._TASKS_TABLE}
                 (id, title, description, status, due_at, email_deadline_remind_hours, priority, checklist_items, project_id, object_id, protocol_date, completed_at, completed_at_source,
                  department_id, visibility_scope, observer_user_ids,
-                 assignee_user_id, assignee_username, assignee_full_name,
+                 assignee_user_id, assignee_user_ids, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
                  created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -6183,6 +6495,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     visibility_scope_text,
                     serialized_observer_user_ids,
                     assignee_id,
+                    serialized_assignee_user_ids,
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
                     controller_id if controller else 0,
@@ -6206,7 +6519,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.commit()
         stages["db_write_ms"] = self._elapsed_ms(db_started)
 
-        assignee_recipients = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
+        assignee_recipients = set(normalized_assignee_ids)
+        for target_assignee_id in normalized_assignee_ids:
+            assignee_recipients.update(self._task_delegate_user_ids(target_assignee_id))
         recipient_count = len(assignee_recipients) + (1 if controller_id > 0 else 0) + len(normalized_observer_ids)
         notify_started = time.perf_counter()
         with self._hub_push_deferred() as push_stats:
@@ -6224,7 +6539,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     self._create_task_notifications(
                         conn,
                         recipient_user_ids={controller_id},
-                        skip_user_ids={actor_id, assignee_id},
+                        skip_user_ids={actor_id, *normalized_assignee_ids},
                         event_type="task.controller_assigned",
                         title="Вы назначены контролером задачи",
                         body=title_text,
@@ -6234,7 +6549,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     self._create_task_notifications(
                         conn,
                         recipient_user_ids=set(normalized_observer_ids),
-                        skip_user_ids={actor_id, assignee_id, controller_id},
+                        skip_user_ids={actor_id, *normalized_assignee_ids, controller_id},
                         event_type="task.observer_added",
                         title="Вас добавили наблюдателем задачи",
                         body=title_text,
@@ -6255,6 +6570,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             task_id=task_id,
             recipients=recipient_count,
             push_jobs=int(push_stats.get("push_jobs") or 0),
+        )
+        self._publish_task_realtime(
+            task=result,
+            operation="created",
+            actor_user_id=actor_id,
         )
         return result
 
@@ -6283,6 +6603,22 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 raise PermissionError("Only task creator or admin can edit task")
             updates: list[str] = []
             params: list[Any] = []
+            assignees_changed = "assignee_user_ids" in payload or "assignee_user_id" in payload
+            next_assignees: list[dict[str, Any]] = []
+            if assignees_changed:
+                if "assignee_user_ids" in payload:
+                    next_assignees = self._resolve_active_task_assignees(payload.get("assignee_user_ids"))
+                else:
+                    next_assignees = self._resolve_active_task_assignees(
+                        None,
+                        fallback_assignee_user_id=payload.get("assignee_user_id"),
+                    )
+                effective_assignee_ids = [self._as_int(item.get("id")) for item in next_assignees]
+            else:
+                effective_assignee_ids = self._normalize_assignee_user_ids(
+                    task.get("assignee_user_ids"),
+                    fallback_assignee_user_id=task.get("assignee_user_id"),
+                )
             effective_project_id = _normalize_text(payload.get("project_id")) if "project_id" in payload else _normalize_text(task.get("project_id"))
             effective_object_id = _normalize_text(payload.get("object_id")) if "object_id" in payload else _normalize_text(task.get("object_id"))
             if "project_id" in payload or "object_id" in payload:
@@ -6301,8 +6637,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 next_department_id = _normalize_text(payload.get("department_id")) or None
                 if next_department_id and not department_service.get_department(next_department_id):
                     raise ValueError("Department is not available")
-                if next_department_id and not (is_admin or can_create_task_for_department(actor, department_id=next_department_id, assignee=user_service.get_by_id(self._as_int(task.get("assignee_user_id"))) or {})):
-                    raise PermissionError("Task cannot be moved to the selected department")
+                if next_department_id and not is_admin:
+                    for effective_assignee_id in effective_assignee_ids:
+                        effective_assignee = user_service.get_by_id(effective_assignee_id) or {}
+                        if not can_create_task_for_department(
+                            actor,
+                            department_id=next_department_id,
+                            assignee=effective_assignee,
+                        ):
+                            raise PermissionError("Task cannot be moved to the selected department")
                 updates.append("department_id = ?")
                 params.append(next_department_id)
             if "visibility_scope" in payload:
@@ -6314,12 +6657,30 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if "checklist_items" in payload:
                 updates.append("checklist_items = ?")
                 params.append(self._serialize_checklist_items(payload.get("checklist_items")))
+            if assignees_changed:
+                effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))
+                if effective_department_id and not is_admin:
+                    for assignee in next_assignees:
+                        if not can_create_task_for_department(
+                            actor,
+                            department_id=effective_department_id,
+                            assignee=assignee,
+                        ):
+                            raise PermissionError("Task cannot be assigned in the selected department")
+                primary_assignee = next_assignees[0]
+                updates.extend([
+                    "assignee_user_id = ?",
+                    "assignee_user_ids = ?",
+                    "assignee_username = ?",
+                    "assignee_full_name = ?",
+                ])
+                params.extend([
+                    self._as_int(primary_assignee.get("id")),
+                    self._serialize_json_list(effective_assignee_ids),
+                    _normalize_text(primary_assignee.get("username")),
+                    _normalize_text(primary_assignee.get("full_name")) or _normalize_text(primary_assignee.get("username")),
+                ])
             if "observer_user_ids" in payload:
-                effective_assignee_id = (
-                    self._as_int(payload.get("assignee_user_id"))
-                    if "assignee_user_id" in payload
-                    else self._as_int(task.get("assignee_user_id"))
-                )
                 effective_controller_id = (
                     self._as_int(payload.get("controller_user_id"))
                     if "controller_user_id" in payload
@@ -6330,8 +6691,24 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     self._serialize_observer_user_ids(
                         payload.get("observer_user_ids"),
                         creator_user_id=self._as_int(task.get("created_by_user_id")),
-                        assignee_user_id=effective_assignee_id,
+                        assignee_user_id=effective_assignee_ids[0],
+                        assignee_user_ids=effective_assignee_ids,
                         controller_user_id=effective_controller_id,
+                    )
+                )
+            elif assignees_changed:
+                updates.append("observer_user_ids = ?")
+                params.append(
+                    self._serialize_observer_user_ids(
+                        task.get("observer_user_ids"),
+                        creator_user_id=self._as_int(task.get("created_by_user_id")),
+                        assignee_user_id=effective_assignee_ids[0],
+                        assignee_user_ids=effective_assignee_ids,
+                        controller_user_id=(
+                            self._as_int(payload.get("controller_user_id"))
+                            if "controller_user_id" in payload
+                            else self._as_int(task.get("controller_user_id"))
+                        ),
                     )
                 )
             if "email_deadline_remind_hours" in payload:
@@ -6346,25 +6723,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 else:
                     updates.append("email_deadline_remind_hours = ?")
                     params.append(None)
-            for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id", "protocol_date"):
+            for key in ("title", "description", "due_at", "priority", "controller_user_id", "protocol_date"):
                 if key not in payload:
                     continue
-                if key == "assignee_user_id":
-                    assignee = user_service.get_by_id(int(payload.get(key)))
-                    if not assignee or not bool(assignee.get("is_active", True)):
-                        raise ValueError("Assignee user is not available")
-                    effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))
-                    if effective_department_id and not (is_admin or can_create_task_for_department(actor, department_id=effective_department_id, assignee=assignee)):
-                        raise PermissionError("Task cannot be assigned in the selected department")
-                    updates.extend(["assignee_user_id = ?", "assignee_username = ?", "assignee_full_name = ?"])
-                    params.extend(
-                        [
-                            self._as_int(assignee.get("id")),
-                            _normalize_text(assignee.get("username")),
-                            _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
-                        ]
-                    )
-                elif key == "controller_user_id":
+                if key == "controller_user_id":
                     controller_id = self._as_int(payload.get(key))
                     if controller_id <= 0:
                         updates.extend(["controller_user_id = ?", "controller_username = ?", "controller_full_name = ?"])
@@ -6414,7 +6776,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             updates.append("updated_at = ?")
             params.append(_utc_now_iso())
             params.append(normalized_id)
-            previous_assignee_id = self._as_int(task.get("assignee_user_id"))
+            previous_assignee_ids = self._task_assignee_user_ids(task)
             previous_controller_id = self._as_int(task.get("controller_user_id"))
             previous_due_at = _normalize_text(task.get("due_at")) or None
             previous_observer_ids = set(self._task_observer_user_ids(task))
@@ -6423,13 +6785,17 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             updated = dict(row)
-            next_assignee_id = self._as_int(updated.get("assignee_user_id"))
+            next_assignee_ids = self._task_assignee_user_ids(updated)
             next_controller_id = self._as_int(updated.get("controller_user_id"))
             title_text = _normalize_text(updated.get("title"))
-            if next_assignee_id > 0 and next_assignee_id != previous_assignee_id:
+            added_assignee_ids = next_assignee_ids - previous_assignee_ids
+            if added_assignee_ids:
+                added_assignee_recipients = set(added_assignee_ids)
+                for added_assignee_id in added_assignee_ids:
+                    added_assignee_recipients.update(self._task_delegate_user_ids(added_assignee_id))
                 self._create_task_notifications(
                     conn,
-                    recipient_user_ids={next_assignee_id, *self._task_delegate_user_ids(next_assignee_id)},
+                    recipient_user_ids=added_assignee_recipients,
                     skip_user_ids={actor_id},
                     event_type="task.assigned",
                     title="Вам назначена задача",
@@ -6440,17 +6806,20 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 self._create_task_notifications(
                     conn,
                     recipient_user_ids={next_controller_id},
-                    skip_user_ids={actor_id, next_assignee_id},
+                    skip_user_ids={actor_id, *next_assignee_ids},
                     event_type="task.controller_assigned",
                     title="Вы назначены контролером задачи",
                     body=title_text,
                     task_id=normalized_id,
                 )
             next_due_at = _normalize_text(updated.get("due_at")) or None
-            if next_due_at != previous_due_at and next_assignee_id > 0:
+            if next_due_at != previous_due_at and next_assignee_ids:
+                deadline_recipients = set(next_assignee_ids)
+                for deadline_assignee_id in next_assignee_ids:
+                    deadline_recipients.update(self._task_delegate_user_ids(deadline_assignee_id))
                 self._create_task_notifications(
                     conn,
-                    recipient_user_ids={next_assignee_id, *self._task_delegate_user_ids(next_assignee_id)},
+                    recipient_user_ids=deadline_recipients,
                     skip_user_ids={actor_id},
                     event_type="task.deadline_changed",
                     title="Изменен срок задачи",
@@ -6463,7 +6832,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 self._create_task_notifications(
                     conn,
                     recipient_user_ids=added_observer_ids,
-                    skip_user_ids={actor_id, next_assignee_id, next_controller_id},
+                    skip_user_ids={actor_id, *next_assignee_ids, next_controller_id},
                     event_type="task.observer_added",
                     title="Вас добавили наблюдателем задачи",
                     body=title_text,
@@ -6474,10 +6843,23 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         try:
             from backend.chat.task_discussion import sync_task_discussion_members
 
-            if any(key in (payload or {}) for key in ("assignee_user_id", "controller_user_id", "title", "observer_user_ids")):
+            if any(key in (payload or {}) for key in ("assignee_user_id", "assignee_user_ids", "controller_user_id", "title", "observer_user_ids")):
                 sync_task_discussion_members(task_id=normalized_id, task=updated_task)
         except Exception:
             pass
+        if assignees_changed:
+            membership_cache_user_ids = {actor_id, *previous_assignee_ids, *next_assignee_ids}
+            for assignee_id in previous_assignee_ids | next_assignee_ids:
+                membership_cache_user_ids.update(self._task_delegate_user_ids(assignee_id))
+            for cache_user_id in membership_cache_user_ids:
+                if cache_user_id > 0:
+                    self._invalidate_dashboard_cache(cache_user_id)
+        self._publish_task_realtime(
+            task=updated_task,
+            previous_task=task,
+            operation="updated",
+            actor_user_id=actor_id,
+        )
         return updated_task
 
     def task_exists(self, task_id: str) -> bool:
@@ -6530,6 +6912,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return {}
         placeholders = ", ".join(["?"] * len(normalized_ids))
         result: dict[str, dict[str, Any]] = {}
+        viewer = None
+        if not is_admin:
+            normalized_user_id = self._as_int(user_id)
+            viewer = user_service.get_by_id(normalized_user_id) or {"id": normalized_user_id, "role": "viewer"}
+        delegate_user_ids_by_assignee: dict[int, list[int]] = {}
         with self._db_conn(write=False) as conn:
             rows = conn.execute(
                 f"SELECT * FROM {self._TASKS_TABLE} WHERE id IN ({placeholders})",
@@ -6540,7 +6927,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 task_id = _normalize_text(task.get("id"))
                 if not task_id:
                     continue
-                if not self._task_user_can_view(task, user_id=int(user_id), is_admin=bool(is_admin)):
+                if not self._task_user_can_view(
+                    task,
+                    user_id=int(user_id),
+                    is_admin=bool(is_admin),
+                    viewer=viewer,
+                    delegate_user_ids_by_assignee=delegate_user_ids_by_assignee,
+                ):
                     continue
                 result[task_id] = self._task_with_latest_report(conn, task, viewer_user_id=int(user_id))
         return result
@@ -6559,6 +6952,152 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=int(user_id), is_admin=is_admin)
             return self._task_with_latest_report(conn, task, viewer_user_id=int(user_id))
 
+    @staticmethod
+    def _empty_task_canvas_scene() -> dict[str, Any]:
+        return {"elements": [], "appState": {}, "files": {}}
+
+    def _task_canvas_can_edit(self, *, actor: dict[str, Any], task: dict[str, Any]) -> bool:
+        return can_edit_task_canvas(
+            actor,
+            task,
+            participant_user_ids=self._task_participant_user_ids(task, include_delegates=True),
+            observer_user_ids=self._task_observer_user_ids(task),
+        )
+
+    def _task_canvas_payload(
+        self,
+        *,
+        task_id: str,
+        row: Any,
+        can_edit: bool,
+    ) -> dict[str, Any]:
+        scene = self._empty_task_canvas_scene()
+        if row is not None:
+            try:
+                parsed = json.loads(str(row["scene_json"] or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                scene = {
+                    "elements": parsed.get("elements") if isinstance(parsed.get("elements"), list) else [],
+                    "appState": parsed.get("appState") if isinstance(parsed.get("appState"), dict) else {},
+                    "files": parsed.get("files") if isinstance(parsed.get("files"), dict) else {},
+                }
+        return {
+            "task_id": task_id,
+            "revision": self._as_int(row["revision"] if row is not None else 0),
+            "scene": scene,
+            "can_edit": bool(can_edit),
+            "max_scene_bytes": self._TASK_CANVAS_MAX_BYTES,
+            "updated_by_user_id": self._as_int(row["updated_by_user_id"], 0) or None if row is not None else None,
+            "updated_by_username": _normalize_text(row["updated_by_username"]) if row is not None else "",
+            "updated_at": _normalize_text(row["updated_at"]) or None if row is not None else None,
+        }
+
+    def get_task_canvas(self, *, task_id: str, actor: dict[str, Any]) -> dict[str, Any]:
+        normalized_id = _normalize_text(task_id)
+        actor_id = self._as_int((actor or {}).get("id"))
+        if not normalized_id:
+            raise LookupError("Task not found")
+        with self._db_conn(write=False) as conn:
+            task = self._task_access_or_raise(
+                conn,
+                task_id=normalized_id,
+                user_id=actor_id,
+                is_admin=str((actor or {}).get("role") or "").strip().lower() == "admin",
+            )
+            row = conn.execute(
+                f"SELECT * FROM {self._TASK_CANVAS_TABLE} WHERE task_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            return self._task_canvas_payload(
+                task_id=normalized_id,
+                row=row,
+                can_edit=self._task_canvas_can_edit(actor=actor, task=task),
+            )
+
+    def save_task_canvas(
+        self,
+        *,
+        task_id: str,
+        scene: dict[str, Any],
+        expected_revision: int,
+        actor: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_id = _normalize_text(task_id)
+        actor_id = self._as_int((actor or {}).get("id"))
+        expected = self._as_int(expected_revision, -1)
+        if not normalized_id:
+            raise LookupError("Task not found")
+        if expected < 0:
+            raise ValueError("Canvas revision must be non-negative")
+
+        normalized_scene = {
+            "elements": list((scene or {}).get("elements") or []),
+            "appState": dict((scene or {}).get("appState") or {}),
+            "files": dict((scene or {}).get("files") or {}),
+        }
+        if len(normalized_scene["elements"]) > self._TASK_CANVAS_MAX_ELEMENTS:
+            raise TaskCanvasTooLarge(f"Task canvas has more than {self._TASK_CANVAS_MAX_ELEMENTS} elements")
+        scene_json = json.dumps(normalized_scene, ensure_ascii=False, separators=(",", ":"))
+        if len(scene_json.encode("utf-8")) > self._TASK_CANVAS_MAX_BYTES:
+            raise TaskCanvasTooLarge("Task canvas is larger than 2 MB")
+
+        with self._db_conn(write=True) as conn:
+            task = self._task_access_or_raise(
+                conn,
+                task_id=normalized_id,
+                user_id=actor_id,
+                is_admin=str((actor or {}).get("role") or "").strip().lower() == "admin",
+            )
+            if not self._task_canvas_can_edit(actor=actor, task=task):
+                raise PermissionError("Task canvas is read-only for current user")
+
+            existing = conn.execute(
+                f"SELECT revision FROM {self._TASK_CANVAS_TABLE} WHERE task_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            current_revision = self._as_int(existing["revision"] if existing is not None else 0)
+            if current_revision != expected:
+                raise TaskCanvasRevisionConflict(current_revision)
+
+            next_revision = current_revision + 1
+            now = _utc_now_iso()
+            username = _normalize_text((actor or {}).get("username"))
+            if existing is None:
+                result = conn.execute(
+                    f"""
+                    INSERT INTO {self._TASK_CANVAS_TABLE}(
+                      task_id, scene_json, revision, updated_by_user_id,
+                      updated_by_username, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(task_id) DO NOTHING
+                    """,
+                    (normalized_id, scene_json, next_revision, actor_id or None, username, now, now),
+                )
+            else:
+                result = conn.execute(
+                    f"""
+                    UPDATE {self._TASK_CANVAS_TABLE}
+                    SET scene_json = ?, revision = ?, updated_by_user_id = ?,
+                        updated_by_username = ?, updated_at = ?
+                    WHERE task_id = ? AND revision = ?
+                    """,
+                    (scene_json, next_revision, actor_id or None, username, now, normalized_id, current_revision),
+                )
+            if self._rowcount(result) != 1:
+                latest = conn.execute(
+                    f"SELECT revision FROM {self._TASK_CANVAS_TABLE} WHERE task_id = ?",
+                    (normalized_id,),
+                ).fetchone()
+                raise TaskCanvasRevisionConflict(self._as_int(latest["revision"] if latest is not None else 0))
+
+            row = conn.execute(
+                f"SELECT * FROM {self._TASK_CANVAS_TABLE} WHERE task_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            return self._task_canvas_payload(task_id=normalized_id, row=row, can_edit=True)
+
     def delete_task(self, *, task_id: str, actor_user_id: int, is_admin: bool = False) -> bool:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
@@ -6567,13 +7106,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         file_paths: list[str] = []
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                f"SELECT id, created_by_user_id FROM {self._TASKS_TABLE} WHERE id = ?",
+                f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
                 (normalized_id,),
             ).fetchone()
             if row is None:
                 return False
             if not is_admin and self._as_int(row["created_by_user_id"]) != actor_id:
                 raise PermissionError("Only task creator or admin can delete it")
+            task = dict(row)
 
             task_attach_rows = conn.execute(
                 f"SELECT file_path FROM {self._TASK_ATTACH_TABLE} WHERE task_id = ?",
@@ -6610,12 +7150,19 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"DELETE FROM {self._TASK_COMMENTS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_COMMENT_READS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_STATUS_LOG_TABLE} WHERE task_id = ?", (normalized_id,))
+            conn.execute(f"DELETE FROM {self._TASK_CANVAS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,))
             conn.commit()
 
         self._remove_relative_files(file_paths)
         self._remove_dir_quiet(self.task_attachments_root / normalized_id)
         self._remove_dir_quiet(self.task_attachment_previews_root / normalized_id)
+        self._publish_task_realtime(
+            task=None,
+            previous_task=task,
+            operation="deleted",
+            actor_user_id=actor_id,
+        )
         return True
 
     def delete_notifications_for_entity(self, *, entity_type: str, entity_id: str) -> int:
@@ -6825,9 +7372,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             analytics_where.append(f"object_id IN ({placeholders})")
             analytics_params.extend(sorted(normalized_object_ids))
         if normalized_participants:
-            placeholders = ", ".join(["?"] * len(normalized_participants))
-            analytics_where.append(f"assignee_user_id IN ({placeholders})")
-            analytics_params.extend(sorted(normalized_participants))
+            assignee_clause, assignee_params = self._assignee_membership_any_clause(
+                sorted(normalized_participants)
+            )
+            analytics_where.append(assignee_clause)
+            analytics_params.extend(assignee_params)
         basis_date_expr = self._analytics_basis_date_expr(basis)
         if start_iso:
             analytics_where.append(f"({basis_date_expr} IS NOT NULL AND {basis_date_expr} >= ?)")
@@ -6922,11 +7471,27 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     ) -> list[dict[str, Any]]:
         metrics_sql = self._analytics_metrics_select_sql(now_iso)
         if group_field == "assignee_user_id":
-            select_fields = (
-                "assignee_user_id, "
-                "MAX(assignee_full_name) AS assignee_full_name, "
-                "MAX(assignee_username) AS assignee_username"
-            )
+            if self._uses_postgresql():
+                participant_expr = "CAST(assignee_entry.value AS INTEGER)"
+                participant_join = (
+                    "CROSS JOIN LATERAL json_array_elements_text("
+                    "COALESCE(NULLIF(assignee_user_ids, ''), '[]')::json"
+                    ") AS assignee_entry(value)"
+                )
+            else:
+                participant_expr = "CAST(assignee_entry.value AS INTEGER)"
+                participant_join = "JOIN json_each(COALESCE(assignee_user_ids, '[]')) assignee_entry"
+            rows = conn.execute(
+                f"""
+                SELECT {participant_expr} AS assignee_user_id, {metrics_sql}
+                FROM {self._TASKS_TABLE}
+                {participant_join}
+                {where_sql}
+                GROUP BY {participant_expr}
+                """,
+                tuple(params),
+            ).fetchall()
+            return [dict(row) for row in rows]
         else:
             select_fields = group_field
         rows = conn.execute(
@@ -7203,7 +7768,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     }
                     return empty_payload
                 id_placeholders = ", ".join(["?"] * len(visible_ids))
-                where_clauses.append(f"id IN ({id_placeholders})")
+                where_clauses.append(f"{self._TASKS_TABLE}.id IN ({id_placeholders})")
                 where_params.extend(visible_ids)
 
             where_sql = self._analytics_where_sql(where_clauses)
@@ -7412,15 +7977,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         params: list[Any] = []
         delegate_owner_ids = user_service.get_delegate_owner_ids(int(user_id))
         observer_clause, observer_params = self._observer_membership_clause(int(user_id))
+        assignee_scope_clause, assignee_scope_params = self._assignee_membership_any_clause(
+            [int(user_id), *delegate_owner_ids]
+        )
         if normalized_scope == "my":
             if normalized_role_scope == "assignee":
-                if delegate_owner_ids:
-                    delegate_placeholders = ", ".join(["?"] * len(delegate_owner_ids))
-                    where_clauses.append(f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}))")
-                    params.extend([int(user_id), *delegate_owner_ids])
-                else:
-                    where_clauses.append("assignee_user_id = ?")
-                    params.append(int(user_id))
+                where_clauses.append(assignee_scope_clause)
+                params.extend(assignee_scope_params)
             elif normalized_role_scope == "creator":
                 where_clauses.append("created_by_user_id = ?")
                 params.append(int(user_id))
@@ -7428,20 +7991,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 where_clauses.append("controller_user_id = ?")
                 params.append(int(user_id))
             else:
-                if delegate_owner_ids:
-                    delegate_placeholders = ", ".join(["?"] * len(delegate_owner_ids))
-                    where_clauses.append(
-                        f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}) OR created_by_user_id = ? OR controller_user_id = ? OR {observer_clause})"
-                    )
-                    params.extend([int(user_id), *delegate_owner_ids, int(user_id), int(user_id), *observer_params])
-                else:
-                    where_clauses.append(
-                        f"(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ? OR {observer_clause})"
-                    )
-                    params.extend([int(user_id), int(user_id), int(user_id), *observer_params])
+                where_clauses.append(
+                    f"({assignee_scope_clause} OR created_by_user_id = ? OR controller_user_id = ? OR {observer_clause})"
+                )
+                params.extend([*assignee_scope_params, int(user_id), int(user_id), *observer_params])
         elif assignee_user_id is not None:
-            where_clauses.append("assignee_user_id = ?")
-            params.append(self._as_int(assignee_user_id))
+            assignee_filter_clause, assignee_filter_params = self._assignee_membership_any_clause(
+                [self._as_int(assignee_user_id)]
+            )
+            where_clauses.append(assignee_filter_clause)
+            params.extend(assignee_filter_params)
         if controller_user_id is not None:
             where_clauses.append("controller_user_id = ?")
             params.append(self._as_int(controller_user_id))
@@ -7566,7 +8125,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 }
             else:
                 departments_by_id = {}
-            # Lean list: no full observers directory enrich (observer_user_ids only).
+            users_by_id = self._users_by_id()
+            # Lean list: observer details stay detail-only; assignee names are needed by list cards.
             items = [
                 self._task_to_list_item(
                     row,
@@ -7574,6 +8134,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     projects_by_id=projects_by_id,
                     objects_by_id=objects_by_id,
                     departments_by_id=departments_by_id,
+                    users_by_id=users_by_id,
                 )
                 for row in visible_rows
             ]
@@ -7608,11 +8169,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_user_id = self._as_int(user_id)
         if normalized_user_id <= 0:
             return False
-        assignee_id = self._as_int(task.get("assignee_user_id"))
-        if assignee_id == normalized_user_id:
+        assignee_ids = self._task_assignee_user_ids(task)
+        if normalized_user_id in assignee_ids:
             return True
         delegate_owner_ids = user_service.get_delegate_owner_ids(normalized_user_id)
-        return assignee_id in {self._as_int(item) for item in (delegate_owner_ids or [])}
+        return bool(assignee_ids & {self._as_int(item) for item in (delegate_owner_ids or [])})
 
     def _transition_spec(self, operation: str) -> dict[str, Any]:
         from backend.services.hub_task_transitions import TRANSITION_MATRIX
@@ -7784,7 +8345,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+            result = self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+        self._publish_task_realtime(
+            task=result,
+            previous_task=task,
+            operation="started",
+            actor_user_id=user_id,
+        )
+        return result
 
     def _can_reopen_task(self, task: dict[str, Any], user: dict[str, Any], *, is_admin: bool = False) -> bool:
         if _normalize_text(task.get("integration_kind")).lower() == "transfer_act_upload":
@@ -7891,7 +8459,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+            result = self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+        self._publish_task_realtime(
+            task=result,
+            previous_task=task,
+            operation="reopened",
+            actor_user_id=user_id,
+        )
+        return result
 
     def submit_task(
         self,
@@ -8071,6 +8646,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             recipients=recipients,
             push_jobs=int(push_stats.get("push_jobs") or 0),
         )
+        self._publish_task_realtime(
+            task=result,
+            operation="submitted",
+            actor_user_id=user_id,
+        )
         return result
 
     def review_task(
@@ -8150,20 +8730,23 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 username=_normalize_text(reviewer.get("username")),
             )
             title_text = _normalize_text(task.get("title"))
-            assignee_id = self._as_int(task.get("assignee_user_id"))
+            assignee_ids = self._task_assignee_user_ids(task)
             conn.commit()
         stages["db_write_ms"] = self._elapsed_ms(db_started)
 
         notify_started = time.perf_counter()
-        recipient_ids = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
+        assignee_recipients = set(assignee_ids)
+        for assignee_id in assignee_ids:
+            assignee_recipients.update(self._task_delegate_user_ids(assignee_id))
+        recipient_ids = set(assignee_recipients)
         for recipient_user_id in {creator_id, controller_id}:
-            if recipient_user_id > 0 and recipient_user_id not in {reviewer_id, assignee_id}:
+            if recipient_user_id > 0 and recipient_user_id != reviewer_id and recipient_user_id not in assignee_ids:
                 recipient_ids.add(recipient_user_id)
         with self._hub_push_deferred() as push_stats:
             with self._db_conn(write=True) as conn:
                 self._create_task_notifications(
                     conn,
-                    recipient_user_ids={assignee_id, *self._task_delegate_user_ids(assignee_id)},
+                    recipient_user_ids=assignee_recipients,
                     skip_user_ids={reviewer_id},
                     event_type="task.reviewed",
                     title="Результат проверки задачи",
@@ -8171,12 +8754,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     task_id=normalized_id,
                 )
                 for recipient_user_id in {creator_id, controller_id}:
-                    if recipient_user_id <= 0 or recipient_user_id == reviewer_id or recipient_user_id == assignee_id:
+                    if recipient_user_id <= 0 or recipient_user_id == reviewer_id or recipient_user_id in assignee_ids:
                         continue
                     self._create_task_notifications(
                         conn,
                         recipient_user_ids={recipient_user_id},
-                        skip_user_ids={reviewer_id, assignee_id},
+                        skip_user_ids={reviewer_id, *assignee_ids},
                         event_type="task.reviewed",
                         title="Задача проверена",
                         body=f"{title_text}: {review_result}",
@@ -8198,6 +8781,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             decision=decision_text,
             recipients=len({item for item in recipient_ids if item > 0 and item != reviewer_id}),
             push_jobs=int(push_stats.get("push_jobs") or 0),
+        )
+        self._publish_task_realtime(
+            task=result,
+            operation="reviewed",
+            actor_user_id=reviewer_id,
         )
         return result
 
@@ -8295,7 +8883,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, updated, viewer_user_id=actor_id) if updated else None
+            result = self._task_with_latest_report(conn, updated, viewer_user_id=actor_id) if updated else None
+        self._publish_task_realtime(
+            task=result,
+            previous_task=task,
+            operation="completed",
+            actor_user_id=actor_id,
+        )
+        return result
 
     def get_report(self, report_id: str) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(report_id)
@@ -8459,7 +9054,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return
         delegate_owner_ids = user_service.get_delegate_owner_ids(normalized_user_id)
         assignee_filters = [normalized_user_id, *delegate_owner_ids]
-        placeholders = ", ".join(["?"] * len(assignee_filters))
+        assignee_clause, assignee_params = self._assignee_membership_any_clause(assignee_filters)
         rows = conn.execute(
             f"""
             SELECT id, title, due_at, status, email_deadline_remind_hours
@@ -8467,9 +9062,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             WHERE status <> 'done'
               AND due_at IS NOT NULL
               AND due_at <> ''
-              AND assignee_user_id IN ({placeholders})
+              AND {assignee_clause}
             """,
-            tuple(assignee_filters),
+            tuple(assignee_params),
         ).fetchall()
         now_utc = datetime.now(timezone.utc)
         today_iso = now_utc.date().isoformat()
@@ -8543,19 +9138,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _collect_task_due_notification_user_ids(self, conn: sqlite3.Connection) -> list[int]:
         rows = conn.execute(
             f"""
-            SELECT DISTINCT assignee_user_id
+            SELECT assignee_user_id, assignee_user_ids
             FROM {self._TASKS_TABLE}
             WHERE status <> 'done'
               AND due_at IS NOT NULL
               AND due_at <> ''
-              AND assignee_user_id IS NOT NULL
             """
         ).fetchall()
-        assignee_ids = {
-            self._as_int(row["assignee_user_id"])
-            for row in rows
-            if self._as_int(row["assignee_user_id"]) > 0
-        }
+        assignee_ids: set[int] = set()
+        for row in rows:
+            assignee_ids.update(self._task_assignee_user_ids(dict(row)))
         candidates = set(assignee_ids)
         for assignee_id in assignee_ids:
             for delegate_id in user_service.get_delegate_user_ids(assignee_id):
@@ -8731,12 +9323,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     ) -> dict[str, int]:
         normalized_user_id = int(user_id)
         now_iso = datetime.now(timezone.utc).isoformat()
-        participant_where = "(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?)"
+        assignee_clause, assignee_params = self._assignee_membership_any_clause([normalized_user_id])
+        participant_where = f"({assignee_clause} OR created_by_user_id = ? OR controller_user_id = ?)"
         metrics_row = conn.execute(
             f"""
             SELECT
               SUM(CASE WHEN status IN ('new', 'in_progress', 'review') THEN 1 ELSE 0 END) AS tasks_open_total,
-              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND assignee_user_id = ? THEN 1 ELSE 0 END) AS tasks_assignee_open,
+              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND {assignee_clause} THEN 1 ELSE 0 END) AS tasks_assignee_open,
               SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND created_by_user_id = ? THEN 1 ELSE 0 END) AS tasks_created_open,
               SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND controller_user_id = ? THEN 1 ELSE 0 END) AS tasks_controller_open,
               SUM(CASE WHEN status = 'review' AND (created_by_user_id = ? OR controller_user_id = ?) THEN 1 ELSE 0 END) AS tasks_review_required,
@@ -8754,13 +9347,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             WHERE {participant_where}
             """,
             (
-                normalized_user_id,
+                *assignee_params,
                 normalized_user_id,
                 normalized_user_id,
                 normalized_user_id,
                 normalized_user_id,
                 now_iso,
-                normalized_user_id,
+                *assignee_params,
                 normalized_user_id,
                 normalized_user_id,
             ),
@@ -8770,9 +9363,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             f"""
             SELECT COUNT(*) AS c
             FROM {self._TASKS_TABLE}
-            WHERE assignee_user_id = ? AND status = 'new'
+            WHERE {assignee_clause} AND status = 'new'
             """,
-            (normalized_user_id,),
+            tuple(assignee_params),
         ).fetchone()
         open_total = self._as_int(metrics_row["tasks_open_total"] if metrics_row else 0)
         return {
@@ -8796,6 +9389,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_user_id = int(user_id)
         if normalized_user_id <= 0:
             return 0
+        assignee_clause, assignee_params = self._assignee_membership_any_clause([normalized_user_id])
         row = conn.execute(
             f"""
             SELECT COUNT(DISTINCT t.id) AS c
@@ -8809,7 +9403,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 ON c.task_id = t.id AND c.created_at = latest.max_created_at
             LEFT JOIN {self._TASK_COMMENT_READS_TABLE} r
                 ON r.task_id = t.id AND r.user_id = ?
-            WHERE (t.assignee_user_id = ? OR t.created_by_user_id = ? OR t.controller_user_id = ?)
+            WHERE ({assignee_clause} OR t.created_by_user_id = ? OR t.controller_user_id = ?)
               AND c.user_id <> ?
               AND (
                 r.last_seen_at IS NULL
@@ -8819,7 +9413,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             """,
             (
                 normalized_user_id,
-                normalized_user_id,
+                *assignee_params,
                 normalized_user_id,
                 normalized_user_id,
                 normalized_user_id,

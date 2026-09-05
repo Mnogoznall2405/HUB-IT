@@ -225,7 +225,7 @@ export default function TasksDialogsLayer() {
             onEditDescriptionDraftChange={create.handleEditDescriptionDraftChange}
             onEditObserversChange={create.handleEditObserversChange}
             onAiTransform={create.transformTaskMarkdown}
-            selectedEditAssignee={create.selectedEditAssignee}
+            selectedEditAssignees={create.selectedEditAssignees}
             selectedEditController={create.selectedEditController}
             selectedEditObservers={create.selectedEditObservers}
             selectedEditDepartment={create.selectedEditDepartment}

@@ -17,6 +17,8 @@ import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
+import ShoppingCartCheckoutOutlinedIcon from '@mui/icons-material/ShoppingCartCheckoutOutlined';
+import DomainOutlinedIcon from '@mui/icons-material/DomainOutlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import ExitToAppOutlinedIcon from '@mui/icons-material/ExitToAppOutlined';
@@ -40,6 +42,8 @@ export const navigationItems = [
   }] : []),
   { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main' },
   { path: '/docflow', label: 'Документооборот', shortLabel: 'Документы', icon: <DescriptionOutlinedIcon />, permission: 'docflow.read', group: 'main' },
+  { path: '/construction', label: 'Объекты строительства', shortLabel: 'Объекты', icon: <DomainOutlinedIcon />, permission: 'construction.read', group: 'main' },
+  { path: '/it/requests', label: 'Заявки на МПЗ', shortLabel: 'Заявки МПЗ', icon: <ShoppingCartCheckoutOutlinedIcon />, permission: 'warehouse_1c.it_requests.read', group: 'it' },
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
   { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: <AccountTreeOutlinedIcon />, permission: 'company_structure.read', group: 'tools' },
   { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
@@ -115,6 +119,8 @@ export function isNavigationItemActive(path, candidatePath = '') {
   }
   if (path === '/chat') return currentPath === '/chat' || currentPath.startsWith('/chat/');
   if (path === '/mail') return currentPath === '/mail' || currentPath.startsWith('/mail/');
+  if (path === '/it/requests') return currentPath === '/it/requests' || currentPath.startsWith('/it/requests/');
+  if (path === '/construction') return currentPath === '/construction' || currentPath.startsWith('/construction/');
   if (path === '/menu') return currentPath === '/menu';
   return currentPath === path;
 }

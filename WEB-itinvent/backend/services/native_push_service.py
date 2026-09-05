@@ -29,6 +29,7 @@ FCM_TOKEN_URI = "https://oauth2.googleapis.com/token"
 FCM_ANDROID_CHANNEL_IDS = {
     "chat": "hubit_chat",
     "tasks": "hubit_tasks",
+    "docflow": "hubit_tasks",
     "hub": "hubit_tasks",
     "announcements": "hubit_tasks",
     "mail": "hubit_mail",
@@ -41,6 +42,7 @@ FCM_ANDROID_PACKAGE_NAME = "ru.zsgp.hubit.mobile"
 FCM_ANDROID_TTL_SECONDS = {
     "chat": 24 * 60 * 60,
     "tasks": 7 * 24 * 60 * 60,
+    "docflow": 7 * 24 * 60 * 60,
     "mail": 3 * 24 * 60 * 60,
     "system": 24 * 60 * 60,
 }

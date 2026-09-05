@@ -241,7 +241,12 @@ export default function useTasksListQuery({
   const assigneeFilteredOnServer = canManageAllTasks && viewMode === 'all' && Boolean(assigneeFilter);
 
   const visibleTaskItems = useMemo(() => taskItems.filter((task) => {
-    if (!assigneeFilteredOnServer && assigneeFilter && String(task?.assignee_user_id || '') !== String(assigneeFilter)) return false;
+    if (!assigneeFilteredOnServer && assigneeFilter) {
+      const assigneeIds = Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+        ? task.assignee_user_ids
+        : [task?.assignee_user_id];
+      if (!assigneeIds.some((value) => String(value || '') === String(assigneeFilter))) return false;
+    }
     return true;
   }), [assigneeFilter, assigneeFilteredOnServer, taskItems]);
 

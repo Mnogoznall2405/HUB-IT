@@ -313,6 +313,7 @@ describe('Native Tasks screens', () => {
   it('adds a comment from the native detail composer', async () => {
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
     await waitFor(() => expect(view.getByText('Проверьте резервную копию')).toBeTruthy());
+    expect(view.getByTestId('native-task-detail-keyboard-host')).toBeTruthy();
     await act(async () => {
       fireEvent.changeText(view.getByTestId('native-task-comment-input'), 'Готово');
     });
@@ -351,6 +352,7 @@ describe('Native Tasks screens', () => {
       ...detailTask,
       protocol_date: '2026-08-24',
       assignee_user_id: 7,
+      assignee_user_ids: [7],
       project_id: 'general-tasks',
       capabilities: { ...detailTask.capabilities, can_edit: true },
     });
@@ -368,8 +370,8 @@ describe('Native Tasks screens', () => {
     });
     await waitFor(() => expect(view.getByTestId('native-task-edit-assignee-7')).toBeTruthy());
     await act(async () => {
+      fireEvent.press(view.getByTestId('native-task-edit-assignee-8'));
       fireEvent.press(view.getByTestId('native-task-edit-controller-8'));
-      fireEvent.press(view.getByTestId('native-task-edit-observer-8'));
       fireEvent.press(view.getByTestId('native-task-edit-object-object-1'));
       fireEvent.press(view.getByTestId('native-task-edit-department-department-1'));
     });
@@ -384,9 +386,9 @@ describe('Native Tasks screens', () => {
       title: 'Обновлённая задача',
       due_at: '2026-09-02T18:00:00',
       priority: 'urgent',
-      assignee_user_id: 7,
+      assignee_user_ids: [7, 8],
       controller_user_id: 8,
-      observer_user_ids: [8],
+      observer_user_ids: [],
       project_id: 'general-tasks',
       object_id: 'object-1',
       department_id: 'department-1',

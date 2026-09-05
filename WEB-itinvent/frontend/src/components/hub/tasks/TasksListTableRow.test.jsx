@@ -43,4 +43,23 @@ describe('TasksListTableRow', () => {
     expect(onOpen).toHaveBeenCalled();
     expect(screen.getByText('Проверить акт')).toBeInTheDocument();
   });
+
+  it('shows a plain-text description preview below the title', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <Table>
+          <TableBody>
+            <TasksListTableRow
+              task={{ ...task, description: undefined, description_preview: '**Описание**\n- второй пункт' }}
+              ui={ui}
+              alpha={alpha}
+              onOpen={vi.fn()}
+            />
+          </TableBody>
+        </Table>
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('tasks-list-description-task-1')).toHaveTextContent('Описание второй пункт');
+  });
 });

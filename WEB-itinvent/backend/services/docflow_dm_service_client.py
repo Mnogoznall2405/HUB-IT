@@ -962,6 +962,7 @@ class DocflowDMServiceClient:
         scope: str = "inbox",
         search: str = "",
         limit: int = 50,
+        offset: int = 0,
     ) -> dict[str, Any]:
         normalized_scope = scope if scope in {"inbox", "completed", "all"} else "inbox"
         # typed=false: abstract DMBusinessProcessTask rows are enough for the UI list.
@@ -1000,17 +1001,30 @@ class DocflowDMServiceClient:
                     if all(token in haystack for token in tokens):
                         filtered.append(item)
                 items = filtered
-        items.sort(key=lambda item: str(item.get("completed_at") or item.get("created_at") or ""), reverse=True)
+        items.sort(
+            key=lambda item: (
+                str(item.get("completed_at") or item.get("created_at") or ""),
+                str(item.get("ref") or ""),
+            ),
+            reverse=True,
+        )
         public_limit = max(1, min(200, int(limit or 50)))
-        truncated = bool(remote_truncated or len(items) > public_limit)
-        items = items[:public_limit]
+        public_offset = max(0, min(10_000, int(offset or 0)))
+        available = len(items)
+        page = items[public_offset:public_offset + public_limit]
+        has_more = public_offset + len(page) < available
+        next_offset = public_offset + len(page) if has_more else None
         return {
-            "items": items,
-            "returned": len(items),
+            "items": page,
+            "returned": len(page),
+            "offset": public_offset,
+            "total": None if remote_truncated else available,
+            "has_more": has_more,
+            "next_offset": next_offset,
             "scope": normalized_scope,
             "source": "live_1c",
             "as_of": datetime.now(timezone.utc),
-            "truncated": truncated,
+            "truncated": bool(remote_truncated or has_more),
         }
 
     async def _visible_task_element(self, *, login: str, password: str, task_ref: str) -> etree._Element:

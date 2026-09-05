@@ -56,6 +56,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
+  formatTaskAssigneesSummary,
   formatTaskObserversSummary,
   getTaskUserLabel,
   getChecklistStats,
@@ -81,7 +82,7 @@ export function TaskContextSidebar({
 }) {
   const summaryRows = [
     { label: 'Постановщик', value: task?.created_by_full_name || task?.created_by_username || '-' },
-    { label: 'Исполнитель', value: task?.assignee_full_name || task?.assignee_username || '-' },
+    { label: 'Исполнители', value: formatTaskAssigneesSummary(task) },
     { label: 'Контролёр', value: task?.controller_full_name || task?.controller_username || '-' },
     { label: 'Наблюдатели', value: formatTaskObserversSummary(task) || '-' },
     { label: 'Проверивший', value: task?.reviewer_full_name || '-' },

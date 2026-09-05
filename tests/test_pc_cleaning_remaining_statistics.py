@@ -116,3 +116,116 @@ def test_pc_cleaning_remaining_filters_one_branch(monkeypatch):
     assert payload.remaining_pcs[0].employee == "Сидоров"
     assert payload.remaining_pcs[0].equipment_id == 21
     assert payload.remaining_pcs[0].manufacturer == "Dell"
+
+
+def test_pc_cleaning_history_uses_stable_inventory_identity_after_move():
+    cleaning_records = [
+        {
+            "db_name": "main-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "branch": "Old branch",
+            "employee": "Old owner",
+            "timestamp": "2026-02-12T10:00:00",
+        },
+        {
+            "equipment_id": 22,
+            "db_name": "main-db",
+            "inv_no": "2002",
+            "serial_no": "DUPLICATE-SERIAL",
+            "branch": "Other branch",
+            "employee": "Other owner",
+            "timestamp": "2026-08-03T10:00:00",
+        },
+        {
+            "equipment_id": 11,
+            "db_name": "other-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "timestamp": "2026-08-04T10:00:00",
+        },
+    ]
+    manager = WorksManager(
+        data_manager=SimpleNamespace(
+            load_json=lambda *_args, **_kwargs: cleaning_records,
+        )
+    )
+
+    history = manager.get_pc_cleaning_history(
+        serial_number="DUPLICATE-SERIAL",
+        inv_no="1001",
+        equipment_id=11,
+        db_name="main-db",
+    )
+
+    assert history["count"] == 1
+    assert history["last_date"] == "2026-02-12T10:00:00"
+
+
+def test_add_pc_cleaning_persists_equipment_id_for_future_moves():
+    saved = []
+    manager = WorksManager(
+        data_manager=SimpleNamespace(
+            append_to_json=lambda _file_name, record: saved.append(record) or True,
+        )
+    )
+
+    record = manager.add_pc_cleaning(
+        serial_number="SERIAL-1001",
+        employee="Owner",
+        branch="Branch",
+        location="Room",
+        inv_no="1001",
+        equipment_id=11,
+    )
+
+    assert record["equipment_id"] == 11
+    assert saved[0]["equipment_id"] == 11
+
+
+def test_pc_cleaning_statistics_prefers_inv_no_for_legacy_records_after_move(monkeypatch):
+    manager = WorksManager(data_manager=SimpleNamespace())
+    monkeypatch.setattr(
+        manager,
+        "_get_pc_inventory",
+        lambda db_name=None: [
+            {
+                "id": 11,
+                "branch_name": "New branch",
+                "location": "New room",
+                "inv_no": "1001",
+                "serial_no": "DUPLICATE-SERIAL",
+                "type_name": "PC",
+                "model_name": "Workstation",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        manager,
+        "get_pc_cleanings",
+        lambda db_name=None: [
+            {
+                "db_name": "main-db",
+                "inv_no": "1001",
+                "serial_no": "DUPLICATE-SERIAL",
+                "branch": "Old branch",
+                "timestamp": (datetime.now() - timedelta(days=180)).isoformat(),
+            },
+            {
+                "db_name": "main-db",
+                "inv_no": "2002",
+                "serial_no": "DUPLICATE-SERIAL",
+                "branch": "Other branch",
+                "timestamp": (datetime.now() - timedelta(days=3)).isoformat(),
+            },
+        ],
+    )
+
+    stats = manager.get_pc_cleaning_statistics(period_days=90, db_name="main-db")
+
+    moved_branch = next(row for row in stats["branches"] if row["branch"] == "New branch")
+    assert moved_branch["cleaned_pc"] == 0
+    assert moved_branch["remaining_pc"] == 1
+    assert moved_branch["remaining_pcs"][0]["last_cleaned_at"].startswith(
+        (datetime.now() - timedelta(days=180)).date().isoformat()
+    )

@@ -13,7 +13,12 @@ $ErrorActionPreference = 'Stop'
 $mobileRoot = Split-Path $PSScriptRoot -Parent
 $repoRoot = Split-Path $mobileRoot -Parent
 $packageName = 'ru.zsgp.hubit.mobile'
-$expectedVersion = [string](Get-Content -LiteralPath (Join-Path $mobileRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+$packageMetadata = Get-Content -LiteralPath (Join-Path $mobileRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$expectedVersion = [string]$packageMetadata.version
+$expectedVersionCode = [int]$packageMetadata.hubit.androidVersionCode
+if ($expectedVersionCode -le 0) {
+  throw 'package.json does not contain a valid hubit.androidVersionCode.'
+}
 $resolvedApk = if ($ApkPath) {
   [IO.Path]::GetFullPath($ApkPath)
 } else {
@@ -114,6 +119,9 @@ if (-not $versionName) {
 }
 if ($versionName -ne $expectedVersion) {
   throw "Installed version is $versionName; expected $expectedVersion. Upgrade the APK before device smoke."
+}
+if ([int]$versionCode -ne $expectedVersionCode) {
+  throw "Installed versionCode is $versionCode; expected $expectedVersionCode. Upgrade the APK before device smoke."
 }
 
 Invoke-Adb -Arguments @('shell', 'monkey', '-p', $packageName, '-c', 'android.intent.category.LAUNCHER', '1') | Out-Null

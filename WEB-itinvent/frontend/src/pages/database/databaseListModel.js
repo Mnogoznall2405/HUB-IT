@@ -1,7 +1,90 @@
 import { getItemCapabilityFlags, toInvNo } from './equipmentModel';
-import { normalizeText } from './databaseRecordModel';
+import { normalizeText, readQty } from './databaseRecordModel';
+import { toItemId } from './detailModel';
 
 export const DEFAULT_ACTION_BATCH_SIZE = 10;
+
+const textCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
+
+const getEquipmentSortValue = (item, field) => {
+  switch (field) {
+    case 'id':
+      return toItemId(item);
+    case 'inv':
+      return toInvNo(item);
+    case 'serial':
+      return String(item?.SERIAL_NO || item?.serial_no || item?.HW_SERIAL_NO || item?.hw_serial_no || '').trim();
+    case 'partNo':
+      return String(item?.PART_NO || item?.part_no || '').trim();
+    case 'type':
+      return String(item?.TYPE_NAME || item?.type_name || '').trim();
+    case 'model':
+      return String(item?.MODEL_NAME || item?.model_name || '').trim();
+    case 'qty':
+      return readQty(item, 1);
+    case 'employee':
+      return String(item?.OWNER_DISPLAY_NAME || item?.employee_name || '').trim();
+    case 'status':
+      return String(item?.DESCR || item?.status_name || item?.status || '').trim();
+    default:
+      return '';
+  }
+};
+
+export const sortEquipmentItems = (items, tableSort = {}) => {
+  const field = String(tableSort?.field || 'employee');
+  const direction = tableSort?.direction === 'desc' ? 'desc' : 'asc';
+  const applySortDirection = (comparison) => (direction === 'asc' ? comparison : -comparison);
+
+  return [...(items || [])].sort((a, b) => {
+    if (field === 'qty') {
+      const qtyComparison = getEquipmentSortValue(a, 'qty') - getEquipmentSortValue(b, 'qty');
+      if (qtyComparison !== 0) return applySortDirection(qtyComparison);
+    }
+
+    const primaryComparison = textCollator.compare(
+      String(getEquipmentSortValue(a, field)),
+      String(getEquipmentSortValue(b, field))
+    );
+    if (primaryComparison !== 0) return applySortDirection(primaryComparison);
+
+    const inventoryComparison = textCollator.compare(toInvNo(a), toInvNo(b));
+    if (inventoryComparison !== 0) return applySortDirection(inventoryComparison);
+
+    return applySortDirection(textCollator.compare(toItemId(a), toItemId(b)));
+  });
+};
+
+export const resolveSelectedEquipmentPrintOrder = (
+  groupedData,
+  selectedItems,
+  tableSort = {}
+) => {
+  const requestedInvNos = Array.from(new Set(
+    (selectedItems || []).map((value) => toInvNo(value)).filter(Boolean)
+  ));
+  const pendingInvNos = new Set(requestedInvNos);
+  const items = [];
+
+  Object.keys(groupedData || {}).forEach((branchName) => {
+    const locations = groupedData?.[branchName] || {};
+    Object.keys(locations)
+      .sort((a, b) => textCollator.compare(String(a || ''), String(b || '')))
+      .forEach((locationName) => {
+        sortEquipmentItems(locations[locationName], tableSort).forEach((item) => {
+          const invNo = toInvNo(item);
+          if (!pendingInvNos.has(invNo)) return;
+          pendingInvNos.delete(invNo);
+          items.push(item);
+        });
+      });
+  });
+
+  return {
+    items,
+    skippedInvNos: requestedInvNos.filter((invNo) => pendingInvNos.has(invNo)),
+  };
+};
 
 export const countGroupedItems = (groupedData) =>
   Object.values(groupedData || {}).reduce(

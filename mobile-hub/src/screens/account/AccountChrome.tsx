@@ -3,7 +3,6 @@ import type { ComponentProps, ReactNode } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import type { FluentTokens } from '../../theme/fluentTokens';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 
 export function AccountScreenScaffold({
   title,
@@ -59,7 +59,11 @@ export function AccountScreenScaffold({
         <View style={styles.headerRight}>{rightAction}</View>
       </View>
       {scroll ? (
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView
+          testID="account-keyboard-avoiding-host"
+          style={styles.flex}
+          {...chatKeyboardAvoidingProps()}
+        >
           <ScrollView
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[styles.scroll, { paddingBottom: bottomInset + 12 }]}

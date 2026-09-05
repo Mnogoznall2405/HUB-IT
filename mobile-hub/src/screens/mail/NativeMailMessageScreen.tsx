@@ -3,7 +3,7 @@ import * as Crypto from 'expo-crypto';
 import * as Print from 'expo-print';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { initialWindowMetrics, SafeAreaView } from 'react-native-safe-area-context';
 import {
   deleteMailMessage,
@@ -25,6 +25,8 @@ import {
 } from '../../api/mailApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import {
   formatNativeSnapshotSavedAt,
   readNativeEntitySnapshot,
@@ -148,14 +150,21 @@ export function NativeMailMessageScreen() {
     setError('');
     setSummary('');
     setThreadStats(null);
+    const cached = user?.id
+      ? await readNativeEntitySnapshot<MailMessageDetail>(
+        'mail-message-details',
+        user.id,
+        snapshotKey,
+        Number.MAX_SAFE_INTEGER,
+      )
+      : null;
+    if (cached) {
+      setMessage(cached.data);
+      setCachedAt(cached.savedAt);
+      setLoading(false);
+    }
     if (offlineMode) {
-      const cached = user?.id
-        ? await readNativeEntitySnapshot<MailMessageDetail>('mail-message-details', user.id, snapshotKey)
-        : null;
-      if (cached) {
-        setMessage(cached.data);
-        setCachedAt(cached.savedAt);
-      } else {
+      if (!cached) {
         setMessage(null);
         setCachedAt(0);
         setError('Нет подключения и сохранённой копии письма. Откройте его один раз при наличии сети.');
@@ -213,13 +222,40 @@ export function NativeMailMessageScreen() {
         void loadThreadStats();
       }
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось открыть письмо.'));
+      setError(formatApiError(cause, cached
+        ? 'Показана сохранённая копия. Не удалось обновить письмо.'
+        : 'Не удалось открыть письмо.'));
     } finally {
       setLoading(false);
     }
   }, [allowed, folderParam, mailboxIdParam, messageId, offlineMode, snapshotKey, user?.id]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!allowed || offlineMode || !messageId) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = (event?: unknown) => {
+      const envelope = event && typeof event === 'object' ? event as { payload?: unknown } : {};
+      const payload = envelope.payload && typeof envelope.payload === 'object'
+        ? envelope.payload as Record<string, unknown>
+        : {};
+      const changedMessageId = String(payload.message_id || '').trim();
+      if (changedMessageId && changedMessageId !== messageId) return;
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void load();
+      }, 100);
+    };
+    const releases = [
+      hubRealtimeSocket.onMailChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [allowed, load, messageId, offlineMode]);
   useEffect(() => {
     if (!message || offlineMode || !user?.id) return;
     void writeNativeEntitySnapshot('mail-message-details', user.id, snapshotKey, message);
@@ -535,7 +571,11 @@ export function NativeMailMessageScreen() {
           <MaterialCommunityIcons name="chevron-down" size={38} color={tokens.textPrimary} />
         </Pressable>
       </View>
-      <KeyboardAvoidingView style={styles.readerMain} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        testID="native-mail-message-keyboard-host"
+        style={styles.readerMain}
+        {...chatKeyboardAvoidingProps()}
+      >
       <ScrollView
         testID="native-mail-reader-scroll"
         style={styles.readerScroll}

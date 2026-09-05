@@ -12,8 +12,8 @@ export const NativeConsumableRow = memo(function NativeConsumableRow({
 }: {
   item: ConsumableRecord;
   tokens: FluentTokens;
-  onEditQuantity?: () => void;
-  onDelete?: () => void;
+  onEditQuantity?: (item: ConsumableRecord) => void;
+  onDelete?: (item: ConsumableRecord) => void;
 }) {
   const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const title = item.model_name || item.type_name || item.inv_no || `Расходник ${item.id}`;
@@ -43,7 +43,7 @@ export const NativeConsumableRow = memo(function NativeConsumableRow({
           {onEditQuantity ? (
             <Pressable
               testID={`native-consumable-edit-${item.id}`}
-              onPress={onEditQuantity}
+              onPress={() => onEditQuantity(item)}
               accessibilityRole="button"
               accessibilityLabel={`Изменить остаток ${title}`}
               style={styles.action}
@@ -54,7 +54,7 @@ export const NativeConsumableRow = memo(function NativeConsumableRow({
           {onDelete ? (
             <Pressable
               testID={`native-consumable-delete-${item.id}`}
-              onPress={onDelete}
+              onPress={() => onDelete(item)}
               accessibilityRole="button"
               accessibilityLabel={`Удалить расходник ${title}`}
               style={styles.action}

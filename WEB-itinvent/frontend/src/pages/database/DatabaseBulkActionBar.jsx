@@ -2,12 +2,16 @@ import { memo, useCallback, useState } from 'react';
 import {
   Box,
   Button,
+  ButtonGroup,
+  CircularProgress,
   Drawer,
   IconButton,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
   Paper,
   Slide,
   Tooltip,
@@ -15,11 +19,13 @@ import {
   alpha,
 } from '@mui/material';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
+import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded';
 import BatteryFullOutlinedIcon from '@mui/icons-material/BatteryFullOutlined';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import MyLocationOutlinedIcon from '@mui/icons-material/MyLocationOutlined';
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined';
+import QrCode2OutlinedIcon from '@mui/icons-material/QrCode2Outlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
 
@@ -44,6 +50,7 @@ const MOBILE_BAR_GAP = 8;
 function DatabaseBulkMobileActionButton({
   icon,
   label,
+  ariaLabel = label,
   disabled = false,
   onClick,
   theme,
@@ -54,7 +61,7 @@ function DatabaseBulkMobileActionButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={label}
+      aria-label={ariaLabel}
       sx={{
         minWidth: 0,
         width: 52,
@@ -100,6 +107,10 @@ function DatabaseBulkMobileMoreSheet({
   theme,
   ui,
   capabilities,
+  canWrite,
+  showPrintDialogAction,
+  onPrintWithDialog,
+  onOpenTransferAct,
   onOpenCartridge,
   onOpenBattery,
   onOpenComponent,
@@ -110,7 +121,22 @@ function DatabaseBulkMobileMoreSheet({
     onClose();
   };
 
-  const maintenanceItems = [
+  const additionalItems = [
+    ...(showPrintDialogAction ? [{
+      key: 'print-qr-dialog',
+      label: 'Печать QR…',
+      icon: <QrCode2OutlinedIcon fontSize="small" />,
+      disabled: false,
+      onClick: onPrintWithDialog,
+    }] : []),
+    ...(canWrite ? [{
+      key: 'act',
+      label: 'Акт без перемещения',
+      icon: <AssignmentOutlinedIcon fontSize="small" />,
+      disabled: false,
+      onClick: onOpenTransferAct,
+    }] : []),
+    ...(canWrite ? [
     {
       key: 'cartridge',
       label: 'Картридж',
@@ -132,6 +158,7 @@ function DatabaseBulkMobileMoreSheet({
       disabled: !capabilities.canComponent,
       onClick: onOpenComponent,
     },
+    ] : []),
   ];
 
   return (
@@ -181,7 +208,7 @@ function DatabaseBulkMobileMoreSheet({
         </Box>
 
         <List dense disablePadding data-testid="database-bulk-mobile-more-list">
-          {maintenanceItems.map((item) => (
+          {additionalItems.map((item) => (
             <ListItemButton
               key={item.key}
               disabled={item.disabled}
@@ -216,7 +243,12 @@ function DatabaseBulkMobileBar({
   selectedVisibleCount,
   selectedHiddenCount,
   capabilities,
+  canWrite,
+  desktopQuickPrintAvailable,
+  printing,
   onClearSelection,
+  onQuickPrint,
+  onPrintWithDialog,
   onOpenLocationTransfer,
   onOpenTransfer,
   onOpenTransferAct,
@@ -327,33 +359,43 @@ function DatabaseBulkMobileBar({
             }}
           >
             <DatabaseBulkMobileActionButton
-              icon={<MyLocationOutlinedIcon />}
-              label="Перемещ."
-              onClick={onOpenLocationTransfer}
+              icon={printing ? <CircularProgress size={20} /> : <QrCode2OutlinedIcon />}
+              label="QR"
+              ariaLabel={desktopQuickPrintAvailable ? 'Быстрая печать QR' : 'Печать QR'}
+              disabled={printing}
+              onClick={desktopQuickPrintAvailable ? onQuickPrint : onPrintWithDialog}
               theme={theme}
               ui={ui}
             />
-            <DatabaseBulkMobileActionButton
-              icon={<SwapHorizRoundedIcon />}
-              label="С актом"
-              onClick={onOpenTransfer}
-              theme={theme}
-              ui={ui}
-            />
-            <DatabaseBulkMobileActionButton
-              icon={<AssignmentOutlinedIcon />}
-              label="Акт"
-              onClick={onOpenTransferAct}
-              theme={theme}
-              ui={ui}
-            />
-            <DatabaseBulkMobileActionButton
-              icon={<MoreHorizRoundedIcon />}
-              label="Ещё"
-              onClick={() => setMoreOpen(true)}
-              theme={theme}
-              ui={ui}
-            />
+            {canWrite ? (
+              <>
+                <DatabaseBulkMobileActionButton
+                  icon={<MyLocationOutlinedIcon />}
+                  label="Перемещ."
+                  ariaLabel="Перемещение"
+                  onClick={onOpenLocationTransfer}
+                  theme={theme}
+                  ui={ui}
+                />
+                <DatabaseBulkMobileActionButton
+                  icon={<SwapHorizRoundedIcon />}
+                  label="С актом"
+                  ariaLabel="Перемещение с актом"
+                  onClick={onOpenTransfer}
+                  theme={theme}
+                  ui={ui}
+                />
+              </>
+            ) : null}
+            {(canWrite || desktopQuickPrintAvailable) ? (
+              <DatabaseBulkMobileActionButton
+                icon={<MoreHorizRoundedIcon />}
+                label="Ещё"
+                onClick={() => setMoreOpen(true)}
+                theme={theme}
+                ui={ui}
+              />
+            ) : null}
           </Box>
         </Paper>
       </Slide>
@@ -364,6 +406,10 @@ function DatabaseBulkMobileBar({
         theme={theme}
         ui={ui}
         capabilities={capabilities}
+        canWrite={canWrite}
+        showPrintDialogAction={desktopQuickPrintAvailable}
+        onPrintWithDialog={onPrintWithDialog}
+        onOpenTransferAct={onOpenTransferAct}
         onOpenCartridge={onOpenCartridge}
         onOpenBattery={onOpenBattery}
         onOpenComponent={handleOpenComponent}
@@ -381,7 +427,12 @@ function DatabaseBulkActionBar({
   selectedVisibleCount = 0,
   selectedHiddenCount = 0,
   selectedItemsCapabilities = defaultCapabilities,
+  canWrite = true,
+  desktopQuickPrintAvailable = false,
+  printing = false,
   onClearSelection = noop,
+  onQuickPrint = noop,
+  onPrintWithDialog = noop,
   onOpenLocationTransfer = noop,
   onOpenTransfer = noop,
   onOpenTransferAct = noop,
@@ -391,6 +442,8 @@ function DatabaseBulkActionBar({
 }) {
   const capabilities = { ...defaultCapabilities, ...selectedItemsCapabilities };
   const isMobile = variant === 'mobile';
+  const [printMenuAnchor, setPrintMenuAnchor] = useState(null);
+  const printMenuOpen = Boolean(printMenuAnchor);
 
   const handleOpenComponent = useCallback(() => {
     const kind = capabilities.componentKind || 'printer';
@@ -410,7 +463,12 @@ function DatabaseBulkActionBar({
         selectedVisibleCount={selectedVisibleCount}
         selectedHiddenCount={selectedHiddenCount}
         capabilities={capabilities}
+        canWrite={canWrite}
+        desktopQuickPrintAvailable={desktopQuickPrintAvailable}
+        printing={printing}
         onClearSelection={onClearSelection}
+        onQuickPrint={onQuickPrint}
+        onPrintWithDialog={onPrintWithDialog}
         onOpenLocationTransfer={onOpenLocationTransfer}
         onOpenTransfer={onOpenTransfer}
         onOpenTransferAct={onOpenTransferAct}
@@ -421,8 +479,63 @@ function DatabaseBulkActionBar({
     );
   }
 
+  const printButton = desktopQuickPrintAvailable ? (
+    <>
+      <ButtonGroup variant="contained" size="small" aria-label="Печать QR-этикеток">
+        <Button
+          onClick={onQuickPrint}
+          disabled={printing}
+          startIcon={printing ? <CircularProgress size={16} color="inherit" /> : <QrCode2OutlinedIcon />}
+        >
+          Быстрая печать QR
+        </Button>
+        <Button
+          aria-label="Открыть способы печати QR"
+          aria-controls={printMenuOpen ? 'database-qr-print-menu' : undefined}
+          aria-expanded={printMenuOpen ? 'true' : undefined}
+          aria-haspopup="menu"
+          disabled={printing}
+          onClick={(event) => setPrintMenuAnchor(event.currentTarget)}
+          sx={{ px: 0.75, minWidth: 36 }}
+        >
+          <ArrowDropDownRoundedIcon />
+        </Button>
+      </ButtonGroup>
+      <Menu
+        id="database-qr-print-menu"
+        anchorEl={printMenuAnchor}
+        open={printMenuOpen}
+        onClose={() => setPrintMenuAnchor(null)}
+        MenuListProps={{ 'aria-label': 'Способы печати QR' }}
+      >
+        <MenuItem
+          onClick={() => {
+            setPrintMenuAnchor(null);
+            onPrintWithDialog();
+          }}
+        >
+          <ListItemIcon><PrintOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Печать QR…" secondary="Выбрать принтер и параметры" />
+        </MenuItem>
+      </Menu>
+    </>
+  ) : (
+    <Button
+      size="small"
+      variant="contained"
+      disabled={printing}
+      startIcon={printing ? <CircularProgress size={16} color="inherit" /> : <QrCode2OutlinedIcon />}
+      onClick={onPrintWithDialog}
+    >
+      Печать QR…
+    </Button>
+  );
+
   const actionButtons = (
     <>
+      {printButton}
+      {canWrite ? (
+        <>
       <Tooltip
         title="Меняет только филиал и локацию в базе. Сотрудник и акты не меняются."
         arrow
@@ -498,6 +611,8 @@ function DatabaseBulkActionBar({
       >
         Компонент
       </Button>
+        </>
+      ) : null}
     </>
   );
 

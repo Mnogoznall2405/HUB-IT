@@ -36,6 +36,7 @@ _PURPOSE_CHAINS: dict[str, tuple[str, ...]] = {
         "ROUTERAI_MODEL_ACT",
         "ROUTERAI_MODEL",
         "ACT_PARSE_MODEL",
+        "ROUTERAI_MODEL_ACT_FALLBACK",
         "OCR_MODEL",
     ),
     "ocr": (

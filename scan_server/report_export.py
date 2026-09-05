@@ -50,6 +50,7 @@ CATEGORY_LABELS = {
     "secrets": "Конфиденциальные данные",
     "policy_match": "Совпадение с политикой",
 }
+EXCEL_ILLEGAL_CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
 
 
 def _format_ts(value: Any) -> str:
@@ -76,8 +77,15 @@ def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, (list, dict)):
-        return str(value)
-    return str(value)
+        value = str(value)
+    return EXCEL_ILLEGAL_CONTROL_CHARACTERS_RE.sub("", str(value))
+
+
+def _append_excel_row(ws, row: Iterable[Any]) -> None:
+    ws.append([
+        _safe_text(value) if isinstance(value, (str, list, dict)) else value
+        for value in row
+    ])
 
 
 def _pattern_summary(value: Any) -> str:
@@ -123,16 +131,16 @@ def _fit_columns(ws) -> None:
 
 def _append_table(ws, headers: Iterable[str], rows: Iterable[Iterable[Any]], *, empty_message: str = "Нет данных") -> None:
     header_fill = PatternFill("solid", fgColor="E8EEF8")
-    ws.append(list(headers))
+    _append_excel_row(ws, headers)
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
         cell.fill = header_fill
     row_count = 0
     for row in rows:
-        ws.append(list(row))
+        _append_excel_row(ws, row)
         row_count += 1
     if row_count == 0:
-        ws.append([empty_message])
+        _append_excel_row(ws, [empty_message])
     _fit_columns(ws)
 
 
@@ -146,7 +154,7 @@ def build_scan_task_incidents_excel(report: Dict[str, Any]) -> Tuple[bytes, str]
     wb = Workbook()
     summary_ws = wb.active
     summary_ws.title = "Сводка"
-    summary_ws.append(["Отчёт по запуску сканирования"])
+    _append_excel_row(summary_ws, ["Отчёт по запуску сканирования"])
     summary_ws["A1"].font = Font(bold=True, size=14)
     summary_ws.append([])
 
@@ -178,7 +186,7 @@ def build_scan_task_incidents_excel(report: Dict[str, Any]) -> Tuple[bytes, str]
         ("Инцидентов в отчете", summary.get("incidents_total")),
     ]
     for label, value in summary_rows:
-        summary_ws.append([label, value if value is not None else ""])
+        _append_excel_row(summary_ws, [label, value if value is not None else ""])
 
     summary_ws.append([])
     _append_table(

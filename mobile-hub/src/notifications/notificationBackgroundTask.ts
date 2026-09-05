@@ -8,7 +8,12 @@ import {
   getNotificationActionDetails,
   processNotificationAction,
 } from './notificationActions';
-import { showReplyFailed, showReplyPending, showReplySent } from './notificationActionFeedback';
+import {
+  showReplyFailed,
+  showReplyPending,
+  showReplySending,
+  showReplySent,
+} from './notificationActionFeedback';
 import { reconcileNativeBadge } from './notificationBadge';
 import { notificationData } from './notificationNavigation';
 import {
@@ -24,11 +29,41 @@ import {
 } from './pendingNotificationReplies';
 
 export const HUBIT_NOTIFICATION_BACKGROUND_TASK = 'hubit-notification-actions-v1';
+const QUICK_REPLY_SEND_TIMEOUT_MS = 8_000;
+
+function quickReplyTimeoutError(): Error {
+  return Object.assign(new Error(`quick reply timeout after ${QUICK_REPLY_SEND_TIMEOUT_MS}ms`), {
+    code: 'ECONNABORTED',
+    config: {},
+    isAxiosError: true,
+    response: undefined,
+  });
+}
+
+async function withQuickReplyDeadline<T>(operation: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(
+      () => finish(() => reject(quickReplyTimeoutError())),
+      QUICK_REPLY_SEND_TIMEOUT_MS,
+    );
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+}
 
 async function finishHandledAction(
   result: Notifications.BackgroundNotificationTaskResult,
 ): Promise<Notifications.BackgroundNotificationTaskResult> {
-  await Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
+  void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
   return result;
 }
 
@@ -62,7 +97,7 @@ export async function handleNotificationBackgroundTask(
 ): Promise<Notifications.BackgroundNotificationTaskResult> {
   if (taskError) return Notifications.BackgroundNotificationTaskResult.Failed;
   if (!isNotificationResponse(data)) {
-    await reconcileNativeBadge().catch(() => undefined);
+    void reconcileNativeBadge({ force: true }).catch(() => undefined);
     return Notifications.BackgroundNotificationTaskResult.NewData;
   }
 
@@ -80,7 +115,7 @@ export async function handleNotificationBackgroundTask(
     if (result.status === 'sent' && result.item) await showReplySent(result.item);
     else if (result.status === 'pending' && result.item) await showReplyPending(result.item);
     else if (result.item) await showReplyFailed(result.item);
-    await reconcileNativeBadge().catch(() => undefined);
+    void reconcileNativeBadge({ force: true }).catch(() => undefined);
     return finishHandledAction(result.status === 'discarded'
       ? Notifications.BackgroundNotificationTaskResult.Failed
       : Notifications.BackgroundNotificationTaskResult.NewData);
@@ -97,12 +132,21 @@ export async function handleNotificationBackgroundTask(
     return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
   }
 
+  let replyItem: PendingChatReply | null = null;
   try {
-    await processNotificationAction(data);
-    if (action === HUBIT_CHAT_REPLY_ACTION && userId) {
-      await showReplySent(await pendingReplyFromResponse(data, userId));
+    if (action === HUBIT_CHAT_REPLY_ACTION) {
+      replyItem = await pendingReplyFromResponse(data, userId);
+      await showReplySending(replyItem);
     }
-    await reconcileNativeBadge().catch(() => undefined);
+    if (action === HUBIT_CHAT_REPLY_ACTION) {
+      await withQuickReplyDeadline(processNotificationAction(data));
+    } else {
+      await processNotificationAction(data);
+    }
+    if (replyItem) {
+      await showReplySent(replyItem);
+    }
+    void reconcileNativeBadge({ force: true }).catch(() => undefined);
     return finishHandledAction(Notifications.BackgroundNotificationTaskResult.NewData);
   } catch (error) {
     if (action === HUBIT_MAIL_MARK_READ_ACTION) {
@@ -110,7 +154,7 @@ export async function handleNotificationBackgroundTask(
     }
     if (!isRetryableOfflineError(error) || !userId) {
       if (action === HUBIT_CHAT_REPLY_ACTION && userId) {
-        await showReplyFailed(await pendingReplyFromResponse(data, userId));
+        await showReplyFailed(replyItem || await pendingReplyFromResponse(data, userId));
       }
       return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
     }
@@ -123,7 +167,7 @@ export async function handleNotificationBackgroundTask(
       await queueConversationRead(userId, details.conversationId, details.messageId);
       await dismissHandledNotification(data);
     } else {
-      const item = await queuePendingChatReply(await pendingReplyFromResponse(data, userId));
+      const item = await queuePendingChatReply(replyItem || await pendingReplyFromResponse(data, userId));
       await showReplyPending(item);
     }
     return finishHandledAction(Notifications.BackgroundNotificationTaskResult.NewData);

@@ -53,6 +53,16 @@ import {
   usePreferences,
 } from '../contexts/PreferencesContext';
 import { CHAT_FEATURE_ENABLED } from '../lib/chatFeature';
+import { CHAT_SOCKET_UNREAD_SUMMARY_EVENT } from '../lib/chatSocket';
+import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_DASHBOARD_EVENT,
+  HUB_REALTIME_DOCFLOW_EVENT,
+  HUB_REALTIME_MAIL_EVENT,
+  HUB_REALTIME_NOTIFICATION_EVENT,
+  HUB_REALTIME_TASK_EVENT,
+} from '../lib/hubRealtimeSocket';
 import {
   buildOfficeUiTokens,
   getOfficeEmptyStateSx,
@@ -231,6 +241,7 @@ function AttentionRow({
   secondary,
   tone = 'default',
   onClick,
+  returnFocusId = '',
 }) {
   const theme = useTheme();
   const toneColor = tone === 'error'
@@ -241,6 +252,7 @@ function AttentionRow({
   return (
     <ButtonBase
       data-testid="dashboard-task-row"
+      data-task-return-focus={returnFocusId || undefined}
       onClick={onClick}
       sx={{
         width: '100%',
@@ -292,7 +304,7 @@ function AttentionRow({
   );
 }
 
-function TaskQueueRow({ task, onClick }) {
+function TaskQueueRow({ task, onClick, returnFocusId = '' }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const overdue = Boolean(task?.is_overdue);
@@ -307,6 +319,7 @@ function TaskQueueRow({ task, onClick }) {
         : ui.iconMuted;
   return (
     <ButtonBase
+      data-task-return-focus={returnFocusId || undefined}
       onClick={onClick}
       sx={{
         width: '100%',
@@ -684,9 +697,9 @@ export default function Dashboard() {
     preferences?.dashboard_sections,
   ]);
 
-  const loadDashboard = useCallback(async () => {
-    setLoading(true);
-    setError('');
+  const loadDashboard = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    if (!silent) setError('');
     const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
       hubAPI.getDashboard({
         announcements_limit: DASHBOARD_ANNOUNCEMENTS_LIMIT,
@@ -699,41 +712,98 @@ export default function Dashboard() {
     if (dashboardResult.status === 'fulfilled') {
       setPayload(dashboardResult.value || EMPTY_DASHBOARD);
     } else {
-      setPayload(EMPTY_DASHBOARD);
-      setError(
-        dashboardResult.reason?.response?.data?.detail
-        || dashboardResult.reason?.message
-        || 'Не удалось загрузить главную страницу.',
-      );
+      if (!silent) {
+        setPayload(EMPTY_DASHBOARD);
+        setError(
+          dashboardResult.reason?.response?.data?.detail
+          || dashboardResult.reason?.message
+          || 'Не удалось загрузить главную страницу.',
+        );
+      }
     }
-    setCommunicationCounts({
+    setCommunicationCounts((current) => ({
       chat: chatResult.status === 'fulfilled'
         ? Number(chatResult.value?.messages_unread_total || chatResult.value?.unread_total || 0)
-        : 0,
+        : (silent ? current.chat : 0),
       mail: mailResult.status === 'fulfilled'
         ? Number(mailResult.value?.unread_count || mailResult.value?.total_unread || 0)
-        : 0,
-    });
-    setLoading(false);
+        : (silent ? current.mail : 0),
+    }));
+    if (!silent) setLoading(false);
   }, [canReadChat, canReadMail]);
+
+  const loadDocflowSummary = useCallback(async (showLoading = false) => {
+    if (!canReadDocflow) return;
+    if (showLoading) setDocflowSummary({ status: 'loading', count: null, truncated: false });
+    try {
+      const result = await docflowAPI.getInboxSummary();
+      setDocflowSummary(result || { status: 'unavailable', count: null, truncated: false });
+    } catch {
+      setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
+    }
+  }, [canReadDocflow]);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (!canReadDocflow) return undefined;
-    let active = true;
-    setDocflowSummary({ status: 'loading', count: null, truncated: false });
-    docflowAPI.getInboxSummary()
-      .then((result) => {
-        if (active) setDocflowSummary(result || { status: 'unavailable', count: null, truncated: false });
-      })
-      .catch(() => {
-        if (active) setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
+    let timer = null;
+    const refresh = (event) => {
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        void loadDashboard(true);
+        if (event?.type === HUB_REALTIME_DOCFLOW_EVENT || event?.type === HUB_REALTIME_CONNECTED_EVENT) {
+          void loadDocflowSummary(false);
+        }
+      }, 180);
+    };
+    const eventNames = [
+      HUB_REALTIME_CONNECTED_EVENT,
+      HUB_REALTIME_DASHBOARD_EVENT,
+      HUB_REALTIME_DOCFLOW_EVENT,
+      HUB_REALTIME_MAIL_EVENT,
+      HUB_REALTIME_NOTIFICATION_EVENT,
+      HUB_REALTIME_TASK_EVENT,
+      CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
+    ];
+    eventNames.forEach((eventName) => window.addEventListener(eventName, refresh));
+    const release = hubRealtimeSocket.retain();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      eventNames.forEach((eventName) => window.removeEventListener(eventName, refresh));
+      release();
+    };
+  }, [loadDashboard, loadDocflowSummary]);
+
+  useEffect(() => {
+    const focusId = String(location.state?.taskRestoreFocusId || '').trim();
+    if (!focusId || loading || typeof window === 'undefined') return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const scrollY = Number(location.state?.taskRestoreScrollY || 0);
+      if (Number.isFinite(scrollY) && scrollY >= 0) {
+        window.scrollTo({ top: scrollY, behavior: 'auto' });
+      }
+      const focusTarget = Array.from(document.querySelectorAll('[data-task-return-focus]'))
+        .find((element) => element.dataset?.taskReturnFocus === focusId);
+      focusTarget?.focus?.();
+      const nextState = { ...(location.state || {}) };
+      delete nextState.taskRestoreFocusId;
+      delete nextState.taskRestoreScrollY;
+      navigate(`${location.pathname}${location.search || ''}`, {
+        replace: true,
+        state: nextState,
       });
-    return () => { active = false; };
-  }, [canReadDocflow]);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, location.pathname, location.search, location.state, navigate]);
+
+  useEffect(() => {
+    if (!canReadDocflow) return undefined;
+    void loadDocflowSummary(true);
+    return undefined;
+  }, [canReadDocflow, loadDocflowSummary]);
 
   const taskItems = useMemo(
     () => (Array.isArray(payload?.my_tasks?.items) ? payload.my_tasks.items : []),
@@ -1004,11 +1074,19 @@ export default function Dashboard() {
             return (
               <AttentionRow
                 key={`task-${entry.id}`}
+                returnFocusId={`dashboard-attention-task-${entry.id}`}
                 icon={meta.icon}
                 title={task?.title || 'Задача'}
                 secondary={meta.secondary}
                 tone={meta.tone}
-                onClick={() => navigate(`/tasks?task=${encodeURIComponent(entry.id)}`)}
+                onClick={() => navigate(`/tasks?task=${encodeURIComponent(entry.id)}`, {
+                  state: {
+                    taskReturnTo: '/dashboard',
+                    taskReturnLabel: 'Назад на главную',
+                    taskReturnFocusId: `dashboard-attention-task-${entry.id}`,
+                    taskReturnScrollY: window.scrollY,
+                  },
+                })}
               />
             );
           })}
@@ -1077,7 +1155,15 @@ export default function Dashboard() {
               <TaskQueueRow
                 key={String(task.id)}
                 task={task}
-                onClick={() => navigate(`/tasks?task=${encodeURIComponent(String(task.id))}`)}
+                returnFocusId={`dashboard-queue-task-${task.id}`}
+                onClick={() => navigate(`/tasks?task=${encodeURIComponent(String(task.id))}`, {
+                  state: {
+                    taskReturnTo: '/dashboard',
+                    taskReturnLabel: 'Назад на главную',
+                    taskReturnFocusId: `dashboard-queue-task-${task.id}`,
+                    taskReturnScrollY: window.scrollY,
+                  },
+                })}
               />
             ))}
           </Stack>

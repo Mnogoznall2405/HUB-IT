@@ -5,7 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import EmployeeEquipmentDialog from './EmployeeEquipmentDialog';
 
-const { getEmployeeEquipment, getEmployeeWarehouse, exportEmployeeEquipmentWorkbook } = vi.hoisted(() => ({
+const {
+  downloadEquipmentActFile,
+  getEmployeeEquipment,
+  getEmployeeWarehouse,
+  exportEmployeeEquipmentWorkbook,
+} = vi.hoisted(() => ({
+  downloadEquipmentActFile: vi.fn(),
   getEmployeeEquipment: vi.fn(),
   getEmployeeWarehouse: vi.fn(),
   exportEmployeeEquipmentWorkbook: vi.fn(),
@@ -17,6 +23,14 @@ vi.mock('../../api/equipmentSearch', () => ({
 
 vi.mock('../../api/warehouse1c', () => ({
   warehouse1cAPI: { getEmployeeWarehouse },
+}));
+
+vi.mock('../../api/equipmentTransferActs', () => ({
+  equipmentTransferActsAPI: { downloadEquipmentActFile },
+}));
+
+vi.mock('../../components/documentPreview/DocumentPreviewDialog', () => ({
+  default: ({ open, title }) => (open ? <div role="dialog" aria-label={title} /> : null),
 }));
 
 vi.mock('./employeeEquipmentExcel', () => ({
@@ -45,6 +59,11 @@ describe('EmployeeEquipmentDialog', () => {
     getEmployeeEquipment.mockReset();
     getEmployeeEquipment.mockResolvedValue({ equipment: [] });
     getEmployeeWarehouse.mockReset();
+    downloadEquipmentActFile.mockReset();
+    downloadEquipmentActFile.mockResolvedValue({
+      data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+      headers: { 'content-type': 'application/pdf' },
+    });
     exportEmployeeEquipmentWorkbook.mockReset();
     exportEmployeeEquipmentWorkbook.mockResolvedValue('оборудование.xlsx');
   });
@@ -69,6 +88,40 @@ describe('EmployeeEquipmentDialog', () => {
         allDatabases: true,
       });
     });
+  });
+
+  it('shows and opens the current act from the employee equipment table', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        {
+          inv_no: 'INV-1',
+          model_name: 'ThinkPad',
+          hub_db_id: 'archive',
+          current_act_available: true,
+          current_act_doc_no: 77,
+          current_act_doc_number: 'ACT-77',
+          current_act_doc_date: '2026-09-04T08:30:00',
+        },
+        {
+          inv_no: 'INV-2',
+          model_name: 'Monitor',
+          current_act_available: false,
+        },
+      ],
+    });
+
+    renderDialog(true);
+
+    const openActButton = await screen.findByRole('button', { name: /Открыть актуальный акт ACT-77/ });
+    fireEvent.click(openActButton);
+
+    await waitFor(() => {
+      expect(downloadEquipmentActFile).toHaveBeenCalledWith('77', expect.objectContaining({
+        inv_no: 'INV-1',
+        db_id: 'archive',
+      }));
+    });
+    expect(screen.getByLabelText('Актуального акта нет для оборудования INV-2')).toBeInTheDocument();
   });
 
   it('shows the matched warehouse before its live 1C balances finish loading', async () => {

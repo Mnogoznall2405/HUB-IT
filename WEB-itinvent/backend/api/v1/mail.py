@@ -20,6 +20,11 @@ from pydantic import BaseModel, Field
 
 from backend.api.deps import ensure_user_permission, get_current_active_user, get_current_admin_user, get_current_session_id
 from backend.models.auth import User
+from backend.realtime.hub import (
+    HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+    HUB_MAIL_UNREAD_CHANGED_EVENT,
+    hub_realtime_publisher,
+)
 from backend.services.authorization_service import PERM_MAIL_ACCESS
 from backend.services.request_auth_context_service import (
     get_request_session_id,
@@ -361,6 +366,31 @@ async def _write_through_mail_read_state(**kwargs: Any) -> None:
         await _run_in_mail_executor(mail_runtime_snapshot_service.apply_read_state, **kwargs)
     except Exception:
         logger.warning("Mail read-state snapshot write-through failed", exc_info=True)
+
+
+def _publish_mail_realtime(
+    *,
+    user_id: int,
+    event_type: str,
+    message_id: str = "",
+    conversation_id: str = "",
+    mailbox_id: str = "",
+    operation: str = "",
+    unread_delta: int | None = None,
+) -> bool:
+    payload: dict[str, Any] = {
+        "message_id": _normalize_text(message_id),
+        "conversation_id": _normalize_text(conversation_id),
+        "mailbox_id": _normalize_text(mailbox_id),
+        "operation": _normalize_text(operation),
+    }
+    if unread_delta is not None:
+        payload["unread_delta"] = int(unread_delta)
+    return hub_realtime_publisher.publish_user_event(
+        recipient_user_id=int(user_id),
+        event_type=event_type,
+        payload=payload,
+    )
 
 
 async def _write_through_mail_preferences(*, user_id: int, preferences: dict[str, Any]) -> None:
@@ -1215,6 +1245,14 @@ async def mark_message_read(
                 message_id=message_id,
                 folder="inbox",
             )
+            _publish_mail_realtime(
+                user_id=int(current_user.id),
+                event_type=HUB_MAIL_UNREAD_CHANGED_EVENT,
+                message_id=message_id,
+                mailbox_id=mailbox_id,
+                operation="read",
+                unread_delta=-1,
+            )
         return {"ok": ok}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1242,6 +1280,14 @@ async def mark_message_unread(
                 message_id=message_id,
                 folder="inbox",
             )
+            _publish_mail_realtime(
+                user_id=int(current_user.id),
+                event_type=HUB_MAIL_UNREAD_CHANGED_EVENT,
+                message_id=message_id,
+                mailbox_id=mailbox_id,
+                operation="unread",
+                unread_delta=1,
+            )
         return {"ok": ok}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1254,13 +1300,21 @@ async def set_mail_message_importance(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.set_message_importance,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
             message_id=message_id,
             importance=payload.importance,
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            message_id=message_id,
+            mailbox_id=payload.mailbox_id,
+            operation="importance",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1306,13 +1360,21 @@ async def move_mail_message(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.move_message,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
             message_id=message_id,
             target_folder=_normalize_text(payload.target_folder, "inbox"),
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            message_id=message_id,
+            mailbox_id=payload.mailbox_id,
+            operation="move",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1324,13 +1386,21 @@ async def delete_mail_message(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.delete_message,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
             message_id=message_id,
             permanent=bool(payload.permanent),
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            message_id=message_id,
+            mailbox_id=payload.mailbox_id,
+            operation="delete_permanent" if payload.permanent else "delete",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1342,13 +1412,21 @@ async def restore_mail_message(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.restore_message,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
             message_id=message_id,
             target_folder=_normalize_text(payload.target_folder),
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            message_id=message_id,
+            mailbox_id=payload.mailbox_id,
+            operation="restore",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1359,7 +1437,7 @@ async def bulk_mail_message_action(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.bulk_message_action,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
@@ -1368,6 +1446,13 @@ async def bulk_mail_message_action(
             target_folder=_normalize_text(payload.target_folder),
             permanent=bool(payload.permanent),
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            mailbox_id=payload.mailbox_id,
+            operation=f"bulk:{_normalize_text(payload.action)}",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1378,13 +1463,20 @@ async def mark_all_mail_read(
     current_user: User = Depends(get_current_mail_user),
 ):
     try:
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.mark_all_as_read,
             user_id=int(current_user.id),
             mailbox_id=_normalize_text(payload.mailbox_id) or None,
             folder=_normalize_text(payload.folder, "inbox"),
             folder_scope=_normalize_text(payload.folder_scope, "current"),
         )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_UNREAD_CHANGED_EVENT,
+            mailbox_id=payload.mailbox_id,
+            operation="mark_all_read",
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1521,6 +1613,14 @@ async def mark_mail_conversation_read(
                 conversation_id=_normalize_text(conversation_id),
                 folder=kwargs["folder"],
             )
+            _publish_mail_realtime(
+                user_id=int(current_user.id),
+                event_type=HUB_MAIL_UNREAD_CHANGED_EVENT,
+                conversation_id=conversation_id,
+                mailbox_id=normalized_mailbox_id,
+                operation="conversation_read",
+                unread_delta=-changed,
+            )
         return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1552,6 +1652,14 @@ async def mark_mail_conversation_unread(
                 is_read=False,
                 conversation_id=_normalize_text(conversation_id),
                 folder=kwargs["folder"],
+            )
+            _publish_mail_realtime(
+                user_id=int(current_user.id),
+                event_type=HUB_MAIL_UNREAD_CHANGED_EVENT,
+                conversation_id=conversation_id,
+                mailbox_id=normalized_mailbox_id,
+                operation="conversation_unread",
+                unread_delta=changed,
             )
         return result
     except MailServiceError as exc:

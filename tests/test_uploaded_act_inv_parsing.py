@@ -15,10 +15,11 @@ from backend.utils.person_names import to_short_fio  # noqa: E402
 
 
 class _UploadedActFakeCursor:
-    def __init__(self):
+    def __init__(self, template_empl_no=None):
         self._one = None
         self._many = []
         self.inserted_docs_params = None
+        self.template_empl_no = template_empl_no
 
     def execute(self, query, params=None):
         text = " ".join(str(query or "").lower().split())
@@ -30,7 +31,7 @@ class _UploadedActFakeCursor:
         elif "select i.id, i.branch_no, i.loc_no" in text:
             self._many = [(101, 7, 9)]
         elif "select top 1 d.type_no, d.comp_no" in text:
-            self._one = (99, 0, None, None, None, None)
+            self._one = (99, 0, None, None, self.template_empl_no, None)
         elif "select top 1 d.type_no" in text and "n'%акт%'" in text:
             self._one = (10,) if "n'%аннулир%'" in text else (99,)
         elif "select isnull(max(doc_no), 0) + 1 from docs" in text:
@@ -53,8 +54,8 @@ class _UploadedActFakeCursor:
 
 
 class _UploadedActFakeConnection:
-    def __init__(self):
-        self.cursor_obj = _UploadedActFakeCursor()
+    def __init__(self, template_empl_no=None):
+        self.cursor_obj = _UploadedActFakeCursor(template_empl_no=template_empl_no)
 
     def __enter__(self):
         return self
@@ -67,8 +68,8 @@ class _UploadedActFakeConnection:
 
 
 class _UploadedActFakeDB:
-    def __init__(self):
-        self.connection = _UploadedActFakeConnection()
+    def __init__(self, template_empl_no=None):
+        self.connection = _UploadedActFakeConnection(template_empl_no=template_empl_no)
 
     def get_connection(self):
         return self.connection
@@ -154,6 +155,26 @@ def test_create_uploaded_transfer_act_does_not_copy_annulled_doc_type(monkeypatc
     assert result["doc_no"] == 1464
     assert fake_db.connection.cursor_obj.inserted_docs_params is not None
     assert fake_db.connection.cursor_obj.inserted_docs_params[1] == 10
+
+
+def test_create_uploaded_transfer_act_does_not_copy_template_employee_when_recipient_is_unknown(monkeypatch):
+    fake_db = _UploadedActFakeDB(template_empl_no=777)
+    monkeypatch.setattr(queries, "get_db", lambda db_id=None: fake_db)
+    monkeypatch.setattr(queries, "get_owner_no_by_name", lambda *args, **kwargs: None)
+
+    queries.create_uploaded_transfer_act(
+        from_employee="Old Owner",
+        to_employee="Unresolved Recipient",
+        doc_date=datetime(2026, 9, 4, 12, 0),
+        equipment_item_ids=[101],
+        file_name="signed.pdf",
+        file_bytes=b"%PDF-1.4",
+        created_by="tester",
+        db_id="main",
+    )
+
+    assert fake_db.connection.cursor_obj.inserted_docs_params is not None
+    assert fake_db.connection.cursor_obj.inserted_docs_params[5] is None
 
 
 def test_parse_inv_nos_from_text_ignores_word_garbage_and_dates():

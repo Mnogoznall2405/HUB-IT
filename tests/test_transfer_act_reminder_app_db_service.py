@@ -224,3 +224,21 @@ def test_transfer_act_reminder_service_supports_app_db_backend(temp_dir, monkeyp
         doc_number="101",
     )
     assert completed["reminder_status"] == "matched_partial"
+
+    with reminder._lock, reminder._connect() as conn:
+        conn.execute(
+            f"UPDATE {reminder._GROUPS_TABLE} SET completed_at = ? WHERE reminder_id = ?",
+            ("2026-09-04T00:00:00+00:00", created["reminder_id"]),
+        )
+        conn.execute(
+            f"UPDATE {reminder._REMINDERS_TABLE} SET status = 'done', completed_at = ? WHERE reminder_id = ?",
+            ("2026-09-04T00:00:00+00:00", created["reminder_id"]),
+        )
+        conn.commit()
+
+    reconciled = reminder.reconcile_task_completion_mismatches(limit=10)
+
+    assert reconciled == {"checked": 1, "closed": 1, "failed": 0}
+    task = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert task is not None
+    assert task["status"] == "done"

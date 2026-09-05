@@ -3,6 +3,7 @@ import type { NotificationResponse } from 'expo-notifications';
 import * as chatApi from '../api/chatApi';
 import * as mailApi from '../api/mailApi';
 import * as tokenStore from '../auth/tokenStore';
+import { reconcileNativeBadge } from './notificationBadge';
 import { getPendingChatReplyCount } from './pendingNotificationReplies';
 import { HUBIT_CHAT_REPLY_ACTION, HUBIT_MAIL_MARK_READ_ACTION } from './nativePush';
 import { handleNotificationBackgroundTask } from './notificationBackgroundTask';
@@ -45,6 +46,10 @@ describe('notification background action task', () => {
     jest.spyOn(tokenStore, 'getSessionUserId').mockResolvedValue(7);
     (chatApi.sendTextMessage as jest.Mock).mockReset().mockResolvedValue({ id: 'sent-1' });
     (chatApi.markConversationRead as jest.Mock).mockReset().mockResolvedValue(undefined);
+    jest.mocked(reconcileNativeBadge).mockReset().mockResolvedValue(0);
+    jest.mocked(Notifications.dismissNotificationAsync).mockReset().mockResolvedValue(undefined);
+    jest.mocked(Notifications.scheduleNotificationAsync).mockReset().mockResolvedValue('feedback');
+    jest.mocked(Notifications.clearLastNotificationResponseAsync).mockReset().mockResolvedValue(undefined);
   });
 
   it('sends a quick reply without opening the app and shows delivery state', async () => {
@@ -57,6 +62,77 @@ describe('notification background action task', () => {
         content: expect.objectContaining({ title: 'Ответ отправлен' }),
       }),
     );
+  });
+
+  it('returns after delivery when badge reconciliation stalls', async () => {
+    jest.mocked(reconcileNativeBadge).mockImplementationOnce(
+      () => new Promise<number | null>(() => undefined),
+    );
+
+    const result = await Promise.race([
+      handleNotificationBackgroundTask(response()).then(() => 'completed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+    ]);
+
+    expect(result).toBe('completed');
+  });
+
+  it('returns after delivery when clearing the native response stalls', async () => {
+    jest.mocked(Notifications.clearLastNotificationResponseAsync).mockImplementationOnce(
+      () => new Promise<void>(() => undefined),
+    );
+
+    const result = await Promise.race([
+      handleNotificationBackgroundTask(response()).then(() => 'completed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+    ]);
+
+    expect(result).toBe('completed');
+  });
+
+  it('updates RemoteInput under the same identifier before waiting for the chat request', async () => {
+    let resolveSend: ((value: { id: string }) => void) | undefined;
+    (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(
+      () => new Promise<{ id: string }>((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+
+    const task = handleNotificationBackgroundTask(response());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalledWith('chat:msg:message-7');
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identifier: 'chat:msg:message-7',
+        content: expect.objectContaining({ title: 'Отправка ответа…' }),
+      }),
+    );
+
+    resolveSend?.({ id: 'sent-1' });
+    await expect(task).resolves.toBe(Notifications.BackgroundNotificationTaskResult.NewData);
+  });
+
+  it('stops a stalled quick reply and saves it for retry instead of leaving Android pending', async () => {
+    jest.useFakeTimers();
+    try {
+      (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(
+        () => new Promise(() => undefined),
+      );
+
+      const task = handleNotificationBackgroundTask(response());
+      await jest.advanceTimersByTimeAsync(8_000);
+
+      await expect(task).resolves.toBe(Notifications.BackgroundNotificationTaskResult.NewData);
+      expect(await getPendingChatReplyCount(7)).toBe(1);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({ title: 'Ответ сохранён' }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('stores the exact reply and exposes retry state when offline', async () => {

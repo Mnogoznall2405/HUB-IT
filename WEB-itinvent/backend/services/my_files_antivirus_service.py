@@ -1,4 +1,4 @@
-"""Fail-closed Microsoft Defender scanning for my-files spool payloads."""
+"""Fail-closed antivirus scanning for my-files spool payloads."""
 from __future__ import annotations
 
 import os
@@ -10,6 +10,9 @@ from pathlib import Path
 from backend.config import config
 
 
+GIB_BYTES = 1024**3
+
+
 @dataclass(frozen=True)
 class SecurityScanResult:
     status: str
@@ -19,6 +22,17 @@ class SecurityScanResult:
 
 class MyFilesAntivirusError(RuntimeError):
     """Raised when the configured antivirus cannot produce a trustworthy result."""
+
+    def __init__(self, message: str, *, engine: str = "unknown") -> None:
+        super().__init__(message)
+        self.engine = str(engine or "unknown").strip() or "unknown"
+
+
+def _scan_timeout_seconds(path: Path, configured_timeout_sec: int) -> int:
+    base_timeout = max(1, int(configured_timeout_sec))
+    size_bytes = max(0, int(path.stat().st_size))
+    size_units = max(1, (size_bytes + GIB_BYTES - 1) // GIB_BYTES)
+    return base_timeout * size_units
 
 
 def _resolve_kaspersky_path(explicit_path: str = "") -> Path | None:
@@ -64,7 +78,13 @@ def _resolve_defender_path(explicit_path: str = "") -> Path | None:
     return None
 
 
-def _run_scan_command(args: list[str], *, timeout: int, scanner_name: str) -> subprocess.CompletedProcess[str]:
+def _run_scan_command(
+    args: list[str],
+    *,
+    timeout: int,
+    scanner_name: str,
+    scanner_engine: str,
+) -> subprocess.CompletedProcess[str]:
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         return subprocess.run(
@@ -79,9 +99,9 @@ def _run_scan_command(args: list[str], *, timeout: int, scanner_name: str) -> su
             creationflags=creation_flags,
         )
     except subprocess.TimeoutExpired as exc:
-        raise MyFilesAntivirusError(f"{scanner_name} scan timed out") from exc
+        raise MyFilesAntivirusError(f"{scanner_name} scan timed out", engine=scanner_engine) from exc
     except OSError as exc:
-        raise MyFilesAntivirusError(f"{scanner_name} scan could not start") from exc
+        raise MyFilesAntivirusError(f"{scanner_name} scan could not start", engine=scanner_engine) from exc
 
 
 def _scan_with_defender(executable: Path, path: Path, *, timeout: int) -> SecurityScanResult:
@@ -97,6 +117,7 @@ def _scan_with_defender(executable: Path, path: Path, *, timeout: int) -> Securi
         ],
         timeout=timeout,
         scanner_name="Microsoft Defender",
+        scanner_engine="microsoft-defender",
     )
 
     output = f"{result.stdout}\n{result.stderr}".strip().lower()
@@ -104,7 +125,10 @@ def _scan_with_defender(executable: Path, path: Path, *, timeout: int) -> Securi
         return SecurityScanResult(status="clean", engine="microsoft-defender")
     if "threat" in output and "found no threats" not in output:
         return SecurityScanResult(status="blocked", engine="microsoft-defender", detail="Threat detected")
-    raise MyFilesAntivirusError(f"Microsoft Defender scan failed with exit code {result.returncode}")
+    raise MyFilesAntivirusError(
+        f"Microsoft Defender scan failed with exit code {result.returncode}",
+        engine="microsoft-defender",
+    )
 
 
 def _kaspersky_stat(output: str, label: str) -> int | None:
@@ -117,6 +141,7 @@ def _scan_with_kaspersky(executable: Path, path: Path, *, timeout: int) -> Secur
         [str(executable), "SCAN", str(path), "/i0"],
         timeout=timeout,
         scanner_name="Kaspersky",
+        scanner_engine="kaspersky-endpoint-security",
     )
     output = f"{result.stdout}\n{result.stderr}".strip()
     detected = _kaspersky_stat(output, "Total detected")
@@ -144,7 +169,10 @@ def _scan_with_kaspersky(executable: Path, path: Path, *, timeout: int) -> Secur
         and corrupted == 0
     ):
         return SecurityScanResult(status="clean", engine="kaspersky-endpoint-security")
-    raise MyFilesAntivirusError(f"Kaspersky scan failed with exit code {result.returncode}")
+    raise MyFilesAntivirusError(
+        f"Kaspersky scan failed with exit code {result.returncode}",
+        engine="kaspersky-endpoint-security",
+    )
 
 
 def scan_my_file(path: Path) -> SecurityScanResult:
@@ -157,15 +185,22 @@ def scan_my_file(path: Path) -> SecurityScanResult:
     provider = str(settings.antivirus_provider or "auto").strip().lower()
     if provider not in {"auto", "kaspersky", "defender"}:
         raise MyFilesAntivirusError(f"Unsupported antivirus provider: {provider}")
+    scan_timeout = _scan_timeout_seconds(path, settings.antivirus_timeout_sec)
 
     if provider in {"auto", "kaspersky"}:
         executable = _resolve_kaspersky_path(settings.kaspersky_path)
         if executable is not None:
-            return _scan_with_kaspersky(executable, path, timeout=settings.antivirus_timeout_sec)
+            return _scan_with_kaspersky(executable, path, timeout=scan_timeout)
         if provider == "kaspersky":
-            raise MyFilesAntivirusError("Kaspersky scanner is unavailable")
+            raise MyFilesAntivirusError(
+                "Kaspersky scanner is unavailable",
+                engine="kaspersky-endpoint-security",
+            )
 
     executable = _resolve_defender_path(settings.defender_path)
     if executable is None:
-        raise MyFilesAntivirusError("Microsoft Defender scanner is unavailable")
-    return _scan_with_defender(executable, path, timeout=settings.antivirus_timeout_sec)
+        raise MyFilesAntivirusError(
+            "Microsoft Defender scanner is unavailable",
+            engine="microsoft-defender",
+        )
+    return _scan_with_defender(executable, path, timeout=scan_timeout)

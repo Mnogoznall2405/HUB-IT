@@ -374,6 +374,198 @@ def test_complete_uploaded_act_can_auto_match_open_reminder_without_explicit_ids
     assert matched["reminder_task_id"] == created["task_id"]
 
 
+def test_combined_uploaded_act_closes_all_matching_groups_and_finishes_hub_task(temp_dir, monkeypatch):
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch)
+    transferred_items, acts = _sample_transfer_payload()
+
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "transfer_act_reminder_controller_username": "kozlovskii.me",
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me", "full_name": "Kozlovskii Me"},
+            "resolved_controller_source": "configured",
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+
+    created = reminder.create_transfer_reminder(
+        db_id="main",
+        transferred_items=transferred_items,
+        acts=acts,
+        new_employee_no="501",
+        new_employee_name="New Employee",
+        actor_user=actor,
+    )
+
+    completed = reminder.complete_for_uploaded_act(
+        reminder_id=created["reminder_id"],
+        source_task_id=created["task_id"],
+        db_id="main",
+        current_user=actor,
+        from_employee="",
+        to_employee="New Employee",
+        linked_inv_nos=["1001", "1002", "2001"],
+        doc_no=556,
+        doc_number="556",
+    )
+
+    assert completed["reminder_status"] == "completed"
+    assert completed["reminder_pending_groups"] == 0
+    reminder_payload = reminder.get_reminder(reminder_id=created["reminder_id"])
+    assert reminder_payload["completed_groups_total"] == 2
+    assert {group["matched_doc_no"] for group in reminder_payload["completed_groups"]} == {556}
+    task = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert str(task["status"]).lower() == "done"
+
+
+def test_combined_uploaded_act_can_complete_subset_of_pending_groups(temp_dir, monkeypatch):
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch)
+    transferred_items = [
+        {"inv_no": "1001", "old_employee_name": "Ivan Ivanov"},
+        {"inv_no": "1002", "old_employee_name": "Ivan Ivanov"},
+        {"inv_no": "2001", "old_employee_name": "Petr Petrov"},
+        {"inv_no": "3001", "old_employee_name": "Sidor Sidorov"},
+    ]
+    acts = [
+        {"act_id": "act-1", "old_employee": "Ivan Ivanov", "equipment_count": 2},
+        {"act_id": "act-2", "old_employee": "Petr Petrov", "equipment_count": 1},
+        {"act_id": "act-3", "old_employee": "Sidor Sidorov", "equipment_count": 1},
+    ]
+
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "transfer_act_reminder_controller_username": "kozlovskii.me",
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me", "full_name": "Kozlovskii Me"},
+            "resolved_controller_source": "configured",
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+
+    created = reminder.create_transfer_reminder(
+        db_id="main",
+        transferred_items=transferred_items,
+        acts=acts,
+        new_employee_no="501",
+        new_employee_name="New Employee",
+        actor_user=actor,
+    )
+
+    partial = reminder.complete_for_uploaded_act(
+        reminder_id=created["reminder_id"],
+        source_task_id=created["task_id"],
+        db_id="main",
+        current_user=actor,
+        from_employee="",
+        to_employee="New Employee",
+        linked_inv_nos=["2001", "1002", "1001"],
+        doc_no=557,
+        doc_number="557",
+    )
+
+    assert partial["reminder_status"] == "matched_partial"
+    assert partial["reminder_pending_groups"] == 1
+    reminder_payload = reminder.get_reminder(reminder_id=created["reminder_id"])
+    assert reminder_payload["completed_groups_total"] == 2
+    assert reminder_payload["pending_groups"][0]["inv_nos"] == ["3001"]
+    task = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert str(task["status"]).lower() == "in_progress"
+
+
+def test_uploaded_act_with_extra_inventory_number_does_not_match_groups(temp_dir, monkeypatch):
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch)
+    transferred_items, acts = _sample_transfer_payload()
+
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "transfer_act_reminder_controller_username": "kozlovskii.me",
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me", "full_name": "Kozlovskii Me"},
+            "resolved_controller_source": "configured",
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+
+    created = reminder.create_transfer_reminder(
+        db_id="main",
+        transferred_items=transferred_items,
+        acts=acts,
+        new_employee_no="501",
+        new_employee_name="New Employee",
+        actor_user=actor,
+    )
+
+    unmatched = reminder.complete_for_uploaded_act(
+        reminder_id=created["reminder_id"],
+        source_task_id=created["task_id"],
+        db_id="main",
+        current_user=actor,
+        from_employee="",
+        to_employee="New Employee",
+        linked_inv_nos=["1001", "1002", "9999"],
+        doc_no=558,
+        doc_number="558",
+    )
+
+    assert unmatched["reminder_status"] == "none"
+    reminder_payload = reminder.get_reminder(reminder_id=created["reminder_id"])
+    assert reminder_payload["completed_groups_total"] == 0
+    task = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert str(task["status"]).lower() == "in_progress"
+
+
+def test_reconcile_done_reminder_closes_open_hub_task(temp_dir, monkeypatch):
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch)
+    transferred_items, acts = _sample_transfer_payload()
+
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "transfer_act_reminder_controller_username": "kozlovskii.me",
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me", "full_name": "Kozlovskii Me"},
+            "resolved_controller_source": "configured",
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+
+    created = reminder.create_transfer_reminder(
+        db_id="main",
+        transferred_items=transferred_items,
+        acts=acts,
+        new_employee_no="501",
+        new_employee_name="New Employee",
+        actor_user=actor,
+    )
+    with reminder._lock, reminder._connect() as conn:
+        conn.execute(
+            f"UPDATE {reminder._GROUPS_TABLE} SET completed_at = ? WHERE reminder_id = ?",
+            ("2026-09-04T00:00:00+00:00", created["reminder_id"]),
+        )
+        conn.execute(
+            f"UPDATE {reminder._REMINDERS_TABLE} SET status = 'done', completed_at = ? WHERE reminder_id = ?",
+            ("2026-09-04T00:00:00+00:00", created["reminder_id"]),
+        )
+        conn.commit()
+
+    before = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert str(before["status"]).lower() == "in_progress"
+
+    result = reminder.reconcile_task_completion_mismatches(limit=10)
+
+    assert result == {"checked": 1, "closed": 1, "failed": 0}
+    after = hub.get_task(created["task_id"], user_id=10, is_admin=True)
+    assert str(after["status"]).lower() == "done"
+    assert "автоматически" in str(after.get("review_comment") or "").lower()
+
+
 def test_create_transfer_reminder_returns_warning_when_controller_is_missing(temp_dir, monkeypatch):
     _, reminder_module, _, reminder, actor = _build_services(temp_dir, monkeypatch)
     transferred_items, acts = _sample_transfer_payload()

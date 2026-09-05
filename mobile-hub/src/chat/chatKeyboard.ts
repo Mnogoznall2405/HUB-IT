@@ -1,7 +1,7 @@
-export const CHAT_KEYBOARD_AVOIDING_BEHAVIOR = 'padding' as const;
+import { Platform } from 'react-native';
 
-export function chatKeyboardAvoidingProps() {
+export function chatKeyboardAvoidingProps(platform: string = Platform.OS) {
   return {
-    behavior: CHAT_KEYBOARD_AVOIDING_BEHAVIOR,
+    behavior: platform === 'ios' ? ('padding' as const) : ('height' as const),
   };
 }

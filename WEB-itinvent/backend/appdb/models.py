@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -163,6 +164,78 @@ class AppOrgStructureDepartmentLink(AppBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(64), nullable=False)
     department_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObject(AppBase):
+    """HUB-owned passport for one construction object."""
+
+    __tablename__ = "construction_objects"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_objects_active_name", "is_active", "name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObject1CGroup(AppBase):
+    """Stable 1C nomenclature-group link assigned to one HUB object."""
+
+    __tablename__ = "construction_object_1c_groups"
+    __table_args__ = _table_args(
+        UniqueConstraint("group_ref", name="uq_app_construction_object_1c_group_ref"),
+        Index("ix_app_construction_object_1c_groups_object", "object_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObjectRoleAssignment(AppBase):
+    """Versioned project-role assignment backed by a stable ZUP employee code."""
+
+    __tablename__ = "construction_object_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ('project_lead', 'pto_manager', 'umto_coordinator')",
+            name="ck_app_construction_object_role_key",
+        ),
+        Index("ix_app_construction_object_roles_object", "object_id", "role_key"),
+        Index("ix_app_construction_object_roles_employee", "employee_code"),
+        Index(
+            "uq_app_construction_object_active_role",
+            "object_id",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 

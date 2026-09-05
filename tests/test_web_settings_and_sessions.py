@@ -315,6 +315,67 @@ def test_users_endpoint_allows_legacy_short_username(monkeypatch):
     assert response.json()[0]["username"] == "1c"
 
 
+def test_users_search_endpoint_forwards_bounded_filters(monkeypatch):
+    calls = []
+
+    def _search_users(**kwargs):
+        calls.append(kwargs)
+        return {
+            "items": [{
+                "id": 1,
+                "username": "ivanov",
+                "email": None,
+                "full_name": "Иванов Иван",
+                "is_active": True,
+                "role": "operator",
+                "permissions": [],
+                "use_custom_permissions": False,
+                "custom_permissions": [],
+                "auth_source": "local",
+                "telegram_id": None,
+                "assigned_database": None,
+                "mailbox_email": None,
+                "mailbox_login": None,
+                "mail_signature_html": None,
+                "mail_is_configured": False,
+            }],
+            "total": 1,
+            "limit": kwargs["limit"],
+            "offset": kwargs["offset"],
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(auth.user_service, "search_users", _search_users)
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.users.manage"])
+
+    response = TestClient(app).get(
+        "/auth/users/search",
+        params={
+            "q": "иванов",
+            "limit": 30,
+            "offset": 0,
+            "status": "active",
+            "role": "operator",
+            "exclude_user_id": 99,
+            "ids": "1,2",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["username"] == "ivanov"
+    assert calls == [{
+        "query": "иванов",
+        "limit": 30,
+        "offset": 0,
+        "status": "active",
+        "role": "operator",
+        "exclude_user_id": 99,
+        "user_ids": [1, 2],
+    }]
+
+
 def test_non_admin_with_manage_sessions_permission_can_access_sessions_endpoint(monkeypatch):
     monkeypatch.setattr(auth.session_service, "list_sessions", lambda active_only=True: [{
         "session_id": "active-session",

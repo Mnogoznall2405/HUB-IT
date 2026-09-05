@@ -70,6 +70,68 @@ def test_user_service_uses_direct_app_db_lookup_for_identity_reads(temp_dir, mon
     assert service.get_by_username("DIRECT-LOOKUP")["id"] == created["id"]
 
 
+def test_user_service_searches_and_pages_without_full_app_db_load(temp_dir, monkeypatch):
+    service = UserService(file_path=Path(temp_dir) / "web_users.json", database_url=_sqlite_url(temp_dir))
+    for username, full_name, is_active, role in (
+        ("search-alpha", "Search Alpha", True, "operator"),
+        ("search-bravo", "Search Bravo", True, "operator"),
+        ("search-charlie", "Search Charlie", False, "operator"),
+        ("search-viewer", "Search Viewer", True, "viewer"),
+    ):
+        service.create_user(
+            username=username,
+            password="secret123",
+            role=role,
+            full_name=full_name,
+            department="Search Department",
+            is_active=is_active,
+        )
+
+    monkeypatch.setattr(service, "_load_users", lambda: (_ for _ in ()).throw(AssertionError("full user load")))
+
+    first_page = service.search_users(
+        query="search",
+        limit=1,
+        offset=0,
+        status="active",
+        role="operator",
+    )
+    second_page = service.search_users(
+        query="search",
+        limit=1,
+        offset=1,
+        status="active",
+        role="operator",
+    )
+
+    assert first_page["total"] == 2
+    assert first_page["has_more"] is True
+    assert first_page["items"][0]["username"] == "search-alpha"
+    assert second_page["items"][0]["username"] == "search-bravo"
+    assert second_page["has_more"] is False
+
+
+def test_user_service_bounds_legacy_search_response_for_large_directory(temp_dir, monkeypatch):
+    user_module = importlib.import_module("backend.services.user_service")
+    monkeypatch.setattr(user_module, "is_app_database_configured", lambda: False)
+    service = UserService(file_path=Path(temp_dir) / "web_users.json")
+    users = [{
+        "id": index,
+        "username": f"employee-{index:04d}",
+        "full_name": f"Employee {index:04d}",
+        "role": "viewer",
+        "is_active": True,
+        "auth_source": "local",
+    } for index in range(1, 5001)]
+    monkeypatch.setattr(service, "_load_users", lambda: users)
+
+    page = service.search_users(query="employee", limit=30, offset=0, status="active")
+
+    assert page["total"] == 5000
+    assert len(page["items"]) == 30
+    assert page["has_more"] is True
+
+
 def test_session_service_works_with_app_db_backend(temp_dir):
     service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
 

@@ -16,6 +16,7 @@ import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import { formatTaskAssigneesSummary } from '../../pages/tasks/taskUserUtils';
 
 const taskStatusMeta = (status) => {
   const value = String(status || '').toLowerCase();
@@ -153,7 +154,7 @@ const TaskCard = React.memo(({
               {task?.assignee_initials || '?'}
             </Avatar>
             <Typography variant="caption" color="text.secondary">
-              {task?.assignee_full_name || 'Не назначено'}
+              {formatTaskAssigneesSummary(task, { compact: true }) || 'Не назначено'}
             </Typography>
             <Typography variant="caption" color="text.secondary">
               ·

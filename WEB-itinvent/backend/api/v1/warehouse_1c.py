@@ -25,6 +25,7 @@ from backend.models.warehouse_1c import (
 )
 from backend.services.authorization_service import (
     PERM_DATABASE_WRITE,
+    PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
     PERM_WAREHOUSE_1C_READ,
     PERM_WAREHOUSE_1C_RECONCILE_WRITE,
 )
@@ -338,6 +339,43 @@ async def match_nomenclature_to_hub(
             scope=resolved_scope,
         )
     )
+
+
+@router.get("/it-requests")
+async def get_it_requests(
+    view: str = Query("active", max_length=16),
+    q: str = Query("", max_length=200),
+    stage: str = Query("", max_length=32),
+    overdue: bool | None = Query(None),
+    warehouse_ref: str = Query("", max_length=64),
+    limit: int = Query(25, ge=1, le=100),
+    cursor: str = Query("", max_length=512),
+    refresh: bool = Query(False),
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_IT_REQUESTS_READ)),
+):
+    return await _run_or_raise(
+        warehouse_1c_service.get_it_requests(
+            view=view,
+            search=q,
+            stage=stage,
+            overdue=overdue,
+            warehouse_ref=warehouse_ref,
+            limit=limit,
+            cursor=cursor or None,
+            refresh=refresh,
+        )
+    )
+
+
+@router.get("/it-requests/{request_ref}")
+async def get_it_request_detail(
+    request_ref: str,
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_IT_REQUESTS_READ)),
+):
+    result = await _run_or_raise(warehouse_1c_service.get_it_request_detail(request_ref))
+    if result is None:
+        raise HTTPException(status_code=404, detail="ИТ-заявка не найдена")
+    return result
 
 
 @router.get("/movements")

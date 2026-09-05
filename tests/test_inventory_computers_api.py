@@ -762,8 +762,10 @@ def test_upsert_host_does_not_clear_soft_hide(monkeypatch):
     class FakeSession:
         def __init__(self, row):
             self.row = row
+            self.get_kwargs = {}
 
-        def get(self, model, key):
+        def get(self, model, key, **kwargs):
+            self.get_kwargs = kwargs
             return self.row
 
         def flush(self):
@@ -800,6 +802,7 @@ def test_upsert_host_does_not_clear_soft_hide(monkeypatch):
             "timestamp": 1_710_000_100,
         }
     )
+    assert session.get_kwargs == {"with_for_update": True}
     assert row.hidden_at == 1_710_000_000
     assert row.hidden_by == "tester"
     assert row.hidden_reason == "noise"

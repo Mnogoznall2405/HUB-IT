@@ -25,6 +25,7 @@ from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, g
 from backend.config import config
 from backend.models.auth import (
     User,
+    UserSearchResponse,
     LoginRequest,
     LoginResponse,
     LoginModeResponse,
@@ -1313,10 +1314,10 @@ async def refresh_auth_tokens(
             session_id=payload.get("session_id"),
         )
 
-    refresh_state = await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, token_data.jti)
+    refresh_state = await run_in_threadpool(auth_runtime_store_service.get_json, "refresh", token_data.jti)
     if not refresh_state:
         grace_payload = await run_in_threadpool(
-            auth_runtime_store_service.wait_refresh_rotation_grace,
+            auth_runtime_store_service.get_refresh_rotation_grace,
             token_data.jti,
         )
         if grace_payload:
@@ -1345,6 +1346,7 @@ async def refresh_auth_tokens(
             device_id=str(refresh_state.get("device_id") or token_data.device_id or f"session:{token_data.session_id}"),
             network_zone=network_context.network_zone,
             twofa_policy=resolve_twofa_policy(),
+            persist_refresh=False,
         )
     except AuthSecurityError as exc:
         detail = str(exc)
@@ -1358,22 +1360,16 @@ async def refresh_auth_tokens(
         raise HTTPException(status_code=401, detail=detail) from exc
 
     grace_ttl = max(1, int(config.session.refresh_rotation_grace_seconds or 15))
-    grace_payload = {
-        "access_token": str(refreshed.get("access_token") or ""),
-        "refresh_token": str(refreshed.get("refresh_token") or ""),
-        "access_ttl_seconds": int(refreshed.get("access_ttl_seconds") or 0),
-        "refresh_ttl_seconds": int(refreshed.get("refresh_ttl_seconds") or 0),
-        "user": refreshed.get("user"),
-        "session_id": refreshed.get("session_id"),
-    }
-    await run_in_threadpool(
-        auth_runtime_store_service.save_refresh_rotation_grace,
+    committed = await run_in_threadpool(
+        auth_runtime_store_service.complete_refresh_rotation,
         token_data.jti,
-        grace_payload,
-        grace_ttl,
+        refreshed,
+        grace_ttl_seconds=grace_ttl,
+        revoke_ttl_seconds=token_ttl_seconds(token_data),
     )
-    await run_in_threadpool(auth_runtime_store_service.revoke_jti, token_data.jti, ttl_seconds=token_ttl_seconds(token_data))
-    return await _deliver_refresh_payload(refreshed, metric_name="refresh_success")
+    if not committed:
+        raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
+    return await _deliver_refresh_payload(committed, metric_name="refresh_success")
 
 
 def _normalize_mobile_web_next_path(value: str | None) -> str:
@@ -2041,7 +2037,53 @@ async def list_users(
     _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
 ):
     """List all web users."""
-    return _serialize_user_records(user_service.list_users())
+    items = await run_in_threadpool(user_service.list_users)
+    return _serialize_user_records(items)
+
+
+@router.get("/users/search", response_model=UserSearchResponse)
+async def search_users(
+    q: str = Query(default="", max_length=160),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    status_filter: str = Query(default="all", alias="status", pattern="^(all|active|inactive)$"),
+    role: str = Query(default="all", pattern="^(all|admin|operator|viewer)$"),
+    exclude_user_id: int | None = Query(default=None, ge=1),
+    ids: str = Query(default="", max_length=2048),
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """Search a bounded admin user page without returning the whole directory."""
+    user_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_value in str(ids or "").split(","):
+        try:
+            user_id = int(raw_value.strip())
+        except (TypeError, ValueError):
+            continue
+        if user_id <= 0 or user_id in seen_ids:
+            continue
+        seen_ids.add(user_id)
+        user_ids.append(user_id)
+        if len(user_ids) >= 200:
+            break
+
+    result = await run_in_threadpool(
+        user_service.search_users,
+        query=q,
+        limit=limit,
+        offset=offset,
+        status=status_filter,
+        role=role,
+        exclude_user_id=exclude_user_id,
+        user_ids=user_ids if str(ids or "").strip() else None,
+    )
+    return UserSearchResponse(
+        items=_serialize_user_records(list(result.get("items") or [])),
+        total=int(result.get("total") or 0),
+        limit=int(result.get("limit") or limit),
+        offset=int(result.get("offset") or offset),
+        has_more=bool(result.get("has_more", False)),
+    )
 
 
 @router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)

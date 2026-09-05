@@ -102,6 +102,7 @@ class TransferActReminderSchemaConfigurationError(RuntimeError):
 class TransferActReminderService:
     _REMINDERS_TABLE = "equipment_transfer_act_reminders"
     _GROUPS_TABLE = "equipment_transfer_act_reminder_groups"
+    _TASKS_TABLE = "hub_tasks"
 
     def __init__(self, *, database_url: str | None = None) -> None:
         explicit_database_url = str(database_url or "").strip() or None
@@ -124,7 +125,7 @@ class TransferActReminderService:
         if self._use_app_db and self._database_url:
             return SqlAlchemyCompatConnection(
                 get_app_engine(self._database_url),
-                table_names=self._reminder_table_names(),
+                table_names={*self._reminder_table_names(), self._TASKS_TABLE},
                 schema=self._app_schema,
             )
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
@@ -712,23 +713,109 @@ class TransferActReminderService:
         from_employee: str,
         to_employee: str,
         linked_inv_nos: list[str],
-    ) -> list[tuple[sqlite3.Row, sqlite3.Row]]:
+    ) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
         # Matching only by INV_NO signature — employee names are too fragile
         # (case sensitivity, typos, AI parsing errors).
-        # INV_NO is unique and reliable. Candidates are already filtered by
-        # status='open', assignee_user_id, and db_id at the caller level.
-        matches: list[tuple[sqlite3.Row, sqlite3.Row]] = []
+        # One uploaded PDF may contain several generated acts, so accept the
+        # exact union of one or more disjoint pending groups. Extra or missing
+        # inventory numbers still fail closed.
+        matches: list[tuple[sqlite3.Row, list[sqlite3.Row]]] = []
         inv_signature = _normalized_inv_signature(linked_inv_nos)
+        inv_values = set(inv_signature)
+        if not inv_values:
+            return matches
         for reminder_row in candidates:
             reminder = dict(reminder_row)
+            matched_group_rows: list[sqlite3.Row] = []
+            matched_inv_values: set[str] = set()
+            has_overlap = False
             for group_row in self._list_group_rows(conn, _normalize_text(reminder.get("reminder_id"))):
                 group = self._serialize_group_row(group_row)
                 if group.get("completed_at"):
                     continue
-                if _normalized_inv_signature(group.get("inv_nos")) != inv_signature:
+                group_inv_values = set(_normalized_inv_signature(group.get("inv_nos")))
+                if not group_inv_values or not group_inv_values.issubset(inv_values):
                     continue
-                matches.append((reminder_row, group_row))
+                if matched_inv_values.intersection(group_inv_values):
+                    has_overlap = True
+                    break
+                matched_group_rows.append(group_row)
+                matched_inv_values.update(group_inv_values)
+            if not has_overlap and matched_group_rows and matched_inv_values == inv_values:
+                matches.append((reminder_row, matched_group_rows))
         return matches
+
+    def reconcile_task_completion_mismatches(self, *, limit: int = 100) -> dict[str, int]:
+        """Retry automatic Hub-task closure after a prior partial failure."""
+        safe_limit = max(1, min(int(limit or 100), 1000))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.*
+                FROM {self._REMINDERS_TABLE} r
+                INNER JOIN {self._TASKS_TABLE} t ON t.id = r.task_id
+                WHERE t.status <> 'done'
+                  AND (
+                    r.status = 'done'
+                    OR (
+                      r.status = 'open'
+                      AND EXISTS (
+                        SELECT 1 FROM {self._GROUPS_TABLE} all_groups
+                        WHERE all_groups.reminder_id = r.reminder_id
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM {self._GROUPS_TABLE} pending_groups
+                        WHERE pending_groups.reminder_id = r.reminder_id
+                          AND (pending_groups.completed_at IS NULL OR pending_groups.completed_at = '')
+                      )
+                    )
+                  )
+                ORDER BY r.updated_at
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+
+        closed = 0
+        failed = 0
+        actor = {
+            "id": 0,
+            "username": "hub-it",
+            "full_name": "HUB-IT",
+            "role": "system",
+        }
+        for row in rows:
+            reminder = dict(row)
+            try:
+                task = hub_service.complete_task_direct(
+                    task_id=_normalize_text(reminder.get("task_id")),
+                    actor=actor,
+                    comment="Подписанные акты загружены, задача закрыта автоматически.",
+                )
+                if _normalize_text((task or {}).get("status")).lower() != "done":
+                    failed += 1
+                    continue
+                if _normalize_text(reminder.get("status")).lower() != "done":
+                    now_iso = _utc_now_iso()
+                    with self._lock, self._connect() as conn:
+                        conn.execute(
+                            f"""
+                            UPDATE {self._REMINDERS_TABLE}
+                            SET status = 'done', updated_at = ?, completed_at = ?
+                            WHERE reminder_id = ?
+                            """,
+                            (now_iso, now_iso, _normalize_text(reminder.get("reminder_id"))),
+                        )
+                        conn.commit()
+                closed += 1
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Failed to reconcile transfer act reminder task completion reminder_id=%s task_id=%s",
+                    _normalize_text(reminder.get("reminder_id")),
+                    _normalize_text(reminder.get("task_id")),
+                )
+        return {"checked": len(rows), "closed": closed, "failed": failed}
 
     def complete_for_uploaded_act(
         self,
@@ -797,18 +884,19 @@ class TransferActReminderService:
                     "warning": "Найдено несколько подходящих reminder-задач. Задача не закрыта автоматически.",
                 }
 
-            reminder_row, group_row = matches[0]
+            reminder_row, group_rows = matches[0]
             reminder = dict(reminder_row)
-            group = dict(group_row)
             now_iso = _utc_now_iso()
-            conn.execute(
-                f"""
-                UPDATE {self._GROUPS_TABLE}
-                SET matched_doc_no = ?, matched_doc_number = ?, completed_at = ?
-                WHERE id = ?
-                """,
-                (int(doc_no), _normalize_text(doc_number), now_iso, _normalize_text(group.get("id"))),
-            )
+            for group_row in group_rows:
+                group = dict(group_row)
+                conn.execute(
+                    f"""
+                    UPDATE {self._GROUPS_TABLE}
+                    SET matched_doc_no = ?, matched_doc_number = ?, completed_at = ?
+                    WHERE id = ?
+                    """,
+                    (int(doc_no), _normalize_text(doc_number), now_iso, _normalize_text(group.get("id"))),
+                )
             conn.execute(
                 f"UPDATE {self._REMINDERS_TABLE} SET updated_at = ? WHERE reminder_id = ?",
                 (now_iso, _normalize_text(reminder.get("reminder_id"))),

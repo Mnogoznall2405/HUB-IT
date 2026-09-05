@@ -76,6 +76,7 @@ export default function useChatActiveConversationLifecycleEffects({
   setMessageMenuMessage,
   setSelectedMessageIds,
   setThreadMenuAnchor,
+  syncMessageInUrl = true,
 }) {
   useEffect(() => {
     setSelectedMessageIds([]);
@@ -128,6 +129,7 @@ export default function useChatActiveConversationLifecycleEffects({
     void revealMessage(requestedMessageId).then((found) => {
       if (cancelled || !found) return;
       requestedMessageRevealKeyRef.current = revealPlan.revealKey;
+      if (!syncMessageInUrl) return;
       const nextSearch = buildMessageSearchParamAfterReveal(locationSearch, requestedMessageId);
       if (nextSearch === null) return;
       navigate({ pathname: '/chat', search: nextSearch }, { replace: true });
@@ -146,5 +148,6 @@ export default function useChatActiveConversationLifecycleEffects({
     requestedMessageId,
     requestedMessageRevealKeyRef,
     revealMessageRef,
+    syncMessageInUrl,
   ]);
 }

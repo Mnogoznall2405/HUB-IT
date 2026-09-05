@@ -148,6 +148,11 @@ PROCESS_BRIDGE_OPERATIONS = (
     "balances",
     "balances_batch",
     "catalog_sync",
+    "construction_object_request_detail",
+    "construction_object_requests",
+    "construction_objects",
+    "it_request_detail",
+    "it_requests",
     "movements",
 )
 _PROCESS_BRIDGE_DISABLED = object()
@@ -263,6 +268,26 @@ def decode_movement_cursor(value: str | None) -> int:
         return max(0, int(raw_offset))
     except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
         raise Warehouse1CValidationError("Некорректный cursor движений") from exc
+
+
+def encode_it_request_cursor(offset: int) -> str:
+    payload = f"it-request-offset:{max(0, int(offset))}".encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_it_request_cursor(value: str | None) -> int:
+    text = normalize_text(value)
+    if not text:
+        return 0
+    try:
+        padded = text + "=" * (-len(text) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("ascii")
+        prefix, raw_offset = decoded.split(":", 1)
+        if prefix != "it-request-offset":
+            raise ValueError("unexpected cursor")
+        return max(0, int(raw_offset))
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise Warehouse1CValidationError("Некорректный cursor ИТ-заявок") from exc
 
 
 def utc_now_iso() -> str:
@@ -1454,6 +1479,29 @@ class Warehouse1CService:
                 except Exception:
                     logger.exception("Warehouse 1C legacy catalogue cache write failed")
             self._catalog_sync_lock.release()
+            try:
+                status = self.get_catalog_status()
+                from backend.realtime.hub import HUB_1C_SYNC_COMPLETED_EVENT, HUB_1C_SYNC_FAILED_EVENT
+                from backend.services.authorization_service import PERM_WAREHOUSE_1C_READ
+                from backend.services.hub_service import hub_service
+
+                failed = bool(str(status.get("last_error") or "").strip())
+                hub_service.publish_permission_realtime(
+                    permission=PERM_WAREHOUSE_1C_READ,
+                    event_type=HUB_1C_SYNC_FAILED_EVENT if failed else HUB_1C_SYNC_COMPLETED_EVENT,
+                    event_id=f"warehouse-catalog:{status.get('last_attempt_at') or status.get('updated_at') or utc_now_iso()}",
+                    payload={
+                        "integration": "warehouse_1c",
+                        "catalog": "warehouse",
+                        "success": not failed,
+                        "updated_at": status.get("updated_at"),
+                        "last_attempt_at": status.get("last_attempt_at"),
+                        "nomenclature_count": int(status.get("nomenclature_count") or 0),
+                        "warehouses_count": int(status.get("warehouses_count") or 0),
+                    },
+                )
+            except Exception:
+                logger.warning("Warehouse 1C realtime invalidation publish failed", exc_info=True)
         return self.get_catalog_status()
 
     def sync_catalog_from_1c_as_leader(self) -> dict[str, Any]:
@@ -1809,6 +1857,44 @@ class Warehouse1CService:
             if entry_ref == normalized_ref:
                 return {"ref": entry_ref, "code": code, "name": name}
         return None
+
+    def lookup_nomenclature_refs(self, refs: list[str]) -> dict[str, dict[str, str]]:
+        """Resolve exact catalogue refs without one database query per request line."""
+        normalized_refs = sorted(
+            {
+                normalize_text(ref).lower()
+                for ref in refs or []
+                if normalize_text(ref)
+            }
+        )
+        if not normalized_refs:
+            return {}
+        store = self._catalog_snapshot_store
+        if store is not None:
+            try:
+                available, rows = store.lookup_nomenclature_refs(
+                    normalized_refs,
+                    source_base=DEFAULT_1C_REF,
+                )
+                if available:
+                    return {
+                        normalize_text(key).lower(): dict(value)
+                        for key, value in dict(rows or {}).items()
+                        if isinstance(value, dict)
+                    }
+            except Exception as exc:
+                logger.warning("Warehouse 1C app catalogue refs lookup failed: %s", exc)
+        self._ensure_legacy_catalog_cache_loaded()
+        wanted = set(normalized_refs)
+        return {
+            normalize_text(entry_ref).lower(): {
+                "ref": entry_ref,
+                "code": code,
+                "name": name,
+            }
+            for entry_ref, code, name, _name_cf in self._nomenclature_cache
+            if normalize_text(entry_ref).lower() in wanted
+        }
 
     def lookup_nomenclature_codes(self, codes: list[str]) -> dict[str, dict[str, str]]:
         """Resolve exact catalogue codes without materialising the full app snapshot."""
@@ -3559,6 +3645,349 @@ class Warehouse1CService:
             "date_from": parsed_date_from.isoformat() if parsed_date_from else None,
             "date_to": parsed_date_to.isoformat() if parsed_date_to else None,
         }
+
+    # ------------------------------------------------------------------
+    # IT purchase requests (read-only request/line/document lifecycle)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _get_it_requests_sync(
+        connection: Any,
+        view: str,
+        search: str,
+        stage: str,
+        overdue: bool | None,
+        limit: int,
+        cursor: str,
+        warehouse_ref: str,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_it_requests import query_it_requests
+
+        return query_it_requests(
+            connection,
+            view=view,
+            search=search,
+            stage=stage,
+            overdue=overdue,
+            limit=limit,
+            cursor=cursor,
+            warehouse_ref=warehouse_ref,
+            refresh=refresh,
+        )
+
+    def _get_it_request_detail_sync(self, connection: Any, request_ref: str) -> dict[str, Any] | None:
+        from backend.services.warehouse_1c_it_requests import REQUEST_DOCUMENT, query_it_request_detail
+
+        reference = self._rebuild_document_ref(connection, REQUEST_DOCUMENT, request_ref)
+        return query_it_request_detail(connection, reference)
+
+    async def get_it_requests(
+        self,
+        *,
+        view: str = "active",
+        search: str = "",
+        stage: str = "",
+        overdue: bool | None = None,
+        limit: int = 25,
+        cursor: str | None = None,
+        warehouse_ref: str = "",
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_it_requests import STAGE_META, decode_snapshot_cursor
+
+        normalized_view = normalize_text(view).lower() or "active"
+        if normalized_view not in {"active", "history", "all"}:
+            raise Warehouse1CValidationError("view должен быть active, history или all")
+        normalized_stage = normalize_text(stage).lower()
+        if normalized_stage and normalized_stage not in STAGE_META:
+            raise Warehouse1CValidationError("Неизвестный этап ИТ-заявки")
+        normalized_search = normalize_text(search)
+        normalized_limit = clamp_limit(limit, 25, 100)
+        normalized_warehouse_ref = normalize_text(warehouse_ref).lower()
+        try:
+            _, offset = decode_snapshot_cursor(cursor)
+        except ValueError as exc:
+            raise Warehouse1CValidationError(str(exc)) from exc
+        if offset > 10_000:
+            raise Warehouse1CValidationError("Некорректный cursor ИТ-заявок")
+        payload = {
+            "view": normalized_view,
+            "search": normalized_search,
+            "stage": normalized_stage,
+            "overdue": overdue,
+            "limit": normalized_limit,
+            "cursor": cursor or "",
+            "warehouse_ref": normalized_warehouse_ref,
+            "refresh": bool(refresh),
+        }
+        bridged = await self._run_process_bridge("it_requests", payload)
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return dict(bridged)
+        result = await self._run_pooled(
+            self._get_it_requests_sync,
+            normalized_view,
+            normalized_search,
+            normalized_stage,
+            overdue,
+            normalized_limit,
+            cursor or "",
+            normalized_warehouse_ref,
+            bool(refresh),
+        )
+        return result
+
+    async def get_it_request_detail(self, request_ref: str) -> dict[str, Any] | None:
+        from backend.services.warehouse_1c_it_requests import (
+            get_cached_it_request_detail,
+            remember_it_request_detail,
+        )
+
+        normalized_ref = normalize_1c_ref(request_ref)
+        if not normalized_ref:
+            raise Warehouse1CValidationError("Некорректный идентификатор ИТ-заявки")
+        cached = get_cached_it_request_detail(normalized_ref)
+        if cached is not None:
+            return cached
+        bridged = await self._run_process_bridge(
+            "it_request_detail",
+            {"request_ref": normalized_ref},
+        )
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            result = dict(bridged) if bridged else None
+        else:
+            result = await self._run_pooled(self._get_it_request_detail_sync, normalized_ref)
+        if result is not None:
+            remember_it_request_detail(normalized_ref, result)
+        return result
+
+    # ------------------------------------------------------------------
+    # Construction portfolio (read-only aggregation by nomenclature group)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _get_construction_objects_sync(
+        connection: Any,
+        search: str,
+        kind: str,
+        limit: int,
+        cursor: str,
+        refresh: bool,
+        managed_objects: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_construction import query_construction_objects
+
+        return query_construction_objects(
+            connection,
+            search=search,
+            kind=kind,
+            limit=limit,
+            cursor=cursor,
+            refresh=refresh,
+            managed_objects=managed_objects,
+        )
+
+    async def get_construction_objects(
+        self,
+        *,
+        search: str = "",
+        kind: str = "all",
+        limit: int = 24,
+        cursor: str | None = None,
+        refresh: bool = False,
+        managed_objects: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_construction import decode_construction_cursor
+
+        normalized_search = normalize_text(search)
+        if len(normalized_search) > 200:
+            raise Warehouse1CValidationError("Поисковый запрос не должен превышать 200 символов")
+        normalized_kind = normalize_text(kind).lower() or "all"
+        if normalized_kind not in {"all", "project", "general", "unassigned"}:
+            raise Warehouse1CValidationError("kind должен быть all, project, general или unassigned")
+        normalized_limit = clamp_limit(limit, 24, 48)
+        normalized_managed_objects = list(managed_objects or [])[:250]
+        try:
+            decode_construction_cursor(cursor)
+        except ValueError as exc:
+            raise Warehouse1CValidationError(str(exc)) from exc
+
+        payload = {
+            "search": normalized_search,
+            "kind": normalized_kind,
+            "limit": normalized_limit,
+            "cursor": cursor or "",
+            "refresh": bool(refresh),
+            "managed_objects": normalized_managed_objects,
+        }
+        bridged = await self._run_process_bridge("construction_objects", payload)
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return dict(bridged)
+        return await self._run_pooled(
+            self._get_construction_objects_sync,
+            normalized_search,
+            normalized_kind,
+            normalized_limit,
+            cursor or "",
+            bool(refresh),
+            normalized_managed_objects,
+        )
+
+    def _get_construction_object_requests_sync(
+        self,
+        connection: Any,
+        group_refs: list[str],
+        view: str,
+        search: str,
+        stage: str,
+        overdue: bool | None,
+        warehouse_ref: str,
+        limit: int,
+        cursor: str,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_construction_requests import (
+            query_construction_object_requests,
+        )
+
+        return query_construction_object_requests(
+            connection,
+            group_refs=group_refs,
+            view=view,
+            search=search,
+            stage=stage,
+            overdue=overdue,
+            warehouse_ref=warehouse_ref,
+            limit=limit,
+            cursor=cursor,
+            refresh=refresh,
+            nomenclature_lookup=self.lookup_nomenclature_refs,
+        )
+
+    def _get_construction_object_request_detail_sync(
+        self,
+        connection: Any,
+        group_refs: list[str],
+        request_ref: str,
+    ) -> dict[str, Any] | None:
+        from backend.services.warehouse_1c_construction_requests import (
+            query_construction_object_request_detail,
+        )
+        from backend.services.warehouse_1c_it_requests import REQUEST_DOCUMENT
+
+        reference = self._rebuild_document_ref(connection, REQUEST_DOCUMENT, request_ref)
+        return query_construction_object_request_detail(
+            connection,
+            reference,
+            group_refs=group_refs,
+        )
+
+    async def get_construction_object_requests(
+        self,
+        *,
+        group_refs: list[str],
+        view: str = "active",
+        search: str = "",
+        stage: str = "",
+        overdue: bool | None = None,
+        warehouse_ref: str = "",
+        limit: int = 25,
+        cursor: str | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        from backend.services.warehouse_1c_construction_requests import (
+            STAGE_META,
+            normalize_group_refs,
+        )
+        from backend.services.warehouse_1c_it_requests import decode_snapshot_cursor
+
+        try:
+            normalized_group_refs = list(normalize_group_refs(group_refs))
+        except ValueError as exc:
+            raise Warehouse1CValidationError(str(exc)) from exc
+        if len(normalized_group_refs) > 100:
+            raise Warehouse1CValidationError("У объекта слишком много номенклатурных групп 1С")
+        normalized_view = normalize_text(view).lower() or "active"
+        if normalized_view not in {"active", "history", "all"}:
+            raise Warehouse1CValidationError("view должен быть active, history или all")
+        normalized_search = normalize_text(search)
+        if len(normalized_search) > 200:
+            raise Warehouse1CValidationError("Поисковый запрос не должен превышать 200 символов")
+        normalized_stage = normalize_text(stage).lower()
+        if normalized_stage and normalized_stage not in STAGE_META:
+            raise Warehouse1CValidationError("Неизвестный этап заявки")
+        normalized_warehouse_ref = normalize_text(warehouse_ref).lower()
+        normalized_limit = clamp_limit(limit, 25, 100)
+        try:
+            _, offset = decode_snapshot_cursor(cursor)
+        except ValueError as exc:
+            raise Warehouse1CValidationError("Некорректный cursor заявок объекта") from exc
+        if offset > 10_000:
+            raise Warehouse1CValidationError("Некорректный cursor заявок объекта")
+
+        payload = {
+            "group_refs": normalized_group_refs,
+            "view": normalized_view,
+            "search": normalized_search,
+            "stage": normalized_stage,
+            "overdue": overdue,
+            "warehouse_ref": normalized_warehouse_ref,
+            "limit": normalized_limit,
+            "cursor": cursor or "",
+            "refresh": bool(refresh),
+        }
+        bridged = await self._run_process_bridge("construction_object_requests", payload)
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return dict(bridged)
+        return await self._run_pooled(
+            self._get_construction_object_requests_sync,
+            normalized_group_refs,
+            normalized_view,
+            normalized_search,
+            normalized_stage,
+            overdue,
+            normalized_warehouse_ref,
+            normalized_limit,
+            cursor or "",
+            bool(refresh),
+        )
+
+    async def get_construction_object_request_detail(
+        self,
+        *,
+        group_refs: list[str],
+        request_ref: str,
+    ) -> dict[str, Any] | None:
+        from backend.services.warehouse_1c_construction_requests import (
+            get_cached_construction_request_detail,
+            normalize_group_refs,
+        )
+
+        try:
+            normalized_group_refs = list(normalize_group_refs(group_refs))
+        except ValueError as exc:
+            raise Warehouse1CValidationError(str(exc)) from exc
+        normalized_request_ref = normalize_1c_ref(request_ref)
+        if not normalized_request_ref:
+            raise Warehouse1CValidationError("Некорректный идентификатор заявки")
+        cached = get_cached_construction_request_detail(
+            normalized_group_refs,
+            normalized_request_ref,
+        )
+        if cached is not None:
+            return cached
+        bridged = await self._run_process_bridge(
+            "construction_object_request_detail",
+            {
+                "group_refs": normalized_group_refs,
+                "request_ref": normalized_request_ref,
+            },
+        )
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return dict(bridged) if bridged else None
+        return await self._run_pooled(
+            self._get_construction_object_request_detail_sync,
+            normalized_group_refs,
+            normalized_request_ref,
+        )
 
     # ------------------------------------------------------------------
     # Movement / transfer detail (registrar drill-down + attached files)

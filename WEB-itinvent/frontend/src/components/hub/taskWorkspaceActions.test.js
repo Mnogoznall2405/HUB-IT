@@ -12,6 +12,7 @@ const task = {
   created_by_user_id: 1,
   created_by_full_name: 'Иван Автор',
   assignee_user_id: 2,
+  assignee_user_ids: [2, 4],
   controller_user_id: 3,
   capabilities: { can_submit: false, can_start: false, can_review: false, can_close: true },
 };
@@ -58,6 +59,16 @@ describe('taskWorkspaceActions', () => {
     expect(actions.find((item) => item.key === 'close')).toEqual(expect.objectContaining({
       enabled: false,
       reason: 'Недоступно: закрыть может постановщик, руководитель отдела или администратор',
+    }));
+  });
+
+  it('treats a secondary assignee as an executor', () => {
+    const actions = buildTaskWorkspacePrimaryActions({
+      ...task,
+      capabilities: { can_submit: true, can_start: false, can_review: false, can_close: false },
+    }, { id: 4 });
+    expect(actions.find((item) => item.key === 'submit')).toEqual(expect.objectContaining({
+      enabled: true,
     }));
   });
 

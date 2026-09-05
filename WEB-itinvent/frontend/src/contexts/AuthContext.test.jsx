@@ -298,7 +298,7 @@ describe('AuthProvider startup', () => {
     expect(clearMobileOfflineCacheMock).toHaveBeenCalledTimes(1);
   });
 
-  it('always grants basic address-book and chat access when the server permission list is empty', async () => {
+  it('always grants the viewer baseline when the server permission list is empty', async () => {
     getCurrentUserMock.mockResolvedValue({ id: 10, username: 'custom', role: 'viewer', permissions: [] });
 
     renderAuth('/dashboard');
@@ -309,5 +309,7 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-address-book')).toHaveTextContent('true');
     expect(screen.getByTestId('can-chat-read')).toHaveTextContent('true');
     expect(screen.getByTestId('can-chat-write')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
   });
 });

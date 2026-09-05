@@ -53,6 +53,12 @@ export type HubTask = {
   created_by_full_name?: string | null;
   created_by_username?: string | null;
   assignee_user_id?: number | null;
+  assignee_user_ids?: number[];
+  assignees?: Array<{
+    user_id: number;
+    username?: string | null;
+    full_name?: string | null;
+  }>;
   controller_user_id?: number | null;
   project_id?: string | null;
   project_name?: string | null;
@@ -236,6 +242,7 @@ export type TaskUpdatePayload = Partial<Pick<HubTask,
   | 'priority'
   | 'checklist_items'
   | 'assignee_user_id'
+  | 'assignee_user_ids'
   | 'controller_user_id'
   | 'observer_user_ids'
   | 'project_id'

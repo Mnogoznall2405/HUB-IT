@@ -708,14 +708,20 @@ async def export_statistics_excel(
 async def get_pc_cleaning_history(
     serial_number: str,
     hw_serial_number: Optional[str] = None,
+    inv_no: Optional[str] = None,
+    equipment_id: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_current_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Get PC cleaning history for a specific serial number."""
+    """Get PC cleaning history for a specific equipment item."""
     try:
         history = manager.get_pc_cleaning_history(
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
+            inv_no=inv_no,
+            equipment_id=equipment_id,
+            db_name=db_id,
         )
         return PcCleaningHistoryResponse(**history)
     except Exception as e:
@@ -825,12 +831,17 @@ async def bulk_work(
                 )
             elif data.work_type == 'cleaning':
                 manager.add_pc_cleaning(
-                    serial_number=item.get('serial_number', ''),
+                    serial_number=item.get('serial_number') or item.get('serial_no', ''),
                     employee=data.employee or item.get('employee', ''),
                     branch=data.branch,
                     location=data.location,
                     inv_no=item.get('inv_no'),
                     db_name=data.db_name,
+                    equipment_id=item.get('equipment_id'),
+                    current_description=item.get('current_description'),
+                    hw_serial_no=item.get('hw_serial_no'),
+                    model_name=item.get('model_name'),
+                    manufacturer=item.get('manufacturer'),
                 )
             success_count += 1
         except Exception as e:

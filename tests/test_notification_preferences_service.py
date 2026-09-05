@@ -35,6 +35,7 @@ def test_legacy_chat_preference_is_inherited_by_new_chat_categories(temp_dir):
     assert legacy["channels"]["chat_direct"] is False
     assert legacy["channels"]["chat_group"] is False
     assert legacy["channels"]["chat_task"] is False
+    assert legacy["channels"]["docflow"] is True
 
 
 def test_chat_categories_can_be_changed_independently(temp_dir):

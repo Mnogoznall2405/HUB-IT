@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   filterTaskUserOptions,
+  formatTaskAssigneesSummary,
   formatHubTaskError,
   getTaskUserLabel,
 } from './taskUserUtils';
@@ -23,6 +24,19 @@ describe('taskUserUtils', () => {
     const filtered = filterTaskUserOptions(users, { inputValue: 'сидор' });
     expect(filtered).toHaveLength(1);
     expect(filtered[0].id).toBe(2);
+  });
+
+  it('formats all assignees and provides a compact card label', () => {
+    const task = {
+      assignee_user_ids: [1, 2, 3],
+      assignees: [
+        { user_id: 1, full_name: 'Иван Петров' },
+        { user_id: 2, full_name: 'Мария Сидорова' },
+        { user_id: 3, username: 'guest' },
+      ],
+    };
+    expect(formatTaskAssigneesSummary(task)).toBe('Иван Петров, Мария Сидорова, guest');
+    expect(formatTaskAssigneesSummary(task, { compact: true })).toBe('Иван Петров, Мария Сидорова +1');
   });
 
   it('maps known backend errors to russian messages', () => {

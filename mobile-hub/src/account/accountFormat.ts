@@ -4,6 +4,7 @@ import type { HubUser } from '../api/types';
 export const DEFAULT_NOTIFICATION_CHANNELS = {
   mail: true,
   tasks: true,
+  docflow: true,
   task_email: true,
   announcements: true,
   chat: true,
@@ -15,6 +16,7 @@ export const DEFAULT_NOTIFICATION_CHANNELS = {
 export type NotificationChannels = {
   mail: boolean;
   tasks: boolean;
+  docflow: boolean;
   task_email: boolean;
   announcements: boolean;
   chat: boolean;
@@ -171,6 +173,7 @@ export function normalizeNotificationChannels(value: unknown = {}): Notification
   return {
     mail: Boolean(source.mail ?? DEFAULT_NOTIFICATION_CHANNELS.mail),
     tasks: Boolean(source.tasks ?? DEFAULT_NOTIFICATION_CHANNELS.tasks),
+    docflow: Boolean(source.docflow ?? DEFAULT_NOTIFICATION_CHANNELS.docflow),
     task_email: Boolean(source.task_email ?? DEFAULT_NOTIFICATION_CHANNELS.task_email),
     announcements: Boolean(source.announcements ?? DEFAULT_NOTIFICATION_CHANNELS.announcements),
     chat: legacyChatEnabled,

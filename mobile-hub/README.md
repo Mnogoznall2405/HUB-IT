@@ -4,7 +4,7 @@ Android-клиент HUB-IT: native авторизация/2FA, SecureStore, pus
 
 После входа Android показывает только native-enabled модули. Переходов в портал и WebView-fallback больше нет: старые `/web` и `/portal` ссылки перенаправляются на подходящий нативный экран, а недоступные в APK разделы — в нативное меню. Актуальный состав и проценты покрытия: [MOBILE_HUB_NATIVE_SCREEN_MIGRATION_MAP.md](../documentation/technical/MOBILE_HUB_NATIVE_SCREEN_MIGRATION_MAP.md).
 
-Текущий source-кандидат: Expo SDK 57, React Native 0.86, Android package `ru.zsgp.hubit.mobile`, версия `1.1.17`, `versionCode` 19, target/compile SDK 36.
+Текущий source-кандидат: Expo SDK 57, React Native 0.86, Android package `ru.zsgp.hubit.mobile`, версия `1.1.24`, `versionCode` 26, target/compile SDK 36.
 
 ## Установка и запуск
 
@@ -30,7 +30,7 @@ EXPO_PUBLIC_NATIVE_NOTIFICATIONS_ENABLED=true
 
 Expo Go подходит для быстрой проверки UI. Remote push нужно проверять в development/preview APK, а не в Expo Go.
 
-Preview APK регистрирует notification task в module scope: `Ответить` и `Прочитано` могут выполняться в фоне без открытия интерфейса приложения. Если быстрый ответ временно не отправился, его точный текст хранится в ограниченной SecureStore-очереди, а Android WorkManager повторяет безопасную синхронизацию с минимальным интервалом 15 минут. Реальная частота зависит от Doze, производителя и Force stop; поэтому background/killed сценарии обязательно проверяются на физическом устройстве.
+Preview APK регистрирует notification task в module scope: `Ответить` и `Прочитано` могут выполняться в фоне без открытия интерфейса приложения. Быстрый ответ обновляет исходный Android notification identifier, чтобы RemoteInput штатно сменился со статуса отправки на итоговый; при временной ошибке точный текст хранится в ограниченной SecureStore-очереди, а Android WorkManager повторяет безопасную синхронизацию с минимальным интервалом 15 минут. Реальная частота зависит от Doze, производителя и Force stop; поэтому background/killed сценарии обязательно проверяются на физическом устройстве.
 
 ## Приёмка на физическом Android
 
@@ -63,7 +63,7 @@ npm run build:apk:local
 
 Для первоначального создания постоянного ключа и двух backup используйте `scripts/prepare-release-signing.ps1`; скрипт требует пути вне Git, не перезаписывает существующие файлы и не принимает пароль через CLI. Подробная процедура и переход с debug-preview описаны в `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
 
-Готовый внутренний preview APK: `dist/hubit-mobile-preview.apk`. Для публикации рядом с HUB Desktop используется `scripts/mobile/publish-apk.ps1`; manifest и версионный APK размещаются под `/desktop-updates/mobile/preview/`. Preview 1.1.17 опубликован 2026-08-27. Подробности и rollback: `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
+Готовый внутренний preview APK: `dist/hubit-mobile-preview.apk`. Для публикации рядом с HUB Desktop используется `scripts/mobile/publish-apk.ps1`; manifest и версионный APK размещаются под `/desktop-updates/mobile/preview/`. Preview 1.1.24 опубликован 2026-09-02. Подробности и rollback: `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
 
 Результат: `dist/hubit-mobile-preview.apk`; рядом создаётся `dist/hubit-mobile-preview.audit.json` с package/version, размером, SHA-256 APK, SHA-256 сертификата и режимом подписи. Сборка без четырёх `HUBIT_ANDROID_*` переменных завершается fail-fast.
 

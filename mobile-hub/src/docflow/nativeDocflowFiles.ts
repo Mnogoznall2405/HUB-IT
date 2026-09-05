@@ -3,15 +3,22 @@ import { Platform } from 'react-native';
 import type { DocflowTaskFile } from '../api/docflowApi';
 import { getDocflowFilePreviewState } from '../api/docflowApi';
 import { API_V1_BASE } from '../api/config';
+import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { sanitizeNativeFileName } from '../files/filePolicy';
 
 const CACHE_DIRECTORY_NAME = 'hubit-docflow';
 
 function docflowCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, CACHE_DIRECTORY_NAME);
+  const directory = new Directory(Paths.document, CACHE_DIRECTORY_NAME);
   directory.create({ intermediates: true, idempotent: true });
   return directory;
+}
+
+async function docflowCacheFile(fileName: string): Promise<File> {
+  const userId = Number(await getSessionUserId());
+  if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
+  return new File(docflowCacheDirectory(), `${userId}-${fileName}`);
 }
 
 export function clearNativeDocflowCache(): void {
@@ -80,7 +87,7 @@ export async function downloadNativeDocflowPreview(
   }
 
   const cacheKey = `${safeTaskRef}-${safeFileRef}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 180);
-  const destination = new File(docflowCacheDirectory(), `${cacheKey}-preview.pdf`);
+  const destination = await docflowCacheFile(`${cacheKey}-preview.pdf`);
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
   try {
@@ -112,7 +119,7 @@ export async function downloadNativeDocflowFile(
   const downloadPath = nativeDocflowFilePath(safeTaskRef, safeFileRef);
   const safeName = sanitizeNativeFileName(file.name || 'document.bin');
   const cacheKey = `${safeTaskRef}-${safeFileRef}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 180);
-  const destination = new File(docflowCacheDirectory(), `${cacheKey}-${safeName}`);
+  const destination = await docflowCacheFile(`${cacheKey}-${safeName}`);
   const expectedSize = Math.max(0, Number(file.size || 0));
   if (destination.exists && (!expectedSize || destination.size === expectedSize)) return destination;
   if (destination.exists) destination.delete();

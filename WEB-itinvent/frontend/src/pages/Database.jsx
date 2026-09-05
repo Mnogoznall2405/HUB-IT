@@ -40,6 +40,8 @@ import UploadActDialog from './database/UploadActDialog';
 import ActionDialog from './database/ActionDialog';
 import DatabaseDataSections from './database/DatabaseDataSections';
 import DetailQrDialog from './database/DetailQrDialog';
+import EquipmentQrPrintFeedback from './database/EquipmentQrPrintFeedback';
+import EquipmentQrPrintPortal from './database/EquipmentQrPrintPortal';
 import { parseEquipmentQrLink } from './database/qrModel';
 import DeleteEquipmentDialog from './database/DeleteEquipmentDialog';
 import DeleteConsumableDialog from './database/DeleteConsumableDialog';
@@ -88,6 +90,7 @@ import { useDatabaseConsumableDelete } from './database/useDatabaseConsumableDel
 import { useDatabaseDetailRuntime } from './database/useDatabaseDetailRuntime';
 import { useDatabaseListNavigation } from './database/useDatabaseListNavigation';
 import { useDatabaseQrScanner } from './database/useDatabaseQrScanner';
+import useEquipmentQrBatchPrint from './database/useEquipmentQrBatchPrint';
 import { useDatabaseRecentCards } from './database/useDatabaseRecentCards';
 import { useDatabaseRecentActs } from './database/useDatabaseRecentActs';
 import { useDatabaseTransferAction } from './database/useDatabaseTransferAction';
@@ -358,6 +361,15 @@ function Database() {
     getDbCacheScope,
     staleTimeMs: DATABASE_SWR_STALE_TIME_MS,
   });
+  const refreshedCurrentActDocNoRef = useRef('');
+
+  useEffect(() => {
+    const docNo = String(uploadActCommitResult?.doc_no || '').trim();
+    if (!docNo || refreshedCurrentActDocNoRef.current === docNo) return;
+    refreshedCurrentActDocNoRef.current = docNo;
+    void fetchAllEquipment({ force: true, mode: DATA_MODE_EQUIPMENT });
+  }, [fetchAllEquipment, uploadActCommitResult?.doc_no]);
+
   const {
     handleSearchChange,
     handleSearchKeyDown,
@@ -1239,6 +1251,14 @@ function Database() {
     setMobileSelectionMode(false);
   }, []);
 
+  const qrBatchPrint = useEquipmentQrBatchPrint({
+    groupedEquipment: allEquipment,
+    selectedItems,
+    tableSort,
+    databaseId: db_name || currentDb?.id || '',
+    onClearSelection: handleClearSelection,
+  });
+
   const handleOpenLocationTransferForSelection = useCallback(() => {
     resetTransferState();
     setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
@@ -1502,6 +1522,8 @@ function Database() {
         onSelect={handleCheckboxChange}
         onAction={handleAction}
         onOpenEmployee={handleOpenEmployee}
+        onOpenCurrentAct={handleOpenEquipmentActFile}
+        openingCurrentActDocNo={detailActOpeningDocNo}
         onEditConsumableQty={canDatabaseWrite ? openEditConsumableQtyModal : null}
         onDeleteConsumable={canDatabaseDelete ? openDeleteConsumableModal : null}
         dataMode={dataMode}
@@ -1522,6 +1544,7 @@ function Database() {
     expandedBranches,
     expandedLocations,
     handleAction,
+    handleOpenEquipmentActFile,
     handleOpenEmployee,
     handleCheckboxChange,
     handleMobileCardSelect,
@@ -1529,6 +1552,7 @@ function Database() {
     handleTableSort,
     isAdmin,
     isMobile,
+    detailActOpeningDocNo,
     mobileSelectionMode,
     openEditConsumableQtyModal,
     openDeleteConsumableModal,
@@ -1553,7 +1577,7 @@ function Database() {
     <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
       <PageShell sx={{
         pb: isMobile
-          ? `calc(var(--app-shell-mobile-bottom-nav-height, 64px) + ${!isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 ? `${MOBILE_BAR_HEIGHT + MOBILE_BAR_GAP + 4}px` : '8px'})`
+          ? `calc(var(--app-shell-mobile-bottom-nav-height, 64px) + ${!isConsumablesMode && selectedItems.length > 0 ? `${MOBILE_BAR_HEIGHT + MOBILE_BAR_GAP + 4}px` : '8px'})`
           : 3,
       }}>
         {isMobile && (
@@ -1746,7 +1770,7 @@ function Database() {
           />
         )}
 
-        {isMobile && !isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 && (
+        {isMobile && !isConsumablesMode && selectedItems.length > 0 && (
           <DatabaseBulkActionBar
             theme={theme}
             ui={ui}
@@ -1755,7 +1779,12 @@ function Database() {
             selectedVisibleCount={selectedVisibleCount}
             selectedHiddenCount={selectedHiddenCount}
             selectedItemsCapabilities={selectedItemsCapabilities}
+            canWrite={canDatabaseWrite}
+            desktopQuickPrintAvailable={qrBatchPrint.desktopQuickPrintAvailable}
+            printing={qrBatchPrint.printing}
             onClearSelection={handleClearSelection}
+            onQuickPrint={qrBatchPrint.printQuick}
+            onPrintWithDialog={qrBatchPrint.printWithDialog}
             onOpenLocationTransfer={handleOpenLocationTransferForSelection}
             onOpenTransfer={handleOpenTransferForSelection}
             onOpenTransferAct={handleOpenTransferActForSelection}
@@ -1765,7 +1794,7 @@ function Database() {
           />
         )}
 
-        {!isMobile && !isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 && (
+        {!isMobile && !isConsumablesMode && selectedItems.length > 0 && (
           <DatabaseSelectionBar
             theme={theme}
             ui={ui}
@@ -1773,7 +1802,12 @@ function Database() {
             selectedVisibleCount={selectedVisibleCount}
             selectedHiddenCount={selectedHiddenCount}
             selectedItemsCapabilities={selectedItemsCapabilities}
+            canWrite={canDatabaseWrite}
+            desktopQuickPrintAvailable={qrBatchPrint.desktopQuickPrintAvailable}
+            printing={qrBatchPrint.printing}
             onClearSelection={handleClearSelection}
+            onQuickPrint={qrBatchPrint.printQuick}
+            onPrintWithDialog={qrBatchPrint.printWithDialog}
             onOpenLocationTransfer={handleOpenLocationTransferForSelection}
             onOpenTransfer={handleOpenTransferForSelection}
             onOpenTransferAct={handleOpenTransferActForSelection}
@@ -2086,6 +2120,14 @@ function Database() {
           text={detailQrText}
           fileName={detailQrFileName}
           equipment={detailModal.data}
+        />
+
+        <EquipmentQrPrintPortal labels={qrBatchPrint.labels} />
+        <EquipmentQrPrintFeedback
+          feedback={qrBatchPrint.feedback}
+          repeating={qrBatchPrint.printing}
+          onClose={qrBatchPrint.dismissFeedback}
+          onRepeat={qrBatchPrint.repeatLastPrint}
         />
 
         <DeleteEquipmentDialog

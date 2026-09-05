@@ -22,6 +22,7 @@ from backend.models.password_vault import (
     PasswordVaultListResponse,
     PasswordVaultRevealRequest,
     PasswordVaultRevealResponse,
+    PasswordVaultUnlockMobileBiometricRequest,
     PasswordVaultUnlockRequest,
     PasswordVaultUnlockResponse,
     PasswordVaultUnlockSetup2faResponse,
@@ -39,11 +40,16 @@ from backend.services.password_vault_service import (
     PasswordVaultValidationError,
     password_vault_service,
 )
+from backend.services.session_service import normalize_client_device_id
 from backend.services.trusted_device_service import TrustedDeviceServiceError, trusted_device_service
 from backend.utils.request_network import build_request_network_context
 
 
 router = APIRouter()
+
+_MOBILE_AUTH_CLIENT_HEADER = "x-auth-client"
+_MOBILE_AUTH_CLIENT_VALUE = "mobile"
+_CLIENT_DEVICE_HEADER_NAME = "x-client-device-id"
 
 
 def _request_meta(request: Request) -> PasswordVaultRequestMeta:
@@ -52,6 +58,20 @@ def _request_meta(request: Request) -> PasswordVaultRequestMeta:
         ip_address=network_context.client_ip,
         user_agent=str(request.headers.get("user-agent") or ""),
     )
+
+
+def _require_mobile_client_device_id(request: Request) -> str:
+    auth_client = str(request.headers.get(_MOBILE_AUTH_CLIENT_HEADER) or "").strip().lower()
+    if auth_client != _MOBILE_AUTH_CLIENT_VALUE:
+        raise HTTPException(status_code=404, detail="Not found")
+    client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
+    if not client_device_id:
+        raise HTTPException(status_code=400, detail="Mobile device identifier is required")
+    return client_device_id
+
+
+def _is_mobile_client(request: Request) -> bool:
+    return str(request.headers.get(_MOBILE_AUTH_CLIENT_HEADER) or "").strip().lower() == _MOBILE_AUTH_CLIENT_VALUE
 
 
 def _service_error_to_http(exc: Exception) -> HTTPException:
@@ -120,8 +140,16 @@ async def update_password(
     payload: PasswordVaultEntryUpdate,
     request: Request,
     current_user: User = Depends(require_permission(PERM_PASSWORDS_WRITE)),
+    session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     try:
+        if _is_mobile_client(request):
+            _require_mobile_client_device_id(request)
+            await run_in_threadpool(
+                password_vault_service.require_unlocked,
+                user_id=int(current_user.id),
+                session_id=session_id,
+            )
         return await run_in_threadpool(
             password_vault_service.update_entry,
             entry_id,
@@ -226,6 +254,27 @@ async def unlock_password_vault(
             session_id=session_id,
             totp_code=payload.totp_code,
             backup_code=payload.backup_code,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/unlock/mobile-biometric", response_model=PasswordVaultUnlockResponse)
+async def unlock_password_vault_mobile_biometric(
+    payload: PasswordVaultUnlockMobileBiometricRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    session_id: str | None = Depends(get_current_session_id),
+) -> dict[str, str]:
+    client_device_id = _require_mobile_client_device_id(request)
+    try:
+        return await run_in_threadpool(
+            password_vault_service.unlock_with_mobile_biometric,
+            actor=current_user,
+            session_id=session_id,
+            renewal_token=payload.renewal_token,
+            client_device_id=client_device_id,
             meta=_request_meta(request),
         )
     except Exception as exc:

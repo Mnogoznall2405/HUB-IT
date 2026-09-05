@@ -359,6 +359,7 @@ function ChatThread({
   onThreadScroll,
   bottomRef,
   onBack,
+  backLabel = 'Назад к чатам',
   onOpenInfo,
   onOpenTask,
   onOpenSearch,
@@ -1313,6 +1314,7 @@ function ChatThread({
         typingLine={typingLine}
         contextPanelOpen={contextPanelOpen}
         onBack={onBack}
+        backLabel={backLabel}
         onOpenDrawer={showEmbeddedMenuButton ? openDrawer : undefined}
         onOpenInfo={onOpenInfo}
         onOpenTask={onOpenTask}

@@ -3,13 +3,16 @@ import { Alert, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { NativeAddressBookScreen } from './NativeAddressBookScreen';
 import { openPortalPath } from '../../navigation/moduleRegistry';
-import { openAddressBookChat } from '../../addressBook/openAddressBookChat';
+import { openAddressBookChat, openCachedAddressBookChat } from '../../addressBook/openAddressBookChat';
 import * as addressBookApi from '../../api/addressBookApi';
+import * as addressBookSnapshot from '../../cache/nativeAddressBookSnapshot';
+import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
 
 let mockAuth: {
   user: { id: number; username: string; role: string; permissions: string[] };
   hasPermission: (permission: string) => boolean;
+  offlineMode: boolean;
 };
 
 let mockPreferences: {
@@ -33,14 +36,27 @@ jest.mock('../../navigation/moduleRegistry', () => ({
 
 jest.mock('../../addressBook/openAddressBookChat', () => ({
   openAddressBookChat: jest.fn(),
+  openCachedAddressBookChat: jest.fn(),
+  getAddressBookChatCacheKey: jest.fn(() => 'email:ivanov@zsgp.ru'),
   isAddressBookChatNotFound: jest.fn(() => false),
   getAddressBookChatErrorMessage: jest.fn(() => 'chat error'),
 }));
 
 jest.mock('../../api/addressBookApi', () => ({
   searchAddressBook: jest.fn(),
+  getCompleteAddressBook: jest.fn(),
   getAddressBookStatus: jest.fn(),
   syncAddressBook: jest.fn(),
+}));
+
+jest.mock('../../cache/nativeAddressBookSnapshot', () => ({
+  readNativeAddressBookSnapshot: jest.fn(),
+  writeNativeAddressBookSnapshot: jest.fn(),
+}));
+
+jest.mock('../../cache/nativeSnapshotCache', () => ({
+  readNativeEntitySnapshot: jest.fn(),
+  writeNativeEntitySnapshot: jest.fn(),
 }));
 
 const sampleItem = {
@@ -63,6 +79,7 @@ function setViewerAuth(extraPermissions: string[] = []) {
   mockAuth = {
     user: { id: 2, username: 'user', role: 'viewer', permissions },
     hasPermission: (permission) => permissions.includes(permission),
+    offlineMode: false,
   };
 }
 
@@ -70,6 +87,7 @@ function setAdminAuth() {
   mockAuth = {
     user: { id: 1, username: 'admin', role: 'admin', permissions: ['address_book.read', 'chat.read', 'chat.write'] },
     hasPermission: () => true,
+    offlineMode: false,
   };
 }
 
@@ -88,6 +106,18 @@ describe('NativeAddressBookScreen', () => {
       updated_at: '2026-05-21T10:00:00+00:00',
       last_error: '',
     });
+    (addressBookApi.getCompleteAddressBook as jest.Mock).mockResolvedValue({
+      items: [sampleItem],
+      total: 1,
+      updated_at: '2026-05-21T10:00:00+00:00',
+      last_error: '',
+      has_more: false,
+    });
+    (addressBookSnapshot.readNativeAddressBookSnapshot as jest.Mock).mockResolvedValue(null);
+    (addressBookSnapshot.writeNativeAddressBookSnapshot as jest.Mock).mockResolvedValue(true);
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
+    (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockResolvedValue(undefined);
+    (openAddressBookChat as jest.Mock).mockResolvedValue({ conversationId: 'c-42', peerUserId: 42 });
     (addressBookApi.getAddressBookStatus as jest.Mock).mockResolvedValue({
       count: 1,
       updated_at: '2026-05-21T10:00:00+00:00',
@@ -112,7 +142,78 @@ describe('NativeAddressBookScreen', () => {
     expect(view.getByText('Lead specialist · Monitoring department')).toBeTruthy();
     expect(view.getByText('89312250556')).toBeTruthy();
     expect(view.queryByTestId('address-book-sync')).toBeNull();
-    expect(addressBookApi.searchAddressBook).toHaveBeenCalledWith({ q: '', limit: 50 });
+    expect(addressBookApi.getCompleteAddressBook).toHaveBeenCalled();
+    expect(addressBookSnapshot.writeNativeAddressBookSnapshot).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({ items: [sampleItem], total: 1 }),
+    );
+  });
+
+  it('opens the full saved directory offline without calling the server', async () => {
+    setViewerAuth();
+    mockAuth.offlineMode = true;
+    (addressBookSnapshot.readNativeAddressBookSnapshot as jest.Mock).mockResolvedValue({
+      savedAt: Date.now(),
+      data: {
+        items: [sampleItem],
+        total: 1,
+        updated_at: '2026-05-21T10:00:00+00:00',
+        last_error: '',
+      },
+    });
+
+    const view = await render(<NativeAddressBookScreen />);
+
+    await waitFor(() => expect(view.getByText('Ivanov Ivan Ivanovich')).toBeTruthy());
+    expect(addressBookApi.getCompleteAddressBook).not.toHaveBeenCalled();
+    expect(addressBookApi.getAddressBookStatus).not.toHaveBeenCalled();
+  });
+
+  it('exposes all 5000 saved employees to the offline virtualized list', async () => {
+    setViewerAuth();
+    mockAuth.offlineMode = true;
+    const offlineItems = Array.from({ length: 5_000 }, (_, index) => ({
+      ...sampleItem,
+      full_name: `Employee ${String(index).padStart(4, '0')}`,
+      employee_code: `E${index}`,
+      work_emails: [{
+        kind: 'Корпоративный E-mail',
+        value: `employee${index}@zsgp.ru`,
+        normalized: `employee${index}@zsgp.ru`,
+      }],
+    }));
+    (addressBookSnapshot.readNativeAddressBookSnapshot as jest.Mock).mockResolvedValue({
+      savedAt: Date.now(),
+      data: {
+        items: offlineItems,
+        total: offlineItems.length,
+        updated_at: '2026-09-04T10:00:00+05:00',
+        last_error: '',
+        has_more: false,
+      },
+    });
+
+    const view = await render(<NativeAddressBookScreen />);
+
+    await waitFor(() => {
+      expect(view.getByTestId('address-book-entry-list').props.data).toHaveLength(5_000);
+    });
+    const savedItems = view.getByTestId('address-book-entry-list').props.data;
+    expect(savedItems.at(-1)?.employee_code).toBe('E4999');
+    expect(view.getByText('Найдено 5000')).toBeTruthy();
+    expect(addressBookApi.getCompleteAddressBook).not.toHaveBeenCalled();
+    expect(addressBookApi.getAddressBookStatus).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('keeps the live directory visible when refreshing the offline copy fails', async () => {
+    setViewerAuth();
+    (addressBookSnapshot.writeNativeAddressBookSnapshot as jest.Mock).mockResolvedValue(false);
+
+    const view = await render(<NativeAddressBookScreen />);
+
+    await waitFor(() => expect(view.getByText('Ivanov Ivan Ivanovich')).toBeTruthy());
+    expect(view.getByText('Адресная книга загружена, но offline-копию обновить не удалось.')).toBeTruthy();
   });
 
   it('shows the 1C sync action for an admin', async () => {
@@ -153,11 +254,12 @@ describe('NativeAddressBookScreen', () => {
 
   it('does not render personal phones when the API omitted them', async () => {
     setViewerAuth();
-    (addressBookApi.searchAddressBook as jest.Mock).mockResolvedValue({
+    (addressBookApi.getCompleteAddressBook as jest.Mock).mockResolvedValue({
       items: [{ ...sampleItem, personal_phones: [], age: null, hire_date: null }],
       total: 1,
       updated_at: '2026-05-21T10:00:00+00:00',
       last_error: '',
+      has_more: false,
     });
     const view = await render(<NativeAddressBookScreen />);
 
@@ -221,12 +323,45 @@ describe('NativeAddressBookScreen', () => {
     await waitFor(() => {
       expect(openAddressBookChat).toHaveBeenCalledWith(sampleItem);
     });
+    expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+      'address-book-chat-links',
+      2,
+      'email:ivanov@zsgp.ru',
+      { conversationId: 'c-42', peerUserId: 42 },
+    );
+  });
+
+  it('opens a known contact chat offline from the local link cache', async () => {
+    setViewerAuth(['chat.read', 'chat.write']);
+    mockAuth.offlineMode = true;
+    (addressBookSnapshot.readNativeAddressBookSnapshot as jest.Mock).mockResolvedValue({
+      savedAt: Date.now(),
+      data: { items: [sampleItem], total: 1, updated_at: '', last_error: '' },
+    });
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+      savedAt: Date.now(),
+      data: { conversationId: 'cached-42', peerUserId: 42 },
+    });
+    const view = await render(<NativeAddressBookScreen />);
+    const chatId = 'address-book-chat-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0';
+
+    await waitFor(() => expect(view.getByTestId(chatId)).toBeTruthy());
+    await act(async () => {
+      fireEvent.press(view.getByTestId(chatId));
+    });
+
+    await waitFor(() => expect(openCachedAddressBookChat).toHaveBeenCalledWith({
+      conversationId: 'cached-42',
+      peerUserId: 42,
+    }));
+    expect(openAddressBookChat).not.toHaveBeenCalled();
   });
 
   it('hides the screen without address_book.read', async () => {
     mockAuth = {
       user: { id: 3, username: 'guest', role: 'viewer', permissions: [] },
       hasPermission: () => false,
+      offlineMode: false,
     };
     const view = await render(<NativeAddressBookScreen />);
     expect(view.getByText('Нет доступа')).toBeTruthy();

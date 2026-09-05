@@ -61,7 +61,15 @@ export default function TasksGanttView({
                 <Box
                   key={row.task.id}
                   data-testid={`tasks-gantt-row-${row.task.id}`}
+                  data-task-open-trigger={String(row.task.id)}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onOpenTask(row.task)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    onOpenTask(row.task);
+                  }}
                   sx={{
                     display: 'grid',
                     gridTemplateColumns: 'minmax(180px, 260px) minmax(360px, 1fr)',
@@ -71,6 +79,11 @@ export default function TasksGanttView({
                     p: 0.55,
                     borderRadius: '10px',
                     '&:hover': { bgcolor: ui.actionHover },
+                    '&:focus-visible': {
+                      outline: '2px solid',
+                      outlineColor: 'primary.main',
+                      outlineOffset: '2px',
+                    },
                   }}
                 >
                   <Box sx={{ minWidth: 0 }}>
@@ -112,6 +125,7 @@ export default function TasksGanttView({
               {ganttPayload.noDueItems.map((task) => (
                 <Button
                   key={task.id}
+                  data-task-open-trigger={String(task.id)}
                   variant="text"
                   onClick={() => onOpenTask(task)}
                   sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 800, px: 0.7 }}

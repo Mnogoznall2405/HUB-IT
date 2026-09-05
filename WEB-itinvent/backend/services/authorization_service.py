@@ -36,6 +36,8 @@ PERM_KB_MANAGE_ALL = "kb.manage_all"
 PERM_DEPARTMENTS_MANAGE = "departments.manage"
 PERM_COMPANY_STRUCTURE_READ = "company_structure.read"
 PERM_COMPANY_STRUCTURE_WRITE = "company_structure.write"
+PERM_CONSTRUCTION_READ = "construction.read"
+PERM_CONSTRUCTION_WRITE = "construction.write"
 PERM_SETTINGS_READ = "settings.read"
 PERM_SETTINGS_USERS_MANAGE = "settings.users.manage"
 PERM_SETTINGS_SESSIONS_MANAGE = "settings.sessions.manage"
@@ -52,6 +54,7 @@ PERM_ADDRESS_BOOK_HIRE_DATE_READ = "address_book.hire_date.read"
 PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ = "address_book.personal_phone.read"
 PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ = "address_book.personal_email.read"
 PERM_WAREHOUSE_1C_READ = "warehouse_1c.read"
+PERM_WAREHOUSE_1C_IT_REQUESTS_READ = "warehouse_1c.it_requests.read"
 PERM_WAREHOUSE_1C_RECONCILE_WRITE = "warehouse_1c.reconcile.write"
 PERM_DOCFLOW_READ = "docflow.read"
 PERM_DOCFLOW_ACT = "docflow.act"
@@ -130,6 +133,8 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_KB_MANAGE_ALL,
     PERM_DEPARTMENTS_MANAGE,
     PERM_COMPANY_STRUCTURE_WRITE,
+    PERM_CONSTRUCTION_READ,
+    PERM_CONSTRUCTION_WRITE,
     PERM_SETTINGS_USERS_MANAGE,
     PERM_SETTINGS_SESSIONS_MANAGE,
     PERM_SETTINGS_AI_MANAGE,
@@ -141,6 +146,7 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_VCS_MANAGE,
     PERM_ADDRESS_BOOK_READ,
     PERM_WAREHOUSE_1C_READ,
+    PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
     PERM_WAREHOUSE_1C_RECONCILE_WRITE,
     PERM_DOCFLOW_ADMIN,
     PERM_HUB_ABSENCES_MANAGE,
@@ -200,7 +206,7 @@ class AuthorizationService:
         if bool(use_custom_permissions):
             return sorted(
                 set(self.normalize_permissions(custom_permissions))
-                | set(_ALWAYS_GRANTED_PERMISSIONS)
+                | set(self._permissions_by_role["viewer"])
             )
         return self.get_permissions_for_role(role)
 

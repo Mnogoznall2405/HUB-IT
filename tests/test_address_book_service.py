@@ -643,6 +643,81 @@ def test_search_ranks_name_matches_before_other_fields_and_sorts_empty_query():
     ]
 
 
+def test_search_paginates_the_complete_sorted_directory():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {"full_name": "Charlie", "work_phones": [], "personal_phones": []},
+                    {"full_name": "Alpha", "work_phones": [], "personal_phones": []},
+                    {"full_name": "Bravo", "work_phones": [], "personal_phones": []},
+                ]
+            }
+        )
+    )
+
+    first_page = service.search("", limit=2, offset=0)
+    second_page = service.search("", limit=2, offset=2)
+
+    assert [item["full_name"] for item in first_page["items"]] == ["Alpha", "Bravo"]
+    assert first_page["offset"] == 0
+    assert first_page["has_more"] is True
+    assert [item["full_name"] for item in second_page["items"]] == ["Charlie"]
+    assert second_page["offset"] == 2
+    assert second_page["has_more"] is False
+
+
+def test_snapshot_loads_cache_once_and_uses_employee_code_as_stable_tiebreaker():
+    class CountingMemoryDataManager(MemoryDataManager):
+        def __init__(self, payload):
+            super().__init__(payload)
+            self.load_count = 0
+
+        def load_json(self, filename, default_content=None):
+            self.load_count += 1
+            return super().load_json(filename, default_content)
+
+    manager = CountingMemoryDataManager(
+        {
+            "updated_at": "2026-09-02T10:00:00Z",
+            "items": [
+                {"full_name": "Same User", "employee_code": "E2"},
+                {"full_name": "Alpha User", "employee_code": "E9"},
+                {"full_name": "Same User", "employee_code": "E1"},
+            ],
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    result = service.snapshot()
+
+    assert manager.load_count == 1
+    assert [(item["full_name"], item["employee_code"]) for item in result["items"]] == [
+        ("Alpha User", "E9"),
+        ("Same User", "E1"),
+        ("Same User", "E2"),
+    ]
+    assert result["total"] == 3
+    assert result["offset"] == 0
+    assert result["has_more"] is False
+    assert result["updated_at"] == "2026-09-02T10:00:00Z"
+
+
+def test_snapshot_returns_all_5000_directory_entries_without_pagination():
+    items = [
+        {"full_name": f"Employee {index:04d}", "employee_code": f"E{index}"}
+        for index in range(5_000)
+    ]
+    service = AddressBookService(data_manager=MemoryDataManager({"items": items}))
+
+    result = service.snapshot()
+
+    assert result["total"] == 5_000
+    assert len(result["items"]) == 5_000
+    assert result["items"][-1]["employee_code"] == "E4999"
+    assert result["has_more"] is False
+
+
 def test_load_items_initializes_com_in_current_thread(monkeypatch):
     calls = []
 

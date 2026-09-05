@@ -6,6 +6,7 @@ using Hub.Desktop.Notifications;
 using Hub.Desktop.Security;
 using Hub.Desktop.Shell;
 using Hub.Desktop.Remote;
+using Hub.Desktop.Printing;
 
 namespace Hub.Desktop.Interop;
 
@@ -26,6 +27,7 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler<DesktopShellStatusChangedEventArgs>? ShellStatusChanged;
     public event EventHandler<DesktopQuickRoutesChangedEventArgs>? QuickRoutesChanged;
     public event EventHandler? PrintCurrentDocumentRequested;
+    public event EventHandler<DesktopEquipmentQrPrintRequestedEventArgs>? EquipmentQrPrintRequested;
     public event EventHandler? OpenDownloadsRequested;
     public event EventHandler? OpenDiagnosticsRequested;
     public event EventHandler? CheckForUpdatesRequested;
@@ -183,7 +185,7 @@ public sealed class DesktopBridgeHost : IDisposable
         }
     }
 
-    private void Core_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    private async void Core_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (!IsTrustedDocument(e.Source) || !IsTrustedDocument(_core.Source))
         {
@@ -281,6 +283,45 @@ public sealed class DesktopBridgeHost : IDisposable
             }
 
             PrintCurrentDocumentRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.PrintEquipmentQrBatch
+            && message.EquipmentQrPrint is { } qrPrint)
+        {
+            var status = DesktopEquipmentQrPrintStatus.Failed;
+            if (!_bridgeReady)
+            {
+                DesktopLog.Warning("Rejected equipment QR print request before bridge handshake");
+            }
+            else
+            {
+                var eventArgs = new DesktopEquipmentQrPrintRequestedEventArgs(qrPrint.Mode);
+                EquipmentQrPrintRequested?.Invoke(this, eventArgs);
+                if (eventArgs.Completion is not null)
+                {
+                    try
+                    {
+                        status = await eventArgs.Completion;
+                    }
+                    catch (Exception exception)
+                    {
+                        DesktopLog.Error("Equipment QR print request failed", exception);
+                    }
+                }
+            }
+
+            try
+            {
+                _core.PostWebMessageAsJson(
+                    DesktopBridgeProtocol.CreateEquipmentQrPrintResultMessage(
+                        qrPrint.RequestId,
+                        status));
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Equipment QR print response failed", exception);
+            }
             return;
         }
 
@@ -410,6 +451,14 @@ public sealed class DesktopPrepareDownloadedFileRequestedEventArgs(
     public DesktopDownloadedFileAction Action { get; } = action;
 
     public bool Accepted { get; set; }
+}
+
+public sealed class DesktopEquipmentQrPrintRequestedEventArgs(
+    DesktopEquipmentQrPrintMode mode) : EventArgs
+{
+    public DesktopEquipmentQrPrintMode Mode { get; } = mode;
+
+    public Task<DesktopEquipmentQrPrintStatus>? Completion { get; set; }
 }
 
 public sealed class DesktopShellStatusChangedEventArgs(DesktopShellStatus status) : EventArgs

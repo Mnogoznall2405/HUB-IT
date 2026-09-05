@@ -1,4 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { FluentTokens } from '../theme/fluentTokens';
 import { buildFeedAttachmentUrl } from '../api/feedApi';
@@ -15,7 +16,7 @@ import {
   type FeedPost,
 } from './feedFormat';
 
-export function FeedPostCard({
+export const FeedPostCard = memo(function FeedPostCard({
   post,
   tokens,
   detailView = false,
@@ -28,11 +29,11 @@ export function FeedPostCard({
   post: FeedPost;
   tokens: FluentTokens;
   detailView?: boolean;
-  onOpen?: () => void;
-  onToggleReaction?: () => void;
-  onBookmark?: () => void;
-  onComments?: () => void;
-  onAcknowledge?: () => void;
+  onOpen?: (post: FeedPost) => void;
+  onToggleReaction?: (post: FeedPost) => void;
+  onBookmark?: (post: FeedPost) => void;
+  onComments?: (post: FeedPost) => void;
+  onAcknowledge?: (post: FeedPost) => void;
 }) {
   const authorName = post.author_full_name || post.author_username || 'Автор публикации';
   const preview = String(post.preview || stripFeedMarkdown(post.body) || '').trim();
@@ -107,24 +108,24 @@ export function FeedPostCard({
           tokens={tokens}
           active={Boolean(viewerReaction)}
           label={viewerReaction ? `${viewerReaction.emoji} ${viewerReaction.label}` : 'Нравится'}
-          onPress={onToggleReaction}
+          onPress={onToggleReaction ? () => onToggleReaction(post) : undefined}
         />
         <Action
           tokens={tokens}
           label={commentsCount > 0 ? `Комментарии ${commentsCount}` : 'Комментарии'}
-          onPress={onComments || onOpen}
+          onPress={onComments || onOpen ? () => (onComments || onOpen)?.(post) : undefined}
         />
         <Action
           tokens={tokens}
           active={Boolean(post.viewer_bookmarked)}
           label={post.viewer_bookmarked ? 'В сохранённых' : 'Сохранить'}
-          onPress={onBookmark}
+          onPress={onBookmark ? () => onBookmark(post) : undefined}
         />
       </View>
 
       {post.is_ack_pending && onAcknowledge ? (
         <Pressable
-          onPress={onAcknowledge}
+          onPress={() => onAcknowledge(post)}
           style={[styles.ackButton, { backgroundColor: tokens.primary }]}
           accessibilityRole="button"
           accessibilityLabel="Подтвердить прочтение"
@@ -149,7 +150,7 @@ export function FeedPostCard({
   return (
     <Pressable
       testID={`feed-post-card-${post.id}`}
-      onPress={onOpen}
+      onPress={onOpen ? () => onOpen(post) : undefined}
       accessibilityRole="button"
       accessibilityLabel={post.title || 'Публикация'}
       style={[styles.card, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}
@@ -157,7 +158,7 @@ export function FeedPostCard({
       {content}
     </Pressable>
   );
-}
+});
 
 function Badge({
   tokens,

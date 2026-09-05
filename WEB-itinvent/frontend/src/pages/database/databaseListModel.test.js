@@ -16,7 +16,9 @@ import {
   groupSearchResults,
   mergeGroupedEquipment,
   normalizeActionTargets,
+  resolveSelectedEquipmentPrintOrder,
   runInBatches,
+  sortEquipmentItems,
 } from './databaseListModel';
 
 describe('databaseListModel', () => {
@@ -126,6 +128,27 @@ describe('databaseListModel', () => {
     expect(normalizeActionTargets([' 1001 ', '', null, '1002'], 'fallback')).toEqual(['1001', '1002']);
     expect(normalizeActionTargets([], ' 1003 ')).toEqual(['1003']);
     expect(buildLocationKey('HQ', 'Office')).toBe('HQ::Office');
+  });
+
+  it('keeps batch QR printing in the same grouped and table sort order', () => {
+    const hqA = { ID: 1, INV_NO: '1002', OWNER_DISPLAY_NAME: 'Анна' };
+    const hqB = { ID: 2, INV_NO: '1001', OWNER_DISPLAY_NAME: 'Борис' };
+    const remote = { ID: 3, INV_NO: '2001', OWNER_DISPLAY_NAME: 'Виктор' };
+    const grouped = {
+      HQ: { 'Кабинет 20': [hqB], 'Кабинет 10': [hqA] },
+      Remote: { Склад: [remote] },
+    };
+
+    expect(sortEquipmentItems([hqB, hqA], { field: 'employee', direction: 'asc' }))
+      .toEqual([hqA, hqB]);
+    expect(resolveSelectedEquipmentPrintOrder(
+      grouped,
+      ['2001', 'missing', '1001', '1002'],
+      { field: 'employee', direction: 'asc' }
+    )).toEqual({
+      items: [hqA, hqB, remote],
+      skippedInvNos: ['missing'],
+    });
   });
 
   it('builds equipment indexes, visible location keys, expansion state, and visible selection counts', () => {

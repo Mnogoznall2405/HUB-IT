@@ -17,6 +17,7 @@ const createDeps = (overrides = {}) => ({
   openComposeFromDraftMessage: vi.fn(),
   saveCurrentListScrollPosition: vi.fn(),
   revalidateSelectedMailDetail: vi.fn(),
+  performMailReadMutation: vi.fn(),
   closeMobileNavigationIfNeeded: vi.fn(),
   setSelectedItems: vi.fn(),
   setDetailLoading: vi.fn(),
@@ -30,6 +31,61 @@ const createDeps = (overrides = {}) => ({
 });
 
 describe('useMailListItemSelection', () => {
+  it('starts marking an unread message read as soon as it is selected', async () => {
+    const deps = createDeps();
+    const { result } = renderHook(() => useMailListItemSelection(deps));
+
+    await act(async () => {
+      await result.current('msg-1', { id: 'msg-1', is_read: false });
+    });
+
+    expect(deps.performMailReadMutation).toHaveBeenCalledWith({
+      mode: 'messages',
+      targetId: 'msg-1',
+      nextIsRead: true,
+      currentUnreadCount: 1,
+      currentMessageCount: 1,
+      errorMessage: 'Не удалось отметить письмо как прочитанное.',
+    });
+    expect(deps.performMailReadMutation.mock.invocationCallOrder[0])
+      .toBeLessThan(deps.setSelectedId.mock.invocationCallOrder[0]);
+  });
+
+  it('starts marking an unread conversation read before opening its detail', async () => {
+    const deps = createDeps({ viewMode: 'conversations' });
+    const { result } = renderHook(() => useMailListItemSelection(deps));
+
+    await act(async () => {
+      await result.current('conv-1', {
+        conversation_id: 'conv-1',
+        unread_count: 2,
+        messages_count: 4,
+      });
+    });
+
+    expect(deps.performMailReadMutation).toHaveBeenCalledWith({
+      mode: 'conversations',
+      targetId: 'conv-1',
+      nextIsRead: true,
+      currentUnreadCount: 2,
+      currentMessageCount: 4,
+      errorMessage: 'Не удалось отметить диалог как прочитанный.',
+    });
+    expect(deps.performMailReadMutation.mock.invocationCallOrder[0])
+      .toBeLessThan(deps.setSelectedId.mock.invocationCallOrder[0]);
+  });
+
+  it('does not mark an already read message again when it is selected', async () => {
+    const deps = createDeps();
+    const { result } = renderHook(() => useMailListItemSelection(deps));
+
+    await act(async () => {
+      await result.current('msg-1', { id: 'msg-1', is_read: true });
+    });
+
+    expect(deps.performMailReadMutation).not.toHaveBeenCalled();
+  });
+
   it('toggles bulk selection on mobile instead of opening a message', async () => {
     const deps = createDeps({
       isMobile: true,

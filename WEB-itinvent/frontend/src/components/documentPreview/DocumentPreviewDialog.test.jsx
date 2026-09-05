@@ -84,6 +84,15 @@ describe('DocumentPreviewDialog', () => {
     expect(screen.getByRole('dialog')).toHaveClass('MuiDialog-paperFullScreen');
   });
 
+  it('keeps the fullscreen preview above every application modal', () => {
+    setMobileMedia(false);
+    renderDialog();
+
+    const dialogRoot = screen.getByRole('dialog').closest('.MuiDialog-root');
+    expect(dialogRoot).not.toBeNull();
+    expect(window.getComputedStyle(dialogRoot).zIndex).toBe(String(theme.zIndex.tooltip - 1));
+  });
+
   it('rotates a PDF preview left and right without changing the source file', async () => {
     setMobileMedia(false);
     render(

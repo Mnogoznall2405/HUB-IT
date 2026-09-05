@@ -16,8 +16,8 @@ Windows desktop-shell для корпоративного портала HUB. К
 - постоянный профиль WebView2 в `%LOCALAPPDATA%\HUB-IT\Desktop\WebView2`;
 - стандартные autofill и password manager WebView2 включены: после согласия пользователя сохранённый логин подставляется из его локального профиля, а приложение не читает и не хранит AD-пароль самостоятельно;
 - production origin `https://hubit.zsgp.ru`;
-- внешние HTTPS- и `mailto:`-ссылки открываются системным обработчиком;
-- остальные внешние схемы блокируются;
+- внешние HTTPS-, `mailto:`-, `vnc:`-ссылки и HTTP-ссылки на буквальные приватные IPv4-адреса RFC1918 открываются системным обработчиком;
+- остальные внешние схемы и HTTP-адреса блокируются;
 - certificate errors не игнорируются;
 - DevTools и browser accelerator keys отключены в Release;
 - локальный offline/error overlay и безопасные rolling-логи;
@@ -33,6 +33,7 @@ Windows desktop-shell для корпоративного портала HUB. К
 - отдельные Desktop-настройки управляют видимостью при входе в Windows, стартовой страницей,
   одноразовым напоминанием при X и opt-in `Ctrl+Shift+H` с обнаружением конфликта;
 - `hubit://`, Jump List, permission-aware tray routes и `Ctrl+K` открывают только строгие внутренние маршруты;
+- отдельное окно письма автоматически восстанавливает WebView2 после сетевого или renderer-сбоя и после ограниченных повторов показывает кнопку ручного восстановления;
 - окно загрузок поддерживает Cancel/Clear/Open folder, а taskbar показывает общий прогресс;
 - системный режим темы выбирается в настройках портала и следует Windows;
 - versioned React/C# handshake определяет desktop runtime до первого React render;
@@ -203,6 +204,36 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ## Производительность в VM и RDP
 
 WebView2 требует рабочего WDDM-видеодрайвера для плавного аппаратного рендеринга. Если виртуальная машина видит только `Microsoft Basic Display Adapter`, а WPF сообщает `Render Tier 0`, интерфейс рендерится программно и может заметно подтормаживать. Для VMware установите поддерживаемый `VMware SVGA 3D` из VMware Tools; для RDP-сервера при наличии доступного GPU включите политику `Use hardware graphics adapters for all Remote Desktop Services sessions` и перезагрузите VM. Не передавайте WebView2 принудительные GPU-флаги при отсутствующем драйвере.
+
+## Воспроизводимый замер производительности
+
+PerfBench-сборка запускается только отдельным скриптом и всегда использует временный
+изолированный профиль WebView2, не затрагивая рабочую сессию пользователя:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\desktop\run-performance-benchmark.ps1 -Runs 5 -Mode Both
+```
+
+Скрипт выполняет холодные запуски с новым профилем и тёплые запуски с общим профилем,
+а затем сохраняет JSONL каждого прогона и сводные p50/p95 в
+`artifacts\desktop\perf\<UTC timestamp>\report.json` и `report.md`. В отчёт входят
+время старта WPF/WebView2/навигации/bridge, first paint/FCP, число и объём ресурсов,
+long tasks, CPU и память host/renderer. Временные профили удаляются после завершения;
+`-KeepProfiles` оставляет их только для локального разбора.
+
+Для авторизованного маршрута логин и пароль задаются только через уже предусмотренные
+переменные окружения `HUB_DESKTOP_PERF_LOGIN_USER` и
+`HUB_DESKTOP_PERF_LOGIN_PASSWORD`; для учётной записи с TOTP используется
+`HUB_DESKTOP_PERF_TOTP_SECRET`. Значения в аргументы или отчёт не попадают. Пример:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\desktop\run-performance-benchmark.ps1 `
+  -Runs 5 -Mode Both -Route /tasks -RequireAuthenticated
+```
+
+Маршруты `/chat` и `/tasks` дополнительно требуют успешный функциональный smoke встроенного
+lazy-loaded интерфейса. Один прогон не считается подтверждением оптимизации: сравнивайте p50/p95
+одинакового сценария и объёма данных до и после изменения.
 
 ## Desktop bridge v1
 

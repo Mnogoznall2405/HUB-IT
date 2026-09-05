@@ -5,6 +5,7 @@ import {
   Alert,
   AppState,
   FlatList,
+  type ListRenderItemInfo,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -24,6 +25,12 @@ import {
 import { formatApiError } from '../../api/formatError';
 import { HUB_WEB_ORIGIN } from '../../api/config';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeEntitySnapshot,
+  readNativeSnapshot,
+  writeNativeEntitySnapshot,
+  writeNativeSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import {
   NativeMyFileCard,
   type MyFileCardAction,
@@ -50,6 +57,16 @@ import {
   readNativeMyFileTextPreview,
   uploadNativeMyFile,
 } from '../../myFiles/nativeMyFilesTransfers';
+import {
+  getNativeMyFilesOfflineFile,
+  getNativeMyFilesOfflineIds,
+  pinNativeMyFileOffline,
+  removeNativeMyFileOffline,
+} from '../../myFiles/nativeMyFilesOfflineStore';
+import {
+  type NativeMyFileDetailSnapshot,
+  type NativeMyFilesInboxSnapshot,
+} from '../../myFiles/nativeMyFilesSnapshot';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { shareNativeText } from '../../share/nativeOutgoingShare';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -61,13 +78,15 @@ type BusyFile = { id: string; action: MyFileCardAction } | null;
 type UploadState = { name: string; index: number; totalFiles: number; progress: number | null } | null;
 
 export function NativeMyFilesScreen() {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('my_files.read');
   const canWrite = hasPermission('my_files.write');
   const canShare = hasPermission('my_files.share');
+  const userId = Number(user?.id || 0);
   const [items, setItems] = useState<MyFileRecord[]>([]);
+  const [offlineFileIds, setOfflineFileIds] = useState<Set<string>>(() => new Set());
   const [quota, setQuota] = useState<MyFilesQuota | null>(null);
   const [retentionDays, setRetentionDays] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -93,13 +112,30 @@ export function NativeMyFilesScreen() {
   }, []);
 
   const loadData = useCallback(async ({ refresh = false, silent = false } = {}) => {
-    if (!canRead || offlineMode) {
+    if (!canRead) {
       setLoading(false);
       return;
     }
     if (refresh) setRefreshing(true);
     else if (!silent) setLoading(true);
     if (!silent) setError('');
+    let cached = false;
+    if (userId) {
+      const snapshot = await readNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId);
+      if (!mountedRef.current) return;
+      if (snapshot) {
+        cached = true;
+        setItems(snapshot.data.items);
+        setQuota(snapshot.data.quota);
+        setLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (!cached && !silent) setError('Нет подключения и сохранённого списка файлов.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     const [filesResult, quotaResult] = await Promise.allSettled([listMyFiles(), getMyFilesQuota()]);
     if (!mountedRef.current) return;
     const errors: string[] = [];
@@ -108,11 +144,33 @@ export function NativeMyFilesScreen() {
     if (quotaResult.status === 'fulfilled') setQuota(quotaResult.value);
     else errors.push(formatApiError(quotaResult.reason, 'Не удалось загрузить квоту.'));
     setError(errors.join(' '));
+    if (userId && filesResult.status === 'fulfilled' && quotaResult.status === 'fulfilled') {
+      void writeNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId, {
+        items: filesResult.value,
+        quota: quotaResult.value,
+      });
+    }
     setLoading(false);
     setRefreshing(false);
-  }, [canRead, offlineMode]);
+  }, [canRead, offlineMode, userId]);
 
   useEffect(() => { void loadData(); }, [loadData]);
+
+  useEffect(() => {
+    let active = true;
+    if (!userId || !items.length) {
+      setOfflineFileIds(new Set());
+      return () => { active = false; };
+    }
+    void getNativeMyFilesOfflineIds(userId, items)
+      .then((ids) => {
+        if (active) setOfflineFileIds(ids);
+      })
+      .catch(() => {
+        if (active) setOfflineFileIds(new Set());
+      });
+    return () => { active = false; };
+  }, [items, userId]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -182,8 +240,9 @@ export function NativeMyFilesScreen() {
     item: MyFileRecord,
     action: MyFileCardAction,
     operation: () => Promise<void>,
+    options: { allowOffline?: boolean } = {},
   ) => {
-    if (busyFile || offlineMode || fileActionLockRef.current) return;
+    if (busyFile || (offlineMode && !options.allowOffline) || fileActionLockRef.current) return;
     fileActionLockRef.current = true;
     setBusyFile({ id: item.id, action });
     setError('');
@@ -200,22 +259,44 @@ export function NativeMyFilesScreen() {
 
   const openFile = useCallback((item: MyFileRecord) => {
     void runFileAction(item, 'open', async () => {
-      const file = await downloadNativeMyFile(item);
+      const file = await downloadNativeMyFile(item, { userId });
       await openNativeFile(file, myFileMimeType(item));
-    });
-  }, [runFileAction]);
+    }, { allowOffline: true });
+  }, [runFileAction, userId]);
 
   const openPreview = useCallback((item: MyFileRecord) => {
     void runFileAction(item, 'preview', async () => {
       const previewKind = nativeMyFilePreviewKind(item);
       if (!previewKind) throw new Error('Предпросмотр этого файла недоступен');
       if (previewKind === 'text') {
-        const file = await downloadNativeMyFile(item);
+        const file = await downloadNativeMyFile(item, { userId });
         const text = await readNativeMyFileTextPreview(file);
         if (mountedRef.current) setPreview({ kind: 'text', fileName: myFileName(item), text });
         return;
       }
-      const metadata = await getMyFilePreview(item.id);
+      const offlineFile = userId ? await getNativeMyFilesOfflineFile(userId, item) : null;
+      const mimeType = myFileMimeType(item).split(';', 1)[0].trim().toLowerCase();
+      if (offlineFile && previewKind === 'image' && mimeType.startsWith('image/')) {
+        if (mountedRef.current) setPreview({ kind: 'image', fileName: myFileName(item), imageUri: offlineFile.uri });
+        return;
+      }
+      if (offlineFile && previewKind === 'pdf' && mimeType === 'application/pdf') {
+        await openNativeFile(offlineFile, mimeType);
+        return;
+      }
+      const cached = userId
+        ? await readNativeEntitySnapshot<NativeMyFileDetailSnapshot>('my-file-details', userId, item.id)
+        : null;
+      let metadata = cached?.data.preview;
+      if (!offlineMode) {
+        metadata = await getMyFilePreview(item.id);
+        if (userId) {
+          void writeNativeEntitySnapshot<NativeMyFileDetailSnapshot>('my-file-details', userId, item.id, {
+            preview: metadata,
+          });
+        }
+      }
+      if (!metadata) throw new Error('Предпросмотр ещё не сохранён. Откройте файл один раз при наличии интернета');
       const downloaded = await downloadNativeMyFilePreview(item, metadata);
       if (previewKind === 'pdf') {
         await openNativeFile(downloaded.file, downloaded.mimeType);
@@ -224,15 +305,42 @@ export function NativeMyFilesScreen() {
       if (mountedRef.current) {
         setPreview({ kind: 'image', fileName: myFileName(item), imageUri: downloaded.file.uri });
       }
-    });
-  }, [runFileAction]);
+    }, { allowOffline: true });
+  }, [offlineMode, runFileAction, userId]);
 
   const shareFile = useCallback((item: MyFileRecord) => {
     void runFileAction(item, 'share-file', async () => {
-      const file = await downloadNativeMyFile(item);
+      const file = await downloadNativeMyFile(item, { userId });
       await shareNativeFile(file, myFileName(item), myFileMimeType(item));
-    });
-  }, [runFileAction]);
+    }, { allowOffline: true });
+  }, [runFileAction, userId]);
+
+  const saveOffline = useCallback((item: MyFileRecord) => {
+    void runFileAction(item, 'save-offline', async () => {
+      if (!userId) throw new Error('Не удалось определить владельца файла');
+      const source = await downloadNativeMyFile(item, { userId });
+      await pinNativeMyFileOffline(userId, item, source);
+      if (mountedRef.current) {
+        setOfflineFileIds((current) => new Set(current).add(item.id));
+        setNotice(`«${myFileName(item)}» теперь доступен без сети.`);
+      }
+    }, { allowOffline: true });
+  }, [runFileAction, userId]);
+
+  const removeOffline = useCallback((item: MyFileRecord) => {
+    void runFileAction(item, 'remove-offline', async () => {
+      if (!userId) return;
+      await removeNativeMyFileOffline(userId, item.id);
+      if (mountedRef.current) {
+        setOfflineFileIds((current) => {
+          const next = new Set(current);
+          next.delete(item.id);
+          return next;
+        });
+        setNotice(`Офлайн-копия «${myFileName(item)}» удалена; файл на сервере сохранён.`);
+      }
+    }, { allowOffline: true });
+  }, [runFileAction, userId]);
 
   const deliverShareLink = useCallback(async (item: MyFileRecord, rotate: boolean) => {
     const share = await createMyFileShare(item.id, rotate);
@@ -292,6 +400,7 @@ export function NativeMyFilesScreen() {
         onPress: () => {
           void runFileAction(item, 'delete', async () => {
             await deleteMyFile(item.id);
+            if (userId) await removeNativeMyFileOffline(userId, item.id);
             if (mountedRef.current) {
               setItems((current) => current.filter((entry) => entry.id !== item.id));
               setNotice('Файл удалён.');
@@ -301,7 +410,49 @@ export function NativeMyFilesScreen() {
         },
       },
     ]);
-  }, [loadData, runFileAction]);
+  }, [loadData, runFileAction, userId]);
+
+  const refreshFiles = useCallback(() => {
+    void loadData({ refresh: true });
+  }, [loadData]);
+
+  const renderFile = useCallback(({ item }: ListRenderItemInfo<MyFileRecord>) => (
+    <NativeMyFileCard
+      item={item}
+      tokens={tokens}
+      canWrite={canWrite}
+      canShare={canShare}
+      offline={offlineMode}
+      availableOffline={offlineFileIds.has(item.id)}
+      actionsLocked={Boolean(busyFile)}
+      busyAction={busyFile?.id === item.id ? busyFile.action : null}
+      onPreview={openPreview}
+      onOpen={openFile}
+      onShareFile={shareFile}
+      onSaveOffline={saveOffline}
+      onRemoveOffline={removeOffline}
+      onShareLink={shareLink}
+      onRotate={confirmRotate}
+      onRevoke={confirmRevoke}
+      onDelete={confirmDelete}
+    />
+  ), [
+    busyFile,
+    canShare,
+    canWrite,
+    confirmDelete,
+    confirmRevoke,
+    confirmRotate,
+    offlineFileIds,
+    offlineMode,
+    openFile,
+    openPreview,
+    removeOffline,
+    saveOffline,
+    shareFile,
+    shareLink,
+    tokens,
+  ]);
 
   if (!canRead) {
     return (
@@ -319,7 +470,7 @@ export function NativeMyFilesScreen() {
       scroll={false}
     >
       <NativeMyFilePreviewModal preview={preview} tokens={tokens} onClose={() => setPreview(null)} />
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показаны данные текущего сеанса, сетевые действия отключены.</Text> : null}
+      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показан сохранённый список. Файлы со статусом «Офлайн» можно открыть и отправить без сети.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.success }]}>{notice}</Text> : null}
 
@@ -404,7 +555,7 @@ export function NativeMyFilesScreen() {
 
       <View style={styles.listHeading}>
         <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Файлы · {items.length}</Text>
-        <Pressable onPress={() => { void loadData({ refresh: true }); }} disabled={refreshing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить список файлов" style={styles.refreshButton}>
+        <Pressable onPress={refreshFiles} disabled={refreshing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить список файлов" style={styles.refreshButton}>
           {refreshing ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="refresh" size={21} color={tokens.primary} />}
         </Pressable>
       </View>
@@ -417,7 +568,7 @@ export function NativeMyFilesScreen() {
           data={items}
           keyExtractor={(item) => item.id}
           refreshing={refreshing}
-          onRefresh={() => { void loadData({ refresh: true }); }}
+          onRefresh={refreshFiles}
           contentContainerStyle={items.length ? styles.listContent : styles.emptyContent}
           ListEmptyComponent={(
             <View style={styles.emptyBody}>
@@ -426,24 +577,7 @@ export function NativeMyFilesScreen() {
               <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{error ? 'Проверьте соединение и повторите.' : 'Загрузите файлы — после проверки безопасности они появятся здесь.'}</Text>
             </View>
           )}
-          renderItem={({ item }) => (
-            <NativeMyFileCard
-              item={item}
-              tokens={tokens}
-              canWrite={canWrite}
-              canShare={canShare}
-              offline={offlineMode}
-              actionsLocked={Boolean(busyFile)}
-              busyAction={busyFile?.id === item.id ? busyFile.action : null}
-              onPreview={() => openPreview(item)}
-              onOpen={() => openFile(item)}
-              onShareFile={() => shareFile(item)}
-              onShareLink={() => shareLink(item)}
-              onRotate={() => confirmRotate(item)}
-              onRevoke={() => confirmRevoke(item)}
-              onDelete={() => confirmDelete(item)}
-            />
-          )}
+          renderItem={renderFile}
         />
       )}
     </AccountScreenScaffold>

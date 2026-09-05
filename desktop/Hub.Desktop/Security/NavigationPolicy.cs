@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace Hub.Desktop.Security;
 
 public enum NavigationDisposition
@@ -73,7 +75,26 @@ public sealed class NavigationPolicy
     {
         return uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
             || uri.Scheme.Equals(Uri.UriSchemeMailto, StringComparison.OrdinalIgnoreCase)
-            || uri.Scheme.Equals("vnc", StringComparison.OrdinalIgnoreCase);
+            || uri.Scheme.Equals("tg", StringComparison.OrdinalIgnoreCase)
+            || uri.Scheme.Equals("vnc", StringComparison.OrdinalIgnoreCase)
+            || IsPrivateIpv4HttpUri(uri);
+    }
+
+    private static bool IsPrivateIpv4HttpUri(Uri uri)
+    {
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            || uri.HostNameType != UriHostNameType.IPv4
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !IPAddress.TryParse(uri.Host, out var address))
+        {
+            return false;
+        }
+
+        var bytes = address.GetAddressBytes();
+        return bytes.Length == 4
+            && (bytes[0] == 10
+                || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+                || (bytes[0] == 192 && bytes[1] == 168));
     }
 
     private static string NormalizeOrigin(Uri uri)

@@ -31,6 +31,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private readonly IDesktopGlobalActions _globalActions;
     private readonly DesktopDownloadCoordinator _downloads;
     private readonly NavigationPolicy _navigationPolicy;
+    private readonly ExternalUriLauncher _externalUriLauncher;
     private readonly DesktopWebViewHost _webViewHost;
     private readonly DesktopWindowController _windowController;
     private readonly DesktopWindowPlacementService _windowPlacement = new();
@@ -73,6 +74,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
             ? initialRoute
             : null;
         _navigationPolicy = new NavigationPolicy(options.BaseUri);
+        _externalUriLauncher = new ExternalUriLauncher(_navigationPolicy);
 
         InitializeComponent();
         _webViewHost = new DesktopWebViewHost(
@@ -265,6 +267,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.ShellStatusChanged += DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged += DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested += DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.EquipmentQrPrintRequested += DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested += DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
@@ -425,6 +428,14 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private void DesktopBridge_PrintCurrentDocumentRequested(object? sender, EventArgs e) =>
         PrintCurrentPage();
+
+    private void DesktopBridge_EquipmentQrPrintRequested(
+        object? sender,
+        DesktopEquipmentQrPrintRequestedEventArgs e) =>
+        e.Completion = _printing.PrintEquipmentQrBatchAsync(
+            _webView?.CoreWebView2,
+            _options.BaseUri,
+            e.Mode);
 
     private void DesktopBridge_OpenDownloadsRequested(object? sender, EventArgs e) =>
         _globalActions.ShowDownloads();
@@ -674,23 +685,32 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private void OpenExternalUri(string rawUri)
     {
-        if (!_navigationPolicy.TryGetExternalUri(rawUri, out var uri))
+        var result = _externalUriLauncher.Open(rawUri);
+        if (result.Status == ExternalUriLaunchStatus.Opened)
         {
-            DesktopLog.Warning("Rejected external navigation from the secondary window");
             return;
         }
 
-        try
+        if (result.Status == ExternalUriLaunchStatus.Blocked)
         {
-            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            DesktopLog.Warning(
+                $"Rejected secondary external URI scheme '{result.Scheme}' after policy evaluation");
         }
-        catch (Exception exception)
+        else
         {
-            DesktopLog.Error("System handler failed to open an external URI", exception);
-            ShowError(
-                "Не удалось открыть ссылку",
-                "Системный обработчик ссылки недоступен.");
+            DesktopLog.Error(
+                "System handler failed to open an external URI",
+                result.Error ?? new InvalidOperationException("System handler rejected the URI."));
         }
+
+        System.Windows.MessageBox.Show(
+            this,
+            result.Status == ExternalUriLaunchStatus.Blocked
+                ? "Эта ссылка заблокирована политикой безопасности HUB Desktop."
+                : "Не удалось открыть ссылку. Проверьте системный браузер или приложение для этого типа ссылок.",
+            "HUB Desktop",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private void OpenCurrentPageInBrowser()
@@ -1019,6 +1039,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.ShellStatusChanged -= DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged -= DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested -= DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.EquipmentQrPrintRequested -= DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested -= DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;

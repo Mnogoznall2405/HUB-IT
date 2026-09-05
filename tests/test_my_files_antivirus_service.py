@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,6 +60,37 @@ def test_auto_provider_prefers_kaspersky_when_installed(tmp_path, monkeypatch, e
 
     assert result == antivirus.SecurityScanResult(status="clean", engine="kaspersky-endpoint-security")
     assert calls == [[str(kaspersky_path), "SCAN", str(payload), "/i0"]]
+
+
+def test_large_payload_scales_kaspersky_timeout(monkeypatch, enabled_antivirus):
+    class LargePayload:
+        def exists(self):
+            return True
+
+        def is_file(self):
+            return True
+
+        def stat(self):
+            return SimpleNamespace(st_size=2_617_951_073)
+
+        def __str__(self):
+            return r"C:\spool\large.7z"
+
+    kaspersky_path = Path(r"C:\Kaspersky\avp.com")
+    captured: dict[str, int] = {}
+    enabled_antivirus.antivirus_timeout_sec = 300
+    monkeypatch.setattr(antivirus, "_resolve_kaspersky_path", lambda _path="": kaspersky_path, raising=False)
+
+    def fake_run(args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return _completed(args, _kaspersky_output())
+
+    monkeypatch.setattr(antivirus.subprocess, "run", fake_run)
+
+    result = antivirus.scan_my_file(LargePayload())
+
+    assert result.status == "clean"
+    assert captured["timeout"] == 900
 
 
 def test_kaspersky_detection_is_blocked(tmp_path, monkeypatch, enabled_antivirus):

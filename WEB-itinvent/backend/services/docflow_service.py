@@ -457,6 +457,7 @@ class Docflow1CAdapter:
                 scope=str(payload.get("scope") or "inbox"),
                 search=str(payload.get("search") or ""),
                 limit=int(payload.get("limit") or 50),
+                offset=int(payload.get("offset") or 0),
             )
         if operation == "task_detail":
             return await self._dm_client.get_task_detail(
@@ -542,6 +543,7 @@ class Docflow1CAdapter:
                     scope=str(payload.get("scope") or "inbox"),
                     search=str(payload.get("search") or ""),
                     limit=int(payload.get("limit") or 50),
+                    offset=int(payload.get("offset") or 0),
                 )
             if operation == "task_detail":
                 return self._direct_client.get_task_detail(
@@ -1370,6 +1372,7 @@ class DocflowService:
         search: str,
         limit: int,
         correlation_id: str,
+        offset: int = 0,
     ) -> dict[str, Any]:
         result = await self._saved_credentials_call(
             user_id=int(user_id),
@@ -1378,6 +1381,7 @@ class DocflowService:
                 "scope": scope,
                 "search": search,
                 "limit": limit,
+                "offset": offset,
             },
         )
         return dict(result)

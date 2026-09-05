@@ -41,6 +41,21 @@ class MyFileQuotaResponse(BaseModel):
     remaining_bytes: int
 
 
+class MyFileUploadSessionCreateRequest(BaseModel):
+    file_name: str = Field(min_length=1, max_length=512)
+    file_size: int = Field(gt=0)
+    retention_days: int = 1
+    mime_type: str = Field(default="application/octet-stream", max_length=255)
+
+
+class MyFileUploadSessionResponse(BaseModel):
+    file_id: str
+    chunk_size_bytes: int
+    uploaded_bytes: int
+    file_size_bytes: int
+    complete: bool = False
+
+
 class MyFileShareResponse(BaseModel):
     token: str
     public_path: str

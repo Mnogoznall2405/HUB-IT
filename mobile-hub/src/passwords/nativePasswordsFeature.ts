@@ -1,7 +1,7 @@
 import type { Href } from 'expo-router';
 
 export function resolveNativePasswordsEnabled(value: string | undefined): boolean {
-  return value === 'true';
+  return value !== 'false';
 }
 
 export const NATIVE_PASSWORDS_ENABLED = resolveNativePasswordsEnabled(
@@ -33,4 +33,3 @@ export function passwordsPortalPath(): string {
 export function asPasswordsHref(destination: NativePasswordsDestination): Href {
   return destination as Href;
 }
-

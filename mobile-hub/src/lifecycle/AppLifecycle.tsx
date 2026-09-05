@@ -21,6 +21,9 @@ import {
   rememberNotificationDestination,
 } from '../notifications/notificationNavigation';
 import { drainOfflineCommandQueue } from '../offline/offlineCommandQueue';
+import { refreshStaleNativeOfflineData } from '../offline/nativeOfflineBackgroundRefresh';
+import { refreshNativeReadCaches } from '../offline/nativeReadCacheRefresh';
+import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import {
   ensureMobileBackgroundSyncRegistered,
   syncPendingNotificationReplies,
@@ -30,15 +33,26 @@ import {
 function scheduleAfterInitialRender(callback: () => void): () => void {
   let cancelled = false;
   let secondFrame: number | null = null;
+  let idleCallback: number | null = null;
   const firstFrame = requestAnimationFrame(() => {
     secondFrame = requestAnimationFrame(() => {
-      if (!cancelled) callback();
+      if (cancelled) return;
+      if (typeof globalThis.requestIdleCallback === 'function') {
+        idleCallback = globalThis.requestIdleCallback(() => {
+          if (!cancelled) callback();
+        }, { timeout: 1_500 });
+      } else {
+        callback();
+      }
     });
   });
   return () => {
     cancelled = true;
     cancelAnimationFrame(firstFrame);
     if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+    if (idleCallback !== null && typeof globalThis.cancelIdleCallback === 'function') {
+      globalThis.cancelIdleCallback(idleCallback);
+    }
   };
 }
 
@@ -96,15 +110,15 @@ async function openNotificationResponse(
       await handleNotificationBackgroundTask(response);
     } else {
       await processNotificationAction(response);
+      void reconcileNativeBadge({ force: true }).catch(() => undefined);
     }
-    await reconcileNativeBadge();
   } catch (error) {
     Alert.alert(
       'Не удалось выполнить действие',
       error instanceof Error ? error.message : 'Откройте HUB-IT и повторите действие.',
     );
   } finally {
-    await Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
+    void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
   }
 }
 
@@ -113,9 +127,27 @@ export function AppLifecycle() {
   const pathname = usePathname();
   const nativeChatActive = pathname.startsWith('/chat');
   const userRef = useRef(user);
+  const offlineModeRef = useRef(offlineMode);
   const previousOfflineModeRef = useRef(offlineMode);
   const pendingNotificationResponseRef = useRef<Notifications.NotificationResponse | null>(null);
   userRef.current = user;
+  offlineModeRef.current = offlineMode;
+
+  const refreshReadCaches = () => {
+    const currentUser = userRef.current;
+    if (!currentUser || offlineModeRef.current) return;
+    void (async () => {
+      await refreshNativeReadCaches({
+        userId: currentUser.id,
+        permissions: currentUser.permissions || [],
+      });
+      await refreshStaleNativeOfflineData({
+        userId: currentUser.id,
+        permissions: currentUser.permissions || [],
+        isAdmin: String(currentUser.role || '').trim().toLowerCase() === 'admin',
+      });
+    })().catch(() => undefined);
+  };
 
   useEffect(() => {
     if (Platform.OS === 'web') return undefined;
@@ -137,7 +169,7 @@ export function AppLifecycle() {
     });
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(deliverResponse);
     const receivedSubscription = Notifications.addNotificationReceivedListener(() => {
-      void reconcileNativeBadge();
+      void reconcileNativeBadge({ force: true });
     });
     void Notifications.getLastNotificationResponseAsync().then((response) => {
       if (response) deliverResponse(response);
@@ -153,6 +185,7 @@ export function AppLifecycle() {
   useEffect(() => {
     if (!user) {
       chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
+      hubRealtimeSocket.disconnect();
       void clearNativeBadge();
       void unregisterMobileBackgroundSync();
       return;
@@ -168,11 +201,33 @@ export function AppLifecycle() {
       if (userRef.current?.id !== user.id) return;
       void ensureMobileBackgroundSyncRegistered();
       void syncNativePushToken({ requestPermission: false });
-      void reconcileNativeBadge();
       void drainOfflineCommandQueue(user.id);
       void syncPendingNotificationReplies(user.id);
+      refreshReadCaches();
     });
   }, [user]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+    if (!user || offlineMode) {
+      hubRealtimeSocket.disconnect();
+      return undefined;
+    }
+    void hubRealtimeSocket.connect();
+    return () => hubRealtimeSocket.disconnect();
+  }, [offlineMode, user?.id]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+    const reconcile = () => { void reconcileNativeBadge({ force: true }); };
+    const releases = [
+      hubRealtimeSocket.on('hub.realtime.connected', reconcile),
+      hubRealtimeSocket.on('hub.notification.created', reconcile),
+      hubRealtimeSocket.onTaskChanged(reconcile),
+      hubRealtimeSocket.onMailChanged(reconcile),
+    ];
+    return () => releases.forEach((release) => release());
+  }, []);
 
   useEffect(() => {
     const wasOffline = previousOfflineModeRef.current;
@@ -180,6 +235,7 @@ export function AppLifecycle() {
     if (!user || !wasOffline || offlineMode) return;
     void drainOfflineCommandQueue(user.id);
     void syncPendingNotificationReplies(user.id);
+    refreshReadCaches();
   }, [offlineMode, user]);
 
   useEffect(() => {
@@ -196,12 +252,15 @@ export function AppLifecycle() {
       if (!user) return;
       if (nextState === 'active') {
         void syncNativePushToken({ requestPermission: false });
-        void reconcileNativeBadge();
+        void reconcileNativeBadge({ force: true });
         void drainOfflineCommandQueue(user.id);
         void syncPendingNotificationReplies(user.id);
+        refreshReadCaches();
         if (nativeChatActive) void chatSocket.resume();
-      } else if (nativeChatActive) {
-        chatSocket.suspend();
+        void hubRealtimeSocket.resume();
+      } else {
+        hubRealtimeSocket.suspend();
+        if (nativeChatActive) chatSocket.suspend();
       }
     });
     return () => subscription.remove();

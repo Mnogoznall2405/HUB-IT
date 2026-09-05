@@ -15,6 +15,25 @@ export type PermissionGroup = {
   permissions: PermissionItem[];
 };
 
+const BASE_USER_PERMISSIONS = new Set([
+  'address_book.read',
+  'announcements.read',
+  'chat.ai.use',
+  'chat.read',
+  'chat.write',
+  'company_structure.read',
+  'dashboard.read',
+  'docflow.act',
+  'docflow.read',
+  'mail.access',
+  'my_files.read',
+  'my_files.share',
+  'my_files.write',
+  'settings.read',
+  'tasks.create',
+  'tasks.read',
+]);
+
 export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
   {
     group: 'Корпоративный чат',
@@ -27,6 +46,7 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
     group: 'Общие',
     permissions: [
       { value: 'dashboard.read', label: 'Dashboard: просмотр' },
+      { value: 'announcements.read', label: 'Лента: просмотр' },
       { value: 'announcements.write', label: 'Лента: создание своих публикаций' },
       { value: 'announcements.moderate', label: 'Лента: модерация и аналитика' },
       { value: 'statistics.read', label: 'Статистика: просмотр' },
@@ -162,7 +182,14 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
       { value: 'settings.ai.manage', label: 'Settings: AI bots manage' },
     ],
   },
-];
+].map((group) => ({
+  ...group,
+  permissions: group.permissions.map((permission) => (
+    BASE_USER_PERMISSIONS.has(permission.value)
+      ? { ...permission, alwaysGranted: true }
+      : permission
+  )),
+}));
 
 export const SESSION_STATUS_META: Record<string, { label: string }> = {
   active: { label: 'Активна' },
@@ -182,6 +209,7 @@ export const APP_LOCK_TIMEOUT_LABELS: Record<number, string> = {
 export const NOTIFICATION_CHANNEL_LABELS: Array<[string, string]> = [
   ['mail', 'Почта'],
   ['tasks', 'Задачи'],
+  ['docflow', '1С ДО'],
   ['task_email', 'Email по задачам'],
   ['announcements', 'Лента компании'],
 ];

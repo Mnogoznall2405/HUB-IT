@@ -4,6 +4,7 @@ import * as docflowApi from '../api/docflowApi';
 import * as hubApi from '../api/hubApi';
 import * as notificationApi from '../api/notificationApi';
 import { writeNativeSnapshot } from '../cache/nativeSnapshotCache';
+import * as nativeUnreadSnapshot from '../notifications/nativeUnreadSnapshot';
 import { DashboardScreen } from './DashboardScreen';
 
 let mockOfflineMode = false;
@@ -12,6 +13,9 @@ jest.mock('../api/chatApi', () => ({ getUnreadSummary: jest.fn() }));
 jest.mock('../api/docflowApi', () => ({ getInboxSummary: jest.fn() }));
 jest.mock('../api/hubApi', () => ({ getHubDashboard: jest.fn() }));
 jest.mock('../api/notificationApi', () => ({ getMailUnreadSnapshot: jest.fn() }));
+jest.mock('../notifications/nativeUnreadSnapshot', () => ({
+  getNativeUnreadSnapshot: jest.fn(),
+}));
 jest.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, username: 'cached-user', full_name: 'Иван Иванов', role: 'user', permissions: [] },
@@ -39,6 +43,35 @@ describe('DashboardScreen cache', () => {
   beforeEach(() => {
     mockOfflineMode = false;
     jest.clearAllMocks();
+    jest.mocked(nativeUnreadSnapshot.getNativeUnreadSnapshot).mockResolvedValue({
+      tasks_open: 0,
+      tasks_open_total: 0,
+      chat_messages_unread_total: 3,
+      mail_unread: 2,
+      mail_state: 'ok',
+      notifications_unread_total: 0,
+      announcements_unread: 0,
+      successful_sources: 3,
+    });
+  });
+
+  it('reuses the shared unread snapshot instead of loading Chat and Mail counters separately', async () => {
+    jest.mocked(hubApi.getHubDashboard).mockResolvedValueOnce({
+      announcements: { items: [], total: 0 },
+      my_tasks: { items: [], total: 0 },
+      unread_counts: {},
+      summary: {},
+      absences_today: { count: 0, items: [] },
+    });
+    jest.mocked(docflowApi.getInboxSummary).mockResolvedValueOnce({
+      status: 'available', count: 0, truncated: false,
+    });
+
+    await render(<DashboardScreen />);
+
+    await waitFor(() => expect(nativeUnreadSnapshot.getNativeUnreadSnapshot).toHaveBeenCalled());
+    expect(chatApi.getUnreadSummary).not.toHaveBeenCalled();
+    expect(notificationApi.getMailUnreadSnapshot).not.toHaveBeenCalled();
   });
 
   it('shows the encrypted local snapshot before the live dashboard request completes', async () => {

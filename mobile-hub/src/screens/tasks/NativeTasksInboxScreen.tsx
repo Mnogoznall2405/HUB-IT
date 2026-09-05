@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
+  type ListRenderItemInfo,
   Modal,
   Pressable,
   ScrollView,
@@ -23,9 +25,14 @@ import {
   type TaskListPage,
 } from '../../api/taskApi';
 import { useAuth } from '../../auth/AuthContext';
-import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
+import {
+  readNativeCollectionSnapshot,
+  writeNativeCollectionSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { NativeTaskRow } from '../../components/tasks/NativeTaskRow';
 import { usePreferences } from '../../preferences/PreferencesContext';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { TASK_STATUS_OPTIONS } from '../../tasks/taskFormat';
 import { buildNativeTaskListSections } from '../../tasks/nativeTaskViews';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
@@ -235,7 +242,11 @@ export function NativeTasksInboxScreen() {
     const userId = Number(user?.id || 0);
     let cached = false;
     if (reset && !refresh && userId) {
-      const snapshot = await readNativeSnapshot<{ signature: string; page: TaskListPage }>('tasks-inbox', userId);
+      const snapshot = await readNativeCollectionSnapshot<{ signature: string; page: TaskListPage }>(
+        'tasks-inbox',
+        userId,
+        signature,
+      );
       if (requestId !== requestRef.current) return;
       if (snapshot?.data.signature === signature) {
         cached = true;
@@ -256,9 +267,20 @@ export function NativeTasksInboxScreen() {
     try {
       const page = await getTasksPage(request);
       if (requestId !== requestRef.current) return;
-      setItems((current) => uniqueTasks(reset ? page.items : [...current, ...page.items]));
+      const cachedItems = uniqueTasks(reset ? page.items : [...items, ...page.items]);
+      setItems(cachedItems);
       setTotal(page.total);
-      if (reset && userId) void writeNativeSnapshot('tasks-inbox', userId, { signature, page });
+      if (userId) {
+        void writeNativeCollectionSnapshot('tasks-inbox', userId, signature, {
+          signature,
+          page: {
+            ...page,
+            items: cachedItems,
+            offset: 0,
+            limit: Math.max(Number(page.limit || 0), cachedItems.length),
+          },
+        });
+      }
     } catch (cause) {
       if (requestId !== requestRef.current) return;
       setError(cached
@@ -277,6 +299,26 @@ export function NativeTasksInboxScreen() {
   useEffect(() => {
     if (allowed) void loadPage({ reset: true });
   }, [allowed, debouncedQuery, filters, sortByDue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!allowed || offlineMode) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadPage({ reset: true, refresh: true });
+      }, 100);
+    };
+    const releases = [
+      hubRealtimeSocket.onTaskChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [allowed, loadPage, offlineMode]);
 
   useEffect(() => {
     if (!filtersVisible || directoriesLoading || directoriesLoaded) return;
@@ -370,6 +412,50 @@ export function NativeTasksInboxScreen() {
     setFilters((current) => ({ ...current, viewMode, assigneeUserId: undefined }));
   };
 
+  const openTask = useCallback((task: HubTask) => {
+    router.push({
+      pathname: '/(shell)/tasks/[taskId]',
+      params: { taskId: String(task.id) },
+    } as never);
+  }, []);
+
+  const renderTaskFeedRow = useCallback(({ item }: ListRenderItemInfo<TaskFeedRow>) => {
+    if (item.kind === 'section') {
+      return (
+        <View testID="native-task-active-section" style={styles.taskSectionHeader}>
+          <Text accessibilityRole="header" style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>{item.label}</Text>
+          <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{item.count}</Text>
+        </View>
+      );
+    }
+    if (item.kind === 'completed-toggle') {
+      return (
+        <Pressable
+          testID="native-task-completed-toggle"
+          accessibilityRole="button"
+          accessibilityLabel={`${completedTasksOpen ? 'Скрыть' : 'Показать'} завершённые задачи. ${item.count}`}
+          accessibilityState={{ expanded: completedTasksOpen }}
+          onPress={() => setCompletedTasksOpen((value) => !value)}
+          style={({ pressed }) => [styles.completedToggle, { backgroundColor: tokens.panelInset }, pressed && styles.pressed]}
+        >
+          <View style={styles.completedToggleText}>
+            <Text style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>Завершённые</Text>
+            <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{item.count}</Text>
+          </View>
+          <MaterialCommunityIcons name={completedTasksOpen ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
+        </Pressable>
+      );
+    }
+    return (
+      <NativeTaskRow
+        task={item.task}
+        tokens={tokens}
+        personRole={filters.viewMode === 'assignee' ? 'created_by' : 'assignee'}
+        onPress={openTask}
+      />
+    );
+  }, [completedTasksOpen, filters.viewMode, openTask, tokens]);
+
   if (!allowed) {
     return (
       <AccountScreenScaffold title="Задачи" tokens={tokens}>
@@ -415,13 +501,6 @@ export function NativeTasksInboxScreen() {
         </View>
       )}
     >
-      {offlineMode ? (
-        <View accessibilityRole="alert" style={[styles.offline, { backgroundColor: `${tokens.warning}18` }]}>
-          <MaterialCommunityIcons name="cloud-off-outline" size={18} color={tokens.warning} />
-          <Text style={[styles.offlineText, { color: tokens.warning }]}>Нет подключения. Доступны последние загруженные данные.</Text>
-        </View>
-      ) : null}
-
       <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
         <TextInput
@@ -545,50 +624,12 @@ export function NativeTasksInboxScreen() {
             </View>
           )}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={tokens.primary} style={styles.footerLoader} /> : null}
-          renderItem={({ item }) => {
-            if (item.kind === 'section') {
-              return (
-                <View testID="native-task-active-section" style={styles.taskSectionHeader}>
-                  <Text accessibilityRole="header" style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>{item.label}</Text>
-                  <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{item.count}</Text>
-                </View>
-              );
-            }
-            if (item.kind === 'completed-toggle') {
-              return (
-                <Pressable
-                  testID="native-task-completed-toggle"
-                  accessibilityRole="button"
-                  accessibilityLabel={`${completedTasksOpen ? 'Скрыть' : 'Показать'} завершённые задачи. ${item.count}`}
-                  accessibilityState={{ expanded: completedTasksOpen }}
-                  onPress={() => setCompletedTasksOpen((value) => !value)}
-                  style={({ pressed }) => [styles.completedToggle, { backgroundColor: tokens.panelInset }, pressed && styles.pressed]}
-                >
-                  <View style={styles.completedToggleText}>
-                    <Text style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>Завершённые</Text>
-                    <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{item.count}</Text>
-                  </View>
-                  <MaterialCommunityIcons name={completedTasksOpen ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
-                </Pressable>
-              );
-            }
-            return (
-              <NativeTaskRow
-                task={item.task}
-                tokens={tokens}
-                personRole={filters.viewMode === 'assignee' ? 'created_by' : 'assignee'}
-                onPress={(task) => router.push({
-                  pathname: '/(shell)/tasks/[taskId]',
-                  params: { taskId: String(task.id) },
-                } as never)}
-              />
-            );
-          }}
+          renderItem={renderTaskFeedRow}
         />
       )}
 
       <Modal visible={filtersVisible} transparent animationType="slide" onRequestClose={() => setFiltersVisible(false)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} {...chatKeyboardAvoidingProps()}>
           <Pressable style={styles.backdropDismissLayer} accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => setFiltersVisible(false)} />
           <View testID="native-task-filter-sheet" accessibilityViewIsModal style={[styles.filterSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
             <SheetHeader title="Фильтры задач" subtitle="Выберите условия и примените их к списку" tokens={tokens} onClose={() => setFiltersVisible(false)} />
@@ -696,7 +737,7 @@ export function NativeTasksInboxScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={moreVisible} transparent animationType="slide" onRequestClose={() => setMoreVisible(false)}>

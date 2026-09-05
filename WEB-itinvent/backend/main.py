@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
@@ -37,6 +37,7 @@ from backend.services.ad_groups_access_sync_service import background_ad_groups_
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
 from backend.services.docflow_service import docflow_service
+from backend.services.docflow_notification_service import docflow_notification_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.app_push_outbox_service import app_push_outbox_service
 from backend.services.mail_notification_service import mail_notification_service
@@ -77,6 +78,7 @@ MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
 ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
 WAREHOUSE_1C_CATALOG_SYNC_ENABLED = _env_flag("WAREHOUSE_1C_CATALOG_SYNC_ENABLED", "1")
 TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
+DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED", "1")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
 ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
 
@@ -182,6 +184,8 @@ async def lifespan(app: FastAPI):
     warehouse_1c_catalog_sync_task: asyncio.Task | None = None
     task_due_notification_task: asyncio.Task | None = None
     announcement_publish_task: asyncio.Task | None = None
+    docflow_notification_started = False
+    hub_realtime_started = False
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
     if LDAP_APP_USER_SYNC_ENABLED:
@@ -214,6 +218,7 @@ async def lifespan(app: FastAPI):
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
         f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
+        f" docflow_notifications={DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED}"
         f" announcement_publish={announcement_publish_background_enabled()}"
     )
     if not MAIL_MODULE_ENABLED:
@@ -239,6 +244,10 @@ async def lifespan(app: FastAPI):
             print("Internal app database: configured and reachable")
             await app_push_outbox_service.start()
             print(f"App push outbox: enabled={app_push_outbox_service.enabled}")
+            if DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED:
+                await docflow_notification_service.start()
+                docflow_notification_started = True
+                print("1C DO notification worker: started")
             expired_runtime_items = auth_runtime_store_service.cleanup_expired()
             if expired_runtime_items:
                 print(f"Auth runtime cleanup: removed {expired_runtime_items} expired items")
@@ -276,17 +285,29 @@ async def lifespan(app: FastAPI):
             print(f"Local SQLite store: {store.db_path}")
         except Exception as exc:
             print(f"SQLite init warning: {exc}")
+    if config.chat.enabled and not chat_routes_enabled():
+        try:
+            from backend.realtime.hub import hub_realtime_publisher
+
+            await hub_realtime_publisher.start()
+            hub_realtime_started = True
+            print(f"HUB realtime publisher: mode={hub_realtime_publisher.mode}")
+        except Exception as exc:
+            print(f"HUB realtime publisher warning: {exc}")
     if config.chat.enabled and chat_routes_enabled():
         try:
             from backend.chat.service import chat_service
             from backend.chat.push_service import chat_push_service
             from backend.chat.realtime import chat_realtime
+            from backend.realtime.hub import hub_realtime_publisher
             from backend.ai_chat.service import ai_chat_service
 
             chat_status = chat_service.initialize_runtime()
             ai_chat_service.initialize_runtime()
             await chat_service.start()
             await chat_realtime.start()
+            await hub_realtime_publisher.start(realtime_manager=chat_realtime)
+            hub_realtime_started = True
 
             async def _chat_event_loop_lag_probe() -> None:
                 """Measure event-loop scheduling lag while chat is under load."""
@@ -345,10 +366,19 @@ async def lifespan(app: FastAPI):
         announcement_publish_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
+    if docflow_notification_started:
+        await docflow_notification_service.stop()
     await app_push_outbox_service.stop()
     await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()
+    if hub_realtime_started:
+        try:
+            from backend.realtime.hub import hub_realtime_publisher
+
+            await hub_realtime_publisher.stop()
+        except Exception:
+            pass
     if config.chat.enabled and chat_routes_enabled():
         try:
             from backend.chat.service import chat_service
@@ -559,6 +589,7 @@ app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
 app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
 app.include_router(company_structure.router, prefix="/api/v1/company-structure", tags=["Company Structure"])
 app.include_router(warehouse_1c.router, prefix="/api/v1/warehouse-1c", tags=["Warehouse 1C"])
+app.include_router(construction.router, prefix="/api/v1/construction", tags=["Construction"])
 app.include_router(docflow.router, prefix="/api/v1/docflow", tags=["1C Document Management"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])

@@ -18,6 +18,7 @@ import TransferIcon from '@mui/icons-material/SwapHoriz';
 import { DATA_MODE_EQUIPMENT, getEquipmentRowActions, toInvNo } from './equipmentModel';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
+import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -91,6 +92,8 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   theme,
   onAction,
   onOpenEmployee = null,
+  onOpenCurrentAct = null,
+  openingCurrentActDocNo = '',
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
   isAdmin = false,
@@ -274,6 +277,12 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
             </Box>
           ) : null}
         </Box>
+
+        <EquipmentCurrentActIndicator
+          item={item}
+          onOpenAct={onOpenCurrentAct}
+          openingDocNo={openingCurrentActDocNo}
+        />
 
         <Chip
           label={status}

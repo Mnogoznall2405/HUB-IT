@@ -45,6 +45,11 @@ import PageShell from '../components/layout/PageShell';
 import { useAuth } from '../contexts/AuthContext';
 import { docflowAPI } from '../api/docflow';
 import { hideScrollbarSx } from '../lib/hideScrollbarSx';
+import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_DOCFLOW_EVENT,
+} from '../lib/hubRealtimeSocket';
 import { waitForAttachmentPreview } from '../components/documentPreview/asyncAttachmentPreview';
 import {
   buildAttachmentBlobPayload,
@@ -1404,6 +1409,33 @@ export default function Docflow() {
     setActionProgressLabel('');
     setCommandState(null);
   }, []);
+
+  useEffect(() => {
+    if (!profile?.configured) return undefined;
+    let timer = null;
+    const refresh = (event) => {
+      if (timer) return;
+      const changedTaskRef = String(event?.detail?.payload?.task_ref || '').trim();
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (scope === 'inbox') void loadTasks({ force: true });
+        const openTaskRef = String(selectedTaskRef.current || '').trim();
+        if (openTaskRef && (!changedTaskRef || changedTaskRef === openTaskRef)) {
+          detailCache.current.delete(openTaskRef);
+          void loadTaskDetail({ ref: openTaskRef }, { force: true });
+        }
+      }, 180);
+    };
+    window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, refresh);
+    window.addEventListener(HUB_REALTIME_DOCFLOW_EVENT, refresh);
+    const release = hubRealtimeSocket.retain();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, refresh);
+      window.removeEventListener(HUB_REALTIME_DOCFLOW_EVENT, refresh);
+      release();
+    };
+  }, [loadTaskDetail, loadTasks, profile?.configured, scope]);
 
   const applySelectedTaskAction = useCallback(async (comment) => {
     const taskRef = String(selectedTask?.ref || '').trim();

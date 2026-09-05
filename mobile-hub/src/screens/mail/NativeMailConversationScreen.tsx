@@ -2,7 +2,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   getMailConversation,
   sendMailMessage,
@@ -14,6 +14,7 @@ import {
 import { formatApiError } from '../../api/formatError';
 import { getNativeMailPreferences } from '../../api/mailConfigApi';
 import { useAuth } from '../../auth/AuthContext';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import {
   formatNativeSnapshotSavedAt,
   readNativeEntitySnapshot,
@@ -80,14 +81,21 @@ export function NativeMailConversationScreen() {
     }
     setLoading(true);
     setError('');
+    const cached = user?.id
+      ? await readNativeEntitySnapshot<MailConversationDetail>(
+        'mail-conversation-details',
+        user.id,
+        snapshotKey,
+        Number.MAX_SAFE_INTEGER,
+      )
+      : null;
+    if (cached) {
+      setConversation(cached.data);
+      setCachedAt(cached.savedAt);
+      setLoading(false);
+    }
     if (offlineMode) {
-      const cached = user?.id
-        ? await readNativeEntitySnapshot<MailConversationDetail>('mail-conversation-details', user.id, snapshotKey)
-        : null;
-      if (cached) {
-        setConversation(cached.data);
-        setCachedAt(cached.savedAt);
-      } else {
+      if (!cached) {
         setConversation(null);
         setCachedAt(0);
         setError('Нет подключения и сохранённой копии переписки. Откройте её один раз при наличии сети.');
@@ -115,7 +123,9 @@ export function NativeMailConversationScreen() {
         });
       }
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось открыть переписку.'));
+      setError(formatApiError(cause, cached
+        ? 'Показана сохранённая копия. Не удалось обновить переписку.'
+        : 'Не удалось открыть переписку.'));
     } finally {
       setLoading(false);
     }
@@ -309,7 +319,11 @@ export function NativeMailConversationScreen() {
       onBack={() => goBackOrReplace('/(shell)/mail')}
       scroll={false}
     >
-      <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        testID="native-mail-conversation-keyboard-host"
+        style={styles.screen}
+        {...chatKeyboardAvoidingProps()}
+      >
       <ScrollView
         testID="native-mail-conversation-scroll"
         style={styles.scroll}

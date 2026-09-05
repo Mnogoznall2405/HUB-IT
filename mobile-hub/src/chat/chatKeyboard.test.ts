@@ -1,6 +1,7 @@
 import { chatKeyboardAvoidingProps } from './chatKeyboard';
 
-it('keeps Android and iOS on the same padding behavior without an enabled-gate', () => {
-  expect(chatKeyboardAvoidingProps()).toEqual({ behavior: 'padding' });
-  expect(chatKeyboardAvoidingProps()).not.toHaveProperty('enabled', false);
+it('uses height on Android adjustResize and padding on iOS', () => {
+  expect(chatKeyboardAvoidingProps('android')).toEqual({ behavior: 'height' });
+  expect(chatKeyboardAvoidingProps('ios')).toEqual({ behavior: 'padding' });
+  expect(chatKeyboardAvoidingProps('android')).not.toHaveProperty('enabled', false);
 });

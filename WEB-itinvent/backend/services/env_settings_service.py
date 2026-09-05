@@ -70,6 +70,7 @@ _DIRECT_DESCRIPTIONS = {
     "ROUTERAI_MODEL_CHAT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для AI-чата."),
     "ROUTERAI_MODEL_MARKDOWN": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для Markdown."),
     "ROUTERAI_MODEL_ACT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для актов."),
+    "ROUTERAI_MODEL_ACT_FALLBACK": ("ИИ и интеграции", "Резервная RouterAI-модель для распознавания актов."),
     "ROUTERAI_MODEL_OCR": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для OCR."),
     "ROUTERAI_MODEL_DOC_CONVERT": ("ИИ и интеграции", "Необязательная отдельная RouterAI-модель для документов."),
     "OPENROUTER_API_KEY": ("ИИ и интеграции", "Устаревший совместимый ключ LLM-провайдера."),

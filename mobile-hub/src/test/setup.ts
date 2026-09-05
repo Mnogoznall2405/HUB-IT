@@ -212,15 +212,51 @@ jest.mock('expo-audio', () => {
   };
 });
 
+jest.mock('expo-video', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    VideoView: (props: Record<string, unknown>) => React.createElement(View, props),
+    useVideoPlayer: (_source: unknown, setup?: (player: Record<string, unknown>) => void) => {
+      const player = {
+        loop: false,
+        muted: false,
+        keepScreenOnWhilePlaying: true,
+        status: 'readyToPlay',
+        play: jest.fn(),
+        pause: jest.fn(),
+        addListener: jest.fn(() => ({ remove: jest.fn() })),
+      };
+      setup?.(player);
+      return player;
+    },
+  };
+});
+
+jest.mock('lottie-react-native', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => React.createElement(View, props),
+  };
+});
+
 beforeEach(() => {
   mockSecureStore.clear();
   try {
     const fileSystem = require('expo-file-system') as {
       Directory: new (parent: unknown, ...segments: string[]) => { list: () => Array<{ delete?: () => void }> };
-      Paths: { cache: unknown };
+      Paths: { cache: unknown; document: unknown };
     };
-    const snapshotDirectory = new fileSystem.Directory(fileSystem.Paths.cache, 'hubit-native-snapshots');
-    snapshotDirectory.list().forEach((entry) => entry.delete?.());
+    [fileSystem.Paths.cache, fileSystem.Paths.document].forEach((root) => {
+      try {
+        const snapshotDirectory = new fileSystem.Directory(root, 'hubit-native-snapshots');
+        snapshotDirectory.list().forEach((entry) => entry.delete?.());
+      } catch {
+        // The legacy cache directory and the persistent document directory are independent.
+      }
+    });
   } catch {
     // Some isolated unit tests replace expo-file-system with a minimal mock.
   }

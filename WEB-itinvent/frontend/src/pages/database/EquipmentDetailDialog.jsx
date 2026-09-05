@@ -33,6 +33,14 @@ import EquipmentDetailWarehouse1CTab from './EquipmentDetailWarehouse1CTab';
 import EmployeeNameLink from './EmployeeNameLink';
 import LocationAutocompleteField from './LocationAutocompleteField';
 
+const EDIT_PICKER_OVERLAY_SX = {
+  zIndex: (theme) => `${theme.zIndex.modal + 3} !important`,
+};
+
+const EDIT_SELECT_MENU_PROPS = {
+  sx: EDIT_PICKER_OVERLAY_SX,
+};
+
 const getOptionByNumber = (options, field, value) => {
   const numberValue = toNumberOrNull(value);
   return (options || []).find((option) => toNumberOrNull(option?.[field]) === numberValue);
@@ -73,6 +81,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
               <Select
                 labelId="equipment-detail-status-label"
                 id="equipment-detail-status"
+                MenuProps={EDIT_SELECT_MENU_PROPS}
                 value={form.status_no ?? ''}
                 onChange={(event) => onFormPatch?.({ status_no: toNumberOrNull(event.target.value) })}
                 label="Статус"
@@ -104,6 +113,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                     <Select
                       labelId="equipment-detail-type-label"
                       id="equipment-detail-type"
+                      MenuProps={EDIT_SELECT_MENU_PROPS}
                       value={form.type_no ?? ''}
                       label="Тип оборудования"
                       onChange={(event) => {
@@ -142,6 +152,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                     <Select
                       labelId="equipment-detail-model-label"
                       id="equipment-detail-model"
+                      MenuProps={EDIT_SELECT_MENU_PROPS}
                       value={form.model_no ?? ''}
                       label="Модель"
                       onChange={(event) => {
@@ -306,6 +317,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                     <Select
                       labelId="equipment-detail-branch-label"
                       id="equipment-detail-branch"
+                      MenuProps={EDIT_SELECT_MENU_PROPS}
                       value={form.branch_no ?? ''}
                       label="Филиал"
                       onChange={(event) => {
@@ -338,6 +350,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                     label="Местоположение"
                     value={form.loc_no ?? ''}
                     options={locations}
+                    popperSx={EDIT_PICKER_OVERLAY_SX}
                     size={isMobile ? 'medium' : 'small'}
                     onChange={(locNo) => {
                       const locationNo = toIdOrNull(locNo);

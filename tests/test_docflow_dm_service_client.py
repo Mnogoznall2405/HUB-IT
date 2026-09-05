@@ -208,6 +208,42 @@ async def test_list_tasks_filters_search_locally_without_dm_name_condition():
 
 
 @pytest.mark.asyncio
+async def test_list_tasks_returns_stable_offset_metadata_for_the_available_set():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_soap_response(
+                "DMGetObjectListResponse",
+                f"<tns:items>{_task()}</tns:items><tns:items>{_acquaintance_task()}</tns:items>"
+                "<tns:tooManyObjects>false</tns:tooManyObjects>",
+            ),
+        )
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        first = await client.list_tasks(
+            login="user", password="secret", scope="all", limit=1, offset=0,
+        )
+        second = await client.list_tasks(
+            login="user", password="secret", scope="all", limit=1, offset=1,
+        )
+    finally:
+        await client.aclose()
+
+    assert first["total"] == 2
+    assert first["has_more"] is True
+    assert first["next_offset"] == 1
+    assert second["offset"] == 1
+    assert second["returned"] == 1
+    assert second["total"] == 2
+    assert second["has_more"] is False
+    assert second["next_offset"] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("scope", "expected_completed", "expected_count"), [
     ("inbox", False, 1),
     ("completed", True, 1),

@@ -136,7 +136,35 @@ describe('TaskUi helpers', () => {
 
     expect(screen.getByTestId('task-detail-mobile-header')).toBeInTheDocument();
     expect(screen.getByTestId('task-detail-mobile-actions')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Назад/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'К списку' })).toBeInTheDocument();
+  });
+
+  it('renders the canvas detail header as a single compact row', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskDetailHeader
+          task={sampleTask}
+          statusMeta={{ label: 'В работе', color: '#d97706', bg: 'rgba(217,119,6,0.16)' }}
+          priorityMeta={{ value: 'high', label: 'Высокий', dotColor: '#d97706' }}
+          transferLabel="Осталось актов: 1"
+          isTransferReminder={false}
+          onBack={vi.fn()}
+          onCopyLink={vi.fn()}
+          compact
+          backLabel="К доске"
+          taskDiscussionEnabled
+          onOpenTaskDiscussion={vi.fn()}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('task-detail-compact-header')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'К доске' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Открыть чат' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Копировать ссылку' })).toBeInTheDocument();
+    expect(screen.queryByText('Полная карточка задачи с обсуждением, файлами и историей статусов.')).not.toBeInTheDocument();
   });
 
   it('renders mobile task content with title, description, and files first', () => {

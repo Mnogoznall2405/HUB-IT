@@ -42,6 +42,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private readonly IDesktopNotificationService _notifications;
     private readonly IAutostartService _autostart;
     private readonly NavigationPolicy _navigationPolicy;
+    private readonly ExternalUriLauncher _externalUriLauncher;
     private readonly bool _startHidden;
     private readonly Forms.ToolStripMenuItem _autostartItem;
     private readonly HubTrayContextMenu _trayMenu;
@@ -156,6 +157,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             ? _startupSettings.LastSafeRoute
             : null;
         _navigationPolicy = new NavigationPolicy(options.BaseUri);
+        _externalUriLauncher = new ExternalUriLauncher(_navigationPolicy);
         _performance = new DesktopPerformanceMetrics(GetProcessStartedAt());
         _nextMemorySampleAtUtc = DateTimeOffset.UtcNow.AddSeconds(10);
         _performanceTimer = new DispatcherTimer(
@@ -741,6 +743,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         finally
         {
             RecordBenchProcessSnapshot("frontend_probe_processes");
+            DesktopPerfBench.MarkOnce("bench_ready");
             DesktopPerfBench.WriteReadySentinel();
             MaybeQuitAfterBench();
         }
@@ -757,6 +760,26 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _ = await core.ExecuteScriptAsync(script);
         DesktopPerfBench.MarkOnce("route_navigate");
         await Task.Delay(2500);
+        try
+        {
+            var encodedPath = await core.ExecuteScriptAsync("window.location.pathname");
+            var currentPath = System.Text.Json.JsonSerializer.Deserialize<string>(encodedPath);
+            DesktopPerfBench.MarkOnce(
+                string.Equals(
+                    currentPath,
+                    DesktopPerfBench.GetNavigatePath(),
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "route_ready"
+                    : "route_failed");
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or System.Runtime.InteropServices.COMException
+            or System.Text.Json.JsonException)
+        {
+            DesktopPerfBench.MarkOnce("route_failed");
+        }
+
         var smoke = DesktopPerfBench.CreatePostNavigateSmokeScript();
         if (smoke is not null)
         {
@@ -1199,6 +1222,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.ShellStatusChanged += DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged += DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested += DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.EquipmentQrPrintRequested += DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested += DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
@@ -1340,24 +1364,32 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void OpenExternalUri(string rawUri)
     {
-        if (!_navigationPolicy.TryGetExternalUri(rawUri, out var uri))
+        var result = _externalUriLauncher.Open(rawUri);
+        if (result.Status == ExternalUriLaunchStatus.Opened)
         {
-            DesktopLog.Warning("Rejected external navigation after policy evaluation");
+            DesktopLog.Info($"Opened external URI scheme '{result.Scheme}' in the system handler");
             return;
         }
 
-        try
+        if (result.Status == ExternalUriLaunchStatus.Blocked)
         {
-            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
-            DesktopLog.Info($"Opened external URI scheme '{uri.Scheme}' in the system handler");
+            DesktopLog.Warning($"Rejected external URI scheme '{result.Scheme}' after policy evaluation");
         }
-        catch (Exception exception)
+        else
         {
-            DesktopLog.Error("System handler failed to open an external URI", exception);
-            ShowError(
-                "Не удалось открыть ссылку",
-                "Системный обработчик ссылки недоступен.");
+            DesktopLog.Error(
+                "System handler failed to open an external URI",
+                result.Error ?? new InvalidOperationException("System handler rejected the URI."));
         }
+
+        System.Windows.MessageBox.Show(
+            this,
+            result.Status == ExternalUriLaunchStatus.Blocked
+                ? "Эта ссылка заблокирована политикой безопасности HUB Desktop."
+                : "Не удалось открыть ссылку. Проверьте системный браузер или приложение для этого типа ссылок.",
+            "HUB Desktop",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private void DesktopBridge_Ready(object? sender, EventArgs e)
@@ -1419,6 +1451,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void DesktopBridge_PrintCurrentDocumentRequested(object? sender, EventArgs e) =>
         PrintCurrentPage();
+
+    private void DesktopBridge_EquipmentQrPrintRequested(
+        object? sender,
+        DesktopEquipmentQrPrintRequestedEventArgs e) =>
+        e.Completion = _printing.PrintEquipmentQrBatchAsync(
+            _webView?.CoreWebView2,
+            _options.BaseUri,
+            e.Mode);
 
     private void DesktopBridge_OpenDownloadsRequested(object? sender, EventArgs e) =>
         ShowDownloadsWindow();
@@ -1818,6 +1858,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.ShellStatusChanged -= DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged -= DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested -= DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.EquipmentQrPrintRequested -= DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested -= DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;

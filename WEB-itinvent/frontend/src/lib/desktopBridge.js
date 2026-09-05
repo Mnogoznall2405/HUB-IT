@@ -9,6 +9,8 @@ const SHOW_NOTIFICATION_MESSAGE_TYPE = 'notification.show';
 const SHELL_STATUS_MESSAGE_TYPE = 'shell.status';
 const QUICK_ROUTES_MESSAGE_TYPE = 'shell.quickRoutes';
 const PRINT_CURRENT_DOCUMENT_MESSAGE_TYPE = 'document.printCurrent';
+const EQUIPMENT_QR_PRINT_MESSAGE_TYPE = 'equipmentQr.print';
+const EQUIPMENT_QR_PRINT_RESULT_MESSAGE_TYPE = 'equipmentQr.printResult';
 const OPEN_DOWNLOADS_MESSAGE_TYPE = 'desktop.openDownloads';
 const OPEN_DIAGNOSTICS_MESSAGE_TYPE = 'desktop.openDiagnostics';
 const CHECK_FOR_UPDATES_MESSAGE_TYPE = 'desktop.checkForUpdates';
@@ -34,6 +36,7 @@ const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1000;
 const OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS = 600;
 const VNC_PREFLIGHT_RESULT_TIMEOUT_MS = 1000;
+const EQUIPMENT_QR_PRINT_RESULT_TIMEOUT_MS = 120000;
 const LEGACY_OPEN_INTENT_LIFETIME_MS = 15000;
 const MAXIMUM_INBOUND_MESSAGE_LENGTH = 4096;
 const MAXIMUM_SYSTEM_LIFECYCLE_MESSAGE_LENGTH = 512;
@@ -67,6 +70,7 @@ let pendingDesktopQuickRoutes = null;
 let pendingOpenDownloadedFileRequest = null;
 let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
+let pendingEquipmentQrPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
 const mailComposeCloseListeners = new Set();
 let legacyOpenIntentBusyUntil = 0;
@@ -78,6 +82,7 @@ let pendingLifecycleEvent = null;
 export const DESKTOP_WINDOW_STATE_CHANGED_EVENT = 'itinvent:desktop-window-state-changed';
 export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command-palette';
 export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
+export const DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY = 'equipment-qr-print';
 export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
 export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
 export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
@@ -401,6 +406,21 @@ const isValidPreparedDownloadResultMessage = (message) => {
     && (message.status === 'accepted' || message.status === 'busy');
 };
 
+const isValidEquipmentQrPrintResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === EQUIPMENT_QR_PRINT_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['succeeded', 'dialog-opened', 'failed'].includes(message.status);
+};
+
 const isValidVncPreflightResultMessage = (message) => {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const keys = Object.keys(message);
@@ -566,6 +586,19 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
           window.clearTimeout(pending.timeoutId);
           pending.resolve({
             accepted: message.status === 'accepted',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidEquipmentQrPrintResultMessage(message)) {
+        const pending = pendingEquipmentQrPrintRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingEquipmentQrPrintRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            accepted: message.status === 'succeeded' || message.status === 'dialog-opened',
             status: message.status,
           });
         }
@@ -870,6 +903,47 @@ export function requestDesktopPrintCurrent() {
   } catch {
     return false;
   }
+}
+
+export function requestDesktopEquipmentQrPrint(mode) {
+  if (
+    !isDesktopCapabilityAvailable(DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY)
+    || !['quick', 'dialog'].includes(mode)
+  ) {
+    return Promise.resolve({ accepted: false, status: 'unavailable' });
+  }
+  if (pendingEquipmentQrPrintRequest) {
+    return Promise.resolve({ accepted: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `qr-print-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ accepted: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (pendingEquipmentQrPrintRequest?.requestId !== requestId) return;
+        pendingEquipmentQrPrintRequest = null;
+        resolve({ accepted: false, status: 'timeout' });
+      }, EQUIPMENT_QR_PRINT_RESULT_TIMEOUT_MS);
+      pendingEquipmentQrPrintRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: EQUIPMENT_QR_PRINT_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        mode,
+      });
+    } catch {
+      const pending = pendingEquipmentQrPrintRequest;
+      pendingEquipmentQrPrintRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ accepted: false, status: 'unavailable' });
+    }
+  });
 }
 
 const postDesktopAction = (type) => {

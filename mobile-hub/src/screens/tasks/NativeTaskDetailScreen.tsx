@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -44,6 +45,8 @@ import {
 } from '../../api/taskApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
 import { useAuth } from '../../auth/AuthContext';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import {
   formatNativeSnapshotSavedAt,
   readNativeEntitySnapshot,
@@ -110,6 +113,14 @@ type NativeTaskDetailSnapshot = {
   statusLog: TaskStatusLog[];
 };
 
+type TaskPresencePeer = {
+  id?: number;
+  username?: string;
+  full_name?: string;
+  connection_id: string;
+  seenAt: number;
+};
+
 export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
@@ -138,7 +149,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   const [editDueDate, setEditDueDate] = useState('');
   const [editPriority, setEditPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal');
   const [editProtocolDate, setEditProtocolDate] = useState('');
-  const [editAssigneeId, setEditAssigneeId] = useState<number | null>(null);
+  const [editAssigneeIds, setEditAssigneeIds] = useState<number[]>([]);
   const [editControllerId, setEditControllerId] = useState<number | null>(null);
   const [editObserverIds, setEditObserverIds] = useState<number[]>([]);
   const [editProjectId, setEditProjectId] = useState('');
@@ -159,6 +170,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   const [fileBusy, setFileBusy] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [presencePeers, setPresencePeers] = useState<TaskPresencePeer[]>([]);
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) router.back();
@@ -189,17 +201,24 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
     if (mode === 'refresh') setRefreshing(true);
     else setLoading(true);
     setError('');
+    const cached = user?.id
+      ? await readNativeEntitySnapshot<NativeTaskDetailSnapshot>(
+        'task-details',
+        user.id,
+        taskId,
+        Number.MAX_SAFE_INTEGER,
+      )
+      : null;
+    if (cached) {
+      setTask(cached.data.task);
+      setComments(cached.data.comments || []);
+      setStatusLog(cached.data.statusLog || []);
+      setStatusLogError('');
+      setCachedAt(cached.savedAt);
+      if (mode === 'initial') setLoading(false);
+    }
     if (offlineMode) {
-      const cached = user?.id
-        ? await readNativeEntitySnapshot<NativeTaskDetailSnapshot>('task-details', user.id, taskId)
-        : null;
-      if (cached) {
-        setTask(cached.data.task);
-        setComments(cached.data.comments || []);
-        setStatusLog(cached.data.statusLog || []);
-        setStatusLogError('');
-        setCachedAt(cached.savedAt);
-      } else {
+      if (!cached) {
         setTask(null);
         setComments([]);
         setStatusLog([]);
@@ -234,10 +253,14 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
         }
       }
     } catch (cause) {
-      setTask(null);
-      setComments([]);
-      setStatusLog([]);
-      setError(formatApiError(cause, 'Не удалось открыть задачу.'));
+      if (!cached) {
+        setTask(null);
+        setComments([]);
+        setStatusLog([]);
+      }
+      setError(formatApiError(cause, cached
+        ? 'Показана сохранённая копия. Не удалось обновить задачу.'
+        : 'Не удалось открыть задачу.'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -247,6 +270,79 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   useEffect(() => {
     if (allowed && taskId) void loadTask();
   }, [allowed, loadTask, taskId]);
+
+  useEffect(() => {
+    if (!allowed || offlineMode || !taskId) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = (event?: unknown) => {
+      const envelope = event && typeof event === 'object' ? event as { payload?: unknown } : {};
+      const payload = envelope.payload && typeof envelope.payload === 'object'
+        ? envelope.payload as Record<string, unknown>
+        : {};
+      const changedTaskId = String(payload.task_id || '').trim();
+      if (changedTaskId && changedTaskId !== String(taskId)) return;
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadTask('refresh');
+      }, 100);
+    };
+    const releases = [
+      hubRealtimeSocket.onTaskChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [allowed, loadTask, offlineMode, taskId]);
+
+  useEffect(() => {
+    if (!allowed || offlineMode || !taskId) {
+      setPresencePeers([]);
+      return undefined;
+    }
+    const release = hubRealtimeSocket.watchTaskPresence(taskId, (event) => {
+      const envelope = event && typeof event === 'object'
+        ? event as { type?: string; payload?: unknown }
+        : {};
+      const payload = envelope.payload && typeof envelope.payload === 'object'
+        ? envelope.payload as Record<string, unknown>
+        : {};
+      if (String(payload.task_id || '') !== String(taskId)) return;
+      if (envelope.type === 'tasks.presence.snapshot') {
+        setPresencePeers([]);
+        return;
+      }
+      const collaborator = payload.collaborator && typeof payload.collaborator === 'object'
+        ? payload.collaborator as Record<string, unknown>
+        : {};
+      const connectionId = String(payload.connection_id || collaborator.connection_id || '').trim();
+      if (!connectionId) return;
+      setPresencePeers((current) => {
+        if (envelope.type === 'tasks.presence.left') {
+          return current.filter((peer) => peer.connection_id !== connectionId);
+        }
+        const next: TaskPresencePeer = {
+          id: Number(collaborator.id || 0) || undefined,
+          username: String(collaborator.username || ''),
+          full_name: String(collaborator.full_name || ''),
+          connection_id: connectionId,
+          seenAt: Date.now(),
+        };
+        return [...current.filter((peer) => peer.connection_id !== connectionId), next];
+      });
+    });
+    const timer = setInterval(() => {
+      const oldestAllowed = Date.now() - 80_000;
+      setPresencePeers((current) => current.filter((peer) => peer.seenAt >= oldestAllowed));
+    }, 20_000);
+    return () => {
+      clearInterval(timer);
+      release();
+      setPresencePeers([]);
+    };
+  }, [allowed, offlineMode, taskId]);
 
   useEffect(() => {
     if (!task || offlineMode || loading || refreshing || !user?.id) return;
@@ -345,7 +441,12 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
       ? task.priority as 'low' | 'normal' | 'high' | 'urgent'
       : 'normal');
     setEditProtocolDate(String(task.protocol_date || '').slice(0, 10));
-    setEditAssigneeId(Number(task.assignee_user_id || 0) || null);
+    const assigneeIds = (Array.isArray(task.assignee_user_ids)
+      ? task.assignee_user_ids
+      : [task.assignee_user_id])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0);
+    setEditAssigneeIds([...new Set(assigneeIds)]);
     setEditControllerId(Number(task.controller_user_id || 0) || null);
     setEditObserverIds((Array.isArray(task.observer_user_ids) ? task.observer_user_ids : [])
       .map(Number).filter((id) => Number.isInteger(id) && id > 0));
@@ -407,6 +508,10 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
       setError('Укажите название задачи.');
       return;
     }
+    if (!editAssigneeIds.length) {
+      setError('Выберите хотя бы одного исполнителя.');
+      return;
+    }
     let dueAt: string | null;
     try {
       dueAt = normalizeDueDate(editDueDate);
@@ -433,7 +538,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
         due_at: dueAt,
         priority: editPriority,
         protocol_date: protocolDate || undefined,
-        assignee_user_id: editAssigneeId || undefined,
+        assignee_user_ids: editAssigneeIds,
         controller_user_id: editControllerId,
         observer_user_ids: editObserverIds,
         project_id: editProjectId || undefined,
@@ -450,7 +555,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
     } finally {
       setEditBusy(false);
     }
-  }, [editAssigneeId, editBusy, editControllerId, editDepartmentId, editDescription, editDueDate, editEmailReminder, editObjectId, editObserverIds, editPriority, editProjectId, editProtocolDate, editTitle, editVisibility, offlineMode, task]);
+  }, [editAssigneeIds, editBusy, editControllerId, editDepartmentId, editDescription, editDueDate, editEmailReminder, editObjectId, editObserverIds, editPriority, editProjectId, editProtocolDate, editTitle, editVisibility, offlineMode, task]);
 
   const saveChecklist = useCallback(async (items: TaskChecklistItem[], successMessage: string) => {
     if (!task || checklistBusy || offlineMode) return;
@@ -629,6 +734,11 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
         </View>
       )}
     >
+      <KeyboardAvoidingView
+        testID="native-task-detail-keyboard-host"
+        style={styles.flex}
+        {...chatKeyboardAvoidingProps()}
+      >
       {loading && !task ? (
         <AccountLoading tokens={tokens} />
       ) : !task ? (
@@ -650,6 +760,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
             style={styles.flex}
             contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 88 }]}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             refreshControl={undefined}
           >
             {refreshing ? <ActivityIndicator color={tokens.primary} /> : null}
@@ -672,6 +783,18 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                 <TaskBadge label={taskPriorityLabel(task.priority)} color={task.priority === 'urgent' ? tokens.error : tokens.warning} tokens={tokens} />
                 {task.is_overdue ? <TaskBadge label="Просрочена" color={tokens.error} tokens={tokens} /> : null}
               </View>
+              {presencePeers.filter((peer) => Number(peer.id || 0) !== Number(user?.id || 0)).length ? (
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={[styles.presence, { color: tokens.textSecondary }]}
+                >
+                  Сейчас смотрят: {Array.from(new Set(
+                    presencePeers
+                      .filter((peer) => Number(peer.id || 0) !== Number(user?.id || 0))
+                      .map((peer) => String(peer.full_name || peer.username || 'Пользователь').trim()),
+                  )).join(', ')}
+                </Text>
+              ) : null}
               <Text style={[styles.description, { color: tokens.textSecondary }]}>
                 {String(task.description || '').trim() || 'Описание задачи не заполнено.'}
               </Text>
@@ -759,20 +882,29 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                       style={[styles.input, { color: tokens.textPrimary, borderColor: tokens.border }]}
                     />
 
-                    <Text style={[styles.editGroupTitle, { color: tokens.textPrimary }]}>Исполнитель</Text>
-                    <View accessibilityRole="radiogroup" style={styles.editDirectoryList}>
+                    <Text style={[styles.editGroupTitle, { color: tokens.textPrimary }]}>Исполнители</Text>
+                    <View style={styles.editDirectoryList}>
                       {filteredEditAssignees.map((person) => {
-                        const selected = editAssigneeId === Number(person.id);
+                        const personId = Number(person.id);
+                        const selected = editAssigneeIds.includes(personId);
                         return (
                           <Pressable
                             key={`assignee-${person.id}`}
                             testID={`native-task-edit-assignee-${person.id}`}
-                            onPress={() => setEditAssigneeId(Number(person.id))}
-                            accessibilityRole="radio"
-                            accessibilityState={{ selected }}
+                            onPress={() => {
+                              if (selected && editAssigneeIds.length === 1) return;
+                              setEditAssigneeIds((current) => selected
+                                ? current.filter((id) => id !== personId)
+                                : [...current, personId]);
+                              if (!selected) {
+                                setEditObserverIds((current) => current.filter((id) => id !== personId));
+                              }
+                            }}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected, disabled: selected && editAssigneeIds.length === 1 }}
                             style={[styles.editDirectoryRow, { borderColor: selected ? tokens.selectedBorder : tokens.borderSoft, backgroundColor: selected ? tokens.selected : tokens.actionBg }]}
                           >
-                            <MaterialCommunityIcons name={selected ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={selected ? tokens.primary : tokens.iconMuted} />
+                            <MaterialCommunityIcons name={selected ? 'checkbox-marked-outline' : 'checkbox-blank-outline'} size={20} color={selected ? tokens.primary : tokens.iconMuted} />
                             <View style={styles.editDirectoryBody}>
                               <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{person.full_name || person.username || person.id}</Text>
                               <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>{[person.job_title, person.department].filter(Boolean).join(' · ') || person.username}</Text>
@@ -816,16 +948,20 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                     <View style={styles.editDirectoryList}>
                       {filteredEditAssignees.map((person) => {
                         const personId = Number(person.id);
-                        const selected = editObserverIds.includes(personId);
+                        const unavailable = editAssigneeIds.includes(personId);
+                        const selected = !unavailable && editObserverIds.includes(personId);
                         return (
                           <Pressable
                             key={`observer-${person.id}`}
                             testID={`native-task-edit-observer-${person.id}`}
-                            onPress={() => setEditObserverIds((current) => selected
-                              ? current.filter((id) => id !== personId)
-                              : [...current, personId])}
+                            onPress={() => {
+                              if (unavailable) return;
+                              setEditObserverIds((current) => selected
+                                ? current.filter((id) => id !== personId)
+                                : [...current, personId]);
+                            }}
                             accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected }}
+                            accessibilityState={{ checked: selected, disabled: unavailable }}
                             style={[styles.editDirectoryRow, { borderColor: selected ? tokens.selectedBorder : tokens.borderSoft, backgroundColor: selected ? tokens.selected : tokens.actionBg }]}
                           >
                             <MaterialCommunityIcons name={selected ? 'checkbox-marked-outline' : 'checkbox-blank-outline'} size={20} color={selected ? tokens.primary : tokens.iconMuted} />
@@ -901,7 +1037,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
 
             <AccountSectionCard tokens={tokens} title="Участники и срок">
               <AccountField tokens={tokens} label="Постановщик" value={taskPerson(task, 'created_by')} />
-              <AccountField tokens={tokens} label="Исполнитель" value={taskPerson(task, 'assignee')} />
+              <AccountField tokens={tokens} label="Исполнители" value={taskPerson(task, 'assignee')} />
               <AccountField tokens={tokens} label="Контролёр" value={taskPerson(task, 'controller')} />
               <AccountField tokens={tokens} label="Срок" value={formatTaskDate(task.due_at)} />
               {task.project_name ? <AccountField tokens={tokens} label="Проект" value={task.project_name} /> : null}
@@ -1245,6 +1381,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
           ) : null}
         </View>
       )}
+      </KeyboardAvoidingView>
     </AccountScreenScaffold>
   );
 }
@@ -1324,6 +1461,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, lineHeight: 30, fontWeight: '900' },
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   badge: { minHeight: 30, borderRadius: 15, borderWidth: 1, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  presence: { fontSize: 13, lineHeight: 18, fontWeight: '700' },
   description: { fontSize: 15, lineHeight: 22 },
   fieldLabel: { marginTop: 4, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   editMetaLoading: { marginVertical: 18 },

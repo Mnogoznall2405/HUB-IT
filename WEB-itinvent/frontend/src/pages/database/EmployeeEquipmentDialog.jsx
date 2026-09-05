@@ -39,11 +39,14 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { equipmentSearchAPI } from '../../api/equipmentSearch';
 import { warehouse1cAPI } from '../../api/warehouse1c';
 import { LoadingSpinner } from '../../components/common';
+import DocumentPreviewDialog from '../../components/documentPreview/DocumentPreviewDialog';
 import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
+import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import HubNomenclatureMatchDialog from './HubNomenclatureMatchDialog';
 import { exportEmployeeEquipmentWorkbook } from './employeeEquipmentExcel';
+import { useEquipmentActFilePreview } from './useEquipmentActFilePreview';
 import {
   filterBalancesByText,
   formatWarehouseQty,
@@ -93,7 +96,13 @@ function HubDbChip({ item, show }) {
   );
 }
 
-function HubEquipmentMobileRow({ item, onOpenInvNo, showDbChip = false }) {
+function HubEquipmentMobileRow({
+  item,
+  onOpenInvNo,
+  onOpenCurrentAct,
+  openingCurrentActDocNo,
+  showDbChip = false,
+}) {
   const [expanded, setExpanded] = useState(false);
   const invNo = readFirst(item, ['INV_NO', 'inv_no'], '-');
   const model = readFirst(item, ['MODEL_NAME', 'model_name'], '-');
@@ -142,6 +151,11 @@ function HubEquipmentMobileRow({ item, onOpenInvNo, showDbChip = false }) {
             {model}
           </Typography>
         </Box>
+        <EquipmentCurrentActIndicator
+          item={item}
+          onOpenAct={onOpenCurrentAct}
+          openingDocNo={openingCurrentActDocNo}
+        />
         {hasDetails ? (
           <IconButton
             size="small"
@@ -179,6 +193,8 @@ function HubEquipmentTable({
   loading,
   error,
   onOpenInvNo,
+  onOpenCurrentAct,
+  openingCurrentActDocNo = '',
   isMobile = false,
   filterActive = false,
   emptyMessage = '',
@@ -239,6 +255,8 @@ function HubEquipmentTable({
               key={`${databaseId || 'db'}|${invNo}|${index}`}
               item={item}
               onOpenInvNo={onOpenInvNo}
+              onOpenCurrentAct={onOpenCurrentAct}
+              openingCurrentActDocNo={openingCurrentActDocNo}
               showDbChip={showDbChip}
             />
           );
@@ -260,6 +278,7 @@ function HubEquipmentTable({
             <TableCell>Модель</TableCell>
             <TableCell>Серийник</TableCell>
             <TableCell>Парт. №</TableCell>
+            <TableCell align="center">Акт</TableCell>
             {showDbChip ? <TableCell>База</TableCell> : null}
           </TableRow>
         </TableHead>
@@ -295,6 +314,13 @@ function HubEquipmentTable({
                 <TableCell>{readFirst(item, ['MODEL_NAME', 'model_name'], '-')}</TableCell>
                 <TableCell>{readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], '-')}</TableCell>
                 <TableCell>{readFirst(item, ['PART_NO', 'part_no'], '-')}</TableCell>
+                <TableCell align="center" onClick={(event) => event.stopPropagation()}>
+                  <EquipmentCurrentActIndicator
+                    item={item}
+                    onOpenAct={onOpenCurrentAct}
+                    openingDocNo={openingCurrentActDocNo}
+                  />
+                </TableCell>
                 {showDbChip ? (
                   <TableCell>
                     <HubDbChip item={item} show />
@@ -576,6 +602,12 @@ export default function EmployeeEquipmentDialog({
   const isNarrowMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: false });
   const isTouchMobile = useMediaQuery('(hover: none) and (pointer: coarse)', { defaultMatches: false });
   const isMobile = isNarrowMobile || isTouchMobile;
+  const {
+    preview: currentActPreview,
+    openingDocNo: openingCurrentActDocNo,
+    openActFile: openCurrentAct,
+    closePreview: closeCurrentActPreview,
+  } = useEquipmentActFilePreview();
 
   const [hubItems, setHubItems] = useState([]);
   const [hubLoading, setHubLoading] = useState(false);
@@ -970,6 +1002,8 @@ export default function EmployeeEquipmentDialog({
               filterActive={filterActive}
               emptyMessage={!ownerNo ? 'Сотрудник не найден в справочнике Хаба.' : ''}
               onOpenInvNo={onOpenInvNo ? handleOpenInvNo : null}
+              onOpenCurrentAct={openCurrentAct}
+              openingCurrentActDocNo={openingCurrentActDocNo}
             />
           </Box>
 
@@ -1031,6 +1065,24 @@ export default function EmployeeEquipmentDialog({
         <Button onClick={onClose}>Закрыть</Button>
       </DialogActions>
     </Dialog>
+
+    <DocumentPreviewDialog
+      open={Boolean(currentActPreview?.open)}
+      title={currentActPreview?.title || 'Акт'}
+      subtitle={currentActPreview?.subtitle || ''}
+      kind={currentActPreview?.kind || 'pdf'}
+      objectUrl={currentActPreview?.objectUrl || ''}
+      loading={Boolean(currentActPreview?.loading)}
+      error={currentActPreview?.error || ''}
+      onClose={closeCurrentActPreview}
+      onDownloadOriginal={currentActPreview?.previewBlob && currentActPreview?.objectUrl ? () => {
+        const link = document.createElement('a');
+        link.href = currentActPreview.objectUrl;
+        link.download = currentActPreview.title || 'act.pdf';
+        link.click();
+      } : undefined}
+      canDownloadOriginal={Boolean(currentActPreview?.previewBlob)}
+    />
 
     <HubNomenclatureMatchDialog
       open={hubMatchOpen}

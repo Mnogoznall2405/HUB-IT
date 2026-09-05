@@ -26,4 +26,11 @@ public sealed class DesktopPrintServiceTests
     {
         Assert.False(DesktopPrintService.CanPrintCurrent(TrustedOrigin, source));
     }
+
+    [Fact]
+    public void UsesA4SheetsForEquipmentQrLabels()
+    {
+        Assert.Equal(210d / 25.4d, DesktopPrintService.A4WidthInInches, 8);
+        Assert.Equal(297d / 25.4d, DesktopPrintService.A4HeightInInches, 8);
+    }
 }

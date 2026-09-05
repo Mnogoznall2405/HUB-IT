@@ -1,7 +1,7 @@
 import { nativeMfuDestinationFromPortalPath, resolveNativeMfuEnabled } from './nativeMfuFeature';
 
-it('keeps Native MFU behind an explicit canary flag', () => {
-  expect(resolveNativeMfuEnabled(undefined)).toBe(false);
+it('enables Native MFU by default with an explicit kill switch', () => {
+  expect(resolveNativeMfuEnabled(undefined)).toBe(true);
   expect(resolveNativeMfuEnabled('false')).toBe(false);
   expect(resolveNativeMfuEnabled('true')).toBe(true);
 });

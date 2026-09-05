@@ -18,7 +18,7 @@ from threading import Lock
 
 import ldap3
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, or_, select, text
 
 from backend.appdb.db import (
     apply_postgres_local_timeouts,
@@ -791,6 +791,145 @@ class UserService:
             for user in users
             if not self.is_system_hidden_user(user)
         ]
+
+    @staticmethod
+    def _escape_like(value: object) -> str:
+        return str(value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def search_users(
+        self,
+        *,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        status: str = "all",
+        role: str = "all",
+        exclude_user_id: int | None = None,
+        user_ids: list[int] | set[int] | tuple[int, ...] | None = None,
+    ) -> dict:
+        """Return a stable bounded user page without loading every app-db row."""
+        normalized_query = str(query or "").strip().lower()
+        normalized_limit = max(1, min(200, int(limit or 50)))
+        normalized_offset = max(0, int(offset or 0))
+        normalized_status = str(status or "all").strip().lower()
+        if normalized_status not in {"all", "active", "inactive"}:
+            normalized_status = "all"
+        normalized_role = str(role or "all").strip().lower()
+        if normalized_role not in {"all", "admin", "operator", "viewer"}:
+            normalized_role = "all"
+        normalized_exclude_user_id = int(exclude_user_id or 0)
+        filter_by_user_ids = user_ids is not None
+        normalized_user_ids: set[int] = set()
+        for raw_user_id in list(user_ids or []):
+            try:
+                user_id = int(raw_user_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if user_id > 0:
+                normalized_user_ids.add(user_id)
+
+        def _matches(user: dict) -> bool:
+            if self.is_system_hidden_user(user):
+                return False
+            user_id = int(user.get("id", 0) or 0)
+            if normalized_exclude_user_id > 0 and user_id == normalized_exclude_user_id:
+                return False
+            if filter_by_user_ids and user_id not in normalized_user_ids:
+                return False
+            is_active = bool(user.get("is_active", True))
+            if normalized_status == "active" and not is_active:
+                return False
+            if normalized_status == "inactive" and is_active:
+                return False
+            if normalized_role != "all" and str(user.get("role") or "viewer").strip().lower() != normalized_role:
+                return False
+            if normalized_query:
+                haystack = " ".join(str(user.get(field) or "") for field in (
+                    "username",
+                    "full_name",
+                    "department",
+                    "job_title",
+                    "email",
+                    "mailbox_email",
+                )).lower()
+                if normalized_query not in haystack:
+                    return False
+            return True
+
+        if self._use_app_database:
+            def _search_in_app_db() -> dict:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                    conditions = [
+                        func.lower(AppUser.username).not_like(
+                            f"{self._escape_like(SYSTEM_BOT_USERNAME_PREFIX)}%",
+                            escape="\\",
+                        ),
+                    ]
+                    if normalized_exclude_user_id > 0:
+                        conditions.append(AppUser.id != normalized_exclude_user_id)
+                    if filter_by_user_ids:
+                        conditions.append(AppUser.id.in_(normalized_user_ids))
+                    if normalized_status == "active":
+                        conditions.append(AppUser.is_active.is_(True))
+                    elif normalized_status == "inactive":
+                        conditions.append(AppUser.is_active.is_(False))
+                    if normalized_role != "all":
+                        conditions.append(func.lower(AppUser.role) == normalized_role)
+                    if normalized_query:
+                        pattern = f"%{self._escape_like(normalized_query)}%"
+                        conditions.append(or_(*[
+                            func.lower(func.coalesce(column, "")).like(pattern, escape="\\")
+                            for column in (
+                                AppUser.username,
+                                AppUser.full_name,
+                                AppUser.department,
+                                AppUser.job_title,
+                                AppUser.email,
+                                AppUser.mailbox_email,
+                            )
+                        ]))
+
+                    total = int(session.scalar(
+                        select(func.count()).select_from(AppUser).where(*conditions)
+                    ) or 0)
+                    rows = session.scalars(
+                        select(AppUser)
+                        .where(*conditions)
+                        .order_by(
+                            func.lower(func.coalesce(AppUser.full_name, AppUser.username)).asc(),
+                            AppUser.id.asc(),
+                        )
+                        .offset(normalized_offset)
+                        .limit(normalized_limit)
+                    ).all()
+                    return {
+                        "items": [self._sanitize_user(self._row_to_user_dict(row)) for row in rows],
+                        "total": total,
+                    }
+
+            result = run_with_transient_lock_retry(_search_in_app_db)
+            items = list(result.get("items") or [])
+            total = int(result.get("total") or 0)
+        else:
+            matched = [user for user in self._load_users() if _matches(user)]
+            matched.sort(key=lambda user: (
+                str(user.get("full_name") or user.get("username") or "").lower(),
+                int(user.get("id", 0) or 0),
+            ))
+            total = len(matched)
+            items = [
+                self._sanitize_user(user)
+                for user in matched[normalized_offset:normalized_offset + normalized_limit]
+            ]
+
+        return {
+            "items": items,
+            "total": total,
+            "limit": normalized_limit,
+            "offset": normalized_offset,
+            "has_more": normalized_offset + len(items) < total,
+        }
 
     def sync_ldap_users_bulk(self, payloads: list[dict]) -> list[dict] | None:
         """Upsert LDAP users and their AD membership in one app-db transaction.

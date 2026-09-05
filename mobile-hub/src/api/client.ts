@@ -7,7 +7,11 @@ import {
   isNativeOfflineMutationBlocked,
 } from '../offline/nativeOfflinePolicy';
 
-type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+type RetryConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+  _hubitDeadlineAtMs?: number;
+  hubitTotalTimeoutMs?: number;
+};
 
 const AUTH_REFRESH_TIMEOUT_MS = 30_000;
 const MAIL_EXCHANGE_TIMEOUT_MS = 120_000;
@@ -19,7 +23,36 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+function remainingTotalTimeoutMs(config: RetryConfig): number | null {
+  const total = Number(config.hubitTotalTimeoutMs || 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(config._hubitDeadlineAtMs) || Number(config._hubitDeadlineAtMs) <= 0) {
+    config._hubitDeadlineAtMs = Date.now() + Math.max(1, Math.trunc(total));
+  }
+  return Math.max(0, Math.trunc(Number(config._hubitDeadlineAtMs) - Date.now()));
+}
+
+function applyRemainingTotalTimeout(config: RetryConfig): void {
+  const remaining = remainingTotalTimeoutMs(config);
+  if (remaining === null) return;
+  const requested = Number(config.timeout || 0);
+  config.timeout = Math.max(1, Math.min(
+    remaining,
+    Number.isFinite(requested) && requested > 0 ? Math.trunc(requested) : remaining,
+  ));
+}
+
+function createTotalTimeoutError(config: RetryConfig): Error {
+  return Object.assign(new Error(`timeout of ${Number(config.hubitTotalTimeoutMs || 0)}ms exceeded`), {
+    code: 'ECONNABORTED',
+    config,
+    isAxiosError: true,
+    response: undefined,
+  });
+}
+
 apiClient.interceptors.request.use(async (config) => {
+  applyRemainingTotalTimeout(config as RetryConfig);
   if (isNativeOfflineMutationBlocked(config.method)) {
     throw createNativeOfflineReadOnlyError();
   }
@@ -48,6 +81,7 @@ apiClient.interceptors.request.use(async (config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
+  applyRemainingTotalTimeout(config as RetryConfig);
   return config;
 });
 
@@ -83,7 +117,7 @@ async function expireSession(): Promise<void> {
 function boundedRefreshTimeout(timeoutMs?: number): number {
   const requested = Number(timeoutMs || 0);
   if (!Number.isFinite(requested) || requested <= 0) return AUTH_REFRESH_TIMEOUT_MS;
-  return Math.min(AUTH_REFRESH_TIMEOUT_MS, Math.max(1_000, Math.trunc(requested)));
+  return Math.min(AUTH_REFRESH_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
 async function refreshAccessToken(timeoutMs?: number): Promise<string | null> {
@@ -104,7 +138,7 @@ async function refreshAccessToken(timeoutMs?: number): Promise<string | null> {
   );
   const access = String(response.data?.access_token || '').trim();
   const refresh = String(response.data?.refresh_token || '').trim();
-  if (!access || !refresh) return null;
+  if (!access || !refresh) throw new Error('Incomplete mobile refresh response');
   await tokenStore.setTokens(access, refresh);
   return access;
 }
@@ -151,7 +185,10 @@ export async function getAuthenticatedAccessToken(
       if (currentAccessToken && !options.forceRefresh) return currentAccessToken;
       throw refreshError;
     }
-    if (!options.preserveSessionOnRefreshFailure) await expireSession();
+    const status = axios.isAxiosError(refreshError) ? refreshError.response?.status : undefined;
+    if ((status === 401 || status === 403) && !options.preserveSessionOnRefreshFailure) {
+      await expireSession();
+    }
     throw refreshError;
   }
   if (!refreshedAccessToken) {
@@ -172,18 +209,24 @@ apiClient.interceptors.response.use(
       return Promise.reject(error);
     }
     config._retry = true;
+    const refreshBudget = remainingTotalTimeoutMs(config);
+    if (refreshBudget !== null && refreshBudget <= 0) {
+      return Promise.reject(createTotalTimeoutError(config));
+    }
     let newAccess: string | null = null;
     try {
       newAccess = await getAuthenticatedAccessToken({
         forceRefresh: true,
-        refreshTimeoutMs: Number(config.timeout || 0) || undefined,
+        refreshTimeoutMs: refreshBudget ?? (Number(config.timeout || 0) || undefined),
       });
     } catch (refreshError) {
-      if (axios.isAxiosError(refreshError) && !refreshError.response) {
-        return Promise.reject(refreshError);
-      }
-      return Promise.reject(error);
+      return Promise.reject(refreshError);
     }
+    const retryBudget = remainingTotalTimeoutMs(config);
+    if (retryBudget !== null && retryBudget <= 0) {
+      return Promise.reject(createTotalTimeoutError(config));
+    }
+    if (retryBudget !== null) config.timeout = Math.max(1, retryBudget);
     config.headers.Authorization = `Bearer ${newAccess}`;
     return apiClient(config);
   },

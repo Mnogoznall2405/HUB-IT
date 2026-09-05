@@ -3,6 +3,7 @@ import {
   buildMyFilePublicUrl,
   formatMyFileSize,
   isMyFileProcessing,
+  MY_FILES_MAX_FILE_BYTES,
   myFileIcon,
   nativeMyFilePreviewKind,
   myFileStatusLabel,
@@ -45,6 +46,10 @@ it('formats sizes and maps status/type metadata', () => {
 it('keeps the server retention allowlist', () => {
   expect(normalizeMyFilesRetention(30)).toBe(30);
   expect(normalizeMyFilesRetention(14)).toBe(1);
+});
+
+it('uses the IIS uint32 maximum instead of the former one-gigabyte limit', () => {
+  expect(MY_FILES_MAX_FILE_BYTES).toBe((2 ** 32) - 1);
 });
 
 it('builds only a trusted public HUB path', () => {

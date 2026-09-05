@@ -122,6 +122,86 @@ def test_worker_flushes_queue_into_app_db(temp_dir, monkeypatch):
     assert store.queue_stats()["queue_depth"] == 0
 
 
+def test_worker_ignores_old_full_snapshot_after_current_report(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_backlog = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+    store.enqueue(current, inventory_runtime.build_inventory_dedupe_key(current))
+    store.enqueue(old_backlog, inventory_runtime.build_inventory_dedupe_key(old_backlog))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    for item in store.claim_next_batch(limit=10):
+        worker._handle_item(item)
+
+    app_store = AppInventoryStore(database_url=database_url)
+    host = app_store.get_host("AA-BB-CC-DD-EE-10")
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+    assert app_store.list_change_events() == []
+    assert store.queue_stats()["queue_depth"] == 0
+
+
+def test_worker_ignores_old_heartbeat_after_current_report(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_heartbeat = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+    old_heartbeat["report_type"] = "heartbeat"
+    store.enqueue(current, inventory_runtime.build_inventory_dedupe_key(current))
+    store.enqueue(old_heartbeat, inventory_runtime.build_inventory_dedupe_key(old_heartbeat))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    for item in store.claim_next_batch(limit=10):
+        worker._handle_item(item)
+
+    host = AppInventoryStore(database_url=database_url).get_host("AA-BB-CC-DD-EE-10")
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+    assert store.queue_stats()["queue_depth"] == 0
+
+
+def test_app_inventory_store_keeps_presence_and_snapshot_monotonic(temp_dir):
+    database_url = _sqlite_url(temp_dir)
+    app_store = AppInventoryStore(database_url=database_url)
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_backlog = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+
+    app_store.upsert_host(current)
+    app_store.upsert_host(old_backlog)
+    app_store.touch_host_presence(
+        current["mac_address"],
+        last_seen_at=1_710_100_000,
+        report_type="heartbeat",
+    )
+
+    host = app_store.get_host(current["mac_address"])
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+
+
 def test_worker_moves_repeated_failures_to_dead_letter(temp_dir, monkeypatch):
     store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
     config = _worker_config(temp_dir)

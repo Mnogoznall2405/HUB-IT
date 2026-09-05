@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -32,6 +33,7 @@ from .ocr import FOCUSED_REGION_DPI, MAX_FOCUSED_REGION_PIXELS, MAX_RENDERED_PAG
 from .patterns import list_patterns
 from .pg_compat import begin_request_timings, get_request_timings
 from .report_export import XLSX_MEDIA_TYPE, build_scan_task_incidents_excel
+from .realtime import ScanRealtimeBroker
 from .scan_view import InvalidScanView, ScanListView, coerce_optional_metrics_view, normalize_scan_list_view
 from .system_metrics import SystemMetricsSampler, resolve_system_metrics_sample_interval_sec
 from .worker import ScanWorker
@@ -197,6 +199,7 @@ store = ScanStore(
     sqlite_busy_retry_base_ms=config.sqlite_busy_retry_base_ms,
     database_url=config.database_url,
 )
+scan_realtime = ScanRealtimeBroker(store)
 stop_event = threading.Event()
 watchdog_stop_event = threading.Event()
 worker: Optional[ScanWorker] = (
@@ -814,7 +817,9 @@ async def lifespan(_: FastAPI):
         _loop_descriptor(),
     )
     logger.info("Scan server started on %s:%s", config.host, config.port)
+    await scan_realtime.start()
     yield
+    await scan_realtime.stop()
     watchdog_stop_event.set()
     if watchdog_thread is not None and watchdog_thread.is_alive():
         watchdog_thread.join(timeout=5)
@@ -874,6 +879,7 @@ async def health() -> Dict[str, Any]:
         "storage_backend": getattr(store, "backend", "sqlite"),
         "store_lock_kind": getattr(store, "_lock_kind", "unknown"),
         "timing_headers_enabled": bool(_timing_headers_enabled()),
+        "realtime_subscribers": scan_realtime.subscriber_count,
         "db_size_mb": _path_size_mb(config.db_path) if not getattr(store, "is_postgres", False) else None,
         "wal_size_mb": (
             _path_size_mb(Path(str(config.db_path) + "-wal"))
@@ -913,6 +919,69 @@ async def health() -> Dict[str, Any]:
             "interval_sec": SYSTEM_METRICS_INTERVAL_SEC,
         },
     }
+
+
+@app.get("/api/v1/scan/events")
+async def scan_events(
+    request: Request,
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    access_token_cookie: Optional[str] = Cookie(None, alias=AUTH_COOKIE_NAME),
+):
+    token = _resolve_access_token(credentials, access_token_cookie)
+    client_ip = _extract_forwarded_client_ip(request)
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").strip() or None
+    forwarded_host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip() or None
+
+    async def event_stream():
+        queue = scan_realtime.subscribe()
+        last_auth_check = time.monotonic()
+        connected_id = f"scan-connected-{uuid.uuid4().hex}"
+        yield (
+            f"id: {connected_id}\n"
+            "event: scan.connected\n"
+            f"data: {json.dumps({'protocol': 1, 'event_id': connected_id, 'occurred_at': _now_ts()}, separators=(',', ':'))}\n\n"
+        )
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                if (time.monotonic() - last_auth_check) >= 60.0:
+                    user_raw = await asyncio.to_thread(
+                        _fetch_web_user,
+                        token,
+                        client_ip=client_ip,
+                        forwarded_proto=forwarded_proto,
+                        forwarded_host=forwarded_host,
+                    )
+                    role = str(user_raw.get("role") or "").strip().lower()
+                    permissions = set(user_raw.get("permissions") or [])
+                    if role != "admin" and PERM_SCAN_READ not in permissions:
+                        return
+                    last_auth_check = time.monotonic()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    yield f": heartbeat {_now_ts()}\n\n"
+                    continue
+                event_id = str(event.get("event_id") or uuid.uuid4().hex)
+                yield (
+                    f"id: {event_id}\n"
+                    "event: scan.invalidate\n"
+                    f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                )
+        finally:
+            scan_realtime.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/v1/scan/heartbeat")

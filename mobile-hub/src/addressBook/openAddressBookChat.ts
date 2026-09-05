@@ -9,6 +9,11 @@ import {
 
 const NOT_FOUND_MESSAGE = 'Сотрудник не найден в HUB-чате.';
 
+export type AddressBookChatLink = {
+  conversationId: string;
+  peerUserId: number;
+};
+
 function notFoundError(detail = NOT_FOUND_MESSAGE): Error {
   const error = new Error(detail);
   (error as Error & { response?: { status: number; data: { detail: string } } }).response = {
@@ -53,7 +58,25 @@ export async function resolveAddressBookChatUser(entry: AddressBookEntry | null 
   throw notFoundError();
 }
 
-export async function openAddressBookChat(entry: AddressBookEntry | null | undefined): Promise<void> {
+export function getAddressBookChatCacheKey(entry: AddressBookEntry | null | undefined): string {
+  const lookup = collectAddressBookChatLookup(entry);
+  const email = (Array.isArray(lookup.emails) ? lookup.emails : [])
+    .map((value) => String(value || '').trim().toLocaleLowerCase('ru-RU'))
+    .find(Boolean);
+  if (email) return `email:${email}`;
+  const fullName = String(lookup.fullName || '').trim().toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
+  return fullName ? `name:${fullName}` : '';
+}
+
+export function openCachedAddressBookChat(link: AddressBookChatLink): void {
+  const conversationId = String(link?.conversationId || '').trim();
+  if (!conversationId) throw new Error('Сохранённый чат недоступен. Подключитесь к сети и откройте его ещё раз.');
+  openPortalPath(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+}
+
+export async function openAddressBookChat(
+  entry: AddressBookEntry | null | undefined,
+): Promise<AddressBookChatLink> {
   const user = await resolveAddressBookChatUser(entry);
   const peerUserId = Number(user?.id || 0);
   if (!Number.isFinite(peerUserId) || peerUserId <= 0) {
@@ -64,5 +87,7 @@ export async function openAddressBookChat(entry: AddressBookEntry | null | undef
   if (!conversationId) {
     throw new Error('Не удалось открыть личный диалог.');
   }
-  openPortalPath(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+  const link = { conversationId, peerUserId };
+  openCachedAddressBookChat(link);
+  return link;
 }

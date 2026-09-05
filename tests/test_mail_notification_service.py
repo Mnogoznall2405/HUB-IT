@@ -196,6 +196,7 @@ async def test_poll_once_emits_notification_on_unread_increase_and_offloads_push
     service = notification_module.MailNotificationService()
     thread_calls = []
     send_calls = []
+    realtime_calls = []
     feeds = iter([_feed("msg-1", 1), _feed("msg-2", 2, subject="New subject")])
 
     def _candidates():
@@ -217,6 +218,11 @@ async def test_poll_once_emits_notification_on_unread_increase_and_offloads_push
     monkeypatch.setattr(service, "_iter_candidate_users", _candidates)
     monkeypatch.setattr(service, "_list_notification_feed_sync", _feed_sync)
     monkeypatch.setattr(service, "_send_notification_sync", _send_sync)
+    monkeypatch.setattr(
+        notification_module.hub_realtime_publisher,
+        "publish_user_event",
+        lambda **kwargs: realtime_calls.append(kwargs) or True,
+    )
     monkeypatch.setattr(notification_module.asyncio, "to_thread", _fake_to_thread)
 
     await service.poll_once()
@@ -228,6 +234,19 @@ async def test_poll_once_emits_notification_on_unread_increase_and_offloads_push
     assert send_calls[0]["tag"] == "mail:msg-2"
     assert send_calls[0]["route"].endswith("message=msg-2&mailbox_id=mbox-1")
     assert thread_calls.count("_send_sync") == 1
+    assert realtime_calls == [{
+        "recipient_user_id": 2,
+        "event_type": "mail.message.received",
+        "event_id": realtime_calls[0]["event_id"],
+        "payload": {
+            "message_id": "msg-2",
+            "mailbox_id": "mbox-1",
+            "folder": "inbox",
+            "received_at": "2026-04-16T21:57:02Z",
+            "unread_count": 2,
+        },
+    }]
+    assert realtime_calls[0]["event_id"].startswith("mail-received:2:")
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  type ListRenderItemInfo,
   Pressable,
   StyleSheet,
   Text,
@@ -14,11 +15,20 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { NATIVE_CHAT_ENABLED } from '../../chat/nativeChatFeature';
 import { formatApiError } from '../../api/formatError';
 import {
+  getCompleteAddressBook,
   getAddressBookStatus,
-  searchAddressBook,
   syncAddressBook,
+  type AddressBookSearchResponse,
   type AddressBookStatus,
 } from '../../api/addressBookApi';
+import {
+  readNativeAddressBookSnapshot,
+  writeNativeAddressBookSnapshot,
+} from '../../cache/nativeAddressBookSnapshot';
+import {
+  readNativeEntitySnapshot,
+  writeNativeEntitySnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { useAuth } from '../../auth/AuthContext';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { isAdminUser } from '../../navigation/mobileNavItems';
@@ -30,7 +40,7 @@ import {
   AccountSectionCard,
   AccountStatusText,
 } from '../account/AccountChrome';
-import { useFluentTokens } from '../../theme/fluentTokens';
+import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import { AddressBookEntryDetail } from '../../addressBook/AddressBookEntryDetail';
 import { AddressBookEntryRow } from '../../addressBook/AddressBookEntryRow';
 import {
@@ -38,17 +48,48 @@ import {
   getEntryKey,
   isValidEmailRecipient,
   SEARCH_DEBOUNCE_MS,
-  SEARCH_LIMIT,
   type AddressBookEntry,
 } from '../../addressBook/addressBookFormat';
 import { openExternalUrl, openTelegramChat } from '../../addressBook/messengerLinks';
 import {
   getAddressBookChatErrorMessage,
+  getAddressBookChatCacheKey,
   isAddressBookChatNotFound,
+  openCachedAddressBookChat,
   openAddressBookChat,
+  type AddressBookChatLink,
 } from '../../addressBook/openAddressBookChat';
 
 const SEARCH_PLACEHOLDER = 'ФИО, должность, подразделение, город, телефон или e-mail';
+
+function normalizeDirectorySearch(value: unknown): string {
+  return String(value || '')
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .trim();
+}
+
+function filterAddressBookEntries(items: AddressBookEntry[], query: string): AddressBookEntry[] {
+  const tokens = normalizeDirectorySearch(query).split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return items;
+  return items.filter((item) => {
+    const contacts = [
+      ...(item.work_phones || []),
+      ...(item.personal_phones || []),
+      ...(item.work_emails || []),
+      ...(item.personal_emails || []),
+    ].flatMap((value) => [value.kind, value.value, value.normalized]);
+    const haystack = normalizeDirectorySearch([
+      item.full_name,
+      item.position,
+      item.department,
+      item.department_location,
+      ...contacts,
+    ].join(' '));
+    return tokens.every((token) => haystack.includes(token));
+  });
+}
 
 function useDebouncedValue<T>(value: T, delayMs = SEARCH_DEBOUNCE_MS): T {
   const [debounced, setDebounced] = useState(value);
@@ -59,8 +100,51 @@ function useDebouncedValue<T>(value: T, delayMs = SEARCH_DEBOUNCE_MS): T {
   return debounced;
 }
 
+const AddressBookListRow = memo(function AddressBookListRow({
+  item,
+  index,
+  query,
+  tokens,
+  showChatAction,
+  chatBusy,
+  onSelect,
+  onCall,
+  onOpenTelegram,
+  onComposeEmail,
+  onOpenChat,
+}: {
+  item: AddressBookEntry;
+  index: number;
+  query: string;
+  tokens: FluentTokens;
+  showChatAction: boolean;
+  chatBusy: boolean;
+  onSelect: (item: AddressBookEntry, entryKey: string) => void;
+  onCall: (telHref: string) => void;
+  onOpenTelegram: (digits: string) => void;
+  onComposeEmail: (email: string) => void;
+  onOpenChat: (item: AddressBookEntry, index: number) => void;
+}) {
+  const entryKey = getEntryKey(item, index);
+  return (
+    <AddressBookEntryRow
+      item={item}
+      entryKey={entryKey}
+      query={query}
+      tokens={tokens}
+      showChatAction={showChatAction}
+      chatBusy={chatBusy}
+      onSelect={() => onSelect(item, entryKey)}
+      onCall={onCall}
+      onOpenTelegram={onOpenTelegram}
+      onComposeEmail={onComposeEmail}
+      onOpenChat={() => onOpenChat(item, index)}
+    />
+  );
+});
+
 export function NativeAddressBookScreen() {
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('address_book.read');
@@ -68,7 +152,7 @@ export function NativeAddressBookScreen() {
   const canUseChat = NATIVE_CHAT_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
 
   const [query, setQuery] = useState('');
-  const [items, setItems] = useState<AddressBookEntry[]>([]);
+  const [directoryItems, setDirectoryItems] = useState<AddressBookEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<AddressBookStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,44 +165,72 @@ export function NativeAddressBookScreen() {
   const [chatBusyKey, setChatBusyKey] = useState('');
   const searchRequestRef = useRef(0);
   const debouncedQuery = useDebouncedValue(query);
+  const userId = Number(user?.id || 0);
+  const items = useMemo(
+    () => filterAddressBookEntries(directoryItems, debouncedQuery),
+    [debouncedQuery, directoryItems],
+  );
 
   const loadStatus = useCallback(async () => {
+    if (offlineMode) return;
     try {
       setStatus(await getAddressBookStatus());
     } catch {
       // Status is optional; search still works.
     }
-  }, []);
+  }, [offlineMode]);
 
-  const loadItems = useCallback(async (nextQuery: string, mode: 'load' | 'refresh' = 'load') => {
+  const loadItems = useCallback(async (mode: 'load' | 'refresh' = 'load') => {
     const requestId = ++searchRequestRef.current;
+    let hadCachedSnapshot = false;
     if (mode === 'refresh') setRefreshing(true);
     else setLoading(true);
     setError('');
     try {
-      const data = await searchAddressBook({ q: nextQuery, limit: SEARCH_LIMIT });
+      const snapshot = await readNativeAddressBookSnapshot<AddressBookSearchResponse>(userId);
       if (requestId !== searchRequestRef.current) return;
-      setItems(data.items);
+      if (snapshot) {
+        hadCachedSnapshot = true;
+        setDirectoryItems(snapshot.data.items);
+        setTotal(snapshot.data.total);
+        setStatus((prev) => ({
+          ...(prev || {}),
+          updated_at: snapshot.data.updated_at || prev?.updated_at || '',
+          last_error: snapshot.data.last_error || prev?.last_error || '',
+        }));
+        setLoading(false);
+      }
+      if (offlineMode) return;
+
+      const data = await getCompleteAddressBook();
+      if (requestId !== searchRequestRef.current) return;
+      setDirectoryItems(data.items);
       setTotal(data.total);
       setStatus((prev) => ({
         ...(prev || {}),
         updated_at: data.updated_at || prev?.updated_at || '',
         last_error: data.last_error || prev?.last_error || '',
       }));
+      const stored = await writeNativeAddressBookSnapshot(userId, data);
+      if (!stored && requestId === searchRequestRef.current) {
+        setError('Адресная книга загружена, но offline-копию обновить не удалось.');
+      }
     } catch (cause) {
       if (requestId !== searchRequestRef.current) return;
-      setError(formatApiError(cause, 'Не удалось загрузить адресную книгу.'));
+      if (!hadCachedSnapshot) {
+        setError(formatApiError(cause, 'Не удалось загрузить адресную книгу.'));
+      }
     } finally {
       if (requestId === searchRequestRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [offlineMode, userId]);
 
   useEffect(() => {
-    if (allowed) void loadItems(debouncedQuery);
-  }, [allowed, debouncedQuery, loadItems]);
+    if (allowed && userId > 0) void loadItems();
+  }, [allowed, loadItems, userId]);
 
   useEffect(() => {
     if (allowed) void loadStatus();
@@ -140,7 +252,7 @@ export function NativeAddressBookScreen() {
     try {
       const nextStatus = await syncAddressBook();
       setStatus(nextStatus);
-      await loadItems(debouncedQuery);
+      await loadItems('refresh');
       setMessage('Адресная книга обновлена из 1С.');
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось обновить адресную книгу из 1С.'));
@@ -148,7 +260,7 @@ export function NativeAddressBookScreen() {
     } finally {
       setSyncing(false);
     }
-  }, [debouncedQuery, loadItems, loadStatus]);
+  }, [loadItems, loadStatus]);
 
   const handleCopy = useCallback(async (value: string) => {
     const text = String(value || '').trim();
@@ -202,6 +314,13 @@ export function NativeAddressBookScreen() {
     openPortalPath(`/mail?folder=inbox&compose_to=${encodeURIComponent(recipient)}`);
   }, []);
 
+  const handleSelectEntry = useCallback((item: AddressBookEntry, entryKey: string) => {
+    setSelectedKey(entryKey);
+    setSelectedItem(item);
+    setMessage('');
+    setError('');
+  }, []);
+
   const handleOpenExternalMail = useCallback((email: string) => {
     const recipient = String(email || '').trim();
     if (!isValidEmailRecipient(recipient)) {
@@ -213,10 +332,24 @@ export function NativeAddressBookScreen() {
 
   const handleOpenChat = useCallback(async (item: AddressBookEntry, index: number) => {
     const entryKey = getEntryKey(item, index);
+    const cacheKey = getAddressBookChatCacheKey(item);
     setChatBusyKey(entryKey);
     setError('');
     try {
-      await openAddressBookChat(item);
+      const cached = cacheKey
+        ? await readNativeEntitySnapshot<AddressBookChatLink>('address-book-chat-links', userId, cacheKey)
+        : null;
+      if (cached) {
+        openCachedAddressBookChat(cached.data);
+        return;
+      }
+      if (offlineMode) {
+        throw new Error('Этот чат ещё не открывался на устройстве. Подключитесь к сети для первого перехода.');
+      }
+      const link = await openAddressBookChat(item);
+      if (cacheKey) {
+        await writeNativeEntitySnapshot('address-book-chat-links', userId, cacheKey, link);
+      }
     } catch (cause) {
       if (isAddressBookChatNotFound(cause)) {
         setError(getAddressBookChatErrorMessage(
@@ -229,11 +362,41 @@ export function NativeAddressBookScreen() {
     } finally {
       setChatBusyKey('');
     }
-  }, []);
+  }, [offlineMode, userId]);
 
-  const countLabel = useMemo(() => (
-    total > SEARCH_LIMIT ? `Найдено ${total}, показано ${SEARCH_LIMIT}` : `Найдено ${total}`
-  ), [total]);
+  const countLabel = useMemo(
+    () => `Найдено ${debouncedQuery.trim() ? items.length : total}`,
+    [debouncedQuery, items.length, total],
+  );
+
+  const renderAddressBookItem = useCallback(({ item, index }: ListRenderItemInfo<AddressBookEntry>) => {
+    const entryKey = getEntryKey(item, index);
+    return (
+      <AddressBookListRow
+        item={item}
+        index={index}
+        query={debouncedQuery}
+        tokens={tokens}
+        showChatAction={canUseChat}
+        chatBusy={chatBusyKey === entryKey}
+        onSelect={handleSelectEntry}
+        onCall={handleCall}
+        onOpenTelegram={handleOpenTelegram}
+        onComposeEmail={handleComposeEmail}
+        onOpenChat={handleOpenChat}
+      />
+    );
+  }, [
+    canUseChat,
+    chatBusyKey,
+    debouncedQuery,
+    handleCall,
+    handleComposeEmail,
+    handleOpenChat,
+    handleOpenTelegram,
+    handleSelectEntry,
+    tokens,
+  ]);
 
   if (!allowed) {
     return (
@@ -339,36 +502,14 @@ export function NativeAddressBookScreen() {
           keyExtractor={(item, index) => getEntryKey(item, index)}
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
-          onRefresh={() => { void loadItems(debouncedQuery, 'refresh'); }}
+          onRefresh={() => { void loadItems('refresh'); }}
           contentContainerStyle={items.length === 0 ? styles.emptyList : undefined}
           ListEmptyComponent={(
             <Text style={[styles.empty, { color: tokens.textSecondary }]}>
               {query.trim() ? 'По вашему запросу сотрудники не найдены.' : 'В адресной книге пока нет записей.'}
             </Text>
           )}
-          renderItem={({ item, index }) => {
-            const entryKey = getEntryKey(item, index);
-            return (
-              <AddressBookEntryRow
-                item={item}
-                entryKey={entryKey}
-                query={query}
-                tokens={tokens}
-                showChatAction={canUseChat}
-                chatBusy={chatBusyKey === entryKey}
-                onSelect={() => {
-                  setSelectedKey(entryKey);
-                  setSelectedItem(item);
-                  setMessage('');
-                  setError('');
-                }}
-                onCall={handleCall}
-                onOpenTelegram={handleOpenTelegram}
-                onComposeEmail={handleComposeEmail}
-                onOpenChat={() => { void handleOpenChat(item, index); }}
-              />
-            );
-          }}
+          renderItem={renderAddressBookItem}
         />
       )}
     </AccountScreenScaffold>

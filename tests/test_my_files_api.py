@@ -157,6 +157,28 @@ class FakeMyFilesService:
             "is_shared": False,
         }
 
+    def get_upload_session(self, *, file_id: str, user_id: int):
+        if not self.upload or file_id != "reserved-file" or user_id != 42:
+            raise MyFilesNotFoundError("File not found")
+        spool_path = self.upload["spool_path"]
+        uploaded_bytes = spool_path.stat().st_size if spool_path.is_file() else 0
+        expected_size = int(self.upload["expected_size"])
+        return {
+            "file_id": file_id,
+            "chunk_size_bytes": 16 * 1024 * 1024,
+            "uploaded_bytes": uploaded_bytes,
+            "file_size_bytes": expected_size,
+            "complete": uploaded_bytes == expected_size,
+        }
+
+    def append_upload_chunk(self, *, file_id: str, user_id: int, offset: int, payload: bytes):
+        session = self.get_upload_session(file_id=file_id, user_id=user_id)
+        if offset != session["uploaded_bytes"]:
+            raise ValueError("offset mismatch")
+        with self.upload["spool_path"].open("ab") as target:
+            target.write(payload)
+        return self.get_upload_session(file_id=file_id, user_id=user_id)
+
     def abort_upload(self, *, file_id: str, user_id: int, error_text: str, actor=None, meta=None):
         self.upload = {**(self.upload or {}), "aborted": True, "file_id": file_id, "user_id": user_id}
 
@@ -342,6 +364,30 @@ def test_authenticated_upload_streams_raw_body_directly_to_spool(monkeypatch, tm
     }
 
 
+def test_authenticated_upload_accepts_declared_size_above_former_one_gib_limit(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+
+    async def fake_stream(_request, spool_path, *, expected_size):
+        spool_path.write_bytes(b"test-placeholder")
+        return expected_size
+
+    monkeypatch.setattr(my_files_api, "_stream_request_to_spool", fake_stream)
+    client = _client(fake_service)
+    size = (1024**3) + 1
+
+    response = client.post(
+        "/my-files",
+        params={"file_name": "large.bin", "file_size": size, "retention_days": 1},
+        content=b"test-placeholder",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert response.status_code == 201
+    assert fake_service.upload["expected_size"] == size
+    assert fake_service.upload["size"] == size
+
+
 def test_authenticated_upload_requires_exact_declared_size(monkeypatch, tmp_path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
@@ -358,7 +404,68 @@ def test_authenticated_upload_requires_exact_declared_size(monkeypatch, tmp_path
     assert fake_service.upload["aborted"] is True
 
 
-def test_custom_read_only_permission_cannot_upload(monkeypatch, tmp_path):
+def test_authenticated_chunked_upload_reserves_appends_and_completes(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    payload = b"chunked-payload"
+
+    created = client.post(
+        "/my-files/upload-sessions",
+        json={
+            "file_name": "large.bin",
+            "file_size": len(payload),
+            "retention_days": 30,
+            "mime_type": "application/octet-stream",
+        },
+    )
+    first = client.put(
+        "/my-files/upload-sessions/reserved-file/chunks",
+        params={"offset": 0},
+        content=payload[:7],
+        headers={"content-type": "application/octet-stream"},
+    )
+    second = client.put(
+        "/my-files/upload-sessions/reserved-file/chunks",
+        params={"offset": 7},
+        content=payload[7:],
+        headers={"content-type": "application/octet-stream"},
+    )
+    completed = client.post("/my-files/upload-sessions/reserved-file/complete")
+
+    assert created.status_code == 201
+    assert created.json()["uploaded_bytes"] == 0
+    assert first.status_code == 200
+    assert first.json()["uploaded_bytes"] == 7
+    assert second.json()["complete"] is True
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "queued"
+    assert fake_service.upload["payload"] == payload
+    assert fake_service.upload["retention_days"] == 30
+
+
+def test_chunked_upload_rejects_oversized_chunk_before_service_write(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    monkeypatch.setattr(my_files_api, "UPLOAD_CHUNK_SIZE_BYTES", 4)
+    client = _client(fake_service)
+    client.post(
+        "/my-files/upload-sessions",
+        json={"file_name": "large.bin", "file_size": 5, "retention_days": 1},
+    )
+
+    response = client.put(
+        "/my-files/upload-sessions/reserved-file/chunks",
+        params={"offset": 0},
+        content=b"12345",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert response.status_code == 400
+    assert not fake_service.upload["spool_path"].exists()
+
+
+def test_custom_permissions_retain_viewer_upload_baseline(monkeypatch, tmp_path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
     client = _custom_permission_client(fake_service, ["my_files.read"])
@@ -370,8 +477,8 @@ def test_custom_read_only_permission_cannot_upload(monkeypatch, tmp_path):
         headers={"content-type": "text/csv"},
     )
 
-    assert response.status_code == 403
-    assert fake_service.upload is None
+    assert response.status_code == 201
+    assert fake_service.upload["user_id"] == 42
 
 
 def test_cross_site_browser_upload_is_rejected(monkeypatch, tmp_path):

@@ -14,7 +14,13 @@ describe('native-only route registry', () => {
     expect(hrefForPortalPath('/database')).toEqual({ pathname: '/(shell)/database', params: {} });
     expect(hrefForPortalPath('/my-files')).toEqual({ pathname: '/(shell)/my-files' });
     expect(hrefForPortalPath('/company-structure')).toEqual({ pathname: '/(shell)/company-structure' });
+    expect(hrefForPortalPath('/passwords')).toEqual({ pathname: '/(shell)/passwords' });
+    expect(hrefForPortalPath('/mfu')).toEqual({ pathname: '/(shell)/mfu' });
     expect(hrefForPortalPath('/docflow')).toEqual({ pathname: '/(shell)/docflow' });
+    expect(hrefForPortalPath('/docflow?task=task-1')).toEqual({
+      pathname: '/(shell)/docflow/[taskRef]',
+      params: { taskRef: 'task-1' },
+    });
   });
 
   it('preserves supported native deep links', () => {
@@ -49,6 +55,10 @@ describe('native-only route registry', () => {
       .toEqual({ pathname: '/(shell)/mail' });
     expect(hrefForPortalPath('/database?upload_act=1&reminder_id=r1'))
       .toEqual({ pathname: '/(shell)/database' });
+    expect(hrefForPortalPath('/passwords?section=ad-expiry'))
+      .toEqual({ pathname: '/(shell)/menu' });
+    expect(hrefForPortalPath('/mfu?device=main%7C17'))
+      .toEqual({ pathname: '/(shell)/menu' });
     expect(hrefForPortalPath('/unknown-module')).toEqual({ pathname: '/(shell)/menu' });
   });
 
@@ -62,10 +72,8 @@ describe('native-only route registry', () => {
   it.each([
     ['/scan-center', 'EXPO_PUBLIC_NATIVE_SCAN_CENTER_ENABLED', '/(shell)/scan-center'],
     ['/computers', 'EXPO_PUBLIC_NATIVE_COMPUTERS_ENABLED', '/(shell)/computers'],
-    ['/passwords', 'EXPO_PUBLIC_NATIVE_PASSWORDS_ENABLED', '/(shell)/passwords'],
     ['/groups-access', 'EXPO_PUBLIC_NATIVE_GROUPS_ACCESS_ENABLED', '/(shell)/groups-access'],
     ['/warehouse-1c', 'EXPO_PUBLIC_NATIVE_WAREHOUSE_1C_ENABLED', '/(shell)/warehouse-1c'],
-    ['/mfu', 'EXPO_PUBLIC_NATIVE_MFU_ENABLED', '/(shell)/mfu'],
   ])('hides disabled native module %s and exposes it only when enabled', (path, envName, nativePath) => {
     expect(hrefForPortalPath(path)).toEqual({ pathname: '/(shell)/menu' });
     const previous = process.env[envName];
@@ -73,6 +81,20 @@ describe('native-only route registry', () => {
     jest.isolateModules(() => {
       const registry = require('./moduleRegistry') as typeof import('./moduleRegistry');
       expect(registry.hrefForPortalPath(path)).toEqual({ pathname: nativePath });
+    });
+    if (previous === undefined) delete process.env[envName];
+    else process.env[envName] = previous;
+  });
+
+  it.each([
+    ['/passwords', 'EXPO_PUBLIC_NATIVE_PASSWORDS_ENABLED'],
+    ['/mfu', 'EXPO_PUBLIC_NATIVE_MFU_ENABLED'],
+  ])('exposes native module %s by default and supports an explicit kill switch', (path, envName) => {
+    const previous = process.env[envName];
+    process.env[envName] = 'false';
+    jest.isolateModules(() => {
+      const registry = require('./moduleRegistry') as typeof import('./moduleRegistry');
+      expect(registry.hrefForPortalPath(path)).toEqual({ pathname: '/(shell)/menu' });
     });
     if (previous === undefined) delete process.env[envName];
     else process.env[envName] = previous;

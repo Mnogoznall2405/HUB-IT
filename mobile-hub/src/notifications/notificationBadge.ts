@@ -1,6 +1,8 @@
 import * as Notifications from 'expo-notifications';
-import * as chatApi from '../api/chatApi';
-import * as notificationApi from '../api/notificationApi';
+import {
+  getNativeUnreadSnapshot,
+  nativeUnreadTotal,
+} from './nativeUnreadSnapshot';
 
 const MAX_BADGE_COUNT = 999;
 
@@ -9,27 +11,22 @@ function safeCount(value: unknown): number {
   return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
 }
 
-export async function resolveNativeUnreadCount(): Promise<number | null> {
-  const results = await Promise.allSettled([
-    notificationApi.getNotificationUnreadCounts().then((counts) => (
-      safeCount(counts.notifications_unread_total) + safeCount(counts.announcements_unread)
-    )),
-    notificationApi.getMailUnreadCount(),
-    chatApi.getConversations().then((items) => (
-      items.reduce((total, item) => total + safeCount(item.unread_count), 0)
-    )),
-  ]);
-  const fulfilled = results.filter(
-    (result): result is PromiseFulfilledResult<number> => result.status === 'fulfilled',
-  );
-  if (!fulfilled.length) return null;
-  return Math.min(MAX_BADGE_COUNT, fulfilled.reduce((total, result) => total + safeCount(result.value), 0));
+export async function resolveNativeUnreadCount({ force = false }: { force?: boolean } = {}): Promise<number | null> {
+  const snapshot = await getNativeUnreadSnapshot({ force });
+  if (snapshot.successful_sources <= 0) return null;
+  return Math.min(MAX_BADGE_COUNT, nativeUnreadTotal(snapshot));
 }
 
-export async function reconcileNativeBadge(): Promise<number | null> {
-  const count = await resolveNativeUnreadCount();
+export async function setNativeBadgeCount(count: number): Promise<number> {
+  const normalized = Math.min(MAX_BADGE_COUNT, safeCount(count));
+  await Notifications.setBadgeCountAsync(normalized).catch(() => false);
+  return normalized;
+}
+
+export async function reconcileNativeBadge({ force = false }: { force?: boolean } = {}): Promise<number | null> {
+  const count = await resolveNativeUnreadCount({ force });
   if (count === null) return null;
-  await Notifications.setBadgeCountAsync(count).catch(() => false);
+  await setNativeBadgeCount(count);
   return count;
 }
 

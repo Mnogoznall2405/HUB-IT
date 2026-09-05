@@ -75,6 +75,40 @@ describe('EquipmentTable', () => {
     expect(onAction).toHaveBeenCalledWith('view', expect.objectContaining({ INV_NO: '1001' }));
   });
 
+  it('shows the current act state and opens the available act', () => {
+    const onOpenCurrentAct = vi.fn();
+
+    renderTable({
+      items: [
+        {
+          INV_NO: '1001',
+          ID: 7,
+          OWNER_DISPLAY_NAME: 'Ivan Petrov',
+          current_act_available: true,
+          current_act_doc_no: 901,
+          current_act_doc_number: 'ACT-901',
+          current_act_doc_date: '2026-09-04T08:30:00',
+        },
+        {
+          INV_NO: '1002',
+          ID: 8,
+          OWNER_DISPLAY_NAME: 'Ivan Petrov',
+          current_act_available: false,
+        },
+      ],
+      onOpenCurrentAct,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Открыть актуальный акт ACT-901/ }));
+
+    expect(onOpenCurrentAct).toHaveBeenCalledWith(expect.objectContaining({
+      doc_no: 901,
+      doc_number: 'ACT-901',
+      inv_no: '1001',
+    }));
+    expect(screen.getByLabelText('Актуального акта нет для оборудования 1002')).toBeInTheDocument();
+  });
+
   it('renders consumable rows and exposes quantity editing', () => {
     const onEditConsumableQty = vi.fn();
 

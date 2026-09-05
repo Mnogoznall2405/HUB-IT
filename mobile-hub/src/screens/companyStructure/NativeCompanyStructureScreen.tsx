@@ -32,6 +32,12 @@ import { formatApiError } from '../../api/formatError';
 import { normalizePhoneDigits } from '../../addressBook/addressBookFormat';
 import { openExternalUrl } from '../../addressBook/messengerLinks';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeEntitySnapshot,
+  readNativeSnapshot,
+  writeNativeEntitySnapshot,
+  writeNativeSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import {
   companyNodeTitle,
@@ -47,6 +53,10 @@ import {
   sortedCompanyChildren,
   sortCompanyPeople,
 } from '../../companyStructure/nativeCompanyStructureModel';
+import type {
+  NativeCompanyStructurePeopleSnapshot,
+  NativeCompanyStructureTreeSnapshot,
+} from '../../companyStructure/nativeCompanyStructureSnapshot';
 import { NativeCompanyNodeEditorSheet } from '../../components/companyStructure/NativeCompanyNodeEditorSheet';
 import { NativeCompanyZupImportSheet } from '../../components/companyStructure/NativeCompanyZupImportSheet';
 import { NativeCompanyHierarchySheet } from '../../components/companyStructure/NativeCompanyHierarchySheet';
@@ -83,7 +93,7 @@ export function NativeCompanyStructureScreen() {
   const requestedBlockParam = first(params.blockId);
   const requestedNodeRef = useRef(requestedNodeParam);
   const requestedBlockRef = useRef(requestedBlockParam);
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('company_structure.read');
@@ -159,7 +169,7 @@ export function NativeCompanyStructureScreen() {
   }, [requestedBlockParam, requestedNodeParam, selectNode, tree]);
 
   const loadTree = useCallback(async (refresh = false) => {
-    if (!canRead || offlineMode) {
+    if (!canRead) {
       setLoading(false);
       setRefreshing(false);
       return;
@@ -167,6 +177,33 @@ export function NativeCompanyStructureScreen() {
     const requestId = ++treeRequestRef.current;
     if (refresh) setRefreshing(true); else setLoading(true);
     setError('');
+    const userId = Number(user?.id || 0);
+    let cached = false;
+    if (userId) {
+      const snapshot = await readNativeSnapshot<NativeCompanyStructureTreeSnapshot>('company-structure-tree', userId);
+      if (requestId !== treeRequestRef.current) return;
+      if (snapshot) {
+        cached = true;
+        setTree(snapshot.data.items);
+        const selection = resolveInitialCompanySelection(
+          snapshot.data.items,
+          selectedIdRef.current || requestedNodeRef.current,
+          activeBlockIdRef.current || requestedBlockRef.current,
+        );
+        selectedIdRef.current = selection.nodeId;
+        activeBlockIdRef.current = selection.blockId;
+        setSelectedId(selection.nodeId);
+        setActiveBlockId(selection.blockId);
+        setTreeRevision((current) => current + 1);
+        setLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (!cached) setError('Нет подключения и сохранённой структуры компании.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const payload = await getCompanyStructureTree();
       if (requestId !== treeRequestRef.current) return;
@@ -182,21 +219,25 @@ export function NativeCompanyStructureScreen() {
       setSelectedId(selection.nodeId);
       setActiveBlockId(selection.blockId);
       setTreeRevision((current) => current + 1);
+      if (userId) void writeNativeSnapshot<NativeCompanyStructureTreeSnapshot>('company-structure-tree', userId, payload);
     } catch (cause) {
-      if (requestId === treeRequestRef.current) setError(formatApiError(cause, 'Не удалось загрузить структуру компании.'));
+      if (requestId === treeRequestRef.current) {
+        if (cached) setError('Показана сохранённая структура. Обновить данные не удалось.');
+        else setError(formatApiError(cause, 'Не удалось загрузить структуру компании.'));
+      }
     } finally {
       if (requestId === treeRequestRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
     }
-  }, [canRead, offlineMode]);
+  }, [canRead, offlineMode, user?.id]);
 
   useEffect(() => { void loadTree(); }, [loadTree]);
 
   const loadPeople = useCallback(async (nodeId: string, force = false) => {
     const id = String(nodeId || '').trim();
-    if (!id || !canRead || offlineMode) {
+    if (!id || !canRead) {
       setPeopleLoading(false);
       return;
     }
@@ -213,6 +254,33 @@ export function NativeCompanyStructureScreen() {
     const requestId = ++peopleRequestRef.current;
     setPeopleLoading(true);
     setPeopleError('');
+    const userId = Number(user?.id || 0);
+    let cached = false;
+    if (userId) {
+      const snapshot = await readNativeEntitySnapshot<NativeCompanyStructurePeopleSnapshot>(
+        'company-structure-people',
+        userId,
+        id,
+      );
+      if (requestId !== peopleRequestRef.current || id !== selectedIdRef.current) return;
+      if (snapshot) {
+        cached = true;
+        const next = { items: snapshot.data.items, total: snapshot.data.total };
+        peopleCacheRef.current.set(id, next);
+        setPeople(next.items);
+        setPeopleTotal(next.total);
+        setPeopleLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (!cached) {
+        setPeople([]);
+        setPeopleTotal(0);
+        setPeopleError('Сотрудники этого подразделения ещё не сохранены. Откройте его один раз при наличии интернета.');
+      }
+      setPeopleLoading(false);
+      return;
+    }
     try {
       const payload = await getCompanyStructureNodePeople(id, { limit: PEOPLE_LIMIT, includeDescendants: true });
       if (requestId !== peopleRequestRef.current || id !== selectedIdRef.current) return;
@@ -226,16 +294,27 @@ export function NativeCompanyStructureScreen() {
       }
       setPeople(next.items);
       setPeopleTotal(next.total);
+      if (userId) {
+        void writeNativeEntitySnapshot<NativeCompanyStructurePeopleSnapshot>(
+          'company-structure-people',
+          userId,
+          id,
+          payload,
+        );
+      }
     } catch (cause) {
       if (requestId === peopleRequestRef.current && id === selectedIdRef.current) {
-        setPeople([]);
-        setPeopleTotal(0);
-        setPeopleError(formatApiError(cause, 'Не удалось загрузить сотрудников подразделения.'));
+        if (cached) setPeopleError('Показан сохранённый список сотрудников. Обновить данные не удалось.');
+        else {
+          setPeople([]);
+          setPeopleTotal(0);
+          setPeopleError(formatApiError(cause, 'Не удалось загрузить сотрудников подразделения.'));
+        }
       }
     } finally {
       if (requestId === peopleRequestRef.current) setPeopleLoading(false);
     }
-  }, [canRead, offlineMode]);
+  }, [canRead, offlineMode, user?.id]);
 
   useEffect(() => {
     setPeople([]);
@@ -245,10 +324,52 @@ export function NativeCompanyStructureScreen() {
 
   useEffect(() => {
     const normalized = query.trim();
-    if (normalized.length < 2 || offlineMode || !canRead) {
+    if (normalized.length < 2 || !canRead) {
       searchRequestRef.current += 1;
       setSearchItems([]);
       setSearchTotal(0);
+      setSearchLoading(false);
+      return undefined;
+    }
+    if (offlineMode) {
+      const needle = normalized.toLocaleLowerCase('ru-RU');
+      const localItems: CompanyStructureSearchItem[] = [];
+      treeIndex.nodeById.forEach((node) => {
+        const haystack = `${companyNodeTitle(node)} ${node.person_name} ${node.person_position}`.toLocaleLowerCase('ru-RU');
+        if (!haystack.includes(needle)) return;
+        const path = companyNodePathFromIndex(treeIndex, node.id).map((part) => ({ id: part.id, title: companyNodeTitle(part) }));
+        localItems.push({
+          kind: 'node',
+          node_id: node.id,
+          title: companyNodeTitle(node),
+          subtitle: node.person_position,
+          department: '',
+          department_location: '',
+          work_phones: [],
+          work_emails: [],
+          path,
+        });
+      });
+      peopleCacheRef.current.forEach((cachedPeople, nodeId) => {
+        const path = companyNodePathFromIndex(treeIndex, nodeId).map((part) => ({ id: part.id, title: companyNodeTitle(part) }));
+        cachedPeople.items.forEach((person) => {
+          const haystack = `${person.full_name} ${person.position} ${person.department} ${person.department_location}`.toLocaleLowerCase('ru-RU');
+          if (!haystack.includes(needle)) return;
+          localItems.push({
+            kind: 'person',
+            node_id: nodeId,
+            title: person.full_name,
+            subtitle: person.position,
+            department: person.department,
+            department_location: person.department_location,
+            work_phones: person.work_phones,
+            work_emails: person.work_emails,
+            path,
+          });
+        });
+      });
+      setSearchItems(localItems.slice(0, SEARCH_LIMIT));
+      setSearchTotal(localItems.length);
       setSearchLoading(false);
       return undefined;
     }
@@ -270,7 +391,7 @@ export function NativeCompanyStructureScreen() {
       });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [canRead, offlineMode, query]);
+  }, [canRead, offlineMode, query, treeIndex]);
 
   const closePeople = useCallback(() => {
     setPeopleOpen(false);
@@ -575,7 +696,7 @@ export function NativeCompanyStructureScreen() {
         </View>
       )}
     >
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показаны данные текущего сеанса, обновление и поиск отключены.</Text> : null}
+      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показана сохранённая структура, поиск выполняется на устройстве.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {mutationError && !editorOpen ? <Text accessibilityRole="alert" style={[styles.mutationError, { color: tokens.error }]}>{mutationError}</Text> : null}
       {mutationMessage ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[styles.mutationMessage, { color: tokens.success }]}>{mutationMessage}</Text> : null}
@@ -585,13 +706,12 @@ export function NativeCompanyStructureScreen() {
           testID="native-company-search"
           value={query}
           onChangeText={(value) => { setQuery(value); setError(''); }}
-          editable={!offlineMode}
+          editable
           placeholder="Сотрудник или подразделение"
           placeholderTextColor={tokens.textTertiary}
           accessibilityLabel="Поиск по структуре компании"
-          accessibilityState={{ disabled: offlineMode }}
           returnKeyType="search"
-          style={[styles.searchInput, { color: tokens.textPrimary, opacity: offlineMode ? 0.6 : 1 }]}
+          style={[styles.searchInput, { color: tokens.textPrimary }]}
         />
         {searchLoading ? <ActivityIndicator size="small" color={tokens.primary} /> : query ? (
           <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.clearSearch}>
@@ -658,7 +778,7 @@ export function NativeCompanyStructureScreen() {
             </View>
           ) : selectedNode ? (
             <View style={styles.listHeader}>
-              <NativeCompanyNodeCard node={selectedNode} tokens={tokens} selected onPeople={() => openNodePeople(selectedNode.id)} />
+              <NativeCompanyNodeCard node={selectedNode} tokens={tokens} selected onPeople={openNodePeople} />
               {canWrite ? (
                 <View style={styles.editorActions}>
                   <Pressable testID="native-company-create" disabled={offlineMode || mutating} onPress={openCreate} accessibilityRole="button" accessibilityLabel={`Добавить узел внутри ${companyNodeTitle(selectedNode)}`} style={[styles.editorPrimary, { backgroundColor: tokens.primary, opacity: offlineMode || mutating ? 0.5 : 1 }]}>
@@ -714,7 +834,7 @@ export function NativeCompanyStructureScreen() {
           )}
           renderItem={({ item: entry }) => {
             if (entry.kind === 'node') {
-              return <NativeCompanyNodeCard node={entry.node} tokens={tokens} onSelect={() => selectNode(entry.node.id)} onPeople={() => openNodePeople(entry.node.id)} />;
+              return <NativeCompanyNodeCard node={entry.node} tokens={tokens} onSelect={selectNode} onPeople={openNodePeople} />;
             }
             if (entry.kind === 'people-heading') {
               return (

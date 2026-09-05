@@ -1,7 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
 import EquipmentDetailDialog from './EquipmentDetailDialog';
+
+const theme = createTheme();
 
 const data = {
   ID: 123,
@@ -123,6 +126,45 @@ describe('EquipmentDetailDialog', () => {
       target: { value: 'SN-2' },
     });
     expect(onFormPatch).toHaveBeenCalledWith({ serial_no: 'SN-2' });
+  });
+
+  it('keeps edit pickers above an equipment card opened over its parent dialog', async () => {
+    renderDialog({
+      editMode: true,
+      canWrite: true,
+      stackAboveParent: true,
+      onFormPatch: vi.fn(),
+    });
+
+    const dialogRoot = screen.getByRole('dialog').closest('.MuiModal-root');
+    expect(dialogRoot).not.toBeNull();
+    expect(window.getComputedStyle(dialogRoot).zIndex).toBe(String(theme.zIndex.modal + 2));
+
+    const selectCases = [
+      ['Статус', 'Списан'],
+      ['Тип оборудования', 'Notebook'],
+      ['Модель', 'Lenovo ThinkPad'],
+      ['Филиал', 'Филиал'],
+    ];
+
+    for (const [label, option] of selectCases) {
+      fireEvent.mouseDown(screen.getByLabelText(label));
+      const listbox = await screen.findByRole('listbox');
+      const menuRoot = listbox.closest('.MuiMenu-root');
+      expect(menuRoot).not.toBeNull();
+      expect(Number(window.getComputedStyle(menuRoot).zIndex)).toBeGreaterThan(
+        Number(window.getComputedStyle(dialogRoot).zIndex)
+      );
+      fireEvent.click(within(listbox).getByRole('option', { name: option }));
+    }
+
+    fireEvent.change(screen.getByLabelText('Местоположение'), { target: { value: 'Кабинет' } });
+    const locationListbox = await screen.findByRole('listbox');
+    const locationPopper = locationListbox.closest('.MuiAutocomplete-popper');
+    expect(locationPopper).not.toBeNull();
+    expect(Number(window.getComputedStyle(locationPopper).zIndex)).toBeGreaterThan(
+      Number(window.getComputedStyle(dialogRoot).zIndex)
+    );
   });
 
   it('wires footer edit, cancel, save, and close actions', () => {

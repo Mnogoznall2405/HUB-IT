@@ -108,6 +108,14 @@ const getSelectedDatabaseCachePart = () => {
 };
 
 let refreshInFlight = null;
+
+function refreshAuthSession() {
+  if (!refreshInFlight) {
+    refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true })
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
 let chatRequestDebugSeq = 0;
 
 const CHAT_REQUEST_DEBUG_STORAGE_KEY = 'chat:request-debug';
@@ -342,10 +350,7 @@ apiClient.interceptors.response.use(
 
       if (canRetryWithRefresh) {
         try {
-          if (!refreshInFlight) {
-            refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
-          }
-          await refreshInFlight;
+          await refreshAuthSession();
           if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
             window.dispatchEvent(new CustomEvent('auth-token-refreshed'));
           }
@@ -367,8 +372,6 @@ apiClient.interceptors.response.use(
           }
           // The refresh endpoint definitively rejected the session. Fall
           // through to the existing auth-required handling below.
-        } finally {
-          refreshInFlight = null;
         }
       }
 
@@ -422,7 +425,7 @@ export const authAPI = {
   },
 
   refresh: async () => {
-    const response = await apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+    const response = await refreshAuthSession();
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       window.dispatchEvent(new CustomEvent('auth-token-refreshed'));
     }

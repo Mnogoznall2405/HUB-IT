@@ -67,6 +67,7 @@ const LocationAutocompleteField = memo(function LocationAutocompleteField({
   loading = false,
   required = false,
   size = 'small',
+  popperSx = undefined,
 }) {
   const selectedOption = useMemo(
     () => (Array.isArray(options) ? options.find((option) => option.loc_no === value) || null : null),
@@ -85,6 +86,7 @@ const LocationAutocompleteField = memo(function LocationAutocompleteField({
       getOptionLabel={formatLocationOptionLabel}
       isOptionEqualToValue={(option, selected) => option.loc_no === selected.loc_no}
       noOptionsText="Ничего не найдено"
+      slotProps={popperSx ? { popper: { sx: popperSx } } : undefined}
       renderOption={(props, option) => (
         <li {...props} key={option.loc_no || formatLocationOptionLabel(option)}>
           {formatLocationOptionLabel(option)}

@@ -23,7 +23,7 @@ function assertNativeRuntime(): void {
 }
 
 function taskCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, CACHE_DIRECTORY_NAME);
+  const directory = new Directory(Paths.document, CACHE_DIRECTORY_NAME);
   directory.create({ intermediates: true, idempotent: true });
   return directory;
 }

@@ -6,6 +6,7 @@ import {
   Alert,
   AppState,
   FlatList,
+  type ListRenderItemInfo,
   Modal,
   Pressable,
   ScrollView,
@@ -22,9 +23,14 @@ import {
   testDocflowCredentials,
   type DocflowCredentialProfile,
   type DocflowScope,
+  type DocflowTaskList,
   type DocflowTaskSummary,
 } from '../../api/docflowApi';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeCollectionSnapshot,
+  writeNativeCollectionSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { NativeDocflowTaskCard } from '../../components/docflow/NativeDocflowTaskCard';
 import { HubTextField } from '../../components/ui/HubTextField';
 import { resolveNativeDocflowError } from '../../docflow/docflowError';
@@ -34,6 +40,7 @@ import {
 } from '../../docflow/nativeDocflowModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import {
   AccountPrimaryButton,
   AccountScreenScaffold,
@@ -42,6 +49,12 @@ import {
 } from '../account/AccountChrome';
 
 const TASK_LIMIT = 50;
+
+type DocflowInboxSnapshot = {
+  signature: string;
+  profile: DocflowCredentialProfile;
+  result: DocflowTaskList;
+};
 
 function first(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim();
@@ -64,7 +77,7 @@ function profileStatus(profile: DocflowCredentialProfile | null): string {
 
 export function NativeDocflowInboxScreen() {
   const params = useLocalSearchParams<{ scope?: string | string[]; q?: string | string[] }>();
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('docflow.read');
@@ -90,9 +103,10 @@ export function NativeDocflowInboxScreen() {
   const profileRequestRef = useRef(0);
   const taskRequestRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
+  const snapshotSignature = useMemo(() => JSON.stringify({ scope, query }), [query, scope]);
 
   const loadTasks = useCallback(async (nextProfile: DocflowCredentialProfile | null, refresh = false) => {
-    if (!canRead || offlineMode || !nextProfile?.configured) {
+    if (!canRead || !nextProfile?.configured) {
       setLoadingTasks(false);
       setRefreshing(false);
       return;
@@ -101,16 +115,47 @@ export function NativeDocflowInboxScreen() {
     if (refresh) setRefreshing(true); else setLoadingTasks(true);
     setError('');
     setCorrelationId('');
+    const userId = Number(user?.id || 0);
+    let cached = false;
+    if (!refresh && userId) {
+      const snapshot = await readNativeCollectionSnapshot<DocflowInboxSnapshot>(
+        'docflow-inbox',
+        userId,
+        snapshotSignature,
+      );
+      if (requestId !== taskRequestRef.current) return;
+      if (snapshot) {
+        cached = true;
+        setProfile(snapshot.data.profile);
+        setTasks(snapshot.data.result.items);
+        setTruncated(snapshot.data.result.truncated);
+        setAsOf(snapshot.data.result.as_of);
+        setLoadingTasks(false);
+      }
+    }
+    if (offlineMode) {
+      if (!cached) setError('Нет подключения и сохранённых заданий 1С ДО.');
+      setLoadingTasks(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const result = await listDocflowTasks({ scope, q: query, limit: TASK_LIMIT });
       if (requestId !== taskRequestRef.current) return;
       setTasks(result.items);
       setTruncated(result.truncated);
       setAsOf(result.as_of);
+      if (userId) {
+        void writeNativeCollectionSnapshot('docflow-inbox', userId, snapshotSignature, {
+          signature: snapshotSignature,
+          profile: nextProfile,
+          result,
+        });
+      }
     } catch (cause) {
       if (requestId !== taskRequestRef.current) return;
       const resolved = resolveNativeDocflowError(cause, 'Не удалось загрузить задания из 1С.');
-      setError(resolved.message);
+      setError(cached ? 'Нет подключения. Показаны сохранённые задания 1С ДО.' : resolved.message);
       setCorrelationId(resolved.correlationId);
     } finally {
       if (requestId === taskRequestRef.current) {
@@ -118,10 +163,26 @@ export function NativeDocflowInboxScreen() {
         setRefreshing(false);
       }
     }
-  }, [canRead, offlineMode, query, scope]);
+  }, [canRead, offlineMode, query, scope, snapshotSignature, user?.id]);
 
   const loadProfile = useCallback(async () => {
-    if (!canRead || offlineMode) {
+    if (!canRead) {
+      setLoadingProfile(false);
+      return;
+    }
+    if (offlineMode) {
+      const userId = Number(user?.id || 0);
+      const snapshot = userId
+        ? await readNativeCollectionSnapshot<DocflowInboxSnapshot>('docflow-inbox', userId, snapshotSignature)
+        : null;
+      if (snapshot) {
+        setProfile(snapshot.data.profile);
+        setTasks(snapshot.data.result.items);
+        setTruncated(snapshot.data.result.truncated);
+        setAsOf(snapshot.data.result.as_of);
+      } else {
+        setError('Нет подключения и сохранённых заданий 1С ДО.');
+      }
       setLoadingProfile(false);
       return;
     }
@@ -147,7 +208,7 @@ export function NativeDocflowInboxScreen() {
         setLoadingProfile(false);
       }
     }
-  }, [canRead, offlineMode]);
+  }, [canRead, offlineMode, snapshotSignature, user?.id]);
 
   const refreshAll = useCallback(async () => {
     if (!canRead || offlineMode) return;
@@ -175,6 +236,25 @@ export function NativeDocflowInboxScreen() {
   useEffect(() => {
     if (profile?.configured) void loadTasks(profile);
   }, [loadTasks, profile?.configured, profile?.login]);
+  useEffect(() => {
+    if (!profile?.configured || offlineMode) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadTasks(profile, true);
+      }, 180);
+    };
+    const releases = [
+      hubRealtimeSocket.onDocflowChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [loadTasks, offlineMode, profile]);
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       const becameActive = nextState === 'active' && appStateRef.current !== 'active';
@@ -292,9 +372,24 @@ export function NativeDocflowInboxScreen() {
     );
   }, [credentialBusy, offlineMode, profile?.configured]);
 
+  const openTask = useCallback((taskRef: string) => {
+    router.push({
+      pathname: '/(shell)/docflow/[taskRef]',
+      params: { taskRef },
+    } as never);
+  }, []);
+
+  const renderTask = useCallback(({ item }: ListRenderItemInfo<DocflowTaskSummary>) => (
+    <NativeDocflowTaskCard
+      task={item}
+      tokens={tokens}
+      onPress={openTask}
+    />
+  ), [openTask, tokens]);
+
   if (!canRead) {
     return (
-      <AccountScreenScaffold title="Документооборот" tokens={tokens}>
+      <AccountScreenScaffold title="1С ДО" tokens={tokens}>
         <AccountSectionCard tokens={tokens} title="Нет доступа" description="Для раздела нужно право docflow.read.">{null}</AccountSectionCard>
       </AccountScreenScaffold>
     );
@@ -302,11 +397,10 @@ export function NativeDocflowInboxScreen() {
 
   return (
     <AccountScreenScaffold
-      title="1С · Документооборот"
+      title="1С ДО"
       tokens={tokens}
       scroll={false}
     >
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: запросы к 1С отключены. Доступны только данные текущего экрана.</Text> : null}
       {error ? (
         <View style={[styles.errorBox, { borderColor: tokens.error }]}>
           <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text>
@@ -388,13 +482,7 @@ export function NativeDocflowInboxScreen() {
             refreshing={refreshing}
             onRefresh={() => { void refreshAll(); }}
             contentContainerStyle={tasks.length ? styles.list : styles.emptyList}
-            renderItem={({ item }) => (
-              <NativeDocflowTaskCard
-                task={item}
-                tokens={tokens}
-                onPress={() => router.push({ pathname: '/(shell)/docflow/[taskRef]', params: { taskRef: item.ref } } as never)}
-              />
-            )}
+            renderItem={renderTask}
             ListEmptyComponent={loadingTasks ? (
               <View style={styles.empty}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Первое подключение к 1С может занять до минуты…</Text></View>
             ) : (

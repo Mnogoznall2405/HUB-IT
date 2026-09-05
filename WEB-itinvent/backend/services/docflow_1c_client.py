@@ -1262,11 +1262,13 @@ class Docflow1CComClient:
         scope: str,
         search: str,
         limit: int,
+        offset: int = 0,
     ) -> dict[str, Any]:
         normalized_scope = _text(scope, maximum=16).lower() or "inbox"
         if normalized_scope not in {"inbox", "completed", "all"}:
             raise Docflow1CMappingError("Некорректный scope заданий")
         normalized_limit = max(1, min(int(limit or 50), 100))
+        normalized_offset = max(0, min(int(offset or 0), 10_000))
         normalized_search = _text(search, maximum=200).casefold()
         connection = self._connect(login=login, password=password)
 
@@ -1324,7 +1326,9 @@ class Docflow1CComClient:
             else:
                 select_lines.append(f"    Задание.{field_name} КАК {aliases[key]}")
 
-        fetch_limit = min(500, max(normalized_limit + 1, normalized_limit * (5 if normalized_search else 1) + 1))
+        page_end = normalized_offset + normalized_limit
+        scan_target = page_end + 1
+        fetch_limit = min(500, max(scan_target, scan_target * (5 if normalized_search else 1)))
         where_lines = [f"    Задание.{assignee_field} = &ТекущийПользователь"]
         if normalized_scope != "all":
             where_lines.append(f"    Задание.{completed_field} = &Завершено")
@@ -1347,7 +1351,10 @@ class Docflow1CComClient:
                 query.SetParameter("Завершено", normalized_scope == "completed")
             selection = query.Execute().Select()
             rows: list[dict[str, Any]] = []
+            raw_rows = 0
+            selection_exhausted = False
             while bool(selection.Next()):
+                raw_rows += 1
                 presentation = _connection_text(connection, getattr(selection, "Представление", ""))
                 subject = _connection_text(connection, getattr(selection, aliases["subject"], "")) if "subject" in selected_fields else ""
                 row = {
@@ -1369,8 +1376,10 @@ class Docflow1CComClient:
                 if tokens and not all(token in haystack for token in tokens):
                     continue
                 rows.append(row)
-                if len(rows) > normalized_limit:
+                if len(rows) > page_end:
                     break
+            else:
+                selection_exhausted = True
         except Docflow1CError:
             raise
         except Exception:
@@ -1378,15 +1387,21 @@ class Docflow1CComClient:
                 "Запрос заданий не совместим с текущими метаданными 1С; требуется настройка mapping"
             ) from None
 
-        truncated = len(rows) > normalized_limit
-        page = rows[:normalized_limit]
+        has_more = len(rows) > page_end
+        source_exhausted = selection_exhausted and raw_rows < fetch_limit
+        source_limited = not has_more and not source_exhausted
+        page = rows[normalized_offset:page_end]
         return {
             "items": page,
             "returned": len(page),
+            "offset": normalized_offset,
+            "total": len(rows) if source_exhausted else None,
+            "has_more": has_more,
+            "next_offset": normalized_offset + len(page) if has_more else None,
             "scope": normalized_scope,
             "source": "live_1c",
             "as_of": datetime.now(timezone.utc).isoformat(),
-            "truncated": truncated,
+            "truncated": bool(has_more or source_limited),
         }
 
     @staticmethod

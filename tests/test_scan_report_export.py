@@ -28,7 +28,13 @@ def _get_job(store: ScanStore, job_id: str) -> dict:
     return dict(row)
 
 
-def _seed_task_incident(store: ScanStore, *, task_id: str, event_id: str = "event-1") -> dict:
+def _seed_task_incident(
+    store: ScanStore,
+    *,
+    task_id: str,
+    event_id: str = "event-1",
+    matched_value: str = "secret",
+) -> dict:
     queued = store.queue_job(
         {
             "agent_id": "agent-1",
@@ -50,7 +56,7 @@ def _seed_task_incident(store: ScanStore, *, task_id: str, event_id: str = "even
         job=job,
         severity="high",
         category="secrets",
-        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        matched_patterns=[{"pattern_name": "password", "value": matched_value}],
         short_reason="pattern match",
     )
     store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
@@ -230,6 +236,22 @@ def test_scan_task_incidents_excel_has_summary_and_incident_sheet(temp_dir):
     assert workbook["Наблюдения"]["D1"].value == "Контрольная сумма"
     assert workbook["Наблюдения"]["F1"].value == "Критичность"
     assert workbook["Наблюдения"]["C2"].value == r"C:\Docs\secret.pdf"
+
+
+def test_scan_task_incidents_excel_strips_illegal_control_characters(temp_dir):
+    store = _make_store(temp_dir)
+    task = _create_scan_task(store)
+    _seed_task_incident(
+        store,
+        task_id=task["id"],
+        matched_value="before\x07after\nnext\tvalue",
+    )
+    report = store.get_scan_task_incident_report(task_id=task["id"])
+
+    file_bytes, _ = build_scan_task_incidents_excel(report)
+    workbook = load_workbook(BytesIO(file_bytes))
+
+    assert workbook["Инциденты"]["M2"].value == "password: beforeafter\nnext\tvalue"
 
 
 def test_scan_task_report_preserves_final_counts_after_job_retention(temp_dir):

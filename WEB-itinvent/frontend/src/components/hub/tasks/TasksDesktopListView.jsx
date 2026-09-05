@@ -124,7 +124,7 @@ export default function TasksDesktopListView({
         <Table stickyHeader size="small" aria-label="Список задач">
           <TableHead>
             <TableRow>
-              {['Название', 'Дата изменения', 'Крайний срок', 'Постановщик', 'Исполнитель', 'Проект', 'Теги'].map((label) => (
+              {['Название', 'Дата изменения', 'Крайний срок', 'Постановщик', 'Исполнители', 'Проект', 'Теги'].map((label) => (
                 <TableCell
                   key={label}
                   sortDirection={label === 'Дата изменения' ? dateSortDirection : false}

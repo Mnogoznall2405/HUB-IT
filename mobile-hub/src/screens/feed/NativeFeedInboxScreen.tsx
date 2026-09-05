@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  type ListRenderItemInfo,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +31,10 @@ import {
   type FeedTag,
 } from '../../api/feedApi';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeCollectionSnapshot,
+  writeNativeCollectionSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import {
   AccountLoading,
@@ -57,8 +62,32 @@ const MANAGED_FILTERS: Array<{ id: FeedManagedStatus; label: string }> = [
 ];
 type FeedInboxFilterId = FeedFilterId | FeedManagedStatus;
 
+type NativeFeedInboxSnapshot = {
+  signature: string;
+  items: FeedPost[];
+  total: number;
+  unreadTotal: number;
+};
+
 function isManagedFilter(value: FeedInboxFilterId): value is FeedManagedStatus {
   return MANAGED_FILTERS.some((item) => item.id === value);
+}
+
+function filterOfflineFeedPosts(
+  items: FeedPost[],
+  options: { filter: FeedInboxFilterId; query: string; categoryId: string; tag: string },
+) {
+  const normalizedQuery = options.query.trim().toLocaleLowerCase('ru-RU');
+  return items.filter((post) => {
+    if (normalizedQuery && !`${post.title || ''} ${post.preview || ''} ${post.body || ''}`.toLocaleLowerCase('ru-RU').includes(normalizedQuery)) return false;
+    if (options.categoryId && post.category_id !== options.categoryId) return false;
+    if (options.tag && !(post.tags || []).includes(options.tag)) return false;
+    if (options.filter === 'unread' && !post.is_unread) return false;
+    if (options.filter === 'important' && post.priority !== 'high') return false;
+    if (options.filter === 'saved' && !post.viewer_bookmarked) return false;
+    if (isManagedFilter(options.filter) && post.status !== options.filter) return false;
+    return true;
+  });
 }
 
 function useDebouncedValue<T>(value: T, delayMs = SEARCH_DEBOUNCE_MS): T {
@@ -71,7 +100,7 @@ function useDebouncedValue<T>(value: T, delayMs = SEARCH_DEBOUNCE_MS): T {
 }
 
 export function NativeFeedInboxScreen() {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('dashboard.read');
@@ -100,8 +129,12 @@ export function NativeFeedInboxScreen() {
   const [error, setError] = useState('');
   const requestRef = useRef(0);
   const itemsLengthRef = useRef(0);
+  const itemsRef = useRef<FeedPost[]>([]);
+  const unreadTotalRef = useRef(0);
   const debouncedQuery = useDebouncedValue(query);
   itemsLengthRef.current = items.length;
+  itemsRef.current = items;
+  unreadTotalRef.current = unreadTotal;
 
   const loadPage = useCallback(async ({ reset = false }: { reset?: boolean } = {}) => {
     const requestId = ++requestRef.current;
@@ -113,6 +146,54 @@ export function NativeFeedInboxScreen() {
       setLoadingMore(true);
     }
     setError('');
+    const userId = Number(user?.id || 0);
+    const signature = JSON.stringify({
+      filter,
+      q: debouncedQuery.trim(),
+      categoryId,
+      tag,
+    });
+    let cached = false;
+    if (reset && userId) {
+      let snapshot = await readNativeCollectionSnapshot<NativeFeedInboxSnapshot>(
+        'feed-inbox',
+        userId,
+        signature,
+      );
+      if (!snapshot && offlineMode) {
+        const defaultSignature = JSON.stringify({ filter: 'all', q: '', categoryId: '', tag: '' });
+        snapshot = await readNativeCollectionSnapshot<NativeFeedInboxSnapshot>(
+          'feed-inbox',
+          userId,
+          defaultSignature,
+        );
+      }
+      if (requestId !== requestRef.current) return;
+      if (snapshot) {
+        const nextItems = snapshot.data.signature === signature
+          ? snapshot.data.items
+          : filterOfflineFeedPosts(snapshot.data.items, {
+            filter,
+            query: debouncedQuery,
+            categoryId,
+            tag,
+          });
+        cached = true;
+        setItems(nextItems);
+        setTotal(snapshot.data.signature === signature ? snapshot.data.total : nextItems.length);
+        setUnreadTotal(snapshot.data.unreadTotal);
+        setLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (requestId === requestRef.current) {
+        if (!cached) setError('Нет подключения и сохранённой ленты.');
+        setLoading(false);
+        setRefreshing(false);
+        setLoadingMore(false);
+      }
+      return;
+    }
     try {
       if (isManagedFilter(filter)) {
         if (!reset) return;
@@ -126,6 +207,14 @@ export function NativeFeedInboxScreen() {
         ));
         setItems(filtered);
         setTotal(filtered.length);
+        if (userId) {
+          void writeNativeCollectionSnapshot('feed-inbox', userId, signature, {
+            signature,
+            items: filtered,
+            total: filtered.length,
+            unreadTotal: unreadTotalRef.current,
+          } satisfies NativeFeedInboxSnapshot);
+        }
         return;
       }
       const payload = await listFeedPosts({
@@ -139,14 +228,28 @@ export function NativeFeedInboxScreen() {
         offset,
       });
       if (requestId !== requestRef.current) return;
-      setItems((current) => (reset ? payload.items : [...current, ...payload.items]));
+      const nextItems = reset ? payload.items : [...itemsRef.current, ...payload.items];
+      setItems(nextItems);
       setTotal(payload.total);
+      const nextUnreadTotal = filter === 'all' && !debouncedQuery.trim()
+        ? Number(payload.unread_total || 0)
+        : unreadTotalRef.current;
       if (filter === 'all' && !debouncedQuery.trim()) {
-        setUnreadTotal(Number(payload.unread_total || 0));
+        setUnreadTotal(nextUnreadTotal);
+      }
+      if (userId) {
+        void writeNativeCollectionSnapshot('feed-inbox', userId, signature, {
+          signature,
+          items: nextItems,
+          total: payload.total,
+          unreadTotal: nextUnreadTotal,
+        } satisfies NativeFeedInboxSnapshot);
       }
     } catch (cause) {
       if (requestId !== requestRef.current) return;
-      setError(formatApiError(cause, 'Не удалось загрузить ленту.'));
+      setError(formatApiError(cause, cached
+        ? 'Показана сохранённая лента. Не удалось получить обновления.'
+        : 'Не удалось загрузить ленту.'));
     } finally {
       if (requestId === requestRef.current) {
         setLoading(false);
@@ -154,14 +257,14 @@ export function NativeFeedInboxScreen() {
         setLoadingMore(false);
       }
     }
-  }, [categoryId, debouncedQuery, filter, tag]);
+  }, [categoryId, debouncedQuery, filter, offlineMode, tag, user?.id]);
 
   useEffect(() => {
     if (allowed) void loadPage({ reset: true });
   }, [allowed, loadPage]);
 
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || offlineMode) return;
     let active = true;
     Promise.all([listFeedCategories(canModerate), listFeedTags()])
       .then(([nextCategories, nextTags]) => {
@@ -171,7 +274,7 @@ export function NativeFeedInboxScreen() {
       })
       .catch((cause) => { if (active) setError(formatApiError(cause, 'Не удалось загрузить категории и теги.')); });
     return () => { active = false; };
-  }, [allowed, canModerate]);
+  }, [allowed, canModerate, offlineMode]);
 
   const openPost = useCallback((post: FeedPost) => {
     router.push({ pathname: '/(shell)/feed/[postId]', params: { postId: post.id } } as never);
@@ -184,6 +287,7 @@ export function NativeFeedInboxScreen() {
   }, []);
 
   const handleReaction = useCallback(async (post: FeedPost, reactionType: FeedReactionId) => {
+    if (offlineMode) return;
     setReactionPickerPostId('');
     try {
       if (post.viewer_reaction === reactionType) {
@@ -205,7 +309,7 @@ export function NativeFeedInboxScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось обновить реакцию.'));
     }
-  }, [patchPost]);
+  }, [offlineMode, patchPost]);
 
   const saveCategory = useCallback(async () => {
     const name = categoryName.trim();
@@ -259,6 +363,7 @@ export function NativeFeedInboxScreen() {
   }, [categoryBusy, offlineMode]);
 
   const handleBookmark = useCallback(async (post: FeedPost) => {
+    if (offlineMode) return;
     const next = !post.viewer_bookmarked;
     try {
       await setFeedBookmark(post.id, next);
@@ -266,7 +371,31 @@ export function NativeFeedInboxScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось сохранить публикацию.'));
     }
-  }, [patchPost]);
+  }, [offlineMode, patchPost]);
+
+  const toggleReactionPicker = useCallback((post: FeedPost) => {
+    setReactionPickerPostId((current) => current === post.id ? '' : post.id);
+  }, []);
+
+  const renderFeedPost = useCallback(({ item }: ListRenderItemInfo<FeedPost>) => (
+    <View style={styles.postWithReactionPicker}>
+      <FeedPostCard
+        post={item}
+        tokens={tokens}
+        onOpen={openPost}
+        onComments={openPost}
+        onToggleReaction={offlineMode ? undefined : toggleReactionPicker}
+        onBookmark={offlineMode ? undefined : handleBookmark}
+      />
+      {reactionPickerPostId === item.id ? (
+        <View style={[styles.reactionPicker, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+          {FEED_REACTIONS.map((reaction) => (
+            <Pressable key={reaction.id} testID={`feed-card-reaction-${item.id}-${reaction.id}`} accessibilityRole="button" accessibilityLabel={reaction.label} onPress={() => { void handleReaction(item, reaction.id); }} style={styles.reactionItem}><Text style={styles.reactionEmoji}>{reaction.emoji}</Text></Pressable>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  ), [handleBookmark, handleReaction, offlineMode, openPost, reactionPickerPostId, toggleReactionPicker, tokens]);
 
   if (!allowed) {
     return (
@@ -287,7 +416,7 @@ export function NativeFeedInboxScreen() {
       title="Лента"
       tokens={tokens}
       scroll={false}
-      rightAction={canPublish ? (
+      rightAction={canPublish && !offlineMode ? (
         <Pressable
           testID="feed-create"
           onPress={() => router.push('/(shell)/feed/editor' as never)}
@@ -434,25 +563,7 @@ export function NativeFeedInboxScreen() {
           ListFooterComponent={loadingMore ? (
             <ActivityIndicator color={tokens.primary} style={{ marginVertical: 12 }} />
           ) : null}
-          renderItem={({ item }) => (
-            <View style={styles.postWithReactionPicker}>
-              <FeedPostCard
-                post={item}
-                tokens={tokens}
-                onOpen={() => openPost(item)}
-                onComments={() => openPost(item)}
-                onToggleReaction={() => setReactionPickerPostId((current) => current === item.id ? '' : item.id)}
-                onBookmark={() => { void handleBookmark(item); }}
-              />
-              {reactionPickerPostId === item.id ? (
-                <View style={[styles.reactionPicker, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-                  {FEED_REACTIONS.map((reaction) => (
-                    <Pressable key={reaction.id} testID={`feed-card-reaction-${item.id}-${reaction.id}`} accessibilityRole="button" accessibilityLabel={reaction.label} onPress={() => { void handleReaction(item, reaction.id); }} style={styles.reactionItem}><Text style={styles.reactionEmoji}>{reaction.emoji}</Text></Pressable>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-          )}
+          renderItem={renderFeedPost}
         />
       )}
     </AccountScreenScaffold>

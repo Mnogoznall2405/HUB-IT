@@ -33,21 +33,41 @@ it('loads live tasks with the 1C timeout and drops malformed rows', async () => 
     data: {
       items: [{ ref: ' task-1 ', title: ' Согласовать договор ', completed: false }, { title: 'invalid' }],
       returned: '1',
+      offset: 100,
+      total: 245,
+      has_more: true,
+      next_offset: 101,
       scope: 'inbox',
       source: 'live_1c',
       as_of: '2026-08-24T10:00:00+05:00',
       truncated: true,
     },
   });
-  await expect(listDocflowTasks({ scope: 'inbox', q: ' договор ', limit: 500 })).resolves.toMatchObject({
+  await expect(listDocflowTasks({ scope: 'inbox', q: ' договор ', limit: 500, offset: 100 })).resolves.toMatchObject({
     items: [{ ref: 'task-1', title: 'Согласовать договор' }],
     returned: 1,
+    offset: 100,
+    total: 245,
+    has_more: true,
+    next_offset: 101,
     truncated: true,
   });
   expect(client.get).toHaveBeenCalledWith('/docflow/tasks', expect.objectContaining({
-    params: { scope: 'inbox', q: 'договор', limit: 100 },
+    params: { scope: 'inbox', q: 'договор', limit: 100, offset: 100 },
     timeout: DOCFLOW_QUERY_TIMEOUT_MS,
   }));
+});
+
+it('keeps pagination unavailable against an older server response', async () => {
+  client.get.mockResolvedValue({ data: { items: [], returned: 0, truncated: true } });
+
+  await expect(listDocflowTasks({ offset: 25 })).resolves.toMatchObject({
+    offset: 25,
+    total: null,
+    has_more: false,
+    next_offset: null,
+    truncated: true,
+  });
 });
 
 it('encodes a task ref and makes progressive detail explicit', async () => {

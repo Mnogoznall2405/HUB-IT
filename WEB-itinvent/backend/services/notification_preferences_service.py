@@ -26,6 +26,7 @@ class NotificationPreferencesService:
     DEFAULTS = {
         "mail": True,
         "tasks": True,
+        "docflow": True,
         "task_email": True,
         "announcements": True,
         "chat": True,
@@ -34,7 +35,7 @@ class NotificationPreferencesService:
         "chat_task": True,
     }
     CHAT_CATEGORY_CHANNELS = frozenset(CHAT_NOTIFICATION_CHANNELS.values())
-    QUIET_HOURS_CHANNELS = frozenset({"chat", "mail", "tasks", "hub", "announcements"})
+    QUIET_HOURS_CHANNELS = frozenset({"chat", "mail", "tasks", "docflow", "hub", "announcements"})
     QUIET_HOURS_DEFAULTS = {
         "enabled": False,
         "start": "22:00",

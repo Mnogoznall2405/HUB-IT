@@ -10,10 +10,24 @@ def build_observer_membership_clause(user_id: int, *, uses_postgresql: bool) -> 
     uid = int(user_id)
     if uses_postgresql:
         return (
-            "EXISTS (SELECT 1 FROM json_array_elements_text(COALESCE(NULLIF(observer_user_ids, ''), '[]')::json) je WHERE CAST(je AS INTEGER) = ?)",
+            "EXISTS (SELECT 1 FROM json_array_elements_text(COALESCE(NULLIF(observer_user_ids, ''), '[]')::json) AS je(value) WHERE CAST(je.value AS INTEGER) = ?)",
             [uid],
         )
     return (
         "EXISTS (SELECT 1 FROM json_each(COALESCE(observer_user_ids, '[]')) je WHERE CAST(je.value AS INTEGER) = ?)",
+        [uid],
+    )
+
+
+def build_assignee_membership_clause(user_id: int, *, uses_postgresql: bool) -> tuple[str, list[Any]]:
+    """Return SQL clause + params for whether user_id is listed in assignee_user_ids JSON."""
+    uid = int(user_id)
+    if uses_postgresql:
+        return (
+            "EXISTS (SELECT 1 FROM json_array_elements_text(COALESCE(NULLIF(assignee_user_ids, ''), '[]')::json) AS je(value) WHERE CAST(je.value AS INTEGER) = ?)",
+            [uid],
+        )
+    return (
+        "EXISTS (SELECT 1 FROM json_each(COALESCE(assignee_user_ids, '[]')) je WHERE CAST(je.value AS INTEGER) = ?)",
         [uid],
     )

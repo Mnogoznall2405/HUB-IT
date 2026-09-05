@@ -1,4 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { GroupsAccessGroup } from '../../api/groupsAccessApi';
 import type { useFluentTokens } from '../../theme/fluentTokens';
@@ -22,7 +23,7 @@ function AccessBadge({ level, tokens }: { level: string; tokens: Tokens }) {
   );
 }
 
-export function NativeGroupsAccessGroupCard({
+export const NativeGroupsAccessGroupCard = memo(function NativeGroupsAccessGroupCard({
   group,
   tokens,
 }: {
@@ -48,7 +49,7 @@ export function NativeGroupsAccessGroupCard({
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },

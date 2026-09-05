@@ -75,6 +75,20 @@ vi.mock('../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
 }));
 
+vi.mock('../lib/chatSocket', () => ({
+  CHAT_SOCKET_UNREAD_SUMMARY_EVENT: 'chat-ws-unread-summary',
+}));
+
+vi.mock('../lib/hubRealtimeSocket', () => ({
+  hubRealtimeSocket: { retain: () => () => undefined },
+  HUB_REALTIME_CONNECTED_EVENT: 'hub-realtime-connected',
+  HUB_REALTIME_DASHBOARD_EVENT: 'hub-realtime-dashboard-invalidated',
+  HUB_REALTIME_DOCFLOW_EVENT: 'hub-realtime-docflow-changed',
+  HUB_REALTIME_MAIL_EVENT: 'hub-realtime-mail-changed',
+  HUB_REALTIME_NOTIFICATION_EVENT: 'hub-realtime-notification-created',
+  HUB_REALTIME_TASK_EVENT: 'hub-realtime-task-changed',
+}));
+
 import Dashboard, { getFirstName, getGreeting } from './Dashboard';
 
 const tasks = [
@@ -136,7 +150,11 @@ function installMatchMedia(mobile = false) {
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+  return (
+    <div data-testid="location" data-location-state={JSON.stringify(location.state || {})}>
+      {`${location.pathname}${location.search}`}
+    </div>
+  );
 }
 
 function renderDashboard(initialEntry = '/dashboard', mobile = false) {
@@ -216,6 +234,23 @@ describe('Dashboard today page', () => {
     expect(screen.queryByRole('tab')).toBeNull();
   });
 
+  it('silently reconciles dashboard and docflow counters after realtime invalidation', async () => {
+    renderDashboard();
+
+    await screen.findByTestId('dashboard-today-header');
+    await waitFor(() => {
+      expect(mocks.getDashboard).toHaveBeenCalledTimes(1);
+      expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(1);
+    });
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-docflow-changed'));
+
+    await waitFor(() => {
+      expect(mocks.getDashboard).toHaveBeenCalledTimes(2);
+      expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('uses the same content model on mobile without tabs or swipe views', async () => {
     renderDashboard('/dashboard', true);
 
@@ -232,6 +267,37 @@ describe('Dashboard today page', () => {
     expect(screen.getByRole('button', { name: 'Написать письмо' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('dashboard-primary-action'));
     expect(await screen.findByTestId('location')).toHaveTextContent('/tasks?create=1');
+  });
+
+  it('keeps the dashboard source and focus target when opening a task', async () => {
+    renderDashboard();
+
+    const taskTitle = await screen.findAllByText('Просроченная задача');
+    fireEvent.click(taskTitle[0].closest('button'));
+
+    const location = await screen.findByTestId('location');
+    expect(location).toHaveTextContent('/tasks?task=overdue-1');
+    expect(JSON.parse(location.getAttribute('data-location-state'))).toMatchObject({
+      taskReturnTo: '/dashboard',
+      taskReturnLabel: 'Назад на главную',
+      taskReturnFocusId: 'dashboard-attention-task-overdue-1',
+    });
+  });
+
+  it('restores dashboard scroll and task focus after returning from the card', async () => {
+    window.scrollTo = vi.fn();
+    renderDashboard({
+      pathname: '/dashboard',
+      state: {
+        taskRestoreFocusId: 'dashboard-attention-task-overdue-1',
+        taskRestoreScrollY: 240,
+      },
+    });
+
+    const taskTitle = await screen.findAllByText('Просроченная задача');
+    const taskButton = taskTitle[0].closest('button');
+    await waitFor(() => expect(taskButton).toHaveFocus());
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 240, behavior: 'auto' });
   });
 
   it('collapses attention into a calm status bar when no action is required', async () => {

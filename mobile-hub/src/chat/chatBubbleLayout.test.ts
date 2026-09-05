@@ -9,6 +9,8 @@ import {
   isStickerOnlyMessage,
   resolveChatBubbleMetaMode,
   resolveChatPhotoAspect,
+  resolveChatPhotoFrame,
+  resolveChatPhotoMaxHeight,
   resolveChatPhotoWidth,
   shouldBleedBubbleMedia,
   shouldShowSenderAvatar,
@@ -181,10 +183,31 @@ describe('chatBubbleLayout photo sizing', () => {
   });
 
   it('scales the photo with the screen but stays within bounds', () => {
-    expect(resolveChatPhotoWidth(360)).toBe(230);
-    expect(resolveChatPhotoWidth(1000)).toBe(272);
-    expect(resolveChatPhotoWidth(200)).toBe(180);
-    expect(resolveChatPhotoWidth(0)).toBe(240);
+    expect(resolveChatPhotoWidth(360)).toBe(209);
+    expect(resolveChatPhotoWidth(1000)).toBe(248);
+    expect(resolveChatPhotoWidth(200)).toBe(164);
+    expect(resolveChatPhotoWidth(0)).toBe(232);
+  });
+
+  it('caps portrait previews by viewport height without stretching them', () => {
+    expect(resolveChatPhotoMaxHeight(800)).toBe(304);
+    expect(resolveChatPhotoMaxHeight(1200)).toBe(320);
+    expect(resolveChatPhotoMaxHeight(500)).toBe(220);
+    expect(resolveChatPhotoFrame({
+      maxWidth: 209,
+      maxHeight: 304,
+      sourceWidth: 1080,
+      sourceHeight: 2400,
+    })).toEqual({ width: 188, height: 304 });
+  });
+
+  it('keeps a landscape preview compact at its natural display ratio', () => {
+    expect(resolveChatPhotoFrame({
+      maxWidth: 209,
+      maxHeight: 304,
+      sourceWidth: 1600,
+      sourceHeight: 1200,
+    })).toEqual({ width: 209, height: 157 });
   });
 });
 

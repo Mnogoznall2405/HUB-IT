@@ -25,6 +25,10 @@ import {
 } from '../../api/docflowApi';
 import { openExternalUrl } from '../../addressBook/messengerLinks';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeEntitySnapshot,
+  writeNativeEntitySnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { resolveNativeDocflowError } from '../../docflow/docflowError';
 import {
@@ -41,6 +45,7 @@ import { downloadNativeDocflowFile, downloadNativeDocflowPreview } from '../../d
 import { openNativeFile, shareNativeFile } from '../../files/nativeAttachmentDownloads';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { HubTextField } from '../../components/ui/HubTextField';
 import {
   AccountLoading,
@@ -66,7 +71,7 @@ function createActionIdempotencyKey(): string {
 }
 
 export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const modalBottomInset = initialWindowMetrics?.insets.bottom || 0;
@@ -113,7 +118,7 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
   });
 
   const loadTask = useCallback(async (refresh = false) => {
-    if (!canRead || offlineMode || !taskRef) {
+    if (!canRead || !taskRef) {
       setLoading(false);
       setRefreshing(false);
       return;
@@ -123,16 +128,38 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
     setError('');
     setCorrelationId('');
     setRelatedError('');
+    const userId = Number(user?.id || 0);
+    const snapshot = userId
+      ? await readNativeEntitySnapshot<DocflowTaskDetail>(
+        'docflow-task-details',
+        userId,
+        taskRef,
+        Number.MAX_SAFE_INTEGER,
+      )
+      : null;
+    if (requestId !== requestRef.current) return;
+    if (snapshot) {
+      setTask(snapshot.data);
+      if (!refresh) setLoading(false);
+    }
+    if (offlineMode) {
+      if (!snapshot) setError('Нет подключения и сохранённой карточки 1С ДО.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const core = await getDocflowTask(taskRef, false);
       if (requestId !== requestRef.current) return;
       setTask(core);
+      if (userId) void writeNativeEntitySnapshot('docflow-task-details', userId, taskRef, core);
       setLoading(false);
       setEnriching(true);
       try {
         const detail = await getDocflowTask(taskRef, true);
         if (requestId !== requestRef.current) return;
         setTask(detail);
+        if (userId) void writeNativeEntitySnapshot('docflow-task-details', userId, taskRef, detail);
         if (detail.files_incomplete) {
           setRelatedError('Список связанных файлов загрузился не полностью. Обновите карточку и повторите попытку.');
         }
@@ -144,8 +171,8 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
     } catch (cause) {
       if (requestId !== requestRef.current) return;
       const resolved = resolveNativeDocflowError(cause, 'Не удалось открыть задание 1С.');
-      setTask(null);
-      setError(resolved.message);
+      if (!snapshot) setTask(null);
+      setError(snapshot ? `Показана сохранённая копия. ${resolved.message}` : resolved.message);
       setCorrelationId(resolved.correlationId);
     } finally {
       if (requestId === requestRef.current) {
@@ -154,7 +181,7 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
         setEnriching(false);
       }
     }
-  }, [canRead, offlineMode, taskRef]);
+  }, [canRead, offlineMode, taskRef, user?.id]);
 
   useEffect(() => {
     void loadTask();
@@ -163,6 +190,34 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
       fileAbortRef.current?.abort();
     };
   }, [loadTask]);
+
+  useEffect(() => {
+    if (!canRead || offlineMode || !taskRef) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = (event: unknown) => {
+      const envelope = event && typeof event === 'object'
+        ? event as { payload?: unknown }
+        : {};
+      const payload = envelope.payload && typeof envelope.payload === 'object'
+        ? envelope.payload as Record<string, unknown>
+        : {};
+      const changedTaskRef = String(payload.task_ref || '').trim();
+      if (changedTaskRef && changedTaskRef !== String(taskRef)) return;
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadTask(true);
+      }, 180);
+    };
+    const releases = [
+      hubRealtimeSocket.onDocflowChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [canRead, loadTask, offlineMode, taskRef]);
 
   const handleFile = useCallback(async (file: DocflowTaskFile, action: FileAction) => {
     if (offlineMode || fileLockRef.current) return;

@@ -285,6 +285,8 @@ class ChatNotificationOrchestrator:
                                     title=str(job["title"]),
                                     body=str(job["body"]),
                                     preference_channel=preference_channel,
+                                    conversation_kind=_normalize_text(conversation.kind),
+                                    task_id=_normalize_text(getattr(conversation, "task_id", None)) or None,
                                 )
                                 stats["push_count"] += 1
                             except Exception:

@@ -35,8 +35,11 @@ logger = logging.getLogger("backend.services.my_files_service")
 ALLOWED_RETENTION_DAYS = (1, 3, 7, 10, 30)
 DEFAULT_RETENTION_DAYS = 1
 MAX_RETENTION_DAYS = 30
-MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024
 USER_QUOTA_BYTES = 5 * 1024 * 1024 * 1024
+IIS_MAX_CONTENT_LENGTH_BYTES = (2**32) - 1
+MAX_FILE_SIZE_BYTES = min(USER_QUOTA_BYTES, IIS_MAX_CONTENT_LENGTH_BYTES)
+UPLOAD_CHUNK_SIZE_BYTES = 16 * 1024 * 1024
+MAX_ZSTD_WINDOW_SIZE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 
 STATUS_UPLOADING = "uploading"
@@ -466,7 +469,7 @@ class MyFilesService:
         if size <= 0:
             raise MyFilesValidationError("File is empty")
         if size > MAX_FILE_SIZE_BYTES:
-            raise MyFilesValidationError("File exceeds 1 GB limit")
+            raise MyFilesValidationError("File exceeds upload limit")
 
         now = _utc_now()
         expires_at = now + timedelta(days=safe_days)
@@ -509,6 +512,90 @@ class MyFilesService:
                 session.flush()
                 self._write_audit(session, action="upload_reserved", row=row, actor=actor, meta=meta)
                 return self._response(row, session=session)
+
+    @staticmethod
+    def _active_upload_locked(session, *, file_id: str, user_id: int) -> AppMyFile:
+        row = session.scalars(
+            select(AppMyFile)
+            .where(
+                AppMyFile.id == _normalize_text(file_id),
+                AppMyFile.owner_user_id == int(user_id),
+                AppMyFile.deleted_at.is_(None),
+            )
+            .with_for_update()
+        ).first()
+        if row is None:
+            raise MyFilesNotFoundError("File not found")
+        if row.status != STATUS_UPLOADING:
+            raise MyFilesValidationError("Upload reservation is not active")
+        return row
+
+    @staticmethod
+    def _upload_session_response(row: AppMyFile, spool_path: Path) -> dict[str, Any]:
+        uploaded_bytes = spool_path.stat().st_size if spool_path.is_file() else 0
+        expected_size = int(row.original_size_bytes or 0)
+        if uploaded_bytes > expected_size:
+            raise MyFilesValidationError("Uploaded file exceeds reservation")
+        return {
+            "file_id": _normalize_text(row.id),
+            "chunk_size_bytes": UPLOAD_CHUNK_SIZE_BYTES,
+            "uploaded_bytes": uploaded_bytes,
+            "file_size_bytes": expected_size,
+            "complete": uploaded_bytes == expected_size,
+        }
+
+    def get_upload_session(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+            spool_path = Path(_normalize_text(row.spool_path))
+            return self._upload_session_response(row, spool_path)
+
+    def append_upload_chunk(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        offset: int,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        chunk = bytes(payload or b"")
+        requested_offset = int(offset)
+        if requested_offset < 0:
+            raise MyFilesValidationError("Upload chunk offset is invalid")
+        if not chunk:
+            raise MyFilesValidationError("Upload chunk is empty")
+        if len(chunk) > UPLOAD_CHUNK_SIZE_BYTES:
+            raise MyFilesValidationError("Upload chunk exceeds size limit")
+
+        with app_session(database_url) as session:
+            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+            spool_path = Path(_normalize_text(row.spool_path))
+            if not _normalize_text(row.spool_path):
+                raise MyFilesValidationError("Upload payload path is missing")
+            spool_path.parent.mkdir(parents=True, exist_ok=True)
+            current_size = spool_path.stat().st_size if spool_path.is_file() else 0
+            expected_size = int(row.original_size_bytes or 0)
+
+            if current_size > expected_size or requested_offset + len(chunk) > expected_size:
+                raise MyFilesValidationError("Upload chunk exceeds reservation")
+            if requested_offset > current_size:
+                raise MyFilesValidationError(f"Upload chunk offset mismatch; expected {current_size}")
+            if requested_offset < current_size:
+                if requested_offset + len(chunk) > current_size:
+                    raise MyFilesValidationError(f"Upload chunk offset mismatch; expected {current_size}")
+                with spool_path.open("rb") as source:
+                    source.seek(requested_offset)
+                    if source.read(len(chunk)) != chunk:
+                        raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                return self._upload_session_response(row, spool_path)
+
+            with spool_path.open("ab") as target:
+                target.write(chunk)
+                target.flush()
+            row.updated_at = _utc_now()
+            return self._upload_session_response(row, spool_path)
 
     def complete_upload(
         self,
@@ -898,7 +985,10 @@ class MyFilesService:
             result = self._antivirus_scanner(spool_path)
         except Exception as exc:
             logger.error("Security scan failed for my-file %s: %s", file_id, exc)
-            result = SecurityScanResult(status="error", engine="microsoft-defender")
+            result = SecurityScanResult(
+                status="error",
+                engine=_normalize_text(getattr(exc, "engine", "")) or "unknown",
+            )
             self._record_security_scan(file_id, result)
             if config.my_files_security.antivirus_fail_closed:
                 raise MyFilesValidationError("Security scan is temporarily unavailable") from exc
@@ -1292,7 +1382,13 @@ class MyFilesService:
                     self._queue_preview_for_row_locked(session, row)
         except Exception as exc:
             logger.error("Security backfill failed for my-file %s: %s", file_id, exc)
-            self._record_security_scan(file_id, SecurityScanResult(status="error", engine="microsoft-defender"))
+            self._record_security_scan(
+                file_id,
+                SecurityScanResult(
+                    status="error",
+                    engine=_normalize_text(getattr(exc, "engine", "")) or "unknown",
+                ),
+            )
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
                 if row is not None and row.deleted_at is None:
@@ -1985,7 +2081,7 @@ class MyFilesService:
         import zstandard as zstd  # type: ignore
 
         with path.open("rb") as source:
-            decompressor = zstd.ZstdDecompressor(max_window_size=MAX_FILE_SIZE_BYTES)
+            decompressor = zstd.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW_SIZE_BYTES)
             with decompressor.stream_reader(source) as reader:
                 while True:
                     chunk = reader.read(CHUNK_SIZE)

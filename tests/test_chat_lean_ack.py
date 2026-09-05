@@ -94,7 +94,14 @@ def test_build_lean_from_orm_snapshot():
         kind="text",
         reply_to_message_id=None,
     )
-    payload = build_lean_message_payload_from_orm(message=message, current_user_id=11)
+    payload = build_lean_message_payload_from_orm(
+        message=message,
+        current_user_id=11,
+        conversation_kind="task",
+        task_id="task-3",
+    )
     assert payload["id"] == "m3"
     assert payload["conversation_seq"] == 5
     assert payload["payload_mode"] == "lean"
+    assert payload["conversation_kind"] == "task"
+    assert payload["task_id"] == "task-3"

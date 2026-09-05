@@ -4,7 +4,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import {
   searchCompanyStructureDepartmentCodes,
   searchCompanyStructureLeaderCandidates,
@@ -250,7 +250,7 @@ export function NativeCompanyNodeEditorSheet({
             <MaterialCommunityIcons name="close" size={24} color={tokens.textPrimary} />
           </Pressable>
         </View>
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.flex} {...chatKeyboardAvoidingProps()}>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
             {mutationError ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{mutationError}</Text> : null}
 

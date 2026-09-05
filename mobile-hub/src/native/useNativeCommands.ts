@@ -2,7 +2,10 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import type { NativeCommandName } from './nativeCommandContract';
 import { useMobileUpdater } from '../updates/useMobileUpdater';
-import { executeNativeCommand } from './nativeCommandRuntime';
+import {
+  executeNativeCommand,
+  type NativeCommandExecutionOptions,
+} from './nativeCommandRuntime';
 
 export function useNativeCommands() {
   const {
@@ -28,7 +31,8 @@ export function useNativeCommands() {
   const execute = useCallback((
     command: NativeCommandName,
     payload: Record<string, unknown> = {},
-  ) => executeNativeCommand(command, payload, dependenciesRef.current), []);
+    executionOptions: NativeCommandExecutionOptions = {},
+  ) => executeNativeCommand(command, payload, dependenciesRef.current, executionOptions), []);
 
   return { execute, updater };
 }

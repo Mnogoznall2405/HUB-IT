@@ -31,6 +31,7 @@ if _env_path.exists():
                     os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 from backend.chat.db import get_chat_engine, initialize_chat_schema
+from backend.realtime.hub import hub_realtime_publisher
 from backend.services.app_push_service import app_push_service
 from backend.services.mail_notification_service import mail_notification_service
 
@@ -80,11 +81,21 @@ async def _main() -> None:
         bool(push_config.get("enabled")),
     )
 
+    realtime_started = False
+    try:
+        await hub_realtime_publisher.start()
+        realtime_started = hub_realtime_publisher.started
+        logger.info("Mail realtime publisher: mode=%s", hub_realtime_publisher.mode)
+    except Exception:
+        logger.warning("Mail realtime publisher is unavailable; polling and push remain active", exc_info=True)
+
     await mail_notification_service.start()
     try:
         await mail_notification_service.wait()
     finally:
         await mail_notification_service.stop()
+        if realtime_started:
+            await hub_realtime_publisher.stop()
         if worker_lock is not None:
             worker_lock.close()
 

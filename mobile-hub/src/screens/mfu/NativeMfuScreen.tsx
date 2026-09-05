@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   AppState,
   FlatList,
+  type ListRenderItemInfo,
   Modal,
   Pressable,
   ScrollView,
@@ -195,6 +196,9 @@ export function NativeMfuScreen() {
   }, [cancel, closeDevice]);
 
   const filtered = useMemo(() => filterMfuDevices(payload?.devices || [], { query, branch, ping, snmp }), [branch, payload?.devices, ping, query, snmp]);
+  const renderDevice = useCallback(({ item }: ListRenderItemInfo<MfuDevice>) => (
+    <NativeMfuDeviceCard device={item} tokens={tokens} onPress={openDevice} />
+  ), [openDevice, tokens]);
 
   if (!canRead) {
     return <AccountScreenScaffold title="МФУ" tokens={tokens}><AccountSectionCard tokens={tokens} title="Нет доступа" description="Для раздела нужно право mfu.read.">{null}</AccountSectionCard></AccountScreenScaffold>;
@@ -220,7 +224,7 @@ export function NativeMfuScreen() {
 
   return (
     <AccountScreenScaffold title="МФУ" tokens={tokens} scroll={false}>
-      <FlatList testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : styles.emptyList} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'API не вернул устройств МФУ для выбранной БД.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={({ item }) => <NativeMfuDeviceCard device={item} tokens={tokens} onPress={() => openDevice(item)} />} refreshing={refreshing} onRefresh={refresh} />
+      <FlatList testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : styles.emptyList} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'API не вернул устройств МФУ для выбранной БД.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
       <Modal visible={Boolean(selected)} transparent animationType="slide" onRequestClose={closeDevice}>{selected ? <DeviceDetails device={selected} tokens={tokens} onClose={closeDevice} /> : null}</Modal>
     </AccountScreenScaffold>
   );

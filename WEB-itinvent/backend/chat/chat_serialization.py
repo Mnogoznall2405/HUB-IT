@@ -719,7 +719,7 @@ class ChatSerialization:
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
                 users_by_id=users_by_id,
             )
-        return self._service._serialize_message(
+        payload = self._service._serialize_message(
             conversation_kind=conversation.kind,
             message=message,
             current_user_id=int(current_user_id),
@@ -730,3 +730,5 @@ class ChatSerialization:
             attachments=attachments,
             action_cards_by_message_id=action_cards_by_message_id,
         )
+        payload["task_id"] = _normalize_text(getattr(conversation, "task_id", None)) or None
+        return payload

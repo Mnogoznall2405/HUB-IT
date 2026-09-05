@@ -41,9 +41,11 @@ describe('DetailQrDialog', () => {
 
     expect(screen.getByAltText('QR-код оборудования 1001')).toHaveAttribute('src', 'data:image/png;base64,qr');
     expect(screen.getByText('HUB-IT')).toBeInTheDocument();
+    expect(screen.getByText('Инв. №')).toBeInTheDocument();
+    expect(screen.getByText('1001')).toBeInTheDocument();
     expect(screen.queryByText('Модель')).not.toBeInTheDocument();
     expect(screen.queryByText('OptiPlex 7010')).not.toBeInTheDocument();
-    expect(screen.getByText('СЕРИЙНЫЙ НОМЕР')).toBeInTheDocument();
+    expect(screen.getByText('Серийный номер')).toBeInTheDocument();
     expect(screen.getByText('SN-1')).toBeInTheDocument();
     expect(screen.queryByText('HW-1')).not.toBeInTheDocument();
     expect(screen.queryByText('PN-1')).not.toBeInTheDocument();

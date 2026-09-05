@@ -32,7 +32,6 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import FlagIcon from '@mui/icons-material/Flag';
 import LocalFireDepartmentOutlinedIcon from '@mui/icons-material/LocalFireDepartmentOutlined';
 import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
@@ -56,6 +55,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
+  formatTaskAssigneesSummary,
   formatTaskObserversSummary,
   renderObserverBlock,
   getTaskUserLabel,
@@ -77,9 +77,6 @@ export function TaskMobileDetailScreen({
   onPreviewAttachment,
   onDownloadReport,
   onOpenChecklist,
-  taskDiscussionEnabled = false,
-  onOpenTaskDiscussion,
-  discussionOpening = false,
   formatDateTime,
   formatFileSize,
   ui,
@@ -139,7 +136,7 @@ export function TaskMobileDetailScreen({
         minHeight: '100%',
         px: 2,
         pt: 1.9,
-        pb: taskDiscussionEnabled ? 11 : 3,
+        pb: 3,
         color: ui.textPrimary,
       }}
     >
@@ -159,7 +156,7 @@ export function TaskMobileDetailScreen({
 
         <Stack spacing={0.75}>
           <TaskMobilePersonRow label="Постановщик" name={getTaskUserLabel(task, 'created_by')} ui={ui} theme={theme} />
-          <TaskMobilePersonRow label="Исполнитель" name={getTaskUserLabel(task, 'assignee')} ui={ui} theme={theme} />
+          <TaskMobilePersonRow label="Исполнители" name={formatTaskAssigneesSummary(task)} ui={ui} theme={theme} />
           {getTaskUserLabel(task, 'controller') !== '-' ? (
             <TaskMobilePersonRow label="Контролёр" name={getTaskUserLabel(task, 'controller')} ui={ui} theme={theme} />
           ) : null}
@@ -360,40 +357,6 @@ export function TaskMobileDetailScreen({
             </Box>
             <ExpandMoreIcon sx={{ transform: 'rotate(-90deg)', color: muted, flexShrink: 0 }} />
           </Stack>
-        </Box>
-      ) : null}
-      {taskDiscussionEnabled ? (
-        <Box
-          data-testid="task-mobile-chat-floating"
-          sx={{
-            position: 'fixed',
-            left: '50%',
-            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 18px)',
-            zIndex: theme.zIndex.drawer + 2,
-            transform: 'translateX(-50%)',
-            pointerEvents: 'none',
-          }}
-        >
-          <Button
-            data-testid="task-mobile-open-chat"
-            variant="contained"
-            startIcon={<ForumOutlinedIcon sx={{ fontSize: 20 }} />}
-            disabled={discussionOpening}
-            onClick={() => onOpenTaskDiscussion?.()}
-            sx={{
-              minHeight: 42,
-              px: 1.7,
-              borderRadius: 3,
-              textTransform: 'none',
-              fontWeight: 850,
-              fontSize: '0.95rem',
-              boxShadow: isDark ? '0 12px 32px rgba(0,0,0,0.42)' : '0 12px 28px rgba(37,99,235,0.26)',
-              whiteSpace: 'nowrap',
-              pointerEvents: 'auto',
-            }}
-          >
-            {discussionOpening ? 'Открываем...' : 'Чат задачи'}
-          </Button>
         </Box>
       ) : null}
     </Stack>

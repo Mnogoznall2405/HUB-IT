@@ -111,4 +111,36 @@ describe('useChatActiveConversationLifecycleEffects', () => {
     }));
     unmount();
   });
+
+  it('reveals an embedded message without rewriting the host route', async () => {
+    const { renderHook, waitFor } = await import('@testing-library/react');
+    const navigate = vi.fn();
+    const requestedMessageRevealKeyRef = { current: '' };
+
+    const { unmount } = renderHook(() => useChatActiveConversationLifecycleEffects({
+      activeConversationId: 'conv-task-1',
+      activeConversationIdRef: { current: '' },
+      closeAttachmentPreview: vi.fn(),
+      closeDocumentPreview: vi.fn(),
+      locationSearch: '?task=task-1&task_detail_view=discussion&message=message-1',
+      messagesLength: 1,
+      messagesLoading: false,
+      navigate,
+      requestedConversationId: 'conv-task-1',
+      requestedMessageId: 'message-1',
+      requestedMessageRevealKeyRef,
+      revealMessageRef: { current: vi.fn().mockResolvedValue(true) },
+      setMessageMenuAnchor: vi.fn(),
+      setMessageMenuMessage: vi.fn(),
+      setSelectedMessageIds: vi.fn(),
+      setThreadMenuAnchor: vi.fn(),
+      syncMessageInUrl: false,
+    }));
+
+    await waitFor(() => {
+      expect(requestedMessageRevealKeyRef.current).toBe('conv-task-1:message-1');
+    });
+    expect(navigate).not.toHaveBeenCalled();
+    unmount();
+  });
 });

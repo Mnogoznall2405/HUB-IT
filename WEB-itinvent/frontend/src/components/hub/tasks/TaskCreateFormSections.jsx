@@ -110,7 +110,7 @@ export function TaskPeopleFields({
   return (
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
       <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
-        Исполнитель
+        Исполнители
       </Typography>
       {isMobile ? (
         <Button
@@ -132,7 +132,7 @@ export function TaskPeopleFields({
         >
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ fontWeight: 900, fontSize: '0.95rem', lineHeight: 1.25 }} noWrap>
-              {assigneeSummary || 'Выбрать исполнителя'}
+              {assigneeSummary || 'Выбрать исполнителей'}
             </Typography>
             {selectedAssignees.length === 0 && titleTrimmed.length > 0 ? (
               <Typography variant="caption" sx={{ color: theme.palette.error.main, fontWeight: 800 }}>

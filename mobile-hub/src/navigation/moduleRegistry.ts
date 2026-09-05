@@ -305,10 +305,7 @@ function routePathFromHref(href: NativeModuleHref): string {
   }
   if (href.pathname === '/(shell)/docflow') return '/docflow';
   if (href.pathname === '/(shell)/docflow/[taskRef]') {
-    // The web client has no stable task-detail route contract yet. Keep the
-    // internal native detail address private and canonicalize portal fallback
-    // to the only public route that the web application guarantees.
-    return '/docflow';
+    return `/docflow?task=${encodeURIComponent(href.params.taskRef)}`;
   }
   if (href.pathname === '/(shell)/scan-center') return '/scan-center';
   if (href.pathname === '/(shell)/computers') {

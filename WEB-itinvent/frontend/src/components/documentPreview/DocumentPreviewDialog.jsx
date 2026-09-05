@@ -221,6 +221,12 @@ export default function DocumentPreviewDialog({
       onClose={onClose}
       fullScreen
       maxWidth={false}
+      sx={{
+        // Fullscreen document previews can be opened from dialogs that already
+        // use elevated modal layers. Keep the preview above them while leaving
+        // the tooltip layer available for its toolbar controls.
+        zIndex: (activeTheme) => `${activeTheme.zIndex.tooltip - 1} !important`,
+      }}
       PaperProps={{
         sx: {
           width: '100%',

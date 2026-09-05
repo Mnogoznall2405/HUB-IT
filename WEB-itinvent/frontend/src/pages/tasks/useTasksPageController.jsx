@@ -14,6 +14,10 @@ import {
 } from '../../lib/hubTaskIntegrations';
 import { CHAT_FEATURE_ENABLED, TASK_DISCUSSION_CHAT_ENABLED } from '../../lib/chatFeature';
 import { getTaskUnreadBoardLabel } from '../../lib/taskNavigation';
+import {
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_TASK_EVENT,
+} from '../../lib/hubRealtimeSocket';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import {
   statusMeta,
@@ -51,7 +55,6 @@ import useTaskCreate from './hooks/useTaskCreate.jsx';
 export default function useTasksPageController() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const isChatDesktopViewport = useMediaQuery(theme.breakpoints.up('md'));
   const isAnalyticsMobile = isMobile;
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const renderTaskUserOption = useMemo(
@@ -84,13 +87,13 @@ export default function useTasksPageController() {
   const canWriteTasks = hasPermission('tasks.write');
   const canReviewTasks = hasPermission('tasks.review');
   const taskDiscussionChatEnabled = CHAT_FEATURE_ENABLED && TASK_DISCUSSION_CHAT_ENABLED;
-  const openTaskInChat = taskDiscussionChatEnabled && isChatDesktopViewport;
   const canUseControllerTab = canReviewTasks;
 
   const [error, setError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const desktopDiscussionTaskIdRef = useRef('');
+  const taskOpenTriggerRef = useRef(null);
+  const taskOpenTriggerIdRef = useRef('');
 
   const [assigneeSearchInput, setAssigneeSearchInput] = useState('');
   const [observerSearchInput, setObserverSearchInput] = useState('');
@@ -243,7 +246,6 @@ export default function useTasksPageController() {
     canManageAllTasks,
     canReviewTasks,
     taskDiscussionChatEnabled,
-    openTaskInChat,
     isMobile,
     ui,
     setError,
@@ -251,6 +253,54 @@ export default function useTasksPageController() {
     loadTasks: list.loadTasks,
     departments: list.departments,
   });
+
+  useEffect(() => {
+    let refreshTimer = null;
+    let refreshSelectedTask = false;
+    let selectedTaskDeleted = false;
+    const scheduleRefresh = ({ taskId = '', operation = '', forceSnapshot = false } = {}) => {
+      const normalizedTaskId = String(taskId || '').trim();
+      const selectedTaskId = String(details.selectedTaskId || '').trim();
+      if (forceSnapshot || (normalizedTaskId && normalizedTaskId === selectedTaskId)) {
+        refreshSelectedTask = Boolean(selectedTaskId);
+        selectedTaskDeleted = selectedTaskDeleted
+          || (normalizedTaskId === selectedTaskId && operation === 'deleted');
+      }
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void list.reloadTasks();
+        if (selectedTaskDeleted) {
+          details.closeTaskDetails();
+        } else if (refreshSelectedTask && selectedTaskId) {
+          void details.loadTaskDetails(selectedTaskId);
+        }
+        refreshSelectedTask = false;
+        selectedTaskDeleted = false;
+      }, 75);
+    };
+    const handleTaskChanged = (event) => {
+      const payload = event?.detail?.payload || {};
+      scheduleRefresh({
+        taskId: payload.task_id,
+        operation: String(payload.operation || '').trim().toLowerCase(),
+      });
+    };
+    const handleConnected = () => scheduleRefresh({ forceSnapshot: true });
+
+    window.addEventListener(HUB_REALTIME_TASK_EVENT, handleTaskChanged);
+    window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      window.removeEventListener(HUB_REALTIME_TASK_EVENT, handleTaskChanged);
+      window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+    };
+  }, [
+    details.closeTaskDetails,
+    details.loadTaskDetails,
+    details.selectedTaskId,
+    list.reloadTasks,
+  ]);
 
   const create = useTaskCreate({
     canCreateTasks,
@@ -378,24 +428,35 @@ export default function useTasksPageController() {
   }, [navigate]);
 
   const onOpenTaskDetails = useCallback((task) => {
-    if (openTaskInChat) {
-      void details.handleOpenTaskDiscussion(task, { split: true });
-      return;
+    const taskId = String(task?.id || '').trim();
+    taskOpenTriggerIdRef.current = taskId;
+    if (typeof document !== 'undefined') {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && activeElement.dataset?.taskOpenTrigger === taskId) {
+        taskOpenTriggerRef.current = activeElement;
+      } else if (taskId) {
+        taskOpenTriggerRef.current = Array.from(document.querySelectorAll('[data-task-open-trigger]'))
+          .find((element) => element.dataset?.taskOpenTrigger === taskId && element.getClientRects().length > 0)
+          || null;
+      }
     }
     details.openTaskDetails(task);
-  }, [details.handleOpenTaskDiscussion, details.openTaskDetails, openTaskInChat]);
+  }, [details.openTaskDetails]);
 
-  useEffect(() => {
-    const taskId = String(details.selectedTaskId || '').trim();
-    if (!taskId) {
-      desktopDiscussionTaskIdRef.current = '';
-      return;
-    }
-    if (!openTaskInChat) return;
-    if (desktopDiscussionTaskIdRef.current === taskId) return;
-    desktopDiscussionTaskIdRef.current = taskId;
-    void details.handleOpenTaskDiscussion({ id: taskId }, { replace: true, split: true });
-  }, [details.handleOpenTaskDiscussion, details.selectedTaskId, openTaskInChat]);
+  const onCloseTaskDetails = useCallback(() => {
+    const shouldRestoreListFocus = !details.taskReturnTo;
+    details.closeTaskDetails();
+    if (!shouldRestoreListFocus || typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      const taskId = taskOpenTriggerIdRef.current;
+      const stored = taskOpenTriggerRef.current;
+      const fallback = taskId
+        ? Array.from(document.querySelectorAll('[data-task-open-trigger]'))
+          .find((element) => element.dataset?.taskOpenTrigger === taskId && element.getClientRects().length > 0)
+        : null;
+      (stored?.isConnected ? stored : fallback)?.focus?.();
+    });
+  }, [details.closeTaskDetails, details.taskReturnTo]);
 
   const onOpenEditTask = useCallback((task) => {
     create.openEditTask(task);
@@ -697,8 +758,13 @@ export default function useTasksPageController() {
     detailsLoading: details.detailsLoading,
     selectedMobileTaskView: details.selectedMobileTaskView,
     selectedTaskTab: details.selectedTaskTab,
+    selectedTaskView: details.selectedTaskView,
     taskDiscussionChatEnabled,
     discussionOpening: details.discussionOpening,
+    discussionError: details.discussionError,
+    discussionConversationId: details.selectedDiscussionConversationId,
+    discussionMessageId: details.selectedDiscussionMessageId,
+    taskBackLabel: details.taskBackLabel,
     reopeningTaskId: create.reopeningTaskId,
     detailsComments: details.detailsComments,
     detailsStatusLog: details.detailsStatusLog,
@@ -715,18 +781,20 @@ export default function useTasksPageController() {
     canReviewTask: details.canReviewTask,
     canCloseTask: details.canCloseTask,
     canReopenTask: details.canReopenTask,
-    closeTaskDetails: details.closeTaskDetails,
+    closeTaskDetails: onCloseTaskDetails,
     closeMobileTaskChecklist: details.closeMobileTaskChecklist,
     handleCopyTaskLink: details.handleCopyTaskLink,
     openEditTask: create.openEditTask,
     handleDeleteTask: create.handleDeleteTask,
     handleOpenTaskDiscussion: details.handleOpenTaskDiscussion,
+    retryTaskDiscussion: details.retryTaskDiscussion,
     handleToggleTaskChecklistItem: details.handleToggleTaskChecklistItem,
     handleAddTaskChecklistItem: details.handleAddTaskChecklistItem,
     handleUploadAttachment: details.handleUploadAttachment,
     handleDownloadAttachment: details.handleDownloadAttachment,
     handleDownloadReport: details.handleDownloadReport,
     setTaskDetailTab: details.setTaskDetailTab,
+    setTaskDetailView: details.setTaskDetailView,
     setDetailsCommentBody: details.setDetailsCommentBody,
     handleAddTaskComment: details.handleAddTaskComment,
     openMobileTaskChecklist: details.openMobileTaskChecklist,
@@ -890,7 +958,7 @@ export default function useTasksPageController() {
     handleEditDescriptionDraftChange: create.handleEditDescriptionDraftChange,
     handleEditObserversChange: create.handleEditObserversChange,
     transformTaskMarkdown,
-    selectedEditAssignee: create.selectedEditAssignee,
+    selectedEditAssignees: create.selectedEditAssignees,
     selectedEditController: create.selectedEditController,
     selectedEditObservers: create.selectedEditObservers,
     selectedEditDepartment: create.selectedEditDepartment,

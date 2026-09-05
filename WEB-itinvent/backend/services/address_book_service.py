@@ -931,6 +931,7 @@ class AddressBookService:
         query: str = "",
         limit: int = 50,
         *,
+        offset: int = 0,
         include_age: bool = True,
         include_hire_date: bool = False,
         include_personal_emails: bool = True,
@@ -943,6 +944,7 @@ class AddressBookService:
             personal_by_code = {}
         tokens = normalize_search_text(query).split()
         limited = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
 
         if tokens:
             items = [
@@ -964,10 +966,16 @@ class AddressBookService:
                         include_personal_phones=include_personal_phones,
                     ),
                     normalize_search_text(item.get("full_name")),
+                    normalize_search_text(item.get("employee_code")),
                 )
             )
         else:
-            items.sort(key=lambda item: normalize_search_text(item.get("full_name")))
+            items.sort(
+                key=lambda item: (
+                    normalize_search_text(item.get("full_name")),
+                    normalize_search_text(item.get("employee_code")),
+                )
+            )
 
         return {
             "items": [
@@ -979,10 +987,53 @@ class AddressBookService:
                     include_personal_emails=include_personal_emails,
                     include_personal_phones=include_personal_phones,
                 )
-                for item in items[:limited]
+                for item in items[safe_offset : safe_offset + limited]
             ],
             "total": len(items),
             "limit": limited,
+            "offset": safe_offset,
+            "has_more": safe_offset + limited < len(items),
+            "updated_at": normalize_text(cache.get("updated_at")),
+            "last_error": normalize_text(cache.get("last_error")),
+        }
+
+    def snapshot(
+        self,
+        *,
+        include_age: bool = True,
+        include_hire_date: bool = False,
+        include_personal_emails: bool = True,
+        include_personal_phones: bool = True,
+    ) -> dict[str, Any]:
+        """Return one permission-filtered, internally consistent directory revision."""
+        cache = self.load_cache()
+        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        items.sort(
+            key=lambda item: (
+                normalize_search_text(item.get("full_name")),
+                normalize_search_text(item.get("employee_code")),
+            )
+        )
+        personal_by_code = cache.get("personal_by_code")
+        if not isinstance(personal_by_code, dict):
+            personal_by_code = {}
+        public_items = [
+            self._serialize_public_search_item(
+                item,
+                personal_by_code,
+                include_age=include_age,
+                include_hire_date=include_hire_date,
+                include_personal_emails=include_personal_emails,
+                include_personal_phones=include_personal_phones,
+            )
+            for item in items
+        ]
+        return {
+            "items": public_items,
+            "total": len(public_items),
+            "limit": len(public_items),
+            "offset": 0,
+            "has_more": False,
             "updated_at": normalize_text(cache.get("updated_at")),
             "last_error": normalize_text(cache.get("last_error")),
         }

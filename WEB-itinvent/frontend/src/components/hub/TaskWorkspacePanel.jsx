@@ -20,6 +20,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import DrawOutlinedIcon from '@mui/icons-material/DrawOutlined';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
@@ -34,6 +35,7 @@ import {
   isTransferActUploadTask,
 } from '../../lib/hubTaskIntegrations';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { buildTaskDetailPath } from '../../lib/taskNavigation';
 import MarkdownRenderer from './MarkdownRenderer';
 import TaskChecklist from './TaskChecklist';
 import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
@@ -223,9 +225,13 @@ function TaskWorkspacePanel({
     setReferencesLoading(true);
     setError('');
     try {
-      const assigneeId = task?.assignee_user_id;
+      const assigneeIds = (Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+        ? task.assignee_user_ids
+        : [task?.assignee_user_id])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
       const results = await Promise.allSettled([
-        assigneeId ? hubAPI.getAssignees({ ids: String(assigneeId) }) : Promise.resolve({ items: [] }),
+        assigneeIds.length ? hubAPI.getAssignees({ ids: assigneeIds.join(',') }) : Promise.resolve({ items: [] }),
         hubAPI.getControllers(),
         departmentsAPI.list(),
         hubAPI.getTaskProjects({ include_inactive: true }),
@@ -252,7 +258,7 @@ function TaskWorkspacePanel({
     } finally {
       setReferencesLoading(false);
     }
-  }, [referencesLoading, task?.assignee_user_id]);
+  }, [referencesLoading, task?.assignee_user_id, task?.assignee_user_ids]);
 
   const handleToggleChecklist = useCallback(async (itemId, done) => {
     if (!task?.id || !itemId || updatingChecklistItemId) return;
@@ -367,6 +373,14 @@ function TaskWorkspacePanel({
     if (href) onNavigate?.(href);
   };
 
+  const openTaskCanvas = () => {
+    if (onNavigate) {
+      onNavigate(buildTaskDetailPath(task?.id || normalizedTaskId, { view: 'canvas' }));
+      return;
+    }
+    onOpenInTasks?.();
+  };
+
   return (
     <Box
       data-testid="task-workspace-panel"
@@ -428,6 +442,9 @@ function TaskWorkspacePanel({
         ) : null}
         <MenuItem onClick={() => { setMoreMenuAnchor(null); onOpenInTasks?.(); }}>
           <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1 }} /> Открыть в задачах
+        </MenuItem>
+        <MenuItem onClick={() => { setMoreMenuAnchor(null); openTaskCanvas(); }}>
+          <DrawOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> Открыть доску
         </MenuItem>
         {canDeleteTask ? (
           <MenuItem onClick={() => { setMoreMenuAnchor(null); void handleDeleteTask(); }} sx={{ color: 'error.main' }}>

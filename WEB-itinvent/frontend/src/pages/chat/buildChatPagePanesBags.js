@@ -72,6 +72,7 @@ export default function buildChatPagePanesBags(input) {
       openMobileInboxView: input.openMobileInboxView,
       handleOpenInfo: input.handleOpenInfo,
       openTaskFromChat: input.openTaskFromChat,
+      mobileBackLabel: input.mobileBackLabel,
       openSearchDialog: input.openSearchDialog,
       handleOpenMenu: input.handleOpenMenu,
       openMessageReads: input.openMessageReads,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -300,6 +302,46 @@ def test_send_chat_message_notification_uses_android_friendly_ttl_and_high_urgen
     assert payload["actions"][0]["route"] == "/chat?conversation=conv-1&message=msg-1"
     assert payload["actions"][1]["action"] == "dismiss"
     assert isinstance(payload["timestamp"], int)
+
+
+def test_send_chat_message_notification_routes_task_chat_to_task_discussion(monkeypatch):
+    import backend.chat.push_service as push_service_module
+
+    service = ChatPushService()
+    captured: dict[str, object] = {}
+
+    class _Session:
+        @staticmethod
+        def get(_model, _conversation_id):
+            return SimpleNamespace(kind="task", task_id="task-77")
+
+    @contextmanager
+    def fake_chat_session():
+        yield _Session()
+
+    monkeypatch.setattr(push_service_module, "chat_session", fake_chat_session)
+    monkeypatch.setattr(service, "_get_active_subscriptions", lambda **_: [object()])
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
+    )
+
+    result = service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-task-77",
+        message_id="msg-task-77",
+        title="Task discussion",
+        body="New message",
+    )
+
+    assert result.sent == 1
+    payload = captured["payload"]
+    expected_route = "/tasks?task=task-77&task_detail_view=discussion&message=msg-task-77"
+    assert payload["data"]["route"] == expected_route
+    assert payload["data"]["conversation_kind"] == "task"
+    assert payload["data"]["task_id"] == "task-77"
+    assert payload["actions"][0]["route"] == expected_route
 
 
 def test_send_chat_message_notification_respects_specific_chat_preference(monkeypatch):

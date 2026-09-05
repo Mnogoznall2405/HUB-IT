@@ -8,6 +8,8 @@ from backend.database.connection import get_db
 from backend.database.queries import AVAILABLE_DATABASES
 
 logger = logging.getLogger("ad_sync")
+AD_SYNC_MAX_USERS = 1_500
+AD_SYNC_LDAP_PAGE_SIZE = 500
 # Configure simple logging if not already configured
 if not logger.handlers:
     handler = logging.StreamHandler()
@@ -52,34 +54,53 @@ def fetch_ad_users() -> List[Dict]:
     search_filter = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(sAMAccountName=*)(displayName=*))"
     attributes = ['sAMAccountName', 'sn', 'givenName', 'middleName', 'displayName', 'department', 'title', 'mail', 'telephoneNumber']
     
+    users = []
     try:
-        conn.search(search_base=base_dn, search_filter=search_filter, attributes=attributes, search_scope=SUBTREE)
+        entries = conn.extend.standard.paged_search(
+            search_base=base_dn,
+            search_filter=search_filter,
+            attributes=attributes,
+            search_scope=SUBTREE,
+            paged_size=AD_SYNC_LDAP_PAGE_SIZE,
+            size_limit=AD_SYNC_MAX_USERS,
+            generator=True,
+        )
+        for entry in entries:
+            if entry.get("type") != "searchResEntry":
+                continue
+            attrs = entry.get("attributes") or {}
+
+            def attr_text(name: str) -> str:
+                value = attrs.get(name)
+                if isinstance(value, (list, tuple)):
+                    value = value[0] if value else ""
+                return str(value or "")
+
+            login = attr_text("sAMAccountName")
+            display_name = attr_text("displayName")
+            if not login or not display_name:
+                continue
+            users.append({
+                "login": login,
+                "lname": attr_text("sn"),
+                "fname": attr_text("givenName"),
+                "mname": attr_text("middleName"),
+                "display_name": display_name,
+                "department": attr_text("department"),
+                "title": attr_text("title"),
+                "mail": attr_text("mail"),
+                "phone": attr_text("telephoneNumber"),
+            })
+            if len(users) >= AD_SYNC_MAX_USERS:
+                logger.warning("AD sync user limit reached: %s", AD_SYNC_MAX_USERS)
+                break
     except Exception as e:
         logger.error(f"AD Search failed: {e}")
-        conn.unbind()
         return []
+    finally:
+        conn.unbind()
     
-    users = []
-    for entry in conn.entries:
-        try:
-            users.append({
-                "login": str(entry.sAMAccountName.value) if 'sAMAccountName' in entry and entry.sAMAccountName else "",
-                "lname": str(entry.sn.value) if 'sn' in entry and entry.sn else "",
-                "fname": str(entry.givenName.value) if 'givenName' in entry and entry.givenName else "",
-                "mname": str(entry.middleName.value) if 'middleName' in entry and entry.middleName else "",
-                "display_name": str(entry.displayName.value) if 'displayName' in entry and entry.displayName else "",
-                "department": str(entry.department.value) if 'department' in entry and entry.department else "",
-                "title": str(entry.title.value) if 'title' in entry and entry.title else "",
-                "mail": str(entry.mail.value) if 'mail' in entry and entry.mail else "",
-                "phone": str(entry.telephoneNumber.value) if 'telephoneNumber' in entry and entry.telephoneNumber else "",
-            })
-        except Exception as e:
-            logger.debug(f"Failed to parse AD entry: {e}")
-            
-    conn.unbind()
-    
-    # Filter out empty logins
-    return [u for u in users if u.get("login") and u.get("display_name")]
+    return users
 
 
 def sync_users_to_db(ad_users: List[Dict], db_id: str, force_update: bool = False) -> dict:

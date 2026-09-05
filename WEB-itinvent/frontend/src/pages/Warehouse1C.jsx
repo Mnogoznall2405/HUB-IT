@@ -65,6 +65,11 @@ import {
   sortBalancesByNomenclature,
   UNBOUNDED_MOVEMENT_PERIOD,
 } from './database/warehouse1cShared';
+import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_INTEGRATION_EVENT,
+} from '../lib/hubRealtimeSocket';
 const AUTOCOMPLETE_DEBOUNCE_MS = 300;
 const AUTOCOMPLETE_MIN_CHARS = 2;
 const NOMENCLATURE_AUTOCOMPLETE_LIMIT = 50;
@@ -898,6 +903,26 @@ function Warehouse1C() {
 
   useEffect(() => {
     void refreshCatalogStatus();
+  }, [refreshCatalogStatus]);
+
+  useEffect(() => {
+    let timer = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refreshCatalogStatus();
+      }, 180);
+    };
+    window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, refresh);
+    window.addEventListener(HUB_REALTIME_INTEGRATION_EVENT, refresh);
+    const release = hubRealtimeSocket.retain();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, refresh);
+      window.removeEventListener(HUB_REALTIME_INTEGRATION_EVENT, refresh);
+      release();
+    };
   }, [refreshCatalogStatus]);
 
   const handleCatalogSync = useCallback(async () => {

@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
 import { usePreferences } from '../../preferences/PreferencesContext';
@@ -15,6 +15,7 @@ import {
 } from '../../navigation/mobileNavItems';
 import { openPortalPath } from '../../navigation/moduleRegistry';
 import { useNavUnreadCounts } from '../../navigation/useNavUnreadCounts';
+import { hasPendingMobileUpdate, useMobileUpdater } from '../../updates/useMobileUpdater';
 
 export function HubBottomNav({
   currentPath,
@@ -28,6 +29,7 @@ export function HubBottomNav({
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const unreadCounts = useNavUnreadCounts();
+  const { state: updateState } = useMobileUpdater();
   const items = useMemo(
     () => resolveMobileNavigationItems({
       selectedPaths: preferences.mobile_bottom_nav_items,
@@ -49,7 +51,8 @@ export function HubBottomNav({
         styles.wrap,
         {
           backgroundColor: tokens.navBg,
-          paddingBottom: insets.bottom,
+          borderColor: tokens.borderSoft,
+          bottom: Math.max(insets.bottom, 9),
           shadowColor: tokens.scheme === 'dark' ? '#000' : '#0f172a',
           transform: [{ translateY: hidden ? 120 : 0 }],
         },
@@ -63,6 +66,7 @@ export function HubBottomNav({
             item={item}
             active={activePath === item.path}
             unreadCounts={unreadCounts}
+            updateState={updateState}
             tokens={tokens}
             onPress={() => openPortalPath(item.path)}
           />
@@ -76,12 +80,14 @@ function NavAction({
   item,
   active,
   unreadCounts,
+  updateState,
   tokens,
   onPress,
 }: {
   item: MobileNavItem;
   active: boolean;
   unreadCounts: Record<string, unknown>;
+  updateState: ReturnType<typeof useMobileUpdater>['state'];
   tokens: ReturnType<typeof useFluentTokens>;
   onPress: () => void;
 }) {
@@ -92,6 +98,12 @@ function NavAction({
   const showBadge = mailBadge ? mailBadge.showBadge : badgeCount > 0;
   const badgeContent = mailBadge ? mailBadge.badgeContent : badgeCount;
   const badgeWarning = mailBadge?.needsAttention;
+  const showUpdateBadge = item.path === '/menu'
+    && hasPendingMobileUpdate(updateState)
+    && ['available', 'downloading', 'paused', 'verifying', 'ready', 'installing', 'error'].includes(updateState.status);
+  const updateBusy = updateState.status === 'downloading'
+    || updateState.status === 'verifying'
+    || updateState.status === 'installing';
 
   return (
     <Pressable
@@ -99,7 +111,7 @@ function NavAction({
       style={styles.action}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
-      accessibilityLabel={item.shortLabel}
+      accessibilityLabel={`${item.shortLabel}${showUpdateBadge ? '. Доступно обновление приложения' : ''}`}
       testID={`hub-bottom-nav-${item.path.replace(/^\//, '')}`}
     >
       <View
@@ -117,7 +129,15 @@ function NavAction({
           size={24}
           color={active ? tokens.primary : tokens.iconMuted}
         />
-        {showBadge ? (
+        {showUpdateBadge ? (
+          <View testID="hub-bottom-nav-update-badge" style={[styles.badge, styles.updateBadge, { backgroundColor: tokens.primary }]}>
+            {updateBusy ? (
+              <ActivityIndicator testID="hub-bottom-nav-update-spinner" size={9} color="#fff" />
+            ) : (
+              <MaterialCommunityIcons name="arrow-down" size={11} color="#fff" />
+            )}
+          </View>
+        ) : showBadge ? (
           <View
             style={[
               styles.badge,
@@ -135,7 +155,7 @@ function NavAction({
         style={[
           styles.label,
           {
-            color: active ? tokens.textPrimary : tokens.iconMuted,
+            color: active ? tokens.primaryLight : tokens.iconMuted,
             fontWeight: active ? '800' : '700',
             fontSize: active ? 11.4 : 11,
           },
@@ -150,32 +170,34 @@ function NavAction({
 const styles = StyleSheet.create({
   wrap: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    left: 10,
+    right: 10,
     zIndex: 20,
     elevation: 12,
-    shadowOpacity: 0.18,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: -8 },
+    borderRadius: 28,
+    borderWidth: 1,
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
   },
   row: {
-    height: 72,
+    height: 66,
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 4,
   },
   action: {
     flex: 1,
     minWidth: 0,
-    minHeight: 64,
+    minHeight: 58,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 2,
   },
   iconShell: {
-    width: 56,
-    height: 32,
-    borderRadius: 16,
+    width: 58,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -201,5 +223,12 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
     lineHeight: 12,
+  },
+  updateBadge: {
+    minWidth: 18,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 0,
   },
 });

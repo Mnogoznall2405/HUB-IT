@@ -163,6 +163,45 @@ def test_native_task_push_uses_tasks_channel_without_chat_actions(monkeypatch):
     assert message["data"]["tag"] == "tasks:42"
 
 
+def test_native_docflow_push_reuses_the_work_tasks_android_channel(monkeypatch):
+    service = native_push.NativePushService()
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(service, "_get_access_token", lambda _: "access-token")
+    monkeypatch.setattr(
+        native_push.urllib.request,
+        "urlopen",
+        lambda request, timeout: captured.update(
+            payload=json.loads(request.data.decode("utf-8"))
+        ) or _Response(),
+    )
+
+    service._send_fcm_message(
+        service_account={},
+        project_id="hubit-test",
+        token="fcm-token",
+        title="Новое задание в 1С ДО",
+        body="Согласовать договор",
+        data={"channel": "docflow", "task_ref": "task-1"},
+        tag="docflow:task-1",
+    )
+
+    message = captured["payload"]["message"]
+    assert message["android"]["notification"]["channel_id"] == "hubit_tasks"
+    assert message["data"]["channelId"] == "hubit_tasks"
+    assert message["android"]["ttl"] == "604800s"
+
+
 def test_native_mail_push_forwards_launcher_notification_count(monkeypatch):
     service = native_push.NativePushService()
     captured = {}

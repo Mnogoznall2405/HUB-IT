@@ -1,4 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { MfuDevice } from '../../api/mfuApi';
 import { minimumMfuSupplyPercent } from '../../mfu/nativeMfuModel';
@@ -10,12 +11,13 @@ function pingLabel(status: MfuDevice['ping']['status']): string {
   return 'Неизвестно';
 }
 
-export function NativeMfuDeviceCard({ device, tokens, onPress }: { device: MfuDevice; tokens: FluentTokens; onPress: () => void }) {
+export const NativeMfuDeviceCard = memo(function NativeMfuDeviceCard({ device, tokens, onPress }: { device: MfuDevice; tokens: FluentTokens; onPress: (device: MfuDevice) => void }) {
   const minimum = minimumMfuSupplyPercent(device);
   const pingColor = device.ping.status === 'online' ? tokens.success : (device.ping.status === 'offline' ? tokens.error : tokens.textTertiary);
+  const handlePress = useCallback(() => onPress(device), [device, onPress]);
   return (
     <Pressable
-      onPress={onPress}
+      onPress={handlePress}
       accessibilityRole="button"
       accessibilityLabel={`${device.model_name || device.type_name}. ${pingLabel(device.ping.status)}. ${device.branch_name}, ${device.location_name}`}
       accessibilityHint="Открывает подробности МФУ"
@@ -35,7 +37,7 @@ export function NativeMfuDeviceCard({ device, tokens, onPress }: { device: MfuDe
       <MaterialCommunityIcons name="chevron-right" size={22} color={tokens.iconMuted} />
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: { minHeight: 112, borderWidth: 1, borderRadius: 16, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 11 },

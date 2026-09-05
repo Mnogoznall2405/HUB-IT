@@ -1,13 +1,27 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import useTaskDetails from './useTaskDetails';
 
-vi.mock('../../../api/hubTasks', () => ({ default: {} }));
+const { mockGetTask, mockOpenTaskDiscussion } = vi.hoisted(() => ({
+  mockGetTask: vi.fn(),
+  mockOpenTaskDiscussion: vi.fn(),
+}));
+
+vi.mock('../../../api/hubTasks', () => ({ default: { getTask: mockGetTask } }));
 vi.mock('../../../api/hubTaskActivity', () => ({ default: {} }));
 vi.mock('../../../api/hubTaskFiles', () => ({ default: {} }));
-vi.mock('../../../api/hubTaskDiscussion', () => ({ default: {} }));
+vi.mock('../../../api/hubTaskDiscussion', () => ({
+  default: { openTaskDiscussion: mockOpenTaskDiscussion },
+}));
+
+beforeEach(() => {
+  mockGetTask.mockReset();
+  mockGetTask.mockResolvedValue({ id: 'task-1', capabilities: { can_open_discussion: true } });
+  mockOpenTaskDiscussion.mockReset();
+  mockOpenTaskDiscussion.mockResolvedValue({ conversation_id: 'conversation-task-1' });
+});
 
 function renderUseTaskDetails(overrides = {}) {
   const defaults = {
@@ -106,6 +120,21 @@ describe('useTaskDetails canCloseTask', () => {
   });
 });
 
+describe('useTaskDetails shared assignees', () => {
+  it('allows a secondary assignee to start and submit through list-data fallbacks', () => {
+    const { result } = renderUseTaskDetails({ user: { id: 4 } });
+    const task = {
+      id: 'task-shared',
+      status: 'new',
+      assignee_user_id: 2,
+      assignee_user_ids: [2, 4],
+    };
+
+    expect(result.current.canStartTask(task)).toBe(true);
+    expect(result.current.canSubmitTask({ ...task, status: 'in_progress' })).toBe(true);
+  });
+});
+
 describe('useTaskDetails canDeleteTask', () => {
   it('allows the task creator and blocks another user', () => {
     const { result } = renderUseTaskDetails({ user: { id: 3 } });
@@ -142,7 +171,7 @@ describe('useTaskDetails detailsOpen', () => {
     expect(result.current.detailsOpen).toBe(true);
   });
 
-  it('hides the in-page card while the desktop task chat split is used', () => {
+  it('keeps the canonical in-page card even when a legacy split preference is supplied', () => {
     const { result } = renderHook(() => useTaskDetails({
       user: { id: 3 },
       canManageAllTasks: false,
@@ -161,6 +190,143 @@ describe('useTaskDetails detailsOpen', () => {
       ),
     });
 
-    expect(result.current.detailsOpen).toBe(false);
+    expect(result.current.detailsOpen).toBe(true);
+  });
+
+  it('keeps the in-page canvas open instead of redirecting it to the task chat', async () => {
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: true,
+      openTaskInChat: true,
+      isMobile: false,
+      ui: {},
+      setError: vi.fn(),
+      patchTaskItem: vi.fn(),
+      loadTasks: vi.fn(),
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1&task_detail_view=canvas']}>{children}</MemoryRouter>
+      ),
+    });
+
+    expect(result.current.selectedTaskView).toBe('canvas');
+    expect(result.current.detailsOpen).toBe(true);
+    await waitFor(() => expect(result.current.detailsTask?.id).toBe('task-1'));
+  });
+
+  it('does not provision a discussion for an ordinary task-card open', async () => {
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: true,
+      isMobile: false,
+      ui: {},
+      setError: vi.fn(),
+      patchTaskItem: vi.fn(),
+      loadTasks: vi.fn(),
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.detailsTask?.id).toBe('task-1'));
+    expect(result.current.selectedTaskView).toBe('overview');
+    expect(mockOpenTaskDiscussion).not.toHaveBeenCalled();
+  });
+
+  it('provisions the discussion only after the discussion route is opened', async () => {
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: true,
+      isMobile: false,
+      ui: {},
+      setError: vi.fn(),
+      patchTaskItem: vi.fn(),
+      loadTasks: vi.fn(),
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1&task_detail_view=discussion&message=message-9']}>
+          {children}
+        </MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.selectedDiscussionConversationId).toBe('conversation-task-1'));
+    expect(result.current.selectedTaskView).toBe('discussion');
+    expect(result.current.selectedDiscussionMessageId).toBe('message-9');
+    expect(mockOpenTaskDiscussion).toHaveBeenCalledTimes(1);
+    expect(mockOpenTaskDiscussion).toHaveBeenCalledWith('task-1');
+  });
+
+  it('keeps a discussion error inside the card and retries without closing it', async () => {
+    mockOpenTaskDiscussion
+      .mockRejectedValueOnce(new Error('Chat unavailable'))
+      .mockResolvedValueOnce({ conversation_id: 'conversation-task-1' });
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: true,
+      isMobile: false,
+      ui: {},
+      setError: vi.fn(),
+      patchTaskItem: vi.fn(),
+      loadTasks: vi.fn(),
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1&task_detail_view=discussion']}>
+          {children}
+        </MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.discussionError).toBe('Chat unavailable'));
+    expect(result.current.detailsOpen).toBe(true);
+
+    act(() => result.current.retryTaskDiscussion());
+
+    await waitFor(() => expect(result.current.selectedDiscussionConversationId).toBe('conversation-task-1'));
+    expect(mockOpenTaskDiscussion).toHaveBeenCalledTimes(2);
+    expect(result.current.detailsOpen).toBe(true);
+  });
+
+  it('does not call the discussion API when the server capability disables it', async () => {
+    const setError = vi.fn();
+    mockGetTask.mockResolvedValue({
+      id: 'task-1',
+      capabilities: { can_open_discussion: false },
+    });
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: true,
+      isMobile: false,
+      ui: {},
+      setError,
+      patchTaskItem: vi.fn(),
+      loadTasks: vi.fn(),
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1&task_detail_view=discussion']}>
+          {children}
+        </MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.selectedTaskView).toBe('overview'));
+    expect(mockOpenTaskDiscussion).not.toHaveBeenCalled();
+    expect(setError).toHaveBeenCalledWith('Обсуждение этой задачи недоступно.');
   });
 });

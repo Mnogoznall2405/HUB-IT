@@ -95,6 +95,7 @@ describe('TasksCreateDialog', () => {
         title: 'Задача для редактирования',
         description: 'Текущее описание',
         assignee_user_id: '1',
+        assignee_user_ids: ['1', '2'],
         observer_user_ids: [],
         controller_user_id: '',
         project_id: 'project-1',
@@ -110,12 +111,19 @@ describe('TasksCreateDialog', () => {
       setEditData: noop,
       onSave,
       onEditDescriptionDraftChange: noop,
-      selectedEditAssignee: { id: '1', full_name: 'Иван Иванов' },
+      selectedEditAssignees: [
+        { id: '1', full_name: 'Иван Иванов' },
+        { id: '2', full_name: 'Пётр Петров' },
+      ],
+      renderTaskUserTags: (value) => value.map((item) => (
+        <span key={item.id}>{item.full_name}</span>
+      )),
       editDueLabel: 'Без срока',
       createDuePresets: [],
     });
 
     expect(screen.getByDisplayValue('Задача для редактирования')).toBeInTheDocument();
+    expect(screen.getByText('Пётр Петров')).toBeInTheDocument();
     const saveButton = screen.getByRole('button', { name: 'Сохранить изменения' });
     expect(saveButton).toBeEnabled();
     expect(screen.queryByRole('button', { name: /^Создать/ })).not.toBeInTheDocument();

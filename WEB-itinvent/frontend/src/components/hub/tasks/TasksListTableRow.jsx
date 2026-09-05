@@ -2,6 +2,8 @@ import { memo } from 'react';
 import { Box, IconButton, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import { formatDateTime, formatShortDate } from '../../../pages/tasks/taskFormatters';
+import { stripMarkdownForPreview } from '../../../pages/tasks/taskRichText';
+import { formatTaskAssigneesSummary } from '../../../pages/tasks/taskUserUtils';
 import TaskTagsRow from './TaskTagsRow';
 import OverflowMenu from '../../common/OverflowMenu';
 
@@ -17,22 +19,57 @@ function TasksListTableRow({
   onDelete,
   onMenuSelect,
 }) {
+  const descriptionPreview = stripMarkdownForPreview(task?.description_preview || task?.description);
+
   return (
     <TableRow
       key={task.id}
       hover
       data-testid={`tasks-list-row-${task.id}`}
+      data-task-open-trigger={String(task.id)}
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.currentTarget !== event.target) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onOpen?.();
+      }}
       sx={{
         cursor: 'pointer',
         '&:hover td': { bgcolor: ui.actionHover },
+        '&:focus-visible': {
+          outline: '2px solid',
+          outlineColor: 'primary.main',
+          outlineOffset: '-2px',
+        },
       }}
     >
-      <TableCell sx={{ minWidth: 260, borderColor: ui.borderSoft }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          <Typography sx={{ minWidth: 0, flex: 1, fontWeight: 850, lineHeight: 1.25 }}>
-            {task?.title || '-'}
-          </Typography>
+      <TableCell sx={{ minWidth: 320, borderColor: ui.borderSoft }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography sx={{ fontWeight: 850, lineHeight: 1.25 }}>
+              {task?.title || '-'}
+            </Typography>
+            {descriptionPreview ? (
+              <Typography
+                data-testid={`tasks-list-description-${task.id}`}
+                variant="caption"
+                sx={{
+                  color: ui.subtleText,
+                  display: '-webkit-box',
+                  mt: 0.35,
+                  overflow: 'hidden',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                  whiteSpace: 'pre-line',
+                }}
+              >
+                {descriptionPreview}
+              </Typography>
+            ) : null}
+          </Box>
           {menuItems.length > 0 ? (
             <OverflowMenu
               label={`Действия задачи «${task?.title || 'Без названия'}»`}
@@ -70,7 +107,7 @@ function TasksListTableRow({
         </Typography>
       </TableCell>
       <TableCell sx={{ minWidth: 160, borderColor: ui.borderSoft }}>{task?.created_by_full_name || task?.created_by_username || '-'}</TableCell>
-      <TableCell sx={{ minWidth: 160, borderColor: ui.borderSoft }}>{task?.assignee_full_name || task?.assignee_username || '-'}</TableCell>
+      <TableCell sx={{ minWidth: 160, borderColor: ui.borderSoft }}>{formatTaskAssigneesSummary(task, { compact: true })}</TableCell>
       <TableCell sx={{ minWidth: 150, borderColor: ui.borderSoft }}>{projectLabel}</TableCell>
       <TableCell sx={{ minWidth: 260, borderColor: ui.borderSoft }}>
         <TaskTagsRow task={task} ui={ui} taskDiscussionChatEnabled={taskDiscussionChatEnabled} alpha={alpha} />

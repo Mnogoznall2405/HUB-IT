@@ -587,7 +587,8 @@ export function useDatabaseDetailRuntime({
 
   const handleOpenEquipmentActFile = useCallback(async (act) => {
     setDetailActsError('');
-    const result = await openActFile(act, { invNo: detailModal?.invNo || '' });
+    const actInvNo = String(readFirst(act, ['inv_no', 'INV_NO'], '') || '').trim();
+    const result = await openActFile(act, { invNo: actInvNo || detailModal?.invNo || '' });
     if (!result?.ok && result?.error) {
       setDetailActsError(result.error === ACT_DOC_NO_ERROR ? ACT_DOC_NO_ERROR : result.error);
     }

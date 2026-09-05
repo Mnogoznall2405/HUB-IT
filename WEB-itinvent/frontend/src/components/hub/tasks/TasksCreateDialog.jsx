@@ -106,7 +106,7 @@ export default function TasksCreateDialog({
   editLoading = false,
   onSave,
   onEditDescriptionDraftChange,
-  selectedEditAssignee = null,
+  selectedEditAssignees = [],
   selectedEditController = null,
   selectedEditObservers = [],
   selectedEditDepartment = null,
@@ -123,7 +123,7 @@ export default function TasksCreateDialog({
   const [editOptionalSections, setEditOptionalSections] = useState({});
   const [editDuePickerOpen, setEditDuePickerOpen] = useState(false);
   const editDueAnchorRef = useRef(null);
-  const editAssigneeId = String(editData?.assignee_user_id || '').trim();
+  const editAssigneeIds = Array.isArray(editData?.assignee_user_ids) ? editData.assignee_user_ids : [];
   const createData = isEditing
     ? {
       id: '',
@@ -141,22 +141,20 @@ export default function TasksCreateDialog({
       email_deadline_remind_mode: 'default',
       email_deadline_remind_hours: 24,
       ...(editData || {}),
-      assignee_user_ids: editAssigneeId ? [editAssigneeId] : [],
+      assignee_user_ids: editAssigneeIds,
     }
     : createDataProp;
   const setCreateData = isEditing
     ? (updater) => setEditData?.((previous) => {
-      const previousAssigneeId = String(previous?.assignee_user_id || '').trim();
       const compatiblePrevious = {
         ...previous,
-        assignee_user_ids: previousAssigneeId ? [previousAssigneeId] : [],
+        assignee_user_ids: Array.isArray(previous?.assignee_user_ids) ? previous.assignee_user_ids : [],
       };
       const next = typeof updater === 'function' ? updater(compatiblePrevious) : updater;
       const assigneeIds = Array.isArray(next?.assignee_user_ids) ? next.assignee_user_ids : [];
-      const { assignee_user_ids: _ignoredAssigneeIds, ...rest } = next || {};
       return {
-        ...rest,
-        assignee_user_id: String(assigneeIds.at(-1) || ''),
+        ...(next || {}),
+        assignee_user_ids: assigneeIds,
       };
     })
     : setCreateDataProp;
@@ -167,7 +165,7 @@ export default function TasksCreateDialog({
     ? onEditDescriptionDraftChange
     : onCreateDescriptionDraftChangeProp;
   const selectedCreateAssignees = isEditing
-    ? [selectedEditAssignee].filter(Boolean)
+    ? selectedEditAssignees
     : selectedCreateAssigneesProp;
   const selectedCreateController = isEditing ? selectedEditController : selectedCreateControllerProp;
   const selectedCreateObservers = isEditing ? selectedEditObservers : selectedCreateObserversProp;
@@ -198,7 +196,7 @@ export default function TasksCreateDialog({
     ? () => setEditDuePickerOpen((current) => !current)
     : onOpenDuePickerProp;
   const onChangeAssigneeIdsEffective = isEditing
-    ? (ids) => setCreateData((previous) => ({ ...previous, assignee_user_ids: ids.slice(-1) }))
+    ? (ids) => setCreateData((previous) => ({ ...previous, assignee_user_ids: ids }))
     : onChangeAssigneeIds;
   const onChangeObserverIdsEffective = isEditing
     ? (ids) => setCreateData((previous) => ({ ...previous, observer_user_ids: ids }))
@@ -525,7 +523,7 @@ export default function TasksCreateDialog({
                         {...params}
                         label="Наблюдатели"
                         placeholder="Фамилия или логин"
-                        helperText="Наблюдатели видят задачу и участвуют в обсуждении. Ответственный остаётся один; при необходимости его можно переназначить."
+                        helperText="Наблюдатели видят задачу и участвуют в обсуждении, но не являются её исполнителями."
                       />
                     )}
                   />
@@ -759,7 +757,7 @@ export default function TasksCreateDialog({
                 createSaving
                 || createLoading
                 || String(createData.title || '').trim().length < 3
-                || (!isEditing && createData.assignee_user_ids.length === 0)
+                || createData.assignee_user_ids.length === 0
                 || (!isEditing && !effectiveCreateProjectId)
                 || (!isEditing && !String(createData.protocol_date || '').trim())
               }
@@ -771,7 +769,7 @@ export default function TasksCreateDialog({
                   ? (isEditing ? 'Сохранение...' : 'Создание...')
                   : (isEditing
                     ? 'Сохранить изменения'
-                    : `Создать${(Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids.length : 0) > 1 ? ` (${createData.assignee_user_ids.length})` : ''}`))}
+                    : 'Создать задачу'))}
             </Button>
           </DialogActions>
         </Dialog>

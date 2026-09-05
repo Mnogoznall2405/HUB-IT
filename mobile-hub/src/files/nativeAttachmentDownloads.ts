@@ -3,6 +3,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import type { ChatAttachment } from '../api/types';
+import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from './authenticatedFileDownload';
 import {
   resolveTrustedAttachmentUrl,
@@ -13,8 +14,16 @@ import {
 
 const ANDROID_VIEW_ACTION = 'android.intent.action.VIEW';
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
-const CACHE_DIRECTORY_NAME = 'hubit-attachments';
+// v2 invalidates files that older builds could leave partially downloaded.
+const CACHE_DIRECTORY_NAME = 'hubit-attachments-v2';
+const CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const CACHE_CLEANUP_SIZE_DELTA_BYTES = 16 * 1024 * 1024;
+const CHAT_MEDIA_MAX_PARALLEL_DOWNLOADS = 3;
 const chatMediaDownloads = new Map<string, Promise<File>>();
+const queuedChatMediaDownloads: Array<() => void> = [];
+let lastAttachmentCacheCleanupAt = 0;
+let attachmentCacheBytesAddedSinceCleanup = 0;
+let activeChatMediaDownloads = 0;
 
 export type NativeTransferProgress = {
   loaded: number;
@@ -32,36 +41,122 @@ export function isDownloadedAttachmentSizeValid(
 }
 
 function attachmentCacheDirectory(): Directory {
-  const directory = new Directory(Paths.cache, CACHE_DIRECTORY_NAME);
+  const directory = new Directory(Paths.document, CACHE_DIRECTORY_NAME);
   directory.create({ intermediates: true, idempotent: true });
   return directory;
 }
 
-function cacheEntries(directory: Directory) {
-  return directory.list()
-    .filter((entry): entry is File => entry instanceof File && entry.exists)
-    .map((entry) => ({
-      uri: entry.uri,
-      size: Math.max(0, Number(entry.size || 0)),
-      modifiedAt: Number(entry.lastModified || entry.creationTime || 0),
-    }));
+async function attachmentCacheFile(fileName: string): Promise<File> {
+  const userId = Number(await getSessionUserId());
+  if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
+  return new File(attachmentCacheDirectory(), `${userId}-${fileName}`);
+}
+
+function cacheEntries(files: File[]) {
+  return files.map((entry) => ({
+    uri: entry.uri,
+    size: Math.max(0, Number(entry.size || 0)),
+    modifiedAt: Number(entry.lastModified || entry.creationTime || 0),
+  }));
 }
 
 export function cleanupAttachmentCache(preserveUri?: string): void {
   const directory = attachmentCacheDirectory();
-  const evictions = new Set(selectCacheEvictions(cacheEntries(directory), { preserveUri }));
-  for (const entry of directory.list()) {
-    if (entry instanceof File && evictions.has(entry.uri) && entry.exists) entry.delete();
+  const files = directory.list()
+    .filter((entry): entry is File => entry instanceof File && entry.exists);
+  const evictions = new Set(selectCacheEvictions(cacheEntries(files), {
+    preserveUri,
+    maxAgeMs: Number.POSITIVE_INFINITY,
+  }));
+  for (const entry of files) {
+    if (evictions.has(entry.uri) && entry.exists) entry.delete();
   }
+  lastAttachmentCacheCleanupAt = Date.now();
+  attachmentCacheBytesAddedSinceCleanup = 0;
+}
+
+function maintainAttachmentCache(preserveUri?: string, addedBytes = 0): void {
+  attachmentCacheBytesAddedSinceCleanup = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    attachmentCacheBytesAddedSinceCleanup + Math.max(0, Number(addedBytes || 0)),
+  );
+  const now = Date.now();
+  const intervalElapsed = lastAttachmentCacheCleanupAt <= 0
+    || now < lastAttachmentCacheCleanupAt
+    || now - lastAttachmentCacheCleanupAt >= CACHE_CLEANUP_INTERVAL_MS;
+  if (!intervalElapsed && attachmentCacheBytesAddedSinceCleanup < CACHE_CLEANUP_SIZE_DELTA_BYTES) return;
+  try {
+    cleanupAttachmentCache(preserveUri);
+  } catch {
+    // Cache maintenance must never block an otherwise valid media hit/download.
+    lastAttachmentCacheCleanupAt = now;
+    attachmentCacheBytesAddedSinceCleanup = 0;
+  }
+}
+
+function chatMediaAbortError(): Error {
+  return Object.assign(new Error('Загрузка медиа отменена'), { name: 'AbortError' });
+}
+
+function drainChatMediaDownloadQueue(): void {
+  while (
+    activeChatMediaDownloads < CHAT_MEDIA_MAX_PARALLEL_DOWNLOADS
+    && queuedChatMediaDownloads.length > 0
+  ) {
+    queuedChatMediaDownloads.shift()?.();
+  }
+}
+
+function withChatMediaDownloadSlot<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let queued = true;
+    const start = () => {
+      if (!queued) return;
+      queued = false;
+      signal?.removeEventListener('abort', cancelQueued);
+      if (signal?.aborted) {
+        reject(chatMediaAbortError());
+        return;
+      }
+      activeChatMediaDownloads += 1;
+      void operation().then(resolve, reject).finally(() => {
+        activeChatMediaDownloads = Math.max(0, activeChatMediaDownloads - 1);
+        drainChatMediaDownloadQueue();
+      });
+    };
+    const cancelQueued = () => {
+      if (!queued) return;
+      queued = false;
+      const index = queuedChatMediaDownloads.indexOf(start);
+      if (index >= 0) queuedChatMediaDownloads.splice(index, 1);
+      reject(chatMediaAbortError());
+    };
+    if (signal?.aborted) {
+      queued = false;
+      reject(chatMediaAbortError());
+      return;
+    }
+    signal?.addEventListener('abort', cancelQueued, { once: true });
+    queuedChatMediaDownloads.push(start);
+    drainChatMediaDownloadQueue();
+  });
 }
 
 export function clearAttachmentCache(): void {
   const directory = attachmentCacheDirectory();
   for (const entry of directory.list()) entry.delete();
+  lastAttachmentCacheCleanupAt = Date.now();
+  attachmentCacheBytesAddedSinceCleanup = 0;
 }
 
 export function getAttachmentCacheSize(): number {
-  return cacheEntries(attachmentCacheDirectory()).reduce((sum, entry) => sum + entry.size, 0);
+  const directory = attachmentCacheDirectory();
+  const files = directory.list()
+    .filter((entry): entry is File => entry instanceof File && entry.exists);
+  return cacheEntries(files).reduce((sum, entry) => sum + entry.size, 0);
 }
 
 function downloadFileName(attachment: ChatAttachment): string {
@@ -83,15 +178,15 @@ export async function downloadChatAttachment(
   const sourceUrl = resolveTrustedAttachmentUrl(
     attachment.download_url || attachment.url || attachment.original_url,
   );
-  const destination = new File(attachmentCacheDirectory(), downloadFileName(attachment));
+  const destination = await attachmentCacheFile(downloadFileName(attachment));
   const metadataSize = Math.max(0, Number(attachment.file_size || 0));
   if (destination.exists && destination.size > 0) {
     options.onProgress?.({ loaded: destination.size, total: destination.size, progress: 1 });
-    cleanupAttachmentCache(destination.uri);
+    maintainAttachmentCache(destination.uri);
     return destination;
   }
   if (destination.exists) destination.delete();
-  cleanupAttachmentCache();
+  maintainAttachmentCache();
   let responseTotalBytes: number | null = null;
   try {
     const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
@@ -112,7 +207,7 @@ export async function downloadChatAttachment(
       if (downloaded.exists) downloaded.delete();
       throw new Error('Скачанный файл имеет неверный размер');
     }
-    cleanupAttachmentCache(downloaded.uri);
+    maintainAttachmentCache(downloaded.uri, downloaded.size);
     return downloaded;
   } catch (error) {
     if (destination.exists) destination.delete();
@@ -129,29 +224,29 @@ export async function downloadTrustedChatMedia(
     throw new Error('Нативное скачивание доступно только в приложении');
   }
   const sourceUrl = resolveTrustedChatMediaUrl(url);
-  const destination = new File(attachmentCacheDirectory(), sanitizeNativeFileName(cacheName));
+  const destination = await attachmentCacheFile(sanitizeNativeFileName(cacheName));
   if (destination.exists && !options.forceDownload) {
-    cleanupAttachmentCache(destination.uri);
+    maintainAttachmentCache(destination.uri);
     return destination;
   }
   const pending = chatMediaDownloads.get(destination.uri);
   if (pending) return pending;
-  const download = (async () => {
+  const download = withChatMediaDownloadSlot(async () => {
     if (destination.exists) destination.delete();
-    cleanupAttachmentCache();
+    maintainAttachmentCache();
     try {
       const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
         idempotent: true,
         signal: options.signal,
         preserveSessionOnAuthFailure: true,
       });
-      cleanupAttachmentCache(downloaded.uri);
+      maintainAttachmentCache(downloaded.uri, downloaded.size);
       return downloaded;
     } catch (error) {
       if (destination.exists) destination.delete();
       throw error;
     }
-  })().finally(() => {
+  }, options.signal).finally(() => {
     chatMediaDownloads.delete(destination.uri);
   });
   chatMediaDownloads.set(destination.uri, download);

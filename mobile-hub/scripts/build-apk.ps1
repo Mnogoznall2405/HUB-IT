@@ -491,6 +491,12 @@ if ($Local) {
     throw 'expo prebuild finished without a complete Android project.'
   }
 
+  Write-Step "Validate package, Android and release-note versions"
+  node (Join-Path $PSScriptRoot 'mobile-version.cjs') $root
+  if ($LASTEXITCODE -ne 0) {
+    throw "Mobile version validation failed with exit code $LASTEXITCODE"
+  }
+
   Configure-GradleWrapper
   Patch-GradleWindowsSettings
   $cmakeDir = Use-RepoCmake

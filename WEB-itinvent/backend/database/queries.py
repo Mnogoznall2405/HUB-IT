@@ -18,6 +18,7 @@ from backend.database.equipment_act_history_reads import (
     list_latest_equipment_acts as _act_history_list_latest_equipment_acts,
     search_equipment_acts as _act_history_search_equipment_acts,
 )
+from backend.database.equipment_current_act_reads import enrich_equipment_current_acts
 from backend.database.equipment_directory_reads import (
     QUERY_GET_ALL_BRANCHES,
     QUERY_GET_ALL_LOCATIONS,
@@ -171,6 +172,7 @@ QUERY_COUNT_EMPLOYEES = """
 
 QUERY_GET_EQUIPMENT_BY_OWNER = """
     SELECT
+        i.ID as id,
         CAST(i.INV_NO AS VARCHAR(64)) as inv_no,
         i.SERIAL_NO as serial_no,
         i.HW_SERIAL_NO as hw_serial_no,
@@ -414,6 +416,15 @@ def get_equipment_by_owner(owner_no: int, db_id: Optional[str] = None) -> List[d
     return db.execute_query(QUERY_GET_EQUIPMENT_BY_OWNER, (owner_no,))
 
 
+def get_equipment_by_owner_with_current_acts(
+    owner_no: int,
+    db_id: Optional[str] = None,
+) -> List[dict]:
+    """Get employee equipment enriched for the UI's current-act indicator."""
+    rows = get_equipment_by_owner(owner_no, db_id)
+    return enrich_equipment_current_acts(rows, db_id=db_id, get_db_fn=get_db)
+
+
 def _resolve_owner_no_across_db(
     *,
     db_id: Optional[str],
@@ -461,6 +472,7 @@ def get_equipment_by_owner_all_databases(
     *,
     employee_name: str = "",
     current_db_id: Optional[str] = None,
+    include_current_acts: bool = False,
 ) -> List[dict]:
     """Load employee equipment from all configured Hub databases, tagged with db meta."""
     from backend.api.v1.database import get_all_db_configs
@@ -493,7 +505,11 @@ def get_equipment_by_owner_all_databases(
         if not resolved:
             continue
         try:
-            rows = get_equipment_by_owner(resolved, one_db_id)
+            rows = (
+                get_equipment_by_owner_with_current_acts(resolved, one_db_id)
+                if include_current_acts
+                else get_equipment_by_owner(resolved, one_db_id)
+            )
         except Exception:
             logger.exception("get_equipment_by_owner failed for db=%s owner=%s", one_db_id, resolved)
             continue
@@ -1133,7 +1149,6 @@ def create_uploaded_transfer_act(
         template_comp_no = int(template[1]) if template and template[1] is not None else 0
         template_branch_no = int(template[2]) if template and template[2] is not None else None
         template_loc_no = int(template[3]) if template and template[3] is not None else None
-        template_empl_no = int(template[4]) if template and template[4] is not None else None
         template_suppl_no = int(template[5]) if template and template[5] is not None else None
 
         # Force document type as "Act" using recent non-annulled act documents.
@@ -1160,7 +1175,10 @@ def create_uploaded_transfer_act(
 
         branch_no_value = equipment_branch_no if equipment_branch_no is not None else template_branch_no
         loc_no_value = equipment_loc_no if equipment_loc_no is not None else template_loc_no
-        empl_no_value = owner_no if owner_no is not None else template_empl_no
+        # A template employee is unrelated to the uploaded transfer. Keeping
+        # EMPL_NO empty is safer than assigning the act to a random old owner;
+        # current-act lookup can still correlate it via equipment history.
+        empl_no_value = owner_no
 
         # 3) DOCS insert.
         cursor.execute("SELECT ISNULL(MAX(DOC_NO), 0) + 1 FROM DOCS")

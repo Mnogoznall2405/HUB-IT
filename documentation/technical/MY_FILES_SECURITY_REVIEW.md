@@ -48,10 +48,10 @@ production 2026-06-04. Оставшиеся пункты P2/P3 относятс�
   строятся по SHA-256.
 - Ответ скачивания использует `Content-Disposition: attachment`
   (`WEB-itinvent/backend/api/v1/my_files.py:84`).
-- Размер одного файла ограничен 1 GiB на уровне приложения и IIS
-  (`WEB-itinvent/backend/services/my_files_service.py:29`,
-  `WEB-itinvent/backend/api/v1/my_files.py:64`,
-  `WEB-itinvent/frontend/public/web.config:7`).
+- Размер одного файла ограничен максимумом IIS `uint32` (4 GiB минус 1 байт); общая пользовательская квота остаётся 5 GiB
+  (`WEB-itinvent/backend/services/my_files_service.py:40`,
+  `WEB-itinvent/backend/api/v1/my_files.py:124`,
+  `WEB-itinvent/frontend/public/web.config:14`).
 - Для публичных ссылок и download-grant включены rate limits с хранением
   счётчиков в AppDB.
 - Проверенный runtime работает в `production`, с `debug=false`,

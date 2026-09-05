@@ -35,6 +35,10 @@ import {
 } from '../../api/feedApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeEntitySnapshot,
+  writeNativeEntitySnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import {
@@ -67,10 +71,19 @@ import type { FeedUploadFile } from '../../api/feedApi';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { createFeedClientRequestId } from '../../feed/feedRequestId';
 
+type NativeFeedPostSnapshot = {
+  post: FeedPost;
+  comments: FeedComment[];
+  commentsTotal: number;
+  commentsNextOffset: number | null;
+  commentsSort: 'interesting' | 'newest' | 'oldest';
+  replies: Record<string, FeedComment[]>;
+};
+
 export function NativeFeedPostScreen() {
   const params = useLocalSearchParams<{ postId?: string | string[] }>();
   const postId = String(Array.isArray(params.postId) ? params.postId[0] : params.postId || '').trim();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const bottomInset = useNativeBottomNavInset();
@@ -88,7 +101,7 @@ export function NativeFeedPostScreen() {
   const [expandedRoots, setExpandedRoots] = useState<Set<string>>(() => new Set());
   const [loadingReplies, setLoadingReplies] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
-  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [commentFiles, setCommentFiles] = useState<FeedUploadFile[]>([]);
@@ -117,20 +130,62 @@ export function NativeFeedPostScreen() {
 
   const reactionTotal = Object.values(post?.reaction_counts || {})
     .reduce((sum, count) => sum + Math.max(0, Number(count || 0)), 0);
-  const pollCanVote = post?.status === 'published' && !post?.poll?.is_closed;
+  const pollCanVote = !offlineMode && post?.status === 'published' && !post?.poll?.is_closed;
 
   useAndroidBackHandler(() => {
     goBackOrReplace('/(shell)/feed');
     return true;
   });
 
-  const loadPost = useCallback(async () => {
+  const loadContent = useCallback(async () => {
     if (!postId) return;
     setLoading(true);
+    setCommentsLoading(true);
     setError('');
+    const cached = user?.id
+      ? await readNativeEntitySnapshot<NativeFeedPostSnapshot>(
+        'feed-post-details',
+        user.id,
+        postId,
+      )
+      : null;
+    if (cached) {
+      setPost(cached.data.post);
+      setComments(cached.data.comments || []);
+      setCommentsTotal(cached.data.commentsTotal || 0);
+      setCommentsNextOffset(cached.data.commentsNextOffset ?? null);
+      setReplies(cached.data.replies || {});
+      setLoading(false);
+      setCommentsLoading(false);
+    }
+    if (offlineMode) {
+      if (!cached) {
+        setPost(null);
+        setComments([]);
+        setCommentsTotal(0);
+        setCommentsNextOffset(null);
+        setReplies({});
+        setError('Нет подключения и сохранённой публикации. Откройте её один раз при наличии сети.');
+      }
+      setLoading(false);
+      setCommentsLoading(false);
+      return;
+    }
     try {
-      const next = await getFeedPost(postId);
+      const [next, commentsPayload] = await Promise.all([
+        getFeedPost(postId),
+        listFeedComments(postId, {
+          limit: FEED_COMMENT_PAGE_SIZE,
+          offset: 0,
+          sort: commentsSort,
+        }),
+      ]);
       setPost(next);
+      setComments(commentsPayload.items);
+      setCommentsTotal(commentsPayload.comments_total ?? commentsPayload.total);
+      setCommentsNextOffset(commentsPayload.next_offset ?? null);
+      setReplies({});
+      setExpandedRoots(new Set());
       void markFeedPostRead(postId)
         .then((updated) => {
           if (updated) setPost((current) => (current ? { ...current, ...updated, is_unread: false } : updated));
@@ -138,41 +193,31 @@ export function NativeFeedPostScreen() {
         })
         .catch(() => undefined);
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось открыть публикацию.'));
-      setPost(null);
+      setError(formatApiError(cause, cached
+        ? 'Показана сохранённая публикация. Не удалось получить обновления.'
+        : 'Не удалось открыть публикацию.'));
+      if (!cached) setPost(null);
     } finally {
       setLoading(false);
-    }
-  }, [postId]);
-
-  const loadComments = useCallback(async () => {
-    if (!postId) return;
-    setCommentsLoading(true);
-    try {
-      const payload = await listFeedComments(postId, {
-        limit: FEED_COMMENT_PAGE_SIZE,
-        offset: 0,
-        sort: commentsSort,
-      });
-      setComments(payload.items);
-      setCommentsTotal(payload.comments_total ?? payload.total);
-      setCommentsNextOffset(payload.next_offset ?? null);
-      setReplies({});
-      setExpandedRoots(new Set());
-    } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось загрузить комментарии.'));
-    } finally {
       setCommentsLoading(false);
     }
-  }, [commentsSort, postId]);
+  }, [commentsSort, offlineMode, postId, user?.id]);
 
   useEffect(() => {
-    if (allowed && postId) void loadPost();
-  }, [allowed, loadPost, postId]);
+    if (allowed && postId) void loadContent();
+  }, [allowed, loadContent, postId]);
 
   useEffect(() => {
-    if (allowed && postId) void loadComments();
-  }, [allowed, loadComments, postId]);
+    if (!user?.id || !post || loading || commentsLoading || offlineMode) return;
+    void writeNativeEntitySnapshot<NativeFeedPostSnapshot>('feed-post-details', user.id, postId, {
+      post,
+      comments,
+      commentsTotal,
+      commentsNextOffset,
+      commentsSort,
+      replies,
+    });
+  }, [comments, commentsLoading, commentsNextOffset, commentsSort, commentsTotal, loading, offlineMode, post, postId, replies, user?.id]);
 
   useEffect(() => {
     if (reactionTotal <= 0) setReactionDetailsOpen(false);
@@ -186,7 +231,7 @@ export function NativeFeedPostScreen() {
   }, [post?.id, post?.poll?.viewer_option_ids]);
 
   useEffect(() => {
-    if (!reactionDetailsOpen || !post?.id) return;
+    if (!reactionDetailsOpen || !post?.id || offlineMode) return;
     let active = true;
     setReactionUsersLoading(true);
     setReactionUsersError('');
@@ -207,10 +252,10 @@ export function NativeFeedPostScreen() {
         if (active) setReactionUsersLoading(false);
       });
     return () => { active = false; };
-  }, [activeReactionFilter, post?.id, post?.viewer_reaction, reactionDetailsOpen]);
+  }, [activeReactionFilter, offlineMode, post?.id, post?.viewer_reaction, reactionDetailsOpen]);
 
   useEffect(() => {
-    if (!analyticsOpen || !post?.id || !canManage || post.can_manage === false) return;
+    if (!analyticsOpen || !post?.id || !canManage || post.can_manage === false || offlineMode) return;
     let active = true;
     setAnalyticsLoading(true);
     setAnalyticsError('');
@@ -228,10 +273,10 @@ export function NativeFeedPostScreen() {
         if (active) setAnalyticsLoading(false);
       });
     return () => { active = false; };
-  }, [analyticsOpen, canManage, post?.can_manage, post?.id]);
+  }, [analyticsOpen, canManage, offlineMode, post?.can_manage, post?.id]);
 
   const loadMoreReactionUsers = useCallback(async () => {
-    if (!post?.id || reactionUsersLoading || reactionUsersNextOffset == null) return;
+    if (!post?.id || reactionUsersLoading || reactionUsersNextOffset == null || offlineMode) return;
     setReactionUsersLoading(true);
     try {
       const payload = await listFeedReactionUsers(post.id, activeReactionFilter, {
@@ -248,10 +293,10 @@ export function NativeFeedPostScreen() {
     } finally {
       setReactionUsersLoading(false);
     }
-  }, [activeReactionFilter, post?.id, reactionUsersLoading, reactionUsersNextOffset]);
+  }, [activeReactionFilter, offlineMode, post?.id, reactionUsersLoading, reactionUsersNextOffset]);
 
   const loadMoreAnalytics = useCallback(async () => {
-    if (!post?.id || analyticsLoading || analytics?.next_offset == null) return;
+    if (!post?.id || analyticsLoading || analytics?.next_offset == null || offlineMode) return;
     setAnalyticsLoading(true);
     try {
       const payload = await getFeedAnalytics(post.id, { limit: 30, offset: analytics.next_offset });
@@ -265,10 +310,10 @@ export function NativeFeedPostScreen() {
     } finally {
       setAnalyticsLoading(false);
     }
-  }, [analytics?.next_offset, analyticsLoading, post?.id]);
+  }, [analytics?.next_offset, analyticsLoading, offlineMode, post?.id]);
 
   const loadMoreComments = useCallback(async () => {
-    if (!postId || commentsLoading || commentsNextOffset == null) return;
+    if (!postId || commentsLoading || commentsNextOffset == null || offlineMode) return;
     setCommentsLoading(true);
     try {
       const payload = await listFeedComments(postId, {
@@ -287,11 +332,12 @@ export function NativeFeedPostScreen() {
     } finally {
       setCommentsLoading(false);
     }
-  }, [commentsLoading, commentsNextOffset, commentsSort, commentsTotal, postId]);
+  }, [commentsLoading, commentsNextOffset, commentsSort, commentsTotal, offlineMode, postId]);
 
   const loadReplies = useCallback(async (rootCommentId: string) => {
     if (!postId || loadingReplies.has(rootCommentId)) return;
     setExpandedRoots((current) => new Set(current).add(rootCommentId));
+    if (Object.prototype.hasOwnProperty.call(replies, rootCommentId) || offlineMode) return;
     setLoadingReplies((current) => new Set(current).add(rootCommentId));
     try {
       const payload = await listFeedComments(postId, {
@@ -310,7 +356,7 @@ export function NativeFeedPostScreen() {
         return next;
       });
     }
-  }, [loadingReplies, postId]);
+  }, [loadingReplies, offlineMode, postId, replies]);
 
   const patchComment = useCallback((commentId: string, patch: Partial<FeedComment>) => {
     const patchItems = (items: FeedComment[]) => items.map((item) => (
@@ -323,7 +369,7 @@ export function NativeFeedPostScreen() {
   }, []);
 
   const handleReaction = useCallback(async (reactionType: FeedReactionId) => {
-    if (!post) return;
+    if (!post || offlineMode) return;
     setReactionPickerOpen(false);
     try {
       if (post.viewer_reaction === reactionType) {
@@ -344,10 +390,10 @@ export function NativeFeedPostScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось обновить реакцию.'));
     }
-  }, [post]);
+  }, [offlineMode, post]);
 
   const handleBookmark = useCallback(async () => {
-    if (!post) return;
+    if (!post || offlineMode) return;
     const next = !post.viewer_bookmarked;
     try {
       await setFeedBookmark(post.id, next);
@@ -356,10 +402,10 @@ export function NativeFeedPostScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось сохранить публикацию.'));
     }
-  }, [post]);
+  }, [offlineMode, post]);
 
   const handleAcknowledge = useCallback(async () => {
-    if (!post) return;
+    if (!post || offlineMode) return;
     try {
       const updated = await acknowledgeFeedPost(post.id);
       setPost((current) => ({ ...(current || post), ...(updated || {}), is_ack_pending: false }));
@@ -367,7 +413,7 @@ export function NativeFeedPostScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось подтвердить прочтение.'));
     }
-  }, [post]);
+  }, [offlineMode, post]);
 
   const handleShare = useCallback(async () => {
     if (!post) return;
@@ -389,7 +435,7 @@ export function NativeFeedPostScreen() {
   }, [post]);
 
   const submitPollVote = useCallback(async (optionIds: string[]) => {
-    if (!post?.poll) return;
+    if (!post?.poll || offlineMode) return;
     setPollVoting(true);
     try {
       const updated = await voteFeedPoll(post.id, optionIds);
@@ -399,7 +445,7 @@ export function NativeFeedPostScreen() {
     } finally {
       setPollVoting(false);
     }
-  }, [post]);
+  }, [offlineMode, post]);
 
   const handleVote = useCallback((optionId: string) => {
     if (!post?.poll || !pollCanVote || pollVoting) return;
@@ -413,7 +459,7 @@ export function NativeFeedPostScreen() {
   }, [pollCanVote, pollVoting, post?.poll, submitPollVote]);
 
   const handleDeletePost = useCallback(() => {
-    if (!post?.id || !canModerate) return;
+    if (!post?.id || !canModerate || offlineMode) return;
     Alert.alert('Удалить публикацию навсегда?', 'Публикация, комментарии и вложения будут удалены без возможности восстановления.', [
       { text: 'Отмена', style: 'cancel' },
       {
@@ -426,11 +472,11 @@ export function NativeFeedPostScreen() {
         },
       },
     ]);
-  }, [canModerate, post?.id]);
+  }, [canModerate, offlineMode, post?.id]);
 
   const handleSendComment = useCallback(async () => {
     const body = commentText.trim();
-    if (!postId || (!body && commentFiles.length === 0) || sending) return;
+    if (!postId || (!body && commentFiles.length === 0) || sending || offlineMode) return;
     setSending(true);
     setError('');
     try {
@@ -482,7 +528,7 @@ export function NativeFeedPostScreen() {
     } finally {
       setSending(false);
     }
-  }, [commentFiles, commentText, commentsSort, loadReplies, postId, replies, replyingTo, sending]);
+  }, [commentFiles, commentText, commentsSort, loadReplies, offlineMode, postId, replies, replyingTo, sending]);
 
   const startReply = useCallback((comment: FeedComment) => {
     setReplyingTo(comment);
@@ -498,7 +544,7 @@ export function NativeFeedPostScreen() {
 
   const saveCommentEdit = useCallback(async () => {
     const body = editingCommentText.trim();
-    if (!postId || !editingCommentId || !body || busyCommentId) return;
+    if (!postId || !editingCommentId || !body || busyCommentId || offlineMode) return;
     setBusyCommentId(editingCommentId);
     try {
       const updated = await updateFeedComment(postId, editingCommentId, body);
@@ -515,9 +561,10 @@ export function NativeFeedPostScreen() {
     } finally {
       setBusyCommentId('');
     }
-  }, [busyCommentId, editingCommentId, editingCommentText, patchComment, postId]);
+  }, [busyCommentId, editingCommentId, editingCommentText, offlineMode, patchComment, postId]);
 
   const confirmDeleteComment = useCallback((comment: FeedComment) => {
+    if (offlineMode) return;
     Alert.alert(
       'Удалить комментарий?',
       'Ответы останутся в обсуждении.',
@@ -546,10 +593,10 @@ export function NativeFeedPostScreen() {
         },
       ],
     );
-  }, [patchComment, postId]);
+  }, [offlineMode, patchComment, postId]);
 
   const handleCommentReaction = useCallback(async (comment: FeedComment, reactionType: FeedReactionId) => {
-    if (!postId || busyCommentId) return;
+    if (!postId || busyCommentId || offlineMode) return;
     setBusyCommentId(comment.id);
     setCommentReactionPickerId('');
     try {
@@ -564,9 +611,10 @@ export function NativeFeedPostScreen() {
     } finally {
       setBusyCommentId('');
     }
-  }, [busyCommentId, patchComment, postId]);
+  }, [busyCommentId, offlineMode, patchComment, postId]);
 
   const handlePickFiles = useCallback(async () => {
+    if (offlineMode) return;
     try {
       const picked = await pickNativeFeedFiles();
       setCommentFiles((current) => {
@@ -576,7 +624,7 @@ export function NativeFeedPostScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось выбрать вложение.'));
     }
-  }, []);
+  }, [offlineMode]);
 
   const handleOpenAttachment = useCallback(async (
     attachment: FeedAttachment,
@@ -624,7 +672,7 @@ export function NativeFeedPostScreen() {
       }}
       rightAction={(
         <View style={styles.headerActions}>
-          {canManage && post?.can_manage ? (
+          {canManage && post?.can_manage && !offlineMode ? (
             <>
               <Pressable
                 testID="feed-analytics-toggle"
@@ -647,7 +695,7 @@ export function NativeFeedPostScreen() {
               </Pressable>
             </>
           ) : null}
-          {canModerate && post ? (
+          {canModerate && post && !offlineMode ? (
             <Pressable
               testID="feed-delete"
               onPress={handleDeletePost}
@@ -682,6 +730,11 @@ export function NativeFeedPostScreen() {
             keyboardShouldPersistTaps="handled"
           >
             <AccountStatusText tokens={tokens} error={error} message={message} />
+            {offlineMode ? (
+              <Text accessibilityRole="alert" style={{ color: tokens.warning }}>
+                Автономная копия: сетевые действия отключены.
+              </Text>
+            ) : null}
             {analyticsOpen ? (
               <AccountSectionCard tokens={tokens} title="Статистика публикации">
                 {analyticsLoading ? (
@@ -743,9 +796,9 @@ export function NativeFeedPostScreen() {
               post={post}
               tokens={tokens}
               detailView
-              onToggleReaction={() => setReactionPickerOpen((value) => !value)}
-              onBookmark={() => { void handleBookmark(); }}
-              onAcknowledge={() => { void handleAcknowledge(); }}
+              onToggleReaction={offlineMode ? undefined : () => setReactionPickerOpen((value) => !value)}
+              onBookmark={offlineMode ? undefined : () => { void handleBookmark(); }}
+              onAcknowledge={offlineMode ? undefined : () => { void handleAcknowledge(); }}
             />
 
             {reactionPickerOpen ? (
@@ -1051,8 +1104,8 @@ export function NativeFeedPostScreen() {
                 testID="feed-comments-load-more"
                 accessibilityRole="button"
                 accessibilityLabel="Показать ещё комментарии"
-                accessibilityState={{ disabled: commentsLoading }}
-                disabled={commentsLoading}
+                accessibilityState={{ disabled: commentsLoading || offlineMode }}
+                disabled={commentsLoading || offlineMode}
                 onPress={() => { void loadMoreComments(); }}
                 style={[styles.loadMoreButton, { borderColor: tokens.borderSoft }]}
               >
@@ -1065,7 +1118,7 @@ export function NativeFeedPostScreen() {
             ) : null}
           </ScrollView>
 
-          {post.comments_enabled !== false ? (
+          {post.comments_enabled !== false && !offlineMode ? (
             <View
               style={[
                 styles.composer,

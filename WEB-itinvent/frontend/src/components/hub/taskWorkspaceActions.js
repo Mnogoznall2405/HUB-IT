@@ -20,7 +20,10 @@ export function formatHubPersonDisplay(name, username = '') {
 export function resolveTaskActorRole(task, currentUser) {
   const userId = Number(currentUser?.id || 0);
   if (!userId) return 'guest';
-  if (Number(task?.assignee_user_id) === userId) return 'assignee';
+  const assigneeIds = Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+    ? task.assignee_user_ids
+    : [task?.assignee_user_id];
+  if (assigneeIds.some((value) => Number(value) === userId)) return 'assignee';
   if (Number(task?.controller_user_id) === userId) return 'controller';
   if (Number(task?.created_by_user_id) === userId) return 'creator';
   if (Boolean(task?.is_observer)) return 'observer';

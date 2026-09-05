@@ -2,6 +2,7 @@ import {
   collectRecentStickers,
   deriveStickerPreviewUrl,
   isStickerChatAttachment,
+  pickStickerPlaybackUrl,
   pickStickerImageUrl,
   stickerEmojiLabel,
   stickerFromChatAttachment,
@@ -28,6 +29,28 @@ describe('native chat sticker helpers', () => {
       mime_type: 'application/x-tgsticker',
       file_url: '/api/v1/chat/messages/m1/attachments/a1/file',
     })).toBeNull();
+    expect(pickStickerPlaybackUrl({
+      mime_type: 'application/x-tgsticker',
+      file_url: '/api/v1/chat/messages/m1/attachments/a1/file',
+    })).toBe('/api/v1/chat/messages/m1/attachments/a1/file');
+    expect(pickStickerPlaybackUrl({
+      mime_type: 'video/webm',
+      file_url: '/api/v1/chat/stickers/s2/file',
+    })).toBe('/api/v1/chat/stickers/s2/file');
+    expect(pickStickerPlaybackUrl({
+      mime_type: 'image/webp',
+      file_url: '/api/v1/chat/stickers/s3/file',
+    })).toBeNull();
+    expect(pickStickerPlaybackUrl({
+      format: 'animated',
+      mime_type: 'application/octet-stream',
+      file_url: '/api/v1/chat/stickers/s4/file',
+    } as never)).toBe('/api/v1/chat/stickers/s4/file');
+    expect(pickStickerPlaybackUrl({
+      file_name: 'sticker-office.webm',
+      mime_type: 'application/octet-stream',
+      file_url: '/api/v1/chat/messages/m1/attachments/a2/file',
+    } as never)).toBe('/api/v1/chat/messages/m1/attachments/a2/file');
     expect(deriveStickerPreviewUrl('/api/v1/chat/stickers/s1/file')).toBe(
       '/api/v1/chat/stickers/s1/preview',
     );
@@ -43,7 +66,11 @@ describe('native chat sticker helpers', () => {
       media_kind: 'sticker',
       file_name: 'sticker-office.tgs',
       preview_url: '/api/v1/chat/stickers/s1/preview',
-    }).preview_url).toBe('/api/v1/chat/stickers/s1/preview');
+    })).toMatchObject({
+      preview_url: '/api/v1/chat/stickers/s1/preview',
+      file_name: 'sticker-office.tgs',
+      format: 'animated',
+    });
   });
 
   it('rebuilds the recent row from installed packs', () => {

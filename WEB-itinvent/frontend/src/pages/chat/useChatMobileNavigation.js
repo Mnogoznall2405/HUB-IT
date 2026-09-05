@@ -34,6 +34,7 @@ export default function useChatMobileNavigation({
   setMobileBottomNavHidden,
   setMobileTransitionDirection,
   setMobileView,
+  syncConversationInUrl = true,
 }) {
   const maybeRefreshStaleConversations = useCallback(() => {
     if (!loadConversations || !lastConversationsLoadAtRef) return;
@@ -51,10 +52,12 @@ export default function useChatMobileNavigation({
     const params = new URLSearchParams(currentSearch);
     const normalizedConversationId = String(conversationId || '').trim();
     const nextView = String(nextState?.view || '').trim() === 'thread' ? 'thread' : 'inbox';
-    if (nextView === 'thread' && normalizedConversationId) {
-      params.set('conversation', normalizedConversationId);
-    } else {
-      params.delete('conversation');
+    if (syncConversationInUrl) {
+      if (nextView === 'thread' && normalizedConversationId) {
+        params.set('conversation', normalizedConversationId);
+      } else {
+        params.delete('conversation');
+      }
     }
     const shouldPreserveFocusedMessage = (
       nextView === 'thread'
@@ -67,7 +70,7 @@ export default function useChatMobileNavigation({
     }
     const nextSearch = params.toString();
     return `${currentPathname}${nextSearch ? `?${nextSearch}` : ''}${currentHash || ''}`;
-  }, [activeConversationIdRef, locationHash, locationPathname, locationSearch, requestedConversationId, requestedMessageId]);
+  }, [activeConversationIdRef, locationHash, locationPathname, locationSearch, requestedConversationId, requestedMessageId, syncConversationInUrl]);
 
   const getMobileHistoryKey = useCallback((nextState, conversationId = activeConversationIdRef.current) => {
     const nextView = String(nextState?.view || '').trim() === 'thread' ? 'thread' : 'inbox';

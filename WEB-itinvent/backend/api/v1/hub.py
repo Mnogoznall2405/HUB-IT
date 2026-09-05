@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from backend.api.deps import ensure_user_any_permission, ensure_user_permission, get_current_active_user, require_any_permission, require_permission
 from backend.models.auth import User
+from backend.models.hub_task_canvas import TaskCanvasResponse, TaskCanvasUpdateRequest
 from backend.services.authorization_service import (
     PERM_ANNOUNCEMENTS_MODERATE,
     PERM_ANNOUNCEMENTS_READ,
@@ -38,7 +39,12 @@ from backend.services.access_policy_service import (
     can_review_task,
     user_is_department_manager,
 )
-from backend.services.hub_service import _normalize_email_deadline_remind_hours, hub_service
+from backend.services.hub_service import (
+    TaskCanvasRevisionConflict,
+    TaskCanvasTooLarge,
+    _normalize_email_deadline_remind_hours,
+    hub_service,
+)
 from backend.services.task_attachment_preview_service import task_attachment_preview_service
 from backend.services.hub_task_transitions import TaskTransitionConflict, note_side_effect_failure
 from backend.services.task_email_service import task_email_service
@@ -51,6 +57,7 @@ from backend.chat.task_discussion import (
 )
 from backend.services.task_analytics_export_service import build_task_analytics_excel
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
+from backend.realtime.hub import HUB_DASHBOARD_INVALIDATE_EVENT
 from backend.services.markdown_transform_service import (
     MarkdownTransformConfigError,
     MarkdownTransformError,
@@ -234,7 +241,7 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
     is_admin = _is_admin_user(current_user)
     is_transfer_reminder = _normalize_text(enriched.get("integration_kind")).lower() == "transfer_act_upload"
     is_creator = int(enriched.get("created_by_user_id") or 0) == actor_id
-    is_assignee = int(enriched.get("assignee_user_id") or 0) == actor_id
+    is_assignee = actor_id in hub_service._task_assignee_user_ids(enriched)
     is_controller = int(enriched.get("controller_user_id") or 0) == actor_id
     controller_missing = int(enriched.get("controller_user_id") or 0) <= 0
     is_department_manager = user_is_department_manager(actor, enriched.get("department_id"))
@@ -306,7 +313,11 @@ def _enrich_task_collection(payload: dict) -> dict:
     result = dict(payload or {})
     items = result.get("items")
     if isinstance(items, list):
-        result["items"] = transfer_act_reminder_service.enrich_tasks(items)
+        enriched_items = transfer_act_reminder_service.enrich_tasks(items)
+        for item in enriched_items:
+            if isinstance(item, dict) and "description" not in item:
+                item["description"] = _normalize_text(item.get("description_preview"))
+        result["items"] = enriched_items
     if "meta" not in result:
         result["meta"] = {}
     if isinstance(result.get("meta"), dict) and "email_deadline_soon_hours_default" not in result["meta"]:
@@ -411,11 +422,17 @@ async def create_hub_absence(
 ):
     _require_absences_manage(current_user)
     try:
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             employee_absence_service.create,
             payload if isinstance(payload, dict) else {},
             created_by=int(current_user.id),
         )
+        hub_service.publish_permission_realtime(
+            permission=PERM_DASHBOARD_READ,
+            event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
+            payload={"sections": ["absences"], "operation": "created"},
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -428,11 +445,17 @@ async def update_hub_absence(
 ):
     _require_absences_manage(current_user)
     try:
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             employee_absence_service.update,
             int(absence_id),
             payload if isinstance(payload, dict) else {},
         )
+        hub_service.publish_permission_realtime(
+            permission=PERM_DASHBOARD_READ,
+            event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
+            payload={"sections": ["absences"], "operation": "updated"},
+        )
+        return result
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Запись об отсутствии не найдена") from exc
     except ValueError as exc:
@@ -449,6 +472,11 @@ async def delete_hub_absence(
         await run_in_threadpool(employee_absence_service.delete, int(absence_id))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Запись об отсутствии не найдена") from exc
+    hub_service.publish_permission_realtime(
+        permission=PERM_DASHBOARD_READ,
+        event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
+        payload={"sections": ["absences"], "operation": "deleted"},
+    )
     return {"ok": True}
 
 
@@ -1551,33 +1579,30 @@ async def create_task(
         if due_at_value and "email_deadline_remind_hours" in payload:
             email_deadline_remind_hours = _normalize_email_deadline_remind_hours(payload.get("email_deadline_remind_hours"))
 
-        created_items = []
-        for assignee_id in assignee_ids:
-            created_items.append(
-                await run_in_threadpool(
-                    hub_service.create_task,
-                    title=_normalize_text(payload.get("title")),
-                    description=_normalize_text(payload.get("description")),
-                    assignee_user_id=int(assignee_id),
-                    controller_user_id=controller_user_id,
-                    due_at=due_at_value,
-                    project_id=_normalize_text(payload.get("project_id")) or None,
-                    object_id=_normalize_text(payload.get("object_id")) or None,
-                    protocol_date=_normalize_text(payload.get("protocol_date")) or None,
-                    priority=_normalize_text(payload.get("priority"), "normal"),
-                    checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
-                    department_id=_normalize_text(payload.get("department_id")) or None,
-                    visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
-                    email_deadline_remind_hours=email_deadline_remind_hours,
-                    observer_user_ids=observer_ids,
-                    actor=_actor_dict(current_user),
-                )
-            )
-        for created_task in created_items:
-            await _safe_provision_task_discussion(
-                task=created_task,
-                actor_user_id=int(current_user.id),
-            )
+        created_task = await run_in_threadpool(
+            hub_service.create_task,
+            title=_normalize_text(payload.get("title")),
+            description=_normalize_text(payload.get("description")),
+            assignee_user_id=assignee_ids[0],
+            assignee_user_ids=assignee_ids,
+            controller_user_id=controller_user_id,
+            due_at=due_at_value,
+            project_id=_normalize_text(payload.get("project_id")) or None,
+            object_id=_normalize_text(payload.get("object_id")) or None,
+            protocol_date=_normalize_text(payload.get("protocol_date")) or None,
+            priority=_normalize_text(payload.get("priority"), "normal"),
+            checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
+            department_id=_normalize_text(payload.get("department_id")) or None,
+            visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
+            email_deadline_remind_hours=email_deadline_remind_hours,
+            observer_user_ids=observer_ids,
+            actor=_actor_dict(current_user),
+        )
+        await _safe_provision_task_discussion(
+            task=created_task,
+            actor_user_id=int(current_user.id),
+        )
+        created_items = [created_task]
         return {
             "items": transfer_act_reminder_service.enrich_tasks(created_items),
             "created": len(created_items),
@@ -1612,6 +1637,55 @@ async def get_task(
         user_id=int(current_user.id),
     )
     return _enrich_task_payload_for_user(item, current_user)
+
+
+@router.get("/tasks/{task_id}/canvas", response_model=TaskCanvasResponse)
+async def get_task_canvas(
+    task_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    try:
+        return await run_in_threadpool(
+            hub_service.get_task_canvas,
+            task_id=task_id,
+            actor=_actor_dict(current_user),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/tasks/{task_id}/canvas", response_model=TaskCanvasResponse)
+async def put_task_canvas(
+    task_id: str,
+    payload: TaskCanvasUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    try:
+        return await run_in_threadpool(
+            hub_service.save_task_canvas,
+            task_id=task_id,
+            scene=payload.scene.model_dump(by_alias=True),
+            expected_revision=payload.revision,
+            actor=_actor_dict(current_user),
+        )
+    except TaskCanvasRevisionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Доска была изменена в другой вкладке. Обновите её перед повторным сохранением.",
+                "current_revision": exc.current_revision,
+            },
+        ) from exc
+    except TaskCanvasTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/tasks/{task_id}")

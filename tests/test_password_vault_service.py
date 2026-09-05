@@ -288,6 +288,61 @@ def test_password_vault_unlock_with_trusted_device(temp_dir, monkeypatch):
     assert "unlock.webauthn" in audit_json
 
 
+def test_password_vault_unlock_with_mobile_biometric_credential(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    _install_runtime_store(monkeypatch)
+    actor = _actor()
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda user_id: {"id": user_id, "is_2fa_enabled": True, "totp_secret_enc": "enc"},
+    )
+    authenticate = lambda **kwargs: {"credential_id": "credential-1", "user_id": actor.id}
+    monkeypatch.setattr(service_module.mobile_biometric_session_service, "authenticate", authenticate)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+
+    result = service.unlock_with_mobile_biometric(
+        actor=actor,
+        session_id="session-mobile",
+        renewal_token="device-bound-renewal-token",
+        client_device_id="device-17",
+        meta=_meta(),
+    )
+
+    assert result["unlocked_until"]
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-mobile")
+    assert "unlock.mobile_biometric" in json.dumps(service.list_audit(limit=20), ensure_ascii=False)
+
+
+def test_password_vault_rejects_mobile_biometric_credential_for_another_user(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    actor = _actor()
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda user_id: {"id": user_id, "is_2fa_enabled": True, "totp_secret_enc": "enc"},
+    )
+    monkeypatch.setattr(
+        service_module.mobile_biometric_session_service,
+        "authenticate",
+        lambda **kwargs: {"credential_id": "credential-2", "user_id": actor.id + 1},
+    )
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+
+    with pytest.raises(PasswordVaultAccessError, match="Не удалось подтвердить отпечаток"):
+        service.unlock_with_mobile_biometric(
+            actor=actor,
+            session_id="session-mobile",
+            renewal_token="wrong-user-renewal-token",
+            client_device_id="device-17",
+            meta=_meta(),
+        )
+
+    rate_key = service._unlock_rate_key(user_id=actor.id, ip_address=_meta().ip_address)
+    assert runtime_store.counters[(service_module.PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE, rate_key)] == 1
+
+
 def test_password_vault_requires_existing_active_group(temp_dir, monkeypatch):
     _configure_crypto(monkeypatch)
     _install_runtime_store(monkeypatch)

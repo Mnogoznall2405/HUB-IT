@@ -46,6 +46,9 @@ export function hubNotificationPortalPath(item: HubNotificationItem): string {
       messageId ? `&message=${encodeURIComponent(messageId)}` : ''
     }`;
   }
+  if (entityType === 'docflow' && entityId) {
+    return `/docflow?task=${encodeURIComponent(entityId)}`;
+  }
   return '/dashboard';
 }
 

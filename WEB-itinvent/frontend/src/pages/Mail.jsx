@@ -1519,6 +1519,7 @@ function Mail() {
     openComposeFromDraftMessage,
     saveCurrentListScrollPosition,
     revalidateSelectedMailDetail,
+    performMailReadMutation,
     closeMobileNavigationIfNeeded,
     setSelectedItems,
     setDetailLoading,

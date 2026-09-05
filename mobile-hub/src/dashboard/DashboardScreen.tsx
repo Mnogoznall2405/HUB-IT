@@ -11,24 +11,24 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as chatApi from '../api/chatApi';
 import * as docflowApi from '../api/docflowApi';
 import type { DocflowInboxSummary } from '../api/docflowApi';
 import * as hubApi from '../api/hubApi';
 import type { HubDashboard } from '../api/hubApi';
-import * as notificationApi from '../api/notificationApi';
 import { formatApiError } from '../api/formatError';
 import { useAuth } from '../auth/AuthContext';
 import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
 import { NATIVE_CHAT_ENABLED } from '../chat/nativeChatFeature';
 import { openNativeNotifications, openPortalPath } from '../navigation/moduleRegistry';
 import { useNativeBottomNavInset } from '../navigation/useNativeBottomNavInset';
+import { getNativeUnreadSnapshot } from '../notifications/nativeUnreadSnapshot';
 import { usePreferences } from '../preferences/PreferencesContext';
 import {
   normalizeDashboardLayoutSections,
   type DashboardSectionKey,
 } from '../preferences/preferenceNormalizers';
 import { useFluentTokens, type FluentTokens } from '../theme/fluentTokens';
+import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import { DashboardCustomizeSheet, SECTION_META } from './DashboardCustomizeSheet';
 import {
   absenceInitials,
@@ -138,10 +138,13 @@ export function DashboardScreen() {
       setLoading(false);
       return;
     }
-    const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
+    const [dashboardResult, unreadResult] = await Promise.allSettled([
       hubApi.getHubDashboard(),
-      canReadChat ? chatApi.getUnreadSummary() : Promise.resolve(null),
-      canReadMail ? notificationApi.getMailUnreadSnapshot() : Promise.resolve(null),
+      getNativeUnreadSnapshot({
+        canReadChat,
+        canReadMail,
+        force: mode === 'refresh',
+      }),
     ]);
     if (dashboardResult.status === 'fulfilled') {
       const nextPayload = dashboardResult.value || EMPTY_DASHBOARD;
@@ -156,12 +159,15 @@ export function DashboardScreen() {
         ? 'Нет подключения. Показаны сохранённые данные.'
         : formatApiError(dashboardResult.reason, 'Не удалось загрузить главную страницу.'));
     }
+    const unread = unreadResult.status === 'fulfilled' && unreadResult.value.successful_sources > 0
+      ? unreadResult.value
+      : null;
     const nextCommunicationCounts = {
-      chat: chatResult.status === 'fulfilled'
-        ? Number(chatResult.value?.messages_unread_total || 0)
+      chat: unread
+        ? Number(unread.chat_messages_unread_total || 0)
         : communicationCountsRef.current.chat,
-      mail: mailResult.status === 'fulfilled'
-        ? Number(mailResult.value?.unread_count || 0)
+      mail: unread
+        ? Number(unread.mail_unread || 0)
         : communicationCountsRef.current.mail,
     };
     communicationCountsRef.current = nextCommunicationCounts;
@@ -173,6 +179,22 @@ export function DashboardScreen() {
     setLoading(false);
     setRefreshing(false);
   }, [canReadChat, canReadMail, offlineMode, persistDashboardSnapshot]);
+
+  const refreshDocflowSummary = useCallback(async () => {
+    if (!canReadDocflow || offlineMode) return;
+    try {
+      const result = await docflowApi.getInboxSummary();
+      docflowSummaryRef.current = result;
+      setDocflowSummary(result);
+      persistDashboardSnapshot(result);
+    } catch {
+      const unavailable: DocflowInboxSummary = {
+        status: 'unavailable', count: null, truncated: false,
+      };
+      docflowSummaryRef.current = unavailable;
+      setDocflowSummary(unavailable);
+    }
+  }, [canReadDocflow, offlineMode, persistDashboardSnapshot]);
 
   useEffect(() => {
     let active = true;
@@ -202,6 +224,34 @@ export function DashboardScreen() {
   }, [loadDashboard, user?.id]);
 
   useEffect(() => {
+    if (offlineMode) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadDashboard('background');
+      }, 180);
+    };
+    const refreshWithDocflow = () => {
+      refresh();
+      void refreshDocflowSummary();
+    };
+    const releases = [
+      hubRealtimeSocket.on('hub.realtime.connected', refreshWithDocflow),
+      hubRealtimeSocket.on('hub.notification.created', refresh),
+      hubRealtimeSocket.onTaskChanged(refresh),
+      hubRealtimeSocket.onMailChanged(refresh),
+      hubRealtimeSocket.onDocflowChanged(refreshWithDocflow),
+      hubRealtimeSocket.on('dashboard.invalidate', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [loadDashboard, offlineMode, refreshDocflowSummary]);
+
+  useEffect(() => {
     if (!canReadDocflow) return undefined;
     if (offlineMode) {
       if (docflowSummaryRef.current.status === 'loading') {
@@ -209,29 +259,10 @@ export function DashboardScreen() {
       }
       return undefined;
     }
-    let active = true;
     setDocflowSummary({ status: 'loading', count: null, truncated: false });
-    docflowApi.getInboxSummary()
-      .then((result) => {
-        if (active) {
-          docflowSummaryRef.current = result;
-          setDocflowSummary(result);
-          persistDashboardSnapshot(result);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          const unavailable: DocflowInboxSummary = {
-            status: 'unavailable',
-            count: null,
-            truncated: false,
-          };
-          docflowSummaryRef.current = unavailable;
-          setDocflowSummary(unavailable);
-        }
-      });
-    return () => { active = false; };
-  }, [canReadDocflow, offlineMode, persistDashboardSnapshot]);
+    void refreshDocflowSummary();
+    return undefined;
+  }, [canReadDocflow, offlineMode, refreshDocflowSummary]);
 
   const taskItems = useMemo(() => listDashboardTasks(payload), [payload]);
   const announcementItems = useMemo(() => listDashboardAnnouncements(payload), [payload]);

@@ -415,30 +415,57 @@ class AppInventoryStore:
             row.ip_address = _normalize_text(context.get("ip_address")) or None
             row.updated_at = now
 
-    def upsert_host(self, payload: dict[str, Any]) -> None:
+    def upsert_host(self, payload: dict[str, Any]) -> bool:
         host_key = _payload_host_key(payload)
         if not host_key:
-            return
+            return False
+        stored_payload = dict(payload)
+        incoming_timestamp = _to_int(stored_payload.get("timestamp"), 0)
+        if stored_payload.get("last_seen_at") in (None, "") and incoming_timestamp > 0:
+            stored_payload["last_seen_at"] = incoming_timestamp
         now = _utcnow()
         with app_session(self._database_url) as session:
-            row = session.get(AppInventoryHost, host_key)
+            row = session.get(AppInventoryHost, host_key, with_for_update=True)
             if row is None:
                 row = AppInventoryHost(mac_address=host_key)
                 session.add(row)
-            row.hostname = str(payload.get("hostname") or "").strip() or None
-            row.user_login = str(payload.get("user_login") or "").strip() or None
-            row.user_full_name = str(payload.get("user_full_name") or "").strip() or None
-            row.ip_primary = str(payload.get("ip_primary") or "").strip() or None
-            row.report_type = str(payload.get("report_type") or "full_snapshot").strip() or "full_snapshot"
-            row.last_seen_at = int(payload.get("last_seen_at")) if payload.get("last_seen_at") not in (None, "") else None
-            row.last_full_snapshot_at = (
-                int(payload.get("last_full_snapshot_at")) if payload.get("last_full_snapshot_at") not in (None, "") else None
+            else:
+                persisted_payload = self._row_payload(row)
+                persisted_timestamp = _to_int(persisted_payload.get("timestamp"), 0)
+                if persisted_timestamp > 0 and incoming_timestamp > 0 and incoming_timestamp < persisted_timestamp:
+                    return False
+
+                persisted_last_seen_at = _to_int(row.last_seen_at, 0)
+                incoming_last_seen_at = _to_int(stored_payload.get("last_seen_at"), 0)
+                if persisted_last_seen_at > incoming_last_seen_at:
+                    stored_payload["last_seen_at"] = persisted_last_seen_at
+
+                persisted_full_snapshot_at = _to_int(row.last_full_snapshot_at, 0)
+                incoming_full_snapshot_at = _to_int(stored_payload.get("last_full_snapshot_at"), 0)
+                if persisted_full_snapshot_at > incoming_full_snapshot_at:
+                    stored_payload["last_full_snapshot_at"] = persisted_full_snapshot_at
+
+            row.hostname = str(stored_payload.get("hostname") or "").strip() or None
+            row.user_login = str(stored_payload.get("user_login") or "").strip() or None
+            row.user_full_name = str(stored_payload.get("user_full_name") or "").strip() or None
+            row.ip_primary = str(stored_payload.get("ip_primary") or "").strip() or None
+            row.report_type = str(stored_payload.get("report_type") or "full_snapshot").strip() or "full_snapshot"
+            row.last_seen_at = (
+                int(stored_payload.get("last_seen_at"))
+                if stored_payload.get("last_seen_at") not in (None, "")
+                else None
             )
-            row.payload_json = json.dumps(payload, ensure_ascii=False)
+            row.last_full_snapshot_at = (
+                int(stored_payload.get("last_full_snapshot_at"))
+                if stored_payload.get("last_full_snapshot_at") not in (None, "")
+                else None
+            )
+            row.payload_json = json.dumps(stored_payload, ensure_ascii=False)
             row.updated_at = now
             # Soft-hide flags are operator-owned; agent ingest must not clear them.
             if row.report_type != "heartbeat":
-                self._replace_search_indexes(session, host_key, payload, now)
+                self._replace_search_indexes(session, host_key, stored_payload, now)
+        return True
 
     def set_host_hidden(
         self,
@@ -484,10 +511,14 @@ class AppInventoryStore:
             return False
         now = _utcnow()
         with app_session(self._database_url) as session:
-            row = session.get(AppInventoryHost, host_key)
+            row = session.get(AppInventoryHost, host_key, with_for_update=True)
             if row is None:
                 return False
-            row.last_seen_at = int(last_seen_at)
+            incoming_last_seen_at = int(last_seen_at)
+            persisted_last_seen_at = _to_int(row.last_seen_at, 0)
+            if persisted_last_seen_at > incoming_last_seen_at:
+                return True
+            row.last_seen_at = incoming_last_seen_at
             row.report_type = str(report_type or "heartbeat").strip() or "heartbeat"
             normalized_hostname = str(hostname or "").strip()
             normalized_user_login = str(user_login or "").strip()

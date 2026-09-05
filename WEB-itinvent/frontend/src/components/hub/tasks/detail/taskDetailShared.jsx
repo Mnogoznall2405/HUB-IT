@@ -40,6 +40,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ThumbUpOffAltIcon from '@mui/icons-material/ThumbUpOffAlt';
 import MarkdownRenderer from '../../MarkdownRenderer';
 import OverflowMenu from '../../../common/OverflowMenu';
+import { formatTaskAssigneesSummary } from '../../../../pages/tasks/taskUserUtils';
 import {
   TASK_DETAIL_TABS,
   getDefaultTaskDetailTab,
@@ -47,6 +48,8 @@ import {
   getTaskUnreadBadgeLabel,
   normalizeTaskDetailTab,
 } from '../../../../lib/taskNavigation';
+
+export { formatTaskAssigneesSummary };
 
 export {
   TASK_DETAIL_TABS,

@@ -28,6 +28,11 @@ function DetailQrDialog({
   equipment = null,
 }) {
   const label = useMemo(() => buildEquipmentQrLabelContent(equipment), [equipment]);
+  const serialFontSize = label.serialNo.length > 32
+    ? { xs: 14, sm: 18 }
+    : label.serialNo.length > 22
+      ? { xs: 17, sm: 22 }
+      : { xs: 22, sm: 28 };
   const [downloadUrl, setDownloadUrl] = useState('');
   const [downloadLoading, setDownloadLoading] = useState(false);
 
@@ -76,13 +81,16 @@ function DetailQrDialog({
               aspectRatio: '1 / 1',
               mx: 'auto',
               display: 'grid',
-              gridTemplateRows: 'auto minmax(0, 1fr) auto',
+              gridTemplateRows: 'auto auto minmax(0, 1fr) auto',
               justifyItems: 'center',
               gap: { xs: 0.5, sm: 1 },
               bgcolor: '#fff',
               color: '#000',
+              border: '2px solid #000',
               borderRadius: 0,
-              p: { xs: 1.5, sm: 2 },
+              boxSizing: 'border-box',
+              px: { xs: 1.5, sm: 2 },
+              py: { xs: 2.25, sm: 2.75 },
               boxShadow: 'none',
               overflow: 'hidden',
             }}
@@ -119,10 +127,39 @@ function DetailQrDialog({
               </Typography>
             </Box>
 
+            <Box component="dl" sx={{ m: 0, minWidth: 0, width: '100%', maxWidth: '100%', textAlign: 'center' }}>
+              <Typography
+                component="dt"
+                sx={{
+                  color: '#000',
+                  fontSize: { xs: 10, sm: 12 },
+                  lineHeight: 1.2,
+                  fontWeight: 600,
+                  letterSpacing: '0.04em',
+                }}
+              >
+                Инв. №
+              </Typography>
+              <Typography
+                component="dd"
+                sx={{
+                  m: 0,
+                  color: '#000',
+                  fontSize: { xs: 25, sm: 32 },
+                  lineHeight: 1.05,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {label.invNo}
+              </Typography>
+            </Box>
+
             <Box
               sx={{
-                width: { xs: '70%', sm: '74%' },
-                maxWidth: 370,
+                width: { xs: '66%', sm: '69%' },
+                maxWidth: 345,
                 alignSelf: 'center',
                 display: 'grid',
                 placeItems: 'center',
@@ -154,9 +191,15 @@ function DetailQrDialog({
             <Box component="dl" sx={{ m: 0, minWidth: 0, maxWidth: '100%', textAlign: 'center' }}>
               <Typography
                 component="dt"
-                sx={{ color: '#000', fontSize: { xs: 10, sm: 12 }, lineHeight: 1.25, fontWeight: 600 }}
+                sx={{
+                  color: '#000',
+                  fontSize: { xs: 10, sm: 12 },
+                  lineHeight: 1.25,
+                  fontWeight: 600,
+                  letterSpacing: '0.04em',
+                }}
               >
-                СЕРИЙНЫЙ НОМЕР
+                Серийный номер
               </Typography>
               <Typography
                 component="dd"
@@ -164,10 +207,13 @@ function DetailQrDialog({
                   m: 0,
                   mt: 0.25,
                   color: '#000',
-                  fontSize: { xs: 18, sm: 22 },
-                  lineHeight: 1.15,
+                  fontSize: serialFontSize,
+                  lineHeight: 1.1,
                   fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
                   overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                  maxWidth: '100%',
                 }}
               >
                 {label.serialNo}

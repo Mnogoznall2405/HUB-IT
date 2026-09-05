@@ -6,6 +6,7 @@ import logging
 import os
 
 from backend.services.hub_service import hub_service
+from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,18 @@ async def background_task_due_notification_loop() -> None:
     while True:
         try:
             processed = await asyncio.to_thread(hub_service.run_task_due_notification_cycle)
-            logger.info("Task due notification cycle finished: users=%s", processed)
+            try:
+                reconciled = await asyncio.to_thread(
+                    transfer_act_reminder_service.reconcile_task_completion_mismatches
+                )
+            except Exception:
+                reconciled = {"checked": 0, "closed": 0, "failed": 1}
+                logger.exception("Transfer act reminder task reconciliation failed")
+            logger.info(
+                "Task due notification cycle finished: users=%s transfer_act_reconciled=%s",
+                processed,
+                reconciled,
+            )
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
             logger.info("Task due notification loop cancelled")

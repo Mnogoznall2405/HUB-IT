@@ -31,6 +31,8 @@ from backend.models.my_files import (
     MyFileQuotaResponse,
     MyFileResponse,
     MyFileShareResponse,
+    MyFileUploadSessionCreateRequest,
+    MyFileUploadSessionResponse,
     PublicMyFilePreviewResponse,
     PublicMyFileResponse,
 )
@@ -44,6 +46,7 @@ from backend.services.my_files_service import (
     DEFAULT_RETENTION_DAYS,
     MAX_FILE_SIZE_BYTES,
     STORAGE_ZSTD,
+    UPLOAD_CHUNK_SIZE_BYTES,
     MyFilesCapacityError,
     MyFilesConfigurationError,
     MyFilesNotFoundError,
@@ -122,7 +125,7 @@ async def _stream_request_to_spool(request: Request, spool_path: Path, *, expect
                     continue
                 size += len(chunk)
                 if size > MAX_FILE_SIZE_BYTES:
-                    raise MyFilesValidationError("File exceeds 1 GB limit")
+                    raise MyFilesValidationError("File exceeds upload limit")
                 if size > int(expected_size):
                     raise MyFilesValidationError("Uploaded file size does not match reservation")
                 target.write(chunk)
@@ -133,6 +136,27 @@ async def _stream_request_to_spool(request: Request, spool_path: Path, *, expect
         spool_path.unlink(missing_ok=True)
         raise MyFilesValidationError("Uploaded file size does not match reservation")
     return size
+
+
+async def _read_upload_chunk(request: Request) -> bytes:
+    raw_content_length = str(request.headers.get("content-length") or "").strip()
+    if raw_content_length:
+        try:
+            if int(raw_content_length) > UPLOAD_CHUNK_SIZE_BYTES:
+                raise MyFilesValidationError("Upload chunk exceeds size limit")
+        except ValueError as exc:
+            raise MyFilesValidationError("Upload chunk content length is invalid") from exc
+
+    payload = bytearray()
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        payload.extend(chunk)
+        if len(payload) > UPLOAD_CHUNK_SIZE_BYTES:
+            raise MyFilesValidationError("Upload chunk exceeds size limit")
+    if not payload:
+        raise MyFilesValidationError("Upload chunk is empty")
+    return bytes(payload)
 
 
 def _content_disposition(file_name: str, *, inline: bool = False) -> str:
@@ -238,6 +262,121 @@ async def upload_my_file(
                 pass
         if not isinstance(exc, Exception):
             raise
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post(
+    "/upload-sessions",
+    response_model=MyFileUploadSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_my_file_upload_session(
+    payload: MyFileUploadSessionCreateRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    enforce_upload_limits(request, user_id=int(current_user.id))
+    spool_path = my_files_service.new_spool_path(payload.file_name)
+    try:
+        reserved = await run_in_threadpool(
+            my_files_service.reserve_upload,
+            actor=current_user,
+            original_file_name=payload.file_name,
+            mime_type=payload.mime_type,
+            spool_path=spool_path,
+            expected_size_bytes=payload.file_size,
+            retention_days=payload.retention_days,
+            meta=_request_meta(request),
+        )
+        return await run_in_threadpool(
+            my_files_service.get_upload_session,
+            file_id=str(reserved["id"]),
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/upload-sessions/{file_id}", response_model=MyFileUploadSessionResponse)
+async def get_my_file_upload_session(
+    file_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    try:
+        return await run_in_threadpool(
+            my_files_service.get_upload_session,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.put("/upload-sessions/{file_id}/chunks", response_model=MyFileUploadSessionResponse)
+async def upload_my_file_chunk(
+    file_id: str,
+    request: Request,
+    offset: int = Query(..., ge=0),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        payload = await _read_upload_chunk(request)
+        return await run_in_threadpool(
+            my_files_service.append_upload_chunk,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            offset=offset,
+            payload=payload,
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/upload-sessions/{file_id}/complete", response_model=MyFileResponse)
+async def complete_my_file_upload_session(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        session = await run_in_threadpool(
+            my_files_service.get_upload_session,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+        return await run_in_threadpool(
+            my_files_service.complete_upload,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            actual_size_bytes=int(session["uploaded_bytes"]),
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/upload-sessions/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_my_file_upload_session(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.abort_upload,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            error_text="Upload cancelled",
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
         raise _service_error_to_http(exc) from exc
 
 

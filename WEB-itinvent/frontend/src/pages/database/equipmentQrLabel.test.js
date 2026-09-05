@@ -33,6 +33,7 @@ describe('equipmentQrLabel', () => {
   });
 
   it('renders a self-contained PNG label with the QR and HUB logo', async () => {
+    const longSerialNo = `SN-${'1234567890'.repeat(12)}`;
     const context = {
       drawImage: vi.fn(),
       fillRect: vi.fn(),
@@ -70,7 +71,7 @@ describe('equipmentQrLabel', () => {
 
     try {
       await expect(buildEquipmentQrLabelDataUrl({
-        equipment: { INV_NO: '1001', SERIAL_NO: 'SN-1' },
+        equipment: { INV_NO: '1001', SERIAL_NO: longSerialNo },
         qrDataUrl: 'data:image/png;base64,qr',
       })).resolves.toBe('data:image/png;base64,label');
     } finally {
@@ -83,9 +84,18 @@ describe('equipmentQrLabel', () => {
     expect(context.drawImage).toHaveBeenCalledTimes(2);
     expect(context.save).toHaveBeenCalledTimes(1);
     expect(context.restore).toHaveBeenCalledTimes(1);
-    expect(context.strokeRect).not.toHaveBeenCalled();
+    expect(context.strokeRect).toHaveBeenCalledTimes(1);
+    expect(context.strokeRect).toHaveBeenCalledWith(1.5, 1.5, 997, 997);
+    expect(context.strokeStyle).toBe('#000000');
+    expect(context.lineWidth).toBe(3);
     expect(context.fillText).toHaveBeenCalledWith('HUB-IT', expect.any(Number), expect.any(Number));
-    expect(context.fillText).toHaveBeenCalledWith('SN-1', 500, 933);
+    expect(context.fillText).toHaveBeenCalledWith('Инв. №', 500, 135);
+    expect(context.fillText).toHaveBeenCalledWith('1001', 500, 195, 880);
+    expect(context.fillText).toHaveBeenCalledWith('Серийный номер', 500, 862);
+    expect(context.fillText).toHaveBeenCalledWith(longSerialNo, 500, 936, 880);
+    expect(context.fillText.mock.calls.map(([text]) => text)).not.toContain(
+      expect.stringContaining('…')
+    );
     expect(canvas.toDataURL).toHaveBeenCalledWith('image/png');
   });
 });

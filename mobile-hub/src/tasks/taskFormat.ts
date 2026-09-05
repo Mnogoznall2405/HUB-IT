@@ -41,6 +41,13 @@ export function formatTaskDate(value: unknown): string {
 }
 
 export function taskPerson(task: HubTask, role: 'assignee' | 'controller' | 'created_by'): string {
+  if (role === 'assignee') {
+    const assignees = Array.isArray(task.assignees) ? task.assignees : [];
+    const labels = assignees
+      .map((item) => String(item?.full_name || item?.username || item?.user_id || '').trim())
+      .filter(Boolean);
+    if (labels.length) return labels.join(', ');
+  }
   const fullName = String(task[`${role}_full_name`] || '').trim();
   const username = String(task[`${role}_username`] || '').trim();
   return fullName || username || 'Не указан';

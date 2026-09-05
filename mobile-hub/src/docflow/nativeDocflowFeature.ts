@@ -22,6 +22,19 @@ export function nativeDocflowDestinationFromPortalPath(path: string): NativeDocf
   } catch {
     return null;
   }
+  const taskRef = String(parsed.searchParams.get('task') || '').trim();
+  if (taskRef && ['/docflow', '/docflow/'].includes(parsed.pathname) && !parsed.hash) {
+    let decodedTaskRef: string;
+    try {
+      decodedTaskRef = decodeURIComponent(taskRef);
+    } catch {
+      return null;
+    }
+    return {
+      pathname: '/(shell)/docflow/[taskRef]',
+      params: { taskRef: decodedTaskRef },
+    };
+  }
   if (!['/docflow', '/docflow/'].includes(parsed.pathname) || parsed.hash || parsed.search) return null;
   return { pathname: '/(shell)/docflow' };
 }

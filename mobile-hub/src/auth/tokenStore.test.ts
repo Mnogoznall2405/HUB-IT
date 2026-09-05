@@ -8,6 +8,11 @@ import {
   subscribeAccessTokenChanges,
 } from './tokenStore';
 import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
+import { clearNativeMyFilesOffline } from '../myFiles/nativeMyFilesOfflineStore';
+
+jest.mock('../myFiles/nativeMyFilesOfflineStore', () => ({
+  clearNativeMyFilesOffline: jest.fn(async () => undefined),
+}));
 
 const cachedUser = {
   id: 38,
@@ -23,9 +28,10 @@ it('keeps the headless task owner only for the active authenticated session', as
   await expect(getSessionUserId()).resolves.toBe(38);
   await clearTokens();
   await expect(getSessionUserId()).resolves.toBeNull();
+  expect(clearNativeMyFilesOffline).not.toHaveBeenCalled();
 });
 
-it('keeps the cached native identity only while its tokens exist', async () => {
+it('keeps encrypted offline data when an expired session clears its credentials', async () => {
   await setTokens('access-token', 'refresh-token');
   await setCachedSessionUser(cachedUser);
   await writeNativeSnapshot('dashboard', cachedUser.id, { private: true });
@@ -33,7 +39,20 @@ it('keeps the cached native identity only while its tokens exist', async () => {
   await expect(getCachedSessionUser()).resolves.toEqual(cachedUser);
   await clearTokens();
   await expect(getCachedSessionUser()).resolves.toBeNull();
+  await expect(readNativeSnapshot('dashboard', cachedUser.id)).resolves.toEqual(
+    expect.objectContaining({ data: { private: true } }),
+  );
+});
+
+it('removes encrypted offline data only during an explicit device logout', async () => {
+  await setTokens('access-token', 'refresh-token');
+  await setCachedSessionUser(cachedUser);
+  await writeNativeSnapshot('dashboard', cachedUser.id, { private: true });
+
+  await clearTokens({ clearOfflineData: true });
+
   await expect(readNativeSnapshot('dashboard', cachedUser.id)).resolves.toBeNull();
+  expect(clearNativeMyFilesOffline).toHaveBeenCalledWith(cachedUser.id);
 });
 
 it('rejects an invalid session owner', async () => {

@@ -36,6 +36,9 @@ const {
   mockChatSocketUnsubscribeInbox,
   mockChatSocketGetConnectionState,
   mockIsChatConversationMuted,
+  mockHubRealtimeRetain,
+  mockHubRealtimeRelease,
+  mockHubRealtimeIsStable,
   mockPreferences,
   mockPrefetchRouteByPath,
 } = vi.hoisted(() => ({
@@ -67,6 +70,9 @@ const {
   mockChatSocketUnsubscribeInbox: vi.fn(),
   mockChatSocketGetConnectionState: vi.fn(() => 'disconnected'),
   mockIsChatConversationMuted: vi.fn(() => false),
+  mockHubRealtimeRelease: vi.fn(),
+  mockHubRealtimeRetain: vi.fn(),
+  mockHubRealtimeIsStable: vi.fn(() => false),
   mockPrefetchRouteByPath: vi.fn(async () => {}),
   mockPreferences: {
     mobile_bottom_nav_items: ['/dashboard', '/tasks', '/chat', '/mail'],
@@ -155,6 +161,20 @@ vi.mock('../../lib/chatSocket', () => ({
   isChatConversationMuted: mockIsChatConversationMuted,
 }));
 
+vi.mock('../../lib/hubRealtimeSocket', () => ({
+  hubRealtimeSocket: {
+    retain: mockHubRealtimeRetain,
+    isStableConnection: mockHubRealtimeIsStable,
+  },
+  HUB_REALTIME_ENABLED: true,
+  HUB_REALTIME_RELAX_POLLING_ENABLED: true,
+  HUB_REALTIME_CONNECTED_EVENT: 'hub-realtime-connected',
+  HUB_REALTIME_STABLE_EVENT: 'hub-realtime-stable',
+  HUB_REALTIME_STATUS_EVENT: 'hub-realtime-status',
+  HUB_REALTIME_MAIL_EVENT: 'hub-realtime-mail-changed',
+  HUB_REALTIME_NOTIFICATION_EVENT: 'hub-realtime-notification-created',
+}));
+
 vi.mock('../../lib/chatNotifications', () => {
   const ordinary = new Set([
     'chat.message_received',
@@ -167,7 +187,15 @@ vi.mock('../../lib/chatNotifications', () => {
     && ordinary.has(String(item?.event_type || '').trim().toLowerCase())
   );
   return {
-    buildChatNotificationRoute: ({ conversationId, messageId } = {}) => {
+    buildChatNotificationRoute: ({ conversationId, messageId, conversationKind, taskId } = {}) => {
+      if (String(conversationKind || '').trim().toLowerCase() === 'task' && taskId) {
+        const query = new URLSearchParams({
+          task: String(taskId),
+          task_detail_view: 'discussion',
+        });
+        if (messageId) query.set('message', messageId);
+        return `/tasks?${query.toString()}`;
+      }
       const query = new URLSearchParams();
       if (conversationId) query.set('conversation', conversationId);
       if (messageId) query.set('message', messageId);
@@ -399,6 +427,11 @@ describe('MainLayout hub Windows notifications', () => {
     mockChatSocketRetain.mockClear();
     mockChatSocketSubscribeInbox.mockClear();
     mockChatSocketUnsubscribeInbox.mockClear();
+    mockHubRealtimeRelease.mockReset();
+    mockHubRealtimeRetain.mockReset();
+    mockHubRealtimeRetain.mockReturnValue(mockHubRealtimeRelease);
+    mockHubRealtimeIsStable.mockReset();
+    mockHubRealtimeIsStable.mockReturnValue(false);
     mockApiPost.mockResolvedValue({ data: { ok: true } });
     mockGetChatUnreadSummary.mockResolvedValue({ messages_unread_total: 2, conversations_unread: 1 });
     mockGetMessages.mockResolvedValue({
@@ -603,6 +636,113 @@ describe('MainLayout hub Windows notifications', () => {
   afterEach(() => {
     Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
     vi.useRealTimers();
+  });
+
+  it('uses HUB realtime events to trigger the existing notification reconciliation', async () => {
+    const view = render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const pollCallsBeforeEvent = mockApiGet.mock.calls.filter(
+      ([url]) => url === '/hub/notifications/poll',
+    ).length;
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-notification-created'));
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const pollCallsAfterEvent = mockApiGet.mock.calls.filter(
+      ([url]) => url === '/hub/notifications/poll',
+    ).length;
+    expect(mockHubRealtimeRetain).toHaveBeenCalledTimes(1);
+    expect(pollCallsAfterEvent).toBeGreaterThan(pollCallsBeforeEvent);
+
+    view.unmount();
+    expect(mockHubRealtimeRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('relaxes periodic polling only after realtime becomes stable and restores it on disconnect', async () => {
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const countPollCalls = () => mockApiGet.mock.calls.filter(
+      ([url, options]) => url === '/hub/notifications/poll' && !options?.params?.unread_only,
+    ).length;
+    const initialPollCalls = countPollCalls();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-stable'));
+      await vi.advanceTimersByTimeAsync(100_000);
+      await Promise.resolve();
+    });
+
+    expect(countPollCalls()).toBe(initialPollCalls);
+
+    await advanceHubPollInterval();
+    expect(countPollCalls()).toBe(initialPollCalls + 1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-status', {
+        detail: { status: 'disconnected' },
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(countPollCalls()).toBe(initialPollCalls + 2);
+
+    await advanceHubPollInterval();
+    expect(countPollCalls()).toBe(initialPollCalls + 3);
+  });
+
+  it('keeps realtime for mail-only users and reconciles mail after an event', async () => {
+    mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
+    const mailNeedsRefresh = vi.fn();
+    window.addEventListener('mail-needs-refresh', mailNeedsRefresh);
+
+    const view = render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    mockGetUnreadCount.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-mail-changed'));
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockHubRealtimeRetain).toHaveBeenCalledTimes(1);
+    expect(mockGetUnreadCount).toHaveBeenCalled();
+    expect(mailNeedsRefresh).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    window.removeEventListener('mail-needs-refresh', mailNeedsRefresh);
   });
 
   it('consumes the notifications tray route exactly once and preserves unrelated query state', async () => {
@@ -869,6 +1009,88 @@ describe('MainLayout hub Windows notifications', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('chat-ws-message-created', { detail: activeConversationDetail }));
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it('routes task-chat notifications to the task discussion and suppresses the active embedded thread', async () => {
+    const view = render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-task-1',
+          payload: {
+            id: 'msg-task-1',
+            conversation_id: 'conv-task-1',
+            conversation_kind: 'task',
+            task_id: 'task-1',
+            body: 'Сообщение по задаче',
+            sender: { full_name: 'Коллега' },
+            is_own: false,
+          },
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(mockCreateChatSystemNotification).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'msg-task-1',
+      conversationId: 'conv-task-1',
+      conversationKind: 'task',
+      taskId: 'task-1',
+    }));
+    mockCreateChatSystemNotification.mock.calls[0][0].onNavigate(
+      '/tasks?task=task-1&task_detail_view=discussion&message=msg-task-1',
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/tasks?task=task-1&task_detail_view=discussion&message=msg-task-1',
+    );
+
+    view.unmount();
+    mockCreateChatSystemNotification.mockClear();
+    visibilityState = 'visible';
+    mockLocation.pathname = '/tasks';
+    mockLocation.search = '?task=task-1&task_detail_view=discussion';
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      window.dispatchEvent(new CustomEvent('chat-active-conversation-changed', {
+        detail: { conversationId: 'conv-task-1' },
+      }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-task-1',
+          payload: {
+            id: 'msg-task-2',
+            conversation_id: 'conv-task-1',
+            conversation_kind: 'task',
+            task_id: 'task-1',
+            body: 'Уже открытое сообщение',
+            sender: { full_name: 'Коллега' },
+            is_own: false,
+          },
+        },
+      }));
       await Promise.resolve();
     });
 

@@ -24,6 +24,7 @@ export default function useChatPagePanelsBridge({
   userId,
   messagesRef,
   notifyApiError,
+  disableTaskPanel = false,
 }) {
   const preview = useChatPreviewController({
     activeConversationIdRef,
@@ -51,6 +52,7 @@ export default function useChatPagePanelsBridge({
     setMessageMenuMessage,
     setThreadMenuAnchor,
     userId,
+    disableTaskPanel,
   });
 
   return {

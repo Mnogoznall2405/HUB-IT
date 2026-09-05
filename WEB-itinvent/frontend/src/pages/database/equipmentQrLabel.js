@@ -24,15 +24,21 @@ const loadImage = (src) => new Promise((resolve, reject) => {
   image.src = src;
 });
 
-const fitText = (context, text, maxWidth) => {
+const setFittedTextFont = (context, text, {
+  maxWidth,
+  maxFontSize,
+  minFontSize,
+  fontWeight = 800,
+}) => {
   const normalized = normalizeValue(text, '—');
-  if (context.measureText(normalized).width <= maxWidth) return normalized;
-
-  let shortened = normalized;
-  while (shortened.length > 1 && context.measureText(`${shortened}…`).width > maxWidth) {
-    shortened = shortened.slice(0, -1);
+  let fontSize = maxFontSize;
+  while (fontSize > minFontSize) {
+    context.font = `${fontWeight} ${fontSize}px "Segoe UI", Arial, sans-serif`;
+    if (context.measureText(normalized).width <= maxWidth) return normalized;
+    fontSize -= 2;
   }
-  return `${shortened}…`;
+  context.font = `${fontWeight} ${minFontSize}px "Segoe UI", Arial, sans-serif`;
+  return normalized;
 };
 
 export const buildEquipmentQrLabelDataUrl = async ({
@@ -63,10 +69,10 @@ export const buildEquipmentQrLabelDataUrl = async ({
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  const logoSize = 92;
+  const logoSize = 76;
   const logoGap = 22;
   context.fillStyle = '#000000';
-  context.font = '800 60px "Segoe UI", Arial, sans-serif';
+  context.font = '800 56px "Segoe UI", Arial, sans-serif';
   context.textAlign = 'left';
   const brandWidth = context.measureText(content.brandName).width;
   const brandGroupWidth = brandWidth + (logoImage ? logoSize + logoGap : 0);
@@ -74,7 +80,7 @@ export const buildEquipmentQrLabelDataUrl = async ({
   if (logoImage) {
     context.save();
     context.filter = 'brightness(0)';
-    context.drawImage(logoImage, brandGroupX, 20, logoSize, logoSize);
+    context.drawImage(logoImage, brandGroupX, 32, logoSize, logoSize);
     context.restore();
   }
   context.fillText(
@@ -83,15 +89,35 @@ export const buildEquipmentQrLabelDataUrl = async ({
     91,
   );
 
+  context.textAlign = 'center';
+  context.font = '600 24px "Segoe UI", Arial, sans-serif';
+  context.fillText('Инв. №', 500, 135);
+  const invNo = setFittedTextFont(context, content.invNo, {
+    maxWidth: 880,
+    maxFontSize: 62,
+    minFontSize: 30,
+  });
+  context.fillText(invNo, 500, 195, 880);
+
   context.imageSmoothingEnabled = false;
-  context.drawImage(qrImage, 155, 120, 690, 690);
+  context.drawImage(qrImage, 200, 220, 600, 600);
 
   context.fillStyle = '#000000';
   context.textAlign = 'center';
-  context.font = '600 23px "Segoe UI", Arial, sans-serif';
-  context.fillText('СЕРИЙНЫЙ НОМЕР', 500, 872);
-  context.font = '800 54px "Segoe UI", Arial, sans-serif';
-  context.fillText(fitText(context, content.serialNo, 820), 500, 933);
+  context.font = '600 24px "Segoe UI", Arial, sans-serif';
+  context.fillText('Серийный номер', 500, 862);
+  const serialNo = setFittedTextFont(context, content.serialNo, {
+    maxWidth: 880,
+    maxFontSize: 54,
+    minFontSize: 24,
+  });
+  // Canvas keeps the complete value and only condenses horizontally as a last resort.
+  context.fillText(serialNo, 500, 936, 880);
+
+  // A 0.15 mm inner frame keeps every 50x50 mm label identical and marks the cut line.
+  context.strokeStyle = '#000000';
+  context.lineWidth = 3;
+  context.strokeRect(1.5, 1.5, 997, 997);
   context.textAlign = 'left';
 
   return canvas.toDataURL('image/png');

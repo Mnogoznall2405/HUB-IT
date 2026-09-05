@@ -3,6 +3,7 @@ import apiClient, { getAuthenticatedAccessToken } from './client';
 import * as tokenStore from '../auth/tokenStore';
 import { subscribeSessionExpired } from '../auth/sessionEvents';
 import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
+import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
 
 const originalAdapter = apiClient.defaults.adapter;
 
@@ -124,9 +125,45 @@ describe('mobile API refresh', () => {
     expect(refresh.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ timeout: 5_000 }));
   });
 
-  it('clears the session and publishes one event when refresh rejects', async () => {
+  it('keeps a session bootstrap refresh and retry inside one total timeout budget', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    await tokenStore.setTokens('expired-access', 'refresh-token');
+    const refresh = jest.spyOn(axios, 'post').mockImplementation(async () => {
+      now = 4_500;
+      return response({}, {
+        access_token: 'bootstrap-access',
+        refresh_token: 'bootstrap-refresh',
+      }) as never;
+    });
+    let retryTimeout = 0;
+    apiClient.defaults.adapter = (async (config: InternalAxiosRequestConfig) => {
+      const authorization = String(config.headers?.Authorization || '');
+      if (authorization === 'Bearer expired-access') {
+        now = 4_000;
+        return unauthorized(config);
+      }
+      retryTimeout = Number(config.timeout || 0);
+      return response(config, { ok: true });
+    }) as never;
+
+    await apiClient.get('/auth/me', {
+      timeout: 5_000,
+      hubitTotalTimeoutMs: 5_000,
+    } as never);
+
+    expect(refresh.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ timeout: 2_000 }));
+    expect(retryTimeout).toBe(1_500);
+  });
+
+  it('clears the session and publishes one event when refresh rejects credentials', async () => {
     await tokenStore.setTokens('expired-access', 'expired-refresh');
-    jest.spyOn(axios, 'post').mockRejectedValue(new Error('refresh unavailable'));
+    await tokenStore.setSessionUserId(38);
+    await writeNativeSnapshot('dashboard', 38, { prepared: true });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: response({}, {}, 401),
+    });
     apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => unauthorized(config)) as never;
     const expired = jest.fn();
     const unsubscribe = subscribeSessionExpired(expired);
@@ -135,6 +172,9 @@ describe('mobile API refresh', () => {
 
     expect(await tokenStore.getAccessToken()).toBeNull();
     expect(await tokenStore.getRefreshToken()).toBeNull();
+    await expect(readNativeSnapshot('dashboard', 38)).resolves.toEqual(
+      expect.objectContaining({ data: { prepared: true } }),
+    );
     expect(expired).toHaveBeenCalledTimes(1);
     unsubscribe();
   });
@@ -157,6 +197,30 @@ describe('mobile API refresh', () => {
     expect(await tokenStore.getRefreshToken()).toBe('offline-refresh');
     expect(expired).not.toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it.each([429, 500, 502, 503])('preserves credentials and propagates refresh HTTP %s', async (status) => {
+    await tokenStore.setTokens('expired-access', 'retryable-refresh');
+    const refreshError = { isAxiosError: true, response: response({}, {}, status) };
+    jest.spyOn(axios, 'post').mockRejectedValue(refreshError);
+    apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => unauthorized(config)) as never;
+    const expired = jest.fn();
+    const unsubscribe = subscribeSessionExpired(expired);
+    try {
+      await expect(apiClient.get('/auth/me')).rejects.toBe(refreshError);
+      expect(await tokenStore.getRefreshToken()).toBe('retryable-refresh');
+      expect(await tokenStore.getAccessToken()).toBe('expired-access');
+      expect(expired).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('preserves credentials when a successful refresh response is incomplete', async () => {
+    await tokenStore.setTokens('expired-access', 'retryable-refresh');
+    jest.spyOn(axios, 'post').mockResolvedValue(response({}, {}) as never);
+    await expect(getAuthenticatedAccessToken({ forceRefresh: true })).rejects.toBeTruthy();
+    expect(await tokenStore.getRefreshToken()).toBe('retryable-refresh');
   });
 
   it('does not recurse on refresh and logout endpoints', async () => {

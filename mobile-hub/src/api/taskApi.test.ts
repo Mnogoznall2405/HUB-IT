@@ -119,8 +119,10 @@ describe('taskApi', () => {
     });
   });
 
-  it('creates one task per selected assignee through the existing backend contract', async () => {
-    mockedClient.post.mockResolvedValue({ data: { items: [{ id: 't1' }, { id: 't2' }], created: 2 } });
+  it('creates one shared task for all selected assignees', async () => {
+    mockedClient.post.mockResolvedValue({
+      data: { items: [{ id: 't1', assignee_user_ids: [7, 8] }], created: 1 },
+    });
     await expect(createTask({
       title: 'Native task',
       assignee_user_ids: [7, 8],
@@ -129,7 +131,7 @@ describe('taskApi', () => {
       due_at: '2026-08-25T18:00:00',
       email_deadline_remind_hours: 6,
       priority: 'normal',
-    })).resolves.toEqual([{ id: 't1' }, { id: 't2' }]);
+    })).resolves.toEqual([{ id: 't1', assignee_user_ids: [7, 8] }]);
     expect(mockedClient.post).toHaveBeenCalledWith('/hub/tasks', expect.objectContaining({
       assignee_user_ids: [7, 8],
       project_id: 'p1',

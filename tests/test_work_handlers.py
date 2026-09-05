@@ -19,6 +19,66 @@ sys.path.insert(0, '.')
 from bot.config import States
 
 
+def test_pc_cleaning_history_prefers_inventory_identity_after_move():
+    from bot.handlers.work import _select_pc_cleaning_records
+
+    equipment = {
+        "ID": 11,
+        "INV_NO": "1001",
+        "SERIAL_NO": "DUPLICATE-SERIAL",
+        "HW_SERIAL_NO": "HW-1001",
+        "BRANCH_NAME": "New branch",
+        "EMPLOYEE_NAME": "New owner",
+    }
+    records = [
+        {
+            "db_name": "main-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "branch": "Old branch",
+            "employee": "Old owner",
+            "timestamp": "2026-02-12T10:00:00",
+        },
+        {
+            "db_name": "main-db",
+            "inv_no": "2002",
+            "serial_no": "DUPLICATE-SERIAL",
+            "timestamp": "2026-08-03T10:00:00",
+        },
+        {
+            "db_name": "other-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "timestamp": "2026-08-04T10:00:00",
+        },
+    ]
+
+    matches = _select_pc_cleaning_records(records, equipment, db_name="main-db")
+
+    assert [record["timestamp"] for record in matches] == ["2026-02-12T10:00:00"]
+
+
+@pytest.mark.asyncio
+async def test_save_pc_cleaning_persists_equipment_id(context, equipment_mock):
+    from bot.handlers.work import save_pc_cleaning
+
+    equipment_mock["INV_NO"] = "1001"
+    context.user_data = {
+        "pc_cleaning_serial_no": equipment_mock["SERIAL_NO"],
+        "pc_cleaning_equipment": equipment_mock,
+    }
+
+    with patch("bot.handlers.work.database_manager") as mock_db:
+        mock_db.get_user_database.return_value = "main-db"
+        mock_db.get_database_config.return_value = None
+        with patch("bot.handlers.work.append_json_data", return_value=True) as append_mock:
+            assert await save_pc_cleaning(context) is True
+
+    saved_record = append_mock.call_args.args[1]
+    assert saved_record["equipment_id"] == equipment_mock["ID"]
+    assert saved_record["inv_no"] == "1001"
+
+
 # ============================================================================
 # FIXTURES
 # ============================================================================

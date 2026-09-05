@@ -54,7 +54,21 @@ it('sends an idempotent Chat reply and marks the source message read', async () 
     replyToMessageId: 'message-7',
   });
   expect(chatApi.markConversationRead).toHaveBeenCalledWith('conversation-2', 'message-7');
-  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('chat:msg:message-7');
+  expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalledWith('chat:msg:message-7');
+});
+
+it('finishes a Chat reply even when Android notification dismissal stalls', async () => {
+  jest.mocked(Notifications.dismissNotificationAsync).mockImplementationOnce(
+    () => new Promise<void>(() => undefined),
+  );
+
+  const result = await Promise.race([
+    processNotificationAction(response(HUBIT_CHAT_REPLY_ACTION, 'Ответ')).then(() => 'completed'),
+    new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+  ]);
+
+  expect(result).toBe('completed');
+  expect(chatApi.sendTextMessage).toHaveBeenCalledTimes(1);
 });
 
 it('marks a conversation read without creating a message', async () => {

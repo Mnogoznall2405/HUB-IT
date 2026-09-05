@@ -36,6 +36,7 @@ from backend.services.authorization_service import (
     authorization_service,
 )
 from backend.services.docflow_service import DocflowServiceError, docflow_service
+from backend.realtime.hub import HUB_DOCFLOW_TASK_CHANGED_EVENT, hub_realtime_publisher
 
 
 router = APIRouter()
@@ -61,6 +62,31 @@ def _has_permission(user: User, permission: str) -> bool:
         permission,
         use_custom_permissions=bool(user.use_custom_permissions),
         custom_permissions=user.custom_permissions,
+    )
+
+
+def _publish_docflow_change(
+    *,
+    user_id: int,
+    operation: str,
+    result: dict,
+    task_ref: str = "",
+) -> None:
+    command_id = str(result.get("command_id") or "").strip()
+    command_status = str(result.get("status") or "").strip()
+    normalized_task_ref = str(task_ref or "").strip()
+    task = result.get("task") if isinstance(result.get("task"), dict) else {}
+    normalized_task_ref = normalized_task_ref or str(task.get("ref") or "").strip()
+    hub_realtime_publisher.publish_user_event(
+        recipient_user_id=int(user_id),
+        event_type=HUB_DOCFLOW_TASK_CHANGED_EVENT,
+        event_id=f"docflow:{command_id or normalized_task_ref}:{command_status or operation}",
+        payload={
+            "operation": str(operation or "changed")[:80],
+            "command_id": command_id or None,
+            "status": command_status or None,
+            "task_ref": normalized_task_ref or None,
+        },
     )
 
 
@@ -154,6 +180,7 @@ async def list_my_docflow_tasks(
     scope: Literal["inbox", "completed", "all"] = Query("inbox"),
     q: str = Query("", max_length=200),
     limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=10_000),
     current_user: User = Depends(require_permission(PERM_DOCFLOW_READ)),
 ) -> DocflowTaskListResponse:
     correlation = _correlation_id(request)
@@ -164,6 +191,7 @@ async def list_my_docflow_tasks(
             scope=scope,
             search=q,
             limit=limit,
+            offset=offset,
             correlation_id=correlation,
         )
     except DocflowServiceError as exc:
@@ -266,6 +294,11 @@ async def create_my_docflow_assignment(
         _raise_service_error(exc, correlation)
     if str(result.get("status") or "") in {"pending", "state_unknown"}:
         response.status_code = status.HTTP_202_ACCEPTED
+    _publish_docflow_change(
+        user_id=int(current_user.id),
+        operation="assignment.created",
+        result=result,
+    )
     return DocflowAssignmentCommandResponse.model_validate(result)
 
 
@@ -288,6 +321,11 @@ async def get_my_docflow_assignment_command(
         _raise_service_error(exc, correlation)
     if str(result.get("status") or "") in {"pending", "state_unknown"}:
         response.status_code = status.HTTP_202_ACCEPTED
+    _publish_docflow_change(
+        user_id=int(current_user.id),
+        operation="assignment.command_checked",
+        result=result,
+    )
     return DocflowAssignmentCommandResponse.model_validate(result)
 
 
@@ -340,6 +378,12 @@ async def apply_my_docflow_task_action(
         _raise_service_error(exc, correlation)
     if str(result.get("status") or "") in {"pending", "state_unknown"}:
         response.status_code = status.HTTP_202_ACCEPTED
+    _publish_docflow_change(
+        user_id=int(current_user.id),
+        operation="task.action_applied",
+        result=result,
+        task_ref=str(task_ref),
+    )
     return DocflowCommandResponse.model_validate(result)
 
 
@@ -362,6 +406,11 @@ async def get_my_docflow_command(
         _raise_service_error(exc, correlation)
     if str(result.get("status") or "") in {"pending", "state_unknown"}:
         response.status_code = status.HTTP_202_ACCEPTED
+    _publish_docflow_change(
+        user_id=int(current_user.id),
+        operation="task.command_checked",
+        result=result,
+    )
     return DocflowCommandResponse.model_validate(result)
 
 

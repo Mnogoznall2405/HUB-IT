@@ -822,6 +822,7 @@ class ScanStore:
             resolve_agent_sql_context=lambda mac_address, hostname: _resolve_agent_sql_context(mac_address, hostname),
             is_postgres=lambda: self.is_postgres,
         )
+
         self._scan_host_read_store = ScanHostReadStore(
             lock=self._lock,
             connect=self._connect,
@@ -839,6 +840,41 @@ class ScanStore:
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.transient_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
+
+    def get_realtime_cursor(self) -> Dict[str, tuple[tuple[str, int, int], ...]]:
+        """Return a compact shared-DB change cursor for Scan Center invalidations."""
+        query = """
+            SELECT 'agents' AS section, status, COUNT(*) AS c,
+                   MAX(COALESCE(updated_at, last_seen_at, 0)) AS changed_at
+            FROM scan_agents GROUP BY status
+            UNION ALL
+            SELECT 'tasks' AS section, status, COUNT(*) AS c,
+                   MAX(COALESCE(updated_at, created_at, 0)) AS changed_at
+            FROM scan_tasks GROUP BY status
+            UNION ALL
+            SELECT 'jobs' AS section, status, COUNT(*) AS c,
+                   MAX(COALESCE(finished_at, started_at, created_at, 0)) AS changed_at
+            FROM scan_jobs GROUP BY status
+            UNION ALL
+            SELECT 'incidents' AS section, status, COUNT(*) AS c,
+                   MAX(COALESCE(resolved_at, ack_at, created_at, 0)) AS changed_at
+            FROM scan_incidents GROUP BY status
+            ORDER BY section, status
+        """
+        grouped: Dict[str, list[tuple[str, int, int]]] = {
+            "agents": [], "tasks": [], "jobs": [], "incidents": [],
+        }
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+        for row in rows:
+            section = str(row["section"] or "")
+            if section in grouped:
+                grouped[section].append((
+                    str(row["status"] or ""),
+                    int(row["c"] or 0),
+                    int(row["changed_at"] or 0),
+                ))
+        return {section: tuple(values) for section, values in grouped.items()}
 
     @property
     def is_postgres(self) -> bool:

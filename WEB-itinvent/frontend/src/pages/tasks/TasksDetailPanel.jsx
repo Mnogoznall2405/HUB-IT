@@ -19,8 +19,12 @@ export default function TasksDetailPanel() {
       theme={ui.theme}
       selectedMobileTaskView={detail.selectedMobileTaskView}
       selectedTaskTab={detail.selectedTaskTab}
+      selectedTaskView={detail.selectedTaskView}
       taskDiscussionChatEnabled={filters.taskDiscussionChatEnabled}
       discussionOpening={detail.discussionOpening}
+      discussionError={detail.discussionError}
+      discussionConversationId={detail.discussionConversationId}
+      discussionMessageId={detail.discussionMessageId}
       reopeningTaskId={detail.reopeningTaskId}
       comments={detail.detailsComments}
       statusLog={detail.detailsStatusLog}
@@ -46,20 +50,31 @@ export default function TasksDetailPanel() {
       statusMeta={ui.statusMeta}
       priorityMeta={ui.priorityMeta}
       onBack={detail.closeTaskDetails}
+      backLabel={detail.taskBackLabel}
       onBackFromChecklist={detail.closeMobileTaskChecklist}
-      onCopyLink={() => void detail.handleCopyTaskLink(detail.detailsTask?.id, detail.selectedTaskTab)}
+      onCopyLink={() => void detail.handleCopyTaskLink(
+        detail.detailsTask?.id,
+        detail.selectedTaskTab,
+        detail.selectedTaskView,
+      )}
       onShareLink={detail.nativeTaskShareAvailable
-        ? () => void detail.handleShareTaskLink(detail.detailsTask, detail.selectedTaskTab)
+        ? () => void detail.handleShareTaskLink(
+          detail.detailsTask,
+          detail.selectedTaskTab,
+          detail.selectedTaskView,
+        )
         : undefined}
       onOpenEditTask={detail.openEditTask}
       onDeleteTask={(task) => void detail.handleDeleteTask(task)}
       onOpenTaskDiscussion={detail.handleOpenTaskDiscussion}
+      onRetryTaskDiscussion={detail.retryTaskDiscussion}
       onToggleChecklistItem={detail.handleToggleTaskChecklistItem}
       onAddChecklistItem={detail.handleAddTaskChecklistItem}
       onUploadAttachment={detail.handleUploadAttachment}
       onDownloadAttachment={detail.handleDownloadAttachment}
       onDownloadReport={detail.handleDownloadReport}
       onTabChange={detail.setTaskDetailTab}
+      onViewChange={detail.setTaskDetailView}
       onCommentChange={detail.setDetailsCommentBody}
       onAddComment={() => void detail.handleAddTaskComment()}
       onOpenMobileChecklist={detail.openMobileTaskChecklist}

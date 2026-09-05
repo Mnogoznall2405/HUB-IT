@@ -677,18 +677,20 @@ def _get_inventory_host(mac_address: str) -> Optional[Dict[str, Any]]:
     return payload.get(_normalize_text(mac_address))
 
 
-def _save_inventory_host(record: Dict[str, Any], current_data: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
+def _save_inventory_host(
+    record: Dict[str, Any],
+    current_data: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[bool]:
     app_store = _get_inventory_app_store()
     if app_store is not None:
-        app_store.upsert_host(record)
-        return True
+        return app_store.upsert_host(record)
 
     store = get_local_store()
     payload = current_data if isinstance(current_data, dict) else store.load_json(INVENTORY_FILE, default_content={})
     if not isinstance(payload, dict):
         payload = {}
     payload[_normalize_text(record.get("mac_address"))] = record
-    return bool(store.save_json(INVENTORY_FILE, payload))
+    return True if store.save_json(INVENTORY_FILE, payload) else None
 
 
 def _touch_inventory_host_presence(
@@ -868,13 +870,33 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     current_data = None if app_store is not None else _load_inventory_snapshot()
     previous_record = app_store.get_host(mac_key) if app_store is not None else current_data.get(mac_key)
 
+    previous_persisted_ts = (
+        _to_int(previous_record.get("timestamp"), default=0)
+        if isinstance(previous_record, dict)
+        else 0
+    )
+    previous_last_seen_at = (
+        _to_int(previous_record.get("last_seen_at"), default=0)
+        if isinstance(previous_record, dict)
+        else 0
+    )
+    if previous_persisted_ts > 0 and current_ts < previous_persisted_ts:
+        return {
+            "success": True,
+            "deferred": False,
+            "stale_ignored": True,
+            "message": "Out-of-order inventory report ignored",
+            "retry_after_sec": 0,
+        }
+
+    effective_last_seen_at = max(last_seen_at, previous_last_seen_at)
+
     if report_type == "heartbeat" and app_store is not None and isinstance(previous_record, dict):
-        previous_persisted_ts = _to_int(previous_record.get("timestamp"), default=0)
         if previous_persisted_ts > 0 and (current_ts - previous_persisted_ts) < INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS:
             retry_after_sec = max(1, INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS - max(0, current_ts - previous_persisted_ts))
             touched = _touch_inventory_host_presence(
                 mac_address=mac_key,
-                last_seen_at=last_seen_at,
+                last_seen_at=effective_last_seen_at,
                 report_type=report_type,
                 hostname=incoming_payload.get("hostname"),
                 user_login=incoming_payload.get("user_login") or incoming_payload.get("current_user"),
@@ -892,7 +914,7 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = _merge_payload(previous_record, incoming_payload)
     merged["report_type"] = report_type
     merged["timestamp"] = current_ts
-    merged["last_seen_at"] = last_seen_at
+    merged["last_seen_at"] = effective_last_seen_at
 
     new_change_events: List[Dict[str, Any]] = []
 
@@ -902,7 +924,16 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     elif not merged.get("last_full_snapshot_at"):
         merged["last_full_snapshot_at"] = current_ts
 
-    if not _save_inventory_host(merged, current_data=current_data):
+    save_result = _save_inventory_host(merged, current_data=current_data)
+    if save_result is False:
+        return {
+            "success": True,
+            "deferred": False,
+            "stale_ignored": True,
+            "message": "Out-of-order inventory report ignored",
+            "retry_after_sec": 0,
+        }
+    if save_result is not True:
         logger.error("Failed to save inventory snapshot")
         raise RuntimeError("Failed to save data")
 

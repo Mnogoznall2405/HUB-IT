@@ -12,6 +12,8 @@ const renderBar = (props = {}) => {
   const ui = buildOfficeUiTokens(theme);
   const handlers = {
     onClearSelection: vi.fn(),
+    onQuickPrint: vi.fn(),
+    onPrintWithDialog: vi.fn(),
     onOpenLocationTransfer: vi.fn(),
     onOpenTransfer: vi.fn(),
     onOpenTransferAct: vi.fn(),
@@ -47,13 +49,14 @@ describe('DatabaseBulkActionBar', () => {
 
     expect(screen.getByTestId('database-bulk-action-bar')).toHaveAttribute('data-variant', 'mobile');
     expect(screen.getByLabelText('Выбрано: 2')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Перемещ.' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'С актом' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Акт' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Печать QR' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Перемещение' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Перемещение с актом' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Ещё' }));
 
     const moreList = screen.getByTestId('database-bulk-mobile-more-list');
+    expect(within(moreList).getByText('Акт без перемещения')).toBeInTheDocument();
     expect(within(moreList).getByText('Картридж')).toBeInTheDocument();
     expect(within(moreList).getByText('Батарея')).toBeInTheDocument();
     expect(within(moreList).getByText('Компонент')).toBeInTheDocument();
@@ -93,8 +96,31 @@ describe('DatabaseBulkActionBar', () => {
   it('keeps desktop maintenance buttons visible', () => {
     renderBar({ variant: 'desktop' });
 
+    expect(screen.getByRole('button', { name: 'Печать QR…' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Картридж' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Батарея' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Компонент' })).toBeInTheDocument();
+  });
+
+  it('offers quick printing and a printer-dialog fallback in Desktop', () => {
+    const handlers = renderBar({
+      variant: 'desktop',
+      desktopQuickPrintAvailable: true,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Быстрая печать QR' }));
+    expect(handlers.onQuickPrint).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть способы печати QR' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Печать QR/ }));
+    expect(handlers.onPrintWithDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps QR printing available for read-only users without write actions', () => {
+    renderBar({ variant: 'desktop', canWrite: false });
+
+    expect(screen.getByRole('button', { name: 'Печать QR…' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Перемещение' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Картридж' })).not.toBeInTheDocument();
   });
 });

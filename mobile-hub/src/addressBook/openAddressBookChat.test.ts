@@ -1,4 +1,9 @@
-import { openAddressBookChat, resolveAddressBookChatUser } from './openAddressBookChat';
+import {
+  getAddressBookChatCacheKey,
+  openAddressBookChat,
+  openCachedAddressBookChat,
+  resolveAddressBookChatUser,
+} from './openAddressBookChat';
 import * as chatApi from '../api/chatApi';
 import { openPortalPath } from '../navigation/moduleRegistry';
 
@@ -29,7 +34,10 @@ describe('openAddressBookChat', () => {
     resolveChatUser.mockResolvedValueOnce({ id: 42, username: 'ivanov' });
     createDirectConversation.mockResolvedValueOnce({ id: 'c-42' });
 
-    await openAddressBookChat(entry);
+    await expect(openAddressBookChat(entry)).resolves.toEqual({
+      conversationId: 'c-42',
+      peerUserId: 42,
+    });
 
     expect(resolveChatUser).toHaveBeenCalledWith({ email: 'ivanov@zsgp.ru', full_name: 'Ivanov Ivan' });
     expect(createDirectConversation).toHaveBeenCalledWith(42);
@@ -44,5 +52,14 @@ describe('openAddressBookChat', () => {
 
     await expect(resolveAddressBookChatUser(entry)).resolves.toEqual({ id: 7, username: 'ivanov' });
     expect(resolveChatUser).toHaveBeenNthCalledWith(3, { full_name: 'Ivanov Ivan' });
+  });
+
+  it('opens a previously resolved chat without a network lookup', () => {
+    openCachedAddressBookChat({ conversationId: 'cached-42', peerUserId: 42 });
+
+    expect(openPortalPath).toHaveBeenCalledWith('/chat?conversation=cached-42');
+    expect(resolveChatUser).not.toHaveBeenCalled();
+    expect(createDirectConversation).not.toHaveBeenCalled();
+    expect(getAddressBookChatCacheKey(entry)).toBe('email:ivanov@zsgp.ru');
   });
 });

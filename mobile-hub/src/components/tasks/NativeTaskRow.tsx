@@ -18,7 +18,7 @@ export const NativeTaskRow = memo(function NativeTaskRow({ task, tokens, personR
   const priority = taskPriorityLabel(task.priority);
   const accent = overdue ? tokens.error : task.status === 'done' ? tokens.success : tokens.primary;
   const title = String(task.title || '').trim() || 'Задача';
-  const personLabel = personRole === 'created_by' ? 'Поставил' : 'Исполнитель';
+  const personLabel = personRole === 'created_by' ? 'Поставил' : 'Исполнители';
   const hasAttachments = Boolean(task.has_attachments) || Boolean(task.attachments?.length);
 
   return (

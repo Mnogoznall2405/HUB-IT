@@ -793,7 +793,7 @@ class WorksManager:
             inv_no: Inventory number
             db_name: Database name
             additional_data: Additional metadata
-            equipment_id: Equipment ID for SQL update (optional)
+            equipment_id: Stable equipment ID for history matching and SQL update (optional)
             current_description: Current DESCRIPTION value for SQL update (optional)
             hw_serial_no: Hardware serial number (optional)
             model_name: Model name (optional)
@@ -813,6 +813,7 @@ class WorksManager:
             'employee': employee.strip(),
             'inv_no': (inv_no or "").strip(),
             'db_name': (db_name or "").strip(),
+            'equipment_id': self._normalize_equipment_id(equipment_id),
             'timestamp': datetime.now().isoformat(),
         }
 
@@ -1085,13 +1086,19 @@ class WorksManager:
         self,
         serial_number: str,
         hw_serial_number: Optional[str] = None,
+        inv_no: Optional[str] = None,
+        equipment_id: Optional[int] = None,
+        db_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Get PC cleaning history for a specific serial number.
+        Get PC cleaning history for one equipment item.
 
         Args:
             serial_number: Serial number to search for
             hw_serial_number: Hardware serial number (optional, for additional search)
+            inv_no: Stable inventory number preserved by equipment transfers
+            equipment_id: Immutable ITEMS.ID when available
+            db_name: Inventory database containing the equipment item
 
         Returns:
             Dictionary with last_date, count, and time_ago_str
@@ -1100,10 +1107,14 @@ class WorksManager:
             data = self.data_manager.load_json(self.CLEANING_FILE, default_content=[])
             if not isinstance(data, list):
                 return self._history_from_records([])
-            pc_cleanings = [
-                c for c in data
-                if self._record_matches_serial(c, serial_number, hw_serial_number)
-            ]
+            pc_cleanings = self._select_pc_cleaning_records(
+                data,
+                serial_number=serial_number,
+                hw_serial_number=hw_serial_number,
+                inv_no=inv_no,
+                equipment_id=equipment_id,
+                db_name=db_name,
+            )
             return self._history_from_records(pc_cleanings)
 
         except Exception as e:
@@ -1170,7 +1181,11 @@ class WorksManager:
         pc_inventory = self._get_pc_inventory(db_name=db_name)
         cleanings = self.get_pc_cleanings(db_name=db_name)
 
-        latest_cleaning_by_identifier: Dict[str, datetime] = {}
+        latest_cleaning_by_equipment_id: Dict[int, datetime] = {}
+        latest_cleaning_by_inv_no: Dict[str, datetime] = {}
+        latest_legacy_cleaning_by_inv_no: Dict[str, datetime] = {}
+        latest_cleaning_by_serial: Dict[str, datetime] = {}
+        latest_unkeyed_cleaning_by_serial: Dict[str, datetime] = {}
         cleanings_by_branch_total: Dict[str, int] = {}
         cleanings_by_branch_period: Dict[str, int] = {}
         cleanings_total = 0
@@ -1189,10 +1204,30 @@ class WorksManager:
                 cleanings_period += 1
                 cleanings_by_branch_period[branch_name] = cleanings_by_branch_period.get(branch_name, 0) + 1
 
-            for identifier in self._extract_identifiers(record):
-                existing = latest_cleaning_by_identifier.get(identifier)
+            record_equipment_id = self._normalize_equipment_id(record.get("equipment_id"))
+            if record_equipment_id is not None:
+                existing = latest_cleaning_by_equipment_id.get(record_equipment_id)
                 if existing is None or cleaned_at > existing:
-                    latest_cleaning_by_identifier[identifier] = cleaned_at
+                    latest_cleaning_by_equipment_id[record_equipment_id] = cleaned_at
+
+            record_inv_no = self._extract_inv_identifier(record)
+            if record_inv_no:
+                existing = latest_cleaning_by_inv_no.get(record_inv_no)
+                if existing is None or cleaned_at > existing:
+                    latest_cleaning_by_inv_no[record_inv_no] = cleaned_at
+                if record_equipment_id is None:
+                    existing_legacy = latest_legacy_cleaning_by_inv_no.get(record_inv_no)
+                    if existing_legacy is None or cleaned_at > existing_legacy:
+                        latest_legacy_cleaning_by_inv_no[record_inv_no] = cleaned_at
+
+            for identifier in self._extract_serial_identifiers(record):
+                existing = latest_cleaning_by_serial.get(identifier)
+                if existing is None or cleaned_at > existing:
+                    latest_cleaning_by_serial[identifier] = cleaned_at
+                if record_equipment_id is None and not record_inv_no:
+                    existing_unkeyed = latest_unkeyed_cleaning_by_serial.get(identifier)
+                    if existing_unkeyed is None or cleaned_at > existing_unkeyed:
+                        latest_unkeyed_cleaning_by_serial[identifier] = cleaned_at
 
         total_pc_by_branch: Dict[str, int] = {}
         cleaned_pc_by_branch: Dict[str, int] = {}
@@ -1202,12 +1237,14 @@ class WorksManager:
             branch_name = self._normalize_branch_name(item.get("branch_name"))
             total_pc_by_branch[branch_name] = total_pc_by_branch.get(branch_name, 0) + 1
 
-            identifiers = self._extract_identifiers(item)
-            latest_for_item = None
-            for identifier in identifiers:
-                candidate = latest_cleaning_by_identifier.get(identifier)
-                if candidate is not None and (latest_for_item is None or candidate > latest_for_item):
-                    latest_for_item = candidate
+            latest_for_item = self._resolve_pc_cleaning_timestamp_for_item(
+                item,
+                latest_by_equipment_id=latest_cleaning_by_equipment_id,
+                latest_by_inv_no=latest_cleaning_by_inv_no,
+                latest_legacy_by_inv_no=latest_legacy_cleaning_by_inv_no,
+                latest_by_serial=latest_cleaning_by_serial,
+                latest_unkeyed_by_serial=latest_unkeyed_cleaning_by_serial,
+            )
 
             if latest_for_item is not None and latest_for_item >= start_dt:
                 cleaned_pc_by_branch[branch_name] = cleaned_pc_by_branch.get(branch_name, 0) + 1
@@ -1768,6 +1805,93 @@ class WorksManager:
 
         return latest
 
+    def _select_pc_cleaning_records(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        serial_number: Optional[str],
+        hw_serial_number: Optional[str],
+        inv_no: Optional[str],
+        equipment_id: Optional[int],
+        db_name: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """Match cleaning history by stable identity before serial fallbacks."""
+        target_db = str(db_name or "").strip().casefold()
+        target_equipment_id = self._normalize_equipment_id(equipment_id)
+        target_inv_no = self._normalize_identifier(inv_no)
+        matches: List[Dict[str, Any]] = []
+
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+
+            record_db = str(record.get("db_name") or "").strip().casefold()
+            if target_db and record_db and record_db != target_db:
+                continue
+
+            record_equipment_id = self._normalize_equipment_id(record.get("equipment_id"))
+            if target_equipment_id is not None and record_equipment_id is not None:
+                if target_equipment_id == record_equipment_id:
+                    matches.append(record)
+                continue
+
+            record_inv_no = self._extract_inv_identifier(record)
+            if target_inv_no and record_inv_no:
+                if target_inv_no == record_inv_no:
+                    matches.append(record)
+                continue
+
+            if self._record_matches_serial(record, serial_number, hw_serial_number):
+                matches.append(record)
+
+        return matches
+
+    def _resolve_pc_cleaning_timestamp_for_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        latest_by_equipment_id: Dict[int, datetime],
+        latest_by_inv_no: Dict[str, datetime],
+        latest_legacy_by_inv_no: Dict[str, datetime],
+        latest_by_serial: Dict[str, datetime],
+        latest_unkeyed_by_serial: Dict[str, datetime],
+    ) -> Optional[datetime]:
+        """Resolve the latest cleaning using the same identity priority as history."""
+        raw_equipment_id = item.get("id") if item.get("id") is not None else item.get("ID")
+        if raw_equipment_id is None:
+            raw_equipment_id = item.get("equipment_id")
+        equipment_id = self._normalize_equipment_id(raw_equipment_id)
+        if equipment_id is not None:
+            exact = latest_by_equipment_id.get(equipment_id)
+            if exact is not None:
+                return exact
+
+        inv_no = self._extract_inv_identifier(item)
+        if inv_no:
+            inv_candidates = (
+                latest_legacy_by_inv_no
+                if equipment_id is not None
+                else latest_by_inv_no
+            )
+            exact = inv_candidates.get(inv_no)
+            if exact is not None:
+                return exact
+
+        # When the current row has a stable identity, only truly legacy
+        # serial-only records may be used as a final fallback. A record carrying
+        # a different ID/inventory number belongs to another equipment item.
+        serial_candidates = (
+            latest_unkeyed_by_serial
+            if equipment_id is not None or inv_no
+            else latest_by_serial
+        )
+        latest = None
+        for identifier in self._extract_serial_identifiers(item):
+            candidate = serial_candidates.get(identifier)
+            if candidate is not None and (latest is None or candidate > latest):
+                latest = candidate
+        return latest
+
     def _build_signature_key(self, record: Dict[str, Any]) -> str:
         """
         Build fallback signature key (branch + location + model).
@@ -1805,6 +1929,38 @@ class WorksManager:
                 pass
         return text.upper()
 
+    @staticmethod
+    def _normalize_equipment_id(value: Any) -> Optional[int]:
+        """Normalize immutable SQL equipment IDs stored in compatibility records."""
+        if value in (None, ""):
+            return None
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return None
+        return normalized if normalized > 0 else None
+
+    def _extract_inv_identifier(self, record: Dict[str, Any]) -> str:
+        """Extract the normalized inventory number used by transfer commands."""
+        return self._normalize_identifier(record.get("inv_no") or record.get("INV_NO"))
+
+    def _extract_serial_identifiers(self, record: Dict[str, Any]) -> List[str]:
+        """Extract serial identifiers without mixing in the inventory number."""
+        keys = (
+            "serial_no",
+            "SERIAL_NO",
+            "serial_number",
+            "SERIAL_NUMBER",
+            "hw_serial_no",
+            "HW_SERIAL_NO",
+        )
+        values = []
+        for key in keys:
+            normalized = self._normalize_identifier(record.get(key))
+            if normalized:
+                values.append(normalized)
+        return list(dict.fromkeys(values))
+
     def _build_remaining_pc_item(
         self,
         item: Dict[str, Any],
@@ -1837,22 +1993,10 @@ class WorksManager:
 
     def _extract_identifiers(self, record: Dict[str, Any]) -> List[str]:
         """Extract normalized identifiers from JSON or SQL record."""
-        keys = (
-            "serial_no",
-            "SERIAL_NO",
-            "serial_number",
-            "SERIAL_NUMBER",
-            "hw_serial_no",
-            "HW_SERIAL_NO",
-            "inv_no",
-            "INV_NO",
-        )
-        values = []
-        for key in keys:
-            normalized = self._normalize_identifier(record.get(key))
-            if normalized:
-                values.append(normalized)
-        # preserve order, remove duplicates
+        values = self._extract_serial_identifiers(record)
+        inv_no = self._extract_inv_identifier(record)
+        if inv_no:
+            values.append(inv_no)
         return list(dict.fromkeys(values))
 
     @staticmethod

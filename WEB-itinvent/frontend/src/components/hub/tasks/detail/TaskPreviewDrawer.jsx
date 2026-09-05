@@ -56,6 +56,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
+  formatTaskAssigneesSummary,
   formatTaskObserversSummary,
   renderObserverBlock,
   getTaskUserLabel,
@@ -241,8 +242,8 @@ export function TaskPreviewDrawer({
               <Typography sx={{ fontWeight: 800, mb: 0.75 }}>Контекст</Typography>
               <Grid container spacing={1}>
                 <Grid item xs={12} sm={6}>
-                  <Typography variant="caption" sx={{ color: ui.subtleText }}>Исполнитель</Typography>
-                  <Typography sx={{ fontWeight: 700 }}>{task?.assignee_full_name || task?.assignee_username || '-'}</Typography>
+                  <Typography variant="caption" sx={{ color: ui.subtleText }}>Исполнители</Typography>
+                  <Typography sx={{ fontWeight: 700 }}>{formatTaskAssigneesSummary(task)}</Typography>
                 </Grid>
                 <Grid item xs={12} sm={6}>
                   <Typography variant="caption" sx={{ color: ui.subtleText }}>Контролёр</Typography>

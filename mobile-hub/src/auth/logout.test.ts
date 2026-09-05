@@ -1,6 +1,8 @@
 import * as authApi from '../api/authApi';
 import { clearAllNativeChatDrafts } from '../chat/chatDrafts';
 import { chatSocket } from '../chat/chatSocket';
+import { clearNativeDatabaseFileCache } from '../database/nativeDatabaseFiles';
+import { clearNativeFeedFileCache } from '../feed/nativeFeedFiles';
 import { clearAttachmentCache } from '../files/nativeAttachmentDownloads';
 import { clearOfflineCommandQueue } from '../offline/offlineCommandQueue';
 import { revokeNativePushToken } from '../notifications/nativePush';
@@ -35,6 +37,14 @@ jest.mock('../notifications/nativePush', () => ({
 
 jest.mock('../files/nativeAttachmentDownloads', () => ({
   clearAttachmentCache: jest.fn(),
+}));
+
+jest.mock('../feed/nativeFeedFiles', () => ({
+  clearNativeFeedFileCache: jest.fn(),
+}));
+
+jest.mock('../database/nativeDatabaseFiles', () => ({
+  clearNativeDatabaseFileCache: jest.fn(),
 }));
 
 jest.mock('../mail/nativeMailFiles', () => ({
@@ -85,13 +95,15 @@ describe('endMobileSession', () => {
     expect(revokeNativePushToken).toHaveBeenCalledTimes(1);
     expect(authApi.revokeMobileBiometricSession).toHaveBeenCalledTimes(1);
     expect(authApi.logout).toHaveBeenCalledWith('refresh-token');
-    expect(tokenStore.clearTokens).toHaveBeenCalledTimes(1);
+    expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: true });
     expect(disableBiometricLogin).toHaveBeenCalledTimes(1);
     expect(clearAttachmentCache).toHaveBeenCalledTimes(1);
     expect(clearNativeMailCache).toHaveBeenCalledTimes(1);
     expect(clearNativeTaskFileCache).toHaveBeenCalledTimes(1);
     expect(clearNativeMyFilesCache).toHaveBeenCalledTimes(1);
     expect(clearNativeDocflowCache).toHaveBeenCalledTimes(1);
+    expect(clearNativeFeedFileCache).toHaveBeenCalledTimes(1);
+    expect(clearNativeDatabaseFileCache).toHaveBeenCalledTimes(1);
     expect(clearOfflineCommandQueue).toHaveBeenCalledTimes(1);
     expect(clearPendingChatReplies).toHaveBeenCalledTimes(1);
     expect(clearAllNativeChatDrafts).toHaveBeenCalledTimes(1);
@@ -111,7 +123,7 @@ describe('endMobileSession', () => {
     (authApi.logout as jest.Mock).mockRejectedValueOnce(new Error('offline'));
 
     await expect(endMobileSession()).resolves.toBeUndefined();
-    expect(tokenStore.clearTokens).toHaveBeenCalledTimes(1);
+    expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: true });
     expect(disableBiometricLogin).toHaveBeenCalledTimes(1);
   });
 });

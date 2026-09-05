@@ -2,7 +2,10 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as databaseApi from '../../api/databaseApi';
+import * as equipmentCatalog from '../../cache/nativeEquipmentCatalogSnapshot';
+import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { pickNativeDatabaseActPdf } from '../../database/nativeDatabaseActUpload';
+import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { NativeDatabaseScreen } from './NativeDatabaseScreen';
 import { NativeEquipmentDetailScreen } from './NativeEquipmentDetailScreen';
 
@@ -13,7 +16,7 @@ let mockRole = 'user';
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     offlineMode: mockOfflineMode,
-    user: { role: mockRole },
+    user: { id: 17, role: mockRole },
     hasPermission: (permission: string) => mockPermissions.includes(permission),
   }),
 }));
@@ -66,6 +69,17 @@ jest.mock('../../database/nativeDatabaseActUpload', () => ({
   pickNativeDatabaseActPdf: jest.fn(),
 }));
 jest.mock('../../files/nativeAttachmentDownloads', () => ({ openNativeFile: jest.fn() }));
+jest.mock('../../cache/nativeSnapshotCache', () => ({
+  readNativeCollectionSnapshot: jest.fn(),
+  writeNativeCollectionSnapshot: jest.fn(async () => true),
+  readNativeEntitySnapshot: jest.fn(),
+  writeNativeEntitySnapshot: jest.fn(async () => true),
+  readNativeSnapshot: jest.fn(),
+  writeNativeSnapshot: jest.fn(async () => true),
+}));
+jest.mock('../../cache/nativeEquipmentCatalogSnapshot', () => ({
+  readNativeEquipmentCatalogSnapshot: jest.fn(),
+}));
 jest.mock('expo-camera', () => {
   const React = require('react');
   const { Pressable } = require('react-native');
@@ -109,6 +123,10 @@ beforeEach(() => {
   mockOfflineMode = false;
   mockRole = 'user';
   params.mockReturnValue({});
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue(null);
+  (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock).mockResolvedValue(null);
   (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValue([{ id: 'ITINVENT', name: 'Основная' }]);
   (databaseApi.getCurrentDatabase as jest.Mock).mockResolvedValue({ id: 'ITINVENT', name: 'Основная', locked: false });
   (databaseApi.searchEquipment as jest.Mock).mockResolvedValue({ equipment: [equipment], total: 1, page: 1, pages: 1 });
@@ -173,18 +191,256 @@ it('browses equipment without forcing a search query', async () => {
   expect(databaseApi.listEquipment).toHaveBeenCalledWith(1, 50, 'ITINVENT');
 });
 
+it('stores the database bootstrap and equipment list after an online load', async () => {
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
+
+  expect(snapshotCache.writeNativeSnapshot).toHaveBeenCalledWith(
+    'database-bootstrap',
+    17,
+    expect.objectContaining({
+      currentDatabase: expect.objectContaining({ id: 'ITINVENT' }),
+      databases: [expect.objectContaining({ id: 'ITINVENT' })],
+    }),
+  );
+  expect(snapshotCache.writeNativeCollectionSnapshot).toHaveBeenCalledWith(
+    'database-inbox',
+    17,
+    expect.any(String),
+    expect.objectContaining({
+      equipment: [expect.objectContaining({ inv_no: 'INV-1' })],
+      total: 1,
+    }),
+  );
+});
+
+it('opens the cached equipment list offline without calling the database API', async () => {
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: expect.any(String),
+      mode: 'equipment',
+      query: '',
+      equipment: [equipment],
+      consumables: [],
+      acts: [],
+      total: 1,
+      page: 1,
+      pages: 1,
+    },
+  });
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
+
+  expect(databaseApi.listAvailableDatabases).not.toHaveBeenCalled();
+  expect(databaseApi.getCurrentDatabase).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+});
+
+it('opens the complete local equipment catalog offline instead of only the first cached page', async () => {
+  mockOfflineMode = true;
+  const secondEquipment = { ...equipment, inv_no: 'INV-2', model_name: 'ThinkCentre' };
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [equipment], consumables: [], acts: [], total: 2, page: 1, pages: 1,
+    },
+  });
+  (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 2,
+    data: { databaseId: 'ITINVENT', equipment: [equipment, secondEquipment], total: 2 },
+  });
+
+  const view = await render(<NativeDatabaseScreen />);
+
+  await waitFor(() => expect(view.getByText('ThinkCentre')).toBeTruthy());
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+});
+
+it('filters the cached equipment list locally while offline', async () => {
+  mockOfflineMode = true;
+  const secondEquipment = { ...equipment, inv_no: 'INV-2', model_name: 'ThinkCentre', employee_name: 'Петров П.П.' };
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, signature: string) => (
+      JSON.parse(signature).query === ''
+        ? {
+          savedAt: 1,
+          data: {
+            signature,
+            mode: 'equipment',
+            query: '',
+            equipment: [equipment, secondEquipment],
+            consumables: [],
+            acts: [],
+            total: 2,
+            page: 1,
+            pages: 1,
+          },
+        }
+        : null
+    ),
+  );
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('ThinkCentre')).toBeTruthy());
+  fireEvent.changeText(view.getByTestId('native-database-search'), 'Иванов');
+  await waitFor(() => expect(view.queryByText('ThinkCentre')).toBeNull(), { timeout: 2_000 });
+  expect(view.getByText('OptiPlex')).toBeTruthy();
+  expect(databaseApi.searchEquipment).not.toHaveBeenCalled();
+});
+
+it('keeps QR navigation available offline because parsing does not require a server', async () => {
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [equipment], consumables: [], acts: [], total: 1, page: 1, pages: 1,
+    },
+  });
+  (Clipboard.getStringAsync as jest.Mock).mockResolvedValue('INV_NO: INV-1');
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-paste-qr')).toBeTruthy());
+  fireEvent.press(view.getByTestId('native-database-paste-qr'));
+
+  await waitFor(() => expect(router.push).toHaveBeenCalledWith({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
+  }));
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+});
+
+it('promotes a cached equipment-list item for native QR detail navigation offline', async () => {
+  mockOfflineMode = true;
+  let promotedDetail: unknown = null;
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementationOnce(async (
+    _scope: string,
+    _userId: number,
+    _key: string,
+    data: unknown,
+  ) => {
+    promotedDetail = data;
+  });
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [equipment], consumables: [], acts: [], total: 1, page: 1, pages: 1,
+    },
+  });
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-qr-camera')); });
+
+  await waitFor(() => expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({
+      databaseId: 'ITINVENT',
+      equipment: expect.objectContaining({ inv_no: 'INV-1' }),
+      loadedTabs: [],
+    }),
+  ));
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
+  });
+
+  await view.unmount();
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({ savedAt: 1, data: promotedDetail });
+  const detail = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(detail.getAllByText('OptiPlex').length).toBeGreaterThan(0));
+  expect(detail.getByText('Инв. № INV-1')).toBeTruthy();
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+});
+
 it('keeps the inventory toolbar and equipment card readable without icon-only primary actions', async () => {
   mockPermissions = ['database.read', 'database.write'];
   const view = await render(<NativeDatabaseScreen />);
   await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
 
-  expect(view.getByText('База данных')).toBeTruthy();
+  expect(view.getByTestId('native-database-header-selector')).toBeTruthy();
+  expect(view.getByTestId('native-database-header-selector').props.accessibilityLabel).toContain('Основная');
   expect(view.getByText('Добавить')).toBeTruthy();
   expect(view.getByText('Обновить')).toBeTruthy();
   expect(view.getByText('Инв. № INV-1')).toBeTruthy();
   expect(view.getByText('OptiPlex').props.numberOfLines).toBe(2);
   expect(view.getByTestId('native-database-scan-qr').props.accessibilityLabel).toBe('Сканировать инвентарный QR-код камерой');
   expect(view.getByTestId('native-database-refresh').props.accessibilityLabel).toBe('Обновить результаты');
+});
+
+it('selects the database from a header sheet instead of a horizontal page strip', async () => {
+  (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValueOnce([
+    { id: 'ITINVENT', name: 'Основная' },
+    { id: 'MSK-ITINVENT', name: 'Москва' },
+  ]);
+  (databaseApi.switchDatabase as jest.Mock).mockResolvedValueOnce({
+    id: 'MSK-ITINVENT',
+    name: 'Москва',
+    locked: false,
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-header-selector')).toBeTruthy());
+
+  expect(view.queryByText('База данных')).toBeNull();
+  await act(async () => {
+    fireEvent.press(view.getByTestId('native-database-header-selector'));
+  });
+  expect(view.getByTestId('native-database-picker-sheet')).toBeTruthy();
+  expect(view.getByText('Выберите базу')).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.press(view.getByTestId('native-database-option-MSK-ITINVENT'));
+  });
+
+  await waitFor(() => expect(databaseApi.switchDatabase).toHaveBeenCalledWith('MSK-ITINVENT'));
+  await waitFor(() => expect(view.getByTestId('native-database-header-selector').props.accessibilityLabel).toContain('Москва'));
+  expect(view.queryByTestId('native-database-picker-sheet')).toBeNull();
 });
 
 it('hides recent cards while the user is searching so results stay in focus', async () => {
@@ -261,6 +517,35 @@ it('updates consumable quantity natively with database.write', async () => {
   ));
 });
 
+it('starts only one act download for two immediate presses', async () => {
+  params.mockReturnValue({ mode: 'acts' });
+  (databaseApi.searchEquipmentActs as jest.Mock).mockResolvedValueOnce({
+    acts: [{
+      doc_no: 7,
+      doc_number: 'A-7',
+      has_file: true,
+      items: [{ item_id: 1, inv_no: 'INV-1', serial_no: 'SN-1', model_name: 'OptiPlex' }],
+      type_name: 'Передача',
+      branch_name: '',
+      location_name: '',
+      employee_name: '',
+      raw: {},
+    }],
+    total: 1,
+    truncated: false,
+  });
+  (downloadEquipmentAct as jest.Mock).mockReturnValueOnce(new Promise(() => undefined));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-act-file-7')).toBeTruthy());
+
+  await act(async () => {
+    fireEvent.press(view.getByTestId('native-equipment-act-file-7'));
+    fireEvent.press(view.getByTestId('native-equipment-act-file-7'));
+  });
+
+  expect(downloadEquipmentAct).toHaveBeenCalledTimes(1);
+});
+
 it('loads detail first and lazy-loads acts only after selecting the tab', async () => {
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);
@@ -272,6 +557,71 @@ it('loads detail first and lazy-loads acts only after selecting the tab', async 
   });
   await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledWith('INV-1', 'ITINVENT'));
   await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+});
+
+it('stores an opened equipment card and its loaded tabs for offline use', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({ equipment: expect.objectContaining({ inv_no: 'INV-1' }) }),
+  );
+
+  fireEvent.press(view.getByTestId('native-equipment-tab-acts'));
+  await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenLastCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({
+      acts: [expect.objectContaining({ doc_no: 7 })],
+      loadedTabs: expect.arrayContaining(['acts']),
+    }),
+  );
+});
+
+it('opens a cached equipment card and cached tab offline without network calls', async () => {
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'acts' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: ['acts'],
+    },
+  });
+
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+
+  expect(databaseApi.getCurrentDatabase).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipmentActs).not.toHaveBeenCalled();
+});
+
+it('opens any equipment card from the complete offline catalog without a prior detail visit', async () => {
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
+  (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 2,
+    data: { databaseId: 'ITINVENT', equipment: [equipment], total: 1 },
+  });
+
+  const view = await render(<NativeEquipmentDetailScreen />);
+
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  expect(view.queryByText(/ещё не сохранена/)).toBeNull();
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
 });
 
 it('lazy-loads service history and exposes native recording actions', async () => {

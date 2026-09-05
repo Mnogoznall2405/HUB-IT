@@ -95,6 +95,7 @@ export default function useChatSessionPersistenceEffects({
   messagesHasMore,
   messagesHasNewer,
   mobileView,
+  syncSessionState = true,
   userCacheId,
   viewerLastReadAt,
   viewerLastReadMessageId,
@@ -134,10 +135,12 @@ export default function useChatSessionPersistenceEffects({
   ]);
 
   useEffect(() => {
+    if (!syncSessionState) return;
     syncLastConversationSessionStorage(activeConversationId, lastConversationSessionKey);
-  }, [activeConversationId, lastConversationSessionKey]);
+  }, [activeConversationId, lastConversationSessionKey, syncSessionState]);
 
   useEffect(() => {
+    if (!syncSessionState) return;
     syncLastMobileViewSessionStorage(mobileView, lastMobileViewSessionKey);
-  }, [lastMobileViewSessionKey, mobileView]);
+  }, [lastMobileViewSessionKey, mobileView, syncSessionState]);
 }

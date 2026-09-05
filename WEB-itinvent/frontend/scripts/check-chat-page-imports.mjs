@@ -34,7 +34,7 @@ while ((m = importRe.exec(source)) !== null) {
   });
 }
 
-const fnBodyMatch = source.match(/export function ChatPageContent\(\)\s*\{([\s\S]*)\n\}/);
+const fnBodyMatch = source.match(/export function ChatPageContent\([^)]*\)\s*\{([\s\S]*)\n\}/);
 if (!fnBodyMatch) {
   console.error('Could not parse ChatPageContent function body');
   process.exit(1);

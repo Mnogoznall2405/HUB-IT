@@ -16,6 +16,28 @@ it('exposes the company feed as a primary navigation destination', () => {
   ]));
 });
 
+it('exposes IT purchase requests only through their dedicated permission group', () => {
+  expect(navigationItems).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      path: '/it/requests',
+      label: 'Заявки на МПЗ',
+      permission: 'warehouse_1c.it_requests.read',
+      group: 'it',
+    }),
+  ]));
+});
+
+it('exposes construction objects through the dedicated permission', () => {
+  expect(navigationItems).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      path: '/construction',
+      label: 'Объекты строительства',
+      permission: 'construction.read',
+      group: 'main',
+    }),
+  ]));
+});
+
 describe('getMailNavigationBadgeMeta', () => {
   it('does not treat stale as attention and hides zero-count badge', () => {
     expect(getMailNavigationBadgeMeta('stale', 0)).toMatchObject({

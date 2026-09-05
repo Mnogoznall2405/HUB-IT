@@ -4,6 +4,7 @@ import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -21,6 +22,7 @@ from backend.services.one_c_catalog_snapshot_service import (  # noqa: E402
     OneCCatalogSnapshotStore,
 )
 from backend.services.one_c_catalog_search import catalog_rows_fingerprint  # noqa: E402
+from backend.services.hub_service import hub_service  # noqa: E402
 from backend.appdb.db import app_session, initialize_app_schema  # noqa: E402
 from backend.appdb.models import AppOneCCatalogEntry, AppOneCCatalogToken  # noqa: E402
 from backend.api.v1.warehouse_1c import _run_or_raise  # noqa: E402
@@ -137,6 +139,11 @@ def test_catalog_snapshot_search_lookup_and_generation_are_indexed(temp_dir):
     assert available is True
     assert codes["pn-101"]["ref"] == "nom-1"
 
+    available, refs = store.lookup_nomenclature_refs(["nom-1", "nom-3", "missing"])
+    assert available is True
+    assert set(refs) == {"nom-1", "nom-3"}
+    assert refs["nom-3"]["name"] == "APC Smart UPS"
+
     previous_generation = status["generation"]
     store.replace_snapshot(
         nomenclature=[("nom-new", "NEW-1", "New catalogue row")],
@@ -193,6 +200,18 @@ def test_warehouse_service_uses_app_catalog_without_python_cache(temp_dir):
             "ref": "nom-1",
             "code": "PN-101",
             "name": "Ippon Back Basic 800",
+        }
+        assert service.lookup_nomenclature_refs(["nom-1", "nom-3", "missing"]) == {
+            "nom-1": {
+                "ref": "nom-1",
+                "code": "PN-101",
+                "name": "Ippon Back Basic 800",
+            },
+            "nom-3": {
+                "ref": "nom-3",
+                "code": "APC-9",
+                "name": "APC Smart UPS",
+            },
         }
         suggestion = asyncio.run(service.suggest_nomenclature("Ippon 800"))
         assert [row["ref"] for row in suggestion["results"]] == ["nom-1"]
@@ -497,6 +516,8 @@ def test_catalog_sync_promotes_app_snapshot_without_rebuilding_local_index(temp_
         raise AssertionError(f"Unexpected pool function: {function.__name__}")
 
     monkeypatch.setattr(service._pool, "submit", fake_submit)
+    publish_realtime = Mock(return_value=1)
+    monkeypatch.setattr(hub_service, "publish_permission_realtime", publish_realtime)
     try:
         status = service.sync_catalog_from_1c()
         assert status["source"] == "app_db_indexed_snapshot"
@@ -504,6 +525,25 @@ def test_catalog_sync_promotes_app_snapshot_without_rebuilding_local_index(temp_
         assert service._nomenclature_cache == []
         assert service._word_frequency_index == {}
         assert asyncio.run(service.search_nomenclature("Synced"))[0]["ref"] == "nom-sync"
+        publish_call = publish_realtime.call_args.kwargs
+        assert publish_call["permission"] == "warehouse_1c.read"
+        assert publish_call["event_type"] == "integration.1c.sync.completed"
+        assert publish_call["payload"]["success"] is True
+        assert publish_call["payload"]["nomenclature_count"] == 1
+        assert publish_call["payload"]["warehouses_count"] == 1
+
+        publish_realtime.reset_mock()
+
+        def fail_submit(_function):
+            raise RuntimeError("catalog sync failed")
+
+        monkeypatch.setattr(service._pool, "submit", fail_submit)
+        failed_status = service.sync_catalog_from_1c()
+        assert failed_status["last_error"]
+        failed_publish_call = publish_realtime.call_args.kwargs
+        assert failed_publish_call["event_type"] == "integration.1c.sync.failed"
+        assert failed_publish_call["payload"]["success"] is False
+        assert "last_error" not in failed_publish_call["payload"]
     finally:
         service.shutdown()
 

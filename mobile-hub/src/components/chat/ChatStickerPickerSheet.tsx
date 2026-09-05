@@ -1,11 +1,11 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  FlatList,
   Modal,
   PanResponder,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import type { ChatSticker, ChatStickerPack } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { buildStickerPickerRows, type StickerPickerRow } from '../../chat/chatPickerRows';
 import { collectRecentStickers } from '../../chat/chatStickers';
 import { shouldDismissMediaViewer } from '../../chat/chatGestures';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
@@ -46,6 +47,7 @@ export function ChatStickerPickerSheet({
   const [preview, setPreview] = useState<ChatSticker | null>(null);
   const dragY = useRef(new Animated.Value(0)).current;
   const recent = useMemo(() => collectRecentStickers(packs, recentIds), [packs, recentIds]);
+  const rows = useMemo(() => buildStickerPickerRows(packs, recent), [packs, recent]);
 
   const close = () => {
     setPreview(null);
@@ -69,6 +71,45 @@ export function ChatStickerPickerSheet({
     },
     onPanResponderTerminate: () => dragY.setValue(0),
   }), [onClose, reduceMotion]);
+
+  const renderRow = useCallback(({ item }: { item: StickerPickerRow }) => {
+    if (item.kind === 'header') {
+      return (
+        <View style={styles.packHeader}>
+          <Text style={styles.packTitle}>{item.title}</Text>
+          {item.pack && onRemove ? (
+            <Pressable
+              onPress={() => onRemove(item.pack!)}
+              style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={`Удалить набор ${item.title}`}
+            >
+              <Text style={styles.removeText}>Удалить</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      );
+    }
+    return (
+      <View style={styles.grid}>
+        {item.stickers.map((sticker) => (
+          <Pressable
+            key={sticker.id}
+            onPress={() => onSend(sticker)}
+            onLongPress={() => setPreview(sticker)}
+            onPressOut={() => setPreview(null)}
+            delayLongPress={220}
+            style={({ pressed }) => [styles.sticker, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={`Отправить стикер ${sticker.emoji || ''}`.trim()}
+            accessibilityHint="Удерживайте, чтобы посмотреть крупно"
+          >
+            <ChatStickerImage sticker={sticker} size={64} />
+          </Pressable>
+        ))}
+      </View>
+    );
+  }, [onRemove, onSend, styles]);
 
   return (
     <Modal
@@ -131,36 +172,26 @@ export function ChatStickerPickerSheet({
             </View>
           ) : null}
           {loading || importing ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
-            {recent.length ? (
-              <StickerSection title="Недавние" stickers={recent} onSend={onSend} onPreview={setPreview} />
-            ) : null}
-            {packs.map((pack) => (
-              <View key={pack.id} style={styles.pack}>
-                <View style={styles.packHeader}>
-                  <Text style={styles.packTitle}>{pack.title}</Text>
-                  {onRemove ? (
-                    <Pressable
-                      onPress={() => onRemove(pack)}
-                      style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Удалить набор ${pack.title}`}
-                    >
-                      <Text style={styles.removeText}>Удалить</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-                <StickerGrid stickers={pack.stickers} onSend={onSend} onPreview={setPreview} />
-              </View>
-            ))}
-            {!loading && !packs.length ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
-          </ScrollView>
+          <FlatList
+            testID="chat-sticker-picker-list"
+            data={rows}
+            keyExtractor={(item) => item.id}
+            renderItem={renderRow}
+            keyboardShouldPersistTaps="handled"
+            initialNumToRender={6}
+            maxToRenderPerBatch={5}
+            updateCellsBatchingPeriod={32}
+            windowSize={5}
+            contentContainerStyle={styles.scroll}
+            ListEmptyComponent={!loading ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
+          />
         </Animated.View>
       {preview ? (
         <View style={styles.preview} pointerEvents="none">
           <ChatStickerImage
             sticker={preview}
             size={220}
+            autoPlay
             label={`Превью стикера ${preview.emoji || ''}`.trim()}
           />
           {preview.emoji ? <Text style={styles.previewEmoji}>{preview.emoji}</Text> : null}
@@ -168,57 +199,6 @@ export function ChatStickerPickerSheet({
       ) : null}
       </ChatKeyboardAvoidingHost>
     </Modal>
-  );
-}
-
-function StickerSection({
-  title,
-  stickers,
-  onSend,
-  onPreview,
-}: {
-  title: string;
-  stickers: ChatSticker[];
-  onSend: (sticker: ChatSticker) => void;
-  onPreview: (sticker: ChatSticker | null) => void;
-}) {
-  const { styles } = useChatStyles(createStyles);
-  return (
-    <View style={styles.pack}>
-      <Text style={styles.packTitle}>{title}</Text>
-      <StickerGrid stickers={stickers} onSend={onSend} onPreview={onPreview} />
-    </View>
-  );
-}
-
-function StickerGrid({
-  stickers,
-  onSend,
-  onPreview,
-}: {
-  stickers: ChatSticker[];
-  onSend: (sticker: ChatSticker) => void;
-  onPreview: (sticker: ChatSticker | null) => void;
-}) {
-  const { styles } = useChatStyles(createStyles);
-  return (
-    <View style={styles.grid}>
-      {stickers.map((sticker) => (
-        <Pressable
-          key={sticker.id}
-          onPress={() => onSend(sticker)}
-          onLongPress={() => onPreview(sticker)}
-          onPressOut={() => onPreview(null)}
-          delayLongPress={220}
-          style={({ pressed }) => [styles.sticker, pressed && styles.pressed]}
-          accessibilityRole="button"
-          accessibilityLabel={`Отправить стикер ${sticker.emoji || ''}`.trim()}
-          accessibilityHint="Удерживайте, чтобы посмотреть крупно"
-        >
-          <ChatStickerImage sticker={sticker} size={64} />
-        </Pressable>
-      ))}
-    </View>
   );
 }
 
@@ -257,7 +237,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   },
   importButtonText: { color: '#fff', fontWeight: '700' },
   scroll: { paddingBottom: 24 },
-  pack: { marginBottom: 14 },
   packHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
   packTitle: { color: chatTokens.textSecondary, fontSize: 13, fontWeight: '600', marginBottom: 6 },
   remove: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },

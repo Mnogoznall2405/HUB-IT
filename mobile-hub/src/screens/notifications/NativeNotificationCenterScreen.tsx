@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -27,6 +27,7 @@ import {
   type NotificationCenterItem,
 } from '../../notifications/notificationCenter';
 import { usePreferences } from '../../preferences/PreferencesContext';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 import { goBackOrReplace } from '../account/accountBack';
@@ -57,7 +58,7 @@ function sourceLabel(item: NotificationCenterItem): string {
   return 'HUB-IT';
 }
 
-function NotificationRow({
+const NotificationRow = memo(function NotificationRow({
   item,
   tokens,
   busy,
@@ -66,14 +67,14 @@ function NotificationRow({
   item: NotificationCenterItem;
   tokens: FluentTokens;
   busy: boolean;
-  onPress: () => void;
+  onPress: (item: NotificationCenterItem) => void;
 }) {
   const time = notificationTimeLabel(item.createdAt);
   const source = sourceLabel(item);
   return (
     <Pressable
       testID={`native-notification-${item.key}`}
-      onPress={onPress}
+      onPress={() => onPress(item)}
       disabled={busy}
       accessibilityRole="button"
       accessibilityState={{ busy }}
@@ -117,7 +118,7 @@ function NotificationRow({
       )}
     </Pressable>
   );
-}
+});
 
 export function NativeNotificationCenterScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
@@ -219,6 +220,28 @@ export function NativeNotificationCenterScreen() {
     void load();
   }, [load]));
 
+  useEffect(() => {
+    if (!canReadHub || offlineMode) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void load(true);
+      }, 100);
+    };
+    const releases = [
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+      hubRealtimeSocket.on('hub.notification.created', refresh),
+      hubRealtimeSocket.onTaskChanged(refresh),
+      hubRealtimeSocket.onMailChanged(refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [canReadHub, load, offlineMode]);
+
   const items = useMemo(
     () => buildNotificationCenterItems(hubItems, mailItems).filter((item) => item.unread),
     [hubItems, mailItems],
@@ -280,6 +303,21 @@ export function NativeNotificationCenterScreen() {
     });
     openPortalPath(destination);
   }, [busyKey, markingAll, offlineMode]);
+
+  const openItemRef = useRef(openItem);
+  openItemRef.current = openItem;
+  const handleItemPress = useCallback((item: NotificationCenterItem) => {
+    openItemRef.current(item);
+  }, []);
+
+  const renderNotificationItem = useCallback(({ item }: { item: NotificationCenterItem }) => (
+    <NotificationRow
+      item={item}
+      tokens={tokens}
+      busy={busyKey === item.key}
+      onPress={handleItemPress}
+    />
+  ), [busyKey, handleItemPress, tokens]);
 
   const markAll = useCallback(async () => {
     if (offlineMode || totalUnread <= 0 || markingAll) return;
@@ -392,12 +430,6 @@ export function NativeNotificationCenterScreen() {
           <Text style={[styles.markAllText, { color: tokens.primary }]}>Прочитать все</Text>
         </Pressable>
       </View>
-      {offlineMode ? (
-        <View accessibilityRole="alert" style={[styles.banner, { backgroundColor: `${tokens.warning}18` }]}>
-          <MaterialCommunityIcons name="cloud-off-outline" size={18} color={tokens.warning} />
-          <Text style={[styles.bannerText, { color: tokens.warning }]}>Автономный режим: статус прочтения не изменяется.</Text>
-        </View>
-      ) : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {loading && items.length === 0 ? (
         <View style={styles.loading}><ActivityIndicator color={tokens.primary} /></View>
@@ -424,14 +456,7 @@ export function NativeNotificationCenterScreen() {
               <Text style={[styles.emptyBody, { color: tokens.textSecondary }]}>Новые события появятся здесь.</Text>
             </View>
           )}
-          renderItem={({ item }) => (
-            <NotificationRow
-              item={item}
-              tokens={tokens}
-              busy={busyKey === item.key}
-              onPress={() => openItem(item)}
-            />
-          )}
+          renderItem={renderNotificationItem}
         />
       )}
     </AccountScreenScaffold>

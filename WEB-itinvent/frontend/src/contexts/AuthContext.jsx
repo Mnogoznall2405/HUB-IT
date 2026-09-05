@@ -11,8 +11,20 @@ const AuthContext = createContext(null);
 const alwaysGrantedPermissions = [
   'address_book.read',
   'announcements.read',
+  'chat.ai.use',
   'chat.read',
   'chat.write',
+  'company_structure.read',
+  'dashboard.read',
+  'docflow.act',
+  'docflow.read',
+  'mail.access',
+  'my_files.read',
+  'my_files.share',
+  'my_files.write',
+  'settings.read',
+  'tasks.create',
+  'tasks.read',
 ];
 const rolePermissionFallback = {
   viewer: [
@@ -100,6 +112,8 @@ const rolePermissionFallback = {
     'address_book.personal_email.read',
     'company_structure.read',
     'company_structure.write',
+    'construction.read',
+    'construction.write',
   ],
 };
 

@@ -164,6 +164,15 @@ class PasswordVaultUnlockRequest(BaseModel):
         return text or None
 
 
+class PasswordVaultUnlockMobileBiometricRequest(BaseModel):
+    renewal_token: str = Field(..., min_length=32, max_length=512)
+
+    @field_validator("renewal_token", mode="before")
+    @classmethod
+    def _strip_token(cls, value):
+        return _normalize_text(value)
+
+
 class PasswordVaultUnlockResponse(BaseModel):
     unlocked_until: str
 

@@ -82,6 +82,16 @@ import {
   isChatConversationMuted,
 } from '../../lib/chatSocket';
 import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_ENABLED,
+  HUB_REALTIME_MAIL_EVENT,
+  HUB_REALTIME_NOTIFICATION_EVENT,
+  HUB_REALTIME_RELAX_POLLING_ENABLED,
+  HUB_REALTIME_STABLE_EVENT,
+  HUB_REALTIME_STATUS_EVENT,
+} from '../../lib/hubRealtimeSocket';
+import {
   buildChatNotificationRoute,
   claimChatMessageNotification,
   createChatSystemNotification,
@@ -149,8 +159,10 @@ import {
 const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
 const DRAWER_RAIL_WIDTH = 68;
 const HUB_POLL_INTERVAL_MS = 20_000;
+const HUB_REALTIME_RECONCILE_INTERVAL_MS = 120_000;
 const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
+const SIDEBAR_IT_EXPANDED_KEY = 'sidebar_it_expanded';
 const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
 const normalizeDbId = (value) => String(value ?? '').trim();
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
@@ -255,6 +267,9 @@ function MainLayout({
   const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
     localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
   ));
+  const [sidebarItExpanded, setSidebarItExpanded] = useState(() => (
+    localStorage.getItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
+  ));
   const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -325,6 +340,8 @@ function MainLayout({
   const hubPollFailureCountRef = useRef(0);
   const hubPollLastWarnAtRef = useRef(0);
   const hubPollSuppressToastsRef = useRef(false);
+  const hubPollLastSuccessAtRef = useRef(0);
+  const hubRealtimeStableRef = useRef(false);
   const hasSeenHubNotificationRef = useRef(hasSeenHubNotification);
   const markHubNotificationsSeenRef = useRef(markHubNotificationsSeen);
   const notifyInfoRef = useRef(notifyInfo);
@@ -379,6 +396,9 @@ function MainLayout({
   }, [activeChatConversationId]);
 
   const isChatRoute = location.pathname.startsWith('/chat');
+  const taskDiscussionRouteParams = new URLSearchParams(location.search || '');
+  const isTaskDiscussionRoute = location.pathname.startsWith('/tasks')
+    && taskDiscussionRouteParams.get('task_detail_view') === 'discussion';
   const isMailRoute = location.pathname.startsWith('/mail');
   const isDocflowRoute = location.pathname.startsWith('/docflow');
   const isDlpRoute = location.pathname.startsWith('/dlp') || location.pathname.startsWith('/file-egress');
@@ -469,6 +489,10 @@ function MainLayout({
   );
   const toolNavigationItems = useMemo(
     () => visibleNavigationItems.filter((item) => item.group === 'tools'),
+    [visibleNavigationItems],
+  );
+  const itNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'it'),
     [visibleNavigationItems],
   );
   const visibleMobileNavigationItems = useMemo(
@@ -776,6 +800,8 @@ function MainLayout({
     if (channel === 'chat') {
       const conversationId = String(data?.conversation_id || '').trim();
       const messageId = String(data?.message_id || '').trim();
+      const conversationKind = String(data?.conversation_kind || '').trim();
+      const taskId = String(data?.task_id || '').trim();
       const pushTag = String(detail?.tag || '').trim();
       const dedupeKey = `chat:${messageId || pushTag || conversationId}`;
       const skipBecauseSocketConnected = shouldSkipChatPushForegroundNotification();
@@ -785,13 +811,13 @@ function MainLayout({
       }
       const navigateTo = route !== '/'
         ? route
-        : buildChatNotificationRoute({ conversationId, messageId });
+        : buildChatNotificationRoute({ conversationId, messageId, conversationKind, taskId });
       if (isMobileChatRoute && isNotificationSurfaceVisible()) {
         setChatForegroundDiagnostic('mobile_chat_route_visible');
         return;
       }
       const isActiveVisibleConversation = (
-        location.pathname.startsWith('/chat')
+        (isChatRoute || isTaskDiscussionRoute)
         && activeChatConversationId === conversationId
         && isNotificationSurfaceVisible()
       );
@@ -843,7 +869,7 @@ function MainLayout({
       action: createNavigateToastAction(route, actionLabel),
       durationMs: 5200,
     });
-  }, [activeChatConversationId, isMobileChatRoute, location.pathname]);
+  }, [activeChatConversationId, isChatRoute, isMobileChatRoute, isTaskDiscussionRoute]);
 
   useEffect(() => {
     const handleForegroundPushNotification = (event) => {
@@ -1024,7 +1050,7 @@ function MainLayout({
       if (!claimChatMessageNotification(messageId)) return;
 
       const isActiveVisibleConversation = (
-        location.pathname.startsWith('/chat')
+        (isChatRoute || isTaskDiscussionRoute)
         && activeChatConversationId === conversationId
         && isNotificationSurfaceVisible()
       );
@@ -1047,7 +1073,12 @@ function MainLayout({
 
       const previewText = getMessagePreview(message);
       const senderName = resolveChatNotificationSenderName(message);
-      const navigateTo = buildChatNotificationRoute({ conversationId, messageId });
+      const navigateTo = buildChatNotificationRoute({
+        conversationId,
+        messageId,
+        conversationKind: message?.conversation_kind,
+        taskId: message?.task_id,
+      });
       if (isVisible) {
         notifyInfoRef.current?.(previewText, {
           title: senderName,
@@ -1094,6 +1125,8 @@ function MainLayout({
           title: senderName,
           body: previewText,
           conversationId,
+          conversationKind: message?.conversation_kind,
+          taskId: message?.task_id,
           onNavigate: (target) => navigate(target || navigateTo),
         });
       } else {
@@ -1105,7 +1138,14 @@ function MainLayout({
     return () => {
       window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleChatMessageCreated);
     };
-  }, [activeChatConversationId, hasChatPermission, location.pathname, navigate, user?.id]);
+  }, [
+    activeChatConversationId,
+    hasChatPermission,
+    isChatRoute,
+    isTaskDiscussionRoute,
+    navigate,
+    user?.id,
+  ]);
 useEffect(() => {
   const handleToastActionExecute = (event) => {
     const action = normalizeToastAction(event?.detail);
@@ -1558,6 +1598,7 @@ useEffect(() => {
         });
         hubPollFailureCountRef.current = 0;
         hubPollBackoffUntilRef.current = 0;
+        hubPollLastSuccessAtRef.current = Date.now();
         const payload = response?.data || {};
         if (payload?.hub_chat_ordinary) {
           ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
@@ -1684,9 +1725,19 @@ useEffect(() => {
       hubPollFailureCountRef.current = 0;
       hubPollLastWarnAtRef.current = 0;
       hubPollSuppressToastsRef.current = false;
+      hubPollLastSuccessAtRef.current = 0;
 
       pollNotifications({ forceFull: true, enableToasts: false });
       timer = setInterval(() => {
+        const lastSuccessAt = Number(hubPollLastSuccessAtRef.current || 0);
+        if (
+          HUB_REALTIME_RELAX_POLLING_ENABLED
+          && hubRealtimeStableRef.current
+          && lastSuccessAt > 0
+          && Date.now() - lastSuccessAt < HUB_REALTIME_RECONCILE_INTERVAL_MS
+        ) {
+          return;
+        }
         pollNotifications({ forceFull: false, enableToasts: true });
       }, HUB_POLL_INTERVAL_MS);
       onVisible = () => {
@@ -1764,6 +1815,96 @@ useEffect(() => {
     navigate,
   ]);
 
+  useEffect(() => {
+    if ((!hasHubNotificationPermission && !hasMailPermission) || !HUB_REALTIME_ENABLED) return undefined;
+
+    let refreshTimer = null;
+    let mailRefreshTimer = null;
+    let pendingForceFull = false;
+    let pendingEnableToasts = false;
+    const scheduleRefresh = ({ forceFull, enableToasts }) => {
+      pendingForceFull = pendingForceFull || Boolean(forceFull);
+      pendingEnableToasts = pendingEnableToasts || Boolean(enableToasts);
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        const runForceFull = pendingForceFull;
+        const runEnableToasts = pendingEnableToasts && !runForceFull;
+        pendingForceFull = false;
+        pendingEnableToasts = false;
+        pollNotificationsRef.current?.({
+          forceFull: runForceFull,
+          enableToasts: runEnableToasts,
+          ignoreBackoff: true,
+        });
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      }, 0);
+    };
+    const scheduleMailRefresh = (reason) => {
+      if (!hasMailPermission || mailRefreshTimer) return;
+      mailRefreshTimer = window.setTimeout(() => {
+        mailRefreshTimer = null;
+        fetchUnreadCountsRef.current?.(null, { reason, forceMailUnread: true });
+        window.dispatchEvent(new CustomEvent('mail-needs-refresh', {
+          detail: { reason },
+        }));
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      }, 0);
+    };
+    const handleConnected = () => {
+      if (hasHubNotificationPermission) {
+        scheduleRefresh({ forceFull: true, enableToasts: false });
+      }
+      scheduleMailRefresh('hub-realtime-connected');
+    };
+    const handleStable = () => {
+      if (HUB_REALTIME_RELAX_POLLING_ENABLED) {
+        hubRealtimeStableRef.current = true;
+      }
+    };
+    const handleStatus = (event) => {
+      const status = String(event?.detail?.status || '').trim().toLowerCase();
+      if (status === 'connected') return;
+      const wasStable = hubRealtimeStableRef.current;
+      hubRealtimeStableRef.current = false;
+      if (wasStable && hasHubNotificationPermission) {
+        scheduleRefresh({ forceFull: true, enableToasts: false });
+      }
+    };
+    const handleNotificationCreated = () => {
+      scheduleRefresh({ forceFull: false, enableToasts: true });
+    };
+    const handleMailChanged = () => {
+      scheduleMailRefresh('hub-realtime-mail');
+    };
+
+    window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+    window.addEventListener(HUB_REALTIME_STABLE_EVENT, handleStable);
+    window.addEventListener(HUB_REALTIME_STATUS_EVENT, handleStatus);
+    window.addEventListener(HUB_REALTIME_NOTIFICATION_EVENT, handleNotificationCreated);
+    window.addEventListener(HUB_REALTIME_MAIL_EVENT, handleMailChanged);
+    const release = hubRealtimeSocket.retain();
+    hubRealtimeStableRef.current = Boolean(
+      HUB_REALTIME_RELAX_POLLING_ENABLED
+      && hubRealtimeSocket.isStableConnection?.()
+    );
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (mailRefreshTimer) window.clearTimeout(mailRefreshTimer);
+      window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+      window.removeEventListener(HUB_REALTIME_STABLE_EVENT, handleStable);
+      window.removeEventListener(HUB_REALTIME_STATUS_EVENT, handleStatus);
+      window.removeEventListener(HUB_REALTIME_NOTIFICATION_EVENT, handleNotificationCreated);
+      window.removeEventListener(HUB_REALTIME_MAIL_EVENT, handleMailChanged);
+      hubRealtimeStableRef.current = false;
+      release();
+    };
+  }, [hasHubNotificationPermission, hasMailPermission]);
+
   const handleLogout = async () => {
     setAccountMenuAnchorEl(null);
     await logout();
@@ -1774,6 +1915,14 @@ useEffect(() => {
     setSidebarToolsExpanded((current) => {
       const next = !current;
       localStorage.setItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
+      return next;
+    });
+  };
+
+  const toggleItGroup = () => {
+    setSidebarItExpanded((current) => {
+      const next = !current;
+      localStorage.setItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
       return next;
     });
   };
@@ -2139,6 +2288,41 @@ useEffect(() => {
         <List disablePadding>
           {mainNavigationItems.map((item) => renderNavigationItem(item, compact))}
         </List>
+
+        {itNavigationItems.length > 0 ? (
+          <>
+            {compact ? <Divider sx={{ my: 0.7, borderColor: ui.borderSoft }} /> : (
+              <ListItem disablePadding sx={{ mt: 0.5 }}>
+                <ListItemButton
+                  data-testid={`main-layout-sidebar-it-toggle-${instanceKey}`}
+                  aria-expanded={sidebarItExpanded}
+                  aria-controls={`main-layout-sidebar-it-list-${instanceKey}`}
+                  onClick={toggleItGroup}
+                  sx={{ minHeight: 44, px: 1, borderRadius: '10px', color: ui.mutedText }}
+                >
+                  <ListItemText primary="ИТ" primaryTypographyProps={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }} />
+                  <ExpandMoreRoundedIcon
+                    sx={{
+                      fontSize: 19,
+                      transform: sidebarItExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: prefersReducedMotion ? 'none' : theme.transitions.create('transform', { duration: theme.transitions.duration.shorter }),
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            )}
+            <Collapse
+              id={`main-layout-sidebar-it-list-${instanceKey}`}
+              in={compact || sidebarItExpanded}
+              timeout={prefersReducedMotion ? 0 : 'auto'}
+              unmountOnExit={false}
+            >
+              <List disablePadding>
+                {itNavigationItems.map((item) => renderNavigationItem(item, compact))}
+              </List>
+            </Collapse>
+          </>
+        ) : null}
 
         {toolNavigationItems.length > 0 ? (
           <>

@@ -27,6 +27,8 @@ from backend.services.authorization_service import (
     PERM_TICKETS_PERSONAL_DATA_READ,
     PERM_TICKETS_READ,
     PERM_TICKETS_WRITE,
+    PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
+    PERM_WAREHOUSE_1C_READ,
     authorization_service,
 )
 
@@ -123,19 +125,34 @@ def test_admin_role_keeps_tickets_access_by_default():
     assert PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ in permissions
     assert PERM_ANNOUNCEMENTS_MODERATE in permissions
     assert PERM_COMPUTERS_MANAGE in permissions
+    assert PERM_WAREHOUSE_1C_READ in permissions
+    assert PERM_WAREHOUSE_1C_IT_REQUESTS_READ in permissions
 
 
-def test_global_permissions_include_basic_chat_with_custom_permissions():
+def test_it_requests_permission_is_separate_and_can_be_assigned_individually():
+    operator_permissions = set(authorization_service.get_permissions_for_role("operator"))
+    assert PERM_WAREHOUSE_1C_READ not in operator_permissions
+    assert PERM_WAREHOUSE_1C_IT_REQUESTS_READ not in operator_permissions
+    assert authorization_service.has_permission(
+        "operator",
+        PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
+        use_custom_permissions=True,
+        custom_permissions=[PERM_WAREHOUSE_1C_IT_REQUESTS_READ],
+    )
+    assert not authorization_service.has_permission(
+        "operator",
+        PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
+        use_custom_permissions=True,
+        custom_permissions=[PERM_WAREHOUSE_1C_READ],
+    )
+
+
+def test_custom_permissions_extend_the_viewer_baseline():
+    viewer_permissions = set(authorization_service.get_permissions_for_role("viewer"))
     permissions = set(authorization_service.get_effective_permissions(
         "viewer",
         use_custom_permissions=True,
-        custom_permissions=[],
+        custom_permissions=[PERM_TICKETS_READ],
     ))
 
-    assert permissions == {
-        PERM_ADDRESS_BOOK_READ,
-        PERM_ANNOUNCEMENTS_READ,
-        PERM_CHAT_READ,
-        PERM_CHAT_WRITE,
-        PERM_COMPANY_STRUCTURE_READ,
-    }
+    assert permissions == viewer_permissions | {PERM_TICKETS_READ}

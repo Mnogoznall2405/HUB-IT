@@ -26,6 +26,8 @@ import {
   isTransferActUploadTask,
 } from '../../../lib/hubTaskIntegrations';
 import { buildMobileTaskCardMenuItems } from '../../../pages/tasks/taskCardModel';
+import { formatTaskAssigneesSummary } from '../../../pages/tasks/taskUserUtils';
+import { stripMarkdownForPreview } from '../../../pages/tasks/taskRichText';
 import {
   formatShortDate,
   getInitials,
@@ -59,6 +61,7 @@ const TaskCard = memo(function TaskCard({
 }) {
   const theme = useTheme();
   const latestComment = getTaskCommentPreview(task);
+  const descriptionPreview = stripMarkdownForPreview(task?.description_preview || task?.description);
   const attachCount = Number(task?.attachments_count || 0);
   const isTransferReminder = isTransferActUploadTask(task);
   const priority = priorityMeta(task?.priority);
@@ -116,7 +119,16 @@ const TaskCard = memo(function TaskCard({
     return (
       <Card
         data-testid={`mobile-task-card-${task.id}`}
+        data-task-open-trigger={String(task.id)}
+        role="button"
+        tabIndex={0}
         onClick={() => onOpen?.(task)}
+        onKeyDown={(event) => {
+          if (event.currentTarget !== event.target) return;
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          onOpen?.(task);
+        }}
         sx={{
           px: 1.35,
           py: 1,
@@ -130,6 +142,11 @@ const TaskCard = memo(function TaskCard({
           transition: 'background-color 0.16s ease',
           '&:active': {
             bgcolor: ui.actionBg,
+          },
+          '&:focus-visible': {
+            outline: '2px solid',
+            outlineColor: 'primary.main',
+            outlineOffset: '-2px',
           },
         }}
       >
@@ -159,6 +176,23 @@ const TaskCard = memo(function TaskCard({
             ) : null}
           </Stack>
 
+          {descriptionPreview ? (
+            <Typography
+              data-testid={`mobile-task-card-description-${task.id}`}
+              variant="caption"
+              sx={{
+                color: ui.subtleText,
+                display: '-webkit-box',
+                overflow: 'hidden',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: 2,
+                whiteSpace: 'pre-line',
+              }}
+            >
+              {descriptionPreview}
+            </Typography>
+          ) : null}
+
           <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
             <Typography variant="caption" sx={{ color: statusMeta(task?.status).color, fontWeight: 900, flexShrink: 0 }}>
               {statusMeta(task?.status).label}
@@ -169,7 +203,7 @@ const TaskCard = memo(function TaskCard({
             </Typography>
             <Typography variant="caption" sx={{ color: ui.subtleText, flexShrink: 0 }}>·</Typography>
             <Typography variant="caption" sx={{ color: ui.subtleText, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {task?.assignee_full_name || task?.assignee_username || '-'}
+              {formatTaskAssigneesSummary(task, { compact: true })}
             </Typography>
           </Stack>
 
@@ -217,7 +251,16 @@ const TaskCard = memo(function TaskCard({
   return (
     <Card
       className="task-card"
+      data-task-open-trigger={String(task.id)}
+      role="button"
+      tabIndex={0}
       onClick={() => onOpen?.(task)}
+      onKeyDown={(event) => {
+        if (event.currentTarget !== event.target) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onOpen?.(task);
+      }}
       sx={{
         p: 1.15,
         borderRadius: '14px',
@@ -232,6 +275,11 @@ const TaskCard = memo(function TaskCard({
           bgcolor: ui.actionHover,
           transform: 'translateY(-1px)',
           boxShadow: ui.dialogShadow,
+        },
+        '&:focus-visible': {
+          outline: '2px solid',
+          outlineColor: 'primary.main',
+          outlineOffset: '2px',
         },
       }}
     >
@@ -321,6 +369,24 @@ const TaskCard = memo(function TaskCard({
         </Stack>
       </Stack>
 
+      {descriptionPreview ? (
+        <Typography
+          data-testid={`task-card-description-${task.id}`}
+          variant="caption"
+          sx={{
+            color: ui.subtleText,
+            display: '-webkit-box',
+            mt: 0.45,
+            overflow: 'hidden',
+            WebkitBoxOrient: 'vertical',
+            WebkitLineClamp: 2,
+            whiteSpace: 'pre-line',
+          }}
+        >
+          {descriptionPreview}
+        </Typography>
+      ) : null}
+
       <Stack direction="row" spacing={0.45} sx={{ mt: 0.65, flexWrap: 'wrap', gap: 0.35 }}>
         {isTransferReminder && (
           <Chip
@@ -404,7 +470,7 @@ const TaskCard = memo(function TaskCard({
             {getInitials(task?.assignee_full_name || task?.assignee_username)}
           </Avatar>
           <Typography variant="caption" sx={{ color: ui.subtleText, maxWidth: 108, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {task?.assignee_full_name || task?.assignee_username || '-'}
+            {formatTaskAssigneesSummary(task, { compact: true })}
           </Typography>
         </Stack>
         <Stack direction="row" spacing={0.7} alignItems="center">

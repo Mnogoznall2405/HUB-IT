@@ -47,7 +47,18 @@ function TasksPageContent() {
             </Alert>
           ) : null}
 
-          {detail.detailsOpen ? <TasksDetailPanel /> : <TasksListLayout />}
+          <Box
+            aria-hidden={detail.detailsOpen ? 'true' : undefined}
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: detail.detailsOpen ? 'none' : 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <TasksListLayout />
+          </Box>
+          {detail.detailsOpen ? <TasksDetailPanel /> : null}
         </Box>
 
         {filters.mobileNavigationDrawerProps ? (

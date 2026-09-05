@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { IconButton } from 'react-native-paper';
+import { HubConnectionInline } from '../layout/HubConnectionHeader';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { PresenceAvatar } from './PresenceAvatar';
 
@@ -43,11 +44,7 @@ export function ChatHeader({
             </Text>
             {muted ? <Text style={styles.muted} accessibilityLabel="Уведомления выключены">⌁</Text> : null}
           </View>
-          {subtitle ? (
-            <Text style={styles.subtitle} numberOfLines={1}>
-              {subtitle}
-            </Text>
-          ) : null}
+          <HubConnectionInline onlineLabel={subtitle} style={styles.subtitle} />
         </View>
       </Pressable>
       {onSearch ? (
@@ -81,6 +78,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   textBlock: { flex: 1, minWidth: 0 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   title: { flexShrink: 1, fontSize: 17, fontWeight: '600', color: chatTokens.textPrimary },
-  subtitle: { fontSize: 13, color: chatTokens.textSecondary, marginTop: 2 },
+  subtitle: { marginTop: 2 },
   muted: { color: chatTokens.textSecondary, fontSize: 15 },
 });

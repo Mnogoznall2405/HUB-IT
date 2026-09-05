@@ -39,7 +39,7 @@ async function replyClientMessageId(response: Notifications.NotificationResponse
 export async function dismissHandledNotification(response: Notifications.NotificationResponse): Promise<void> {
   const identifier = String(response.notification.request.identifier || '').trim();
   if (!identifier) return;
-  await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
+  void Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
 }
 
 export async function getNotificationActionDetails(
@@ -89,6 +89,8 @@ export async function processNotificationAction(
     replyToMessageId: messageId || undefined,
   });
   await chatApi.markConversationRead(conversationId, messageId || undefined).catch(() => undefined);
-  await dismissHandledNotification(response);
+  // The background feedback layer updates this exact notification identifier.
+  // Dismissing here races with the final "sent" update and can leave Android's
+  // RemoteInput UI spinning or remove the confirmation after it is posted.
   return { kind: 'reply', route };
 }

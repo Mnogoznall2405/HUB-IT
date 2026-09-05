@@ -454,11 +454,11 @@ export function NativeTaskCreateScreen() {
       <AccountSectionCard
         tokens={tokens}
         title={`Исполнители * (${selectedAssigneeIds.length})`}
-        description="Для каждого выбранного исполнителя сервер создаст отдельную задачу."
+        description="Все выбранные исполнители работают в одной общей задаче."
       >
         <HubTextField
           testID="native-task-create-assignee-search"
-          label="Поиск исполнителя"
+          label="Поиск исполнителей"
           value={assigneeQuery}
           onChangeText={setAssigneeQuery}
           autoCapitalize="words"
@@ -651,7 +651,7 @@ export function NativeTaskCreateScreen() {
       <AccountPrimaryButton
         tokens={tokens}
         testID="native-task-create-submit"
-        label={saving ? 'Создание…' : selectedAssigneeIds.length > 1 ? `Создать задачи: ${selectedAssigneeIds.length}` : 'Создать задачу'}
+        label={saving ? 'Создание…' : 'Создать задачу'}
         disabled={saving || offlineMode}
         onPress={() => { void submit(); }}
       />

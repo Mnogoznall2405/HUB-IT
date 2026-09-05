@@ -6,6 +6,7 @@ import { NativeFeedEditorScreen } from './NativeFeedEditorScreen';
 import { NativeFeedPostScreen } from './NativeFeedPostScreen';
 import * as feedApi from '../../api/feedApi';
 import * as feedFiles from '../../feed/nativeFeedFiles';
+import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
 
 let mockAuth: {
@@ -72,6 +73,13 @@ jest.mock('../../feed/nativeFeedFiles', () => ({
   openNativeFeedFile: jest.fn(),
 }));
 
+jest.mock('../../cache/nativeSnapshotCache', () => ({
+  readNativeCollectionSnapshot: jest.fn(async () => null),
+  writeNativeCollectionSnapshot: jest.fn(async () => true),
+  readNativeEntitySnapshot: jest.fn(async () => null),
+  writeNativeEntitySnapshot: jest.fn(async () => undefined),
+}));
+
 const mockedUseLocalSearchParams = useLocalSearchParams as jest.Mock;
 
 const samplePost = {
@@ -92,6 +100,8 @@ const samplePost = {
 describe('NativeFeedInboxScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
     mockAuth = {
       user: { id: 1, username: 'user', role: 'user', permissions: ['dashboard.read', 'announcements.write'] },
       hasPermission: (permission) => ['dashboard.read', 'announcements.write'].includes(permission),
@@ -118,11 +128,67 @@ describe('NativeFeedInboxScreen', () => {
       expect(view.getByText('Новости компании')).toBeTruthy();
     });
     expect(view.getByText('Короткое описание')).toBeTruthy();
+    await waitFor(() => expect(snapshotCache.writeNativeCollectionSnapshot).toHaveBeenCalledWith(
+      'feed-inbox',
+      1,
+      expect.any(String),
+      expect.objectContaining({ items: [expect.objectContaining({ id: 'post-1' })] }),
+    ));
     expect(view.getByTestId('feed-create')).toBeTruthy();
     await act(async () => {
       fireEvent.press(view.getByTestId('feed-create'));
     });
     expect(router.push).toHaveBeenCalledWith('/(shell)/feed/editor');
+  });
+
+  it('opens the saved feed immediately offline without requesting the API', async () => {
+    mockAuth = { ...mockAuth, offlineMode: true };
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockImplementation(
+      async (_scope: string, _userId: number, signature: string) => ({
+        savedAt: 1,
+        data: {
+          signature,
+          items: [{ ...samplePost, id: 'cached-post', title: 'Сохранённая публикация' }],
+          total: 1,
+          unreadTotal: 0,
+        },
+      }),
+    );
+    (feedApi.listFeedPosts as jest.Mock).mockRejectedValue(new Error('offline'));
+
+    const view = await render(<NativeFeedInboxScreen />);
+
+    await waitFor(() => expect(view.getByText('Сохранённая публикация')).toBeTruthy());
+    expect(feedApi.listFeedPosts).not.toHaveBeenCalled();
+    expect(feedApi.listFeedCategories).not.toHaveBeenCalled();
+    expect(feedApi.listFeedTags).not.toHaveBeenCalled();
+  });
+
+  it('searches the prepared default feed locally while offline', async () => {
+    mockAuth = { ...mockAuth, offlineMode: true };
+    const defaultSignature = JSON.stringify({ filter: 'all', q: '', categoryId: '', tag: '' });
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockImplementation(
+      async (_scope: string, _userId: number, signature: string) => signature === defaultSignature ? ({
+        savedAt: 1,
+        data: {
+          signature,
+          items: [
+            { ...samplePost, id: 'cached-first', title: 'Первая публикация' },
+            { ...samplePost, id: 'cached-second', title: 'Вторая публикация' },
+          ],
+          total: 2,
+          unreadTotal: 0,
+        },
+      }) : null,
+    );
+
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByText('Вторая публикация')).toBeTruthy());
+    await act(async () => { fireEvent.changeText(view.getByTestId('feed-search-input'), 'Вторая'); });
+
+    await waitFor(() => expect(view.queryByText('Первая публикация')).toBeNull());
+    expect(view.getByText('Вторая публикация')).toBeTruthy();
+    expect(feedApi.listFeedPosts).not.toHaveBeenCalled();
   });
 
   it('hides create without announcements.write', async () => {
@@ -159,6 +225,8 @@ describe('NativeFeedInboxScreen', () => {
 describe('NativeFeedEditorScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
     mockedUseLocalSearchParams.mockReturnValue({});
     mockAuth = {
       user: { id: 1, username: 'publisher', role: 'user', permissions: ['dashboard.read', 'announcements.write'] },
@@ -384,6 +452,8 @@ describe('NativeFeedEditorScreen', () => {
 describe('NativeFeedPostScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
     mockedUseLocalSearchParams.mockReturnValue({ postId: 'post-1' });
     mockAuth = {
       user: { id: 1, username: 'user', role: 'user', permissions: ['dashboard.read'] },
@@ -419,6 +489,15 @@ describe('NativeFeedPostScreen', () => {
       expect(view.getByText('Полный текст публикации')).toBeTruthy();
     });
     expect(view.getByText('Первый комментарий')).toBeTruthy();
+    await waitFor(() => expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+      'feed-post-details',
+      1,
+      'post-1',
+      expect.objectContaining({
+        post: expect.objectContaining({ id: 'post-1' }),
+        comments: [expect.objectContaining({ id: 'c1' })],
+      }),
+    ));
     await act(async () => {
       fireEvent.changeText(view.getByTestId('feed-comment-input'), 'Новый комментарий');
     });
@@ -434,6 +513,30 @@ describe('NativeFeedPostScreen', () => {
         clientRequestId: expect.any(String),
       }));
     });
+  });
+
+  it('opens a previously viewed post with comments offline without network calls', async () => {
+    mockAuth = { ...mockAuth, offlineMode: true };
+    (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+      savedAt: 1,
+      data: {
+        post: { ...samplePost, body: 'Сохранённый полный текст' },
+        comments: [{ id: 'cached-comment', body: 'Сохранённый комментарий', full_name: 'Мария' }],
+        commentsTotal: 1,
+        commentsNextOffset: null,
+        commentsSort: 'interesting',
+        replies: {},
+      },
+    });
+    (feedApi.getFeedPost as jest.Mock).mockRejectedValue(new Error('offline'));
+    (feedApi.listFeedComments as jest.Mock).mockRejectedValue(new Error('offline'));
+
+    const view = await render(<NativeFeedPostScreen />);
+
+    await waitFor(() => expect(view.getByText('Сохранённый полный текст')).toBeTruthy());
+    expect(view.getByText('Сохранённый комментарий')).toBeTruthy();
+    expect(feedApi.getFeedPost).not.toHaveBeenCalled();
+    expect(feedApi.listFeedComments).not.toHaveBeenCalled();
   });
 
   it('paginates roots and loads a reply thread', async () => {

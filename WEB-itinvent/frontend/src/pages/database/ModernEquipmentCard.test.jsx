@@ -71,4 +71,24 @@ describe('ModernEquipmentCard', () => {
     expect(onToggleSelect).toHaveBeenNthCalledWith(1, '1001');
     expect(onToggleSelect).toHaveBeenNthCalledWith(2, '1001');
   });
+
+  it('opens the current act from the compact mobile status', () => {
+    const onOpenCurrentAct = vi.fn();
+    renderCard({
+      item: {
+        ...item,
+        current_act_available: true,
+        current_act_doc_no: 901,
+        current_act_doc_number: 'ACT-901',
+      },
+      onOpenCurrentAct,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Открыть актуальный акт ACT-901/ }));
+
+    expect(onOpenCurrentAct).toHaveBeenCalledWith(expect.objectContaining({
+      doc_no: 901,
+      inv_no: '1001',
+    }));
+  });
 });

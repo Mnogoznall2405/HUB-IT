@@ -1,7 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   getCurrentDatabase,
   getEquipment,
@@ -30,6 +30,13 @@ import {
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeEntitySnapshot,
+  readNativeSnapshot,
+  writeNativeEntitySnapshot,
+} from '../../cache/nativeSnapshotCache';
+import { readNativeEquipmentCatalogSnapshot } from '../../cache/nativeEquipmentCatalogSnapshot';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativeEquipmentActCard } from '../../components/database/NativeEquipmentActCard';
 import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentWorkHistoryCard } from '../../components/database/NativeEquipmentWorkHistoryCard';
@@ -47,6 +54,11 @@ import {
   type EquipmentDetailTab,
 } from '../../database/nativeDatabaseModel';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
+import {
+  nativeEquipmentSnapshotKey,
+  type NativeDatabaseBootstrapSnapshot,
+  type NativeEquipmentDetailSnapshot,
+} from '../../database/nativeDatabaseSnapshot';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -106,6 +118,16 @@ export function NativeEquipmentDetailScreen() {
   const [ownerQuery, setOwnerQuery] = useState('');
   const [ownerOptions, setOwnerOptions] = useState<EquipmentOwnerOption[]>([]);
 
+  const applyCachedDetail = useCallback((snapshot: NativeEquipmentDetailSnapshot) => {
+    setDatabaseId(snapshot.databaseId);
+    setEquipment(snapshot.equipment);
+    setActs(snapshot.acts || []);
+    setHistory(snapshot.history || []);
+    setWorkHistory(snapshot.workHistory || []);
+    setUnavailableWorkKinds(snapshot.unavailableWorkKinds || []);
+    setLoadedTabs(new Set(snapshot.loadedTabs || []));
+  }, []);
+
   const ensureDatabase = useCallback(async (): Promise<string> => {
     const current = await getCurrentDatabase();
     if (!requestedDatabaseId || current.id === requestedDatabaseId) return current.id;
@@ -122,19 +144,81 @@ export function NativeEquipmentDetailScreen() {
     if (refresh) setRefreshing(true);
     else setLoading(true);
     setError('');
+    const userId = Number(user?.id || 0);
+    let cached: NativeEquipmentDetailSnapshot | null = null;
+    let cachedDatabaseId = requestedDatabaseId;
+    if (!cachedDatabaseId && userId) {
+      const bootstrap = await readNativeSnapshot<NativeDatabaseBootstrapSnapshot>('database-bootstrap', userId);
+      cachedDatabaseId = bootstrap?.data.currentDatabase.id || '';
+    }
+    if (userId && cachedDatabaseId) {
+      const snapshot = await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+        'database-item-details',
+        userId,
+        nativeEquipmentSnapshotKey(cachedDatabaseId, invNo),
+      );
+      if (snapshot) {
+        cached = snapshot.data;
+        applyCachedDetail(snapshot.data);
+        setLoading(false);
+      }
+      if (!cached) {
+        const catalog = await readNativeEquipmentCatalogSnapshot(userId, cachedDatabaseId);
+        const normalizedInvNo = invNo.trim().toLocaleUpperCase('ru-RU');
+        const catalogItem = catalog?.data.equipment.find(
+          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
+        );
+        if (catalogItem) {
+          cached = {
+            databaseId: cachedDatabaseId,
+            equipment: catalogItem,
+            acts: [],
+            history: [],
+            workHistory: [],
+            unavailableWorkKinds: [],
+            loadedTabs: [],
+          };
+          applyCachedDetail(cached);
+          setLoading(false);
+        }
+      }
+    }
+    if (offlineMode) {
+      if (!cached) setError('Нет подключения, и эта карточка ещё не сохранена на устройстве.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const activeDatabaseId = await ensureDatabase();
       const result = await getEquipment(invNo, activeDatabaseId);
       setDatabaseId(activeDatabaseId);
       setEquipment(result);
       void touchRecentEquipmentCard(invNo, result, 'view', activeDatabaseId).catch(() => undefined);
+      if (userId) {
+        void writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+          'database-item-details',
+          userId,
+          nativeEquipmentSnapshotKey(activeDatabaseId, invNo),
+          {
+            databaseId: activeDatabaseId,
+            equipment: result,
+            acts: cached?.acts || [],
+            history: cached?.history || [],
+            workHistory: cached?.workHistory || [],
+            unavailableWorkKinds: cached?.unavailableWorkKinds || [],
+            loadedTabs: cached?.loadedTabs || [],
+          },
+        );
+      }
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось открыть карточку оборудования.'));
+      if (cached) setError('Показана сохранённая карточка. Обновить данные не удалось.');
+      else setError(formatApiError(cause, 'Не удалось открыть карточку оборудования.'));
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [allowed, ensureDatabase, invNo]);
+  }, [allowed, applyCachedDetail, ensureDatabase, invNo, offlineMode, requestedDatabaseId, user?.id]);
 
   useEffect(() => { void loadEquipment(); }, [loadEquipment]);
 
@@ -142,28 +226,80 @@ export function NativeEquipmentDetailScreen() {
     if (!invNo || target === 'general' || (target === 'works' && !equipment) || (!force && loadedTabs.has(target))) return;
     setTabLoading(true);
     setTabError('');
+    const userId = Number(user?.id || 0);
+    const snapshotKey = nativeEquipmentSnapshotKey(databaseId || requestedDatabaseId, invNo);
+    let cached: NativeEquipmentDetailSnapshot | null = null;
+    if (userId && snapshotKey !== ':') {
+      const snapshot = await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+        'database-item-details',
+        userId,
+        snapshotKey,
+      );
+      if (snapshot) {
+        cached = snapshot.data;
+        if (snapshot.data.loadedTabs.includes(target as 'works' | 'acts' | 'history')) {
+          applyCachedDetail(snapshot.data);
+          setTabLoading(false);
+          if (offlineMode) return;
+        }
+      }
+    }
+    if (offlineMode) {
+      setTabError('Эта вкладка ещё не сохранена. Откройте её один раз при наличии интернета.');
+      setTabLoading(false);
+      return;
+    }
     try {
+      let nextActs = cached?.acts || acts;
+      let nextHistory = cached?.history || history;
+      let nextWorkHistory = cached?.workHistory || workHistory;
+      let nextUnavailable = cached?.unavailableWorkKinds || unavailableWorkKinds;
       if (target === 'acts') {
         const result = await getEquipmentActs(invNo, databaseId);
         setActs(result.acts);
+        nextActs = result.acts;
       } else if (target === 'history') {
         const result = await getEquipmentHistory(invNo, databaseId);
         setHistory(result.history);
+        nextHistory = result.history;
       } else if (equipment) {
         const result = await getEquipmentWorkHistories(equipment, equipmentWorkKinds(equipment));
         setWorkHistory(result.histories);
         setUnavailableWorkKinds(result.unavailable);
+        nextWorkHistory = result.histories;
+        nextUnavailable = result.unavailable;
         if (result.failed.length) {
           setTabError(`Часть истории не загрузилась: ${result.failed.map(equipmentWorkKindLabel).join(', ')}.`);
         }
       }
       setLoadedTabs((current) => new Set(current).add(target));
+      if (userId && equipment) {
+        void writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+          'database-item-details',
+          userId,
+          snapshotKey,
+          {
+            databaseId,
+            equipment,
+            acts: nextActs,
+            history: nextHistory,
+            workHistory: nextWorkHistory,
+            unavailableWorkKinds: nextUnavailable,
+            loadedTabs: [...new Set([
+              ...(cached?.loadedTabs || [...loadedTabs].filter(
+                (value): value is 'works' | 'acts' | 'history' => value !== 'general',
+              )),
+              target as 'works' | 'acts' | 'history',
+            ])],
+          },
+        );
+      }
     } catch (cause) {
       setTabError(formatApiError(cause, target === 'acts' ? 'Не удалось загрузить акты.' : target === 'works' ? 'Не удалось загрузить историю обслуживания.' : 'Не удалось загрузить историю.'));
     } finally {
       setTabLoading(false);
     }
-  }, [databaseId, equipment, invNo, loadedTabs]);
+  }, [acts, applyCachedDetail, databaseId, equipment, history, invNo, loadedTabs, offlineMode, requestedDatabaseId, unavailableWorkKinds, user?.id, workHistory]);
 
   useEffect(() => { void loadTab(tab); }, [loadTab, tab]);
 
@@ -479,7 +615,7 @@ export function NativeEquipmentDetailScreen() {
         onRequestClose={() => { if (!editBusy) setEditOpen(false); }}
         accessibilityViewIsModal
       >
-        <View style={[styles.editor, { backgroundColor: tokens.pageBg }]}> 
+        <KeyboardAvoidingView style={[styles.editor, { backgroundColor: tokens.pageBg }]} {...chatKeyboardAvoidingProps()}>
           <View style={[styles.editorHeader, { borderBottomColor: tokens.borderSoft }]}> 
             <Pressable accessibilityRole="button" accessibilityLabel="Закрыть редактирование" disabled={editBusy} onPress={() => setEditOpen(false)} style={styles.editorHeaderAction}>
               <Text style={[styles.editorHeaderButton, { color: tokens.textSecondary }]}>Отмена</Text>
@@ -582,7 +718,7 @@ export function NativeEquipmentDetailScreen() {
               </View>
             ))}
           </ScrollView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </AccountScreenScaffold>
   );

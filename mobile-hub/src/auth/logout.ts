@@ -1,6 +1,8 @@
 import * as authApi from '../api/authApi';
 import { clearAllNativeChatDrafts } from '../chat/chatDrafts';
 import { chatSocket } from '../chat/chatSocket';
+import { clearNativeDatabaseFileCache } from '../database/nativeDatabaseFiles';
+import { clearNativeFeedFileCache } from '../feed/nativeFeedFiles';
 import { clearAttachmentCache } from '../files/nativeAttachmentDownloads';
 import { clearOfflineCommandQueue } from '../offline/offlineCommandQueue';
 import { revokeNativePushToken } from '../notifications/nativePush';
@@ -56,11 +58,13 @@ export async function endMobileSession(): Promise<void> {
       clearNativeTaskFileCache();
       clearNativeMyFilesCache();
       clearNativeDocflowCache();
+      clearNativeFeedFileCache();
+      clearNativeDatabaseFileCache();
     } catch {
       // Cache cleanup must not prevent credential revocation.
     }
     await Promise.allSettled([
-      tokenStore.clearTokens(),
+      tokenStore.clearTokens({ clearOfflineData: true }),
       disableBiometricLogin(),
       clearOfflineCommandQueue(),
       clearPendingChatReplies(),

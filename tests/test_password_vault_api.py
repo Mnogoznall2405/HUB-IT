@@ -39,6 +39,7 @@ class FakePasswordVaultService:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.reveal_allowed = True
+        self.mobile_update_allowed = True
 
     def list_entries(self, **kwargs):
         self.calls.append("list")
@@ -120,6 +121,16 @@ class FakePasswordVaultService:
     def unlock_with_trusted_device(self, **kwargs):
         self.calls.append("unlock.webauthn")
         return {"unlocked_until": "2026-05-28T00:05:00+00:00"}
+
+    def unlock_with_mobile_biometric(self, **kwargs):
+        self.calls.append("unlock.mobile_biometric")
+        return {"unlocked_until": "2026-05-28T00:05:00+00:00"}
+
+    def require_unlocked(self, **kwargs):
+        self.calls.append("require_unlocked")
+        if not self.mobile_update_allowed:
+            raise PasswordVaultAccessError("Password vault unlock is required")
+        return "2026-05-28T00:05:00+00:00"
 
     def _require_unlock_eligible_user(self, *, user_id):
         self.calls.append("unlock.eligible")
@@ -314,6 +325,51 @@ def test_unlock_and_audit_endpoints(monkeypatch):
     audit_response = admin_client.get("/passwords/audit")
     assert audit_response.status_code == 200
     assert audit_response.json()["items"][0]["action"] == "reveal.copy"
+
+
+def test_mobile_biometric_unlock_requires_mobile_device_headers(monkeypatch):
+    fake = FakePasswordVaultService()
+    client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
+    renewal_token = f"mb1.{('a' * 32)}.{('B' * 48)}"
+
+    hidden = client.post(
+        "/passwords/unlock/mobile-biometric",
+        json={"renewal_token": renewal_token},
+    )
+    unlocked = client.post(
+        "/passwords/unlock/mobile-biometric",
+        json={"renewal_token": renewal_token},
+        headers={"X-Auth-Client": "mobile", "X-Client-Device-ID": "device-0000000017"},
+    )
+
+    assert hidden.status_code == 404
+    assert unlocked.status_code == 200
+    assert unlocked.json()["unlocked_until"]
+    assert fake.calls == ["unlock.mobile_biometric"]
+
+
+def test_mobile_update_requires_active_vault_unlock_but_web_contract_is_unchanged(monkeypatch):
+    fake = FakePasswordVaultService()
+    client = _client_for(lambda: _make_user(permissions=["passwords.write"]), fake, monkeypatch)
+    payload = {"description": "updated"}
+
+    web_update = client.patch("/passwords/entry-1", json=payload)
+    mobile_update = client.patch(
+        "/passwords/entry-1",
+        json=payload,
+        headers={"X-Auth-Client": "mobile", "X-Client-Device-ID": "device-0000000017"},
+    )
+    fake.mobile_update_allowed = False
+    denied_mobile_update = client.patch(
+        "/passwords/entry-1",
+        json=payload,
+        headers={"X-Auth-Client": "mobile", "X-Client-Device-ID": "device-0000000017"},
+    )
+
+    assert web_update.status_code == 200
+    assert mobile_update.status_code == 200
+    assert denied_mobile_update.status_code == 403
+    assert fake.calls == ["update", "require_unlocked", "update", "require_unlocked"]
 
 
 def test_password_group_endpoints_permissions(monkeypatch):

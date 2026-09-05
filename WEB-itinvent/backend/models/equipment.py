@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 class EquipmentBase(BaseModel):
     """Base equipment model with common fields."""
+    id: Optional[int] = Field(None, description="Equipment item ID")
     inv_no: str = Field(..., description="Inventory number")
     serial_no: Optional[str] = Field(None, description="Serial number")
     hw_serial_no: Optional[str] = Field(None, description="Hardware serial number")
@@ -35,6 +36,13 @@ class EquipmentBase(BaseModel):
     hub_db_name: Optional[str] = Field(None, description="Hub database display name")
     is_current_db: Optional[bool] = Field(None, description="True if row is from current Hub DB")
     hub_owner_no: Optional[int] = Field(None, description="Resolved OWNER_NO in that Hub DB")
+    current_act_available: Optional[bool] = Field(
+        None,
+        description="True when a current-owner, non-annulled downloadable act exists",
+    )
+    current_act_doc_no: Optional[int] = Field(None, description="Current act DOC_NO")
+    current_act_doc_number: Optional[str] = Field(None, description="Current act display number")
+    current_act_doc_date: Optional[datetime] = Field(None, description="Current act document date")
 
 
 class EmployeeSummary(BaseModel):

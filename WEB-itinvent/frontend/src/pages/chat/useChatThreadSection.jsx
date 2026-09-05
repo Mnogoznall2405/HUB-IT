@@ -26,6 +26,7 @@ export default function useChatThreadSection(ctx) {
     openMobileInboxView,
     handleOpenInfo,
     openTaskFromChat,
+    mobileBackLabel,
     openSearchDialog,
     handleOpenMenu,
     openMessageReads,
@@ -161,6 +162,7 @@ export default function useChatThreadSection(ctx) {
         onThreadScroll={handleThreadScroll}
         bottomRef={bottomRef}
         onBack={openMobileInboxView}
+        backLabel={mobileBackLabel}
         onOpenInfo={handleOpenInfo}
         onOpenTask={openTaskFromChat}
         onOpenSearch={openSearchDialog}
@@ -302,6 +304,7 @@ export default function useChatThreadSection(ctx) {
       openMessageMenu,
       openMessageReads,
       openMobileInboxView,
+      mobileBackLabel,
       openSearchDialog,
       openTaskFromChat,
       pinnedMessage,

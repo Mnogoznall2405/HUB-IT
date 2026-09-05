@@ -137,13 +137,13 @@ export default function useTaskCreateForm({
 
   useEffect(() => {
     const ids = [
-      editData?.assignee_user_id,
+      ...(Array.isArray(editData?.assignee_user_ids) ? editData.assignee_user_ids : []),
       ...(Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids : []),
     ].filter(Boolean);
     if (ids.length) {
       void resolveAssigneesByIds(ids);
     }
-  }, [createData.assignee_user_ids, editData?.assignee_user_id, resolveAssigneesByIds]);
+  }, [createData.assignee_user_ids, editData?.assignee_user_ids, resolveAssigneesByIds]);
 
   const handleCreateDescriptionDraftChange = useCallback((value) => {
     createDescriptionRef.current = String(value || '');

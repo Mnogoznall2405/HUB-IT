@@ -240,6 +240,7 @@ class ChatTextMessagePersistence:
         member_user_ids: list[int] = []
         message_id = ""
         conversation_kind = ""
+        conversation_task_id = ""
         payload: dict[str, Any] = {}
         dedup_hit = False
         normalized_client_message_id = _normalize_text(client_message_id) or None
@@ -291,6 +292,7 @@ class ChatTextMessagePersistence:
             conversation_kind = (
                 _normalize_text(getattr(conversation, "kind", None), "direct") or "direct"
             )
+            conversation_task_id = _normalize_text(getattr(conversation, "task_id", None))
             reply_to_message = self._resolve_reply_message(
                 session=session,
                 conversation_id=conversation.id,
@@ -312,6 +314,8 @@ class ChatTextMessagePersistence:
                 payload = build_lean_message_payload_from_orm(
                     message=existing_message,
                     current_user_id=int(current_user_id),
+                    conversation_kind=conversation_kind,
+                    task_id=conversation_task_id,
                 )
                 stage_metrics["ack_payload_prepare_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
                 stage_metrics["serialize_ms"] = stage_metrics["ack_payload_prepare_ms"]
@@ -502,6 +506,10 @@ class ChatTextMessagePersistence:
                     current_user_id=int(current_user_id),
                 )
                 member_user_ids = self._conversation_member_ids(dedup_session, dedup_conversation.id)
+                conversation_kind = (
+                    _normalize_text(getattr(dedup_conversation, "kind", None), "direct") or "direct"
+                )
+                conversation_task_id = _normalize_text(getattr(dedup_conversation, "task_id", None))
                 existing_message = self._find_existing_client_message(
                     session=dedup_session,
                     conversation_id=dedup_conversation.id,
@@ -515,6 +523,8 @@ class ChatTextMessagePersistence:
                 payload = build_lean_message_payload_from_orm(
                     message=existing_message,
                     current_user_id=int(current_user_id),
+                    conversation_kind=conversation_kind,
+                    task_id=conversation_task_id,
                 )
                 stage_metrics["serialize_ms"] = 0.0
 
@@ -530,6 +540,8 @@ class ChatTextMessagePersistence:
             payload = build_lean_message_payload_from_orm(
                 message=post_commit_serialize["message"],
                 current_user_id=int(post_commit_serialize["current_user_id"]),
+                conversation_kind=conversation_kind,
+                task_id=conversation_task_id,
             )
             stage_metrics["ack_payload_prepare_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
             stage_metrics["second_db_session"] = float(second_db_session_used)

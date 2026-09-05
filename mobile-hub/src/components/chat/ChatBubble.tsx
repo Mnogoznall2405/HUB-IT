@@ -16,12 +16,14 @@ import {
   isPhotoChatAttachment,
   isStickerOnlyMessage,
   resolveChatBubbleMetaMode,
+  resolveChatPhotoMaxHeight,
   resolveChatPhotoWidth,
   shouldBleedBubbleMedia,
   shouldShowSenderAvatar,
   type ChatBubbleGroupPosition,
 } from '../../chat/chatBubbleLayout';
 import { shouldRenderChatMarkdown, stripChatMarkdownPreview } from '../../chat/chatMarkdown';
+import { pickChatAttachmentPreviewUrl } from '../../chat/chatMedia';
 import { extractFirstChatUrl } from '../../chat/chatLinkPreview';
 import { isStickerChatAttachment, stickerFromChatAttachment } from '../../chat/chatStickers';
 import {
@@ -124,7 +126,7 @@ export const ChatBubble = memo(function ChatBubble({
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const reactions = message.reactions || [];
   const isDeleted = Boolean(message.is_deleted);
   const attachments = isDeleted ? [] : message.attachments || [];
@@ -172,6 +174,7 @@ export const ChatBubble = memo(function ChatBubble({
     hasTrailingBlock,
   });
   const photoWidth = resolveChatPhotoWidth(windowWidth);
+  const photoMaxHeight = resolveChatPhotoMaxHeight(windowHeight);
   const documentWidth = Math.round(Math.max(160, Math.min(280, windowWidth * 0.72)));
   const avatarVisible = shouldShowSenderAvatar({ isOwn, showSenderAvatars, groupPosition });
   const timeLabel = message.created_at
@@ -373,6 +376,7 @@ export const ChatBubble = memo(function ChatBubble({
                 <ChatStickerImage
                   sticker={stickerFromChatAttachment(attachment)}
                   size={CHAT_STICKER_SIZE}
+                  autoPlay
                 />
                 {stickerOnly ? overlayMeta : null}
               </Pressable>
@@ -387,18 +391,10 @@ export const ChatBubble = memo(function ChatBubble({
               />
             );
           }
-          const previewUrl = resolveAttachmentUrl(
-            attachment.id.startsWith('pending-attachment:') ? attachment.local_uri : null,
-          ) || resolveAttachmentUrl(
-            attachment.variant_urls?.thumbnail
-              || attachment.variant_urls?.thumb
-              || attachment.preview_url
-              || attachment.original_url
-              || attachment.url,
-          );
           const localPreviewUrl = attachment.id.startsWith('pending-attachment:')
             ? String(attachment.local_uri || '').trim()
             : '';
+          const previewUrl = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(attachment));
           const effectivePreviewUrl = localPreviewUrl || previewUrl;
           const isPhoto = Boolean(effectivePreviewUrl && isPhotoChatAttachment(attachment));
           if (!isPhoto) {
@@ -436,7 +432,8 @@ export const ChatBubble = memo(function ChatBubble({
             >
               <ChatBubblePhoto
                 uri={effectivePreviewUrl!}
-                width={photoWidth}
+                maxWidth={photoWidth}
+                maxHeight={photoMaxHeight}
                 radius={bleedMedia ? 14 : 10}
               >
                 {attachment.id === lastPhotoId ? overlayMeta : null}
@@ -655,6 +652,8 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   bubble: {
     flexShrink: 1,
     borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'transparent',
     paddingHorizontal: 10,
     paddingVertical: 8,
     overflow: 'hidden',
@@ -664,7 +663,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   bubblePressed: { opacity: 0.88 },
   bubbleSelected: { backgroundColor: chatTokens.sidebarRowSoftActive },
   bubbleHighlighted: {
-    borderWidth: 2,
     borderColor: chatTokens.composerActionBg,
   },
   own: { backgroundColor: chatTokens.bubbleOwnBg },

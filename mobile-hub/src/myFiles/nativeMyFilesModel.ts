@@ -1,7 +1,7 @@
 import type { MyFileRecord } from '../api/myFilesApi';
 
 export const MY_FILES_RETENTION_OPTIONS = [1, 3, 7, 10, 30] as const;
-export const MY_FILES_MAX_FILE_BYTES = 1024 * 1024 * 1024;
+export const MY_FILES_MAX_FILE_BYTES = (2 ** 32) - 1;
 export const MY_FILES_TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 export const MY_FILES_ACTIVE_STATUSES = new Set(['uploading', 'queued', 'scanning', 'processing']);
 

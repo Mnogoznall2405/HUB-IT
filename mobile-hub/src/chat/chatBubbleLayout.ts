@@ -109,8 +109,38 @@ export function resolveChatPhotoAspect(width?: number | null, height?: number | 
 
 export function resolveChatPhotoWidth(windowWidth: number): number {
   const safeWidth = Number(windowWidth || 0);
-  if (!Number.isFinite(safeWidth) || safeWidth <= 0) return 240;
-  return Math.max(180, Math.min(272, Math.round(safeWidth * 0.64)));
+  if (!Number.isFinite(safeWidth) || safeWidth <= 0) return 232;
+  return Math.max(164, Math.min(248, Math.round(safeWidth * 0.58)));
+}
+
+export function resolveChatPhotoMaxHeight(windowHeight: number): number {
+  const safeHeight = Number(windowHeight || 0);
+  if (!Number.isFinite(safeHeight) || safeHeight <= 0) return 280;
+  return Math.max(220, Math.min(320, Math.round(safeHeight * 0.38)));
+}
+
+export function resolveChatPhotoFrame({
+  maxWidth,
+  maxHeight,
+  sourceWidth,
+  sourceHeight,
+}: {
+  maxWidth: number;
+  maxHeight: number;
+  sourceWidth?: number | null;
+  sourceHeight?: number | null;
+}): { width: number; height: number } {
+  const safeMaxWidth = Math.max(1, Math.round(Number(maxWidth || 0)));
+  const safeMaxHeight = Math.max(1, Math.round(Number(maxHeight || 0)));
+  const aspect = resolveChatPhotoAspect(sourceWidth, sourceHeight);
+  const heightAtFullWidth = Math.round(safeMaxWidth / aspect);
+  if (heightAtFullWidth <= safeMaxHeight) {
+    return { width: safeMaxWidth, height: heightAtFullWidth };
+  }
+  return {
+    width: Math.min(safeMaxWidth, Math.round(safeMaxHeight * aspect)),
+    height: safeMaxHeight,
+  };
 }
 
 export function shouldShowSenderAvatar(input: {

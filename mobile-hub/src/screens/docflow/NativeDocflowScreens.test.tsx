@@ -6,6 +6,11 @@ import * as docflowApi from '../../api/docflowApi';
 import type { DocflowTaskDetail } from '../../api/docflowApi';
 import * as docflowFiles from '../../docflow/nativeDocflowFiles';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
+import {
+  clearNativeSnapshots,
+  writeNativeCollectionSnapshot,
+  writeNativeEntitySnapshot,
+} from '../../cache/nativeSnapshotCache';
 import { openPortalPath } from '../../navigation/moduleRegistry';
 import {
   docflowKeyboardAvoidingBehavior,
@@ -19,6 +24,7 @@ let mockOfflineMode = false;
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
+    user: { id: 1, username: 'ivanov' },
     offlineMode: mockOfflineMode,
     hasPermission: (permission: string) => mockPermissions.includes(permission),
   }),
@@ -99,7 +105,8 @@ const enriched: DocflowTaskDetail = {
   }],
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await clearNativeSnapshots(1);
   jest.clearAllMocks();
   mockPermissions = ['docflow.read', 'docflow.act', 'docflow.create'];
   mockOfflineMode = false;
@@ -185,6 +192,48 @@ beforeEach(() => {
   (messengerLinks.openExternalUrl as jest.Mock).mockResolvedValue(true);
   (docflowFiles.downloadNativeDocflowFile as jest.Mock).mockResolvedValue({ uri: 'file://contract.pdf', contentUri: 'content://contract.pdf' });
   (docflowFiles.downloadNativeDocflowPreview as jest.Mock).mockResolvedValue({ uri: 'file://contract-preview.pdf', contentUri: 'content://contract-preview.pdf' });
+});
+
+it('restores a previously opened 1C DO inbox without calling the server offline', async () => {
+  const signature = JSON.stringify({ scope: 'inbox', query: '' });
+  await writeNativeCollectionSnapshot('docflow-inbox', 1, signature, {
+    signature,
+    profile: {
+      configured: true,
+      login: 'ivanov',
+      status: 'valid',
+      last_error_code: null,
+      last_verified_at: null,
+      updated_at: null,
+    },
+    result: {
+      items: [task],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      as_of: '2026-08-24T10:00:00+05:00',
+      truncated: false,
+    },
+  });
+  jest.clearAllMocks();
+  mockOfflineMode = true;
+
+  const view = await render(<NativeDocflowInboxScreen />);
+
+  expect(await view.findByText('Согласовать договор')).toBeTruthy();
+  expect(docflowApi.getDocflowProfile).not.toHaveBeenCalled();
+  expect(docflowApi.listDocflowTasks).not.toHaveBeenCalled();
+});
+
+it('restores a previously opened 1C DO task card offline', async () => {
+  await writeNativeEntitySnapshot('docflow-task-details', 1, task.ref, enriched);
+  jest.clearAllMocks();
+  mockOfflineMode = true;
+
+  const view = await render(<NativeDocflowDetailScreen taskRef={task.ref} />);
+
+  expect(await view.findByText('Договор №7')).toBeTruthy();
+  expect(docflowApi.getDocflowTask).not.toHaveBeenCalled();
 });
 
 it('loads the configured inbox and opens an internal native detail route', async () => {

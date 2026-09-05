@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   ScrollView,
@@ -38,7 +39,12 @@ import {
 } from '../../api/mailConfigApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
-import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
+import {
+  readNativeCollectionSnapshot,
+  writeNativeCollectionSnapshot,
+} from '../../cache/nativeSnapshotCache';
 import {
   NativeMailInboxConversationRow,
   NativeMailInboxDivider,
@@ -294,7 +300,11 @@ export function NativeMailInboxScreen() {
     const userId = Number(user?.id || 0);
     let cached = false;
     if (reset && !refresh && userId) {
-      const snapshot = await readNativeSnapshot<NativeMailInboxSnapshot>('mail-inbox', userId);
+      const snapshot = await readNativeCollectionSnapshot<NativeMailInboxSnapshot>(
+        'mail-inbox',
+        userId,
+        signature,
+      );
       if (requestId !== requestRef.current) return;
       if (snapshot?.data.signature === signature) {
         cached = true;
@@ -332,7 +342,10 @@ export function NativeMailInboxScreen() {
         ? (pageResult.items as MailConversationPreview[]).map((value) => ({ kind: 'conversation' as const, key: `c:${value.conversation_id}`, value }))
         : applyPendingMailReadOverrides(pageResult.items as MailMessagePreview[], mailboxId)
           .map((value) => ({ kind: 'message' as const, key: `m:${value.id}`, value }));
-      setItems((current) => reset ? nextItems : [...current, ...nextItems.filter((item) => !current.some((old) => old.key === item.key))]);
+      const cachedItems = reset
+        ? nextItems
+        : [...items, ...nextItems.filter((item) => !items.some((old) => old.key === item.key))];
+      setItems(cachedItems);
       setTotal(pageResult.total);
       setHasMore(pageResult.has_more);
       if (summaryResult) {
@@ -353,10 +366,10 @@ export function NativeMailInboxScreen() {
         setMailboxes(nextMailboxes);
       }
       if (pageResult.search_limited) setError('Поиск выполнен по ограниченному окну писем. Уточните запрос.');
-      if (reset && userId) {
-        void writeNativeSnapshot<NativeMailInboxSnapshot>('mail-inbox', userId, {
+      if (userId) {
+        void writeNativeCollectionSnapshot<NativeMailInboxSnapshot>('mail-inbox', userId, signature, {
           signature,
-          items: nextItems,
+          items: cachedItems,
           total: pageResult.total,
           hasMore: pageResult.has_more,
           summary: summaryResult || summary,
@@ -393,6 +406,26 @@ export function NativeMailInboxScreen() {
     });
     return undefined;
   }, [advancedFilters, allowed, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view])); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!allowed || offlineMode) return undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void load({ reset: true, refresh: true });
+      }, 100);
+    };
+    const releases = [
+      hubRealtimeSocket.onMailChanged(refresh),
+      hubRealtimeSocket.on('hub.realtime.connected', refresh),
+    ];
+    return () => {
+      if (timer) clearTimeout(timer);
+      releases.forEach((release) => release());
+    };
+  }, [allowed, load, offlineMode]);
 
   const toggleSelected = useCallback((id: string) => {
     setSelected((current) => {
@@ -697,7 +730,6 @@ export function NativeMailInboxScreen() {
         <FilterChip testID="native-mail-important-filter" label="Важные" selected={advancedFilters.importance === 'high'} tokens={tokens} onPress={() => setAdvancedFilters((current) => ({ ...current, importance: current.importance === 'high' ? '' : 'high' }))} />
         <FilterChip testID="native-mail-advanced-filter" label={advancedFilterCount ? `Ещё (${advancedFilterCount})` : 'Ещё'} selected={advancedFilterCount > 0} tokens={tokens} onPress={() => { setAdvancedDraft(advancedFilters); setAdvancedOpen(true); }} />
       </ScrollView>
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.banner, { color: tokens.warning }]}>Автономный режим: показаны последние загруженные данные, действия отключены.</Text> : null}
       {error && items.length > 0 ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {loading && items.length === 0 ? (
         <MailListSkeleton tokens={tokens} />
@@ -816,7 +848,7 @@ export function NativeMailInboxScreen() {
         </View>
       </Modal>
       <Modal visible={advancedOpen} transparent animationType="slide" onRequestClose={() => setAdvancedOpen(false)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} {...chatKeyboardAvoidingProps()}>
           <Pressable style={styles.backdropDismissLayer} accessibilityRole="button" accessibilityLabel="Закрыть расширенные фильтры" onPress={() => setAdvancedOpen(false)} />
           <View testID="native-mail-advanced-filter-sheet" style={[styles.filterSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
             <View style={styles.moveHeader}>
@@ -854,7 +886,7 @@ export function NativeMailInboxScreen() {
               <Pressable testID="native-mail-apply-filters" accessibilityRole="button" accessibilityLabel="Применить расширенные фильтры" onPress={applyAdvancedFilters} style={[styles.primaryFilterAction, { backgroundColor: tokens.primary }]}><Text style={[styles.filterActionText, { color: '#fff' }]}>Применить</Text></Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
       <Modal visible={bulkMoveOpen} transparent animationType="slide" onRequestClose={() => setBulkMoveOpen(false)}>
         <View style={styles.modalBackdrop}>

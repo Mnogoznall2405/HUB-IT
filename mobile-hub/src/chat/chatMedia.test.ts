@@ -11,6 +11,7 @@ import {
   mediaItemFromConversationAttachment,
   mergeChatMediaItems,
   pickChatAttachmentPlaybackUrl,
+  pickChatAttachmentPreviewUrl,
   pickChatAttachmentOriginalUrl,
   resolveMediaViewerRelease,
   shouldPageMediaViewer,
@@ -47,6 +48,21 @@ describe('chat media helpers', () => {
       sender_user_id: 1,
       attachments: [{ id: 'voice-1', kind: 'audio', file_name: 'voice_1.m4a', mime_type: 'audio/mp4' }],
     }])).toEqual([]);
+  });
+
+  it('prefers the sharp preview and falls back to the legacy thumbnail variant', () => {
+    expect(pickChatAttachmentPreviewUrl({
+      id: 'photo-preview',
+      variant_urls: {
+        preview: '/files/preview-1280.jpg',
+        thumbnail: '/files/thumb-320.jpg',
+      },
+      original_url: '/files/original.jpg',
+    })).toBe('/files/preview-1280.jpg');
+    expect(pickChatAttachmentPreviewUrl({
+      id: 'photo-thumb',
+      variant_urls: { thumb: '/files/legacy-thumb.jpg' },
+    })).toBe('/files/legacy-thumb.jpg');
   });
 
   it('collects media in thread order and pages between neighbours', () => {

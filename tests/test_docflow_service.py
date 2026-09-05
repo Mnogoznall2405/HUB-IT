@@ -75,6 +75,10 @@ class FakeAdapter:
             return {
                 "items": [],
                 "returned": 0,
+                "offset": int(payload.get("offset") or 0),
+                "total": 0,
+                "has_more": False,
+                "next_offset": None,
                 "scope": payload.get("scope", "inbox"),
                 "source": "live_1c",
                 "as_of": datetime.now(timezone.utc).isoformat(),
@@ -851,6 +855,7 @@ def test_task_read_uses_the_same_users_credentials_and_marks_invalid(monkeypatch
                 "scope": "inbox",
                 "search": "",
                 "limit": 25,
+                "offset": 0,
             },
         )
     ]
@@ -905,6 +910,7 @@ def test_task_detail_uses_saved_personal_credentials_and_never_accepts_a_login(m
                 "login": "owner.login",
                 "password": "temporary-test-password",
                 "task_ref": task_ref,
+                "include_related": True,
             },
         )
     ]
@@ -1146,11 +1152,12 @@ def test_api_rejects_extra_fields_and_does_not_return_password(monkeypatch):
                 "login": "test.user",
                 "password": "temporary-test-password",
                 "task_ref": task_ref,
+                "include_related": True,
             },
         )
         assert client.get("/docflow/tasks/not-a-uuid").status_code == 422
 
-        action_denied = client.post(
+        action_with_invalid_state = client.post(
             f"/docflow/tasks/{task_ref}/actions",
             headers={"Idempotency-Key": "permission-check-1"},
             json={
@@ -1159,7 +1166,7 @@ def test_api_rejects_extra_fields_and_does_not_return_password(monkeypatch):
                 "state_token": "signed-state-token",
             },
         )
-        assert action_denied.status_code == 403
+        assert action_with_invalid_state.status_code == 409
         assert client.get("/docflow/assignments/capability").status_code == 403
 
         adapter.error = DocflowCredentialsInvalid("invalid")
@@ -1174,6 +1181,51 @@ def test_api_rejects_extra_fields_and_does_not_return_password(monkeypatch):
         assert metadata.status_code == 403
 
 
+def test_tasks_api_accepts_bounded_offset_and_returns_page_metadata(monkeypatch):
+    service, adapter, _ = _service(monkeypatch)
+    asyncio.run(
+        service.save_credentials(
+            user_id=5,
+            login="test.user",
+            password="temporary-test-password",
+            correlation_id="save",
+        )
+    )
+    adapter.calls.clear()
+    monkeypatch.setattr(docflow_api, "docflow_service", service)
+    app = FastAPI()
+    app.include_router(docflow_api.router, prefix="/docflow")
+    current_user = User(
+        id=5,
+        username="hub.user",
+        role="viewer",
+        permissions=["docflow.read"],
+        use_custom_permissions=True,
+        custom_permissions=["docflow.read"],
+        is_active=True,
+    )
+    app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
+
+    with TestClient(app) as client:
+        response = client.get("/docflow/tasks", params={"limit": 25, "offset": 40})
+        assert response.status_code == 200
+        body = response.json()
+        assert body | {"as_of": None} == {
+            "items": [],
+            "returned": 0,
+            "offset": 40,
+            "total": 0,
+            "has_more": False,
+            "next_offset": None,
+            "scope": "inbox",
+            "source": "live_1c",
+            "as_of": None,
+            "truncated": False,
+        }
+        assert adapter.calls[-1][1]["offset"] == 40
+        assert client.get("/docflow/tasks", params={"offset": 10_001}).status_code == 422
+
+
 class _FakeCollection:
     def __init__(self, items):
         self._items = list(items)
@@ -1186,24 +1238,35 @@ class _FakeCollection:
 
 
 class _FakeQuerySelection:
+    def __init__(self, rows=None):
+        self._rows = list(rows or [])
+        self._index = -1
+
     def Next(self):
-        return False
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def __getattr__(self, name):
+        if 0 <= self._index < len(self._rows):
+            return getattr(self._rows[self._index], name)
+        raise AttributeError(name)
 
 
 class _FakeQuery:
-    def __init__(self) -> None:
+    def __init__(self, rows=None) -> None:
         self.Text = ""
         self.parameters = {}
+        self.rows = list(rows or [])
 
     def SetParameter(self, name, value):
         self.parameters[name] = value
 
     def Execute(self):
-        return SimpleNamespace(Select=lambda: _FakeQuerySelection())
+        return SimpleNamespace(Select=lambda: _FakeQuerySelection(self.rows))
 
 
 class _FakeDocflowConnection:
-    def __init__(self) -> None:
+    def __init__(self, rows=None) -> None:
         fields = [
             SimpleNamespace(Name="Автор"),
             SimpleNamespace(Name="ДатаНачала"),
@@ -1226,7 +1289,7 @@ class _FakeDocflowConnection:
         self.Metadata = SimpleNamespace(Tasks=_FakeCollection([task_type]))
         self.SessionParameters = SimpleNamespace()
         setattr(self.SessionParameters, "ТекущийПользователь", object())
-        self.query = _FakeQuery()
+        self.query = _FakeQuery(rows)
 
     def NewObject(self, kind):
         assert kind == "Query"
@@ -1259,12 +1322,59 @@ def test_com_query_is_fixed_to_current_1c_assignee(monkeypatch):
     )
 
     assert result["items"] == []
+    assert result["offset"] == 0
+    assert result["total"] == 0
+    assert result["has_more"] is False
+    assert result["next_offset"] is None
     assert "Задание.ТекущийИсполнитель = &ТекущийПользователь" in connection.query.Text
     assert "Задание.Выполнена КАК Выполнено" in connection.query.Text
     assert "Задание.ДатаНачала КАК Дата" in connection.query.Text
     assert "ПРЕДСТАВЛЕНИЕ(Задание.ПредметСтрокой) КАК Предмет" in connection.query.Text
     assert connection.query.parameters["ТекущийПользователь"] is not None
     assert connection.query.parameters["Завершено"] is False
+
+
+def test_com_task_pages_use_a_stable_offset_without_raising_the_public_limit(monkeypatch):
+    for name in (
+        "DOCFLOW_1C_TASK_TYPE",
+        "DOCFLOW_1C_TASK_ASSIGNEE_FIELD",
+        "DOCFLOW_1C_TASK_COMPLETED_FIELD",
+        "DOCFLOW_1C_TASK_DATE_FIELD",
+        "DOCFLOW_1C_TASK_SUBJECT_FIELD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def task_row(index: int):
+        task_ref = SimpleNamespace(UUID=lambda: f"00000000-0000-0000-0000-{index:012d}")
+        return SimpleNamespace(**{
+            "Ссылка": task_ref,
+            "Представление": f"Задание {index}",
+            "Предмет": f"Задание {index}",
+            "Дата": datetime(2026, 8, index, tzinfo=timezone.utc),
+            "Срок": None,
+            "Автор": "Автор",
+            "Выполнено": False,
+        })
+
+    connection = _FakeDocflowConnection([task_row(3), task_row(2), task_row(1)])
+    client = Docflow1CComClient(
+        connector_factory=lambda: SimpleNamespace(Connect=lambda _connection_string: connection),
+    )
+
+    middle = client.list_tasks(
+        login="test.user", password="temporary-test-password", scope="inbox", search="", limit=1, offset=1,
+    )
+    last = client.list_tasks(
+        login="test.user", password="temporary-test-password", scope="inbox", search="", limit=1, offset=2,
+    )
+
+    assert [item["title"] for item in middle["items"]] == ["Задание 2"]
+    assert middle["has_more"] is True
+    assert middle["next_offset"] == 2
+    assert [item["title"] for item in last["items"]] == ["Задание 1"]
+    assert last["total"] == 3
+    assert last["has_more"] is False
+    assert "ВЫБРАТЬ ПЕРВЫЕ 4" in connection.query.Text
 
 
 def test_com_client_reuses_an_authenticated_connection_without_storing_plain_credentials(monkeypatch):
@@ -1549,13 +1659,29 @@ def _task_detail_row(task_ref: str, process_ref: str, *, process_object=None):
     }
 
 
-def test_task_detail_and_files_are_constrained_by_assignee_task_and_process(monkeypatch):
+def _clear_docflow_task_mapping_env(monkeypatch) -> None:
     for name in (
         "DOCFLOW_1C_TASK_TYPE",
         "DOCFLOW_1C_TASK_ASSIGNEE_FIELD",
+        "DOCFLOW_1C_TASK_COMPLETED_FIELD",
         "DOCFLOW_1C_SESSION_USER_FIELD",
+        "DOCFLOW_1C_TASK_NUMBER_FIELD",
+        "DOCFLOW_1C_TASK_DATE_FIELD",
+        "DOCFLOW_1C_TASK_DUE_FIELD",
+        "DOCFLOW_1C_TASK_AUTHOR_FIELD",
+        "DOCFLOW_1C_TASK_SUBJECT_FIELD",
+        "DOCFLOW_1C_TASK_DESCRIPTION_FIELD",
+        "DOCFLOW_1C_TASK_RESULT_FIELD",
+        "DOCFLOW_1C_TASK_STATE_FIELD",
+        "DOCFLOW_1C_TASK_IMPORTANCE_FIELD",
+        "DOCFLOW_1C_TASK_ACCEPTED_FIELD",
+        "DOCFLOW_1C_TASK_COMPLETED_AT_FIELD",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_task_detail_and_files_are_constrained_by_assignee_task_and_process(monkeypatch):
+    _clear_docflow_task_mapping_env(monkeypatch)
     task_ref = "11111111-1111-1111-1111-111111111111"
     process_ref = "22222222-2222-2222-2222-222222222222"
     file_ref = "33333333-3333-3333-3333-333333333333"
@@ -1604,6 +1730,7 @@ def test_task_detail_and_files_are_constrained_by_assignee_task_and_process(monk
 
 
 def test_file_export_rejects_a_file_that_is_not_owned_by_the_tasks_process(monkeypatch):
+    _clear_docflow_task_mapping_env(monkeypatch)
     task_ref = "11111111-1111-1111-1111-111111111111"
     process_ref = "22222222-2222-2222-2222-222222222222"
     file_ref = "33333333-3333-3333-3333-333333333333"
@@ -1634,6 +1761,7 @@ def test_file_export_rejects_a_file_that_is_not_owned_by_the_tasks_process(monke
 
 
 def test_task_detail_includes_files_owned_by_a_business_process_subject(monkeypatch):
+    _clear_docflow_task_mapping_env(monkeypatch)
     task_ref = "11111111-1111-1111-1111-111111111111"
     process_ref = "22222222-2222-2222-2222-222222222222"
     subject_ref = "44444444-4444-4444-4444-444444444444"
@@ -1672,6 +1800,7 @@ def test_task_detail_includes_files_owned_by_a_business_process_subject(monkeypa
 
 
 def test_file_export_uses_the_standard_1c_file_module_for_disk_volumes(monkeypatch, tmp_path):
+    _clear_docflow_task_mapping_env(monkeypatch)
     task_ref = "11111111-1111-1111-1111-111111111111"
     process_ref = "22222222-2222-2222-2222-222222222222"
     subject_ref = "44444444-4444-4444-4444-444444444444"
@@ -1725,6 +1854,7 @@ def test_file_export_uses_the_standard_1c_file_module_for_disk_volumes(monkeypat
 
 
 def test_file_export_falls_back_to_the_service_ad_volume_reader(monkeypatch, tmp_path):
+    _clear_docflow_task_mapping_env(monkeypatch)
     task_ref = "11111111-1111-1111-1111-111111111111"
     process_ref = "22222222-2222-2222-2222-222222222222"
     subject_ref = "44444444-4444-4444-4444-444444444444"

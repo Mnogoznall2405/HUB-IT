@@ -146,4 +146,33 @@ describe('useDatabaseMaintenanceData', () => {
       getComponentLabel('pc', 'ram')
     );
   });
+
+  it('loads cleaning history with transfer-stable equipment identity', async () => {
+    const history = { count: 1, last_date: '2026-02-12T10:00:00', time_ago_str: '6 months' };
+    jsonAPI.getPcCleaningHistory.mockResolvedValue({ data: history });
+
+    const { result } = renderHook((props) => useDatabaseMaintenanceData(props), {
+      initialProps: createProps({
+        actionModal: { open: true, type: 'cleaning', componentKind: null },
+        resolveSingleActionTarget: vi.fn(() => ({
+          multiple: false,
+          item: {
+            ID: 11,
+            INV_NO: '1001',
+            SERIAL_NO: 'DUPLICATE-SERIAL',
+            HW_SERIAL_NO: 'HW-1001',
+          },
+        })),
+      }),
+    });
+
+    await waitFor(() => expect(result.current.cleaningHistory).toEqual(history));
+
+    expect(jsonAPI.getPcCleaningHistory).toHaveBeenCalledWith(
+      'DUPLICATE-SERIAL',
+      'HW-1001',
+      '1001',
+      11
+    );
+  });
 });

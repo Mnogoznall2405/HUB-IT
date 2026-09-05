@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -10,7 +10,6 @@ import {
 import { ROLE_OPTIONS, SETTINGS_PERMISSION_GROUPS } from '../../account/accountConstants';
 import {
   getDbName,
-  matchesUserSearch,
   normalizePermissions,
   roleLabel,
   summarizePermissions,
@@ -52,6 +51,15 @@ type UserDraft = {
   use_custom_permissions: boolean;
   custom_permissions: string[];
 };
+
+const USERS_PAGE_SIZE = 50;
+const USER_SEARCH_DEBOUNCE_MS = 250;
+
+function mergeUsers(current: userAdminApi.AdminUser[], next: userAdminApi.AdminUser[]) {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  next.forEach((item) => merged.set(item.id, item));
+  return Array.from(merged.values());
+}
 
 function emptyDraft(): UserDraft {
   return {
@@ -101,6 +109,8 @@ export function NativeAdminUsersScreen() {
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = canAccessAdminSection('users', { user, hasPermission });
   const [users, setUsers] = useState<userAdminApi.AdminUser[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [usersHasMore, setUsersHasMore] = useState(false);
   const [dbOptions, setDbOptions] = useState<DatabaseOption[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -112,34 +122,96 @@ export function NativeAdminUsersScreen() {
   const [status, setStatus] = useState({ error: '', message: '' });
   const [delegateLinks, setDelegateLinks] = useState<userAdminApi.TaskDelegateLink[]>([]);
   const [delegatesLoading, setDelegatesLoading] = useState(false);
+  const [delegateSearch, setDelegateSearch] = useState('');
+  const [delegateCandidates, setDelegateCandidates] = useState<userAdminApi.AdminUser[]>([]);
+  const [delegateSearchResults, setDelegateSearchResults] = useState<userAdminApi.AdminUser[]>([]);
+  const [delegateSearching, setDelegateSearching] = useState(false);
+  const usersRequestRef = useRef(0);
+  const delegatesRequestRef = useRef(0);
 
-  const load = useCallback(async () => {
+  const loadUsers = useCallback(async (offset = 0) => {
+    const requestId = usersRequestRef.current + 1;
+    usersRequestRef.current = requestId;
     setLoading(true);
     try {
-      const [nextUsers, nextDb] = await Promise.all([
-        userAdminApi.listUsers(),
-        listAvailableDatabases().catch(() => []),
-      ]);
-      setUsers(nextUsers);
-      setDbOptions(nextDb);
+      const result = await userAdminApi.searchUsers({
+        q: search,
+        limit: USERS_PAGE_SIZE,
+        offset,
+        status: statusFilter,
+        role: roleFilter as 'all' | 'admin' | 'operator' | 'viewer',
+      });
+      if (requestId !== usersRequestRef.current) return;
+      setUsers((current) => offset > 0 ? mergeUsers(current, result.items) : result.items);
+      setUsersTotal(result.total);
+      setUsersHasMore(result.has_more);
     } catch (error) {
+      if (requestId !== usersRequestRef.current) return;
       setStatus({ error: formatApiError(error, 'Не удалось загрузить пользователей.'), message: '' });
     } finally {
-      setLoading(false);
+      if (requestId === usersRequestRef.current) setLoading(false);
     }
-  }, []);
+  }, [roleFilter, search, statusFilter]);
 
   useEffect(() => {
-    if (allowed) void load();
-  }, [allowed, load]);
+    if (!allowed) return undefined;
+    usersRequestRef.current += 1;
+    const timeoutId = setTimeout(() => { void loadUsers(0); }, USER_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeoutId);
+  }, [allowed, loadUsers]);
 
-  const filtered = useMemo(() => users.filter((item) => {
-    if (!matchesUserSearch(item as Record<string, unknown>, search)) return false;
-    if (statusFilter === 'active' && item.is_active === false) return false;
-    if (statusFilter === 'inactive' && item.is_active !== false) return false;
-    if (roleFilter !== 'all' && item.role !== roleFilter) return false;
-    return true;
-  }), [roleFilter, search, statusFilter, users]);
+  useEffect(() => {
+    if (!allowed) return undefined;
+    let active = true;
+    void listAvailableDatabases()
+      .then((items) => { if (active) setDbOptions(items); })
+      .catch(() => { if (active) setDbOptions([]); });
+    return () => { active = false; };
+  }, [allowed]);
+
+  useEffect(() => {
+    const query = delegateSearch.trim();
+    if (!draft?.id || query.length < 2) {
+      delegatesRequestRef.current += 1;
+      setDelegateSearchResults([]);
+      setDelegateSearching(false);
+      return undefined;
+    }
+    delegatesRequestRef.current += 1;
+    const timeoutId = setTimeout(() => {
+      const requestId = delegatesRequestRef.current + 1;
+      delegatesRequestRef.current = requestId;
+      setDelegateSearching(true);
+      void userAdminApi.searchUsers({
+        q: query,
+        limit: 30,
+        offset: 0,
+        status: 'active',
+        role: 'all',
+        excludeUserId: draft.id || undefined,
+      }).then((result) => {
+        if (requestId === delegatesRequestRef.current) setDelegateSearchResults(result.items);
+      }).catch((error) => {
+        if (requestId === delegatesRequestRef.current) {
+          setDelegateSearchResults([]);
+          setStatus({ error: formatApiError(error, 'Не удалось выполнить поиск сотрудника.'), message: '' });
+        }
+      }).finally(() => {
+        if (requestId === delegatesRequestRef.current) setDelegateSearching(false);
+      });
+    }, USER_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeoutId);
+  }, [delegateSearch, draft?.id]);
+
+  const selectedDelegateCandidates = useMemo(() => delegateLinks.map((link) => ({
+    link,
+    candidate: delegateCandidates.find((candidate) => candidate.id === link.delegate_user_id) || null,
+  })), [delegateCandidates, delegateLinks]);
+
+  const visibleDelegateSearchResults = useMemo(() => {
+    const selectedIds = new Set(delegateLinks.map((link) => link.delegate_user_id));
+    return delegateSearchResults.filter((candidate) => !selectedIds.has(candidate.id));
+  }, [delegateLinks, delegateSearchResults]);
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
@@ -174,9 +246,11 @@ export function NativeAdminUsersScreen() {
     };
     if (draft.password) payload.password = draft.password;
     setSaving(true);
+    let profileSaved = false;
     try {
       if (draft.id) {
         await userAdminApi.updateUser(draft.id, payload);
+        profileSaved = true;
         await userAdminApi.updateTaskDelegates(draft.id, delegateLinks.map((item) => ({
           delegate_user_id: item.delegate_user_id,
           role_type: item.role_type,
@@ -188,20 +262,46 @@ export function NativeAdminUsersScreen() {
         setStatus({ error: '', message: 'Пользователь создан.' });
       }
       setDraft(null);
-      await load();
+      await loadUsers(0);
     } catch (error) {
-      setStatus({ error: formatApiError(error, 'Не удалось сохранить пользователя.'), message: '' });
+      const formattedError = formatApiError(
+        error,
+        profileSaved
+          ? 'Назначения помощников и заместителей обновить не удалось.'
+          : 'Не удалось сохранить пользователя.',
+      );
+      setStatus({
+        error: profileSaved
+          ? `Профиль сохранён, но назначения помощников и заместителей обновить не удалось. ${formattedError}`
+          : formattedError,
+        message: '',
+      });
     } finally {
       setSaving(false);
     }
-  }, [delegateLinks, draft, load]);
+  }, [delegateLinks, draft, loadUsers]);
 
   const openUser = useCallback(async (item: userAdminApi.AdminUser) => {
     setDraft(draftFromUser(item));
     setDelegateLinks([]);
+    setDelegateSearch('');
+    setDelegateCandidates([]);
+    setDelegateSearchResults([]);
     setDelegatesLoading(true);
     try {
-      setDelegateLinks(await userAdminApi.getTaskDelegates(item.id));
+      const links = await userAdminApi.getTaskDelegates(item.id);
+      setDelegateLinks(links);
+      const delegateIds = links.map((link) => link.delegate_user_id);
+      if (delegateIds.length > 0) {
+        const result = await userAdminApi.searchUsers({
+          ids: delegateIds,
+          limit: Math.min(200, delegateIds.length),
+          offset: 0,
+          status: 'all',
+          role: 'all',
+        });
+        setDelegateCandidates(result.items);
+      }
     } catch (error) {
       setStatus({ error: formatApiError(error, 'Не удалось загрузить помощников и заместителей.'), message: '' });
     } finally {
@@ -210,6 +310,11 @@ export function NativeAdminUsersScreen() {
   }, []);
 
   const setDelegateRole = useCallback((delegate: userAdminApi.AdminUser, role: 'assistant' | 'deputy' | null) => {
+    if (role) {
+      setDelegateCandidates((current) => current.some((item) => item.id === delegate.id)
+        ? current
+        : [...current, delegate]);
+    }
     setDelegateLinks((current) => {
       const without = current.filter((item) => item.delegate_user_id !== delegate.id);
       if (!role) return without;
@@ -238,7 +343,7 @@ export function NativeAdminUsersScreen() {
               try {
                 await userAdminApi.updateUser(item.id, { is_active: isActive });
                 setStatus({ error: '', message: isActive ? 'Пользователь включён.' : 'Пользователь отключён.' });
-                await load();
+                await loadUsers(0);
               } catch (error) {
                 setStatus({ error: formatApiError(error, 'Не удалось изменить активность.'), message: '' });
               }
@@ -247,7 +352,7 @@ export function NativeAdminUsersScreen() {
         },
       ],
     );
-  }, [load]);
+  }, [loadUsers]);
 
   if (!allowed) {
     return (
@@ -264,7 +369,12 @@ export function NativeAdminUsersScreen() {
       <AccountScreenScaffold
         title={draft.id ? 'Пользователь' : 'Новый пользователь'}
         tokens={tokens}
-        onBack={() => setDraft(null)}
+        onBack={() => {
+          setDelegateSearch('');
+          setDelegateCandidates([]);
+          setDelegateSearchResults([]);
+          setDraft(null);
+        }}
       >
         <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
         <AccountSectionCard tokens={tokens} title="Профиль">
@@ -297,26 +407,16 @@ export function NativeAdminUsersScreen() {
           <View style={styles.gap} />
           <HubTextField label="Telegram ID" keyboardType="number-pad" value={draft.telegram_id} onChangeText={(value) => setDraft({ ...draft, telegram_id: value })} />
         </AccountSectionCard>
-        <AccountSectionCard tokens={tokens} title="Помощники и заместители" description="Получают уведомления по задачам и доступ на чтение карточек исполнителя.">
-          {!draft.id ? (
-            <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>Сначала создайте пользователя.</Text>
-          ) : delegatesLoading ? <AccountLoading tokens={tokens} /> : users
-            .filter((candidate) => candidate.id !== draft.id && candidate.is_active !== false)
-            .map((candidate) => {
-              const selected = delegateLinks.find((item) => item.delegate_user_id === candidate.id)?.role_type || null;
-              return (
-                <View key={candidate.id} style={[styles.delegateRow, { borderBottomColor: tokens.borderSoft }]}> 
-                  <View style={styles.delegateBody}>
-                    <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{candidate.full_name || candidate.username}</Text>
-                    <Text style={{ color: tokens.textSecondary, fontSize: 11 }}>@{candidate.username}</Text>
-                  </View>
-                  <Choice tokens={tokens} selected={selected === 'assistant'} label="Помощник" onPress={() => setDelegateRole(candidate, selected === 'assistant' ? null : 'assistant')} />
-                  <Choice tokens={tokens} selected={selected === 'deputy'} label="Зам" onPress={() => setDelegateRole(candidate, selected === 'deputy' ? null : 'deputy')} />
-                </View>
-              );
-            })}
-        </AccountSectionCard>
-        <AccountSectionCard tokens={tokens} title="Роль и доступ">
+        <AccountSectionCard
+          tokens={tokens}
+          title="Роль и права доступа"
+          description="Сначала задайте роль и персональный набор Web permission, затем настройте делегирование задач."
+        >
+          <Text style={[styles.accessSummary, { color: tokens.textSecondary, backgroundColor: tokens.actionBg }]}>
+            {draft.use_custom_permissions
+              ? `Персональный набор · ${normalizePermissions(draft.custom_permissions).length} прав`
+              : `Права роли · ${roleLabel(draft.role)}`}
+          </Text>
           {ROLE_OPTIONS.map((option) => (
             <Choice
               key={option.value}
@@ -343,7 +443,10 @@ export function NativeAdminUsersScreen() {
             <Switch value={draft.is_active} onValueChange={(value) => setDraft({ ...draft, is_active: value })} />
           </View>
           <View style={styles.switchRow}>
-            <Text style={{ color: tokens.textPrimary, fontWeight: '700', flex: 1 }}>Свои права</Text>
+            <View style={styles.switchCopy}>
+              <Text style={{ color: tokens.textPrimary, fontWeight: '700' }}>Персональный набор прав</Text>
+              <Text style={{ color: tokens.textSecondary, fontSize: 11 }}>Заменяет стандартный набор выбранной роли.</Text>
+            </View>
             <Switch value={draft.use_custom_permissions} onValueChange={(value) => setDraft({ ...draft, use_custom_permissions: value })} />
           </View>
           {draft.use_custom_permissions ? SETTINGS_PERMISSION_GROUPS.map((group) => (
@@ -375,6 +478,70 @@ export function NativeAdminUsersScreen() {
             </View>
           )) : null}
         </AccountSectionCard>
+        <AccountSectionCard tokens={tokens} title="Помощники и заместители" description="Получают уведомления по задачам и доступ на чтение карточек исполнителя.">
+          {!draft.id ? (
+            <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>Сначала создайте пользователя.</Text>
+          ) : delegatesLoading ? <AccountLoading tokens={tokens} /> : (
+            <>
+              {selectedDelegateCandidates.length > 0 ? (
+                <Text style={[styles.delegateSectionLabel, { color: tokens.textSecondary }]}>Назначены</Text>
+              ) : (
+                <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Назначенных сотрудников пока нет.</Text>
+              )}
+              {selectedDelegateCandidates.map(({ link, candidate }) => candidate ? (
+                <DelegateAssignmentRow
+                  key={candidate.id}
+                  candidate={candidate}
+                  selected={link.role_type}
+                  tokens={tokens}
+                  onRoleChange={(role) => setDelegateRole(candidate, role)}
+                />
+              ) : (
+                <View key={link.delegate_user_id} style={[styles.delegateRow, { borderBottomColor: tokens.borderSoft }]}>
+                  <View style={styles.delegateBody}>
+                    <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>
+                      {link.delegate_full_name || link.delegate_username || `ID ${link.delegate_user_id}`}
+                    </Text>
+                    <Text style={{ color: tokens.textSecondary, fontSize: 11 }}>Сотрудник недоступен в текущем списке</Text>
+                  </View>
+                  <View style={styles.delegateRoles}>
+                    <Choice
+                      tokens={tokens}
+                      selected={false}
+                      label="Снять"
+                      onPress={() => setDelegateLinks((current) => current.filter((item) => item.delegate_user_id !== link.delegate_user_id))}
+                    />
+                  </View>
+                </View>
+              ))}
+              <View style={styles.delegateSearch}>
+                <HubTextField
+                  testID="native-admin-delegate-search"
+                  label="Найти сотрудника"
+                  value={delegateSearch}
+                  onChangeText={setDelegateSearch}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              {delegateSearch.trim().length < 2 ? (
+                <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Введите не менее двух букв ФИО, отдела, должности или логина.</Text>
+              ) : delegateSearching ? (
+                <AccountLoading tokens={tokens} />
+              ) : visibleDelegateSearchResults.length === 0 ? (
+                <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Подходящих сотрудников не найдено.</Text>
+              ) : visibleDelegateSearchResults.map((candidate) => (
+                <DelegateAssignmentRow
+                  key={candidate.id}
+                  candidate={candidate}
+                  selected={null}
+                  tokens={tokens}
+                  onRoleChange={(role) => setDelegateRole(candidate, role)}
+                />
+              ))}
+            </>
+          )}
+        </AccountSectionCard>
         <AccountPrimaryButton
           tokens={tokens}
           disabled={saving}
@@ -390,7 +557,7 @@ export function NativeAdminUsersScreen() {
       title="Пользователи"
       tokens={tokens}
       onBack={() => goBackOrReplace('/(shell)/menu/admin')}
-      onRefresh={() => { void load(); }}
+      onRefresh={() => { void loadUsers(0); }}
       refreshing={loading}
     >
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
@@ -416,8 +583,15 @@ export function NativeAdminUsersScreen() {
           />
         ))}
       </View>
-      <AccountPrimaryButton tokens={tokens} label="Новый пользователь" onPress={() => { setDelegateLinks([]); setDraft(emptyDraft()); }} />
-      {loading && users.length === 0 ? <AccountLoading tokens={tokens} /> : filtered.map((item) => (
+      <AccountPrimaryButton tokens={tokens} label="Новый пользователь" onPress={() => {
+        setDelegateLinks([]);
+        setDelegateSearch('');
+        setDelegateCandidates([]);
+        setDelegateSearchResults([]);
+        setDraft(emptyDraft());
+      }} />
+      <Text style={[styles.resultMeta, { color: tokens.textSecondary }]}>Показано: {users.length} из {usersTotal}</Text>
+      {loading && users.length === 0 ? <AccountLoading tokens={tokens} /> : users.map((item) => (
         <Pressable
           key={item.id}
           onPress={() => { void openUser(item); }}
@@ -444,7 +618,47 @@ export function NativeAdminUsersScreen() {
           </View>
         </Pressable>
       ))}
+      {!loading && users.length === 0 ? (
+        <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Пользователи не найдены.</Text>
+      ) : null}
+      {usersHasMore ? (
+        <AccountSecondaryButton
+          tokens={tokens}
+          label={loading ? 'Загрузка…' : 'Показать ещё'}
+          disabled={loading}
+          onPress={() => { void loadUsers(users.length); }}
+        />
+      ) : null}
     </AccountScreenScaffold>
+  );
+}
+
+function DelegateAssignmentRow({
+  candidate,
+  selected,
+  tokens,
+  onRoleChange,
+}: {
+  candidate: userAdminApi.AdminUser;
+  selected: 'assistant' | 'deputy' | null;
+  tokens: ReturnType<typeof useFluentTokens>;
+  onRoleChange: (role: 'assistant' | 'deputy' | null) => void;
+}) {
+  const metadata = [candidate.job_title, candidate.department, candidate.username ? `@${candidate.username}` : '']
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <View style={[styles.delegateRow, { borderBottomColor: tokens.borderSoft }]}>
+      <View style={styles.delegateBody}>
+        <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{candidate.full_name || candidate.username}</Text>
+        {metadata ? <Text style={{ color: tokens.textSecondary, fontSize: 11 }}>{metadata}</Text> : null}
+      </View>
+      <View style={styles.delegateRoles}>
+        <Choice tokens={tokens} selected={selected === 'assistant'} label="Помощник" onPress={() => onRoleChange('assistant')} />
+        <Choice tokens={tokens} selected={selected === 'deputy'} label="Заместитель" onPress={() => onRoleChange('deputy')} />
+        {selected ? <Choice tokens={tokens} selected={false} label="Снять" onPress={() => onRoleChange(null)} /> : null}
+      </View>
+    </View>
   );
 }
 
@@ -462,6 +676,8 @@ function Choice({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
       style={[
         styles.choice,
         {
@@ -479,7 +695,7 @@ const styles = StyleSheet.create({
   gap: { height: 10 },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
   choice: {
-    minHeight: 36,
+    minHeight: 44,
     borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 10,
@@ -489,7 +705,14 @@ const styles = StyleSheet.create({
   userRow: { borderWidth: 1, borderRadius: 14, padding: 12, marginTop: 8 },
   rowActions: { marginTop: 8 },
   switchRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  switchCopy: { flex: 1, minWidth: 0, gap: 2 },
   groupHeader: { minHeight: 40, justifyContent: 'center' },
-  delegateRow: { minHeight: 64, borderBottomWidth: 1, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  delegateRow: { minHeight: 64, borderBottomWidth: 1, paddingVertical: 10, gap: 8 },
   delegateBody: { flex: 1, minWidth: 0 },
+  delegateRoles: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  delegateSearch: { marginTop: 12 },
+  delegateSectionLabel: { marginTop: 2, marginBottom: 4, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
+  delegateHint: { fontSize: 12, lineHeight: 17, marginVertical: 6 },
+  accessSummary: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10, fontSize: 12, fontWeight: '700' },
+  resultMeta: { marginTop: 10, fontSize: 12 },
 });

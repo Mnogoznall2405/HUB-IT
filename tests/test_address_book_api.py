@@ -72,6 +72,22 @@ def test_search_returns_items_for_user_with_permission(monkeypatch):
     assert response.json()["items"][0]["full_name"] == "Иванов Иван"
 
 
+def test_search_forwards_pagination_offset(monkeypatch):
+    captured: dict = {}
+
+    def search(q, limit, **kwargs):
+        captured.update({"q": q, "limit": limit, **kwargs})
+        return {"items": [], "total": 25, "limit": limit, "offset": kwargs.get("offset", 0)}
+
+    monkeypatch.setattr(address_book_api.address_book_service, "search", search)
+    client = _client_for(lambda: _make_user(permissions=["address_book.read"]))
+
+    response = client.get("/address-book/search?q=&limit=10&offset=20")
+
+    assert response.status_code == 200
+    assert captured["offset"] == 20
+
+
 def test_search_enables_each_personal_field_only_with_explicit_permissions(monkeypatch):
     captured: dict = {}
 
@@ -95,6 +111,33 @@ def test_search_enables_each_personal_field_only_with_explicit_permissions(monke
         "include_hire_date": True,
         "include_personal_emails": True,
         "include_personal_phones": True,
+    }
+
+
+def test_snapshot_uses_one_permission_filtered_service_call(monkeypatch):
+    captured: dict = {}
+
+    def snapshot(**kwargs):
+        captured.update(kwargs)
+        return {"items": [{"full_name": "Snapshot User"}], "total": 1}
+
+    monkeypatch.setattr(address_book_api.address_book_service, "snapshot", snapshot, raising=False)
+    client = _client_for(lambda: _make_user(permissions=[
+        "address_book.read",
+        "address_book.hire_date.read",
+        "address_book.personal_email.read",
+    ]))
+
+    response = client.get("/address-book/snapshot")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [{"full_name": "Snapshot User"}]
+    assert response.headers["cache-control"] == "private, no-store"
+    assert captured == {
+        "include_age": False,
+        "include_hire_date": True,
+        "include_personal_emails": True,
+        "include_personal_phones": False,
     }
 
 

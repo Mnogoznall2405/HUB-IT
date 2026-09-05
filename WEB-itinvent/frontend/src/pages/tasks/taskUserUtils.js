@@ -7,6 +7,30 @@ export const getTaskUserLabel = (user) => {
   return display.label === '-' ? 'Пользователь' : display.label;
 };
 
+export const getTaskAssigneeEntries = (task) => {
+  const entries = Array.isArray(task?.assignees) ? task.assignees : [];
+  if (entries.length) return entries;
+  const ids = Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+    ? task.assignee_user_ids
+    : [task?.assignee_user_id];
+  return ids
+    .map((userId, index) => ({
+      user_id: userId,
+      full_name: index === 0 ? task?.assignee_full_name : '',
+      username: index === 0 ? task?.assignee_username : '',
+    }))
+    .filter((item) => String(item.user_id || '').trim());
+};
+
+export const formatTaskAssigneesSummary = (task, { compact = false } = {}) => {
+  const labels = getTaskAssigneeEntries(task)
+    .map((item) => String(item?.full_name || item?.username || item?.user_id || '').trim())
+    .filter(Boolean);
+  if (!labels.length) return '-';
+  if (compact && labels.length > 2) return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
+  return labels.join(', ');
+};
+
 export const getDepartmentLabel = (department) => String(department?.name || department?.department_name || department?.id || '').trim();
 
 export const findDepartmentById = (options, value) => (

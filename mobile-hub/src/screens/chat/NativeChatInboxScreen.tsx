@@ -12,12 +12,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { ListRenderItemInfo } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { IconButton } from 'react-native-paper';
 import * as chatApi from '../../api/chatApi';
 import { formatApiError } from '../../api/formatError';
 import type {
-  ChatConversationPage,
   ChatConversationSummary,
   ChatFolderListResponse,
   ChatGlobalMessageSearchHit,
@@ -25,6 +25,10 @@ import type {
 } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
+import {
+  readNativeChatInboxSnapshot,
+  writeNativeChatInboxSnapshot,
+} from '../../chat/nativeChatInboxSnapshot';
 import { getActiveChatFolderKey, setActiveChatFolderKey } from '../../chat/chatActiveFolder';
 import {
   getActiveNativeChatConversationId,
@@ -54,7 +58,6 @@ import { nextInboxRowSettings } from '../../chat/chatGestures';
 import { applyConversationEnvelope, clearConversationUnread } from '../../chat/chatState';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { chatSocket, shouldUseChatHttpFallback, type ChatSocketStatus } from '../../chat/chatSocket';
-import { ChatConnectionBanner } from '../../components/chat/ChatConnectionBanner';
 import { ChatConversationActionsSheet } from '../../components/chat/ChatConversationActionsSheet';
 import { SwipeableConversationRow } from '../../components/chat/SwipeableConversationRow';
 import { ChatFolderAssignSheet } from '../../components/chat/ChatFolderAssignSheet';
@@ -63,6 +66,7 @@ import { ChatFolderTabs } from '../../components/chat/ChatFolderTabs';
 import { ChatWorkspaceTabs } from '../../components/chat/ChatWorkspaceTabs';
 import { FolderSwipeHost } from '../../components/chat/FolderSwipeHost';
 import { NewChatSheet } from '../../components/chat/NewChatSheet';
+import { HubConnectionInline } from '../../components/layout/HubConnectionHeader';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 
@@ -128,7 +132,7 @@ export function NativeChatInboxScreen() {
     const userId = Number(user?.id || 0);
     let cached = false;
     if (mode === 'initial' && userId) {
-      const snapshot = await readNativeSnapshot<ChatConversationPage>('chat-inbox', userId);
+      const snapshot = await readNativeChatInboxSnapshot(userId);
       if (mountedRef.current && snapshot) {
         cached = true;
         setItems(snapshot.data.items);
@@ -165,7 +169,7 @@ export function NativeChatInboxScreen() {
       setHasMore(page.has_more);
       setNextCursor(page.next_cursor);
       setError('');
-      if (userId) void writeNativeSnapshot('chat-inbox', userId, page);
+      if (userId) void writeNativeChatInboxSnapshot(userId, page);
     } catch (cause) {
       if (mountedRef.current && mode !== 'silent') {
         setError(cached
@@ -183,7 +187,7 @@ export function NativeChatInboxScreen() {
   }, [offlineMode, user?.id]);
 
   const loadMore = useCallback(async () => {
-    if (!hasMore || !nextCursor || loadingMoreRef.current) return;
+    if (offlineMode || !hasMore || !nextCursor || loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
@@ -192,7 +196,16 @@ export function NativeChatInboxScreen() {
       setItems((current) => {
         const byId = new Map(current.map((item) => [item.id, item]));
         page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
-        return [...byId.values()];
+        const merged = [...byId.values()];
+        const userId = Number(user?.id || 0);
+        if (userId) {
+          void writeNativeChatInboxSnapshot(userId, {
+            items: merged,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+          });
+        }
+        return merged;
       });
       setHasMore(page.has_more);
       setNextCursor(page.next_cursor);
@@ -202,7 +215,7 @@ export function NativeChatInboxScreen() {
       loadingMoreRef.current = false;
       if (mountedRef.current) setLoadingMore(false);
     }
-  }, [hasMore, nextCursor]);
+  }, [hasMore, nextCursor, offlineMode, user?.id]);
 
   const loadFolders = useCallback(async () => {
     if (foldersStartingRef.current && !foldersInFlightRef.current) return;
@@ -645,6 +658,71 @@ export function NativeChatInboxScreen() {
     });
   }, []);
 
+  const openConversation = useCallback((item: ChatConversationSummary) => {
+    goConversation(item.id);
+  }, [goConversation]);
+
+  const openConversationActions = useCallback((item: ChatConversationSummary) => {
+    if (isAiConversation(item)) setAiActionConversation(item);
+    else setActionConversation(item);
+  }, []);
+
+  const muteConversation = useCallback((item: ChatConversationSummary) => {
+    void applyRowSwipe(item, 'mute');
+  }, [applyRowSwipe]);
+
+  const archiveConversation = useCallback((item: ChatConversationSummary) => {
+    void applyRowSwipe(item, 'archive');
+  }, [applyRowSwipe]);
+
+  const refreshInbox = useCallback(() => {
+    void load('refresh');
+    void loadFolders();
+  }, [load, loadFolders]);
+
+  const handleEndReached = useCallback(() => {
+    if (!searchItems) void loadMore();
+  }, [loadMore, searchItems]);
+
+  const listContentStyle = useMemo(() => ({ paddingBottom: bottomInset }), [bottomInset]);
+
+  const renderInboxRow = useCallback(({ item }: ListRenderItemInfo<InboxListRow>) => {
+    if (item.type === 'header') {
+      return <Text style={styles.sectionTitle}>{item.title}</Text>;
+    }
+    if (item.type === 'message') {
+      return (
+        <Pressable
+          onPress={() => goConversation(item.item.conversation_id, item.item.message_id)}
+          style={({ pressed }) => [styles.messageHit, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel={`Сообщение в ${item.item.conversation_title}`}
+        >
+          <Text style={styles.messageHitTitle} numberOfLines={1}>{item.item.conversation_title}</Text>
+          <Text style={styles.messageHitPreview} numberOfLines={2}>
+            {[item.item.sender_name, item.item.preview].filter(Boolean).join(': ')}
+          </Text>
+        </Pressable>
+      );
+    }
+    return (
+      <SwipeableConversationRow
+        item={item.item}
+        onPress={openConversation}
+        onLongPress={openConversationActions}
+        onMute={muteConversation}
+        onArchive={archiveConversation}
+      />
+    );
+  }, [
+    archiveConversation,
+    goConversation,
+    muteConversation,
+    openConversation,
+    openConversationActions,
+    styles,
+  ]);
+
   const openNewChat = useCallback(async () => {
     try {
       if (workspace === 'ai') {
@@ -692,9 +770,12 @@ export function NativeChatInboxScreen() {
           onPress={() => router.replace('/(shell)/dashboard')}
           accessibilityLabel="Вернуться в HUB-IT"
         />
-        <Text style={styles.headerTitle} accessibilityRole="header">
-          {workspace === 'ai' ? (aiArchiveOpen ? 'ИИ · Архив' : 'ИИ') : 'Chat'}
-        </Text>
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.headerTitle} accessibilityRole="header">
+            {workspace === 'ai' ? (aiArchiveOpen ? 'ИИ · Архив' : 'ИИ') : 'Chat'}
+          </Text>
+          <HubConnectionInline showHub />
+        </View>
         {workspace === 'chats' ? (
           <IconButton
             icon="folder-cog-outline"
@@ -709,14 +790,6 @@ export function NativeChatInboxScreen() {
           accessibilityLabel={workspace === 'ai' ? 'Новый AI-чат' : 'Создать диалог'}
         />
       </View>
-
-      <ChatConnectionBanner
-        status={status}
-        onRetry={() => {
-          void chatSocket.connect();
-          void load('refresh');
-        }}
-      />
 
       <ChatWorkspaceTabs
         workspace={workspace}
@@ -788,55 +861,20 @@ export function NativeChatInboxScreen() {
           onSwipeEngage={setFolderSwipeActive}
         >
         <FlatList
+          testID="native-chat-inbox-list"
           data={listRows}
           keyExtractor={(item) => item.key}
-          contentContainerStyle={{ paddingBottom: bottomInset }}
-          renderItem={({ item }) => {
-            if (item.type === 'header') {
-              return <Text style={styles.sectionTitle}>{item.title}</Text>;
-            }
-            if (item.type === 'message') {
-              return (
-                <Pressable
-                  onPress={() => goConversation(item.item.conversation_id, item.item.message_id)}
-                  style={({ pressed }) => [styles.messageHit, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Сообщение в ${item.item.conversation_title}`}
-                >
-                  <Text style={styles.messageHitTitle} numberOfLines={1}>{item.item.conversation_title}</Text>
-                  <Text style={styles.messageHitPreview} numberOfLines={2}>
-                    {[item.item.sender_name, item.item.preview].filter(Boolean).join(': ')}
-                  </Text>
-                </Pressable>
-              );
-            }
-            return (
-              <SwipeableConversationRow
-                item={item.item}
-                onPress={() => goConversation(item.item.id)}
-                onLongPress={() => {
-                  if (isAiConversation(item.item)) setAiActionConversation(item.item);
-                  else setActionConversation(item.item);
-                }}
-                onMute={() => void applyRowSwipe(item.item, 'mute')}
-                onArchive={() => void applyRowSwipe(item.item, 'archive')}
-              />
-            );
-          }}
+          contentContainerStyle={listContentStyle}
+          renderItem={renderInboxRow}
           refreshControl={folderSwipeActive ? undefined : (
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => {
-                void load('refresh');
-                void loadFolders();
-              }}
+              onRefresh={refreshInbox}
               tintColor={chatTokens.composerActionBg}
               colors={[chatTokens.composerActionBg]}
             />
           )}
-          onEndReached={() => {
-            if (!searchItems) void loadMore();
-          }}
+          onEndReached={handleEndReached}
           onEndReachedThreshold={0.35}
           initialNumToRender={12}
           maxToRenderPerBatch={10}
@@ -976,7 +1014,8 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: chatTokens.sidebarDivider,
   },
-  headerTitle: { flex: 1, fontSize: 20, fontWeight: '700', color: chatTokens.textPrimary },
+  headerTitleBlock: { flex: 1, minWidth: 0, justifyContent: 'center' },
+  headerTitle: { fontSize: 20, lineHeight: 24, fontWeight: '700', color: chatTokens.textPrimary },
   searchWrap: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 2, gap: 8 },
   search: {
     minHeight: 44,

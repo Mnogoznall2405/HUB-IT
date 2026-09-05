@@ -15,7 +15,7 @@ from backend.services.my_files_service import (
     MyFilesService,
     MyFilesValidationError,
 )
-from backend.services.my_files_antivirus_service import SecurityScanResult
+from backend.services.my_files_antivirus_service import MyFilesAntivirusError, SecurityScanResult
 from backend.services.secret_crypto_service import _build_fernet
 
 
@@ -90,6 +90,106 @@ def test_upload_reservation_counts_toward_quota_before_body_is_written(tmp_path)
 
     service.abort_upload(file_id=reserved["id"], user_id=7)
     assert service.quota(user_id=7)["used_bytes"] == 0
+
+
+def test_upload_reservation_accepts_file_larger_than_former_one_gib_limit(tmp_path):
+    service = _new_service(tmp_path)
+    size = (1024**3) + 1
+
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="large.bin",
+        mime_type="application/octet-stream",
+        spool_path=service.new_spool_path("large.bin"),
+        expected_size_bytes=size,
+        retention_days=1,
+    )
+
+    assert reserved["status"] == "uploading"
+    assert service.quota(user_id=7)["used_bytes"] == size
+    service.abort_upload(file_id=reserved["id"], user_id=7)
+
+
+def test_chunked_upload_appends_retries_idempotently_and_completes(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("chunked.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="chunked.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=11,
+        retention_days=1,
+    )
+
+    initial = service.get_upload_session(file_id=reserved["id"], user_id=7)
+    first = service.append_upload_chunk(
+        file_id=reserved["id"],
+        user_id=7,
+        offset=0,
+        payload=b"hello ",
+    )
+    retried = service.append_upload_chunk(
+        file_id=reserved["id"],
+        user_id=7,
+        offset=0,
+        payload=b"hello ",
+    )
+    final = service.append_upload_chunk(
+        file_id=reserved["id"],
+        user_id=7,
+        offset=6,
+        payload=b"world",
+    )
+    completed = service.complete_upload(
+        file_id=reserved["id"],
+        user_id=7,
+        actual_size_bytes=final["uploaded_bytes"],
+    )
+
+    assert initial["uploaded_bytes"] == 0
+    assert first["uploaded_bytes"] == 6
+    assert retried["uploaded_bytes"] == 6
+    assert final["uploaded_bytes"] == 11
+    assert final["complete"] is True
+    assert spool_path.read_bytes() == b"hello world"
+    assert completed["status"] == "queued"
+
+
+def test_chunked_upload_rejects_gap_and_mismatched_retry(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("chunked.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="chunked.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=10,
+        retention_days=1,
+    )
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"hello")
+
+    with pytest.raises(MyFilesValidationError, match="expected 5"):
+        service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=6, payload=b"x")
+    with pytest.raises(MyFilesValidationError, match="does not match"):
+        service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"HELLO")
+
+    assert spool_path.read_bytes() == b"hello"
+
+
+def test_chunked_upload_is_owner_scoped(tmp_path):
+    service = _new_service(tmp_path)
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="private.bin",
+        mime_type="application/octet-stream",
+        spool_path=service.new_spool_path("private.bin"),
+        expected_size_bytes=5,
+        retention_days=1,
+    )
+
+    with pytest.raises(MyFilesNotFoundError):
+        service.append_upload_chunk(file_id=reserved["id"], user_id=8, offset=0, payload=b"hello")
 
 
 def test_upload_reservation_limits_concurrent_uploads_per_user(tmp_path, monkeypatch):
@@ -321,6 +421,36 @@ def test_security_scan_blocks_file_before_dedup_or_compression(tmp_path):
         assert row.security_scan_status == "blocked"
         assert session.query(AppMyFileBlob).count() == 0
     assert not spool_path.exists()
+
+
+def test_security_scan_error_records_failing_engine(tmp_path):
+    def timed_out_kaspersky(_path):
+        raise MyFilesAntivirusError(
+            "Kaspersky scan timed out",
+            engine="kaspersky-endpoint-security",
+        )
+
+    service = MyFilesService(
+        database_url=_sqlite_url(tmp_path / "app.db"),
+        storage_root=tmp_path / "my-files",
+        antivirus_scanner=timed_out_kaspersky,
+    )
+    spool_path = _stage_upload(service, "large.7z", b"large payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="large.7z",
+        mime_type="application/x-7z-compressed",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+
+    assert service.process_file(created["id"]) is None
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, created["id"])
+        assert row.status == "failed"
+        assert row.security_scan_status == "error"
+        assert row.security_scan_engine == "kaspersky-endpoint-security"
 
 
 def test_existing_ready_file_is_inaccessible_until_security_backfill_completes(tmp_path, monkeypatch):

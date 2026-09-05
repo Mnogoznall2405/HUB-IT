@@ -124,4 +124,78 @@ describe('useChatUrlConversationBootstrap', () => {
     expect(navigate).not.toHaveBeenCalledWith('/chat', { replace: true });
     unmount();
   });
+
+  it('does not rewrite the host route when url synchronization is disabled', async () => {
+    const { renderHook } = await import('@testing-library/react');
+    const navigate = vi.fn();
+
+    const { unmount } = renderHook(() => useChatUrlConversationBootstrap({
+      activeConversationId: 'conv-task-1',
+      applyingRequestedConversationRef: { current: '' },
+      cancelPendingInitialAnchor: vi.fn(),
+      clearStoredConversationState: vi.fn(),
+      composePrefillRequested: false,
+      conversationBootstrapComplete: true,
+      conversations: [{ id: 'conv-task-1' }],
+      conversationsLoading: false,
+      invalidConversationRef: { current: '' },
+      isMobile: false,
+      loadConversations: vi.fn().mockResolvedValue([]),
+      locationSearch: '?task=task-1&task_detail_view=discussion',
+      mobileHistoryReadyRef: { current: false },
+      navigate,
+      notifyInfo: vi.fn(),
+      requestedConversationHandledRef: { current: 'conv-task-1' },
+      requestedConversationRetryRef: { current: '' },
+      requestedConversationId: 'conv-task-1',
+      restoredConversationId: '',
+      restoredMobileView: 'inbox',
+      setActiveConversationId: vi.fn(),
+      setConversationBootstrapComplete: vi.fn(),
+      setMobileView: vi.fn(),
+      syncConversationInUrl: false,
+      writeMobileHistoryState: vi.fn(),
+    }));
+
+    expect(navigate).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps the host route when an embedded conversation is unavailable', async () => {
+    const { renderHook } = await import('@testing-library/react');
+    const navigate = vi.fn();
+    const setActiveConversationId = vi.fn();
+
+    const { unmount } = renderHook(() => useChatUrlConversationBootstrap({
+      activeConversationId: 'conv-task-1',
+      applyingRequestedConversationRef: { current: '' },
+      cancelPendingInitialAnchor: vi.fn(),
+      clearStoredConversationState: vi.fn(),
+      composePrefillRequested: false,
+      conversationBootstrapComplete: false,
+      conversations: [],
+      conversationsLoading: false,
+      invalidConversationRef: { current: '' },
+      isMobile: false,
+      loadConversations: vi.fn().mockResolvedValue([]),
+      locationSearch: '?task=task-1&task_detail_view=discussion',
+      mobileHistoryReadyRef: { current: false },
+      navigate,
+      notifyInfo: vi.fn(),
+      requestedConversationHandledRef: { current: '' },
+      requestedConversationRetryRef: { current: 'conv-task-1' },
+      requestedConversationId: 'conv-task-1',
+      restoredConversationId: '',
+      restoredMobileView: 'inbox',
+      setActiveConversationId,
+      setConversationBootstrapComplete: vi.fn(),
+      setMobileView: vi.fn(),
+      syncConversationInUrl: false,
+      writeMobileHistoryState: vi.fn(),
+    }));
+
+    expect(setActiveConversationId).toHaveBeenCalledWith('');
+    expect(navigate).not.toHaveBeenCalled();
+    unmount();
+  });
 });

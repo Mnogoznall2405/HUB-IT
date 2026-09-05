@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from sqlalchemy import select
 
@@ -570,6 +571,8 @@ class ChatPushService:
         title: str,
         body: str,
         preference_channel: Optional[str] = None,
+        conversation_kind: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> ChatPushSendResult:
         normalized_conversation_id = _normalize_text(conversation_id)
         normalized_message_id = _normalize_text(message_id)
@@ -586,15 +589,27 @@ class ChatPushService:
             )
             return ChatPushSendResult(sent=1)
         resolved_preference_channel = _normalize_text(preference_channel)
-        if not resolved_preference_channel:
+        resolved_conversation_kind = _normalize_text(conversation_kind).lower()
+        resolved_task_id = _normalize_text(task_id)
+        if not resolved_preference_channel or not resolved_conversation_kind:
             try:
                 with chat_session() as session:
                     conversation = session.get(ChatConversation, normalized_conversation_id)
-                    resolved_preference_channel = chat_notification_channel(
-                        getattr(conversation, "kind", None)
+                    resolved_conversation_kind = (
+                        resolved_conversation_kind
+                        or _normalize_text(getattr(conversation, "kind", None)).lower()
                     )
+                    resolved_task_id = (
+                        resolved_task_id
+                        or _normalize_text(getattr(conversation, "task_id", None))
+                    )
+                    if not resolved_preference_channel:
+                        resolved_preference_channel = chat_notification_channel(
+                            getattr(conversation, "kind", None)
+                        )
             except Exception:
-                resolved_preference_channel = "chat"
+                if not resolved_preference_channel:
+                    resolved_preference_channel = "chat"
         try:
             if not notification_preferences_service.is_enabled(
                 user_id=int(recipient_user_id),
@@ -603,17 +618,35 @@ class ChatPushService:
                 return ChatPushSendResult()
         except Exception:
             logger.warning("chat push: failed to read notification preferences", exc_info=True)
+        if resolved_conversation_kind == "task" and resolved_task_id:
+            route_query = urlencode({
+                "task": resolved_task_id,
+                "task_detail_view": "discussion",
+                "message": normalized_message_id,
+            })
+            route = f"/tasks?{route_query}"
+        else:
+            route_query = urlencode({
+                "conversation": normalized_conversation_id,
+                "message": normalized_message_id,
+            })
+            route = f"/chat?{route_query}"
+        notification_data = {
+            "conversation_id": normalized_conversation_id,
+            "message_id": normalized_message_id,
+        }
+        if resolved_conversation_kind:
+            notification_data["conversation_kind"] = resolved_conversation_kind
+        if resolved_task_id:
+            notification_data["task_id"] = resolved_task_id
         result = self.send_notification(
             recipient_user_id=int(recipient_user_id),
             title=title,
             body=body,
             channel="chat",
-            route=f"/chat?conversation={normalized_conversation_id}&message={normalized_message_id}",
+            route=route,
             tag=f"chat:msg:{normalized_message_id}",
-            data={
-                "conversation_id": normalized_conversation_id,
-                "message_id": normalized_message_id,
-            },
+            data=notification_data,
             ttl=CHAT_PUSH_TTL_SEC,
         )
         if int(result.sent or 0) > 0:

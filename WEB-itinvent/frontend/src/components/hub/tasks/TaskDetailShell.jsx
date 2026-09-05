@@ -11,13 +11,14 @@ export default function TaskDetailShell({
   isTransferReminder = false,
   mobileTitle = 'Задача',
   onBack,
+  backLabel = 'К списку',
   onCopyLink,
   isMobile = false,
+  compactHeader = false,
+  contentMode = 'scroll',
+  archiveComments = false,
   actionMenuItems = [],
   onActionMenuSelect,
-  taskDiscussionEnabled = false,
-  onOpenTaskDiscussion,
-  discussionOpening = false,
   loading = false,
   children,
 }) {
@@ -31,17 +32,26 @@ export default function TaskDetailShell({
         isTransferReminder={isTransferReminder}
         mobileTitle={mobileTitle}
         onBack={onBack}
+        backLabel={backLabel}
         onCopyLink={onCopyLink}
         mobile={isMobile}
+        compact={compactHeader}
+        archiveComments={archiveComments}
         actionMenuItems={actionMenuItems}
         onActionMenuSelect={onActionMenuSelect}
-        taskDiscussionEnabled={taskDiscussionEnabled}
-        onOpenTaskDiscussion={onOpenTaskDiscussion}
-        discussionOpening={discussionOpening}
         ui={ui}
         theme={theme}
       />
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <Box
+        data-testid="task-detail-content"
+        data-content-mode={contentMode}
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: contentMode === 'fill' ? 'hidden' : 'auto',
+          ...(contentMode === 'fill' ? { display: 'flex', flexDirection: 'column' } : {}),
+        }}
+      >
         {loading && <LinearProgress sx={{ mb: 1.2, borderRadius: 999 }} />}
         {children}
       </Box>

@@ -13,6 +13,7 @@ import {
   getDefaultTaskDetailTab,
   getTaskNotificationPath,
   normalizeTaskDetailTab,
+  normalizeTaskDetailView,
 } from './taskNavigation';
 
 describe('taskNavigation', () => {
@@ -34,6 +35,12 @@ describe('taskNavigation', () => {
     chatFeature.taskDiscussion = true;
     expect(buildTaskDetailPath('task-1')).toBe('/tasks?task=task-1');
     expect(buildTaskDetailPath('task-1', { tab: 'comments' })).toBe('/tasks?task=task-1&task_tab=comments');
+    expect(buildTaskDetailPath('task-1', { view: 'canvas' })).toBe('/tasks?task=task-1&task_detail_view=canvas');
+    expect(buildTaskDetailPath('task-1', {
+      view: 'discussion',
+      message: 'message-7',
+    })).toBe('/tasks?task=task-1&task_detail_view=discussion&message=message-7');
+    expect(normalizeTaskDetailView('unexpected')).toBe('overview');
   });
 
   it('builds legacy comment deep links when discussion chat is disabled', () => {

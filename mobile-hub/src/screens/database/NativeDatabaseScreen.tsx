@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
+  type ListRenderItemInfo,
   Modal,
   Pressable,
   ScrollView,
@@ -36,6 +38,15 @@ import {
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import {
+  readNativeCollectionSnapshot,
+  readNativeSnapshot,
+  writeNativeCollectionSnapshot,
+  writeNativeEntitySnapshot,
+  writeNativeSnapshot,
+} from '../../cache/nativeSnapshotCache';
+import { readNativeEquipmentCatalogSnapshot } from '../../cache/nativeEquipmentCatalogSnapshot';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativeEquipmentActCard } from '../../components/database/NativeEquipmentActCard';
 import { NativeDatabaseActUploadModal } from '../../components/database/NativeDatabaseActUploadModal';
 import { NativeDatabaseCreateModal } from '../../components/database/NativeDatabaseCreateModal';
@@ -47,6 +58,15 @@ import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
 import { filterConsumables, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
+import {
+  filterNativeActs,
+  filterNativeEquipment,
+  nativeDatabaseListSignature,
+  nativeEquipmentSnapshotKey,
+  type NativeDatabaseBootstrapSnapshot,
+  type NativeEquipmentDetailSnapshot,
+  type NativeDatabaseListSnapshot,
+} from '../../database/nativeDatabaseSnapshot';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -69,7 +89,7 @@ function useDebouncedValue(value: string): string {
 
 export function NativeDatabaseScreen() {
   const params = useLocalSearchParams<{ q?: string | string[]; mode?: string | string[] }>();
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
@@ -91,6 +111,7 @@ export function NativeDatabaseScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [bootstrapReady, setBootstrapReady] = useState(false);
   const [switchingDatabase, setSwitchingDatabase] = useState('');
+  const [databasePickerOpen, setDatabasePickerOpen] = useState(false);
   const [busyAct, setBusyAct] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -107,6 +128,7 @@ export function NativeDatabaseScreen() {
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
   const requestRef = useRef(0);
   const equipmentPageRef = useRef(1);
+  const busyActRef = useRef<number | null>(null);
   const debouncedQuery = useDebouncedValue(query.trim());
   const contentQuery = mode === 'consumables' ? '' : debouncedQuery;
   const visibleConsumables = useMemo(
@@ -138,6 +160,23 @@ export function NativeDatabaseScreen() {
     }
     setLoading(true);
     setError('');
+    const userId = Number(user?.id || 0);
+    let cached = false;
+    if (userId) {
+      const snapshot = await readNativeSnapshot<NativeDatabaseBootstrapSnapshot>('database-bootstrap', userId);
+      if (snapshot) {
+        cached = true;
+        setDatabases(snapshot.data.databases);
+        setCurrentDatabase(snapshot.data.currentDatabase);
+        setBootstrapReady(true);
+        setLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (!cached) setError('Нет подключения и сохранённых данных инвентаря.');
+      setLoading(false);
+      return;
+    }
     try {
       const [available, current] = await Promise.all([
         listAvailableDatabases(),
@@ -146,12 +185,19 @@ export function NativeDatabaseScreen() {
       setDatabases(available);
       setCurrentDatabase(current);
       setBootstrapReady(true);
+      if (userId) {
+        void writeNativeSnapshot<NativeDatabaseBootstrapSnapshot>('database-bootstrap', userId, {
+          databases: available,
+          currentDatabase: current,
+        });
+      }
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось загрузить доступные базы данных.'));
+      if (!cached) setError(formatApiError(cause, 'Не удалось загрузить доступные базы данных.'));
+      else setNotice('Показаны сохранённые данные. Обновить список баз не удалось.');
     } finally {
       setLoading(false);
     }
-  }, [allowed]);
+  }, [allowed, offlineMode, user?.id]);
 
   useEffect(() => { void bootstrap(); }, [bootstrap]);
 
@@ -181,6 +227,68 @@ export function NativeDatabaseScreen() {
     else setLoading(true);
     setError('');
     setNotice('');
+    const userId = Number(user?.id || 0);
+    const signature = nativeDatabaseListSignature(currentDatabase.id, mode, contentQuery);
+    let cached = false;
+    if (!append && userId) {
+      let snapshot = await readNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
+        'database-inbox',
+        userId,
+        signature,
+      );
+      let fallback = false;
+      if (!snapshot && offlineMode && contentQuery) {
+        snapshot = await readNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
+          'database-inbox',
+          userId,
+          nativeDatabaseListSignature(currentDatabase.id, mode, ''),
+        );
+        fallback = Boolean(snapshot);
+      }
+      if (requestId !== requestRef.current) return;
+      if (snapshot) {
+        cached = true;
+        const cachedEquipment = fallback
+          ? filterNativeEquipment(snapshot.data.equipment, contentQuery)
+          : snapshot.data.equipment;
+        const cachedActs = fallback
+          ? filterNativeActs(snapshot.data.acts, contentQuery)
+          : snapshot.data.acts;
+        setEquipment(mode === 'equipment' ? cachedEquipment : []);
+        setConsumables(mode === 'consumables' ? snapshot.data.consumables : []);
+        setActs(mode === 'acts' ? cachedActs : []);
+        setTotal(fallback
+          ? (mode === 'equipment' ? cachedEquipment.length : mode === 'acts' ? cachedActs.length : snapshot.data.consumables.length)
+          : snapshot.data.total);
+        equipmentPageRef.current = snapshot.data.page || 1;
+        setHasMoreEquipment(false);
+        setLoading(false);
+      }
+    }
+    if (!append && offlineMode && mode === 'equipment' && userId) {
+      const catalog = await readNativeEquipmentCatalogSnapshot(userId, currentDatabase.id);
+      if (requestId !== requestRef.current) return;
+      if (catalog) {
+        const localEquipment = filterNativeEquipment(catalog.data.equipment, contentQuery);
+        cached = true;
+        setEquipment(localEquipment);
+        setConsumables([]);
+        setActs([]);
+        setTotal(contentQuery ? localEquipment.length : catalog.data.total);
+        equipmentPageRef.current = 1;
+        setHasMoreEquipment(false);
+        setLoading(false);
+      }
+    }
+    if (offlineMode) {
+      if (requestId === requestRef.current) {
+        if (!cached) setError('Нет подключения и сохранённых данных для этого раздела.');
+        setLoading(false);
+        setRefreshing(false);
+        setLoadingMore(false);
+      }
+      return;
+    }
     try {
       if (mode === 'equipment') {
         const targetPage = append ? equipmentPageRef.current + 1 : 1;
@@ -196,6 +304,20 @@ export function NativeDatabaseScreen() {
         setConsumables([]);
         setActs([]);
         setTotal(result.total);
+        if (!append && userId) {
+          void writeNativeCollectionSnapshot<NativeDatabaseListSnapshot>('database-inbox', userId, signature, {
+            signature,
+            databaseId: currentDatabase.id,
+            mode,
+            query: contentQuery,
+            equipment: result.equipment,
+            consumables: [],
+            acts: [],
+            total: result.total,
+            page: result.page,
+            pages: result.pages,
+          });
+        }
       } else if (mode === 'consumables') {
         const result = await listConsumables({
           onlyPositiveQty: true,
@@ -209,6 +331,21 @@ export function NativeDatabaseScreen() {
         setActs([]);
         setTotal(result.total);
         if (result.truncated) setNotice('Показаны первые 1000 позиций с положительным остатком. Уточните фильтр.');
+        if (userId) {
+          void writeNativeCollectionSnapshot<NativeDatabaseListSnapshot>('database-inbox', userId, signature, {
+            signature,
+            databaseId: currentDatabase.id,
+            mode,
+            query: '',
+            equipment: [],
+            consumables: result.consumables,
+            acts: [],
+            total: result.total,
+            page: 1,
+            pages: 1,
+            truncated: result.truncated,
+          });
+        }
       } else {
         const result = await searchEquipmentActs(debouncedQuery, SEARCH_LIMIT, currentDatabase.id);
         if (requestId !== requestRef.current) return;
@@ -218,10 +355,26 @@ export function NativeDatabaseScreen() {
         setConsumables([]);
         setTotal(result.total);
         if (result.truncated) setNotice('Показаны первые 50 актов. Уточните запрос.');
+        if (userId) {
+          void writeNativeCollectionSnapshot<NativeDatabaseListSnapshot>('database-inbox', userId, signature, {
+            signature,
+            databaseId: currentDatabase.id,
+            mode,
+            query: contentQuery,
+            equipment: [],
+            consumables: [],
+            acts: result.acts,
+            total: result.total,
+            page: 1,
+            pages: 1,
+            truncated: result.truncated,
+          });
+        }
       }
     } catch (cause) {
       if (requestId === requestRef.current) {
-        setError(formatApiError(cause, mode === 'acts' ? 'Не удалось загрузить акты.' : mode === 'consumables' ? 'Не удалось загрузить расходники.' : 'Не удалось найти оборудование.'));
+        if (cached) setNotice('Показаны сохранённые данные. Обновить их не удалось.');
+        else setError(formatApiError(cause, mode === 'acts' ? 'Не удалось загрузить акты.' : mode === 'consumables' ? 'Не удалось загрузить расходники.' : 'Не удалось найти оборудование.'));
       }
     } finally {
       if (requestId === requestRef.current) {
@@ -230,18 +383,38 @@ export function NativeDatabaseScreen() {
         setLoadingMore(false);
       }
     }
-  }, [allowed, bootstrapReady, currentDatabase?.id, contentQuery, mode]);
+  }, [allowed, bootstrapReady, contentQuery, currentDatabase?.id, mode, offlineMode, user?.id]);
 
   useEffect(() => { void loadContent(); }, [loadContent]);
 
   const changeDatabase = useCallback(async (databaseId: string) => {
-    if (!databaseId || databaseId === currentDatabase?.id || currentDatabase?.locked || switchingDatabase) return;
+    if (!databaseId || databaseId === currentDatabase?.id || currentDatabase?.locked || switchingDatabase) return false;
     requestRef.current += 1;
     setSwitchingDatabase(databaseId);
     setError('');
+    if (offlineMode) {
+      const selected = databases.find((database) => database.id === databaseId);
+      if (selected) {
+        setCurrentDatabase({ ...selected, locked: false });
+        setQuery('');
+        setEquipment([]);
+        setConsumables([]);
+        setActs([]);
+        setTotal(0);
+      }
+      setSwitchingDatabase('');
+      return Boolean(selected);
+    }
     try {
       const selected = await switchDatabase(databaseId);
       setCurrentDatabase(selected);
+      const userId = Number(user?.id || 0);
+      if (userId) {
+        void writeNativeSnapshot<NativeDatabaseBootstrapSnapshot>('database-bootstrap', userId, {
+          databases,
+          currentDatabase: selected,
+        });
+      }
       setQuery('');
       setEquipment([]);
       equipmentPageRef.current = 1;
@@ -249,30 +422,72 @@ export function NativeDatabaseScreen() {
       setConsumables([]);
       setActs([]);
       setTotal(0);
+      return true;
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось переключить базу данных.'));
+      return false;
     } finally {
       setSwitchingDatabase('');
     }
-  }, [currentDatabase?.id, currentDatabase?.locked, switchingDatabase]);
+  }, [currentDatabase?.id, currentDatabase?.locked, databases, offlineMode, switchingDatabase, user?.id]);
 
   const openEquipment = useCallback((item: EquipmentRecord | string) => {
     const invNo = typeof item === 'string' ? item : item.inv_no;
     const snapshot = typeof item === 'string' ? null : item;
     if (!invNo) return;
-    if (snapshot) void touchRecentEquipmentCard(invNo, snapshot, 'view', currentDatabase?.id).catch(() => undefined);
+    if (snapshot && !offlineMode) void touchRecentEquipmentCard(invNo, snapshot, 'view', currentDatabase?.id).catch(() => undefined);
     router.push(nativeEquipmentDestination(invNo, 'general', currentDatabase?.id) as never);
-  }, [currentDatabase?.id]);
+  }, [currentDatabase?.id, offlineMode]);
 
-  const openEquipmentFromQr = useCallback((payload: InventoryQrPayload) => {
+  const openEquipmentFromQr = useCallback(async (payload: InventoryQrPayload) => {
     setQrScannerOpen(false);
     setError('');
+    const targetDatabaseId = payload.databaseId || currentDatabase?.id || '';
+    const userId = Number(user?.id || 0);
+    if (offlineMode && userId && targetDatabaseId) {
+      const normalizedInvNo = payload.inventoryNumber.trim().toLocaleUpperCase('ru-RU');
+      let cachedEquipment = targetDatabaseId === currentDatabase?.id
+        ? equipment.find((item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo)
+        : undefined;
+      if (!cachedEquipment) {
+        const snapshot = await readNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
+          'database-inbox',
+          userId,
+          nativeDatabaseListSignature(targetDatabaseId, 'equipment', ''),
+        );
+        cachedEquipment = snapshot?.data.equipment.find(
+          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
+        );
+      }
+      if (!cachedEquipment) {
+        const catalog = await readNativeEquipmentCatalogSnapshot(userId, targetDatabaseId);
+        cachedEquipment = catalog?.data.equipment.find(
+          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
+        );
+      }
+      if (cachedEquipment) {
+        await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+          'database-item-details',
+          userId,
+          nativeEquipmentSnapshotKey(targetDatabaseId, payload.inventoryNumber),
+          {
+            databaseId: targetDatabaseId,
+            equipment: cachedEquipment,
+            acts: [],
+            history: [],
+            workHistory: [],
+            unavailableWorkKinds: [],
+            loadedTabs: [],
+          },
+        );
+      }
+    }
     router.push(nativeEquipmentDestination(
       payload.inventoryNumber,
       'general',
-      payload.databaseId || currentDatabase?.id,
+      targetDatabaseId,
     ) as never);
-  }, [currentDatabase?.id]);
+  }, [currentDatabase?.id, equipment, offlineMode, user?.id]);
 
   const toggleEquipmentSelection = useCallback((invNo: string) => {
     setSelectedInvNos((current) => {
@@ -284,7 +499,8 @@ export function NativeDatabaseScreen() {
   }, []);
 
   const openActFile = useCallback(async (act: EquipmentAct) => {
-    if (busyAct !== null) return;
+    if (busyActRef.current !== null) return;
+    busyActRef.current = act.doc_no;
     setBusyAct(act.doc_no);
     setError('');
     try {
@@ -300,9 +516,10 @@ export function NativeDatabaseScreen() {
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось открыть файл акта.'));
     } finally {
+      busyActRef.current = null;
       setBusyAct(null);
     }
-  }, [busyAct, currentDatabase?.id]);
+  }, [currentDatabase?.id]);
 
   const saveQuantity = useCallback(async () => {
     if (!quantityItem || quantityBusy || offlineMode) return;
@@ -326,14 +543,13 @@ export function NativeDatabaseScreen() {
   }, [currentDatabase?.id, offlineMode, quantityBusy, quantityDraft, quantityItem]);
 
   const pasteInventoryCode = useCallback(async () => {
-    if (offlineMode) return;
     const payload = parseInventoryQrPayload(await Clipboard.getStringAsync());
     if (!payload) {
       setError('В буфере нет поддерживаемого инвентарного QR-кода.');
       return;
     }
-    openEquipmentFromQr(payload);
-  }, [offlineMode, openEquipmentFromQr]);
+    await openEquipmentFromQr(payload);
+  }, [openEquipmentFromQr]);
 
   const confirmDeleteConsumable = useCallback(async () => {
     if (!deleteItem || deleteBusy || offlineMode || !canDelete) return;
@@ -360,6 +576,54 @@ export function NativeDatabaseScreen() {
     return debouncedQuery ? 'По вашему запросу ничего не найдено.' : 'В этой базе пока нет доступных актов.';
   }, [debouncedQuery, loading, mode]);
 
+  const handleEquipmentPress = useCallback((item: EquipmentRecord) => {
+    if (selectionMode) toggleEquipmentSelection(item.inv_no);
+    else openEquipment(item);
+  }, [openEquipment, selectionMode, toggleEquipmentSelection]);
+
+  const handleEquipmentLongPress = useCallback((item: EquipmentRecord) => {
+    toggleEquipmentSelection(item.inv_no);
+  }, [toggleEquipmentSelection]);
+
+  const renderEquipmentRow = useCallback(({ item }: ListRenderItemInfo<EquipmentRecord>) => (
+    <NativeEquipmentRow
+      item={item}
+      tokens={tokens}
+      selectionMode={selectionMode}
+      selected={selectedInvNos.has(item.inv_no)}
+      onLongPress={canWrite && !offlineMode ? handleEquipmentLongPress : undefined}
+      onPress={handleEquipmentPress}
+    />
+  ), [canWrite, handleEquipmentLongPress, handleEquipmentPress, offlineMode, selectedInvNos, selectionMode, tokens]);
+
+  const editConsumableQuantity = useCallback((item: ConsumableRecord) => {
+    setQuantityItem(item);
+    setQuantityDraft(String(item.qty));
+  }, []);
+
+  const requestConsumableDelete = useCallback((item: ConsumableRecord) => {
+    setDeleteItem(item);
+  }, []);
+
+  const renderConsumableRow = useCallback(({ item }: ListRenderItemInfo<ConsumableRecord>) => (
+    <NativeConsumableRow
+      item={item}
+      tokens={tokens}
+      onEditQuantity={canWrite && !offlineMode ? editConsumableQuantity : undefined}
+      onDelete={canDelete && !offlineMode ? requestConsumableDelete : undefined}
+    />
+  ), [canDelete, canWrite, editConsumableQuantity, offlineMode, requestConsumableDelete, tokens]);
+
+  const renderEquipmentAct = useCallback(({ item }: ListRenderItemInfo<EquipmentAct>) => (
+    <NativeEquipmentActCard
+      act={item}
+      tokens={tokens}
+      fileBusy={busyAct === item.doc_no}
+      onOpenEquipment={openEquipment}
+      onOpenFile={openActFile}
+    />
+  ), [busyAct, openActFile, openEquipment, tokens]);
+
   if (!allowed) {
     return (
       <AccountScreenScaffold title="Инвентарь" tokens={tokens}>
@@ -373,50 +637,39 @@ export function NativeDatabaseScreen() {
       title="Инвентарь"
       tokens={tokens}
       scroll={false}
+      rightAction={(
+        <Pressable
+          testID="native-database-header-selector"
+          onPress={() => setDatabasePickerOpen(true)}
+          disabled={databases.length === 0}
+          accessibilityRole="button"
+          accessibilityLabel={`Выбрать базу данных. Сейчас: ${currentDatabase?.name || currentDatabase?.id || 'не выбрана'}`}
+          accessibilityState={{ expanded: databasePickerOpen, disabled: databases.length === 0 }}
+          style={({ pressed }) => [
+            styles.headerDatabaseSelector,
+            {
+              backgroundColor: tokens.panelInset,
+              borderColor: tokens.borderSoft,
+              opacity: databases.length === 0 ? 0.55 : pressed ? 0.88 : 1,
+              transform: [{ scale: pressed && databases.length > 0 ? 0.96 : 1 }],
+            },
+          ]}
+        >
+          {switchingDatabase ? (
+            <ActivityIndicator size="small" color={accentColor} />
+          ) : (
+            <MaterialCommunityIcons name="database-outline" size={17} color={accentColor} />
+          )}
+          <Text numberOfLines={1} style={[styles.headerDatabaseText, { color: tokens.textPrimary }]}>
+            {currentDatabase?.name || currentDatabase?.id || 'База'}
+          </Text>
+          <MaterialCommunityIcons name={databasePickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color={tokens.iconMuted} />
+        </Pressable>
+      )}
     >
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: поиск и переключение базы недоступны.</Text> : null}
+      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показаны сохранённые данные, изменения недоступны.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.textSecondary }]}>{notice}</Text> : null}
-
-      <View style={styles.databaseHeading}>
-        <Text style={[styles.databaseLabel, { color: tokens.textSecondary }]}>База данных</Text>
-        {currentDatabase?.locked ? (
-          <View style={[styles.lockBadge, { backgroundColor: tokens.panelInset }]}>
-            <MaterialCommunityIcons name="lock-outline" size={14} color={tokens.iconMuted} />
-            <Text style={[styles.lockText, { color: tokens.textSecondary }]}>закреплена</Text>
-          </View>
-        ) : null}
-      </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.databaseStrip}
-        accessibilityRole="tablist"
-        accessibilityLabel="Выбор базы данных"
-        accessibilityHint="Проведите в сторону, чтобы увидеть остальные базы"
-      >
-        {databases.map((database) => {
-          const selected = database.id === currentDatabase?.id;
-          const busy = switchingDatabase === database.id;
-          const disabled = offlineMode || Boolean(switchingDatabase) || Boolean(currentDatabase?.locked);
-          return (
-            <Pressable
-              key={database.id}
-              testID={`native-database-option-${database.id}`}
-              onPress={() => { void changeDatabase(database.id); }}
-              disabled={disabled || selected}
-              accessibilityRole="tab"
-              accessibilityState={{ selected, disabled: disabled || selected, busy }}
-              accessibilityLabel={`${database.name}${selected ? ', выбрана' : ''}`}
-              style={[styles.databaseChip, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}
-            >
-              {busy ? <ActivityIndicator size="small" color={selected ? '#fff' : accentColor} /> : null}
-              <Text numberOfLines={1} style={[styles.databaseText, { color: selected ? '#fff' : tokens.textPrimary }]}>{database.name}</Text>
-              {selected && currentDatabase?.locked ? <MaterialCommunityIcons name="lock-outline" size={15} color="#fff" /> : null}
-            </Pressable>
-          );
-        })}
-      </ScrollView>
 
       {!query.trim() && (mode === 'acts' ? recentActs.length : recentCards.length) ? (
         <View style={styles.recentSection}>
@@ -485,7 +738,7 @@ export function NativeDatabaseScreen() {
             testID="native-database-search"
             value={query}
             onChangeText={setQuery}
-            editable={!offlineMode}
+            editable
             placeholder={mode === 'acts' ? 'Номер акта или сотрудник' : mode === 'consumables' ? 'Модель, P/N, размещение' : 'Инв. №, S/N, модель, сотрудник'}
             placeholderTextColor={tokens.textTertiary}
             accessibilityLabel={mode === 'acts' ? 'Поиск актов' : mode === 'consumables' ? 'Фильтр расходников' : 'Поиск оборудования'}
@@ -501,22 +754,18 @@ export function NativeDatabaseScreen() {
         <Pressable
           testID="native-database-scan-qr"
           onPress={() => setQrScannerOpen(true)}
-          disabled={offlineMode}
           accessibilityRole="button"
           accessibilityLabel="Сканировать инвентарный QR-код камерой"
-          accessibilityState={{ disabled: offlineMode }}
-          style={[styles.searchAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: offlineMode ? 0.5 : 1 }]}
+          style={[styles.searchAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
         >
           <MaterialCommunityIcons name="qrcode-scan" size={22} color={accentColor} />
         </Pressable>
         <Pressable
           testID="native-database-paste-qr"
           onPress={() => { void pasteInventoryCode(); }}
-          disabled={offlineMode}
           accessibilityRole="button"
           accessibilityLabel="Вставить инвентарный QR-код из буфера"
-          accessibilityState={{ disabled: offlineMode }}
-          style={[styles.searchAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: offlineMode ? 0.5 : 1 }]}
+          style={[styles.searchAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
         >
           <MaterialCommunityIcons name="content-paste" size={21} color={accentColor} />
         </Pressable>
@@ -587,16 +836,7 @@ export function NativeDatabaseScreen() {
           contentContainerStyle={equipment.length ? styles.listContent : styles.emptyContent}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footer} color={accentColor} /> : null}
-          renderItem={({ item }) => (
-            <NativeEquipmentRow
-              item={item}
-              tokens={tokens}
-              selectionMode={selectionMode}
-              selected={selectedInvNos.has(item.inv_no)}
-              onLongPress={canWrite && !offlineMode ? () => toggleEquipmentSelection(item.inv_no) : undefined}
-              onPress={() => selectionMode ? toggleEquipmentSelection(item.inv_no) : openEquipment(item)}
-            />
-          )}
+          renderItem={renderEquipmentRow}
         />
       ) : mode === 'consumables' ? (
         <FlatList
@@ -608,14 +848,7 @@ export function NativeDatabaseScreen() {
           onRefresh={() => { void loadContent(true); }}
           contentContainerStyle={visibleConsumables.length ? styles.listContent : styles.emptyContent}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
-          renderItem={({ item }) => (
-            <NativeConsumableRow
-              item={item}
-              tokens={tokens}
-              onEditQuantity={canWrite && !offlineMode ? () => { setQuantityItem(item); setQuantityDraft(String(item.qty)); } : undefined}
-              onDelete={canDelete && !offlineMode ? () => setDeleteItem(item) : undefined}
-            />
-          )}
+          renderItem={renderConsumableRow}
         />
       ) : (
         <FlatList
@@ -627,17 +860,101 @@ export function NativeDatabaseScreen() {
           onRefresh={() => { void loadContent(true); }}
           contentContainerStyle={acts.length ? styles.listContent : styles.emptyContent}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
-          renderItem={({ item }) => (
-            <NativeEquipmentActCard
-              act={item}
-              tokens={tokens}
-              fileBusy={busyAct === item.doc_no}
-              onOpenEquipment={openEquipment}
-              onOpenFile={() => { void openActFile(item); }}
-            />
-          )}
+          renderItem={renderEquipmentAct}
         />
       )}
+      <Modal
+        visible={databasePickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDatabasePickerOpen(false)}
+      >
+        <View style={styles.databasePickerRoot}>
+          <Pressable
+            testID="native-database-picker-backdrop"
+            accessibilityRole="button"
+            accessibilityLabel="Закрыть выбор базы данных"
+            onPress={() => setDatabasePickerOpen(false)}
+            style={styles.databasePickerBackdrop}
+          />
+          <View
+            testID="native-database-picker-sheet"
+            accessibilityViewIsModal
+            style={[styles.databasePickerSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}
+          >
+            <View style={styles.databasePickerHeader}>
+              <View style={styles.databasePickerHeading}>
+                <Text accessibilityRole="header" style={[styles.databasePickerTitle, { color: tokens.textPrimary }]}>Выберите базу</Text>
+                <Text style={[styles.databasePickerSubtitle, { color: tokens.textSecondary }]}>Инвентарь и поиск переключатся на выбранную базу</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Закрыть"
+                onPress={() => setDatabasePickerOpen(false)}
+                style={({ pressed }) => [styles.databasePickerClose, { opacity: pressed ? 0.65 : 1 }]}
+              >
+                <MaterialCommunityIcons name="close" size={24} color={tokens.iconMuted} />
+              </Pressable>
+            </View>
+            {currentDatabase?.locked ? (
+              <View style={[styles.databaseLockedNotice, { backgroundColor: tokens.panelInset }]}>
+                <MaterialCommunityIcons name="lock-outline" size={17} color={tokens.iconMuted} />
+                <Text style={[styles.databaseLockedText, { color: tokens.textSecondary }]}>База закреплена администратором и недоступна для переключения.</Text>
+              </View>
+            ) : null}
+            <ScrollView contentContainerStyle={styles.databasePickerOptions} keyboardShouldPersistTaps="handled">
+              {databases.map((database) => {
+                const selected = database.id === currentDatabase?.id;
+                const busy = switchingDatabase === database.id;
+                const disabled = Boolean(switchingDatabase) || (!selected && Boolean(currentDatabase?.locked));
+                return (
+                  <Pressable
+                    key={database.id}
+                    testID={`native-database-option-${database.id}`}
+                    accessibilityRole="radio"
+                    accessibilityLabel={`${database.name}${selected ? ', выбрана' : ''}`}
+                    accessibilityState={{ selected, disabled, busy }}
+                    disabled={disabled}
+                    onPress={() => {
+                      if (selected) {
+                        setDatabasePickerOpen(false);
+                        return;
+                      }
+                      void changeDatabase(database.id).then((changed) => {
+                        if (changed) setDatabasePickerOpen(false);
+                      });
+                    }}
+                    style={({ pressed }) => [
+                      styles.databasePickerOption,
+                      {
+                        backgroundColor: selected ? tokens.selected : tokens.panelInset,
+                        borderColor: selected ? tokens.selectedBorder : tokens.borderSoft,
+                        opacity: disabled ? 0.55 : pressed ? 0.84 : 1,
+                        transform: [{ scale: pressed && !disabled ? 0.96 : 1 }],
+                      },
+                    ]}
+                  >
+                    <View style={[styles.databasePickerIcon, { backgroundColor: selected ? tokens.accentSoft : tokens.panelSolid }]}>
+                      {busy ? (
+                        <ActivityIndicator size="small" color={accentColor} />
+                      ) : (
+                        <MaterialCommunityIcons name="database-outline" size={21} color={selected ? accentColor : tokens.iconMuted} />
+                      )}
+                    </View>
+                    <View style={styles.databasePickerOptionText}>
+                      <Text numberOfLines={1} style={[styles.databasePickerOptionTitle, { color: tokens.textPrimary }]}>{database.name}</Text>
+                      {database.id !== database.name ? (
+                        <Text numberOfLines={1} style={[styles.databasePickerOptionId, { color: tokens.textSecondary }]}>{database.id}</Text>
+                      ) : null}
+                    </View>
+                    <MaterialCommunityIcons name={selected ? 'check-circle' : 'chevron-right'} size={22} color={selected ? accentColor : tokens.iconMuted} />
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
       <Modal
         visible={Boolean(quantityItem)}
         transparent
@@ -645,7 +962,7 @@ export function NativeDatabaseScreen() {
         onRequestClose={() => { if (!quantityBusy) setQuantityItem(null); }}
         accessibilityViewIsModal
       >
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} {...chatKeyboardAvoidingProps()}>
           <View style={[styles.quantityDialog, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}> 
             <Text accessibilityRole="header" style={[styles.quantityTitle, { color: tokens.textPrimary }]}>Остаток расходника</Text>
             <Text numberOfLines={2} style={[styles.quantityDescription, { color: tokens.textSecondary }]}>{quantityItem?.model_name || quantityItem?.type_name || quantityItem?.inv_no}</Text>
@@ -665,7 +982,7 @@ export function NativeDatabaseScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
       <Modal
         visible={Boolean(deleteItem)}
@@ -727,16 +1044,11 @@ export function NativeDatabaseScreen() {
 
 const styles = StyleSheet.create({
   headerAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerDatabaseSelector: { minHeight: 40, maxWidth: 184, borderRadius: 12, borderWidth: 1, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
+  headerDatabaseText: { flexShrink: 1, fontSize: 12, lineHeight: 16, fontWeight: '800' },
   warning: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   error: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   notice: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '600' },
-  databaseHeading: { minHeight: 24, marginBottom: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  databaseLabel: { fontSize: 12, lineHeight: 17, fontWeight: '800' },
-  lockBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  lockText: { fontSize: 10, lineHeight: 14, fontWeight: '700' },
-  databaseStrip: { gap: 8, paddingRight: 20, paddingBottom: 9 },
-  databaseChip: { minHeight: 44, maxWidth: 260, borderRadius: 22, borderWidth: 1, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  databaseText: { flexShrink: 1, fontSize: 13, lineHeight: 18, fontWeight: '800' },
   recentSection: { marginBottom: 9 },
   recentLabel: { marginBottom: 6, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   recentStrip: { gap: 8, paddingRight: 20, paddingBottom: 2 },
@@ -767,6 +1079,22 @@ const styles = StyleSheet.create({
   emptyContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 60 },
   empty: { textAlign: 'center', fontSize: 14, lineHeight: 20 },
   footer: { paddingVertical: 16 },
+  databasePickerRoot: { flex: 1, justifyContent: 'flex-end' },
+  databasePickerBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.48)' },
+  databasePickerSheet: { maxHeight: '72%', borderWidth: 1, borderBottomWidth: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 8, paddingBottom: 24, overflow: 'hidden' },
+  databasePickerHeader: { minHeight: 64, paddingLeft: 18, paddingRight: 8, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  databasePickerHeading: { flex: 1, minWidth: 0 },
+  databasePickerTitle: { fontSize: 18, lineHeight: 23, fontWeight: '900' },
+  databasePickerSubtitle: { marginTop: 2, fontSize: 12, lineHeight: 16 },
+  databasePickerClose: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
+  databaseLockedNotice: { minHeight: 42, marginHorizontal: 14, marginBottom: 8, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  databaseLockedText: { flex: 1, fontSize: 12, lineHeight: 16, fontWeight: '700' },
+  databasePickerOptions: { paddingHorizontal: 12, paddingTop: 4, gap: 8 },
+  databasePickerOption: { minHeight: 64, borderRadius: 16, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 11 },
+  databasePickerIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  databasePickerOptionText: { flex: 1, minWidth: 0 },
+  databasePickerOptionTitle: { fontSize: 15, lineHeight: 20, fontWeight: '800' },
+  databasePickerOptionId: { marginTop: 2, fontSize: 11, lineHeight: 15, fontVariant: ['tabular-nums'] },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.42)', alignItems: 'center', justifyContent: 'center', padding: 24 },
   quantityDialog: { width: '100%', maxWidth: 420, borderWidth: 1, borderRadius: 18, padding: 18 },
   quantityTitle: { fontSize: 18, fontWeight: '900' },

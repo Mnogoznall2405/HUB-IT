@@ -168,6 +168,7 @@ class NotificationPreferencesResponse(BaseModel):
 class NotificationPreferencesPatchRequest(BaseModel):
     mail: Optional[bool] = None
     tasks: Optional[bool] = None
+    docflow: Optional[bool] = None
     task_email: Optional[bool] = None
     announcements: Optional[bool] = None
     chat: Optional[bool] = None

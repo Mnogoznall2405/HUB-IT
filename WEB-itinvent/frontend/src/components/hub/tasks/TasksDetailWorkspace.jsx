@@ -1,8 +1,10 @@
-import { useMemo } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import {
   Box,
   Button,
   Stack,
+  Tab,
+  Tabs,
   Typography,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -17,9 +19,13 @@ import {
 import TaskDetailShell from './TaskDetailShell';
 import TaskDetailChecklist from './TaskDetailChecklist';
 import TaskAttachmentPreviewDialog, { useTaskAttachmentPreview } from './TaskAttachmentPreviewDialog';
+import TaskPresenceIndicator from './TaskPresenceIndicator';
 import { getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
 import { hideMobileScrollbarSx } from '../../../pages/tasks/taskFormatters';
 import { buildMobileTaskActionState } from '../../../pages/tasksViewModel';
+
+const LazyTaskCanvasWorkspace = lazy(() => import('./TaskCanvasWorkspace'));
+const LazyTaskDiscussionWorkspace = lazy(() => import('./TaskDiscussionWorkspace'));
 
 function TaskDetailOverviewSections({
   task,
@@ -94,8 +100,12 @@ export default function TasksDetailWorkspace({
   theme,
   selectedMobileTaskView = 'detail',
   selectedTaskTab = 'comments',
+  selectedTaskView = 'overview',
   taskDiscussionChatEnabled = false,
   discussionOpening = false,
+  discussionError = '',
+  discussionConversationId = '',
+  discussionMessageId = '',
   reopeningTaskId = '',
   comments = [],
   statusLog = [],
@@ -121,18 +131,20 @@ export default function TasksDetailWorkspace({
   statusMeta,
   priorityMeta,
   onBack,
+  backLabel = 'К списку',
   onBackFromChecklist,
   onCopyLink,
   onShareLink,
   onOpenEditTask,
   onDeleteTask,
-  onOpenTaskDiscussion,
+  onRetryTaskDiscussion,
   onToggleChecklistItem,
   onAddChecklistItem,
   onUploadAttachment,
   onDownloadAttachment,
   onDownloadReport,
   onTabChange,
+  onViewChange = () => {},
   onCommentChange,
   onAddComment,
   onOpenMobileChecklist,
@@ -145,6 +157,16 @@ export default function TasksDetailWorkspace({
   renderChecklist,
 }) {
   const attachmentPreview = useTaskAttachmentPreview();
+  const canvasSelected = Boolean(task) && selectedTaskView === 'canvas';
+  const discussionSelected = Boolean(task) && selectedTaskView === 'discussion';
+  const fillSelected = canvasSelected || discussionSelected;
+  const discussionAvailable = Boolean(
+    taskDiscussionChatEnabled
+    && task?.capabilities?.can_open_discussion !== false,
+  );
+  const resolvedTaskView = selectedTaskView === 'discussion' && !discussionAvailable
+    ? 'overview'
+    : selectedTaskView;
   const checklistRenderer = renderChecklist || ((taskItem) => (
     <TaskDetailChecklist
       task={taskItem}
@@ -235,10 +257,20 @@ export default function TasksDetailWorkspace({
       priorityMeta={priorityMeta(task?.priority)}
       transferLabel={getTransferActReminderLabel(task)}
       isTransferReminder={isTransferActUploadTask(task)}
-      mobileTitle={selectedMobileTaskView === 'checklist' ? 'Чек-лист' : 'Задача'}
+      mobileTitle={selectedTaskView === 'canvas'
+        ? 'Доска'
+        : selectedTaskView === 'discussion'
+          ? 'Обсуждение'
+        : selectedMobileTaskView === 'checklist'
+          ? 'Чек-лист'
+          : 'Задача'}
       onBack={isMobile && selectedMobileTaskView === 'checklist' ? onBackFromChecklist : onBack}
+      backLabel={isMobile && selectedMobileTaskView === 'checklist' ? 'К задаче' : backLabel}
       onCopyLink={onCopyLink}
       isMobile={isMobile}
+      compactHeader={fillSelected}
+      contentMode={fillSelected ? 'fill' : 'scroll'}
+      archiveComments={taskDiscussionChatEnabled}
       actionMenuItems={actionMenuItems}
       onActionMenuSelect={(key) => {
         if (key === 'edit') {
@@ -257,21 +289,86 @@ export default function TasksDetailWorkspace({
           void onShareLink?.();
         }
       }}
-      taskDiscussionEnabled={taskDiscussionChatEnabled}
-      onOpenTaskDiscussion={() => void onOpenTaskDiscussion(task)}
-      discussionOpening={discussionOpening}
       loading={loading}
     >
       <Box
+        data-testid="task-detail-workspace-content"
         sx={{
           px: isMobile ? 0 : { xs: 1, md: 1.25 },
-          py: isMobile ? 0 : 1.1,
+          py: isMobile ? 0 : fillSelected ? 0.5 : 1.1,
+          ...(fillSelected ? {
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          } : {}),
           bgcolor: isMobile && theme.palette.mode === 'dark' ? '#0b0b0c' : undefined,
           ...(isMobile ? hideMobileScrollbarSx : {}),
         }}
       >
+        {task && selectedMobileTaskView !== 'checklist' && (
+          <Tabs
+            value={resolvedTaskView}
+            onChange={(_, value) => onViewChange(value)}
+            aria-label="Режим карточки задачи"
+            sx={{
+              mb: fillSelected ? 0.5 : 1,
+              minHeight: isMobile ? 44 : 40,
+              flexShrink: 0,
+              borderBottom: '1px solid',
+              borderColor: ui.borderSoft,
+              '& .MuiTab-root': {
+                minHeight: isMobile ? 44 : 40,
+                minWidth: 92,
+                px: 1.5,
+                textTransform: 'none',
+                fontWeight: 800,
+              },
+            }}
+          >
+            <Tab value="overview" label="Задача" />
+            {discussionAvailable ? <Tab value="discussion" label="Обсуждение" /> : null}
+            <Tab value="canvas" label="Доска" />
+          </Tabs>
+        )}
+        {task && selectedMobileTaskView !== 'checklist' ? (
+          <TaskPresenceIndicator taskId={task.id} />
+        ) : null}
         {task ? (
-          isMobile ? (
+          resolvedTaskView === 'discussion' ? (
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <Suspense
+                fallback={(
+                  <Stack sx={{ flex: 1, minHeight: 0 }} alignItems="center" justifyContent="center">
+                    <Typography variant="body2" sx={{ color: ui.mutedText }}>Загрузка обсуждения…</Typography>
+                  </Stack>
+                )}
+              >
+                <LazyTaskDiscussionWorkspace
+                  taskId={task.id}
+                  conversationId={discussionConversationId}
+                  messageId={discussionMessageId}
+                  loading={discussionOpening}
+                  error={discussionError}
+                  onRetry={onRetryTaskDiscussion}
+                  onBackToTask={() => onViewChange('overview')}
+                />
+              </Suspense>
+            </Box>
+          ) : resolvedTaskView === 'canvas' ? (
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <Suspense
+                fallback={(
+                  <Stack sx={{ flex: 1, minHeight: 0 }} alignItems="center" justifyContent="center">
+                    <Typography variant="body2" sx={{ color: ui.mutedText }}>Загрузка редактора доски…</Typography>
+                  </Stack>
+                )}
+              >
+                <LazyTaskCanvasWorkspace task={task} theme={theme} />
+              </Suspense>
+            </Box>
+          ) : isMobile ? (
             selectedMobileTaskView === 'checklist' ? (
               <TaskMobileChecklistScreen
                 task={task}
@@ -292,9 +389,6 @@ export default function TasksDetailWorkspace({
                 onPreviewAttachment={(attachment) => void attachmentPreview.openPreview(task, attachment)}
                 onDownloadReport={(report) => void onDownloadReport(report)}
                 onOpenChecklist={onOpenMobileChecklist}
-                taskDiscussionEnabled={taskDiscussionChatEnabled}
-                onOpenTaskDiscussion={() => void onOpenTaskDiscussion(task)}
-                discussionOpening={discussionOpening}
                 formatDateTime={formatDateTime}
                 formatFileSize={formatFileSize}
                 ui={ui}

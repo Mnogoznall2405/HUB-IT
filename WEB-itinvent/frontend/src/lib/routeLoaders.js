@@ -71,6 +71,9 @@ export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/K
 export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
 export const loadCompanyStructureRoute = defineRouteLoader(() => import('../pages/CompanyStructure'));
 export const loadWarehouse1CRoute = defineRouteLoader(() => import('../pages/Warehouse1C'));
+export const loadItPurchaseRequestsRoute = defineRouteLoader(() => import('../pages/ItPurchaseRequests'));
+export const loadConstructionObjectsRoute = defineRouteLoader(() => import('../pages/ConstructionObjects'));
+export const loadConstructionObjectDetailRoute = defineRouteLoader(() => import('../pages/ConstructionObjectDetail'));
 export const loadDocflowRoute = defineRouteLoader(() => import('../pages/Docflow'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
 export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
@@ -109,6 +112,9 @@ const ROUTE_LOADERS = new Map([
   ['/kb', loadKnowledgeBaseRoute],
   ['/address-book', loadAddressBookRoute],
   ['/warehouse-1c', loadWarehouse1CRoute],
+  ['/it/requests', loadItPurchaseRequestsRoute],
+  ['/construction', loadConstructionObjectsRoute],
+  ['/construction/objects', loadConstructionObjectDetailRoute],
   ['/docflow', loadDocflowRoute],
   ['/passwords', loadPasswordsRoute],
   ['/groups-access', loadGroupsAccessRoute],
@@ -127,6 +133,15 @@ export const normalizeRouteLoaderPath = (path) => {
   }
   if (normalized === '/networks' || normalized.startsWith('/networks/')) {
     return '/networks';
+  }
+  if (normalized === '/it/requests' || normalized.startsWith('/it/requests/')) {
+    return '/it/requests';
+  }
+  if (normalized === '/construction/objects' || normalized.startsWith('/construction/objects/')) {
+    return '/construction/objects';
+  }
+  if (normalized === '/construction') {
+    return '/construction';
   }
   if (normalized === '/dashboard/news' || normalized.startsWith('/dashboard/news/')) {
     return '/feed';

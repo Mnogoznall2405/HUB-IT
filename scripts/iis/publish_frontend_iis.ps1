@@ -151,4 +151,4 @@ New-Item -ItemType Directory -Force $IisSitePath | Out-Null
 Invoke-RobocopyDeploy -Source $distPath -Destination $IisSitePath -UseMirror:$Mirror.IsPresent
 
 Write-Host "Frontend published to IIS path: $IisSitePath"
-Write-Host "Note: web.config in dist sets maxAllowedContentLength=1GB for My Files uploads. Recycle IIS app pool if uploads still return 413."
+Write-Host "Note: web.config in dist sets maxAllowedContentLength to the IIS uint32 maximum for My Files uploads. Recycle IIS app pool if uploads still return 413."

@@ -62,6 +62,9 @@ import {
   loadTicketsRoute,
   loadVcsRoute,
   loadWarehouse1CRoute,
+  loadItPurchaseRequestsRoute,
+  loadConstructionObjectsRoute,
+  loadConstructionObjectDetailRoute,
   loadFileEgressRoute,
 } from './lib/routeLoaders';
 
@@ -90,6 +93,9 @@ const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
 const CompanyStructure = lazy(loadCompanyStructureRoute);
 const Warehouse1C = lazy(loadWarehouse1CRoute);
+const ItPurchaseRequests = lazy(loadItPurchaseRequestsRoute);
+const ConstructionObjects = lazy(loadConstructionObjectsRoute);
+const ConstructionObjectDetail = lazy(loadConstructionObjectDetailRoute);
 const Docflow = lazy(loadDocflowRoute);
 const Passwords = lazy(loadPasswordsRoute);
 const GroupsAccess = lazy(loadGroupsAccessRoute);
@@ -115,6 +121,8 @@ const routePermissions = [
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
   { path: '/warehouse-1c', permissions: ['warehouse_1c.read'] },
+  { path: '/it/requests', permissions: ['warehouse_1c.it_requests.read'] },
+  { path: '/construction', permissions: ['construction.read'] },
   { path: '/docflow', permissions: ['docflow.read'] },
   { path: '/passwords', permissions: ['passwords.read'] },
   { path: '/groups-access', permissions: ['groups_access.read'] },
@@ -654,6 +662,22 @@ function AuthenticatedAppShell() {
                 <Route
                   path="/warehouse-1c"
                   element={<PermissionRoute permission="warehouse_1c.read"><Warehouse1C /></PermissionRoute>}
+                />
+                <Route
+                  path="/it/requests/:requestRef?"
+                  element={<PermissionRoute permission="warehouse_1c.it_requests.read"><ItPurchaseRequests /></PermissionRoute>}
+                />
+                <Route
+                  path="/construction"
+                  element={<PermissionRoute permission="construction.read"><ConstructionObjects /></PermissionRoute>}
+                />
+                <Route
+                  path="/construction/objects/:objectId"
+                  element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
+                />
+                <Route
+                  path="/construction/objects/:objectId/requests/:requestRef"
+                  element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
                 />
                 <Route
                   path="/docflow"

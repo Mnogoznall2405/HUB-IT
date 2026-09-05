@@ -53,6 +53,7 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
             scope=str(payload.get("scope") or "inbox"),
             search=str(payload.get("search") or ""),
             limit=int(payload.get("limit") or 50),
+            offset=int(payload.get("offset") or 0),
         )
     if operation == "task_detail":
         return client.get_task_detail(

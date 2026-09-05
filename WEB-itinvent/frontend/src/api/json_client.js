@@ -256,14 +256,16 @@ export const jsonAPI = {
     }),
 
   /**
-   * Get PC cleaning history for a specific serial number
+   * Get PC cleaning history for a specific equipment item
    * @param {string} serial_number - Serial number
    * @param {string} [hw_serial_number] - Hardware serial number
+   * @param {string} [inv_no] - Inventory number preserved by transfers
+   * @param {number} [equipment_id] - Stable SQL equipment ID
    * @returns {Promise<Object>} History data with last_date, count, time_ago
    */
-  getPcCleaningHistory: (serial_number, hw_serial_number) =>
+  getPcCleaningHistory: (serial_number, hw_serial_number, inv_no, equipment_id) =>
     apiClient.get('/json/works/cleaning/history', {
-      params: { serial_number, hw_serial_number }
+      params: { serial_number, hw_serial_number, inv_no, equipment_id }
     }),
 
   /**

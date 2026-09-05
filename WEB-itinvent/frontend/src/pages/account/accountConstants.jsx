@@ -65,6 +65,25 @@ export const roleOptions = [
   { value: 'viewer', label: 'Просмотр', color: 'default' },
 ];
 
+const BASE_USER_PERMISSIONS = new Set([
+  'address_book.read',
+  'announcements.read',
+  'chat.ai.use',
+  'chat.read',
+  'chat.write',
+  'company_structure.read',
+  'dashboard.read',
+  'docflow.act',
+  'docflow.read',
+  'mail.access',
+  'my_files.read',
+  'my_files.share',
+  'my_files.write',
+  'settings.read',
+  'tasks.create',
+  'tasks.read',
+]);
+
 const permissionGroups = [
   {
     group: 'Корпоративный чат',
@@ -77,6 +96,7 @@ const permissionGroups = [
     group: 'Общие',
     permissions: [
       { value: 'dashboard.read', label: 'Dashboard: просмотр' },
+      { value: 'announcements.read', label: 'Лента: просмотр' },
       { value: 'announcements.write', label: 'Лента: создание своих публикаций' },
       { value: 'announcements.moderate', label: 'Лента: модерация и аналитика' },
       { value: 'statistics.read', label: 'Статистика: просмотр' },
@@ -144,7 +164,15 @@ const permissionGroups = [
     group: 'Склад 1С',
     permissions: [
       { value: 'warehouse_1c.read', label: 'Склад 1С: просмотр' },
+      { value: 'warehouse_1c.it_requests.read', label: 'ИТ — заявки на МПЗ: просмотр' },
       { value: 'warehouse_1c.reconcile.write', label: 'Склад 1С: подтверждать PART_NO в HUB' },
+    ],
+  },
+  {
+    group: 'Объекты строительства',
+    permissions: [
+      { value: 'construction.read', label: 'Объекты строительства: просмотр' },
+      { value: 'construction.write', label: 'Объекты строительства: настройка карточек и команды' },
     ],
   },
   {
@@ -224,7 +252,14 @@ export const SETTINGS_PERMISSION_GROUPS = [
   PASSWORDS_PERMISSION_GROUP,
   GROUPS_ACCESS_PERMISSION_GROUP,
   AI_PERMISSION_GROUP,
-];
+].map((group) => ({
+  ...group,
+  permissions: group.permissions.map((permission) => (
+    BASE_USER_PERMISSIONS.has(permission.value)
+      ? { ...permission, alwaysGranted: true }
+      : permission
+  )),
+}));
 
 export const sessionStatusMeta = {
   active: { label: 'Активна', color: 'success' },

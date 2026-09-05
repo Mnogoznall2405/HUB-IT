@@ -13,6 +13,7 @@ import {
   hasDeliveredSystemNotification,
   routeSystemNotification,
 } from './systemNotificationRouter';
+import { buildTaskDetailPath } from './taskNavigation';
 
 export const CHAT_NOTIFICATIONS_ENABLED_KEY = 'itinvent_chat_notifications_enabled';
 export const CHAT_NOTIFICATION_SHOWN_KEY = 'itinvent_chat_notification_shown_ids';
@@ -510,9 +511,22 @@ export function shouldSkipChatPushForegroundNotification() {
   return status === 'connected';
 }
 
-export function buildChatNotificationRoute({ conversationId, messageId } = {}) {
+export function buildChatNotificationRoute({
+  conversationId,
+  messageId,
+  conversationKind,
+  taskId,
+} = {}) {
   const normalizedConversationId = String(conversationId || '').trim();
   const normalizedMessageId = String(messageId || '').trim();
+  const normalizedTaskId = String(taskId || '').trim();
+  const normalizedConversationKind = String(conversationKind || '').trim().toLowerCase();
+  if (normalizedTaskId && normalizedConversationKind === 'task') {
+    return buildTaskDetailPath(normalizedTaskId, {
+      view: 'discussion',
+      message: normalizedMessageId,
+    });
+  }
   if (!normalizedConversationId) return '/chat';
   const query = new URLSearchParams();
   query.set('conversation', normalizedConversationId);
@@ -571,6 +585,8 @@ export function createChatSystemNotification({
   title,
   body,
   conversationId,
+  conversationKind,
+  taskId,
   onNavigate,
   channel = 'chat',
   createdAt,
@@ -596,6 +612,8 @@ export function createChatSystemNotification({
   const route = buildChatNotificationRoute({
     conversationId: normalizedConversationId,
     messageId: normalizedMessageId,
+    conversationKind,
+    taskId,
   });
   const normalizedChannel = channel === 'mention' ? 'mention' : 'chat';
   const normalizedUrgency = urgency === 'high' || urgency === 'low' ? urgency : 'normal';

@@ -14,6 +14,10 @@ from backend.appdb.models import AppPasswordVaultAudit, AppPasswordVaultEntry, A
 from backend.config import config
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.auth_security_service import auth_security_service
+from backend.services.mobile_biometric_session_service import (
+    MobileBiometricSessionError,
+    mobile_biometric_session_service,
+)
 from backend.services.secret_crypto_service import (
     SecretCryptoError,
     decrypt_password_vault_secret,
@@ -670,6 +674,36 @@ class PasswordVaultService:
             session_id=session_id,
             meta=meta,
             audit_action="unlock.webauthn",
+        )
+
+    def unlock_with_mobile_biometric(
+        self,
+        *,
+        actor: Any,
+        session_id: str | None,
+        renewal_token: str,
+        client_device_id: str,
+        meta: PasswordVaultRequestMeta,
+    ) -> dict[str, str]:
+        user_id = _actor_id(actor)
+        self._check_unlock_rate_limit(user_id=user_id, ip_address=meta.ip_address)
+        try:
+            self._require_unlock_eligible_user(user_id=user_id)
+            credential = mobile_biometric_session_service.authenticate(
+                renewal_token=_normalize_text(renewal_token),
+                client_device_id=_normalize_text(client_device_id),
+            )
+            if int(credential.get("user_id") or 0) != user_id:
+                raise PasswordVaultAccessError("Biometric credential does not belong to current user")
+        except (MobileBiometricSessionError, PasswordVaultAccessError) as exc:
+            self._record_unlock_failure(user_id=user_id, ip_address=meta.ip_address)
+            raise PasswordVaultAccessError("Не удалось подтвердить отпечаток") from exc
+
+        return self._grant_unlock(
+            actor=actor,
+            session_id=session_id,
+            meta=meta,
+            audit_action="unlock.mobile_biometric",
         )
 
     def get_unlocked_until(self, *, user_id: int, session_id: str | None) -> str | None:

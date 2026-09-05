@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import {
   conversationExistsInList,
+  getTaskConversationTaskId,
   shouldDeferChatUrlSyncForRequestedConversation,
 } from './chatConversationModel';
 
@@ -46,6 +47,7 @@ function handleMissingRequestedConversation({
   setActiveConversationId,
   setConversationBootstrapComplete,
   setMobileView,
+  syncConversationInUrl,
 }) {
   requestedConversationHandledRef.current = conversationId;
   applyingRequestedConversationRef.current = '';
@@ -58,7 +60,9 @@ function handleMissingRequestedConversation({
   setActiveConversationId('');
   if (isMobile) setMobileView('inbox');
   setConversationBootstrapComplete?.(true);
-  navigate('/chat', { replace: true });
+  if (syncConversationInUrl) {
+    navigate('/chat', { replace: true });
+  }
 }
 
 export default function useChatUrlConversationBootstrap({
@@ -85,6 +89,7 @@ export default function useChatUrlConversationBootstrap({
   setActiveConversationId,
   setConversationBootstrapComplete,
   setMobileView,
+  syncConversationInUrl = true,
   writeMobileHistoryState,
 }) {
   const requestedConversationRetryInFlightRef = useRef('');
@@ -93,6 +98,11 @@ export default function useChatUrlConversationBootstrap({
     if (conversationsLoading) return;
     const requestedExists = conversationExistsInList(conversations, requestedConversationId);
     const restoredExists = conversationExistsInList(conversations, restoredConversationId);
+    const restoredConversation = restoredExists
+      ? (Array.isArray(conversations) ? conversations : []).find(
+        (conversation) => String(conversation?.id || '').trim() === String(restoredConversationId || '').trim(),
+      )
+      : null;
     const requestedRetryInFlight = requestedConversationRetryInFlightRef.current
       && String(requestedConversationRetryInFlightRef.current) === String(requestedConversationId || '').trim();
 
@@ -148,12 +158,22 @@ export default function useChatUrlConversationBootstrap({
           setActiveConversationId,
           setConversationBootstrapComplete,
           setMobileView,
+          syncConversationInUrl,
         });
         return;
       }
 
       if (restoredConversationId) {
         if (restoredExists) {
+          if (getTaskConversationTaskId(restoredConversation)) {
+            clearStoredConversationState({ conversationId: restoredConversationId });
+            invalidConversationRef.current = '';
+            applyingRequestedConversationRef.current = '';
+            setActiveConversationId('');
+            if (isMobile) setMobileView('inbox');
+            setConversationBootstrapComplete(true);
+            return;
+          }
           invalidConversationRef.current = '';
           applyingRequestedConversationRef.current = '';
           setActiveConversationId(restoredConversationId);
@@ -213,6 +233,7 @@ export default function useChatUrlConversationBootstrap({
         requestedConversationRetryRef,
         setActiveConversationId,
         setMobileView,
+        syncConversationInUrl,
       });
       return;
     }
@@ -251,10 +272,12 @@ export default function useChatUrlConversationBootstrap({
     setActiveConversationId,
     setConversationBootstrapComplete,
     setMobileView,
+    syncConversationInUrl,
     writeMobileHistoryState,
   ]);
 
   useEffect(() => {
+    if (!syncConversationInUrl) return;
     if (!conversationBootstrapComplete) return;
     if (isMobile) return;
     const currentParams = new URLSearchParams(locationSearch || '');
@@ -275,5 +298,5 @@ export default function useChatUrlConversationBootstrap({
     else currentParams.delete('conversation');
     const nextSearch = currentParams.toString();
     navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
-  }, [activeConversationId, applyingRequestedConversationRef, conversationBootstrapComplete, isMobile, locationSearch, navigate]);
+  }, [activeConversationId, applyingRequestedConversationRef, conversationBootstrapComplete, isMobile, locationSearch, navigate, syncConversationInUrl]);
 }

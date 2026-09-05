@@ -823,9 +823,10 @@ async def get_employee_equipment(
             owner_no,
             employee_name=employee_name,
             current_db_id=db_id,
+            include_current_acts=True,
         )
     else:
-        equipment = queries.get_equipment_by_owner(owner_no, db_id)
+        equipment = queries.get_equipment_by_owner_with_current_acts(owner_no, db_id)
 
     return EquipmentSearchResponse(
         found=len(equipment) > 0,
@@ -2084,6 +2085,8 @@ async def commit_uploaded_act(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    invalidate_equipment_cache(db_id)
 
     reminder_result = transfer_act_reminder_service.complete_for_uploaded_act(
         reminder_id=payload.reminder_id,

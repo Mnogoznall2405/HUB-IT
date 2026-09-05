@@ -161,6 +161,22 @@ describe('chatNotifications', () => {
     expect(onNavigate).toHaveBeenCalledWith('/chat?conversation=conv-1&message=msg-1');
   });
 
+  it('builds the canonical task discussion route for task-chat notifications', async () => {
+    const { buildChatNotificationRoute } = await import('./chatNotifications');
+
+    expect(buildChatNotificationRoute({
+      conversationId: 'conv-task-1',
+      messageId: 'msg-task-1',
+      conversationKind: 'task',
+      taskId: 'task-1',
+    })).toBe('/tasks?task=task-1&task_detail_view=discussion&message=msg-task-1');
+    expect(buildChatNotificationRoute({
+      conversationId: 'conv-direct-1',
+      messageId: 'msg-direct-1',
+      conversationKind: 'direct',
+    })).toBe('/chat?conversation=conv-direct-1&message=msg-direct-1');
+  });
+
   it('routes foreground notifications to the native desktop bridge without browser duplicates', async () => {
     const listeners = new Set();
     const transport = {

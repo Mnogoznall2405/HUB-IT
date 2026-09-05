@@ -18,6 +18,7 @@ import {
   MY_FILES_TEXT_PREVIEW_MAX_BYTES,
   normalizeMyFilesRetention,
 } from './nativeMyFilesModel';
+import { getNativeMyFilesOfflineFile } from './nativeMyFilesOfflineStore';
 
 const CACHE_DIRECTORY_NAME = 'hubit-my-files';
 const NATIVE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
@@ -97,7 +98,7 @@ export async function pickNativeMyFiles(): Promise<NativeMyFileUpload[]> {
     const size = Math.max(0, Number(asset.size || file.size || 0));
     const name = sanitizeNativeFileName(asset.name || file.name || 'file.bin');
     if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
-    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает 1 ГБ`);
+    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает лимит 4 ГБ`);
     return {
       uri: asset.uri,
       name,
@@ -119,7 +120,7 @@ export async function pickNativeMyFilesFolder(): Promise<NativeMyFileUpload | nu
   const size = Math.max(0, Number(asset.size || file.size || 0));
   const name = sanitizeNativeFileName(asset.name || `${asset.folderName || 'folder'}.zip`);
   if (!file.exists || size <= 0) throw new Error(`Архив «${name}» пустой или недоступен`);
-  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает 1 ГБ`);
+  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает лимит 4 ГБ`);
   return {
     uri: asset.uri,
     name,
@@ -140,7 +141,7 @@ export async function uploadNativeMyFile(
   const source = new File(picked.uri);
   const actualSize = Math.max(0, Number(source.size || picked.size || 0));
   if (!source.exists || actualSize <= 0) throw new Error('Файл пустой или недоступен');
-  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает 1 ГБ');
+  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает лимит 4 ГБ');
   const accessToken = await getAuthenticatedAccessToken();
   const deviceId = await getClientDeviceId();
   const query = new URLSearchParams({
@@ -275,11 +276,17 @@ export async function downloadNativeMyFile(
   options: {
     signal?: AbortSignal;
     onProgress?: (progress: MyFileTransferProgress) => void;
+    userId?: number;
   } = {},
 ): Promise<File> {
   assertNativeRuntime();
-  const grant = await createMyFileDownloadGrant(item.id);
-  const sourceUrl = resolveMyFileDownloadGrantUrl(grant.download_path);
+  if (options.userId) {
+    const offlineFile = await getNativeMyFilesOfflineFile(options.userId, item);
+    if (offlineFile) {
+      options.onProgress?.({ loaded: offlineFile.size, total: offlineFile.size, progress: 1 });
+      return offlineFile;
+    }
+  }
   const safeName = sanitizeNativeFileName(item.download_file_name || item.original_file_name || 'file.bin');
   const safeId = item.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
   const destination = new File(cacheDirectory(), `${safeId}-${safeName}`);
@@ -291,6 +298,8 @@ export async function downloadNativeMyFile(
     options.onProgress?.({ loaded: destination.size, total: destination.size, progress: 1 });
     return destination;
   }
+  const grant = await createMyFileDownloadGrant(item.id);
+  const sourceUrl = resolveMyFileDownloadGrantUrl(grant.download_path);
   if (destination.exists) destination.delete();
   cleanupCache();
   try {

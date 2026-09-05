@@ -3,6 +3,7 @@ import { normalizeNativeRoutePath } from './nativeRoutePath';
 import { routePathForPortalPath } from './moduleRegistry';
 
 let pendingPortalPath = '';
+const MAX_SYSTEM_INTENT_LENGTH = 4096;
 
 function nativeRoute(path: string): string {
   return routePathForPortalPath(normalizeNativeRoutePath(path));
@@ -10,7 +11,7 @@ function nativeRoute(path: string): string {
 
 export function routeSystemIntentPath(rawPath: string): string {
   const raw = String(rawPath || '').trim();
-  if (!raw) return '/';
+  if (!raw || raw.length > MAX_SYSTEM_INTENT_LENGTH) return '/';
 
   try {
     const hubOrigin = new URL(HUB_WEB_ORIGIN).origin;
@@ -119,10 +120,12 @@ function portalPathFromNativeRoute(destination: string): string | null {
       return `/company-structure${suffix ? `?${suffix}` : ''}`;
     }
     if (parsed.pathname === '/docflow' || parsed.pathname === '/(shell)/docflow') {
-      return '/docflow';
+      const taskRef = parsed.searchParams.get('task');
+      return taskRef ? `/docflow?task=${encodeURIComponent(taskRef)}` : '/docflow';
     }
-    if (/^(?:\/\(shell\))?\/docflow\/[^/]+$/.test(parsed.pathname)) {
-      return '/docflow';
+    const docflowDetail = parsed.pathname.match(/^(?:\/\(shell\))?\/docflow\/([^/]+)$/);
+    if (docflowDetail) {
+      return `/docflow?task=${encodeURIComponent(decodeURIComponent(docflowDetail[1]))}`;
     }
     if (parsed.pathname === '/scan-center' || parsed.pathname === '/(shell)/scan-center') {
       return '/scan-center';

@@ -29,6 +29,72 @@ from bot.local_json_store import append_json_data, load_json_data
 logger = logging.getLogger(__name__)
 
 
+def _normalize_equipment_identifier(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d+(\.0+)?", text):
+        try:
+            text = str(int(float(text)))
+        except ValueError:
+            pass
+    return text.upper()
+
+
+def _normalize_equipment_id(value):
+    if value in (None, ""):
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _select_pc_cleaning_records(records, equipment: dict, db_name: str = "") -> list[dict]:
+    """Select one PC history using ID/inventory number before serial fallbacks."""
+    target_db = str(db_name or "").strip().casefold()
+    target_equipment_id = _normalize_equipment_id(
+        equipment.get("ID") or equipment.get("equipment_id")
+    )
+    target_inv_no = _normalize_equipment_identifier(equipment.get("INV_NO") or equipment.get("inv_no"))
+    target_serials = {
+        _normalize_equipment_identifier(equipment.get("SERIAL_NO") or equipment.get("serial_no")),
+        _normalize_equipment_identifier(equipment.get("HW_SERIAL_NO") or equipment.get("hw_serial_no")),
+    }
+    target_serials.discard("")
+    matches = []
+
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        record_db = str(record.get("db_name") or "").strip().casefold()
+        if target_db and record_db and record_db != target_db:
+            continue
+
+        record_equipment_id = _normalize_equipment_id(record.get("equipment_id"))
+        if target_equipment_id is not None and record_equipment_id is not None:
+            if target_equipment_id == record_equipment_id:
+                matches.append(record)
+            continue
+
+        record_inv_no = _normalize_equipment_identifier(record.get("inv_no"))
+        if target_inv_no and record_inv_no:
+            if target_inv_no == record_inv_no:
+                matches.append(record)
+            continue
+
+        record_serials = {
+            _normalize_equipment_identifier(record.get("serial_no") or record.get("serial_number")),
+            _normalize_equipment_identifier(record.get("hw_serial_no")),
+        }
+        record_serials.discard("")
+        if target_serials.intersection(record_serials):
+            matches.append(record)
+
+    return matches
+
+
 async def handle_serial_input_with_ocr(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -522,11 +588,8 @@ async def show_pc_cleaning_confirmation(update: Update, context: ContextTypes.DE
         if not isinstance(cleanings, list):
             cleanings = []
 
-        # Ищем чистки для этого серийного номера
-        pc_cleanings = [
-            c for c in cleanings
-            if c.get('serial_no') == serial_no or c.get('serial_no') == hw_serial_no
-        ]
+        db_name = database_manager.get_user_database(update.effective_user.id)
+        pc_cleanings = _select_pc_cleaning_records(cleanings, equipment, db_name=db_name)
 
         if pc_cleanings:
             pc_cleanings.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
@@ -899,6 +962,7 @@ async def save_pc_cleaning(context: ContextTypes.DEFAULT_TYPE) -> bool:
             'employee': equipment.get('EMPLOYEE_NAME', ''),
             'inv_no': equipment.get('INV_NO', ''),
             'db_name': db_name,
+            'equipment_id': _normalize_equipment_id(equipment_id),
             'timestamp': datetime.now().isoformat()
         }
 

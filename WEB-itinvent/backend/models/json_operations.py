@@ -178,6 +178,7 @@ class PcCleaningResponse(BaseModel):
     employee: str
     inv_no: Optional[str] = None
     db_name: Optional[str] = None
+    equipment_id: Optional[int] = None
     timestamp: str
 
 
