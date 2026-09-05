@@ -164,6 +164,8 @@ bot.log*
 .codex_tmp/
 .playwright-cli/
 /.npm-cache/
+/.codex-npm-cache/
+/.codex-work/
 /artifacts/
 WEB-itinvent/uploads/
 /*.xlsx
@@ -172,6 +174,11 @@ WEB-itinvent/uploads/
 
 # Local deployment rollback snapshots
 /deploy_backups/
+
+# Local staging builds and preview copies
+/deploy_staging/
+/one-boat-bitrix-build-staging/
+/one-boat-bitrix-ui-staging/
 
 # One-off local diagnostics
 /_timed.ps1*
