@@ -441,7 +441,7 @@ function SupplyOverview({ summary, facets }) {
           <Box>
             <Typography component="h2" variant="h6" fontWeight={850}>Снабжение объекта</Typography>
             <Typography variant="body2" color="text.secondary">
-              Закупщик, поставщик, стоимость и документы показаны внутри каждой заявки без повторения по строкам.
+              Закупщик, поставщик и документы показаны внутри каждой заявки без повторения по строкам.
             </Typography>
           </Box>
         </Stack>
