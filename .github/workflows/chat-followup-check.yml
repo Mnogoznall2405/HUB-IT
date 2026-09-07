@@ -35,7 +35,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify test network guard
         working-directory: mobile-hub
-        run: node --require ./scripts/block-test-network.cjs -e "require('node:assert/strict').throws(() => new (require('node:net').Socket)().connect(443, 'example.invalid'), { code: 'HUBIT_TEST_REMOTE_NETWORK_BLOCKED' })"
+        run: |
+          node --require ./scripts/block-test-network.cjs -e "require('node:assert/strict').throws(() => new (require('node:net').Socket)().connect(443, 'example.invalid'), { code: 'HUBIT_TEST_REMOTE_NETWORK_BLOCKED' })"
       - name: Queue and navigation regression checks
         id: logic
         continue-on-error: true
