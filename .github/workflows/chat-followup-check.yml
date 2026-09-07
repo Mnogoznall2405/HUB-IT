@@ -1,0 +1,81 @@
+name: Validate isolated chat follow-up branch
+on:
+  push:
+    branches: [fix/chat-offline-history-safety-2026-09-07]
+    paths:
+      - mobile-hub/scripts/apply-chat-followup.py
+      - .github/workflows/chat-followup-check.yml
+permissions:
+  contents: write
+concurrency:
+  group: chat-followup-source-validation
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'Mnogoznall2405/HUB-IT' && github.ref == 'refs/heads/fix/chat-offline-history-safety-2026-09-07'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      EXPO_PUBLIC_API_URL: http://127.0.0.1:9/api/v1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Apply hash-guarded source edits
+        id: apply
+        continue-on-error: true
+        run: python mobile-hub/scripts/apply-chat-followup.py --apply > /tmp/hub-apply.log 2>&1
+      - name: Install existing locked dependencies without lifecycle scripts
+        id: dependencies
+        if: steps.apply.outcome == 'success'
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: timeout 300 npm ci --ignore-scripts --no-audit --no-fund > /tmp/hub-install.log 2>&1
+      - name: Execute queue and screen regression checks
+        id: logic
+        if: steps.apply.outcome == 'success'
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: |
+          if ! node -e "require('typescript')"; then
+            npm install --prefix /tmp/hub-ts --ignore-scripts --no-audit --no-fund typescript@5.8.3
+            export NODE_PATH=/tmp/hub-ts/node_modules
+          fi
+          node --test scripts/chat-delivery.regression.cjs scripts/chat-screen.regression.cjs > /tmp/hub-logic.log 2>&1
+      - name: Type-check the whole mobile project
+        id: lint
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: npm run lint > /tmp/hub-lint.log 2>&1
+      - name: Run the existing mobile Jest suite
+        id: jest
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: npm run test:ci -- --json --outputFile=/tmp/hub-jest.json > /tmp/hub-jest.log 2>&1
+      - name: Record checks and commit only to the same draft branch
+        if: always()
+        env:
+          APPLY_RESULT: ${{ steps.apply.outcome }}
+          INSTALL_RESULT: ${{ steps.dependencies.outcome }}
+          LOGIC_RESULT: ${{ steps.logic.outcome }}
+          LINT_RESULT: ${{ steps.lint.outcome }}
+          JEST_RESULT: ${{ steps.jest.outcome }}
+        run: |
+          python mobile-hub/scripts/report-chat-checks.py
+          git config user.name 'HUB-IT validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add documentation/technical/CHAT_DELIVERY_BRANCH_CHECKS.md
+          if [ "$APPLY_RESULT" = success ] && [ "$LOGIC_RESULT" = success ] && [ "$LINT_RESULT" = success ]; then
+            git add -u mobile-hub/src mobile-hub/app
+          fi
+          git diff --cached --quiet && exit 0
+          git fetch origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git commit -m 'Зафиксировать проверку доставки и навигации чата в отдельной ветке'
+          git push origin "HEAD:$GITHUB_REF"

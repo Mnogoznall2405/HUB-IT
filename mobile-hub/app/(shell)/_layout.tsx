@@ -1,3 +1,4 @@
+import { NativeChatDeliveryHost } from '../../src/chat/NativeChatDeliveryHost';
 import { Redirect, Tabs, usePathname } from 'expo-router';
 import { View } from 'react-native';
 import { useAuth } from '../../src/auth/AuthContext';
@@ -74,6 +75,7 @@ export default function ShellLayout() {
 
   return (
     <HubConnectionProvider>
+      <NativeChatDeliveryHost />
       <ShellTabs />
     </HubConnectionProvider>
   );
