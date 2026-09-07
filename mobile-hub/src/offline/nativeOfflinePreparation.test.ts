@@ -126,6 +126,15 @@ const mockCoverageSuccess = jest.mocked(recordNativeOfflineCoverageSuccess);
 const mockCoverageFailure = jest.mocked(recordNativeOfflineCoverageFailure);
 
 describe('prepareNativeOfflineData', () => {
+  it('does not report a prepared module when its coverage manifest was not committed', async () => {
+    mockCoverageSuccess.mockResolvedValueOnce(false);
+    const result = await prepareNativeOfflineData({
+      userId: 17, isAdmin: false, dashboard: true, feed: false, tasks: false, mail: false,
+      docflow: false, addressBook: false, database: false, myFiles: false, companyStructure: false,
+    });
+    expect(result.preparedModules).toEqual([]);
+    expect(result.failedModules).toEqual(['Главная']);
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockReadCoverage.mockResolvedValue(null);

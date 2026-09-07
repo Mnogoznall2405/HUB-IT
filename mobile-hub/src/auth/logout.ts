@@ -1,3 +1,7 @@
+import { clearMailQuickReplyDrafts } from '../mail/mailQuickReplyDrafts';
+import { clearMailComposeDrafts } from '../mail/nativeMailComposeDrafts';
+import { clearNativeChatOutbox } from '../chat/nativeChatOutbox';
+import { clearMailComposeTransfers } from '../mail/nativeMailComposeTransfer';
 import * as authApi from '../api/authApi';
 import { clearAllNativeChatDrafts } from '../chat/chatDrafts';
 import { chatSocket } from '../chat/chatSocket';
@@ -20,6 +24,7 @@ import { disableBiometricLogin } from './biometricAuth';
  * Server cleanup is best-effort, but local credentials are always removed.
  */
 export async function endMobileSession(): Promise<void> {
+  clearMailComposeTransfers();
   chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
 
   try {
@@ -69,6 +74,9 @@ export async function endMobileSession(): Promise<void> {
       clearOfflineCommandQueue(),
       clearPendingChatReplies(),
       clearAllNativeChatDrafts(),
+      clearNativeChatOutbox(),
+      clearMailQuickReplyDrafts(),
+      clearMailComposeDrafts(),
     ]);
   }
 }

@@ -104,6 +104,17 @@ describe('native appearance settings', () => {
     };
   });
 
+  it('previews and saves the explicit navigation order', async () => {
+    mockPreferences.preferences.mobile_bottom_nav_items = ['/dashboard', '/tasks'];
+    const view = await render(<NativeAppearanceSettingsScreen />);
+    expect(view.getByTestId('native-nav-preview')).toBeTruthy();
+    expect(view.getByTestId('native-nav-move-0--1')).toBeDisabled();
+    await fireEvent.press(view.getByTestId('native-nav-move-1--1'));
+    expect(mockPreferences.savePreferences).not.toHaveBeenCalled();
+    await fireEvent.press(view.getByRole('button', { name: 'Сохранить меню' }));
+    await waitFor(() => expect(mockPreferences.savePreferences).toHaveBeenCalledWith({ mobile_bottom_nav_items: ['/tasks', '/dashboard'] }));
+  });
+
   it('saves the selected theme immediately', async () => {
     const view = await render(<NativeAppearanceSettingsScreen />);
     await act(async () => {

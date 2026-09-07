@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../src/auth/AuthContext';
@@ -22,6 +22,7 @@ export default function BiometricOptInScreen() {
   const [capability, setCapability] = useState<BiometricCapability | null>(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const actionInProgressRef = useRef(false);
 
   useEffect(() => {
     if (!user) {
@@ -39,6 +40,8 @@ export default function BiometricOptInScreen() {
   };
 
   const onEnable = async () => {
+    if (actionInProgressRef.current) return;
+    actionInProgressRef.current = true;
     setError('');
     setSubmitting(true);
     try {
@@ -47,17 +50,23 @@ export default function BiometricOptInScreen() {
     } catch (cause: unknown) {
       setError(formatApiError(cause, 'Не удалось включить вход по отпечатку'));
     } finally {
+      actionInProgressRef.current = false;
       setSubmitting(false);
     }
   };
 
   const onSkip = async () => {
+    if (actionInProgressRef.current) return;
+    actionInProgressRef.current = true;
     setError('');
     setSubmitting(true);
     try {
       await skipBiometrics();
       continueToPortal();
+    } catch {
+      setError('Не удалось сохранить выбор. Попробуйте ещё раз.');
     } finally {
+      actionInProgressRef.current = false;
       setSubmitting(false);
     }
   };
@@ -79,12 +88,12 @@ export default function BiometricOptInScreen() {
         />
         <Text style={styles.title} accessibilityRole="header">Вход по отпечатку</Text>
         <Text style={styles.body}>
-          После подтверждения APK сможет продлевать вход по отпечатку без повторного пароля и 2FA.
-          Доступ действует на этом телефоне, пока вы не выйдете из аккаунта или не отключите отпечаток.
+          Входите по отпечатку на этом телефоне. Его можно отключить в настройках приложения.
+          Иногда потребуется снова подтвердить вход паролем и кодом.
         </Text>
         <Text style={styles.body}>
-          Сервер по-прежнему выдаёт короткие токены и проверяет пользователя при каждом онлайн-входе.
           Без интернета доступны только ранее загруженные данные в режиме чтения.
+          «Не сейчас» оставляет обычный вход по логину и паролю.
         </Text>
         {capability && !supported ? (
           <Text style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="assertive">

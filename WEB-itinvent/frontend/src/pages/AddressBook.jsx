@@ -1,3 +1,4 @@
+import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -94,11 +95,15 @@ const AddressBook = () => {
     }
   }, []);
 
+  const beginSearch = useRequestGuard(query);
+
   const loadItems = useCallback(async (nextQuery) => {
+    const isCurrent = beginSearch();
     setLoading(true);
     setError('');
     try {
       const data = await addressBookAPI.search({ q: nextQuery, limit: SEARCH_LIMIT });
+      if (!isCurrent()) return;
       setItems(Array.isArray(data?.items) ? data.items : []);
       setTotal(Number(data?.total || 0));
       setStatus((prev) => ({
@@ -107,12 +112,13 @@ const AddressBook = () => {
         last_error: data?.last_error || prev?.last_error || '',
       }));
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('Failed to search address book:', err);
       setError('Не удалось загрузить адресную книгу.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginSearch]);
 
   useEffect(() => {
     void loadItems(debouncedQuery);

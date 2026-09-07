@@ -179,12 +179,12 @@ Apply the variable and add `transition-[box-shadow]` for a smooth hover:
 
 Add a subtle `1px` outline with low opacity to images. This creates consistent depth, especially in design systems where other elements use borders or shadows.
 
-### Color rules (non-negotiable)
+### Color examples
 
-- **Light mode**: pure black, `oklch(0 0 0 / 0.1)`.
-- **Dark mode**: pure white, `oklch(1 0 0 / 0.1)`.
-- Never use a near-black or near-white from the project palette (e.g. slate-900, zinc-900, `#0a0a0a`, `#111827`, `#f5f5f7`). Tinted outlines pick up the surrounding surface color and read as dirt on the image edge.
-- Never match the outline to the project's accent or ink color. The outline is a neutral separator, not a themed element.
+- **Light mode example**: `oklch(0 0 0 / 0.1)`; prefer an appropriate existing border token.
+- **Dark mode example**: `oklch(1 0 0 / 0.1)`; verify contrast with the actual surface.
+- Prefer an appropriate existing project token. Check whether a tinted outline produces an unwanted edge against the actual image and surface before changing it.
+- Choose the outline by its role: neutral separation normally needs a subtle border, while a selected state may intentionally use the project accent.
 
 ### Light Mode
 

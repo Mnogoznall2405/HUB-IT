@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -212,6 +212,26 @@ describe('KnowledgeBase', () => {
     expect(screen.getByRole('button', { name: /Открыть Wiki/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Инструкции' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Создать статью/i })).not.toBeInTheDocument();
+  });
+
+  it('does not replace the new article with a late old detail', async () => {
+    const newer = { ...clone(runbookArticle), id: 'article-2', title: 'Second instruction', content: { ...runbookArticle.content, overview: 'New selected detail' } };
+    kbAPIMock.getArticles.mockImplementation(async ({ article_type } = {}) => ({
+      items: article_type === 'template' ? [] : [clone(runbookArticle), newer], total: 2,
+    }));
+    const pending = [];
+    kbAPIMock.getArticle.mockImplementation((id) => id === 'article-2'
+      ? Promise.resolve(newer)
+      : new Promise((resolve) => pending.push(resolve)));
+    renderPage();
+    await waitFor(() => expect(pending.length).toBeGreaterThanOrEqual(2));
+    await act(async () => { pending.at(-1)(clone(runbookArticle)); });
+    const next = await screen.findByText('Second instruction');
+    fireEvent.click(next);
+    expect(await screen.findByText('New selected detail')).toBeInTheDocument();
+    await act(async () => { pending.forEach((resolve) => resolve(clone(runbookArticle))); });
+    expect(screen.getByText('New selected detail')).toBeInTheDocument();
+    expect(screen.queryByText('Описание процесса')).not.toBeInTheDocument();
   });
 
   it('allows selecting primary attachment and falls back to incomplete state after deleting it', async () => {

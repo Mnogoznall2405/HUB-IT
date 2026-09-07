@@ -3767,6 +3767,7 @@ describe('chatMessageSendingAPI contract', () => {
     const { chatMessageSendingAPI } = await importChatMessageSendingAPI();
 
     await expect(chatMessageSendingAPI.forwardMessage('conv/3 C', 'msg/4 D', {
+      client_message_id: 'forward-retry',
       body: '  note  ',
       body_format: 'markdown',
       reply_to_message_id: 'reply/5',
@@ -3776,6 +3777,7 @@ describe('chatMessageSendingAPI contract', () => {
       '/chat/conversations/conv%2F3%20C/messages/forward',
       {
         source_message_id: 'msg/4 D',
+        client_message_id: 'forward-retry',
         body: 'note',
         body_format: 'markdown',
         reply_to_message_id: 'reply/5',
@@ -4116,6 +4118,43 @@ describe('chatFileUploadsAPI contract', () => {
     apiClientMock.get.mockResolvedValue({ data: { files: [] } });
   });
 
+  it('keeps the fallback multipart replay key after a lost response', async () => {
+    const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
+    const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
+    const attempt = {};
+    const file = new File(['x'], 'report.txt');
+    const create = vi.spyOn(chatUploadSessionsAPI, 'createUploadSession').mockRejectedValue(new Error('unavailable'));
+    apiClientMock.post.mockRejectedValueOnce(new Error('response lost')).mockResolvedValue({ data: { id: 'once' } });
+    try {
+      await expect(chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: attempt })).rejects.toThrow('response lost');
+      await expect(chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: attempt })).resolves.toEqual({ id: 'once' });
+      const keys = apiClientMock.post.mock.calls.map(call => call[1].get('client_message_id'));
+      expect(keys[0]).toEqual(expect.any(String));
+      expect(keys[1]).toBe(keys[0]);
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally { create.mockRestore(); }
+  });
+
+  it('retries completion of the same upload session after a lost response', async () => {
+    const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
+    const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
+    const file = new File(['x'], 'report.txt');
+    const attempt = {};
+    const create = vi.spyOn(chatUploadSessionsAPI, 'createUploadSession').mockResolvedValue({
+      session_id: 'session-once', files: [{ file_id: 'f', size: 1, chunk_count: 1, received_chunks: [0] }],
+    });
+    const complete = vi.spyOn(chatUploadSessionsAPI, 'completeUploadSession')
+      .mockRejectedValueOnce(new Error('response lost')).mockResolvedValue({ id: 'committed' });
+    try {
+      await expect(chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: attempt })).rejects.toThrow('response lost');
+      await expect(chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: attempt })).resolves.toEqual({ id: 'committed' });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(complete.mock.calls.map(call => call[0])).toEqual(['session-once', 'session-once']);
+      await chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: {} });
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally { create.mockRestore(); complete.mockRestore(); }
+  });
+
   it('sends files through chat upload-session helpers with signal, progress, and response unwrapping', async () => {
     const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
     const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
@@ -4396,6 +4435,21 @@ describe('chatAPI task share endpoints', () => {
         before_attachment_id: 'att-9',
       },
     });
+  });
+
+  it('preserves a voice replay key through multipart upload', async () => {
+    const { chatAPI } = await import('./client');
+    const file = new File(['voice'], 'voice.webm', { type: 'audio/webm' });
+    await chatAPI.sendFiles('conv-voice', [{ file, media_kind: 'audio', duration_seconds: 4 }], {
+      client_message_id: 'voice-retry-1',
+    });
+    const [url, form] = apiClientMock.post.mock.calls.at(-1);
+    expect(url).toBe('/chat/conversations/conv-voice/messages/files');
+    expect(form.get('client_message_id')).toBe('voice-retry-1');
+    expect(form.get('files')).toBe(file);
+    expect(JSON.parse(form.get('files_meta_json'))[0]).toEqual(expect.objectContaining({
+      media_kind: 'audio', duration_seconds: 4,
+    }));
   });
 
   it('loads unread summary and sends files through chat upload sessions by default', async () => {

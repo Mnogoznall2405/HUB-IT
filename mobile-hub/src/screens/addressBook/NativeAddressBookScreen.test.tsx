@@ -274,15 +274,18 @@ describe('NativeAddressBookScreen', () => {
     expect(view.queryByTestId('address-book-hire-date')).toBeNull();
   });
 
-  it('opens HUB mail compose from the list quick action', async () => {
+  it('opens HUB mail compose through the contact actions', async () => {
     setViewerAuth();
     const view = await render(<NativeAddressBookScreen />);
 
     await waitFor(() => {
-      expect(view.getByLabelText('Написать в HUB ivanov@zsgp.ru')).toBeTruthy();
+      expect(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich')).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.press(view.getByLabelText('Написать в HUB ivanov@zsgp.ru'));
+      fireEvent.press(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich'));
+    });
+    await act(async () => {
+      fireEvent.press(view.getAllByLabelText('Написать в HUB ivanov@zsgp.ru')[0]);
     });
     expect(openPortalPath).toHaveBeenCalledWith('/mail?folder=inbox&compose_to=ivanov%40zsgp.ru');
   });
@@ -312,7 +315,9 @@ describe('NativeAddressBookScreen', () => {
   it('shows chat action only with chat permissions', async () => {
     setViewerAuth(['chat.read', 'chat.write']);
     const view = await render(<NativeAddressBookScreen />);
-    const chatId = 'address-book-chat-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0';
+    await waitFor(() => expect(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich'));
+    const chatId = 'address-book-chat-detail';
 
     await waitFor(() => {
       expect(view.getByTestId(chatId)).toBeTruthy();
@@ -343,7 +348,9 @@ describe('NativeAddressBookScreen', () => {
       data: { conversationId: 'cached-42', peerUserId: 42 },
     });
     const view = await render(<NativeAddressBookScreen />);
-    const chatId = 'address-book-chat-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0';
+    await waitFor(() => expect(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Все действия: Ivanov Ivan Ivanovich'));
+    const chatId = 'address-book-chat-detail';
 
     await waitFor(() => expect(view.getByTestId(chatId)).toBeTruthy());
     await act(async () => {

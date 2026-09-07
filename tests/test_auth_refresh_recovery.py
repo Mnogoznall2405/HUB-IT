@@ -53,6 +53,8 @@ def test_parallel_slow_refresh_returns_one_pair(refresh_client, monkeypatch):
     original = auth.auth_security_service.refresh_session_tokens
     started = Event()
     release = Event()
+    metrics = []
+    monkeypatch.setattr(auth, 'note_auth_session_metric', lambda name, **kwargs: metrics.append(name))
 
     def slow_first(**kwargs):
         if not started.is_set():
@@ -72,8 +74,16 @@ def test_parallel_slow_refresh_returns_one_pair(refresh_client, monkeypatch):
     assert first.status_code == second.status_code == 200
     assert first.json()['refresh_token'] == second.json()['refresh_token']
     assert first.json()['access_token'] == second.json()['access_token']
+    assert sorted(metrics) == ['refresh_grace_hit', 'refresh_success']
     replacement = decode_access_token(first.json()['refresh_token'], expected_token_type='refresh')
     assert store.get_json('refresh', replacement.jti)['session_id'] == 'session-1'
+    from sqlalchemy import func, select
+    from backend.appdb.db import app_session
+    from backend.appdb.models import AppAuthRuntimeItem
+    with app_session(store._database_url) as session:
+        assert session.scalar(select(func.count()).select_from(AppAuthRuntimeItem).where(
+            AppAuthRuntimeItem.namespace == 'refresh',
+        )) == 1
 
 
 def test_rotation_commit_failure_can_be_retried(refresh_client, monkeypatch):
@@ -94,3 +104,25 @@ def test_rotation_replay_after_grace_is_rejected(refresh_client):
     old = decode_access_token(token, expected_token_type='refresh')
     store.delete('refresh_grace', old.jti)
     assert refresh(client, token).status_code == 401
+
+
+def test_prepared_tokens_are_not_registered_before_rotation(refresh_client):
+    client, store, token = refresh_client
+    prepared = auth.auth_security_service.refresh_session_tokens(
+        user={'id': 7, 'username': 'refresh-test', 'role': 'viewer', 'is_active': True},
+        session_id='session-1', device_id='session:session-1', persist_refresh=False,
+    )
+    assert store.get_json('refresh', prepared['_refresh_jti']) is None
+    assert refresh(client, token).status_code == 200
+
+
+def test_web_rotation_keeps_httponly_cookie_delivery(refresh_client):
+    client, store, token = refresh_client
+    response = client.post('/auth/refresh', cookies={auth.config.app.auth_refresh_cookie_name: token})
+    assert response.status_code == 200
+    assert response.json()['access_token'] is None
+    assert response.json()['refresh_token'] is None
+    assert not any(key.startswith('_refresh') for key in response.json())
+    cookies = response.headers.get_list('set-cookie')
+    assert len(cookies) == 2
+    assert all('HttpOnly' in cookie for cookie in cookies)

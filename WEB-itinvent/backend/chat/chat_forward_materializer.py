@@ -39,12 +39,14 @@ class ChatForwardMaterializer:
         conversation_id: str,
         source_message_id: str,
         reply_to_message_id: str | None = None,
+        written_paths: list[Path] | None = None,
     ) -> tuple[ForwardMessageSnapshot, list[dict], list[Path], dict]:
         """Build forward snapshot and copy attachment files. Caller owns cleanup of written_paths."""
         normalized_source_message_id = _normalize_text(source_message_id)
         if not normalized_source_message_id:
             raise ValueError("source_message_id is required")
-        written_paths: list[Path] = []
+        if written_paths is None:
+            written_paths = []
         source_kind = "text"
         source_body = ""
         source_attachments: list[ChatMessageAttachment] = []
@@ -59,7 +61,7 @@ class ChatForwardMaterializer:
                     current_user_id=int(current_user_id),
                 )
                 source_message = session.get(ChatMessage, normalized_source_message_id)
-                if source_message is None:
+                if source_message is None or source_message.is_deleted:
                     raise LookupError("Source message not found")
                 self._service._require_membership(
                     session=session,
@@ -127,8 +129,8 @@ class ChatForwardMaterializer:
                         target_path.relative_to(self._service._attachments_root.resolve())
                     except ValueError as exc:
                         raise ValueError("Invalid attachment path") from exc
-                    shutil.copy2(source_path, target_path)
                     written_paths.append(target_path)
+                    shutil.copy2(source_path, target_path)
                     prepared_attachments.append(
                         {
                             "attachment_id": attachment_id,

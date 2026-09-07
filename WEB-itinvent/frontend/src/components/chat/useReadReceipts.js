@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
+import { getDesktopWindowForeground, DESKTOP_WINDOW_STATE_CHANGED_EVENT } from '../../lib/desktopBridge';
+
+const isReadSurfaceActive = () => document.visibilityState === 'visible'
+  && (getDesktopWindowForeground() ?? document.hasFocus());
 
 const READ_RECEIPTS_DEBOUNCE_MS = 500;
 const READ_RECEIPTS_THRESHOLD = 0.5;
+const READ_RECEIPTS_RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 const buildMessageOrderState = (messages) => {
   const list = Array.isArray(messages) ? messages : [];
@@ -37,6 +43,7 @@ export default function useReadReceipts({
   conversationId,
   messages,
   enabled = true,
+  socketStatus,
   scrollRootRef,
   viewerLastReadMessageId = '',
   markRead,
@@ -55,6 +62,13 @@ export default function useReadReceipts({
   const callbackRefsRef = useRef(new Map());
   const debounceTimerRef = useRef(null);
   const lastSentMessageIdRef = useRef('');
+  const generationRef = useRef(0);
+  const mountedRef = useRef(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const retryCountRef = useRef(0);
+  const retryBlockedRef = useRef(false);
+  const retryPermanentRef = useRef(false);
   const inFlightMessageIdRef = useRef('');
   const flushPendingReadsRef = useRef(async () => {});
   const markReadRef = useRef(markRead);
@@ -86,17 +100,59 @@ export default function useReadReceipts({
     optimisticReadIdsRef.current.clear();
     lastSentMessageIdRef.current = '';
     inFlightMessageIdRef.current = '';
+    retryCountRef.current = 0;
+    retryBlockedRef.current = false;
+    retryPermanentRef.current = false;
     setOptimisticLastReadMessageId('');
   }, [clearPendingTimer]);
 
-  useEffect(() => {
-    resetTracking();
-  }, [normalizedConversationId, resetTracking]);
+  const resumePendingReads = useCallback(() => {
+    if (!mountedRef.current || !enabledRef.current || !isReadSurfaceActive() || retryPermanentRef.current) return;
+    if (retryBlockedRef.current) {
+      retryBlockedRef.current = false;
+      retryCountRef.current = 0;
+    }
+    if (!debounceTimerRef.current) void flushPendingReadsRef.current();
+  }, []);
 
-  useEffect(() => () => {
-    clearPendingTimer();
-    observerRef.current?.disconnect?.();
-  }, [clearPendingTimer]);
+  useEffect(() => {
+    if (socketStatus === 'connected') resumePendingReads();
+  }, [socketStatus, resumePendingReads]);
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    resetTracking();
+    const generation = generationRef.current;
+    const resumeAfterOnline = () => {
+      if (!mountedRef.current || !enabledRef.current || generation !== generationRef.current) return;
+      resumePendingReads();
+    };
+    const updateSurface = () => {
+      if (!isReadSurfaceActive()) { clearPendingTimer(); return; }
+      resumeAfterOnline();
+      // Re-observe: intersections received while in the background were ignored.
+      observedNodesRef.current.forEach((node) => {
+        observerRef.current?.unobserve(node);
+        observerRef.current?.observe(node);
+      });
+    };
+    document.addEventListener('visibilitychange', updateSurface);
+    window.addEventListener('focus', updateSurface);
+    window.addEventListener('blur', updateSurface);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateSurface);
+    window.addEventListener('online', resumeAfterOnline);
+    return () => {
+      window.removeEventListener('online', resumeAfterOnline);
+      document.removeEventListener('visibilitychange', updateSurface);
+      window.removeEventListener('focus', updateSurface);
+      window.removeEventListener('blur', updateSurface);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateSurface);
+      mountedRef.current = false;
+      generationRef.current += 1;
+      clearPendingTimer();
+      observerRef.current?.disconnect?.();
+    };
+  }, [normalizedConversationId, enabled, resetTracking, clearPendingTimer, resumePendingReads]);
 
   useEffect(() => {
     lastSentMessageIdRef.current = resolveLatestMessageIdFromState(
@@ -107,6 +163,8 @@ export default function useReadReceipts({
   }, [messageOrderState, viewerLastReadMessageId]);
 
   const flushPendingReads = useCallback(async () => {
+    if (!mountedRef.current || !enabledRef.current || retryBlockedRef.current || !isReadSurfaceActive()) return;
+    const generation = generationRef.current;
     const currentConversationId = String(normalizedConversationId || '').trim();
     if (!currentConversationId || typeof markReadRef.current !== 'function') return;
     if (inFlightMessageIdRef.current) return;
@@ -135,23 +193,45 @@ export default function useReadReceipts({
     inFlightMessageIdRef.current = nextMessageId;
     try {
       await markReadRef.current(currentConversationId, nextMessageId);
+      if (generation !== generationRef.current || !mountedRef.current) return;
       lastSentMessageIdRef.current = nextMessageId;
+      retryCountRef.current = 0;
     } catch (error) {
-      pendingIds.forEach((messageId) => pendingReadIdsRef.current.add(messageId));
-      onReadSyncErrorRef.current?.(error);
-    } finally {
-      if (inFlightMessageIdRef.current === nextMessageId) {
-        inFlightMessageIdRef.current = '';
+      if (generation !== generationRef.current || !mountedRef.current) return;
+      const status = Number(error?.response?.status || error?.status || 0);
+      const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+      const delay = READ_RECEIPTS_RETRY_DELAYS_MS[retryCountRef.current];
+      if (permanent || delay === undefined) {
+        retryBlockedRef.current = true;
+        retryPermanentRef.current = permanent;
+        if (permanent) pendingReadIdsRef.current.clear();
+        else pendingIds.forEach((messageId) => pendingReadIdsRef.current.add(messageId));
+        onReadSyncErrorRef.current?.(error);
+        return;
       }
-      if (pendingReadIdsRef.current.size > 0) {
+      pendingIds.forEach((messageId) => pendingReadIdsRef.current.add(messageId));
+      retryCountRef.current += 1;
+      clearPendingTimer();
+      debounceTimerRef.current = window.setTimeout(() => {
+        debounceTimerRef.current = null;
         void flushPendingReadsRef.current();
+      }, delay);
+    } finally {
+      if (generation === generationRef.current && mountedRef.current) {
+        if (inFlightMessageIdRef.current === nextMessageId) {
+          inFlightMessageIdRef.current = '';
+        }
+        if (pendingReadIdsRef.current.size > 0 && !debounceTimerRef.current && !retryBlockedRef.current) {
+          void flushPendingReadsRef.current();
+        }
       }
     }
-  }, [normalizedConversationId]);
+  }, [normalizedConversationId, clearPendingTimer]);
 
   flushPendingReadsRef.current = flushPendingReads;
 
   const scheduleFlush = useCallback(() => {
+    if (retryBlockedRef.current || (retryCountRef.current > 0 && debounceTimerRef.current)) return;
     clearPendingTimer();
     debounceTimerRef.current = window.setTimeout(() => {
       debounceTimerRef.current = null;
@@ -203,6 +283,7 @@ export default function useReadReceipts({
     }
 
     const observer = new window.IntersectionObserver((entries) => {
+      if (!mountedRef.current || !enabledRef.current || !isReadSurfaceActive()) return;
       entries.forEach((entry) => {
         if (!entry.isIntersecting || entry.intersectionRatio < READ_RECEIPTS_THRESHOLD) return;
         const messageId = String(entry.target?.getAttribute?.('data-chat-message-id') || '').trim();

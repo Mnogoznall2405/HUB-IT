@@ -1,11 +1,11 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -13,7 +13,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import {
   applyDocflowTaskAction,
   getDocflowCommand,
@@ -74,7 +74,8 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
-  const modalBottomInset = initialWindowMetrics?.insets.bottom || 0;
+  const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const modalBottomInset = safeInsets?.bottom || 0;
   const canRead = hasPermission('docflow.read');
   const canAct = hasPermission('docflow.act');
   const [task, setTask] = useState<DocflowTaskDetail | null>(null);
@@ -399,102 +400,8 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
   return (
     <AccountScreenScaffold
       title="Задание 1С"
-      tokens={tokens}
-      onBack={goBack}
-      refreshing={refreshing}
-      onRefresh={offlineMode ? undefined : () => { void loadTask(true); }}
-    >
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: обновление, файлы и действия 1С отключены.</Text> : null}
-      {loading && !task ? <AccountLoading tokens={tokens} /> : !task ? (
-        <AccountSectionCard tokens={tokens} title="Карточка недоступна" description={error || 'Задание не найдено.'}>
-          {correlationId ? <Text selectable style={[styles.correlation, { color: tokens.textSecondary }]}>Код обращения: {correlationId}</Text> : null}
-          <Pressable onPress={() => { void loadTask(); }} disabled={offlineMode} accessibilityRole="button" style={[styles.retry, { borderColor: tokens.border }]}>
-            <Text style={[styles.retryText, { color: tokens.primary }]}>Повторить</Text>
-          </Pressable>
-        </AccountSectionCard>
-      ) : (
-        <>
-          <View style={[styles.hero, { backgroundColor: tokens.panelSolid, borderColor: isDocflowTaskOverdue(task) ? tokens.error : tokens.borderSoft }]}>
-            <View style={[styles.heroIcon, { backgroundColor: task.completed ? tokens.selected : tokens.accentSoft }]}>
-              <MaterialCommunityIcons name={task.completed ? 'check-circle-outline' : 'file-document-outline'} size={25} color={task.completed ? tokens.success : tokens.primary} />
-            </View>
-            <View style={styles.heroBody}>
-              <Text style={[styles.overline, { color: tokens.textSecondary }]}>{task.process_type_label || task.task_type_label || 'Задание 1С'}</Text>
-              <Text selectable style={[styles.title, { color: tokens.textPrimary }]}>{task.title}</Text>
-              <Text style={[styles.status, { color: task.completed ? tokens.success : tokens.primary }]}>{docflowTaskStatus(task)}</Text>
-            </View>
-          </View>
-
-          {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
-          {relatedError ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>{relatedError}</Text> : null}
-          {actionNotice ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.success }]}>{actionNotice}</Text> : null}
-          {enriching ? <Text accessibilityLiveRegion="polite" style={[styles.enriching, { color: tokens.textSecondary }]}>Загружаем связанные документы и файлы…</Text> : null}
-
-          <AccountSectionCard tokens={tokens} title="Описание">
-            {splitDocflowDescription(task.description).length ? splitDocflowDescription(task.description).map((paragraph, index) => (
-              <Text key={`${index}-${paragraph.slice(0, 20)}`} selectable style={[styles.paragraph, { color: tokens.textPrimary }]}>{paragraph}</Text>
-            )) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Описание в 1С не указано.</Text>}
-          </AccountSectionCard>
-
-          <AccountSectionCard tokens={tokens} title="Сведения">
-            {[
-              ['Автор', task.author],
-              ['Поставлено', formatDocflowDate(task.created_at)],
-              ['Срок исполнения', formatDocflowDate(task.due_at)],
-              ['Выполнено', formatDocflowDate(task.completed_at)],
-              ['Результат', task.result],
-              ['Состояние', task.business_state],
-              ['Важность', task.importance],
-            ].filter((entry) => entry[1]).map(([label, value]) => (
-              <View key={label} style={styles.field}>
-                <Text style={[styles.fieldLabel, { color: tokens.textSecondary }]}>{label}</Text>
-                <Text selectable style={[styles.fieldValue, { color: tokens.textPrimary }]}>{value}</Text>
-              </View>
-            ))}
-          </AccountSectionCard>
-
-          {task.related_objects.length ? (
-            <AccountSectionCard tokens={tokens} title={task.related_objects.length === 1 ? 'Связанный документ' : 'Связанные документы'}>
-              {task.related_objects.map((item) => (
-                <View key={item.ref} style={[styles.related, { borderColor: tokens.primary }]}>
-                  <Text style={[styles.relatedType, { color: tokens.textSecondary }]}>{item.object_type_label || 'Документ 1С'}</Text>
-                  <Text selectable style={[styles.relatedTitle, { color: tokens.textPrimary }]}>{item.title}</Text>
-                </View>
-              ))}
-            </AccountSectionCard>
-          ) : null}
-
-          <AccountSectionCard tokens={tokens} title={`Файлы · ${task.files.length}`} description="Файлы открываются с вашими правами доступа 1С.">
-            {fileError ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{fileError}</Text> : null}
-            {task.files.length ? task.files.map((file) => {
-              const busy = fileBusy.endsWith(`-${file.ref}`);
-              return (
-                <View key={file.ref} style={[styles.file, { borderColor: tokens.borderSoft }]}>
-                  <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
-                  <View style={styles.fileBody}>
-                    <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{file.name}</Text>
-                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{busy && fileProgress != null ? `${Math.round(fileProgress * 100)}%` : formatDocflowFileSize(file.size)}</Text>
-                  </View>
-                  {busy ? (
-                    <Pressable testID={`native-docflow-file-cancel-${file.ref}`} onPress={() => fileAbortRef.current?.abort()} accessibilityRole="button" accessibilityLabel={`Отменить скачивание ${file.name}`} style={styles.fileAction}>
-                      <MaterialCommunityIcons name="close" size={21} color={tokens.error} />
-                    </Pressable>
-                  ) : (
-                    <>
-                      <Pressable testID={`native-docflow-file-open-${file.ref}`} onPress={() => { void handleFile(file, file.preview_supported ? 'preview' : 'open'); }} disabled={offlineMode || Boolean(fileBusy)} accessibilityRole="button" accessibilityLabel={`${file.preview_supported ? 'Предпросмотр' : 'Открыть'} ${file.name}`} style={styles.fileAction}>
-                        <MaterialCommunityIcons name={file.preview_supported ? 'eye-outline' : 'open-in-new'} size={20} color={tokens.primary} />
-                      </Pressable>
-                      <Pressable testID={`native-docflow-file-share-${file.ref}`} onPress={() => { void handleFile(file, 'share'); }} disabled={offlineMode || Boolean(fileBusy)} accessibilityRole="button" accessibilityLabel={`Поделиться ${file.name}`} style={styles.fileAction}>
-                        <MaterialCommunityIcons name="share-variant-outline" size={20} color={tokens.primary} />
-                      </Pressable>
-                    </>
-                  )}
-                </View>
-              );
-            }) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>К этому заданию файлы не прикреплены.</Text>}
-          </AccountSectionCard>
-
-          {!task.completed && (task.available_actions.length || task.action_unavailable_reason || task.requires_digital_signature) ? (
+      footer={task && !task.completed && (task.available_actions.length || task.action_unavailable_reason || task.requires_digital_signature) ? (
+        <View style={{ maxHeight: 180 }}><ScrollView keyboardShouldPersistTaps="handled">
             <AccountSectionCard
               tokens={tokens}
               title={task.requires_digital_signature ? 'Требуется электронная подпись' : 'Действия задания'}
@@ -546,7 +453,104 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
                 </View>
               ) : null}
             </AccountSectionCard>
+        </ScrollView></View>
+      ) : null}
+      tokens={tokens}
+      onBack={goBack}
+      refreshing={refreshing}
+      onRefresh={offlineMode ? undefined : () => { void loadTask(true); }}
+    >
+      {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: обновление, файлы и действия 1С отключены.</Text> : null}
+      {loading && !task ? <AccountLoading tokens={tokens} /> : !task ? (
+        <AccountSectionCard tokens={tokens} title="Карточка недоступна" description={error || 'Задание не найдено.'}>
+          {correlationId ? <Text selectable style={[styles.correlation, { color: tokens.textSecondary }]}>Код обращения: {correlationId}</Text> : null}
+          <Pressable onPress={() => { void loadTask(); }} disabled={offlineMode} accessibilityRole="button" style={[styles.retry, { borderColor: tokens.border }]}>
+            <Text style={[styles.retryText, { color: tokens.primary }]}>Повторить</Text>
+          </Pressable>
+        </AccountSectionCard>
+      ) : (
+        <>
+          <View style={[styles.hero, { backgroundColor: tokens.panelSolid, borderColor: isDocflowTaskOverdue(task) ? tokens.error : tokens.borderSoft }]}>
+            <View style={[styles.heroIcon, { backgroundColor: task.completed ? tokens.selected : tokens.accentSoft }]}>
+              <MaterialCommunityIcons name={task.completed ? 'check-circle-outline' : 'file-document-outline'} size={25} color={task.completed ? tokens.success : tokens.primary} />
+            </View>
+            <View style={styles.heroBody}>
+              <Text style={[styles.overline, { color: tokens.textSecondary }]}>{task.process_type_label || task.task_type_label || 'Задание 1С'}</Text>
+              <Text selectable style={[styles.title, { color: tokens.textPrimary }]}>{task.title}</Text>
+              <Text style={{ color: isDocflowTaskOverdue(task) ? tokens.error : tokens.textSecondary }}>Срок: {formatDocflowDate(task.due_at)}</Text>
+              <Text style={[styles.status, { color: task.completed ? tokens.success : tokens.primary }]}>{docflowTaskStatus(task)}</Text>
+            </View>
+          </View>
+
+          {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
+          {relatedError ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>{relatedError}</Text> : null}
+          {actionNotice ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.success }]}>{actionNotice}</Text> : null}
+          {enriching ? <Text accessibilityLiveRegion="polite" style={[styles.enriching, { color: tokens.textSecondary }]}>Загружаем связанные документы и файлы…</Text> : null}
+
+          <AccountSectionCard tokens={tokens} title="Описание">
+            {splitDocflowDescription(task.description).length ? splitDocflowDescription(task.description).map((paragraph, index) => (
+              <Text key={`${index}-${paragraph.slice(0, 20)}`} selectable style={[styles.paragraph, { color: tokens.textPrimary }]}>{paragraph}</Text>
+            )) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Описание в 1С не указано.</Text>}
+          </AccountSectionCard>
+
+          <AccountSectionCard tokens={tokens} collapsible title="Сведения">
+            {[
+              ['Автор', task.author],
+              ['Поставлено', formatDocflowDate(task.created_at)],
+              ['Срок исполнения', formatDocflowDate(task.due_at)],
+              ['Выполнено', formatDocflowDate(task.completed_at)],
+              ['Результат', task.result],
+              ['Состояние', task.business_state],
+              ['Важность', task.importance],
+            ].filter((entry) => entry[1]).map(([label, value]) => (
+              <View key={label} style={styles.field}>
+                <Text style={[styles.fieldLabel, { color: tokens.textSecondary }]}>{label}</Text>
+                <Text selectable style={[styles.fieldValue, { color: tokens.textPrimary }]}>{value}</Text>
+              </View>
+            ))}
+          </AccountSectionCard>
+
+          {task.related_objects.length ? (
+            <AccountSectionCard tokens={tokens} collapsible title={task.related_objects.length === 1 ? 'Связанный документ' : 'Связанные документы'}>
+              {task.related_objects.map((item) => (
+                <View key={item.ref} style={[styles.related, { borderColor: tokens.primary }]}>
+                  <Text style={[styles.relatedType, { color: tokens.textSecondary }]}>{item.object_type_label || 'Документ 1С'}</Text>
+                  <Text selectable style={[styles.relatedTitle, { color: tokens.textPrimary }]}>{item.title}</Text>
+                </View>
+              ))}
+            </AccountSectionCard>
           ) : null}
+
+          <AccountSectionCard tokens={tokens} collapsible title={`Файлы · ${task.files.length}`} description="Файлы открываются с вашими правами доступа 1С.">
+            {fileError ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{fileError}</Text> : null}
+            {task.files.length ? task.files.map((file) => {
+              const busy = fileBusy.endsWith(`-${file.ref}`);
+              return (
+                <View key={file.ref} style={[styles.file, { borderColor: tokens.borderSoft }]}>
+                  <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
+                  <View style={styles.fileBody}>
+                    <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{file.name}</Text>
+                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{busy && fileProgress != null ? `${Math.round(fileProgress * 100)}%` : formatDocflowFileSize(file.size)}</Text>
+                  </View>
+                  {busy ? (
+                    <Pressable testID={`native-docflow-file-cancel-${file.ref}`} onPress={() => fileAbortRef.current?.abort()} accessibilityRole="button" accessibilityLabel={`Отменить скачивание ${file.name}`} style={styles.fileAction}>
+                      <MaterialCommunityIcons name="close" size={21} color={tokens.error} />
+                    </Pressable>
+                  ) : (
+                    <>
+                      <Pressable testID={`native-docflow-file-open-${file.ref}`} onPress={() => { void handleFile(file, file.preview_supported ? 'preview' : 'open'); }} disabled={offlineMode || Boolean(fileBusy)} accessibilityRole="button" accessibilityLabel={`${file.preview_supported ? 'Предпросмотр' : 'Открыть'} ${file.name}`} style={styles.fileAction}>
+                        <MaterialCommunityIcons name={file.preview_supported ? 'eye-outline' : 'open-in-new'} size={20} color={tokens.primary} />
+                      </Pressable>
+                      <Pressable testID={`native-docflow-file-share-${file.ref}`} onPress={() => { void handleFile(file, 'share'); }} disabled={offlineMode || Boolean(fileBusy)} accessibilityRole="button" accessibilityLabel={`Поделиться ${file.name}`} style={styles.fileAction}>
+                        <MaterialCommunityIcons name="share-variant-outline" size={20} color={tokens.primary} />
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+              );
+            }) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>К этому заданию файлы не прикреплены.</Text>}
+          </AccountSectionCard>
+
         </>
       )}
 

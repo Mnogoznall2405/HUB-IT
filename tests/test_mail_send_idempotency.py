@@ -81,7 +81,8 @@ def _payload_hash(**overrides) -> str:
     return hash_mail_send_payload(**values)
 
 
-def test_flag_defaults_off_and_ignores_garbage():
+def test_flag_defaults_off_and_ignores_garbage(monkeypatch):
+    monkeypatch.delenv("MAIL_SEND_IDEMPOTENCY", raising=False)
     assert mail_send_idempotency_enabled(None) is False
     assert mail_send_idempotency_enabled("") is False
     assert mail_send_idempotency_enabled("0") is False

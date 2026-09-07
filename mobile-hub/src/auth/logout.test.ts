@@ -15,6 +15,8 @@ import { clearNativeTaskFileCache } from '../tasks/nativeTaskFiles';
 import * as tokenStore from './tokenStore';
 import { disableBiometricLogin } from './biometricAuth';
 import { endMobileSession } from './logout';
+import { clearMailQuickReplyDrafts } from '../mail/mailQuickReplyDrafts';
+jest.mock('../mail/mailQuickReplyDrafts', () => ({ clearMailQuickReplyDrafts: jest.fn(async () => undefined) }));
 
 jest.mock('../api/authApi', () => ({
   logout: jest.fn(async () => undefined),
@@ -107,6 +109,7 @@ describe('endMobileSession', () => {
     expect(clearOfflineCommandQueue).toHaveBeenCalledTimes(1);
     expect(clearPendingChatReplies).toHaveBeenCalledTimes(1);
     expect(clearAllNativeChatDrafts).toHaveBeenCalledTimes(1);
+    expect(clearMailQuickReplyDrafts).toHaveBeenCalledTimes(1);
     expect(unregisterMobileBackgroundSync).toHaveBeenCalledTimes(1);
 
     const disconnectOrder = (chatSocket.disconnect as jest.Mock).mock.invocationCallOrder[0];

@@ -3222,6 +3222,7 @@ class MailService:
         conversation_id: str,
         folder: str = "inbox",
         folder_scope: str = "current",
+        require_complete: bool = False,
     ) -> tuple[str, list[tuple[Any, str]], str]:
         try:
             return self._conversation_finder.find(
@@ -3229,6 +3230,7 @@ class MailService:
                 conversation_id=conversation_id,
                 folder=folder,
                 folder_scope=folder_scope,
+                require_complete=require_complete,
             )
         except MailConversationFinderError as exc:
             raise MailServiceError(str(exc)) from exc
@@ -4221,7 +4223,7 @@ class MailService:
             folder=folder,
             folder_scope=folder_scope,
         )
-        if cached is not None:
+        if cached is not None and cached.get("conversation_complete") is True:
             self._set_request_metric("cache_hit", 1)
             return cached
         self._set_request_metric("cache_hit", 0)
@@ -4247,6 +4249,7 @@ class MailService:
                 conversation_id=conversation_key,
                 folder=normalized_folder,
                 folder_scope=normalized_scope,
+                require_complete=True,
             )
             items = [
                 self._serialize_message_detail(
@@ -4264,6 +4267,7 @@ class MailService:
                 conversation_id=resolved_conversation_key,
                 items=items,
             )
+            payload["conversation_complete"] = True
             return self._cache_set(
                 user_id=int(user_id),
                 bucket="conversation_detail",

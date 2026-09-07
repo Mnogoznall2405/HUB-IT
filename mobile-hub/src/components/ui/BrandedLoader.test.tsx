@@ -20,12 +20,12 @@ describe('BrandedLoader', () => {
     expect(view.queryByTestId('startup-vpn-notice')).toBeNull();
   });
 
-  it('warns only when Android reports an active VPN transport', async () => {
+  it('offers neutral network guidance only when Android reports an active VPN transport', async () => {
     mockVpnActive = true;
     const view = await render(<BrandedLoader />);
 
     expect(view.getByTestId('startup-vpn-notice')).toBeTruthy();
-    expect(view.getByText('VPN может замедлять подключение')).toBeTruthy();
-    expect(view.getByText('Если HUB загружается долго, временно отключите VPN.')).toBeTruthy();
+    expect(view.getByText('VPN подключён')).toBeTruthy();
+    expect(view.getByText('Если HUB-IT не открывается, проверьте доступ к корпоративной сети.')).toBeTruthy();
   });
 });

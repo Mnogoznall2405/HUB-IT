@@ -1,8 +1,8 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Image,
-  Modal,
   Pressable,
   StyleSheet,
   Switch,
@@ -41,6 +41,7 @@ import {
   AccountLoading,
   AccountPrimaryButton,
   AccountScreenScaffold,
+  AccountSubpage,
   AccountSecondaryButton,
   AccountSectionCard,
   AccountStatusText,
@@ -53,6 +54,7 @@ export function NativeProfileScreen() {
   const tokens = useFluentTokens(preferences.theme_mode);
   const canAccessMail = hasPermission('mail.access');
   const avatarUrl = resolveAvatarUrl(user?.avatar_url);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [dbOptions, setDbOptions] = useState<DatabaseOption[]>([]);
   const [mailboxes, setMailboxes] = useState<mailApi.MailMailbox[]>([]);
   const [mailboxesLoading, setMailboxesLoading] = useState(canAccessMail);
@@ -258,7 +260,7 @@ export function NativeProfileScreen() {
       tokens={tokens}
       onBack={() => goBackOrReplace('/(shell)/menu')}
     >
-      <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+      {!passwordOpen ? <AccountStatusText tokens={tokens} error={status.error} message={status.message} /> : null}
       <View style={[styles.hero, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <View>
           {avatarUrl ? (
@@ -293,6 +295,13 @@ export function NativeProfileScreen() {
         <AccountField tokens={tokens} label="Права" value={permissionSummaryForUser(user)} />
       </AccountSectionCard>
 
+      <AccountSecondaryButton tokens={tokens} label="Сменить пароль" onPress={() => setPasswordOpen(true)} />
+      <AccountSubpage visible={passwordOpen} title="Смена пароля" tokens={tokens} onClose={() => {
+        if (password.busy) return;
+        setPasswordOpen(false);
+        setPassword((prev) => ({ ...prev, old: '', next: '', confirm: '' }));
+      }}>
+        <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <AccountSectionCard tokens={tokens} title="Смена пароля">
         <HubTextField
           label="Текущий пароль"
@@ -326,6 +335,8 @@ export function NativeProfileScreen() {
           loading={password.busy}
         />
       </AccountSectionCard>
+
+      </AccountSubpage>
 
       {canAccessMail ? (
         <AccountSectionCard tokens={tokens} title="Ящики Exchange" description="Подключение и основной ящик для почты.">

@@ -1,8 +1,10 @@
+import { useReducedMotion } from '../../../src/accessibility/useReducedMotion';
 import { Stack } from 'expo-router';
 import { usePreferences } from '../../../src/preferences/PreferencesContext';
 import { useFluentTokens } from '../../../src/theme/fluentTokens';
 
 export default function ShellAddressBookLayout() {
+  const reduceMotion = useReducedMotion();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
 
@@ -10,7 +12,7 @@ export default function ShellAddressBookLayout() {
     <Stack
       screenOptions={{
         headerShown: false,
-        animation: 'fade',
+        animation: reduceMotion ? 'none' : 'slide_from_right',
         contentStyle: { backgroundColor: tokens.pageBg },
         freezeOnBlur: true,
       }}

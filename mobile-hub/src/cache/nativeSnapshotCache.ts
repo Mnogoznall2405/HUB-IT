@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
   clearEncryptedNativeSnapshots,
   deleteEncryptedNativeSnapshot,
@@ -242,7 +243,8 @@ async function writeCollectionEntry<T>(
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(data);
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure(scope, 'collection-serialize', error);
     return null;
   }
   if (typeof serialized !== 'string') return null;
@@ -300,14 +302,25 @@ async function readCollectionManifestEntry<T>(
       || shard.revision !== entry.revision
       || shard.index !== index
       || typeof shard.chunk !== 'string'
-    ) return null;
+    ) {
+      await recordSnapshotFailure(entry.storageScopes[index], 'collection-shard-verify', new Error('Snapshot shard verification failed'), {
+        sizes: { shardIndex: index, expectedChars: entry.serializedLength },
+      });
+      return null;
+    }
     chunks.push(shard.chunk);
   }
   const serialized = chunks.join('');
-  if (serialized.length !== entry.serializedLength) return null;
+  if (serialized.length !== entry.serializedLength) {
+    await recordSnapshotFailure(entry.storageScopes[0], 'collection-length-verify', new Error('Snapshot manifest verification failed'), {
+      sizes: { expectedChars: entry.serializedLength, actualChars: serialized.length },
+    });
+    return null;
+  }
   try {
     return JSON.parse(serialized) as T;
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure(entry.storageScopes[0], 'collection-parse', error);
     return null;
   }
 }
@@ -320,6 +333,7 @@ export async function readNativeSnapshot<T>(
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return null;
   const key = cacheKey(scope, owner);
+  let stage = 'snapshot-read';
   try {
     let raw = await readEncryptedNativeSnapshot(scope, owner);
     if (!raw) {
@@ -329,6 +343,7 @@ export async function readNativeSnapshot<T>(
       }
     }
     if (!raw) return null;
+    stage = 'snapshot-parse';
     const parsed = JSON.parse(raw) as Partial<NativeSnapshotEnvelope<T>>;
     const savedAt = Number(parsed.savedAt || 0);
     if (
@@ -346,11 +361,8 @@ export async function readNativeSnapshot<T>(
       return null;
     }
     return { savedAt, data: parsed.data as T };
-  } catch {
-    await Promise.allSettled([
-      deleteEncryptedNativeSnapshot(scope, owner),
-      SecureStore.deleteItemAsync(key),
-    ]);
+  } catch (error) {
+    await recordSnapshotFailure(scope, stage, error);
     return null;
   }
 }
@@ -369,8 +381,9 @@ export async function writeNativeSnapshot<T>(
       savedAt: Date.now(),
       data,
     } satisfies NativeSnapshotEnvelope<T>);
-    return writeEncryptedNativeSnapshot(scope, owner, serialized);
-  } catch {
+    return await writeEncryptedNativeSnapshot(scope, owner, serialized);
+  } catch (error) {
+    await recordSnapshotFailure(scope, 'snapshot-serialize-or-write', error);
     // Snapshot persistence is best-effort and must never block a live screen.
     return false;
   }

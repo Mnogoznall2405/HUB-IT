@@ -21,6 +21,9 @@ export default function SetupRequiredScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
+  const copyGeneration = useRef(0);
+  useEffect(() => () => { copyGeneration.current += 1; }, []);
   const completionInProgressRef = useRef(false);
 
   const loadSetup = useCallback(async () => {
@@ -50,6 +53,8 @@ export default function SetupRequiredScreen() {
       setError('Введите шестизначный код из приложения-аутентификатора.');
       return;
     }
+    copyGeneration.current += 1;
+    setCopyStatus('');
     setSubmitting(true);
     setError('');
     completionInProgressRef.current = true;
@@ -65,6 +70,30 @@ export default function SetupRequiredScreen() {
     }
   }, [code, submitting, verifyTwoFactorSetup]);
 
+  const copyValue = async (value: string) => {
+    const generation = ++copyGeneration.current;
+    setError('');
+    setCopyStatus('');
+    try {
+      const copied = await Clipboard.setStringAsync(value);
+      if (copied === false) throw new Error('Clipboard unavailable');
+      if (generation === copyGeneration.current) setCopyStatus('Скопировано');
+    } catch {
+      if (generation !== copyGeneration.current) return;
+      setError('Не удалось скопировать. Выделите текст и скопируйте его вручную.');
+    }
+  };
+
+  const openAuthenticator = async () => {
+    if (!setup) return;
+    setError('');
+    try {
+      await Linking.openURL(setup.otpauth_uri);
+    } catch {
+      setError('Не удалось открыть аутентификатор. Откройте его самостоятельно и добавьте ключ вручную.');
+    }
+  };
+
   if (backupCodes.length) {
     return (
       <HubScreen scroll>
@@ -74,7 +103,9 @@ export default function SetupRequiredScreen() {
           <View testID="two-factor-backup-codes" style={[styles.codes, { borderColor: tokens.border, backgroundColor: tokens.panelInset }]}>
             {backupCodes.map((backupCode) => <Text key={backupCode} selectable style={[styles.code, { color: tokens.textPrimary }]}>{backupCode}</Text>)}
           </View>
-          <HubButton mode="outlined" onPress={() => Clipboard.setStringAsync(backupCodes.join('\n'))} style={styles.btn}>Скопировать все коды</HubButton>
+          <HubButton mode="outlined" onPress={() => { void copyValue(backupCodes.join('\n')); }} style={styles.btn}>Скопировать все коды</HubButton>
+          {copyStatus ? <Text accessibilityLiveRegion="polite" style={styles.body}>{copyStatus}</Text> : null}
+          {error ? <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text> : null}
           <HubButton mode="contained" onPress={() => router.replace('/(auth)/biometric-opt-in')}>Продолжить</HubButton>
         </HubCard>
       </HubScreen>
@@ -96,8 +127,8 @@ export default function SetupRequiredScreen() {
               <Text testID="two-factor-manual-key" selectable style={[styles.secret, { color: tokens.textPrimary }]}>{setup.manual_entry_key}</Text>
               <Text style={[styles.account, { color: tokens.textSecondary }]}>{setup.issuer} · {setup.account_name}</Text>
             </View>
-            <HubButton mode="outlined" onPress={() => Clipboard.setStringAsync(setup.manual_entry_key)} style={styles.btn}>Скопировать ключ</HubButton>
-            <HubButton mode="outlined" onPress={() => Linking.openURL(setup.otpauth_uri)} style={styles.btn}>Открыть аутентификатор</HubButton>
+            <HubButton mode="outlined" onPress={() => { void copyValue(setup.manual_entry_key); }} style={styles.btn}>Скопировать ключ</HubButton>
+            <HubButton mode="outlined" onPress={() => { void openAuthenticator(); }} style={styles.btn}>Открыть аутентификатор</HubButton>
             <HubTextField
               testID="two-factor-setup-code"
               label="Шестизначный код"
@@ -113,6 +144,7 @@ export default function SetupRequiredScreen() {
             <HubButton testID="two-factor-setup-confirm" mode="contained" onPress={verify} loading={submitting} disabled={submitting || code.length !== 6}>Подтвердить и включить 2FA</HubButton>
           </>
         ) : null}
+        {copyStatus ? <Text accessibilityLiveRegion="polite" style={styles.body}>{copyStatus}</Text> : null}
         {error ? <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text> : null}
         {!loading && !setup ? <HubButton mode="outlined" onPress={() => { void loadSetup(); }} style={styles.btn}>Повторить</HubButton> : null}
         <HubButton mode="text" onPress={() => router.replace('/(auth)/login')}>

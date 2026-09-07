@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type RefObject } from 'react';
 import {
   Animated,
   Modal,
@@ -15,7 +15,7 @@ import {
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import {
   clampMediaTranslation,
@@ -54,7 +54,18 @@ function mediaKey(item?: ChatMediaItem | null): string {
   return item ? `${item.message.id}:${item.attachment.id}` : '';
 }
 
-export function ChatMediaViewer({
+export function ChatMediaViewer(props: Omit<ComponentProps<typeof ChatMediaViewerPage>, 'closeRequestRef'>) {
+  const reduceMotion = useReducedMotion();
+  const closeRequestRef = useRef<(() => void) | null>(null);
+  return (
+    <Modal testID="chat-media-modal" visible={Boolean(props.item)} animationType={reduceMotion ? 'none' : 'fade'} transparent
+      statusBarTranslucent navigationBarTranslucent presentationStyle="overFullScreen" onRequestClose={() => (closeRequestRef.current || props.onClose)()}>
+      {props.item ? <ChatMediaViewerPage key={mediaKey(props.item)} {...props} closeRequestRef={closeRequestRef} /> : null}
+    </Modal>
+  );
+}
+
+function ChatMediaViewerPage({
   item,
   items = [],
   onChange,
@@ -64,6 +75,7 @@ export function ChatMediaViewer({
   onSave,
   onForward,
   onRequestMore,
+  closeRequestRef,
 }: {
   item: ChatMediaItem | null;
   items?: ChatMediaItem[];
@@ -74,12 +86,15 @@ export function ChatMediaViewer({
   onSave: () => void;
   onForward: () => void;
   onRequestMore?: () => void;
+  closeRequestRef: RefObject<(() => void) | null>;
 }) {
   const reduceMotion = useReducedMotion();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const message = item?.message || null;
   const attachment = item?.attachment || null;
   const visible = Boolean(item);
+  const transitionGeneration = useRef(0);
+  const transitioning = useRef(false);
   const offsetY = useRef(new Animated.Value(0)).current;
   const originalOpacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(1)).current;
@@ -100,6 +115,7 @@ export function ChatMediaViewer({
   const lastTapAt = useRef(0);
   const singleTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
+  const [zoomed, setZoomed] = useState(false);
   const [stageSize, setStageSize] = useState({ width: windowWidth, height: windowHeight });
   const [mediaSize, setMediaSize] = useState({ width: 0, height: 0 });
   const previewUrl = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(attachment));
@@ -112,6 +128,8 @@ export function ChatMediaViewer({
     ? createdAt.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
     : '';
   const resolvedItems = items.length ? items : (item ? [item] : []);
+  const latestItems = useRef(resolvedItems);
+  useLayoutEffect(() => { latestItems.current = resolvedItems; }, [resolvedItems]);
   const currentIndex = item
     ? findThreadMediaIndex(resolvedItems, item.message.id, item.attachment.id)
     : -1;
@@ -120,13 +138,11 @@ export function ChatMediaViewer({
   const nextIndex = stepThreadMediaIndex(safeIndex, 'next', resolvedItems.length);
   const previousItem = previousIndex == null ? null : resolvedItems[previousIndex];
   const nextItem = nextIndex == null ? null : resolvedItems[nextIndex];
-  const canPrev = Boolean(previousItem);
-  const canNext = Boolean(nextItem);
-  const topInset = Math.max(
-    initialWindowMetrics?.insets.top || 0,
-    Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 47,
-  );
-  const bottomInset = Math.max(initialWindowMetrics?.insets.bottom || 0, 12);
+  const canPrev = Boolean(previousItem && onChange);
+  const canNext = Boolean(nextItem && onChange);
+  const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const topInset = safeInsets?.top ?? (Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 47);
+  const bottomInset = Math.max(safeInsets?.bottom || 0, 12);
 
   const setTranslation = useCallback((x: number, y: number) => {
     translateValue.current = { x, y };
@@ -135,18 +151,21 @@ export function ChatMediaViewer({
   }, [translateX, translateY]);
 
   const resetTransforms = useCallback(() => {
+    [scale, translateX, translateY, offsetY].forEach((value) => value.stopAnimation());
     scaleValue.current = 1;
+    setZoomed(false);
     scale.setValue(1);
     setTranslation(0, 0);
     offsetY.setValue(0);
     dragAxis.current = null;
     pinching.current = false;
-  }, [offsetY, scale, setTranslation]);
+  }, [offsetY, scale, setTranslation, translateX, translateY]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     resetTransforms();
     setChromeVisible(true);
     setMediaSize({ width: 0, height: 0 });
+    originalOpacity.stopAnimation();
     originalOpacity.setValue(0);
   }, [item?.message.id, item?.attachment.id, originalOpacity, resetTransforms]);
 
@@ -154,12 +173,15 @@ export function ChatMediaViewer({
     if (visible && safeIndex >= Math.max(0, resolvedItems.length - 3)) onRequestMore?.();
   }, [onRequestMore, resolvedItems.length, safeIndex, visible]);
 
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
+    transitionGeneration.current += 1;
     if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
-  }, []);
+    [offsetY, originalOpacity, scale, translateX, translateY].forEach((value) => value.stopAnimation());
+  }, [offsetY, originalOpacity, scale, translateX, translateY]);
 
   const animateTransform = useCallback((nextScale: number, x: number, y: number) => {
     scaleValue.current = nextScale;
+    setZoomed(nextScale > 1.05);
     translateValue.current = { x, y };
     if (reduceMotion) {
       scale.setValue(nextScale);
@@ -219,11 +241,17 @@ export function ChatMediaViewer({
   const goPage = useCallback((direction: 'next' | 'prev') => {
     const nextPageIndex = stepThreadMediaIndex(safeIndex, direction, resolvedItems.length);
     if (nextPageIndex == null) {
+      transitioning.current = false;
       resetTransforms();
       return;
     }
-    const next = resolvedItems[nextPageIndex];
-    resetTransforms();
+    const next = latestItems.current.find((candidate) => mediaKey(candidate) === mediaKey(resolvedItems[nextPageIndex]));
+    if (!next) {
+      transitioning.current = false;
+      resetTransforms();
+      return;
+    }
+    // Keep the outgoing frame offscreen until React commits the next keyed page.
     onChange?.(next);
   }, [onChange, resetTransforms, resolvedItems, safeIndex]);
 
@@ -240,19 +268,39 @@ export function ChatMediaViewer({
   }, [offsetY, reduceMotion, translateX]);
 
   const completePage = useCallback((direction: 'next' | 'prev') => {
+    if (transitioning.current || !onChange) return;
+    transitioning.current = true;
+    const generation = ++transitionGeneration.current;
     if (reduceMotion) {
       goPage(direction);
       return;
     }
-    const target = direction === 'next' ? -windowWidth : windowWidth;
+    const target = direction === 'next' ? -stageSize.width : stageSize.width;
     Animated.timing(translateX, { toValue: target, duration: 180, useNativeDriver: true })
       .start(({ finished }) => {
+        if (generation !== transitionGeneration.current) return;
         if (finished) goPage(direction);
-        else settlePage();
+        else { transitioning.current = false; settlePage(); }
       });
-  }, [goPage, reduceMotion, settlePage, translateX, windowWidth]);
+  }, [goPage, onChange, reduceMotion, settlePage, stageSize.width, translateX]);
+
+  const requestClose = useCallback(() => {
+    transitionGeneration.current += 1;
+    transitioning.current = true;
+    [translateX, offsetY, scale, translateY].forEach((value) => value.stopAnimation());
+    if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+    onClose();
+  }, [offsetY, onClose, scale, translateX, translateY]);
+
+  useLayoutEffect(() => {
+    closeRequestRef.current = requestClose;
+    return () => { if (closeRequestRef.current === requestClose) closeRequestRef.current = null; };
+  }, [closeRequestRef, requestClose]);
 
   const completeDismiss = useCallback(() => {
+    if (transitioning.current) return;
+    transitioning.current = true;
+    const generation = ++transitionGeneration.current;
     if (reduceMotion) {
       onClose();
       resetTransforms();
@@ -263,7 +311,9 @@ export function ChatMediaViewer({
       duration: 180,
       useNativeDriver: true,
     }).start(({ finished }) => {
+      if (generation !== transitionGeneration.current) return;
       if (finished) onClose();
+      transitioning.current = false;
       resetTransforms();
     });
   }, [offsetY, onClose, reduceMotion, resetTransforms, stageSize.height, windowHeight]);
@@ -299,18 +349,23 @@ export function ChatMediaViewer({
   }, []);
 
   const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => !isVideo,
+    onStartShouldSetPanResponder: () => !isVideo && !transitioning.current,
     onMoveShouldSetPanResponder: (event, gesture) => {
+      if (isVideo || transitioning.current) return false;
       if ((event.nativeEvent.touches?.length || 0) >= 2) return true;
       if (scaleValue.current > 1.01) return Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4;
       return Math.abs(gesture.dy) > 8 || Math.abs(gesture.dx) > 8;
     },
     onMoveShouldSetPanResponderCapture: (event, gesture) => {
+      // Video owns scrubbing/volume gestures; navigation remains in the toolbar.
+      if (isVideo || transitioning.current) return false;
       if ((event.nativeEvent.touches?.length || 0) >= 2) return true;
       return Math.abs(gesture.dy) > 8 || Math.abs(gesture.dx) > 8;
     },
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: (event) => {
+      if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+      singleTapTimer.current = null;
       gestureStartedAt.current = Date.now();
       dragAxis.current = null;
       panStart.current = { ...translateValue.current };
@@ -345,6 +400,7 @@ export function ChatMediaViewer({
           bounds.y,
         );
         scaleValue.current = nextScale;
+        setZoomed(nextScale > 1.05);
         scale.setValue(nextScale);
         setTranslation(nextX, nextY);
         return;
@@ -386,15 +442,15 @@ export function ChatMediaViewer({
         settleZoom();
         return;
       }
-      if (scaleValue.current > 1.01) {
-        settleZoom();
-        return;
-      }
       const isTap = Math.abs(gesture.dx) < 8
         && Math.abs(gesture.dy) < 8
         && Date.now() - gestureStartedAt.current < 260;
       if (isTap && !isVideo) {
         handleTap({ x: event.nativeEvent.locationX, y: event.nativeEvent.locationY });
+        return;
+      }
+      if (scaleValue.current > 1.01) {
+        settleZoom();
         return;
       }
       const action = resolveMediaViewerRelease({
@@ -458,7 +514,13 @@ export function ChatMediaViewer({
 
   const handleStageLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
-    if (width > 0 && height > 0) setStageSize({ width, height });
+    if (width > 0 && height > 0 && (width !== stageSize.width || height !== stageSize.height)) {
+      // Rotation/resizing invalidates pixel-based swipe targets and zoom bounds.
+      transitionGeneration.current += 1;
+      transitioning.current = false;
+      resetTransforms();
+      setStageSize({ width, height });
+    }
   };
 
   const dismissProgress = offsetY.interpolate({
@@ -468,20 +530,12 @@ export function ChatMediaViewer({
   });
 
   return (
-    <Modal
-      visible={visible}
-      animationType={reduceMotion ? 'none' : 'fade'}
-      transparent
-      statusBarTranslucent
-      navigationBarTranslucent
-      presentationStyle="overFullScreen"
-      onRequestClose={onClose}
-    >
-      <View style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}> 
+      <View testID="chat-media-safe-area" style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset, paddingLeft: safeInsets?.left || 0, paddingRight: safeInsets?.right || 0 }]}>
         <Animated.View pointerEvents="none" style={[styles.backdrop, { opacity: dismissProgress }]} />
-        {chromeVisible ? (
-          <View style={styles.topBar}>
-            <Pressable onPress={onClose} style={styles.iconButton} accessibilityRole="button" accessibilityLabel="Закрыть просмотр">
+          <View testID="chat-media-top-bar" style={[styles.topBar, !chromeVisible && styles.hiddenChrome]}
+            pointerEvents={chromeVisible ? 'auto' : 'none'} accessibilityElementsHidden={!chromeVisible}
+            importantForAccessibility={chromeVisible ? 'auto' : 'no-hide-descendants'}>
+            <Pressable onPress={requestClose} style={styles.iconButton} accessibilityRole="button" accessibilityLabel="Закрыть просмотр">
               <Text style={styles.icon}>←</Text>
             </Pressable>
             <View style={styles.meta}>
@@ -494,7 +548,7 @@ export function ChatMediaViewer({
             </View>
             {canPrev ? (
               <Pressable
-                onPress={() => goPage('prev')}
+                onPress={() => completePage('prev')}
                 style={styles.iconButton}
                 accessibilityRole="button"
                 accessibilityLabel="Предыдущее фото"
@@ -504,7 +558,7 @@ export function ChatMediaViewer({
             ) : null}
             {canNext ? (
               <Pressable
-                onPress={() => goPage('next')}
+                onPress={() => completePage('next')}
                 style={styles.iconButton}
                 accessibilityRole="button"
                 accessibilityLabel="Следующее фото"
@@ -517,16 +571,16 @@ export function ChatMediaViewer({
                 onPress={() => zoomAt(scaleValue.current > 1.05 ? 1 : 3)}
                 style={styles.iconButton}
                 accessibilityRole="button"
-                accessibilityLabel={scaleValue.current > 1.05 ? 'Уменьшить фото' : 'Увеличить фото'}
+                accessibilityLabel={zoomed ? 'Уменьшить фото' : 'Увеличить фото'}
               >
                 <Text style={styles.zoomIcon}>⌕</Text>
               </Pressable>
             ) : null}
           </View>
-        ) : null}
         <View style={styles.stage} onLayout={handleStageLayout} testID="chat-media-viewer-stage">
-          <MediaPreviewSlot item={previousItem} translateX={Animated.add(translateX, -windowWidth)} />
+          <MediaPreviewSlot item={previousItem} translateX={Animated.add(translateX, -stageSize.width)} />
           <Animated.View
+            testID="chat-media-current-slot"
             style={[
               styles.currentSlot,
               {
@@ -573,6 +627,8 @@ export function ChatMediaViewer({
                       style={styles.image}
                       resizeMode="contain"
                       accessible={false}
+                      loadingFallback={null}
+                      errorFallback={null}
                       onLoad={handleOriginalLoad}
                     />
                   </Animated.View>
@@ -582,18 +638,17 @@ export function ChatMediaViewer({
               <Text style={styles.placeholder}>{attachment?.file_name || 'Вложение'}</Text>
             )}
           </Animated.View>
-          <MediaPreviewSlot item={nextItem} translateX={Animated.add(translateX, windowWidth)} />
+          <MediaPreviewSlot item={nextItem} translateX={Animated.add(translateX, stageSize.width)} />
         </View>
-        {chromeVisible ? (
-          <View style={styles.actions} accessibilityRole="toolbar">
+          <View testID="chat-media-actions" style={[styles.actions, !chromeVisible && styles.hiddenChrome]} accessibilityRole="toolbar"
+            pointerEvents={chromeVisible ? 'auto' : 'none'} accessibilityElementsHidden={!chromeVisible}
+            importantForAccessibility={chromeVisible ? 'auto' : 'no-hide-descendants'}>
             <Action label="Открыть" onPress={onOpen} />
             <Action label="Поделиться" onPress={onShare} />
             <Action label="Переслать" onPress={onForward} />
             <Action label="В «Мои файлы»" onPress={onSave} />
           </View>
-        ) : null}
       </View>
-    </Modal>
   );
 }
 
@@ -669,11 +724,13 @@ const styles = StyleSheet.create({
     zIndex: 4,
     minHeight: 56,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-around',
     paddingHorizontal: 8,
     backgroundColor: 'rgba(0,0,0,0.28)',
   },
-  action: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  hiddenChrome: { opacity: 0 },
+  action: { minHeight: 48, flexBasis: '50%', flexGrow: 1, flexShrink: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 10 },
   actionText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   pressed: { opacity: 0.7 },
 });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useRequestGuard from '../lib/useRequestGuard';
 import {
   Alert,
   Box,
@@ -253,7 +254,12 @@ export default function MyFiles() {
     [items],
   );
 
+  const beginLoad = useRequestGuard();
+  const beginPreview = useRequestGuard();
+  const activeLoadsRef = useRef(0);
   const loadData = useCallback(async ({ silent = false } = {}) => {
+    const isCurrent = beginLoad();
+    activeLoadsRef.current += 1;
     if (!silent) setLoading(true);
     setRefreshing(true);
     try {
@@ -261,15 +267,20 @@ export default function MyFiles() {
         myFilesAPI.listFiles(),
         myFilesAPI.getQuota(),
       ]);
+      if (!isCurrent()) return;
       setItems(Array.isArray(filesPayload?.items) ? filesPayload.items : []);
       setQuota(quotaPayload || null);
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить список файлов.', { dedupeMode: 'recent' });
     } finally {
-      if (!silent) setLoading(false);
-      setRefreshing(false);
+      activeLoadsRef.current -= 1;
+      if (isCurrent()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [notifyApiError]);
+  }, [beginLoad, notifyApiError]);
 
   useEffect(() => {
     void loadData();
@@ -285,7 +296,7 @@ export default function MyFiles() {
   useEffect(() => {
     if (!hasProcessingFiles) return undefined;
     const timer = window.setInterval(() => {
-      void loadData({ silent: true });
+      if (activeLoadsRef.current === 0) void loadData({ silent: true });
     }, 4000);
     return () => window.clearInterval(timer);
   }, [hasProcessingFiles, loadData]);
@@ -529,6 +540,7 @@ export default function MyFiles() {
   }, []);
 
   const openDocumentPreview = useCallback(async (item) => {
+    const isCurrent = beginPreview();
     const fileId = String(item?.id || '').trim();
     if (!fileId) return;
 
@@ -549,8 +561,10 @@ export default function MyFiles() {
 
     try {
       const metadata = normalizeAttachmentPreviewMetadata(await myFilesAPI.getPreviewMeta(fileId));
+      if (!isCurrent()) return;
       const resolvedSourceKind = metadata.sourceKind || fallbackSourceKind;
       const previewResponse = await myFilesAPI.downloadPreviewContent(fileId);
+      if (!isCurrent()) return;
       const {
         blob: previewBlob,
         filename: previewFilename,
@@ -561,11 +575,6 @@ export default function MyFiles() {
           content_type: 'application/pdf',
         },
       });
-      const objectUrl = typeof window !== 'undefined' && typeof window.URL?.createObjectURL === 'function'
-        ? window.URL.createObjectURL(previewBlob)
-        : '';
-      previewObjectUrlRef.current = objectUrl;
-
       let excelWorkbook = null;
       if (resolvedSourceKind === 'excel') {
         try {
@@ -580,6 +589,11 @@ export default function MyFiles() {
         }
       }
 
+      if (!isCurrent()) return;
+      const objectUrl = typeof window !== 'undefined' && typeof window.URL?.createObjectURL === 'function'
+        ? window.URL.createObjectURL(previewBlob)
+        : '';
+      previewObjectUrlRef.current = objectUrl;
       setDocumentPreview({
         open: true,
         item,
@@ -595,6 +609,7 @@ export default function MyFiles() {
         pdfFilename: previewFilename || metadata.pdfFilename,
       });
     } catch (error) {
+      if (!isCurrent()) return;
       setDocumentPreview((current) => ({
         ...current,
         loading: false,
@@ -604,12 +619,13 @@ export default function MyFiles() {
         excelWorkbook: null,
       }));
     }
-  }, [revokePreviewObjectUrl]);
+  }, [beginPreview, revokePreviewObjectUrl]);
 
   const closeDocumentPreview = useCallback(() => {
+    beginPreview();
     revokePreviewObjectUrl();
     setDocumentPreview(createEmptyDocumentPreviewState());
-  }, [revokePreviewObjectUrl]);
+  }, [beginPreview, revokePreviewObjectUrl]);
 
   const refreshDocumentPreview = useCallback(() => {
     if (!documentPreview.item) return;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Docflow, { resolveCredentialLogin } from './Docflow';
 import { docflowAPI } from '../api/docflow';
@@ -790,17 +790,24 @@ describe('Docflow page', () => {
 
     render(<Docflow />);
     fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Согласовать' }));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1));
-
-    expect(await screen.findByRole('button', { name: 'Проверить' })).toBeInTheDocument();
-    expect(screen.getByText(/Подтверждаем выполнение в 1С/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Проверить' }));
-
-    expect(await screen.findByText(/1С не применила действие/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
-    expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
-    expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+    const approve = await screen.findByRole('button', { name: 'Согласовать' });
+    // Freeze automatic command polling while exercising the manual path.
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(approve);
+      await act(async () => fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1)));
+      // Complete the confirmation dialog exit before the first poll is due.
+      await act(async () => vi.advanceTimersByTimeAsync(300));
+      expect(screen.getByText(/Подтверждаем выполнение в 1С/)).toBeInTheDocument();
+      expect(docflowAPI.getCommand).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Проверить' })));
+      expect(screen.getByText(/1С не применила действие/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
+      expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
+      expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('confirms an unknown command automatically and removes the completed task from inbox', async () => {

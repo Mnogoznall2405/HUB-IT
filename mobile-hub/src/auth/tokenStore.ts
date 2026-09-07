@@ -11,6 +11,18 @@ const NATIVE_PUSH_TOKEN_KEY = 'hubit_native_push_token';
 const SESSION_USER_ID_KEY = 'hubit_session_user_id';
 const SESSION_USER_CACHE_KEY = 'hubit_session_user_cache_v1';
 
+// Session reads and writes share one order so a delayed deletion cannot erase a
+// newer login, and readers cannot observe a half-written token pair.
+let sessionGeneration = 0;
+export function getSessionGeneration(): number { return sessionGeneration; }
+
+let sessionOperations: Promise<unknown> = Promise.resolve();
+function sessionOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = sessionOperations.then(operation);
+  sessionOperations = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 type AccessTokenChangeListener = (accessToken: string | null) => void;
 
 const accessTokenChangeListeners = new Set<AccessTokenChangeListener>();
@@ -63,11 +75,11 @@ async function deleteItem(key: string): Promise<void> {
   await SecureStore.deleteItemAsync(key);
 }
 
-export async function getAccessToken(): Promise<string | null> {
+async function getAccessTokenInternal(): Promise<string | null> {
   return getItem(ACCESS_KEY);
 }
 
-export async function getRefreshToken(): Promise<string | null> {
+async function getRefreshTokenInternal(): Promise<string | null> {
   return getItem(REFRESH_KEY);
 }
 
@@ -105,14 +117,14 @@ export async function setClientDeviceId(clientDeviceId: string | null | undefine
   if (normalized) await setItem(CLIENT_DEVICE_KEY, normalized);
 }
 
-export async function setTokens(accessToken: string, refreshToken: string): Promise<void> {
+async function setTokensInternal(accessToken: string, refreshToken: string): Promise<void> {
   await setItem(ACCESS_KEY, accessToken);
   await setItem(REFRESH_KEY, refreshToken);
   notifyAccessTokenChanges(accessToken);
 }
 
-export async function clearTokens(options: { clearOfflineData?: boolean } = {}): Promise<void> {
-  const sessionUserId = await getSessionUserId().catch(() => null);
+async function clearTokensInternal(options: { clearOfflineData?: boolean } = {}): Promise<void> {
+  const sessionUserId = await getSessionUserIdInternal().catch(() => null);
   const cleanup: Promise<unknown>[] = [
     deleteItem(ACCESS_KEY),
     deleteItem(REFRESH_KEY),
@@ -131,7 +143,7 @@ export async function clearTokens(options: { clearOfflineData?: boolean } = {}):
   notifyAccessTokenChanges(null);
 }
 
-export async function getCachedSessionUser(): Promise<HubUser | null> {
+async function getCachedSessionUserInternal(): Promise<HubUser | null> {
   try {
     const raw = await getItem(SESSION_USER_CACHE_KEY);
     if (!raw) return null;
@@ -156,23 +168,26 @@ export async function getCachedSessionUser(): Promise<HubUser | null> {
   }
 }
 
-export async function setCachedSessionUser(user: HubUser): Promise<void> {
+async function setCachedSessionUserInternal(user: HubUser): Promise<void> {
   const id = Number(user?.id || 0);
   if (!Number.isInteger(id) || id <= 0) {
     throw new Error('Некорректный идентификатор пользователя');
   }
-  await Promise.all([
+  const results = await Promise.allSettled([
     setItem(SESSION_USER_ID_KEY, String(id)),
     setItem(SESSION_USER_CACHE_KEY, JSON.stringify(user)),
   ]);
+  for (const result of results) {
+    if (result.status === 'rejected') throw result.reason;
+  }
 }
 
-export async function getSessionUserId(): Promise<number | null> {
+async function getSessionUserIdInternal(): Promise<number | null> {
   const value = Number(await getItem(SESSION_USER_ID_KEY));
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
-export async function setSessionUserId(userId: number): Promise<void> {
+async function setSessionUserIdInternal(userId: number): Promise<void> {
   const normalized = Number(userId || 0);
   if (!Number.isInteger(normalized) || normalized <= 0) {
     throw new Error('Некорректный идентификатор пользователя');
@@ -196,4 +211,57 @@ export async function clearNativePushToken(): Promise<void> {
 export async function hasSession(): Promise<boolean> {
   const token = await getAccessToken();
   return Boolean(token && token.trim());
+}
+
+export function getAccessToken(...args: Parameters<typeof getAccessTokenInternal>): ReturnType<typeof getAccessTokenInternal> {
+  return sessionOperation(() => getAccessTokenInternal(...args));
+}
+
+export function getRefreshToken(...args: Parameters<typeof getRefreshTokenInternal>): ReturnType<typeof getRefreshTokenInternal> {
+  return sessionOperation(() => getRefreshTokenInternal(...args));
+}
+
+export function setTokens(...args: Parameters<typeof setTokensInternal>): ReturnType<typeof setTokensInternal> {
+  sessionGeneration += 1;
+  return sessionOperation(() => setTokensInternal(...args));
+}
+
+export function clearTokens(...args: Parameters<typeof clearTokensInternal>): ReturnType<typeof clearTokensInternal> {
+  sessionGeneration += 1;
+  return sessionOperation(() => clearTokensInternal(...args));
+}
+
+export function getCachedSessionUser(...args: Parameters<typeof getCachedSessionUserInternal>): ReturnType<typeof getCachedSessionUserInternal> {
+  return sessionOperation(() => getCachedSessionUserInternal(...args));
+}
+
+export function setCachedSessionUser(...args: Parameters<typeof setCachedSessionUserInternal>): ReturnType<typeof setCachedSessionUserInternal> {
+  return sessionOperation(() => setCachedSessionUserInternal(...args));
+}
+
+export function getSessionUserId(...args: Parameters<typeof getSessionUserIdInternal>): ReturnType<typeof getSessionUserIdInternal> {
+  return sessionOperation(() => getSessionUserIdInternal(...args));
+}
+
+export function setSessionUserId(...args: Parameters<typeof setSessionUserIdInternal>): ReturnType<typeof setSessionUserIdInternal> {
+  return sessionOperation(() => setSessionUserIdInternal(...args));
+}
+
+/** Compare and commit inside the same storage operation; never resurrect an old session. */
+export function replaceRefreshedTokens(expectedRefresh: string, access: string, refresh: string): Promise<boolean> {
+  return sessionOperation(async () => {
+    if (await getRefreshTokenInternal() !== expectedRefresh) return false;
+    await setTokensInternal(access, refresh);
+    return true;
+  });
+}
+
+export function clearExpiredTokens(expectedRefresh: string | null, onCleared: () => void): Promise<boolean> {
+  return sessionOperation(async () => {
+    if (await getRefreshTokenInternal() !== expectedRefresh) return false;
+    sessionGeneration += 1;
+    await clearTokensInternal();
+    onCleared();
+    return true;
+  });
 }

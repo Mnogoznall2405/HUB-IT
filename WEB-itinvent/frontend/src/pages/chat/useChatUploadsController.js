@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { chatAPI } from '../../api/client';
 import {
   summarizePreparedChatUploadItems,
 } from '../../components/chat/chatUploadPrep';
@@ -80,6 +79,7 @@ export default function useChatUploadsController({
     removeSelectedFile,
     resetSelectedImageEdit,
     sendFiles,
+    sendVoiceFile,
   } = useChatFileSending({
     activeConversation,
     activeConversationId,
@@ -118,21 +118,6 @@ export default function useChatUploadsController({
     setThreadMenuAnchor,
   });
 
-  const handleVoiceRecordingComplete = useCallback(async ({ file, duration, mimeType }) => {
-    const conversationId = String(activeConversationId || '').trim();
-    if (!conversationId || !file) return;
-    try {
-      await chatAPI.sendFiles(conversationId, [{
-        file,
-        media_kind: 'audio',
-        duration_seconds: duration,
-        mime_type: mimeType || file.type || 'audio/webm',
-      }], {});
-    } catch (error) {
-      notifyApiError(error, 'Не удалось отправить голосовое сообщение.');
-    }
-  }, [activeConversationId, notifyApiError]);
-
   const {
     voiceRecording,
     voiceRecordingDuration,
@@ -141,7 +126,7 @@ export default function useChatUploadsController({
     stopVoiceRecording,
     cancelVoiceRecording,
   } = useVoiceRecorder({
-    onRecordingComplete: handleVoiceRecordingComplete,
+    onRecordingComplete: sendVoiceFile,
     notifyWarning,
   });
 

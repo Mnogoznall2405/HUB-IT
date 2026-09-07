@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatAPI } from '../../api/client';
 import { chatSocket } from '../../lib/chatSocket';
+import { buildChatDraftKey } from './chatHelpers';
 import useChatComposerSending from './useChatComposerSending';
 
 vi.mock('../../api/client', () => ({
@@ -78,6 +79,19 @@ function Harness({
 describe('useChatComposerSending', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('preserves a newer persisted draft when sending fails late', async () => {
+    let rejectSend;
+    chatSocket.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    chatAPI.sendMessage.mockRejectedValueOnce(new Error('503'));
+    render(<Harness applyOutgoingThreadMessage={vi.fn()} setSocketStatus={vi.fn()} />);
+    fireEvent.click(document.querySelector('button'));
+    const key = buildChatDraftKey(7, 'conversation-1');
+    window.localStorage.setItem(key, 'newer saved draft');
+    rejectSend(new Error('disconnected'));
+    await waitFor(() => expect(chatAPI.sendMessage).toHaveBeenCalled());
+    expect(window.localStorage.getItem(key)).toBe('newer saved draft');
   });
 
   it('keeps optimistic message when socket send falls back to HTTP', async () => {

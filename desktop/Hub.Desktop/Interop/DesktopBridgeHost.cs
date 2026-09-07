@@ -420,11 +420,20 @@ public sealed class DesktopBridgeHost : IDisposable
             return;
         }
 
-        if (message.Type == DesktopInboundMessageType.ShowNotification
-            && message.Notification is not null
-            && !_notifications.TryShow(message.Notification))
+        if (message.Type == DesktopInboundMessageType.ShowNotification && message.Notification is not null)
         {
-            DesktopLog.Warning("Windows app notification could not be shown");
+            var accepted = false;
+            try
+            {
+                accepted = _notifications.TryShow(message.Notification);
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Desktop notification delivery failed", exception);
+            }
+            if (!accepted) DesktopLog.Warning("Windows app notification could not be shown");
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateNotificationResultMessage(
+                message.Notification.Id, accepted));
         }
     }
 

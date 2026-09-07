@@ -265,6 +265,12 @@ function stripRemoteCssResources(html: string, allowExternalImages: boolean): { 
   return { html: next, blocked };
 }
 
+export function sanitizeNativeMailEditableHtml(value: string): string {
+  if (value.length > MAX_MAIL_HTML_LENGTH) throw new Error('Письмо слишком большое для редактора.');
+  return stripDangerousMarkup(value)
+    .replace(/\scontenteditable\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+}
+
 export function prepareNativeMailHtml(
   rawHtml: unknown,
   attachments: MailAttachment[] = [],

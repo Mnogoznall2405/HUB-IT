@@ -120,6 +120,14 @@ export default function Feed() {
   const categoryIdRef = useRef(categoryId);
   const tagRef = useRef(tag);
   const itemsLengthRef = useRef(items.length);
+  const listRequestRef = useRef(0);
+  const listPendingRef = useRef(false);
+  const listScope = JSON.stringify([query, activeFilter, categoryId, tag, deepLinkedPostId]);
+  const listScopeRef = useRef(listScope);
+  if (listScopeRef.current !== listScope) {
+    listScopeRef.current = listScope;
+    listRequestRef.current += 1;
+  }
   queryRef.current = query;
   activeFilterRef.current = activeFilter;
   categoryIdRef.current = categoryId;
@@ -127,6 +135,10 @@ export default function Feed() {
   itemsLengthRef.current = items.length;
 
   const loadPage = useCallback(async ({ reset = false } = {}) => {
+    if (!reset && listPendingRef.current) return;
+    const requestId = ++listRequestRef.current;
+    const isCurrent = () => requestId === listRequestRef.current;
+    listPendingRef.current = true;
     const offset = reset ? 0 : itemsLengthRef.current;
     if (reset) {
       if (itemsLengthRef.current > 0) setRefreshing(true);
@@ -152,20 +164,30 @@ export default function Feed() {
           sort_by: 'published_at',
           sort_dir: 'desc',
         });
+      if (!isCurrent()) return;
       const nextItems = Array.isArray(payload?.items) ? payload.items : [];
-      setItems((current) => (reset ? nextItems : [...current, ...nextItems]));
+      setItems((current) => {
+        if (!isCurrent()) return current;
+        if (reset) return nextItems;
+        const ids = new Set(current.map((item) => String(item.id)));
+        return [...current, ...nextItems.filter((item) => !ids.has(String(item.id)))];
+      });
       setTotal(Number(payload?.total || nextItems.length));
       if (activeFilterRef.current === 'all' && !queryRef.current.trim()) {
         setFeedTotal(Number(payload?.total || nextItems.length));
         setUnreadTotal(Number(payload?.unread_total || 0));
       }
     } catch (requestError) {
+      if (!isCurrent()) return;
       const message = requestError?.response?.data?.detail || requestError?.message || 'Не удалось загрузить ленту.';
       setError(String(message));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
-      setLoadingMore(false);
+      if (isCurrent()) {
+        listPendingRef.current = false;
+        setLoading(false);
+        setRefreshing(false);
+        setLoadingMore(false);
+      }
     }
   }, []);
 

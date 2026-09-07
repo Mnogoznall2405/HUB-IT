@@ -1,6 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useMemo } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { bottomNavMetrics } from '../../navigation/bottomNavMetrics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
 import { usePreferences } from '../../preferences/PreferencesContext';
@@ -25,6 +26,8 @@ export function HubBottomNav({
   hidden?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const { fontScale } = useWindowDimensions();
+  const metrics = bottomNavMetrics(fontScale);
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -47,6 +50,8 @@ export function HubBottomNav({
   return (
     <View
       pointerEvents={hidden ? 'none' : 'auto'}
+      accessibilityElementsHidden={hidden}
+      importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'}
       style={[
         styles.wrap,
         {
@@ -54,16 +59,17 @@ export function HubBottomNav({
           borderColor: tokens.borderSoft,
           bottom: Math.max(insets.bottom, 9),
           shadowColor: tokens.scheme === 'dark' ? '#000' : '#0f172a',
-          transform: [{ translateY: hidden ? 120 : 0 }],
+          transform: [{ translateY: hidden ? metrics.contentHeight + insets.bottom + 24 : 0 }],
         },
       ]}
       testID="hub-bottom-nav"
     >
-      <View style={styles.row}>
+      <View testID="hub-bottom-nav-row" style={[styles.row, { height: metrics.rowHeight }]}>
         {items.map((item) => (
           <NavAction
             key={item.path}
             item={item}
+            labelLines={metrics.lines}
             active={activePath === item.path}
             unreadCounts={unreadCounts}
             updateState={updateState}
@@ -78,6 +84,7 @@ export function HubBottomNav({
 
 function NavAction({
   item,
+  labelLines,
   active,
   unreadCounts,
   updateState,
@@ -85,6 +92,7 @@ function NavAction({
   onPress,
 }: {
   item: MobileNavItem;
+  labelLines: number;
   active: boolean;
   unreadCounts: Record<string, unknown>;
   updateState: ReturnType<typeof useMobileUpdater>['state'];
@@ -111,7 +119,7 @@ function NavAction({
       style={styles.action}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
-      accessibilityLabel={`${item.shortLabel}${showUpdateBadge ? '. Доступно обновление приложения' : ''}`}
+      accessibilityLabel={`${item.label}${showUpdateBadge ? '. Доступно обновление приложения' : ''}`}
       testID={`hub-bottom-nav-${item.path.replace(/^\//, '')}`}
     >
       <View
@@ -151,13 +159,13 @@ function NavAction({
         ) : null}
       </View>
       <Text
-        numberOfLines={1}
+        numberOfLines={labelLines}
         style={[
           styles.label,
           {
             color: active ? tokens.primaryLight : tokens.iconMuted,
             fontWeight: active ? '800' : '700',
-            fontSize: active ? 11.4 : 11,
+            fontSize: 11,
           },
         ]}
       >
@@ -206,13 +214,15 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     fontSize: 11,
     fontWeight: '700',
+    lineHeight: 14,
+    textAlign: 'center',
   },
   badge: {
     position: 'absolute',
     top: -3,
     right: 2,
     minWidth: 16,
-    height: 16,
+    minHeight: 16,
     borderRadius: 8,
     paddingHorizontal: 4,
     alignItems: 'center',

@@ -22,6 +22,7 @@ export function NativeChatComposerDock({
   contextLabel,
   contextPreview,
   onCancelMode,
+  onOpenContext,
   busy = false,
   onAttachmentPress,
   onEmojiPress,
@@ -35,12 +36,13 @@ export function NativeChatComposerDock({
 }: {
   value: string;
   onChangeText: (value: string) => void;
-  onSend: () => void;
+  onSend: () => void | Promise<void>;
   placeholder?: string;
   mode?: 'reply' | 'edit' | null;
   contextLabel?: string;
   contextPreview?: string;
   onCancelMode?: () => void;
+  onOpenContext?: () => void;
   busy?: boolean;
   onAttachmentPress?: () => void;
   onEmojiPress?: () => void;
@@ -172,6 +174,7 @@ export function NativeChatComposerDock({
       onSend={onSend}
       placeholder={placeholder}
       mode={mode}
+      onOpenContext={onOpenContext}
       contextLabel={contextLabel}
       contextPreview={contextPreview}
       onCancelMode={onCancelMode}

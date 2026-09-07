@@ -51,6 +51,7 @@ class MailConversationFinder:
         targets: list[tuple[Any, str]],
         conversation_key: str,
         searched_window: int = 0,
+        require_complete: bool = False,
     ) -> tuple[list[tuple[Any, str]], str, int, bool]:
         items_raw: list[tuple[Any, str]] = []
         last_folder_key = ""
@@ -62,10 +63,10 @@ class MailConversationFinder:
             queryset = self.folder_queryset(folder_obj, folder_key)
             scanned = 0
             while True:
-                if searched_window >= search_budget:
+                if not require_complete and searched_window >= search_budget:
                     search_limited = True
                     break
-                batch_limit = min(self.search_batch_size, search_budget - searched_window)
+                batch_limit = self.search_batch_size if require_complete else min(self.search_batch_size, search_budget - searched_window)
                 batch_items = list(queryset[scanned: scanned + batch_limit])
                 if not batch_items:
                     break
@@ -87,6 +88,7 @@ class MailConversationFinder:
         conversation_id: str,
         folder: str = "inbox",
         folder_scope: str = "current",
+        require_complete: bool = False,
     ) -> tuple[str, list[tuple[Any, str]], str]:
         conversation_key = _normalize_text(conversation_id)
         if not conversation_key:
@@ -102,14 +104,19 @@ class MailConversationFinder:
         items_raw, last_folder_key, searched_window, _search_limited = self._scan_targets(
             targets=targets,
             conversation_key=conversation_key,
+            require_complete=require_complete,
         )
         last_folder_key = last_folder_key or normalized_folder
 
         if not items_raw:
             direct_item = None
+            direct_folder_key = ""
+            allowed_folder_keys = {key for _folder, key in targets}
             try:
                 folder_key_from_message, exchange_id = self.decode_message_id(conversation_key)
-                folder_obj, last_folder_key = self.resolve_folder(account, folder_key_from_message)
+                folder_obj, direct_folder_key = self.resolve_folder(account, folder_key_from_message)
+                if direct_folder_key not in allowed_folder_keys:
+                    raise MailConversationFinderError("Message is outside the selected folders")
                 direct_item = self._item_by_id(folder_obj, exchange_id)
             except Exception:
                 direct_item = None
@@ -117,7 +124,9 @@ class MailConversationFinder:
                 conversation_key = self.item_conversation_key(direct_item)
             try:
                 if direct_item is None:
-                    folder_obj, last_folder_key = self.resolve_folder(account, normalized_folder)
+                    folder_obj, direct_folder_key = self.resolve_folder(account, normalized_folder)
+                    if direct_folder_key not in allowed_folder_keys:
+                        raise MailConversationFinderError("Message is outside the selected folders")
                     direct_item = self._item_by_id(folder_obj, conversation_key)
             except Exception:
                 direct_item = None
@@ -130,10 +139,12 @@ class MailConversationFinder:
                     targets=targets,
                     conversation_key=conversation_key,
                     searched_window=searched_window,
+                    require_complete=require_complete,
                 )
                 last_folder_key = last_scanned_folder_key or last_folder_key
                 if not items_raw:
-                    items_raw = [(direct_item, last_folder_key)]
+                    items_raw = [(direct_item, direct_folder_key)]
+                    last_folder_key = direct_folder_key
 
         if not items_raw:
             raise MailConversationFinderError("Conversation not found")

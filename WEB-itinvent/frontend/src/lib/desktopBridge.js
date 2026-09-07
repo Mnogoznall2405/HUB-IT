@@ -73,6 +73,7 @@ let pendingVncPreflightRequest = null;
 let pendingEquipmentQrPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
 const mailComposeCloseListeners = new Set();
+const pendingNotificationResults = new Map();
 let legacyOpenIntentBusyUntil = 0;
 const navigationListeners = new Set();
 const lifecycleListeners = new Set();
@@ -522,6 +523,15 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
 
     transport.addEventListener('message', (event) => {
       const message = event?.data;
+      if (bridgeReady && message?.type === 'notification.result'
+        && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+        && Object.keys(message).length === 4
+        && isValidBoundedText(message.id, MAXIMUM_NOTIFICATION_ID_LENGTH)
+        && NOTIFICATION_ID_PATTERN.test(message.id)
+        && typeof message.accepted === 'boolean') {
+        pendingNotificationResults.get(message.id)?.(message.accepted);
+        return;
+      }
       if (isValidHostReadyMessage(message)) {
         bridgeReady = true;
         notificationCapabilityAvailable = message.capabilities.notifications;
@@ -764,7 +774,7 @@ export function subscribeDesktopLifecycle(listener) {
   };
 }
 
-export function showDesktopNotification({ id, title, body, route } = {}) {
+export function showDesktopNotification({ id, title, body, route, onResult } = {}) {
   if (!isDesktopNotificationAvailable()) return false;
   if (
     !isValidBoundedText(id, MAXIMUM_NOTIFICATION_ID_LENGTH)
@@ -787,9 +797,20 @@ export function showDesktopNotification({ id, title, body, route } = {}) {
   try {
     const transport = getWebViewTransport();
     if (!transport) return false;
+    if (typeof onResult === 'function') {
+      if (pendingNotificationResults.has(id) || pendingNotificationResults.size >= 100) return false;
+      const timeout = window.setTimeout(() => finish(false), 10000);
+      const finish = (accepted) => {
+        window.clearTimeout(timeout);
+        pendingNotificationResults.delete(id);
+        onResult(accepted);
+      };
+      pendingNotificationResults.set(id, finish);
+    }
     transport.postMessage(message);
     return true;
   } catch {
+    pendingNotificationResults.get(id)?.(false);
     return false;
   }
 }

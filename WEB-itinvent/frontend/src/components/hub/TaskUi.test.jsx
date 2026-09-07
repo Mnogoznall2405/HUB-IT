@@ -238,7 +238,7 @@ describe('TaskUi helpers', () => {
     expect(screen.getByTestId('task-context-mobile-timeline')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Контекст задачи'));
-    expect(screen.getByText('Исполнитель')).toBeInTheDocument();
+    expect(screen.getByText('Исполнители')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Сроки и состояние'));
     expect(screen.getByText('Срок')).toBeInTheDocument();

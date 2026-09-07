@@ -108,3 +108,34 @@ def test_mail_inbox_probe_uses_scan_queryset_without_body():
     assert "conversation_id" in folder.query.fields
     assert "body" not in folder.query.fields
     assert "attachments" not in folder.query.fields
+
+
+def test_complete_conversation_replaces_legacy_cache_and_reuses_verified_cache(monkeypatch):
+    service = _Service()
+    cache = {"conversation_id": "thread", "items": [{"id": "old"}]}
+    calls = []
+    monkeypatch.setattr(service, "_resolve_mail_profile", lambda **kwargs: {"mailbox_id": "box"})
+    monkeypatch.setattr(service, "_set_request_metric", lambda *args: None)
+    monkeypatch.setattr(service, "_cached_conversation_detail", lambda **kwargs: cache)
+    monkeypatch.setattr(service, "_singleflight_key", lambda **kwargs: "test")
+    monkeypatch.setattr(service, "_run_singleflight", lambda key, producer: producer())
+    monkeypatch.setattr(service, "_resolve_account_context", lambda **kwargs: {"profile": {"email": "synthetic@example.test"}, "account": object()})
+    def find(**kwargs):
+        calls.append(kwargs)
+        return "thread", [(SimpleNamespace(id="new"), "inbox")], "inbox"
+    monkeypatch.setattr(service, "_find_conversation_items", find)
+    monkeypatch.setattr(service, "_hydrate_conversation_items", lambda **kwargs: kwargs["items_raw"])
+    monkeypatch.setattr(service, "_serialize_message_detail", lambda **kwargs: {"id": kwargs["item"].id})
+    service._conversation_payloads = SimpleNamespace(conversation_detail_payload=lambda **kwargs: kwargs)
+    def save(**kwargs):
+        cache.clear()
+        cache.update(kwargs["value"])
+        return cache
+    monkeypatch.setattr(service, "_cache_set", save)
+    result = service.get_conversation(user_id=7, mailbox_id="box", conversation_id="thread")
+    assert result["conversation_complete"] is True
+    assert result["items"] == [{"id": "new"}]
+    assert calls[0]["require_complete"] is True
+    assert calls[0]["folder"] == "inbox"
+    assert service.get_conversation(user_id=7, mailbox_id="box", conversation_id="thread") == result
+    assert len(calls) == 1

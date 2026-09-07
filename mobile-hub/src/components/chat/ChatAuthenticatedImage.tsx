@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -30,7 +30,12 @@ function chatMediaCacheName(uri: string): string {
   return `chat-media-${(hash >>> 0).toString(16)}.img`;
 }
 
-export function ChatAuthenticatedImage({
+// A new URI owns a new decode/request state, including the first render.
+export function ChatAuthenticatedImage(props: ComponentProps<typeof ChatImageSource>) {
+  return <ChatImageSource key={props.uri} {...props} />;
+}
+
+function ChatImageSource({
   uri,
   style,
   resizeMode = 'cover',
@@ -58,7 +63,7 @@ export function ChatAuthenticatedImage({
   const refreshAttemptedRef = useRef(false);
   const localUri = isLocalUri(uri);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
@@ -107,7 +112,7 @@ export function ChatAuthenticatedImage({
     void loadImage({ forceDownload: true, showLoading: true });
   };
 
-  if (loadState === 'loading' || !sourceUri) {
+  if (loadState === 'loading' || (!sourceUri && loadState !== 'failed')) {
     if (loadingFallback !== undefined) return <>{loadingFallback}</>;
     return (
       <View
@@ -141,6 +146,8 @@ export function ChatAuthenticatedImage({
     );
   }
 
+  if (!sourceUri) return null;
+  const imageRequestId = requestIdRef.current;
   return (
     <Image
       key={`${sourceUri}:${requestVersion}`}
@@ -149,8 +156,12 @@ export function ChatAuthenticatedImage({
       resizeMode={resizeMode}
       accessibilityLabel={accessibilityLabel}
       accessible={accessible}
-      onLoad={onLoad}
-      onError={handleImageError}
+      onLoad={(event) => {
+        if (mountedRef.current && imageRequestId === requestIdRef.current) onLoad?.(event);
+      }}
+      onError={() => {
+        if (mountedRef.current && imageRequestId === requestIdRef.current) handleImageError();
+      }}
     />
   );
 }

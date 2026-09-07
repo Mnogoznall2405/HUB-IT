@@ -61,6 +61,7 @@ export default function BranchList({
                   {canEdit && (
                     <Stack direction="row" spacing={0.5} onClick={(e) => e.stopPropagation()}>
                       <IconButton
+                        aria-label={`Редактировать филиал ${branch.name}`}
                         size="small"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -71,6 +72,7 @@ export default function BranchList({
                         <EditIcon fontSize="small" />
                       </IconButton>
                       <IconButton
+                        aria-label={`Удалить филиал ${branch.name}`}
                         size="small"
                         color="error"
                         onClick={(e) => {

@@ -33,7 +33,7 @@ export function BrandedLoader({ label = 'Проверяем защищённую
           testID="startup-vpn-notice"
           accessible
           accessibilityLiveRegion="polite"
-          accessibilityLabel="VPN может замедлять подключение. Если HUB загружается долго, временно отключите VPN."
+          accessibilityLabel="VPN подключён. Если HUB-IT не открывается, проверьте доступ к корпоративной сети."
           style={[
             styles.vpnNotice,
             { backgroundColor: tokens.panelSolid, borderColor: tokens.border },
@@ -41,7 +41,7 @@ export function BrandedLoader({ label = 'Проверяем защищённую
         >
           <View style={[styles.vpnIcon, { backgroundColor: tokens.accentSoft }]}>
             <MaterialCommunityIcons
-              name="shield-alert-outline"
+              name="shield-outline"
               size={22}
               color={tokens.primaryLight}
               accessibilityElementsHidden
@@ -49,8 +49,8 @@ export function BrandedLoader({ label = 'Проверяем защищённую
             />
           </View>
           <View style={styles.vpnCopy}>
-            <Text style={[styles.vpnTitle, { color: tokens.textPrimary }]}>VPN может замедлять подключение</Text>
-            <Text style={[styles.vpnBody, { color: tokens.textSecondary }]}>Если HUB загружается долго, временно отключите VPN.</Text>
+            <Text style={[styles.vpnTitle, { color: tokens.textPrimary }]}>VPN подключён</Text>
+            <Text style={[styles.vpnBody, { color: tokens.textSecondary }]}>Если HUB-IT не открывается, проверьте доступ к корпоративной сети.</Text>
           </View>
         </View>
       ) : null}

@@ -1,6 +1,8 @@
 import React, { memo, useMemo, useRef } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { ChatAttachment, ChatMessage, ChatUserSummary } from '../../api/types';
+import { ChatDeliveryStatus } from './ChatDeliveryStatus';
+import { ChatReactionButton } from './ChatReactionButton';
 import { ChatBubblePhoto } from './ChatBubblePhoto';
 import {
   ChatDocumentAttachment,
@@ -16,7 +18,7 @@ import {
   isPhotoChatAttachment,
   isStickerOnlyMessage,
   resolveChatBubbleMetaMode,
-  resolveChatPhotoMaxHeight,
+  CHAT_PHOTO_DEFAULT_ASPECT,
   resolveChatPhotoWidth,
   shouldBleedBubbleMedia,
   shouldShowSenderAvatar,
@@ -95,6 +97,7 @@ export const ChatBubble = memo(function ChatBubble({
   onConfirmAction,
   onCancelAction,
   onRetry,
+  onDiscard,
   onSenderPress,
   groupPosition = 'single',
   showSenderAvatars = false,
@@ -122,11 +125,12 @@ export const ChatBubble = memo(function ChatBubble({
   onConfirmAction?: (actionId: string) => void;
   onCancelAction?: (actionId: string) => void;
   onRetry?: () => void;
+  onDiscard?: () => void;
   groupPosition?: ChatBubbleGroupPosition;
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const reactions = message.reactions || [];
   const isDeleted = Boolean(message.is_deleted);
   const attachments = isDeleted ? [] : message.attachments || [];
@@ -174,26 +178,26 @@ export const ChatBubble = memo(function ChatBubble({
     hasTrailingBlock,
   });
   const photoWidth = resolveChatPhotoWidth(windowWidth);
-  const photoMaxHeight = resolveChatPhotoMaxHeight(windowHeight);
+  const photoMaxHeight = Math.round(photoWidth / CHAT_PHOTO_DEFAULT_ASPECT);
   const documentWidth = Math.round(Math.max(160, Math.min(280, windowWidth * 0.72)));
   const avatarVisible = shouldShowSenderAvatar({ isOwn, showSenderAvatars, groupPosition });
   const timeLabel = message.created_at
     ? new Date(message.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
     : '';
-  const showTicks = Boolean(isOwn && !message.local_status);
   const metaPlainText = buildChatMetaPlainText({
     timeLabel,
-    sending: message.local_status === 'sending',
+    sending: false,
     edited: Boolean(message.edited_at && !isDeleted),
-    showTicks,
-    read: message.delivery_status === 'read',
+    showTicks: isOwn,
+    read: true,
   });
   const meta = (
     <BubbleMeta
       timeLabel={timeLabel}
       sending={message.local_status === 'sending'}
+      failed={message.local_status === 'failed' || message.local_status === 'cancelled'}
+      own={isOwn}
       edited={Boolean(message.edited_at && !isDeleted)}
-      showTicks={showTicks}
       read={message.delivery_status === 'read'}
       tone={metaMode === 'overlay' ? 'overlay' : isOwn ? 'own' : 'other'}
     />
@@ -358,13 +362,13 @@ export const ChatBubble = memo(function ChatBubble({
         {!isDeleted && message.body_text && !stickerOnly ? (
           <ChatLinkPreviewCard text={message.body_text} isOwn={isOwn} />
         ) : null}
-        {attachments.map((attachment) => {
+        {attachments.map((attachment, attachmentIndex) => {
           const resolvedTransfer = attachmentTransfers?.[attachment.id]
             || (attachmentTransfer?.attachmentId === attachment.id ? attachmentTransfer : null);
           if (isStickerChatAttachment(attachment)) {
             return (
               <Pressable
-                key={attachment.id}
+                key={attachmentIndex}
                 onPress={(event) => {
                   event.stopPropagation();
                   onAttachmentPress?.(attachment);
@@ -385,7 +389,7 @@ export const ChatBubble = memo(function ChatBubble({
           if (isAudioChatAttachment(attachment)) {
             return (
               <ChatVoiceNote
-                key={attachment.id}
+                key={attachmentIndex}
                 attachment={attachment}
                 isOwn={isOwn}
               />
@@ -400,7 +404,7 @@ export const ChatBubble = memo(function ChatBubble({
           if (!isPhoto) {
             return (
               <ChatDocumentAttachment
-                key={attachment.id}
+                key={attachmentIndex}
                 attachment={attachment}
                 width={documentWidth}
                 transfer={resolvedTransfer}
@@ -419,7 +423,7 @@ export const ChatBubble = memo(function ChatBubble({
           }
           return (
             <Pressable
-              key={attachment.id}
+              key={attachmentIndex}
               onPress={(event) => {
                 event.stopPropagation();
                 onAttachmentPress?.(attachment);
@@ -474,6 +478,11 @@ export const ChatBubble = memo(function ChatBubble({
             </Text>
           </Pressable>
         ) : null}
+        {(message.local_status === 'failed' || message.local_status === 'cancelled') && onDiscard ? (
+          <Pressable onPress={onDiscard} style={styles.retry} accessibilityRole="button" accessibilityLabel="Убрать сообщение из очереди">
+            <Text style={styles.retryText}>Убрать из очереди</Text>
+          </Pressable>
+        ) : null}
         {actionCard?.id ? (
           <View style={styles.actionCard}>
             <Text style={styles.actionTitle}>{actionCard.preview?.title || 'Действие AI'}</Text>
@@ -520,16 +529,14 @@ export const ChatBubble = memo(function ChatBubble({
       {!isDeleted && reactions.length > 0 ? (
         <View style={styles.reactions}>
           {reactions.map((reaction) => (
-            <Pressable
+            <ChatReactionButton
               key={reaction.emoji}
-              onPress={() => onReactionPress?.(reaction.emoji)}
-              disabled={!onReactionPress}
+              onPress={onReactionPress ? () => onReactionPress(reaction.emoji) : undefined}
               style={[styles.reaction, reaction.reacted_by_me && styles.reactionOwn]}
-              accessibilityRole={onReactionPress ? 'button' : undefined}
-              accessibilityLabel={`${reaction.reacted_by_me ? 'Убрать' : 'Добавить'} реакцию ${reaction.emoji}`}
+              label={`${reaction.reacted_by_me ? 'Убрать' : 'Добавить'} реакцию ${reaction.emoji}`}
             >
               <Text style={styles.reactionText}>{reaction.emoji} {reaction.count}</Text>
-            </Pressable>
+            </ChatReactionButton>
           ))}
         </View>
       ) : null}
@@ -589,15 +596,17 @@ function AttachmentTransferOverlay({
 function BubbleMeta({
   timeLabel,
   sending,
+  failed,
+  own,
   edited,
-  showTicks,
   read,
   tone,
 }: {
   timeLabel: string;
   sending: boolean;
+  failed: boolean;
+  own: boolean;
   edited: boolean;
-  showTicks: boolean;
   read: boolean;
   tone: 'own' | 'other' | 'overlay';
 }) {
@@ -611,20 +620,9 @@ function BubbleMeta({
     : tone === 'own' ? chatTokens.bubbleOwnMetaText : chatTokens.bubbleOtherMetaText;
   return (
     <>
-      {sending ? (
-        <ActivityIndicator
-          testID="chat-message-sending-spinner"
-          size="small"
-          color={spinnerColor}
-          style={styles.metaSpinner}
-          accessibilityLabel="Сообщение отправляется"
-        />
-      ) : null}
       <Text style={[styles.meta, toneStyle]}>{timeLabel}</Text>
       {edited ? <Text style={[styles.meta, toneStyle]}> · изм.</Text> : null}
-      {showTicks ? (
-        <Text style={[styles.meta, toneStyle, read && styles.metaRead]}>{read ? ' ✓✓' : ' ✓'}</Text>
-      ) : null}
+      {own ? <ChatDeliveryStatus status={sending ? 'sending' : failed ? 'failed' : read ? 'read' : 'sent'} color={spinnerColor} /> : null}
     </>
   );
 }

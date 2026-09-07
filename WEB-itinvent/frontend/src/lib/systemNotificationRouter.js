@@ -6,6 +6,7 @@ import { createSystemNotificationEnvelope } from './systemNotificationEnvelope';
 
 export const SYSTEM_NOTIFICATION_DELIVERED_KEY = 'itinvent_system_notification_delivered_v1';
 
+const pendingNativeIds = new Set();
 const STORAGE_VERSION = 1;
 const MAXIMUM_DELIVERED_IDS = 300;
 const ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
@@ -63,16 +64,22 @@ function canShowBrowserNotification() {
 
 export function routeSystemNotification(value, { onNavigate, source } = {}) {
   const envelope = createSystemNotificationEnvelope(value);
-  if (!envelope || hasDeliveredSystemNotification(envelope.id)) return null;
+  if (!envelope || hasDeliveredSystemNotification(envelope.id) || pendingNativeIds.has(envelope.id)) return null;
 
-  if (isDesktopNotificationAvailable() && showDesktopNotification({
-    id: envelope.id,
-    title: envelope.title,
-    body: envelope.body,
-    route: envelope.route,
-  })) {
-    markSystemNotificationDelivered(envelope.id);
-    return { delivery: 'desktop', id: envelope.id };
+  if (isDesktopNotificationAvailable()) {
+    pendingNativeIds.add(envelope.id);
+    const posted = showDesktopNotification({
+      id: envelope.id,
+      title: envelope.title,
+      body: envelope.body,
+      route: envelope.route,
+      onResult: (accepted) => {
+        pendingNativeIds.delete(envelope.id);
+        if (accepted) markSystemNotificationDelivered(envelope.id);
+      },
+    });
+    if (posted) return { delivery: 'desktop', id: envelope.id };
+    pendingNativeIds.delete(envelope.id);
   }
 
   if (!canShowBrowserNotification()) return null;

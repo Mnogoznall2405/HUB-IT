@@ -4,9 +4,11 @@ import {
   getDiagnosticEventCount,
   getReleaseHealthSnapshot,
   recordDiagnosticEvent,
+  recordSnapshotFailure,
   recordReleaseHealthMetric,
   startReleaseHealthSession,
 } from './diagnostics';
+import * as SecureStore from 'expo-secure-store';
 
 jest.mock('expo-application', () => ({
   nativeApplicationVersion: '1.1.4',
@@ -93,5 +95,37 @@ describe('privacy-safe diagnostics', () => {
     );
 
     expect((await getReleaseHealthSnapshot()).counters.push_received).toBe(10);
+  });
+
+  it('keeps concurrent snapshot stages and metadata while excluding private exception content', async () => {
+    const privateValue = 'Иванов Иван, test-person@example.test, token=synthetic-secret';
+    const error = new TypeError(`Call to FileSystemFile.text: ${privateValue}`);
+    error.stack = `TypeError: ${privateValue}\n    at readSnapshot (file:///private/${privateValue}/index.js:10:22)`;
+    await Promise.all(Array.from({ length: 8 }, () => recordSnapshotFailure('address-book-shard-private-revision', 'pending-read', error, {
+      sizes: { readChars: 0, encodedChars: 500 }, files: { pending: { exists: true, size: 500 } },
+    })));
+    expect(await getDiagnosticEventCount()).toBe(8);
+    const events = JSON.parse((await SecureStore.getItemAsync('hubit_diagnostics_v1')) || '[]');
+    const report = buildDiagnosticReport(events);
+    expect(report.events[0].snapshot).toMatchObject({
+      scope: 'address-book-shard', stage: 'pending-read', errorType: 'TypeError',
+      message: 'FileSystemFile.text', stack: 'at readSnapshot (<source>:10:22)',
+      sizes: { readChars: 0, encodedChars: 500 }, files: { pending: { exists: true, size: 500 } },
+    });
+    for (const sensitive of [privateValue, 'Иванов', 'test-person', 'synthetic-secret', 'private-revision', 'file:///']) {
+      expect(JSON.stringify(report)).not.toContain(sensitive);
+    }
+  });
+
+  it('removes the ciphertext argument from native converter errors before storing or sharing', async () => {
+    const error = Object.assign(new Error("[fromCombined] Cannot convert 'SYNTHETIC_CIPHERTEXT_NOT_FOR_LOGS' to a Kotlin type. Value is a string, expected an Object"), { code: 'E_UNEXPECTED' });
+    await recordSnapshotFailure('dashboard', 'sealed-decode', error);
+    const stored = (await SecureStore.getItemAsync('hubit_diagnostics_v1')) || '[]';
+    expect(stored).not.toContain('SYNTHETIC_CIPHERTEXT_NOT_FOR_LOGS');
+    const report = buildDiagnosticReport(JSON.parse(stored));
+    expect(report.events[0].snapshot).toMatchObject({
+      errorCode: 'E_UNEXPECTED',
+      message: '[fromCombined] Cannot convert [redacted] to a Kotlin type; expected an Object (Uint8Array)',
+    });
   });
 });

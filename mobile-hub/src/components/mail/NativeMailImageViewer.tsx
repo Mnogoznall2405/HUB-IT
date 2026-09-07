@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useCallback, useMemo, useRef, type ComponentProps } from 'react';
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -14,7 +14,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { resolveNativeMailImageViewerGesture } from '../../mail/nativeMailImageViewer';
 
@@ -24,7 +24,18 @@ export type NativeMailImageViewerItem = {
   uri: string;
 };
 
-export function NativeMailImageViewer({
+export function NativeMailImageViewer(props: ComponentProps<typeof NativeMailImagePage>) {
+  const reduceMotion = useReducedMotion();
+  const visible = props.items.some((item) => item.key === props.currentKey);
+  return (
+    <Modal visible={visible} transparent animationType={reduceMotion ? 'none' : 'fade'}
+      statusBarTranslucent navigationBarTranslucent presentationStyle="overFullScreen" onRequestClose={props.onClose}>
+      {visible ? <NativeMailImagePage key={props.currentKey} {...props} /> : null}
+    </Modal>
+  );
+}
+
+function NativeMailImagePage({
   items,
   currentKey,
   loading = false,
@@ -43,8 +54,16 @@ export function NativeMailImageViewer({
 }) {
   const reduceMotion = useReducedMotion();
   const { width, height } = useWindowDimensions();
+  const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const transitioning = useRef(false);
+  const generation = useRef(0);
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
+  useLayoutEffect(() => () => {
+    generation.current += 1;
+    translateX.stopAnimation();
+    translateY.stopAnimation();
+  }, [translateX, translateY]);
   const currentIndex = currentKey ? items.findIndex((item) => item.key === currentKey) : -1;
   const current = currentIndex >= 0 ? items[currentIndex] : null;
   const canPrevious = currentIndex > 0;
@@ -57,47 +76,54 @@ export function NativeMailImageViewer({
       return;
     }
     Animated.parallel([
-      Animated.spring(translateX, { toValue: 0, useNativeDriver: true, speed: 28, bounciness: 3 }),
-      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, speed: 28, bounciness: 3 }),
+      Animated.spring(translateX, { toValue: 0, useNativeDriver: true, speed: 28, bounciness: 0 }),
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, speed: 28, bounciness: 0 }),
     ]).start();
   }, [reduceMotion, translateX, translateY]);
 
-  const changePage = useCallback((direction: 'previous' | 'next', animate = true) => {
+  const changePage = useCallback((direction: 'previous' | 'next') => {
+    if (transitioning.current) return;
     const nextIndex = direction === 'previous' ? currentIndex - 1 : currentIndex + 1;
     const next = items[nextIndex];
     if (!next) {
       settle();
       return;
     }
-    const finish = () => {
-      translateX.setValue(0);
-      translateY.setValue(0);
-      onChange(next.key);
-    };
-    if (reduceMotion || !animate) finish();
+    transitioning.current = true;
+    const transitionId = ++generation.current;
+    const finish = () => onChange(next.key);
+    if (reduceMotion) finish();
     else Animated.timing(translateX, {
       toValue: direction === 'previous' ? width : -width,
       duration: 170,
       useNativeDriver: true,
-    }).start(({ finished }) => { if (finished) finish(); else settle(); });
+    }).start(({ finished }) => {
+      if (transitionId !== generation.current) return;
+      if (finished) finish();
+      else { transitioning.current = false; settle(); }
+    });
   }, [currentIndex, items, onChange, reduceMotion, settle, translateX, translateY, width]);
 
   const dismiss = useCallback(() => {
+    if (transitioning.current) return;
+    transitioning.current = true;
+    const transitionId = ++generation.current;
     if (reduceMotion) {
-      translateY.setValue(0);
       onClose();
       return;
     }
     Animated.timing(translateY, { toValue: height, duration: 170, useNativeDriver: true })
       .start(({ finished }) => {
-        translateY.setValue(0);
+        if (transitionId !== generation.current) return;
         if (finished) onClose();
+        else { transitioning.current = false; settle(); }
       });
-  }, [height, onClose, reduceMotion, translateY]);
+  }, [height, onClose, reduceMotion, settle, translateY]);
 
   const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_event, gesture) => Math.abs(gesture.dx) > 8 || Math.abs(gesture.dy) > 8,
+    onMoveShouldSetPanResponder: (_event, gesture) => !transitioning.current && (Math.abs(gesture.dx) > 8 || Math.abs(gesture.dy) > 8),
     onPanResponderMove: (_event, gesture) => {
+      if (transitioning.current) return;
       if (Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.15) {
         const edgeResistance = (gesture.dx > 0 && !canPrevious) || (gesture.dx < 0 && !canNext) ? 0.28 : 1;
         translateX.setValue(gesture.dx * edgeResistance);
@@ -122,8 +148,8 @@ export function NativeMailImageViewer({
   }), [canNext, canPrevious, changePage, dismiss, settle, translateX, translateY]);
 
   if (!current) return null;
-  const topInset = Math.max(initialWindowMetrics?.insets.top || 0, Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 47);
-  const bottomInset = Math.max(initialWindowMetrics?.insets.bottom || 0, 12);
+  const topInset = Math.max(safeInsets?.top || 0, Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 47);
+  const bottomInset = Math.max(safeInsets?.bottom || 0, 12);
   const dismissOpacity = translateY.interpolate({
     inputRange: [0, Math.max(220, height / 2)],
     outputRange: [1, 0.2],
@@ -131,15 +157,6 @@ export function NativeMailImageViewer({
   });
 
   return (
-    <Modal
-      visible
-      transparent
-      animationType={reduceMotion ? 'none' : 'fade'}
-      statusBarTranslucent
-      navigationBarTranslucent
-      presentationStyle="overFullScreen"
-      onRequestClose={onClose}
-    >
       <View testID="native-mail-image-viewer" style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}>
         <Animated.View pointerEvents="none" style={[styles.backdrop, { opacity: dismissOpacity }]} />
         <View style={styles.topBar}>
@@ -148,8 +165,8 @@ export function NativeMailImageViewer({
             <Text numberOfLines={1} style={styles.title}>{current.name || 'Изображение'}</Text>
             <Text style={styles.counter}>{currentIndex + 1} / {items.length}</Text>
           </View>
-          <IconAction icon="chevron-left" label="Предыдущее изображение" onPress={() => changePage('previous', false)} disabled={!canPrevious} />
-          <IconAction icon="chevron-right" label="Следующее изображение" onPress={() => changePage('next', false)} disabled={!canNext} />
+          <IconAction icon="chevron-left" label="Предыдущее изображение" onPress={() => changePage('previous')} disabled={!canPrevious} />
+          <IconAction icon="chevron-right" label="Следующее изображение" onPress={() => changePage('next')} disabled={!canNext} />
         </View>
         <Animated.View
           testID="native-mail-image-viewer-stage"
@@ -160,7 +177,7 @@ export function NativeMailImageViewer({
           style={[styles.stage, { transform: [{ translateX }, { translateY }], opacity: dismissOpacity }]}
           {...panResponder.panHandlers}
         >
-          {current.uri ? <Image source={{ uri: current.uri }} resizeMode="contain" style={styles.image} /> : <ActivityIndicator size="large" color="#ffffff" />}
+          {current.uri ? <Image key={current.uri} fadeDuration={0} source={{ uri: current.uri }} resizeMode="contain" style={styles.image} /> : <ActivityIndicator size="large" color="#ffffff" />}
         </Animated.View>
         <View accessibilityRole="toolbar" style={styles.bottomBar}>
           <Text style={styles.hint}>{loading ? 'Загружаю изображение…' : 'Свайп влево или вправо · вниз — закрыть'}</Text>
@@ -168,7 +185,6 @@ export function NativeMailImageViewer({
           {onShare ? <TextAction icon="share-variant-outline" label="Поделиться" onPress={onShare} disabled={loading || !current.uri} /> : null}
         </View>
       </View>
-    </Modal>
   );
 }
 

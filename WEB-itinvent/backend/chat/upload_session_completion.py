@@ -47,6 +47,22 @@ class UploadSessionCompletionMaterializer:
         finally:
             if not committed:
                 self.cleanup_prepared_files(prepared)
+            else:
+                # Keep source chunks until message persistence commits so a
+                # transient database failure can retry completion without upload.
+                session_id = _normalize_text(manifest.get("session_id"))
+                for item in list(manifest.get("files") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    file_id = _normalize_text(item.get("file_id"))
+                    if not file_id:
+                        continue
+                    try:
+                        self._part_path(session_id, file_id).unlink(missing_ok=True)
+                    except OSError:
+                        # A committed message must not become a failed response
+                        # because optional chunk cleanup failed; TTL cleanup retries.
+                        pass
 
     @staticmethod
     def cleanup_prepared_files(prepared: list[dict[str, Any]]) -> None:
@@ -114,7 +130,6 @@ class UploadSessionCompletionMaterializer:
                 media_kind = _normalize_text(file_payload.get("media_kind")).lower() or None
                 width, height = self._probe_image_dimensions(probe_bytes, mime_type)
                 moved_paths.append(final_path)
-                part_path.unlink(missing_ok=True)
 
                 # Compress video if applicable
                 if (mime_type or "").lower().startswith("video/") and media_kind != "file":

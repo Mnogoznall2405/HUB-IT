@@ -98,6 +98,7 @@ export function NativeCompanyStructureScreen() {
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('company_structure.read');
   const canWrite = hasPermission('company_structure.write');
+  const [fullPathOpen, setFullPathOpen] = useState(false);
   const [tree, setTree] = useState<CompanyStructureNode[]>([]);
   const [treeRevision, setTreeRevision] = useState(0);
   const [selectedId, setSelectedId] = useState('');
@@ -720,7 +721,7 @@ export function NativeCompanyStructureScreen() {
         ) : null}
       </View>
 
-      {!searchMode && blocks.length ? (
+      {!searchMode && selectedPath.length <= 1 && blocks.length ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.blockTabs} accessibilityRole="tablist">
           {blocks.map((block) => {
             const selected = block.id === activeBlockId;
@@ -739,13 +740,14 @@ export function NativeCompanyStructureScreen() {
         </ScrollView>
       ) : null}
 
+      {!searchMode && selectedPath.length > 2 ? <Pressable accessibilityRole="button" accessibilityLabel="Показать полный путь" accessibilityState={{ expanded: fullPathOpen }} onPress={() => setFullPathOpen((value) => !value)} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ color: tokens.primary }}>{fullPathOpen ? 'Свернуть путь' : 'Полный путь'}</Text></Pressable> : null}
       {!searchMode && selectedPath.length > 1 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.breadcrumbs} accessibilityLabel="Путь по структуре компании">
-          {selectedPath.map((node, index) => (
+          {(fullPathOpen ? selectedPath : selectedPath.slice(-2)).map((node, index, visiblePath) => (
             <View key={node.id} style={styles.breadcrumbItem}>
               {index ? <MaterialCommunityIcons name="chevron-right" size={17} color={tokens.iconMuted} /> : null}
-              <Pressable onPress={() => selectNode(node.id)} disabled={index === selectedPath.length - 1} accessibilityRole="button" accessibilityState={{ disabled: index === selectedPath.length - 1 }} style={styles.breadcrumbButton}>
-                <Text style={[styles.breadcrumbText, { color: index === selectedPath.length - 1 ? tokens.textPrimary : tokens.primary }]}>{companyNodeTitle(node)}</Text>
+              <Pressable onPress={() => selectNode(node.id)} disabled={index === visiblePath.length - 1} accessibilityRole="button" accessibilityState={{ disabled: index === visiblePath.length - 1 }} style={styles.breadcrumbButton}>
+                <Text style={[styles.breadcrumbText, { color: index === visiblePath.length - 1 ? tokens.textPrimary : tokens.primary }]}>{companyNodeTitle(node)}</Text>
               </Pressable>
             </View>
           ))}

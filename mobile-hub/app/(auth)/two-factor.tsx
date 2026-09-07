@@ -17,6 +17,7 @@ export default function TwoFactorScreen() {
   const [useBackup, setUseBackup] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [expired, setExpired] = useState(false);
   const verificationInProgressRef = useRef(false);
 
   useEffect(() => {
@@ -26,19 +27,29 @@ export default function TwoFactorScreen() {
   }, [loginChallengeId]);
 
   const onSubmit = async () => {
+    if (verificationInProgressRef.current || expired) return;
+    const normalizedCode = useBackup ? code.trim() : code.replace(/\s/g, '');
     if (!code.trim()) {
       setError(useBackup ? 'Введите резервный код' : 'Введите код из приложения');
+      return;
+    }
+    if (!useBackup && !/^\d{6}$/.test(normalizedCode)) {
+      setError('Введите шестизначный код из приложения.');
       return;
     }
     setError('');
     setSubmitting(true);
     verificationInProgressRef.current = true;
     try {
-      await verifyTwoFactor(code.trim(), useBackup);
+      await verifyTwoFactor(normalizedCode, useBackup);
       router.replace('/(auth)/biometric-opt-in');
     } catch (e: unknown) {
       verificationInProgressRef.current = false;
-      setError(formatApiError(e, 'Неверный код'));
+      const message = formatApiError(e, 'Не удалось подтвердить код');
+      const challengeExpired = message === 'Login confirmation session expired. Sign in again'
+        || message === 'Сессия подтверждения истекла. Войдите снова';
+      setExpired(challengeExpired);
+      setError(challengeExpired ? 'Время подтверждения истекло. Начните вход заново.' : message);
     } finally {
       setSubmitting(false);
     }
@@ -48,10 +59,16 @@ export default function TwoFactorScreen() {
     <HubScreen scroll keyboardAvoiding>
       <HubCard>
         <Text style={styles.title} accessibilityRole="header">Двухфакторная аутентификация</Text>
+        <Text style={styles.hint}>
+          {useBackup
+            ? 'Введите один из резервных кодов, сохранённых при настройке 2FA. Каждый код работает один раз.'
+            : 'Введите шесть цифр из приложения-аутентификатора.'}
+        </Text>
         <HubTextField
           label={useBackup ? 'Резервный код' : 'Код из приложения'}
           value={code}
-          onChangeText={setCode}
+          onChangeText={(value) => setCode(useBackup ? value : value.replace(/\s/g, ''))}
+          editable={!submitting && !expired}
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType={useBackup ? 'default' : 'number-pad'}
@@ -63,18 +80,22 @@ export default function TwoFactorScreen() {
         />
         <HubButton
           mode="text"
-          onPress={() => setUseBackup((v) => !v)}
+          disabled={submitting || expired}
+          onPress={() => { setUseBackup((v) => !v); setCode(''); setError(''); }}
           accessibilityHint="Меняет способ подтверждения, введённый код не отправляется"
         >
-          {useBackup ? 'Использовать TOTP' : 'Использовать резервный код'}
+          {useBackup ? 'Использовать код приложения' : 'Использовать резервный код'}
         </HubButton>
         {error ? (
           <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             {error}
           </Text>
         ) : null}
-        <HubButton mode="contained" onPress={onSubmit} loading={submitting} disabled={submitting}>
+        <HubButton mode="contained" onPress={onSubmit} loading={submitting} disabled={submitting || expired}>
           Подтвердить
+        </HubButton>
+        <HubButton mode="text" disabled={submitting} onPress={() => router.replace('/(auth)/login')}>
+          Войти заново
         </HubButton>
       </HubCard>
     </HubScreen>
@@ -83,6 +104,7 @@ export default function TwoFactorScreen() {
 
 const createStyles = (tokens: FluentTokens) => StyleSheet.create({
   title: { fontSize: 20, fontWeight: '600', marginBottom: 12, color: tokens.textPrimary },
+  hint: { color: tokens.textSecondary, fontSize: 14, lineHeight: 21, marginBottom: 12 },
   field: { marginBottom: 12 },
   error: { color: tokens.error, marginBottom: 8 },
 });

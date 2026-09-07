@@ -3,6 +3,7 @@ import { File, Paths } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
+import { makeSnapshotDiagnostic, normalizeSnapshotDiagnostic, type SnapshotDiagnostic, type SnapshotDiagnosticMetrics } from './snapshotDiagnostic';
 import {
   getAndroidProcessHealthSnapshot,
   normalizeAndroidProcessHealth,
@@ -49,11 +50,13 @@ export type ReleaseHealthSnapshot = {
 export type DiagnosticCode =
   | 'ui_render_error'
   | 'native_file_error'
+  | 'native_snapshot_error'
   | 'notification_action_error';
 
 export type DiagnosticEvent = {
   code: DiagnosticCode;
   at: string;
+  snapshot?: SnapshotDiagnostic;
 };
 
 export type DiagnosticReport = {
@@ -73,6 +76,7 @@ export type DiagnosticReport = {
 
 let releaseHealthMutation = Promise.resolve();
 let sessionStartedInProcess = false;
+let diagnosticMutation = Promise.resolve();
 
 function emptyReleaseHealthCounters(): ReleaseHealthCounters {
   return {
@@ -191,12 +195,17 @@ function normalizeEvents(value: unknown): DiagnosticEvent[] {
   const allowed = new Set<DiagnosticCode>([
     'ui_render_error',
     'native_file_error',
+    'native_snapshot_error',
     'notification_action_error',
   ]);
   return value
     .map((raw) => raw as Partial<DiagnosticEvent>)
     .filter((item) => allowed.has(item.code as DiagnosticCode) && !Number.isNaN(new Date(String(item.at || '')).getTime()))
-    .map((item) => ({ code: item.code as DiagnosticCode, at: String(item.at) }))
+    .map((item) => ({
+      code: item.code as DiagnosticCode, at: String(item.at),
+      ...(item.code === 'native_snapshot_error' && item.snapshot
+        ? { snapshot: normalizeSnapshotDiagnostic(item.snapshot) } : {}),
+    }))
     .slice(-MAX_EVENTS);
 }
 
@@ -209,17 +218,33 @@ async function readEvents(): Promise<DiagnosticEvent[]> {
   }
 }
 
-export async function recordDiagnosticEvent(code: DiagnosticCode): Promise<void> {
-  const events = await readEvents();
-  events.push({ code, at: new Date().toISOString() });
-  await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(events.slice(-MAX_EVENTS))).catch(() => undefined);
+export function recordDiagnosticEvent(code: DiagnosticCode, snapshot?: SnapshotDiagnostic): Promise<void> {
+  diagnosticMutation = diagnosticMutation.catch(() => undefined).then(async () => {
+    const events = await readEvents();
+    events.push({ code, at: new Date().toISOString(), ...(snapshot ? { snapshot } : {}) });
+    await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(normalizeEvents(events)));
+  }).catch(() => undefined);
+  return diagnosticMutation;
+}
+
+export function recordSnapshotFailure(
+  scope: string, stage: string, error: unknown, metrics?: Partial<SnapshotDiagnosticMetrics>,
+): Promise<void> {
+  // Diagnostics must never cause a cache failure, including malformed native errors.
+  try {
+    return recordDiagnosticEvent('native_snapshot_error', makeSnapshotDiagnostic(scope, stage, error, metrics));
+  } catch {
+    return Promise.resolve();
+  }
 }
 
 export async function getDiagnosticEventCount(): Promise<number> {
+  await diagnosticMutation;
   return (await readEvents()).length;
 }
 
 export async function clearDiagnosticEvents(): Promise<void> {
+  await diagnosticMutation;
   await releaseHealthMutation.catch(() => undefined);
   await Promise.all([
     SecureStore.deleteItemAsync(STORAGE_KEY),
@@ -250,6 +275,7 @@ export function buildDiagnosticReport(
 }
 
 export async function shareDiagnosticReport(): Promise<void> {
+  await diagnosticMutation;
   if (!(await Sharing.isAvailableAsync())) throw new Error('Системное меню «Поделиться» недоступно');
   const [events, releaseHealth, androidProcessHealth] = await Promise.all([
     readEvents(),

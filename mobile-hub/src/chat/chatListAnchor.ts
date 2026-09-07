@@ -12,8 +12,8 @@ export function isNearBottomOffset(offsetY: number): boolean {
   return Number(offsetY) < CHAT_NEAR_BOTTOM_OFFSET;
 }
 
-export function shouldUseMaintainVisibleContentPosition(loadingOlder: boolean): boolean {
-  return Boolean(loadingOlder);
+export function shouldUseMaintainVisibleContentPosition(loadingOlder: boolean, nearBottom = true): boolean {
+  return Boolean(loadingOlder) || !nearBottom;
 }
 
 export function shouldRequestBottomAnchor(

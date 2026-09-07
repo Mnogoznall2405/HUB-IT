@@ -324,6 +324,10 @@ function MainLayout({
   const topBannerRef = useRef(null);
   const appBarRef = useRef(null);
   const [topBannerOffset, setTopBannerOffset] = useState(0);
+  useEffect(() => {
+    document.documentElement.style.setProperty('--hubit-global-banner-offset', `${topBannerOffset}px`);
+    return () => document.documentElement.style.removeProperty('--hubit-global-banner-offset');
+  }, [topBannerOffset]);
   const [appBarHeight, setAppBarHeight] = useState(0);
   const notificationsOpenRef = useRef(false);
   const pendingNavigationTimerRef = useRef(null);
@@ -425,7 +429,7 @@ function MainLayout({
     () => (
       Array.isArray(mailNotifications)
         ? mailNotifications.reduce(
-            (sum, item) => sum + (!Boolean(item?.is_read) ? 1 : 0),
+            (sum, item) => sum + (!item?.is_read ? 1 : 0),
             0,
           )
         : 0
@@ -1460,7 +1464,7 @@ useEffect(() => {
       setUnreadCounts(nextCounts);
     }
 
-    if (Boolean(detail?.nextIsRead)) {
+    if (detail?.nextIsRead) {
       const targetId = String(detail?.targetId || '').trim();
       const mode = String(detail?.mode || 'messages').trim();
       if (targetId) {
@@ -1508,7 +1512,7 @@ useEffect(() => {
             limit: 20,
           }).then((data) => {
             nextMailItems = (Array.isArray(data?.items) ? data.items : [])
-              .filter((item) => !Boolean(item?.is_read))
+              .filter((item) => !item?.is_read)
               .sort((left, right) => String(right?.received_at || '').localeCompare(String(left?.received_at || '')));
           }),
         );
@@ -1984,7 +1988,7 @@ useEffect(() => {
     const mailboxId = String(item?.mailbox_id || '').trim();
     if (!messageId) return;
     try {
-      if (!Boolean(item?.is_read)) {
+      if (!item?.is_read) {
         await mailAPI.markAsRead(messageId, mailboxId);
         window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
         await Promise.all([

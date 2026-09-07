@@ -1,6 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   archiveFeedPost,
@@ -241,6 +242,22 @@ export function NativeFeedEditorScreen() {
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const createRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
 
+  const formFingerprint = JSON.stringify([title, preview, body, priority, requiresAck, isPinned,
+    commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate,
+    audienceScope, audienceRoles, audienceUserIds, publishedFrom, expiresAt, pinnedUntil,
+    pollEnabled, pollQuestion, pollOptions, pollAllowsMultiple, pollAnonymous, pollClosesAt,
+    existingAttachments.map((file) => file.id), newFiles, attachmentOrder, coverKey]);
+  const baseline = useRef<{ postId: string; fingerprint: string } | null>(null);
+  useLayoutEffect(() => {
+    if (!loading && (!postId || source?.id === postId)
+      && (!baseline.current || baseline.current.postId !== postId)) {
+      baseline.current = { postId, fingerprint: formFingerprint };
+    }
+  }, [formFingerprint, loading, postId, source]);
+  const dirty = Boolean(baseline.current?.postId === postId
+    && baseline.current.fingerprint !== formFingerprint);
+  const { requestLeave, leaveSaved } = useUnsavedFormGuard(canEdit && dirty, canEdit && (busy || attachmentBusy || transformingBody));
+
   const pollLocked = Boolean(source?.poll && Number(source.poll.total_votes || 0) > 0);
   const debouncedRecipientQuery = useDebouncedValue(recipientQuery, RECIPIENT_SEARCH_DELAY_MS);
   const selectedRecipientIdsKey = audienceScope === 'users' ? audienceUserIds.join(',') : '';
@@ -276,9 +293,11 @@ export function NativeFeedEditorScreen() {
   }, [attachmentOrder, existingAttachments, newFiles]);
 
   const goBack = useCallback(() => {
-    if (router.canGoBack()) router.back();
-    else goBackOrReplace('/(shell)/feed');
-  }, []);
+    requestLeave(() => {
+      if (router.canGoBack()) router.back();
+      else goBackOrReplace('/(shell)/feed');
+    });
+  }, [requestLeave]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -605,8 +624,8 @@ export function NativeFeedEditorScreen() {
   }, [attachmentBusy, postId]);
 
   const openSaved = useCallback((post: FeedPost) => {
-    router.replace({ pathname: '/(shell)/feed/[postId]', params: { postId: post.id } } as never);
-  }, []);
+    leaveSaved(() => router.replace({ pathname: '/(shell)/feed/[postId]', params: { postId: post.id } } as never));
+  }, [leaveSaved]);
 
   const save = useCallback(async (mode: 'draft' | 'published') => {
     if (busy || offlineMode) return;

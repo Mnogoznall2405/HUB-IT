@@ -87,7 +87,9 @@ export function NativeGroupsAccessScreen() {
     const controller = new AbortController();
     statusAbortRef.current = controller;
     setStatusError('');
-    void getGroupsAccessStatus({ signal: controller.signal }).then(setStatus).catch((cause) => {
+    void getGroupsAccessStatus({ signal: controller.signal }).then((result) => {
+      if (!controller.signal.aborted) setStatus(result);
+    }).catch((cause) => {
       if (!controller.signal.aborted) setStatusError(formatApiError(cause, 'Не удалось получить состояние снимка AD.'));
     });
     return () => controller.abort();
@@ -216,25 +218,7 @@ export function NativeGroupsAccessScreen() {
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Автономный режим: снимок AD не сохраняется на устройстве.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
       {statusError ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{statusError}</Text> : null}
-      <View style={[styles.boundaryBanner, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="shield-check-outline" size={23} color={tokens.primary} />
-        <View style={styles.flex}>
-          <Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Безопасный просмотр снимка AD</Text>
-          <Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Доступны постраничный поиск папок и уровни доступа. Сотрудники, состав групп, Excel и синхронизация пока не поддерживаются на мобильном устройстве.</Text>
-        </View>
-      </View>
-      <View style={[styles.summary, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
-        <View style={styles.summaryCell}><Text style={[styles.summaryValue, { color: tokens.textPrimary }]}>{status?.summary.group_count ?? '—'}</Text><Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>групп</Text></View>
-        <View style={[styles.summaryDivider, { backgroundColor: tokens.borderSoft }]} />
-        <View style={styles.summaryCell}><Text style={[styles.summaryValue, { color: tokens.textPrimary }]}>{status?.summary.user_count ?? '—'}</Text><Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>сотрудников</Text></View>
-        <View style={[styles.summaryDivider, { backgroundColor: tokens.borderSoft }]} />
-        <View style={styles.summaryCell}><Text numberOfLines={1} style={[styles.summaryDate, { color: tokens.textPrimary }]}>{formatDateTime(status?.last_sync_at || '')}</Text><Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>снимок AD</Text></View>
-      </View>
       {status?.error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Последняя синхронизация: {status.error}</Text> : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-        <FilterChip label="Все филиалы" selected={!branch} onPress={() => setBranch('')} tokens={tokens} />
-        {branches.map((item) => <FilterChip key={item} label={item} selected={branch === item} onPress={() => setBranch(item)} tokens={tokens} />)}
-      </ScrollView>
       <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
         <MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} />
         <TextInput
@@ -250,6 +234,32 @@ export function NativeGroupsAccessScreen() {
         />
         {queryDraft ? <Pressable onPress={() => { setQueryDraft(''); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} /></Pressable> : null}
       </View>
+      <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>Снимок AD: {formatDateTime(status?.last_sync_at || '')}</Text>
+      <AccountSectionCard tokens={tokens} title={`Филиал: ${branch || 'все'}`} collapsible>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+        <FilterChip label="Все филиалы" selected={!branch} onPress={() => setBranch('')} tokens={tokens} />
+        {branches.map((item) => <FilterChip key={item} label={item} selected={branch === item} onPress={() => setBranch(item)} tokens={tokens} />)}
+      </ScrollView>
+      </AccountSectionCard>
+      <AccountSectionCard tokens={tokens} title="О данных доступа" collapsible>
+      <View style={[styles.boundaryBanner, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+        <MaterialCommunityIcons name="shield-check-outline" size={23} color={tokens.primary} />
+        <View style={styles.flex}>
+          <Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Безопасный просмотр снимка AD</Text>
+          <Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Доступны постраничный поиск папок и уровни доступа. Сотрудники, состав групп, Excel и синхронизация пока не поддерживаются на мобильном устройстве.</Text>
+        </View>
+      </View>
+      <View style={[styles.summary, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
+        <View style={styles.summaryCounts}>
+          <View style={styles.summaryCell}><Text style={[styles.summaryValue, { color: tokens.textPrimary }]}>{status?.summary.group_count ?? '—'}</Text><Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>групп</Text></View>
+          <View style={styles.summaryCell}><Text style={[styles.summaryValue, { color: tokens.textPrimary }]}>{status?.summary.user_count ?? '—'}</Text><Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>сотрудников</Text></View>
+        </View>
+        <View style={[styles.summaryTimestamp, { borderTopColor: tokens.borderSoft }]}>
+          <Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>Обновление снимка AD</Text>
+          <Text selectable style={[styles.summaryDate, { color: tokens.textPrimary }]}>{formatDateTime(status?.last_sync_at || '')}</Text>
+        </View>
+      </View>
+      </AccountSectionCard>
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {total}</Text>
       </View>
@@ -286,12 +296,13 @@ const styles = StyleSheet.create({
   boundaryBanner: { minHeight: 82, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   boundaryTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
   boundaryText: { marginTop: 2, fontSize: 11, lineHeight: 16 },
-  summary: { minHeight: 78, borderWidth: 1, borderRadius: 16, padding: 10, flexDirection: 'row', alignItems: 'stretch' },
-  summaryCell: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center' },
-  summaryDivider: { width: 1, marginVertical: 5 },
+  summary: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 12 },
+  summaryCounts: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  summaryTimestamp: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 12, gap: 4 },
+  summaryCell: { flexGrow: 1, flexBasis: 120, minWidth: 0, alignItems: 'center', justifyContent: 'center' },
   summaryValue: { fontSize: 18, lineHeight: 23, fontWeight: '900' },
-  summaryDate: { maxWidth: '100%', fontSize: 10, lineHeight: 14, fontWeight: '800', textAlign: 'center' },
-  summaryLabel: { marginTop: 2, fontSize: 10, lineHeight: 14, textAlign: 'center' },
+  summaryDate: { fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  summaryLabel: { fontSize: 13, lineHeight: 19 },
   filters: { gap: 7 },
   chip: { minHeight: 42, borderRadius: 21, borderWidth: 1, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
   chipText: { fontSize: 12, fontWeight: '800' },

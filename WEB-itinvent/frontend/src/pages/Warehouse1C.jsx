@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useRequestGuard from '../lib/useRequestGuard';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -1008,8 +1009,11 @@ function Warehouse1C() {
     balNomenclatureValue || balWarehouseValue || balTextQuery.trim(),
   );
 
+  const beginBalances = useRequestGuard();
+  const beginMovements = useRequestGuard();
   const handleSearchBalances = useCallback(async () => {
     if (!canSearchBalances) return;
+    const isCurrent = beginBalances();
     setBalancesLoading(true);
     setBalancesError('');
     setBalancesSearched(true);
@@ -1020,20 +1024,23 @@ function Warehouse1C() {
         warehouseRef: balWarehouseValue?.ref || '',
         q: balTextQuery.trim(),
       });
+      if (!isCurrent()) return;
       const response = normalizeWarehouse1cListResponse(data);
       setBalances(sortBalancesByNomenclature(response.items));
       setBalancesMeta(response.meta);
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('Failed to load 1C balances:', err);
       setBalancesError(resolveErrorMessage(err, 'Не удалось получить остатки из 1С.'));
       setBalances([]);
       setBalancesMeta({});
     } finally {
-      setBalancesLoading(false);
+      if (isCurrent()) setBalancesLoading(false);
     }
-  }, [balNomenclatureValue, balWarehouseValue, balTextQuery, canSearchBalances]);
+  }, [beginBalances, balNomenclatureValue, balWarehouseValue, balTextQuery, canSearchBalances]);
 
   const runMovementsSearch = useCallback(async (overrides = {}) => {
+    const isCurrent = beginMovements();
     const nomenclature = 'nomenclature' in overrides ? overrides.nomenclature : movNomenclatureValue;
     const warehouse = 'warehouse' in overrides ? overrides.warehouse : movWarehouseValue;
     const series = 'series' in overrides ? overrides.series : movSeriesFilter;
@@ -1057,18 +1064,20 @@ function Warehouse1C() {
         dateFrom: from || '',
         dateTo: to || '',
       });
+      if (!isCurrent()) return;
       const response = normalizeWarehouse1cListResponse(data);
       setMovements(response.items);
       setMovementsMeta(response.meta);
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('Failed to load 1C movements:', err);
       setMovementsError(resolveErrorMessage(err, 'Не удалось получить ведомость движений из 1С.'));
       setMovements([]);
       setMovementsMeta({});
     } finally {
-      setMovementsLoading(false);
+      if (isCurrent()) setMovementsLoading(false);
     }
-  }, [movNomenclatureValue, movWarehouseValue, movSeriesFilter, dateFrom, dateTo]);
+  }, [beginMovements, movNomenclatureValue, movWarehouseValue, movSeriesFilter, dateFrom, dateTo]);
 
   const handleSearchMovementsClick = useCallback(() => {
     void runMovementsSearch();
@@ -1144,6 +1153,7 @@ function Warehouse1C() {
     setDeepLinkRequest(null);
 
     if (request.type === 'balances' && (request.nomenclature || request.warehouse)) {
+      const isCurrent = beginBalances();
       setBalancesLoading(true);
       setBalancesError('');
       setBalancesSearched(true);
@@ -1153,18 +1163,20 @@ function Warehouse1C() {
         warehouseRef: request.warehouse?.ref || '',
       })
         .then((data) => {
+          if (!isCurrent()) return;
           const response = normalizeWarehouse1cListResponse(data);
           setBalances(sortBalancesByNomenclature(response.items));
           setBalancesMeta(response.meta);
         })
         .catch((err) => {
+          if (!isCurrent()) return;
           console.error('Failed to load 1C balances from deep link:', err);
           setBalancesError(resolveErrorMessage(err, 'Не удалось получить остатки из 1С.'));
           setBalances([]);
           setBalancesMeta({});
         })
         .finally(() => {
-          setBalancesLoading(false);
+          if (isCurrent()) setBalancesLoading(false);
         });
       return;
     }
@@ -1176,7 +1188,7 @@ function Warehouse1C() {
         series: request.series || null,
       });
     }
-  }, [deepLinkRequest, runMovementsSearch]);
+  }, [beginBalances, deepLinkRequest, runMovementsSearch]);
 
   useEffect(() => {
     // Avoid wiping deep-link query params before they are applied to state.
@@ -1279,7 +1291,6 @@ function Warehouse1C() {
       dateFrom: UNBOUNDED_MOVEMENT_PERIOD.dateFrom,
       dateTo: UNBOUNDED_MOVEMENT_PERIOD.dateTo,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movNomenclatureField, movWarehouseField, runMovementsSearch]);
 
   const handleOpenHubMatch = useCallback((row) => {
@@ -1366,13 +1377,15 @@ function Warehouse1C() {
     navigate(returnContext.returnTo || '/database', { state: sharedState });
   }, [navigate, returnContext]);
 
+  const beginMovementDetail = useRequestGuard();
   const handleCloseMovementDetail = useCallback(() => {
+    beginMovementDetail();
     setMovementDetailOpen(false);
     setMovementDetailRow(null);
     setMovementDetailData(null);
     setMovementDetailError('');
     setMovementDetailLoading(false);
-  }, []);
+  }, [beginMovementDetail]);
 
   const revokeFilePreviewUrl = useCallback(() => {
     if (filePreviewUrlRef.current && typeof window !== 'undefined' && window.URL?.revokeObjectURL) {
@@ -1394,6 +1407,7 @@ function Warehouse1C() {
 
   const handleOpenMovementDetail = useCallback((row) => {
     if (!canOpenMovementDetail(row)) return;
+    const isCurrent = beginMovementDetail();
 
     setMovementDetailRow(row);
     setMovementDetailData(null);
@@ -1405,16 +1419,18 @@ function Warehouse1C() {
 
     warehouse1cAPI.getMovementDetail(row.registrar_ref)
       .then((data) => {
+        if (!isCurrent()) return;
         setMovementDetailData(data);
       })
       .catch((err) => {
+        if (!isCurrent()) return;
         console.error('Failed to load movement detail:', err);
         setMovementDetailError(resolveErrorMessage(err, 'Не удалось загрузить карточку документа.'));
       })
       .finally(() => {
-        setMovementDetailLoading(false);
+        if (isCurrent()) setMovementDetailLoading(false);
       });
-  }, []);
+  }, [beginMovementDetail]);
 
   const handleDownloadMovementFile = useCallback(async (registrarRef, file) => {
     const fileRef = String(file?.ref || '').trim();

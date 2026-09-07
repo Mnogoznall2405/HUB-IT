@@ -128,6 +128,7 @@ export type MailConversationPage = {
 };
 
 export type MailConversationDetail = Omit<MailConversationPreview, 'has_attachments' | 'attachments_count' | 'preview'> & {
+  conversation_complete?: boolean;
   items: MailMessageDetail[];
 };
 

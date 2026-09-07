@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useRequestGuard from '../../../lib/useRequestGuard';
 import { useMediaQuery } from '@mui/material';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { authAPI, settingsAPI } from '../../../api/client';
@@ -109,6 +110,8 @@ export function useAccountSectionData(area = 'settings') {
   const [databases, setDatabases] = useState([]);
   const [databasesLoading, setDatabasesLoading] = useState(false);
   const [databasesLoaded, setDatabasesLoaded] = useState(false);
+  const [databasesAttempted, setDatabasesAttempted] = useState(false);
+  const [databasesError, setDatabasesError] = useState('');
   const [users, setUsers] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
@@ -175,26 +178,31 @@ export function useAccountSectionData(area = 'settings') {
   );
 
   const loadDatabases = useCallback(async () => {
+    setDatabasesAttempted(true);
     setDatabasesLoading(true);
+    setDatabasesError('');
     try {
       const data = await databaseAPI.getAvailableDatabases();
       setDatabases(Array.isArray(data) ? data : []);
       setDatabasesLoaded(true);
-      setBlockingError('');
     } catch (error) {
       console.error(error);
       setDatabasesLoaded(false);
-      setBlockingError('Не удалось загрузить список баз данных.');
+      setDatabasesError('Не удалось загрузить список баз данных.');
     } finally {
       setDatabasesLoading(false);
     }
   }, []);
 
+  const beginUsers = useRequestGuard(JSON.stringify([user?.id, canManageUsers]));
+  const beginSessions = useRequestGuard(JSON.stringify([user?.id, canManageSessions]));
   const loadUsers = useCallback(async () => {
+    const isCurrent = beginUsers();
     if (!canManageUsers) return;
     setUsersLoading(true);
     try {
       const data = await authAPI.getUsers();
+      if (!isCurrent()) return;
       const baseUsers = (Array.isArray(data) ? data : []).map((item) => ({
         ...item,
         use_custom_permissions: Boolean(item?.use_custom_permissions),
@@ -209,30 +217,35 @@ export function useAccountSectionData(area = 'settings') {
           console.error(delegateError);
         }
       }
+      if (!isCurrent()) return;
       setUsers(usersWithDelegates);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить пользователей.');
     } finally {
-      setUsersLoading(false);
+      if (isCurrent()) setUsersLoading(false);
     }
-  }, [canManageUsers]);
+  }, [beginUsers, canManageUsers]);
 
   const loadSessions = useCallback(async () => {
+    const isCurrent = beginSessions();
     if (!canManageSessions) return;
     setSessionsLoading(true);
     try {
       const data = await authAPI.getSessions();
+      if (!isCurrent()) return;
       setSessions(Array.isArray(data) ? data : []);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить сессии.');
     } finally {
-      setSessionsLoading(false);
+      if (isCurrent()) setSessionsLoading(false);
     }
-  }, [canManageSessions]);
+  }, [beginSessions, canManageSessions]);
 
   const loadEnv = useCallback(async () => {
     if (!isAdmin) return;
@@ -331,10 +344,10 @@ export function useAccountSectionData(area = 'settings') {
 
   useEffect(() => {
     const needsDatabases = tab === 'profile' || (tab === 'users' && canManageUsers) || (tab === 'ai-bots' && canManageAiBots);
-    if (user && needsDatabases && !databasesLoaded && !databasesLoading) {
+    if (user && needsDatabases && !databasesAttempted && !databasesLoaded && !databasesLoading) {
       loadDatabases();
     }
-  }, [canManageAiBots, canManageUsers, databasesLoaded, databasesLoading, loadDatabases, tab, user]);
+  }, [canManageAiBots, canManageUsers, databasesAttempted, databasesLoaded, databasesLoading, loadDatabases, tab, user]);
 
   useEffect(() => {
     setBlockingError('');
@@ -932,6 +945,9 @@ export function useAccountSectionData(area = 'settings') {
     resolvedMobileNavigationItems,
     handleSavePreferences,
     dbOptions,
+    databasesError,
+    databasesLoading,
+    retryDatabases: loadDatabases,
     users,
     sessions,
     usersLoading,

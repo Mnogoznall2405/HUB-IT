@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
 export function NativeMailQuickReplyBar({
@@ -11,9 +11,16 @@ export function NativeMailQuickReplyBar({
   disabled,
   placeholder,
   status = '',
+  error = '',
   tokens,
   onChangeText,
   onSend,
+  onExpand,
+  pending = false,
+  onResolve,
+  onReview,
+  restoring = false,
+  onRetryRestore,
 }: {
   testID: string;
   inputTestID: string;
@@ -23,9 +30,16 @@ export function NativeMailQuickReplyBar({
   disabled: boolean;
   placeholder: string;
   status?: string;
+  error?: string;
   tokens: FluentTokens;
   onChangeText: (value: string) => void;
   onSend: () => void;
+  onExpand?: () => void;
+  pending?: boolean;
+  onResolve?: (wasSent: boolean) => void;
+  onReview?: () => void;
+  restoring?: boolean;
+  onRetryRestore?: () => void;
 }) {
   const cannotSend = busy || disabled || !value.trim();
   return (
@@ -33,16 +47,30 @@ export function NativeMailQuickReplyBar({
       testID={testID}
       style={[styles.bar, { backgroundColor: tokens.headerBandBg, borderTopColor: tokens.borderSoft }]}
     >
-      {status ? (
+      {restoring ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Восстановление черновика…</Text> : null}
+      {onRetryRestore ? <Pressable accessibilityRole="button" onPress={onRetryRestore} style={styles.expand}><Text style={{ color: tokens.primary }}>Повторить восстановление</Text></Pressable> : null}
+      {pending && !busy ? <View style={{ gap: 4 }}>
+        <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Результат отправки не подтверждён. Проверьте «Отправленные» перед повтором.</Text>
+        <View style={styles.actions}>
+          {onReview ? <Pressable accessibilityRole="button" onPress={onReview} style={styles.expand}><Text style={{ color: tokens.primary }}>Проверить отправленные</Text></Pressable> : null}
+          {onResolve ? <Pressable accessibilityRole="button" onPress={() => Alert.alert('Письмо найдено в отправленных?', 'Если письмо ещё доставляется, новый ответ может создать дубликат. Завершайте проверку только после проверки папки «Отправленные».', [
+            { text: 'Вернуться', style: 'cancel' },
+            { text: 'Да, ответ отправлен', onPress: () => onResolve(true) },
+            { text: 'Нет, редактировать ответ', onPress: () => onResolve(false) },
+          ])} style={styles.expand}><Text style={{ color: tokens.primary }}>Завершить проверку</Text></Pressable> : null}
+        </View>
+      </View> : null}
+      {error || status ? (
         <Text
           accessibilityLiveRegion="polite"
+          accessibilityRole={error ? 'alert' : undefined}
           pointerEvents="none"
           style={[
             styles.status,
-            { color: tokens.success, backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft },
+            { color: error ? tokens.error : tokens.success, backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft },
           ]}
         >
-          {status}
+          {error || status}
         </Text>
       ) : null}
       <View style={[styles.inputShell, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
@@ -51,12 +79,10 @@ export function NativeMailQuickReplyBar({
           testID={inputTestID}
           value={value}
           onChangeText={onChangeText}
-          onSubmitEditing={() => {
-            if (!cannotSend) onSend();
-          }}
-          editable={!busy && !disabled}
-          multiline={false}
-          returnKeyType="send"
+          editable={!busy && !disabled && !pending}
+          multiline
+          submitBehavior="newline"
+          returnKeyType="default"
           autoCapitalize="sentences"
           placeholder={placeholder}
           placeholderTextColor={tokens.textTertiary}
@@ -64,6 +90,15 @@ export function NativeMailQuickReplyBar({
           style={[styles.input, { color: tokens.textPrimary }]}
         />
       </View>
+      <View style={styles.actions}>
+      {onExpand ? <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Открыть полный редактор ответа"
+        disabled={busy || disabled || pending}
+        accessibilityState={{ disabled: busy || disabled || pending }}
+        onPress={onExpand}
+        style={({ pressed }) => [styles.expand, { opacity: busy || disabled || pending ? 0.5 : pressed ? 0.8 : 1 }]}
+      ><MaterialCommunityIcons name="arrow-expand" size={20} color={tokens.primary} /><Text style={{ color: tokens.primary, fontSize: 14 }}>Полный редактор</Text></Pressable> : null}
       <Pressable
         testID={sendTestID}
         accessibilityRole="button"
@@ -83,6 +118,7 @@ export function NativeMailQuickReplyBar({
         {busy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="send" size={18} color="#fff" />}
         <Text style={styles.sendText}>{busy ? 'Отправка…' : 'Отправить'}</Text>
       </Pressable>
+      </View>
     </View>
   );
 }
@@ -95,14 +131,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
   },
   inputShell: {
-    flex: 1,
     minWidth: 0,
-    minHeight: 42,
+    minHeight: 48,
     borderWidth: 1,
     borderRadius: 10,
     paddingHorizontal: 11,
@@ -113,14 +146,17 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     minWidth: 0,
-    height: 40,
+    minHeight: 40,
+    maxHeight: 120,
     paddingHorizontal: 0,
-    paddingVertical: 0,
-    fontSize: 14,
-    lineHeight: 20,
+    paddingVertical: 8,
+    fontSize: 16,
+    lineHeight: 22,
   },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+  expand: { minHeight: 44, paddingHorizontal: 8, marginRight: 'auto', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' },
   send: {
-    minHeight: 42,
+    minHeight: 44,
     borderRadius: 10,
     paddingHorizontal: 13,
     flexDirection: 'row',
@@ -130,10 +166,7 @@ const styles = StyleSheet.create({
   },
   sendText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   status: {
-    position: 'absolute',
-    right: 12,
-    bottom: '100%',
-    marginBottom: 6,
+    alignSelf: 'stretch',
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 10,
     paddingHorizontal: 10,

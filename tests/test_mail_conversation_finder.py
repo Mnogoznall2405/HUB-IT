@@ -123,3 +123,41 @@ def test_conversation_finder_rejects_missing_conversation():
 
     with pytest.raises(MailConversationFinderError, match="Conversation not found"):
         finder.find(account=object(), conversation_id="missing", folder="inbox")
+
+
+def test_direct_message_from_other_folder_is_not_returned_for_current_scope():
+    inbox = FakeFolder(key="inbox")
+    archive = FakeFolder(key="archive", items=[_item("target", "archived-conv", 1)])
+    finder = _build_finder(folders={"inbox": inbox, "archive": archive})
+    with pytest.raises(MailConversationFinderError, match="Conversation not found"):
+        finder.find(account=object(), conversation_id="archive:target", folder="inbox")
+    assert archive.last_only_fields is None
+
+
+def test_direct_fallback_keeps_actual_folder_when_all_folder_scan_budget_is_spent():
+    inbox = FakeFolder(key="inbox", items=[_item("a", "other", 1), _item("b", "other", 2)])
+    archive = FakeFolder(key="archive", items=[_item("target", "archived-conv", 3)])
+    finder = _build_finder(folders={"inbox": inbox, "archive": archive}, search_window_limit=2)
+    key, items, last_folder = finder.find(account=object(), conversation_id="archive:target", folder="inbox", folder_scope="all")
+    assert key == "archived-conv"
+    assert [(item.id, folder_key) for item, folder_key in items] == [("target", "archive")]
+    assert last_folder == "archive"
+
+
+def test_complete_lookup_finds_every_matching_item_beyond_preview_budget():
+    inbox = FakeFolder(key="inbox", items=[_item("first", "target", 1), _item("other", "other", 2), _item("last", "target", 3)])
+    finder = _build_finder(folders={"inbox": inbox}, search_window_limit=1)
+    _, partial, _ = finder.find(account=object(), conversation_id="target")
+    _, complete, _ = finder.find(account=object(), conversation_id="target", require_complete=True)
+    assert [item.id for item, _ in partial] == ["first"]
+    assert [item.id for item, _ in complete] == ["first", "last"]
+
+
+def test_complete_lookup_preserves_folder_scope_across_multiple_batches():
+    inbox = FakeFolder(key="inbox", items=[_item("a", "target", 1), _item("b", "target", 2), _item("c", "target", 3)])
+    archive = FakeFolder(key="archive", items=[_item("d", "target", 4)])
+    finder = _build_finder(folders={"inbox": inbox, "archive": archive}, search_window_limit=1)
+    _, current, _ = finder.find(account=object(), conversation_id="target", require_complete=True)
+    _, all_items, _ = finder.find(account=object(), conversation_id="target", folder_scope="all", require_complete=True)
+    assert [item.id for item, _ in current] == ["a", "b", "c"]
+    assert [item.id for item, _ in all_items] == ["a", "b", "c", "d"]

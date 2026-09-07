@@ -1,8 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
-  Easing,
   Pressable,
   StyleSheet,
   Text,
@@ -13,18 +12,21 @@ import {
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type VoiceHoldGesture, voiceHoldHintLabel } from '../../chat/chatVoice';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
-import { CHAT_MESSAGE_ENTER_DURATION_MS } from './ChatMessageEnterMotion';
+import { ChatComposerContext } from './ChatComposerContext';
 import { ChatVoiceRecordingMeter } from './ChatVoiceRecordingMeter';
+
+const AnimatedInput = Animated.createAnimatedComponent(TextInput);
 
 type Props = {
   value: string;
   onChangeText: (value: string) => void;
-  onSend: () => void;
+  onSend: () => void | Promise<void>;
   placeholder?: string;
   mode?: 'reply' | 'edit' | null;
   contextLabel?: string;
   contextPreview?: string;
   onCancelMode?: () => void;
+  onOpenContext?: () => void;
   busy?: boolean;
   onAttachmentPress?: () => void;
   onEmojiPress?: () => void;
@@ -53,6 +55,7 @@ export function ChatComposer({
   contextLabel,
   contextPreview,
   onCancelMode,
+  onOpenContext,
   busy = false,
   onAttachmentPress,
   onEmojiPress,
@@ -74,12 +77,23 @@ export function ChatComposer({
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const reduceMotion = useReducedMotion();
+  const inputRef = useRef<TextInput>(null);
+  useEffect(() => {
+    if (mode) inputRef.current?.focus();
+  }, [mode]);
+  const inputHeight = useRef(new Animated.Value(44)).current;
+  const targetHeightRef = useRef(44);
+  useEffect(() => () => inputHeight.stopAnimation(), [inputHeight]);
+  const resizeInput = (height: number) => {
+    const next = Math.min(120, Math.max(44, Math.ceil(height)));
+    if (next === targetHeightRef.current) return;
+    targetHeightRef.current = next;
+    inputHeight.stopAnimation();
+    if (reduceMotion) { inputHeight.setValue(next); return; }
+    Animated.timing(inputHeight, { toValue: next, duration: 160, useNativeDriver: false }).start();
+  };
   const holdOrigin = useRef({ x: 0, y: 0 });
-  const sendGhostProgress = useRef(new Animated.Value(0)).current;
-  const sendGhostAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
-  const sendGhostFrameRef = useRef<number | null>(null);
-  const sendGhostGenerationRef = useRef(0);
-  const [sendGhost, setSendGhost] = useState('');
+  const sentValueRef = useRef<symbol | null>(null);
   const hasText = Boolean(value.trim());
   const showMic = Boolean(onMicPress) && !hasText && mode !== 'edit' && !voiceRecording;
   const sendDisabled = voiceRecording ? busy : (!hasText || busy);
@@ -87,77 +101,20 @@ export function ChatComposer({
     ? null
     : Math.round(Math.max(0, Math.min(1, uploadProgress)) * 100);
 
-  useEffect(() => () => {
-    sendGhostGenerationRef.current += 1;
-    sendGhostAnimationRef.current?.stop();
-    if (sendGhostFrameRef.current !== null) cancelAnimationFrame(sendGhostFrameRef.current);
-  }, []);
-
+  useEffect(() => { sentValueRef.current = null; }, [value, mode]);
   const handleSendPress = () => {
-    const snapshot = value.trim();
-    if (mode !== 'edit' && snapshot && !busy && !reduceMotion) {
-      const generation = ++sendGhostGenerationRef.current;
-      sendGhostAnimationRef.current?.stop();
-      if (sendGhostFrameRef.current !== null) cancelAnimationFrame(sendGhostFrameRef.current);
-      sendGhostProgress.setValue(0);
-      setSendGhost(snapshot);
-      sendGhostFrameRef.current = requestAnimationFrame(() => {
-        sendGhostFrameRef.current = null;
-        const animation = Animated.timing(sendGhostProgress, {
-          toValue: 1,
-          duration: CHAT_MESSAGE_ENTER_DURATION_MS,
-          easing: Easing.bezier(0.2, 0.01, 0.28, 0.91),
-          useNativeDriver: true,
-        });
-        sendGhostAnimationRef.current = animation;
-        animation.start(() => {
-          if (sendGhostGenerationRef.current !== generation) return;
-          sendGhostAnimationRef.current = null;
-          setSendGhost('');
-        });
-      });
-    }
-    onSend();
+    if (busy || !hasText || sentValueRef.current) return;
+    const attempt = Symbol('send');
+    sentValueRef.current = attempt;
+    const release = () => { if (sentValueRef.current === attempt) sentValueRef.current = null; };
+    try {
+      const pending = onSend();
+      if (pending) void pending.then(release, release);
+    } catch (error) { release(); throw error; }
   };
-
-  const sendGhostOpacity = sendGhostProgress.interpolate({
-    inputRange: [0, 0.72, 1],
-    outputRange: [0.92, 0.48, 0],
-  });
-  const sendGhostTranslateY = sendGhostProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -40],
-  });
-  const sendGhostTranslateX = sendGhostProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 18],
-  });
-  const sendGhostScale = sendGhostProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0.96],
-  });
   return (
     <View style={styles.dock} onLayout={onLayout}>
-      {mode && !voiceRecording ? (
-        <View style={styles.context} accessibilityLiveRegion="polite">
-          <View style={styles.contextText}>
-            <Text style={styles.contextLabel} numberOfLines={1}>
-              {mode === 'edit' ? 'Редактирование' : contextLabel || 'Ответ'}
-            </Text>
-            <Text style={styles.contextPreview} numberOfLines={1}>
-              {contextPreview || 'Сообщение'}
-            </Text>
-          </View>
-          <Pressable
-            onPress={onCancelMode}
-            style={({ pressed }) => [styles.cancelButton, pressed && styles.sendBtnPressed]}
-            accessibilityRole="button"
-            accessibilityLabel={mode === 'edit' ? 'Отменить редактирование' : 'Отменить ответ'}
-          >
-            <Text style={styles.cancelLabel}>×</Text>
-          </Pressable>
-        </View>
-      ) : null}
+      <ChatComposerContext mode={voiceRecording ? null : mode} label={contextLabel} preview={contextPreview} onCancel={onCancelMode} onOpen={onOpenContext} busy={busy} />
       {uploadLabel ? (
         <View style={styles.upload} accessibilityLiveRegion="polite">
           <Text style={styles.uploadLabel} numberOfLines={1}>{uploadLabel}</Text>
@@ -185,27 +142,6 @@ export function ChatComposer({
         </View>
       ) : null}
       <View style={styles.composer}>
-        {sendGhost ? (
-          <Animated.View
-            testID="chat-composer-send-ghost"
-            pointerEvents="none"
-            accessible={false}
-            importantForAccessibility="no-hide-descendants"
-            style={[
-              styles.sendGhost,
-              {
-                opacity: sendGhostOpacity,
-                transform: [
-                  { translateY: sendGhostTranslateY },
-                  { translateX: sendGhostTranslateX },
-                  { scale: sendGhostScale },
-                ],
-              },
-            ]}
-          >
-            <Text style={styles.sendGhostText} numberOfLines={3}>{sendGhost}</Text>
-          </Animated.View>
-        ) : null}
         {voiceRecording ? (
           <>
             <Pressable
@@ -277,13 +213,15 @@ export function ChatComposer({
                   <MaterialCommunityIcons name="emoticon-outline" size={24} color={chatTokens.textSecondary} />
                 </Pressable>
               ) : null}
-              <TextInput
+              <AnimatedInput
+                ref={inputRef}
                 value={value}
                 onChangeText={onChangeText}
                 placeholder={placeholder}
                 placeholderTextColor={chatTokens.textSecondary}
                 accessibilityLabel="Текст сообщения"
-                style={styles.input}
+                style={[styles.input, { height: inputHeight }]}
+                onContentSizeChange={(event) => resizeInput(event.nativeEvent.contentSize.height)}
                 multiline
                 maxLength={10000}
                 editable={!busy}
@@ -326,7 +264,7 @@ export function ChatComposer({
                 );
               } : undefined}
               onPressOut={showMic ? onMicHoldRelease : undefined}
-              disabled={sendDisabled && !showMic}
+              disabled={showMic ? busy : sendDisabled}
               accessibilityRole="button"
               accessibilityHint={showMic ? 'Удерживайте, чтобы записать. Влево — отмена, вверх — закрепить' : undefined}
               accessibilityLabel={showMic
@@ -351,27 +289,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   dock: {
     backgroundColor: chatTokens.composerBg,
   },
-  context: {
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: 14,
-    paddingRight: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: chatTokens.composerActionBg,
-    backgroundColor: chatTokens.composerDockBg,
-  },
-  contextText: { flex: 1, minWidth: 0 },
-  contextLabel: { color: chatTokens.accentText, fontSize: 13, fontWeight: '700' },
-  contextPreview: { marginTop: 2, color: chatTokens.textSecondary, fontSize: 13 },
-  cancelButton: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 22,
-  },
-  cancelLabel: { color: chatTokens.textSecondary, fontSize: 28, lineHeight: 30 },
   upload: { paddingHorizontal: 14, paddingTop: 8, backgroundColor: chatTokens.composerDockBg },
   uploadLabel: { marginBottom: 6, color: chatTokens.textSecondary, fontSize: 12 },
   progressTrack: {
@@ -389,23 +306,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     paddingHorizontal: 7,
     paddingTop: 6,
     paddingBottom: 7,
-  },
-  sendGhost: {
-    position: 'absolute',
-    left: 56,
-    right: 58,
-    bottom: 10,
-    zIndex: 4,
-    alignSelf: 'flex-end',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: chatTokens.bubbleOwnBg,
-  },
-  sendGhostText: {
-    color: chatTokens.bubbleOwnText,
-    fontSize: 16,
-    lineHeight: 22,
   },
   inputShell: {
     flex: 1,

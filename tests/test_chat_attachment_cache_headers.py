@@ -58,3 +58,21 @@ def test_regular_attachment_response_does_not_receive_sticker_cache_policy(monke
     response = _download_response(monkeypatch, temp_dir, media_kind="video")
 
     assert response.headers.get("cache-control") is None
+
+
+def test_legacy_active_mime_is_download_only_and_sandboxed(monkeypatch, temp_dir):
+    file_path = Path(temp_dir) / "notes.txt"
+    file_path.write_bytes(b"ordinary test text")
+    fake_api = _FakeChatApi({"path": str(file_path), "file_name": "notes.txt", "mime_type": "text/html"})
+    monkeypatch.setattr(attachments_module, "chat_api", lambda: fake_api)
+    response = asyncio.run(attachments_module.download_chat_attachment(
+        message_id="message-1", attachment_id="attachment-1", inline=True,
+        variant=None, current_user=SimpleNamespace(id=7)))
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["content-security-policy"] == "sandbox"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_regular_media_keeps_inline_disposition(monkeypatch, temp_dir):
+    response = _download_response(monkeypatch, temp_dir, media_kind="video")
+    assert response.headers["content-disposition"].startswith("inline;")

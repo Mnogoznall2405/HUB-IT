@@ -31,7 +31,7 @@ export const NativePasswordEntryCard = memo(function NativePasswordEntryCard({
       </View>
       <View style={styles.content}>
         <View style={styles.titleRow}>
-          <Text numberOfLines={1} style={[styles.title, { color: tokens.textPrimary }]}>{entry.login}</Text>
+          <Text numberOfLines={2} style={[styles.title, { color: tokens.textPrimary }]}>{entry.login}</Text>
           {entry.is_archived ? <Text style={[styles.archived, { color: tokens.warning }]}>Архив</Text> : null}
         </View>
         <Text numberOfLines={1} style={[styles.group, { color: tokens.textSecondary }]}>{entry.group || 'Без группы'}</Text>
@@ -53,9 +53,9 @@ const styles = StyleSheet.create({
   content: { flex: 1, minWidth: 0 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { flex: 1, fontSize: 15, lineHeight: 20, fontWeight: '800' },
-  archived: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
+  archived: { fontSize: 12, fontWeight: '900', textTransform: 'uppercase' },
   group: { marginTop: 2, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   description: { marginTop: 4, fontSize: 12, lineHeight: 17 },
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7 },
-  tag: { overflow: 'hidden', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, fontSize: 10, lineHeight: 14, fontWeight: '800' },
+  tag: { maxWidth: '100%', overflow: 'hidden', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, fontSize: 12, lineHeight: 18, fontWeight: '800' },
 });

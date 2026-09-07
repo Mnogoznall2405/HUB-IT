@@ -8,6 +8,7 @@ import {
   deleteEncryptedNativeSnapshot,
   MAX_NATIVE_SNAPSHOT_BYTES,
 } from './nativeSnapshotStorage';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 
 const ADDRESS_BOOK_MANIFEST_KIND = 'address-book-shards-v1';
 const ADDRESS_BOOK_SHARD_KIND = 'address-book-shard-v1';
@@ -45,6 +46,17 @@ type AddressBookShard = {
 };
 
 let revisionSequence = 0;
+const directoryOperations = new Map<number, Promise<void>>();
+
+function withDirectoryOperation<T>(userId: number, operation: () => Promise<T>): Promise<T> {
+  const previous = directoryOperations.get(userId) || Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const marker = result.then(() => undefined, () => undefined).finally(() => {
+    if (directoryOperations.get(userId) === marker) directoryOperations.delete(userId);
+  });
+  directoryOperations.set(userId, marker);
+  return result;
+}
 
 function isAddressBookManifest(value: unknown): value is AddressBookManifest {
   const candidate = value as Partial<AddressBookManifest> | null;
@@ -123,7 +135,7 @@ async function cleanupScopes(userId: number, scopes: string[]): Promise<void> {
   await Promise.allSettled(scopes.map((scope) => deleteEncryptedNativeSnapshot(scope, userId)));
 }
 
-export async function readNativeAddressBookSnapshot<T extends AddressBookPayload>(
+async function readAddressBookSnapshot<T extends AddressBookPayload>(
   userId: number,
 ): Promise<NativeSnapshot<T> | null> {
   const root = await readNativeSnapshot<T | AddressBookManifest>('address-book', userId);
@@ -146,11 +158,21 @@ export async function readNativeAddressBookSnapshot<T extends AddressBookPayload
       || snapshot.data.index !== index
       || !Array.isArray(snapshot.data.items)
       || snapshot.data.items.length !== descriptor.count
-    ) return null;
+    ) {
+      await recordSnapshotFailure(descriptor.scope, 'shard-verify', new Error('Snapshot shard verification failed'), {
+        sizes: { shardIndex: index, expectedItems: descriptor.count, actualItems: snapshot?.data?.items?.length ?? 0 },
+      });
+      return null;
+    }
     items.push(...snapshot.data.items);
     if (index < root.data.shards.length - 1) await yieldToEventLoop();
   }
-  if (items.length !== root.data.itemCount) return null;
+  if (items.length !== root.data.itemCount) {
+    await recordSnapshotFailure('address-book', 'manifest-verify', new Error('Snapshot manifest verification failed'), {
+      sizes: { expectedItems: root.data.itemCount, actualItems: items.length },
+    });
+    return null;
+  }
   const data = { ...root.data.metadata, items };
   if (!isCompleteAddressBookPayload(data)) return null;
   return {
@@ -159,7 +181,7 @@ export async function readNativeAddressBookSnapshot<T extends AddressBookPayload
   };
 }
 
-export async function writeNativeAddressBookSnapshot<T extends AddressBookPayload>(
+async function writeAddressBookSnapshot<T extends AddressBookPayload>(
   userId: number,
   payload: T,
 ): Promise<boolean> {
@@ -205,12 +227,16 @@ export async function writeNativeAddressBookSnapshot<T extends AddressBookPayloa
     return false;
   }
 
-  const verified = await readNativeAddressBookSnapshot<T>(userId).catch(() => null);
+  const verified = await readAddressBookSnapshot<T>(userId).catch(async (error) => {
+    await recordSnapshotFailure('address-book', 'manifest-verify', error);
+    return null;
+  });
   if (
     !verified
     || verified.data.items.length !== payload.items.length
     || Number(verified.data.total ?? payload.items.length) !== Number(payload.total ?? payload.items.length)
   ) {
+    await recordSnapshotFailure('address-book', 'manifest-verify', new Error('Snapshot manifest verification failed'));
     const restored = previous
       ? await writeNativeSnapshot('address-book', userId, previous.data).catch(() => false)
       : false;
@@ -225,4 +251,18 @@ export async function writeNativeAddressBookSnapshot<T extends AddressBookPayloa
     await cleanupScopes(userId, previous.data.shards.map((shard) => shard.scope));
   }
   return true;
+}
+
+export function readNativeAddressBookSnapshot<T extends AddressBookPayload>(userId: number): Promise<NativeSnapshot<T> | null> {
+  return withDirectoryOperation(userId, () => readAddressBookSnapshot<T>(userId));
+}
+
+export function writeNativeAddressBookSnapshot<T extends AddressBookPayload>(userId: number, payload: T): Promise<boolean> {
+  return withDirectoryOperation(userId, async () => {
+    try { return await writeAddressBookSnapshot(userId, payload); }
+    catch (error) {
+      await recordSnapshotFailure('address-book', 'shard-serialize-or-write', error);
+      return false;
+    }
+  });
 }

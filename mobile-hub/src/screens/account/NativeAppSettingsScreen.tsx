@@ -12,6 +12,8 @@ import { hasPendingMobileUpdate } from '../../updates/useMobileUpdater';
 import {
   AccountPrimaryButton,
   AccountScreenScaffold,
+  AccountSubpage,
+  AccountActionRow,
   AccountSecondaryButton,
   AccountSectionCard,
   AccountStatusText,
@@ -32,13 +34,27 @@ type OfflinePreparationDisplayState = {
   items: OfflinePreparationProgressEvent[];
 };
 
+const PREPARATION_SCOPES: Record<OfflinePreparationProgressEvent['key'], string[]> = {
+  dashboard: ['dashboard'],
+  feed: ['feed-inbox', 'feed-post-details'],
+  tasks: ['tasks-inbox', 'task-details'],
+  chat: ['chat-inbox', 'chat-folders', 'chat-thread-details'],
+  notifications: ['notifications'],
+  mail: ['mail-inbox', 'mail-message-details', 'mail-conversation-details'],
+  docflow: ['docflow-inbox', 'docflow-task-details'],
+  addressBook: ['address-book'],
+  database: ['database-bootstrap', 'database-inbox', 'database-catalog', 'database-item-details'],
+  myFiles: ['my-files-inbox', 'my-file-details'],
+  companyStructure: ['company-structure-tree', 'company-structure-people'],
+};
+
 function formatPreparationMetric(item: OfflinePreparationProgressEvent): string {
   if (item.status === 'loading') return 'Загружается…';
   if (item.status === 'failed') return item.errorMessage || 'Не загружено';
   const loaded = Math.max(0, Number(item.loaded || 0));
   const total = item.total == null ? null : Math.max(0, Number(item.total || 0));
-  if (total != null) return `${loaded} из ${total}${item.unit ? ` ${item.unit}` : ''}`;
-  return `${loaded}${item.unit ? ` ${item.unit}` : ''}`;
+  if (total != null) return `${item.complete === false ? 'Частично: ' : ''}${loaded} из ${total}${item.unit ? ` ${item.unit}` : ''}`;
+  return `${item.complete === false ? 'Частично: ' : ''}${loaded}${item.unit ? ` ${item.unit}` : ''}`;
 }
 
 const SNAPSHOT_SCOPE_LABELS: Record<string, string> = {
@@ -119,6 +135,7 @@ export function NativeAppSettingsScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const { execute, updater } = useNativeCommands();
+  const [activeSection, setActiveSection] = useState<'updates' | 'offline' | 'diagnostics' | null>(null);
   const [updateState, setUpdateState] = useState<CommandState | null>(null);
   const [offlineState, setOfflineState] = useState<CommandState | null>(null);
   const [diagnosticsState, setDiagnosticsState] = useState<CommandState | null>(null);
@@ -222,8 +239,10 @@ export function NativeAppSettingsScreen() {
   const canPrepareAnything = canPrepareDashboard || canPrepareTasks || canPrepareChat || canPrepareMail || canPrepareDocflow || canPrepareAddressBook || canPrepareDatabase || canPrepareMyFiles || canPrepareCompanyStructure;
   const initializing = busyCommands.includes('initial');
   const commandBusy = (command: string) => busyCommands.includes(command);
+  const readyModules = offlinePreparation?.items.filter((item) => item.status === 'completed' && item.complete !== false).length || 0;
+  const retryableModules = offlinePreparation?.items.filter((item) => item.status === 'failed' || item.complete === false) || [];
   const offlinePreparationPercent = offlinePreparation?.totalModules
-    ? Math.round((offlinePreparation.completedModules / offlinePreparation.totalModules) * 100)
+    ? Math.round((readyModules / offlinePreparation.totalModules) * 100)
     : 0;
 
   const handleOfflinePreparationProgress = useCallback((event: OfflinePreparationProgressEvent) => {
@@ -233,32 +252,49 @@ export function NativeAppSettingsScreen() {
       if (existingIndex >= 0) items[existingIndex] = event;
       else items.push(event);
       return {
-        completedModules: event.completedModules,
-        totalModules: event.totalModules,
+        completedModules: items.filter((item) => item.status !== 'loading').length,
+        totalModules: Math.max(current?.totalModules || 0, event.totalModules),
         items,
       };
     });
   }, []);
 
-  const prepareOffline = useCallback(async () => {
-    setOfflinePreparation({ completedModules: 0, totalModules: 0, items: [] });
+  const prepareOffline = useCallback(async (retryOnly = false) => {
+    const retryKeys = new Set(offlinePreparation?.items
+      .filter((item) => item.status === 'failed' || item.complete === false).map((item) => item.key));
+    const requested = (key: OfflinePreparationProgressEvent['key'], allowed: boolean) => allowed && (!retryOnly || retryKeys.has(key));
+    if (retryOnly && !retryKeys.size) return;
+    setOfflinePreparation((current) => retryOnly && current ? {
+      ...current,
+      completedModules: current.items.filter((item) => !retryKeys.has(item.key) && item.status !== 'loading').length,
+      items: current.items.map((item) => retryKeys.has(item.key) ? { ...item, status: 'loading', complete: undefined } : item),
+    } : { completedModules: 0, totalModules: 0, items: [] });
     const result = await run('offline.prepareNative', {
-      dashboard: canPrepareDashboard,
-      feed: canPrepareDashboard,
-      tasks: canPrepareTasks,
-      chat: canPrepareChat,
-      notifications: canPrepareNotifications,
-      mail: canPrepareMail,
-      docflow: canPrepareDocflow,
-      addressBook: canPrepareAddressBook,
-      database: canPrepareDatabase,
-      myFiles: canPrepareMyFiles,
-      companyStructure: canPrepareCompanyStructure,
+      dashboard: requested('dashboard', canPrepareDashboard),
+      feed: requested('feed', canPrepareDashboard),
+      tasks: requested('tasks', canPrepareTasks),
+      chat: requested('chat', canPrepareChat),
+      notifications: requested('notifications', canPrepareNotifications),
+      mail: requested('mail', canPrepareMail),
+      docflow: requested('docflow', canPrepareDocflow),
+      addressBook: requested('addressBook', canPrepareAddressBook),
+      database: requested('database', canPrepareDatabase),
+      myFiles: requested('myFiles', canPrepareMyFiles),
+      companyStructure: requested('companyStructure', canPrepareCompanyStructure),
       tasksManageAll: String(user?.role || '').trim().toLowerCase() === 'admin' || hasPermission('tasks.manage_all'),
     }, {
       onOfflinePreparationProgress: handleOfflinePreparationProgress,
     });
     if (!result) return;
+    const missingScopes = new Set(Array.isArray(result.snapshotMissingScopes) ? result.snapshotMissingScopes.map(String) : []);
+    if (result.snapshotReady === false && missingScopes.size) {
+      setOfflinePreparation((current) => current ? {
+        ...current,
+        items: current.items.map((item) => item.status === 'completed' && PREPARATION_SCOPES[item.key].some((scope) => missingScopes.has(scope))
+          ? { ...item, status: 'failed', complete: false, errorMessage: 'Копия не прошла итоговую проверку. Повторите подготовку.' }
+          : item),
+      } : current);
+    }
     const prepared = Array.isArray(result.preparedModules) ? result.preparedModules.map(String) : [];
     const failed = Array.isArray(result.failedModules) ? result.failedModules.map(String) : [];
     const missing = Array.isArray(result.snapshotMissingScopes)
@@ -272,7 +308,7 @@ export function NativeAppSettingsScreen() {
         : '',
       message: failed.length || verificationFailed ? '' : `Автономные данные подготовлены: ${prepared.join(', ')}.`,
     });
-  }, [canPrepareAddressBook, canPrepareChat, canPrepareCompanyStructure, canPrepareDashboard, canPrepareDatabase, canPrepareDocflow, canPrepareMail, canPrepareMyFiles, canPrepareNotifications, canPrepareTasks, handleOfflinePreparationProgress, hasPermission, run, user?.role]);
+  }, [canPrepareAddressBook, canPrepareChat, canPrepareCompanyStructure, canPrepareDashboard, canPrepareDatabase, canPrepareDocflow, canPrepareMail, canPrepareMyFiles, canPrepareNotifications, canPrepareTasks, handleOfflinePreparationProgress, hasPermission, offlinePreparation, run, user?.role]);
 
   return (
     <AccountScreenScaffold
@@ -280,7 +316,10 @@ export function NativeAppSettingsScreen() {
       tokens={tokens}
       onBack={() => goBackOrReplace('/(shell)/menu/settings')}
     >
-      <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+      {!activeSection ? <AccountStatusText tokens={tokens} error={status.error} message={status.message} /> : null}
+      <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="cellphone-arrow-down" label="Обновления APK" subtitle={`Версия ${updateState?.currentVersion || '—'} · ${updateState?.message || 'Проверка обновлений'}`} onPress={() => setActiveSection('updates')} /></AccountSectionCard>
+      <AccountSubpage visible={activeSection === 'updates'} title="Обновления APK" tokens={tokens} onClose={() => setActiveSection(null)}>
+        <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <AccountSectionCard
         tokens={tokens}
         title="Обновление APK"
@@ -338,6 +377,11 @@ export function NativeAppSettingsScreen() {
           ) : null}
         </View>
       </AccountSectionCard>
+      </AccountSubpage>
+      <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="cloud-off-outline" label="Офлайн-данные" subtitle={offlineState?.snapshotReady ? 'Данные сохранены для работы без сети' : 'Подготовка данных и состояние загрузки'} onPress={() => setActiveSection('offline')} /></AccountSectionCard>
+      <AccountSubpage visible={activeSection === 'offline'} title="Офлайн-данные" tokens={tokens} onClose={() => setActiveSection(null)}>
+        <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+
 
       <AccountSectionCard tokens={tokens} title="Офлайн-данные" description="Сохранённые экраны доступны без сети, очереди отправляются после её восстановления.">
         <Text style={{ color: tokens.textPrimary, marginBottom: 8 }}>
@@ -397,7 +441,7 @@ export function NativeAppSettingsScreen() {
             testID="native-offline-preparation-progress"
             accessible
             accessibilityRole="progressbar"
-            accessibilityLabel="Подготовка автономных данных"
+            accessibilityLabel={`Готовность автономных данных. Проверено ${offlinePreparation.completedModules} из ${offlinePreparation.totalModules} разделов`}
             accessibilityValue={{ min: 0, max: 100, now: offlinePreparationPercent }}
             style={[styles.offlineProgressCard, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}
           >
@@ -405,7 +449,7 @@ export function NativeAppSettingsScreen() {
               <View style={styles.offlineProgressHeading}>
                 <Text style={[styles.offlineProgressTitle, { color: tokens.textPrimary }]}>Подготовка данных</Text>
                 <Text accessibilityLiveRegion="polite" style={[styles.offlineProgressCaption, { color: tokens.textSecondary }]}>
-                  {offlinePreparation.completedModules} из {offlinePreparation.totalModules} разделов
+                  Проверено {offlinePreparation.completedModules} из {offlinePreparation.totalModules} разделов · Готово {readyModules} из {offlinePreparation.totalModules}
                 </Text>
               </View>
               <Text style={[styles.offlineProgressPercent, { color: tokens.primary }]}>{offlinePreparationPercent}%</Text>
@@ -415,9 +459,9 @@ export function NativeAppSettingsScreen() {
             </View>
             <View style={styles.offlineProgressItems}>
               {offlinePreparation.items.map((item) => {
-                const completed = item.status === 'completed';
+                const completed = item.status === 'completed' && item.complete !== false;
                 const failed = item.status === 'failed';
-                const stateColor = completed ? tokens.success : failed ? tokens.error : tokens.primary;
+                const stateColor = completed ? tokens.success : failed ? tokens.error : item.complete === false ? tokens.warning : tokens.primary;
                 return (
                   <View
                     key={item.key}
@@ -431,8 +475,10 @@ export function NativeAppSettingsScreen() {
                         <MaterialCommunityIcons name={completed ? 'check-circle' : 'alert-circle-outline'} size={20} color={stateColor} />
                       )}
                     </View>
-                    <Text numberOfLines={1} style={[styles.offlineProgressModule, { color: tokens.textPrimary }]}>{item.label}</Text>
-                    <Text numberOfLines={2} style={[styles.offlineProgressMetric, { color: stateColor }]}>{formatPreparationMetric(item)}</Text>
+                    <View style={styles.offlineProgressText}>
+                      <Text style={[styles.offlineProgressModule, { color: tokens.textPrimary }]}>{item.label}</Text>
+                      <Text style={[styles.offlineProgressMetric, { color: stateColor }]}>{formatPreparationMetric(item)}</Text>
+                    </View>
                   </View>
                 );
               })}
@@ -447,12 +493,24 @@ export function NativeAppSettingsScreen() {
             label="Подготовить автономный режим"
             onPress={() => { void prepareOffline(); }}
           />
+          {retryableModules.length ? <AccountSecondaryButton
+            testID="native-offline-retry-incomplete"
+            tokens={tokens}
+            disabled={initializing || offlineMode || commandBusy('offline.prepareNative')}
+            label="Повторить неготовые разделы"
+            onPress={() => { void prepareOffline(true); }}
+          /> : null}
           <AccountSecondaryButton testID="native-app-check-network" tokens={tokens} disabled={initializing} loading={commandBusy('network.getState')} label="Проверить сеть" onPress={() => { void run('network.getState'); }} />
           <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('system.openBackgroundSettings')} label="Настройки батареи и фона" onPress={() => { void run('system.openBackgroundSettings'); }} />
           <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('offline.retryQueues')} label="Повторить отправку" onPress={() => { void run('offline.retryQueues'); }} />
           <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('offline.clearFileCache')} label="Очистить кэш файлов" onPress={() => { void run('offline.clearFileCache'); }} />
         </View>
       </AccountSectionCard>
+      </AccountSubpage>
+      <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="stethoscope" label="Диагностика" subtitle={'Отчёт о работе приложения'} onPress={() => setActiveSection('diagnostics')} /></AccountSectionCard>
+      <AccountSubpage visible={activeSection === 'diagnostics'} title="Диагностика" tokens={tokens} onClose={() => setActiveSection(null)}>
+        <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+
 
       <AccountSectionCard tokens={tokens} title="Диагностика" description="Отчёт не содержит переписку, пароли и токены.">
         <Text style={{ color: tokens.textPrimary, marginBottom: 6 }}>
@@ -471,6 +529,7 @@ export function NativeAppSettingsScreen() {
           <AccountSecondaryButton tokens={tokens} danger disabled={initializing} loading={commandBusy('diagnostics.clear')} label="Очистить диагностику" onPress={() => { void run('diagnostics.clear'); }} />
         </View>
       </AccountSectionCard>
+      </AccountSubpage>
     </AccountScreenScaffold>
   );
 }
@@ -489,10 +548,11 @@ const styles = StyleSheet.create({
   offlineProgressTrack: { height: 6, marginHorizontal: 6, borderRadius: 3, overflow: 'hidden' },
   offlineProgressValue: { height: 6, borderRadius: 3 },
   offlineProgressItems: { gap: 6 },
-  offlineProgressRow: { minHeight: 48, borderRadius: 10, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  offlineProgressRow: { minHeight: 48, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 9 },
   offlineProgressIcon: { width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  offlineProgressModule: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  offlineProgressMetric: { maxWidth: '52%', flexShrink: 1, textAlign: 'right', fontSize: 11, lineHeight: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  offlineProgressText: { flex: 1, minWidth: 0 },
+  offlineProgressModule: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  offlineProgressMetric: { marginTop: 3, fontSize: 11, lineHeight: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
   offlineCoverageCard: { marginBottom: 10, borderWidth: 1, borderRadius: 14, padding: 10, gap: 6 },
   offlineCoverageRow: { minHeight: 46, paddingTop: 7, borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
   offlineCoverageText: { flex: 1, minWidth: 0 },

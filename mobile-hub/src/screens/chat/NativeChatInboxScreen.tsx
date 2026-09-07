@@ -770,19 +770,14 @@ export function NativeChatInboxScreen() {
           onPress={() => router.replace('/(shell)/dashboard')}
           accessibilityLabel="Вернуться в HUB-IT"
         />
-        <View style={styles.headerTitleBlock}>
+        <Pressable style={styles.headerTitleBlock} disabled={workspace !== 'chats'} accessibilityRole="button" accessibilityLabel={workspace === 'chats' ? 'Управление папками' : 'ИИ'} onPress={() => setFolderManagerOpen(true)}>
           <Text style={styles.headerTitle} accessibilityRole="header">
-            {workspace === 'ai' ? (aiArchiveOpen ? 'ИИ · Архив' : 'ИИ') : 'Chat'}
+            {workspace === 'ai' ? (aiArchiveOpen ? 'ИИ · Архив' : 'ИИ') : 'Чат ▾'}
           </Text>
           <HubConnectionInline showHub />
-        </View>
-        {workspace === 'chats' ? (
-          <IconButton
-            icon="folder-cog-outline"
-            onPress={() => setFolderManagerOpen(true)}
-            accessibilityLabel="Управление папками"
-          />
-        ) : null}
+        </Pressable>
+
+        <IconButton icon="tray-arrow-up" accessibilityLabel="Очередь отправки" onPress={() => router.push('/(shell)/chat/outbox')} />
         <IconButton
           icon="message-plus-outline"
           iconColor={chatTokens.composerActionBg}
@@ -844,7 +839,7 @@ export function NativeChatInboxScreen() {
         </View>
       ) : error && items.length === 0 ? (
         <View style={[styles.center, { paddingBottom: bottomInset }]} accessibilityLiveRegion="assertive">
-          <Text style={styles.errorTitle}>Не удалось открыть Chat</Text>
+          <Text style={styles.errorTitle}>Не удалось открыть чат</Text>
           <Text style={styles.stateText}>{error}</Text>
           <Pressable
             onPress={() => void load('initial')}

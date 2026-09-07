@@ -42,6 +42,20 @@ function buildController(overrides = {}) {
 }
 
 describe('useChatGroupActionsController', () => {
+  it('does not close the newly selected conversation after leaving another group', async () => {
+    let finish;
+    chatAPI.leaveGroup.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const args = buildController({ isMobile: true });
+    const { result } = renderHook(() => useChatGroupActionsController(args));
+    let pending;
+    act(() => { pending = result.current.handleLeaveGroup(); });
+    args.activeConversationIdRef.current = 'conv-2';
+    await act(async () => { finish({ ok: true }); await pending; });
+    expect(args.clearStoredConversationState).toHaveBeenCalledWith({ conversationId: 'conv-1', invalidateThread: true });
+    expect(args.setActiveConversationId).not.toHaveBeenCalled();
+    expect(args.closeInfoAndContextPanels).not.toHaveBeenCalled();
+    expect(args.openMobileInboxView).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

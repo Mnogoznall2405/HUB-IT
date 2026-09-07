@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AddressBook from './AddressBook';
 import { addressBookAPI } from '../api/addressBook';
@@ -104,6 +104,19 @@ const isMobileQuery = (query) => {
 };
 
 describe('AddressBook page', () => {
+  it('keeps the latest search when the old response arrives last', async () => {
+    const pending = [];
+    addressBookAPI.search.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    render(<AddressBook />);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.change(screen.getByPlaceholderText(searchPlaceholder), { target: { value: 'New contact' } });
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => { pending[1]({ ...samplePayload, items: [{ ...samplePayload.items[0], full_name: 'New contact' }] }); });
+    await act(async () => { pending[0](samplePayload); });
+    expect(await screen.findByTestId('address-book-entry-list')).toHaveTextContent('New contact');
+    expect(screen.queryByText('Ivanov Ivan Ivanovich')).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     setMatchMedia(false);
     authUser = { role: 'viewer' };

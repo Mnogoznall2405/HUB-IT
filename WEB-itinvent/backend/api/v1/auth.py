@@ -1368,8 +1368,10 @@ async def refresh_auth_tokens(
         revoke_ttl_seconds=token_ttl_seconds(token_data),
     )
     if not committed:
+        note_auth_session_metric("refresh_expired_or_already_used", network_zone=network_context.network_zone)
         raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
-    return await _deliver_refresh_payload(committed, metric_name="refresh_success")
+    metric_name = "refresh_success" if committed["refresh_token"] == refreshed["refresh_token"] else "refresh_grace_hit"
+    return await _deliver_refresh_payload(committed, metric_name=metric_name)
 
 
 def _normalize_mobile_web_next_path(value: str | None) -> str:

@@ -52,7 +52,13 @@ export function formatMyFileDate(value: unknown): string {
 }
 
 export function myFileStatusLabel(item: MyFileRecord): string {
-  if (item.status === 'ready') return 'Готов';
+  if (item.security_scan_status === 'blocked') return 'Заблокирован проверкой безопасности';
+  if (item.status === 'ready') {
+    if (item.security_scan_status === 'error') return 'Готов · проверка безопасности недоступна';
+    if (item.security_scan_status === 'skipped') return 'Готов · проверка безопасности пропущена';
+    if (item.security_scan_status !== 'clean') return 'Готов · проверка безопасности не подтверждена';
+    return 'Готов';
+  }
   if (item.status === 'uploading') return 'Загрузка';
   if (item.status === 'queued') return 'В очереди';
   if (item.status === 'scanning') return 'Проверка безопасности';
@@ -120,7 +126,7 @@ export function myFileIcon(item: MyFileRecord): MyFileIconName {
 }
 
 export function isMyFileReady(item: MyFileRecord): boolean {
-  return item.status === 'ready';
+  return item.status === 'ready' && item.security_scan_status !== 'blocked';
 }
 
 export function isMyFileProcessing(item: MyFileRecord): boolean {

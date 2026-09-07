@@ -3,7 +3,7 @@ import { useCallback } from 'react';
 import { chatAPI } from '../../api/client';
 import { CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { chatSocket } from '../../lib/chatSocket';
-import { resolveServerMessageFromSendAck } from '../../pages/chat/chatOptimisticMessages';
+import { resolveServerMessageFromSendAck } from '../../lib/chat/chatSendAck';
 import { buildChatDraftKey } from './chatHelpers';
 
 export default function useChatComposerSending({
@@ -63,7 +63,7 @@ export default function useChatComposerSending({
         }
         return true;
       } catch (error) {
-        if (activeConversationIdRef.current === conversationId) {
+        if (activeConversationIdRef.current === conversationId && !String(latestMessageTextRef.current || '').trim()) {
           setMessageText(body);
           setEditingMessage(draftEditingMessage);
           focusComposer({ forceMobile: true });
@@ -161,7 +161,12 @@ export default function useChatComposerSending({
         focusComposer({ forceMobile: true });
       } else if (draftStorageKeyForConversation) {
         try {
-          window.localStorage.setItem(draftStorageKeyForConversation, body);
+          // A late failure must not replace a draft saved in this or another window.
+          const storedDraft = window.localStorage.getItem(draftStorageKeyForConversation);
+          if (!String(storedDraft || '').trim()
+            && !(activeConversationIdRef.current === conversationId && currentDraftText)) {
+            window.localStorage.setItem(draftStorageKeyForConversation, body);
+          }
         } catch {
           // Ignore browser storage failures for drafts.
         }

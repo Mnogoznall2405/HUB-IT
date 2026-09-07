@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as ScreenCapture from 'expo-screen-capture';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   Image,
@@ -14,8 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../accessibility/useReducedMotion';
 import { HubButton } from '../components/ui/HubButton';
-import { hubTheme } from '../theme/hubTheme';
-import { officeTokens } from '../theme/officeTokens';
+import { type FluentTokens, useAppFluentTokens } from '../theme/fluentTokens';
 import { hapticError, hapticSuccess } from '../native/haptics';
 import { useAuth } from './AuthContext';
 import {
@@ -30,6 +29,8 @@ const DEFAULT_SETTINGS: AppLockSettings = { enabled: false, timeoutSeconds: 60 }
 const SCREEN_CAPTURE_KEY = 'hubit-app-lock';
 
 export function AppLockGate() {
+  const tokens = useAppFluentTokens();
+  const styles = useMemo(() => createStyles(tokens), [tokens]);
   const reduceMotion = useReducedMotion();
   const { biometricEnabled, logout, user } = useAuth();
   const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
@@ -138,7 +139,7 @@ export function AppLockGate() {
             <MaterialCommunityIcons
               name="fingerprint"
               size={54}
-              color={hubTheme.primary}
+              color={tokens.primary}
               accessibilityElementsHidden
               importantForAccessibility="no"
             />
@@ -171,10 +172,10 @@ export function AppLockGate() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (tokens: FluentTokens) => StyleSheet.create({
   page: {
     flex: 1,
-    backgroundColor: officeTokens.pageBg,
+    backgroundColor: tokens.pageBg,
   },
   scroll: {
     flexGrow: 1,
@@ -184,7 +185,7 @@ const styles = StyleSheet.create({
   },
   card: { width: '100%', maxWidth: 420, alignItems: 'center', gap: 14 },
   logo: { width: 52, height: 52, borderRadius: 13, marginBottom: 10 },
-  title: { color: officeTokens.textPrimary, fontSize: 22, lineHeight: 28, fontWeight: '900', textAlign: 'center' },
-  body: { color: officeTokens.textSecondary, fontSize: 14, lineHeight: 21, textAlign: 'center' },
-  error: { color: hubTheme.error, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+  title: { color: tokens.textPrimary, fontSize: 22, lineHeight: 28, fontWeight: '900', textAlign: 'center' },
+  body: { color: tokens.textSecondary, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  error: { color: tokens.error, fontSize: 13, lineHeight: 19, textAlign: 'center' },
 });

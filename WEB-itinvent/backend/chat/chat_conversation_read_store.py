@@ -646,14 +646,18 @@ class ChatConversationReadStore:
                     select(func.count(ChatMessage.id)).where(
                         ChatMessage.conversation_id == conversation.id,
                         ChatMessage.kind == "task_share",
+                        ChatMessage.is_deleted.is_(False),
                     )
                 ).scalar_one()
                 or 0
             )
 
             def _count_attachments(kind: str) -> int:
-                query = select(func.count()).select_from(ChatMessageAttachment).where(
-                    ChatMessageAttachment.conversation_id == conversation.id
+                query = select(func.count()).select_from(ChatMessageAttachment).join(
+                    ChatMessage, ChatMessage.id == ChatMessageAttachment.message_id
+                ).where(
+                    ChatMessageAttachment.conversation_id == conversation.id,
+                    ChatMessage.is_deleted.is_(False),
                 )
                 query = self._service._apply_attachment_kind_filter(query=query, kind=kind)
                 return int(session.execute(query).scalar_one() or 0)
@@ -661,7 +665,8 @@ class ChatConversationReadStore:
             def _recent_attachments(kind: str) -> list[dict]:
                 query = (
                     select(ChatMessageAttachment)
-                    .where(ChatMessageAttachment.conversation_id == conversation.id)
+                    .join(ChatMessage, ChatMessage.id == ChatMessageAttachment.message_id)
+                    .where(ChatMessageAttachment.conversation_id == conversation.id, ChatMessage.is_deleted.is_(False))
                     .order_by(ChatMessageAttachment.created_at.desc(), ChatMessageAttachment.id.desc())
                     .limit(max_recent)
                 )
@@ -712,8 +717,11 @@ class ChatConversationReadStore:
                 current_user_id=int(current_user_id),
             )
 
-            query = select(ChatMessageAttachment).where(
+            query = select(ChatMessageAttachment).join(
+                ChatMessage, ChatMessage.id == ChatMessageAttachment.message_id
+            ).where(
                 ChatMessageAttachment.conversation_id == conversation.id,
+                ChatMessage.is_deleted.is_(False),
             )
             query = self._service._apply_attachment_kind_filter(query=query, kind=normalized_kind)
 

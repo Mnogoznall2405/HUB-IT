@@ -675,6 +675,10 @@ class ChatRealtimePostgresBus:
     def _publish_batch_sync(self, conn, rows: list[tuple[str, str, int]]) -> None:
         table = self._qualified_relay_table()
         with conn.transaction():
+            # BIGSERIAL order alone is not commit order. Serialize writers before
+            # allocating IDs so a listener's id > cursor cannot skip a late commit.
+            # Readers retain ACCESS SHARE and remain independent of this lock.
+            conn.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(table))
             with conn.cursor() as cursor:
                 cursor.execute(
                     sql.SQL(
@@ -1143,6 +1147,11 @@ class ChatRealtimePostgresBus:
         )
         schema_row = schema_cursor.fetchone()
         self._schema = str(schema_row[0] or "public").strip() or "public"
+        from backend.config import config
+
+        if config.app.is_production:
+            self._validate_relay_schema_sync(conn)
+            return
         table = self._qualified_relay_table()
         conn.execute(
             sql.SQL(
@@ -1177,6 +1186,28 @@ class ChatRealtimePostgresBus:
                 table,
             )
         )
+
+    def _validate_relay_schema_sync(self, conn) -> None:
+        """Production connections validate Alembic-owned tables without DDL."""
+        expected = {
+            self._relay_table: {"id", "origin_node_id", "payload_json", "created_at", "expires_at"},
+            "chat_realtime_presence": {"node_id", "connection_id", "user_id", "touched_at", "expires_at"},
+        }
+        rows = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = ANY(%s)",
+            (self._schema, list(expected)),
+        ).fetchall()
+        actual: dict[str, set[str]] = {}
+        for table_name, column_name in rows:
+            actual.setdefault(str(table_name), set()).add(str(column_name))
+        missing = [f"{table}.{column}" for table, columns in expected.items()
+                   for column in sorted(columns - actual.get(table, set()))]
+        if missing:
+            raise RuntimeError(
+                "Chat PostgreSQL realtime schema is not migration-ready; apply the "
+                "chat Alembic migrations before starting runtime. Missing: " + ", ".join(missing)
+            )
 
     def _cleanup_expired_sync(self, conn) -> None:
         try:

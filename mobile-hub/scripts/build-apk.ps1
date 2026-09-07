@@ -6,17 +6,18 @@
 .EXAMPLE
   .\scripts\build-apk.ps1 -Local
   .\scripts\build-apk.ps1 -Eas
+  .\scripts\build-apk.ps1 -Local -SkipPrebuild -Variant emulator -Architectures x86_64 -AllowDebugSigning
 #>
 param(
   [switch]$Local,
   [switch]$Eas,
   [switch]$SkipPrebuild,
   [switch]$AllowDebugSigning,
-  [ValidateSet('debug', 'preview')]
+  [ValidateSet('debug', 'preview', 'emulator')]
   [string]$Variant = 'preview',
   [ValidateSet('preview', 'production')]
   [string]$Profile = 'preview',
-  [ValidateSet('dual', 'arm64')]
+  [ValidateSet('dual', 'arm64', 'x86_64')]
   [string]$Architectures = 'dual'
 )
 
@@ -25,6 +26,13 @@ $root = Split-Path $PSScriptRoot -Parent
 $repoRoot = Split-Path $root -Parent
 $toolsRoot = Join-Path $repoRoot 'tools'
 $androidRoot = Join-Path $root 'android'
+
+if (($Variant -eq 'emulator') -ne ($Architectures -eq 'x86_64')) {
+  throw 'Use -Variant emulator -Architectures x86_64 together for a standalone emulator APK.'
+}
+if ($Variant -eq 'emulator' -and (-not $Local -or $Eas)) {
+  throw 'The emulator APK is local-only; use -Local.'
+}
 
 function Write-Step($message) {
   Write-Host "`n==> $message" -ForegroundColor Cyan
@@ -382,6 +390,9 @@ function Write-ApkAudit($apkPath, $artifactName, $expectedSigner) {
   if ($Variant -eq 'preview' -and @($abis | Where-Object { $_ -match '^x86' }).Count -gt 0) {
     throw 'Preview APK contains emulator-only x86 ABI libraries.'
   }
+  if ($Variant -eq 'emulator' -and ($abis.Count -ne 1 -or $abis[0] -ne 'x86_64')) {
+    throw 'Emulator APK must contain only x86_64 native libraries.'
+  }
 
   $apksigner = Find-AndroidBuildTool 'apksigner.bat'
   $signerOutput = (& $apksigner verify --verbose --print-certs $apkPath 2>&1) -join "`n"
@@ -416,8 +427,8 @@ function Write-ApkAudit($apkPath, $artifactName, $expectedSigner) {
     signer_sha256 = $signer
     signing = if ($expectedSigner) { 'release' } else { 'debug-preview' }
     abis = $abis
-    minified = $Variant -eq 'preview'
-    resource_shrinking = $Variant -eq 'preview'
+    minified = $Variant -ne 'debug'
+    resource_shrinking = $Variant -ne 'debug'
     audited_at = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
   }
   $auditPath = Join-Path $item.DirectoryName ($item.BaseName + '.audit.json')
@@ -506,9 +517,13 @@ if ($Local) {
   $outputVariant = if ($Variant -eq 'debug') { 'debug' } else { 'release' }
   $artifactSuffix = if ($Architectures -eq 'arm64') { '-arm64' } else { '' }
   $artifactName = if ($Variant -eq 'debug') { "hubit-mobile-debug$artifactSuffix.apk" } else { "hubit-mobile-preview$artifactSuffix.apk" }
+  if ($Variant -eq 'emulator') { $artifactName = 'hubit-mobile-emulator-x86_64.apk' }
   $gradleArguments = @($gradleTask, '--no-daemon', '--no-watch-fs', '--stacktrace', '--max-workers=1')
   if ($Architectures -eq 'arm64') {
     $gradleArguments += '-PreactNativeArchitectures=arm64-v8a'
+  }
+  if ($Architectures -eq 'x86_64') {
+    $gradleArguments += '-PreactNativeArchitectures=x86_64'
   }
 
   Write-Step "Local $Variant APK build ($gradleTask)"

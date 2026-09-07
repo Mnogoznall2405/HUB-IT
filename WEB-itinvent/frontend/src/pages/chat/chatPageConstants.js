@@ -6,5 +6,5 @@ export const CHAT_ACTIVE_THREAD_INCREMENTAL_POLL_MS = 1_000;
 export const CHAT_AI_ACTIVE_POLL_MS = 1_000;
 export const CHAT_AI_ACTIVE_POLL_WS_CONNECTED_MS = 10_000;
 export const CHAT_SEARCH_DEBOUNCE_MS = 250;
-export const CHAT_SWR_STALE_TIME_MS = 30_000;
+export { CHAT_SWR_STALE_TIME_MS } from '../../lib/chat/chatReadPolicy';
 export const CHAT_MESSAGE_HIGHLIGHT_MS = 2_600;

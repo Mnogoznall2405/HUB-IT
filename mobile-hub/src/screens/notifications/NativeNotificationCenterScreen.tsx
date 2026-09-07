@@ -3,8 +3,10 @@ import { router, useFocusEffect } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   SectionList,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -121,12 +123,19 @@ const NotificationRow = memo(function NotificationRow({
 });
 
 export function NativeNotificationCenterScreen() {
+  const { user, hasPermission } = useAuth();
+  const permissionScope = ['dashboard.read', 'tasks.read', 'chat.read', 'mail.access'].map(hasPermission).join('|');
+  return <NotificationCenterContent key={`${user?.id || 0}|${permissionScope}`} />;
+}
+
+function NotificationCenterContent() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canReadMail = hasPermission('mail.access');
   const canReadHub = ['dashboard.read', 'tasks.read', 'chat.read', 'mail.access']
     .some((permission) => hasPermission(permission));
+  const [sourceFilter, setSourceFilter] = useState('all');
   const [hubItems, setHubItems] = useState<HubNotificationItem[]>([]);
   const [mailItems, setMailItems] = useState<MailNotificationItem[]>([]);
   const [hubUnread, setHubUnread] = useState(0);
@@ -137,6 +146,11 @@ export function NativeNotificationCenterScreen() {
   const [busyKey, setBusyKey] = useState('');
   const [error, setError] = useState('');
   const mountedRef = useRef(true);
+  const loadGeneration = useRef(0);
+  const readActionPending = useRef(false);
+  const loadPending = useRef(false);
+  const refreshAfterAction = useRef(false);
+  const snapshotAvailableRef = useRef<number | null>(null);
   const snapshotRef = useRef<NotificationCenterSnapshot>({
     hubItems: [],
     mailItems: [],
@@ -144,10 +158,15 @@ export function NativeNotificationCenterScreen() {
     mailUnread: 0,
   });
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; loadGeneration.current += 1; }; }, []);
 
   const load = useCallback(async (refresh = false) => {
+    if (readActionPending.current) { refreshAfterAction.current = true; return; }
+    loadPending.current = true;
+    const generation = ++loadGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === loadGeneration.current;
     if (!canReadHub) {
+      loadPending.current = false;
       setLoading(false);
       return;
     }
@@ -155,21 +174,23 @@ export function NativeNotificationCenterScreen() {
     else setLoading(true);
     setError('');
     const userId = Number(user?.id || 0);
-    let cached = false;
+    let cached = snapshotAvailableRef.current === userId;
     if (!refresh && userId) {
       const snapshot = await readNativeSnapshot<NotificationCenterSnapshot>('notifications', userId);
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       if (snapshot) {
         cached = true;
-        snapshotRef.current = snapshot.data;
+        snapshotAvailableRef.current = userId;
+        snapshotRef.current = { ...snapshot.data, mailItems: canReadMail ? snapshot.data.mailItems : [], mailUnread: canReadMail ? snapshot.data.mailUnread : 0 };
         setHubItems(snapshot.data.hubItems);
-        setMailItems(snapshot.data.mailItems);
+        setMailItems(canReadMail ? snapshot.data.mailItems : []);
         setHubUnread(snapshot.data.hubUnread);
-        setMailUnread(snapshot.data.mailUnread);
+        setMailUnread(canReadMail ? snapshot.data.mailUnread : 0);
         setLoading(false);
       }
     }
     if (offlineMode) {
+      loadPending.current = false;
       if (!cached) setError('Нет подключения и сохранённых уведомлений.');
       setLoading(false);
       setRefreshing(false);
@@ -181,7 +202,7 @@ export function NativeNotificationCenterScreen() {
         ? notificationApi.getMailNotificationFeed(MAIL_LIMIT)
         : Promise.resolve(null),
     ]);
-    if (!mountedRef.current) return;
+    if (!isCurrent()) return;
     const errors: string[] = [];
     const nextSnapshot = { ...snapshotRef.current };
     if (hubResult.status === 'fulfilled') {
@@ -208,9 +229,11 @@ export function NativeNotificationCenterScreen() {
       errors.push(formatApiError(mailResult.reason, 'Не удалось загрузить почтовые уведомления.'));
     }
     snapshotRef.current = nextSnapshot;
+    if (hubResult.status === 'fulfilled' || (mailResult.status === 'fulfilled' && mailResult.value)) snapshotAvailableRef.current = userId;
     if (userId && (hubResult.status === 'fulfilled' || mailResult.status === 'fulfilled')) {
       void writeNativeSnapshot('notifications', userId, nextSnapshot);
     }
+    loadPending.current = false;
     setError(errors.join(' '));
     setLoading(false);
     setRefreshing(false);
@@ -218,6 +241,7 @@ export function NativeNotificationCenterScreen() {
 
   useFocusEffect(useCallback(() => {
     void load();
+    return () => { loadGeneration.current += 1; };
   }, [load]));
 
   useEffect(() => {
@@ -246,24 +270,67 @@ export function NativeNotificationCenterScreen() {
     () => buildNotificationCenterItems(hubItems, mailItems).filter((item) => item.unread),
     [hubItems, mailItems],
   );
-  const sections = useMemo(() => groupNotificationCenterItems(items), [items]);
+  const filteredItems = useMemo(() => items.filter((item) => sourceFilter === 'all' || (sourceFilter === 'mail' ? item.source === 'mail' : item.source === 'hub' && item.entityType === sourceFilter)), [items, sourceFilter]);
+  const sections = useMemo(() => groupNotificationCenterItems(filteredItems), [filteredItems]);
   const totalUnread = hubUnread + mailUnread;
 
+  const persistReadResult = useCallback((source: 'hub' | 'mail', id?: string, mailboxId = '') => {
+    if (!mountedRef.current || !user?.id) return;
+    const previous = snapshotRef.current;
+    const next = { ...previous };
+    if (source === 'hub') {
+      next.hubItems = id ? previous.hubItems.filter(item => String(item.id) !== id) : [];
+      next.hubUnread = id ? Math.max(0, previous.hubUnread - (previous.hubItems.length - next.hubItems.length)) : 0;
+    } else {
+      next.mailItems = id ? previous.mailItems.filter(item => !(String(item.id) === id && String(item.mailbox_id || '') === mailboxId)) : [];
+      next.mailUnread = id ? Math.max(0, previous.mailUnread - (previous.mailItems.length - next.mailItems.length)) : 0;
+    }
+    snapshotRef.current = next;
+    void writeNativeSnapshot('notifications', user.id, next).then((saved) => {
+      if (!saved && mountedRef.current) setError('Отметка сохранена на сервере, но автономную копию обновить не удалось.');
+    }).catch(() => {
+      if (mountedRef.current) setError('Отметка сохранена на сервере, но автономную копию обновить не удалось.');
+    });
+  }, [user?.id]);
+
+  const beginReadAction = useCallback(() => {
+    readActionPending.current = true;
+    if (loadPending.current) refreshAfterAction.current = true;
+    loadGeneration.current += 1;
+    loadPending.current = false;
+    setLoading(false);
+    setRefreshing(false);
+  }, []);
+  const finishReadAction = useCallback(() => {
+    readActionPending.current = false;
+    if (mountedRef.current && refreshAfterAction.current) {
+      refreshAfterAction.current = false;
+      void load(true);
+    }
+  }, [load]);
+
   const openItem = useCallback((item: NotificationCenterItem) => {
-    if (busyKey || markingAll) return;
+    if (!mountedRef.current || readActionPending.current) return;
+    beginReadAction();
     setBusyKey(item.key);
     setError('');
     if (item.source === 'hub') {
       const raw = item.raw as HubNotificationItem;
       const destination = hubNotificationPortalPath(raw);
+      if (destination === '/dashboard') {
+        Alert.alert(item.title, [item.body, 'Связанную карточку открыть нельзя: ссылка отсутствует или этот тип уведомления пока не поддерживается.'].filter(Boolean).join('\n\n'), [{ text: 'Понятно' }]);
+      }
       if (offlineMode) {
+        finishReadAction();
         setBusyKey('');
-        openPortalPath(destination);
+        if (destination !== '/dashboard') openPortalPath(destination);
         return;
       }
       setHubItems((current) => current.filter((candidate) => String(candidate.id) !== item.id));
       setHubUnread((current) => Math.max(0, current - 1));
-      void notificationApi.markHubNotificationRead(item.id).catch((cause) => {
+      void notificationApi.markHubNotificationRead(item.id).then(() => {
+        persistReadResult('hub', item.id);
+      }).catch((cause) => {
         if (!mountedRef.current) return;
         setHubItems((current) => current.some((candidate) => String(candidate.id) === item.id)
           ? current
@@ -271,14 +338,16 @@ export function NativeNotificationCenterScreen() {
         setHubUnread((current) => current + 1);
         setError(formatApiError(cause, 'Уведомление открылось, но не отметилось прочитанным.'));
       }).finally(() => {
+        finishReadAction();
         if (mountedRef.current) setBusyKey('');
       });
-      openPortalPath(destination);
+      if (destination !== '/dashboard') openPortalPath(destination);
       return;
     }
     const raw = item.raw as MailNotificationItem;
     const destination = mailNotificationPortalPath(raw);
     if (offlineMode) {
+      finishReadAction();
       setBusyKey('');
       openPortalPath(destination);
       return;
@@ -289,7 +358,10 @@ export function NativeNotificationCenterScreen() {
     )));
     setMailUnread((current) => Math.max(0, current - 1));
     void markMailMessageRead(item.id, String(raw.mailbox_id || '')).then(() => {
-      publishNativeMailUnreadDelta(-1);
+      if (mountedRef.current) {
+        publishNativeMailUnreadDelta(-1);
+        persistReadResult('mail', item.id, String(raw.mailbox_id || ''));
+      }
     }).catch((cause) => {
       if (!mountedRef.current) return;
       setMailItems((current) => current.some((candidate) => (
@@ -299,10 +371,11 @@ export function NativeNotificationCenterScreen() {
       setMailUnread((current) => current + 1);
       setError(formatApiError(cause, 'Письмо открылось, но не отметилось прочитанным.'));
     }).finally(() => {
-      if (mountedRef.current) setBusyKey('');
+      finishReadAction();
+        if (mountedRef.current) setBusyKey('');
     });
     openPortalPath(destination);
-  }, [busyKey, markingAll, offlineMode]);
+  }, [beginReadAction, finishReadAction, persistReadResult, offlineMode]);
 
   const openItemRef = useRef(openItem);
   openItemRef.current = openItem;
@@ -320,13 +393,15 @@ export function NativeNotificationCenterScreen() {
   ), [busyKey, handleItemPress, tokens]);
 
   const markAll = useCallback(async () => {
-    if (offlineMode || totalUnread <= 0 || markingAll) return;
+    if (!mountedRef.current || offlineMode || totalUnread <= 0 || readActionPending.current) return;
+    beginReadAction();
     setMarkingAll(true);
     setError('');
     const shouldMarkHub = hubUnread > 0;
     const shouldMarkMail = canReadMail && mailUnread > 0;
     const markMail = async () => {
       const mailboxes = await listMailboxes(false);
+      if (!mountedRef.current) return 0;
       const mailboxIds = mailboxes
         .filter((mailbox) => mailbox.is_active !== false)
         .map((mailbox) => String(mailbox.id || '').trim())
@@ -341,6 +416,7 @@ export function NativeNotificationCenterScreen() {
     const errors: string[] = [];
     if (hubResult.status === 'fulfilled') {
       if (shouldMarkHub) {
+        persistReadResult('hub');
         setHubItems([]);
         setHubUnread(0);
       }
@@ -349,6 +425,7 @@ export function NativeNotificationCenterScreen() {
     }
     if (mailResult.status === 'fulfilled') {
       if (shouldMarkMail) {
+        persistReadResult('mail');
         setMailItems([]);
         setMailUnread(0);
         publishNativeMailUnreadAbsolute(0);
@@ -357,8 +434,9 @@ export function NativeNotificationCenterScreen() {
       errors.push(formatApiError(mailResult.reason, 'Не удалось прочитать все письма.'));
     }
     setError(errors.join(' '));
+    finishReadAction();
     setMarkingAll(false);
-  }, [canReadMail, hubUnread, mailUnread, markingAll, offlineMode, totalUnread]);
+  }, [beginReadAction, finishReadAction, persistReadResult, canReadMail, hubUnread, mailUnread, offlineMode, totalUnread]);
 
   if (!canReadHub) {
     return (
@@ -404,33 +482,39 @@ export function NativeNotificationCenterScreen() {
             accessibilityLiveRegion="polite"
             style={[styles.count, { color: tokens.textPrimary }]}
           >
-            {loading ? 'Обновляем…' : `Непрочитанных: ${totalUnread}`}
+            {loading ? 'Обновляем…' : error && items.length === 0 ? 'Данные недоступны' : `Непрочитанных: ${totalUnread}`}
           </Text>
           <Text style={[styles.hint, { color: tokens.textSecondary }]}>Задачи, лента, чат и почта в одной ленте</Text>
         </View>
         <Pressable
           testID="native-notifications-mark-all"
           onPress={() => { void markAll(); }}
-          disabled={offlineMode || markingAll || totalUnread <= 0}
+          disabled={offlineMode || markingAll || Boolean(busyKey) || totalUnread <= 0}
           accessibilityRole="button"
           accessibilityLabel="Отметить все уведомления прочитанными"
-          accessibilityState={{ disabled: offlineMode || markingAll || totalUnread <= 0, busy: markingAll }}
+          accessibilityState={{ disabled: offlineMode || markingAll || Boolean(busyKey) || totalUnread <= 0, busy: markingAll }}
           style={({ pressed }) => [
             styles.markAll,
             {
               backgroundColor: tokens.actionBg,
               borderColor: tokens.actionBorder,
-              opacity: offlineMode || markingAll || totalUnread <= 0 ? 0.5 : pressed ? 0.75 : 1,
+              opacity: offlineMode || markingAll || Boolean(busyKey) || totalUnread <= 0 ? 0.5 : pressed ? 0.75 : 1,
             },
           ]}
         >
           {markingAll ? <ActivityIndicator size="small" color={tokens.primary} /> : (
             <MaterialCommunityIcons name="check-all" size={20} color={tokens.primary} />
           )}
-          <Text style={[styles.markAllText, { color: tokens.primary }]}>Прочитать все</Text>
+          <Text style={[styles.markAllText, { color: tokens.primary }]}>Отметить всё прочитанным</Text>
         </Pressable>
       </View>
+      <View style={{ marginBottom: 10 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} accessibilityRole="tablist" contentContainerStyle={{ gap: 8 }}>
+          {[['all', 'Все'], ['task', 'Задачи'], ['chat', 'Чат'], ['mail', 'Почта'], ['announcement', 'Лента']].map(([key, label]) => <Pressable key={key} testID={`native-notifications-filter-${key}`} accessibilityRole="tab" accessibilityState={{ selected: sourceFilter === key }} onPress={() => setSourceFilter(key)} style={{ minHeight: 44, paddingHorizontal: 14, borderRadius: 22, justifyContent: 'center', backgroundColor: sourceFilter === key ? tokens.primary : tokens.actionBg }}><Text style={{ color: sourceFilter === key ? '#fff' : tokens.textPrimary }}>{label}</Text></Pressable>)}
+        </ScrollView>
+      </View>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
+      {error && !offlineMode ? <Pressable testID="native-notifications-retry" accessibilityRole="button" accessibilityLabel="Повторить загрузку уведомлений" disabled={loading || refreshing} onPress={() => { void load(true); }} style={[styles.markAll, { alignSelf: 'flex-start', marginBottom: 8, borderColor: tokens.actionBorder }]}><Text style={[styles.markAllText, { color: tokens.primary }]}>Повторить загрузку</Text></Pressable> : null}
       {loading && items.length === 0 ? (
         <View style={styles.loading}><ActivityIndicator color={tokens.primary} /></View>
       ) : (
@@ -441,7 +525,7 @@ export function NativeNotificationCenterScreen() {
           refreshing={refreshing}
           onRefresh={() => { void load(true); }}
           stickySectionHeadersEnabled={false}
-          contentContainerStyle={items.length === 0 ? styles.emptyList : styles.list}
+          contentContainerStyle={filteredItems.length === 0 ? styles.emptyList : styles.list}
           renderSectionHeader={({ section }) => (
             <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.textSecondary }]}>
               {section.title}
@@ -452,8 +536,8 @@ export function NativeNotificationCenterScreen() {
           ListEmptyComponent={(
             <View style={[styles.empty, { backgroundColor: tokens.emptyStateBg, borderColor: tokens.borderSoft }]}>
               <MaterialCommunityIcons name="bell-check-outline" size={34} color={tokens.iconMuted} />
-              <Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>Всё прочитано</Text>
-              <Text style={[styles.emptyBody, { color: tokens.textSecondary }]}>Новые события появятся здесь.</Text>
+              <Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>{error ? 'Не удалось обновить уведомления' : sourceFilter === 'all' ? 'Всё прочитано' : 'В этом разделе уведомлений нет'}</Text>
+              <Text style={[styles.emptyBody, { color: tokens.textSecondary }]}>{error ? 'Проверьте подключение и повторите загрузку.' : 'Новые события появятся здесь.'}</Text>
             </View>
           )}
           renderItem={renderNotificationItem}
@@ -466,12 +550,12 @@ export function NativeNotificationCenterScreen() {
 const styles = StyleSheet.create({
   headerActions: { flexDirection: 'row', alignItems: 'center' },
   headerAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
-  summaryText: { flex: 1, minWidth: 0 },
+  summaryRow: { flexDirection: 'column', alignSelf: 'stretch', alignItems: 'center', gap: 10, marginBottom: 10 },
+  summaryText: { alignSelf: 'stretch', minWidth: 0 },
   count: { fontSize: 15, fontWeight: '800' },
   hint: { marginTop: 2, fontSize: 12, lineHeight: 16 },
   markAll: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  markAllText: { fontSize: 12, fontWeight: '800' },
+  markAllText: { flexShrink: 1, fontSize: 12, fontWeight: '800' },
   banner: { minHeight: 40, borderRadius: 12, paddingHorizontal: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
   bannerText: { flex: 1, fontSize: 13, fontWeight: '700' },
   error: { fontSize: 13, fontWeight: '700', marginBottom: 8 },
@@ -484,11 +568,11 @@ const styles = StyleSheet.create({
   notificationRow: { minHeight: 96, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   iconShell: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   notificationBody: { flex: 1, minWidth: 0 },
-  notificationMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  notificationMeta: { flexWrap: 'wrap', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   sourceRow: { minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },
   unreadDot: { width: 7, height: 7, borderRadius: 4 },
-  sourceText: { fontSize: 11, fontWeight: '800' },
-  time: { fontSize: 11, fontWeight: '600' },
+  sourceText: { fontSize: 12, fontWeight: '800' },
+  time: { fontSize: 12, fontWeight: '600' },
   title: { marginTop: 3, fontSize: 15, lineHeight: 20, fontWeight: '800' },
   body: { marginTop: 2, fontSize: 13, lineHeight: 18 },
   empty: { minHeight: 180, borderWidth: 1, borderRadius: 16, alignItems: 'center', justifyContent: 'center', padding: 24 },

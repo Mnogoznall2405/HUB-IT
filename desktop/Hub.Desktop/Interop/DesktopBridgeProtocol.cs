@@ -202,6 +202,15 @@ public static class DesktopBridgeProtocol
         });
     }
 
+    public static string CreateNotificationResultMessage(string id, bool accepted) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "notification.result",
+            version = CurrentVersion,
+            id,
+            accepted,
+        });
+
     public static string CreateCapabilitiesMessage()
     {
         return JsonSerializer.Serialize(new

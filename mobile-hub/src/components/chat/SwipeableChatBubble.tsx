@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
@@ -44,6 +44,7 @@ export const SwipeableChatBubble = memo(function SwipeableChatBubble({
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
   const offset = useRef(new Animated.Value(0)).current;
+  useEffect(() => () => offset.stopAnimation(), [offset]);
   const thresholdDirection = useRef<'reply' | 'forward' | null>(null);
 
   const reset = () => {
@@ -56,7 +57,7 @@ export const SwipeableChatBubble = memo(function SwipeableChatBubble({
       toValue: 0,
       useNativeDriver: true,
       speed: 28,
-      bounciness: 4,
+      bounciness: 0,
     }).start();
   };
 
@@ -73,6 +74,7 @@ export const SwipeableChatBubble = memo(function SwipeableChatBubble({
     onMoveShouldSetPanResponder: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
     onMoveShouldSetPanResponderCapture: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
     onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
+    onPanResponderGrant: () => { offset.stopAnimation(); thresholdDirection.current = null; },
     onPanResponderMove: (_, gesture) => {
       const minimum = onSwipeForward ? -MAX_OFFSET : 0;
       const maximum = onSwipeReply ? MAX_OFFSET : 0;
@@ -101,6 +103,7 @@ export const SwipeableChatBubble = memo(function SwipeableChatBubble({
       }
     },
     onPanResponderRelease: (_, gesture) => {
+      if (!shouldKeepHorizontalSwipe(gesture.dx, gesture.dy)) { reset(); return; }
       if (onSwipeReply && shouldTriggerReply(gesture.dx)) onSwipeReply();
       else if (onSwipeForward && shouldTriggerForward(gesture.dx)) onSwipeForward();
       reset();

@@ -1,4 +1,5 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as computersApi from '../../api/computersApi';
 import type { ComputerRecord } from '../../api/computersApi';
@@ -119,9 +120,31 @@ it('does not request inventory data without computers.read', async () => {
 it('loads a read-only detail without exposing hide or change-history actions', async () => {
   params.mockReturnValue({ macAddress: computer.mac_address, scope: 'all', q: computer.hostname });
   const view = await render(<NativeComputerDetailScreen />);
+  await fireEvent.press(await view.findByRole('button', { name: 'Привязка и пользователь' }));
   await waitFor(() => expect(view.getByText('Dell OptiPlex')).toBeTruthy());
   expect(computersApi.getComputerDetail).toHaveBeenCalledWith(computer.mac_address, { scope: 'all', signal: expect.anything() });
   expect(view.queryByText('Скрыть компьютер')).toBeNull();
   expect(view.queryByText('История изменений')).toBeNull();
   expect(view.queryByTestId('native-computer-detail-open-web')).toBeNull();
+});
+
+it('refreshes the full loaded window without dropping the second page', async () => {
+  jest.useFakeTimers();
+  const initialState = AppState.currentState;
+  AppState.currentState = 'active';
+  try {
+    const records = Array.from({ length: 100 }, (_, i) => ({ ...computer, mac_address: `mac-${i}`, hostname: `PC-${i}` }));
+    const search = computersApi.searchComputers as jest.Mock;
+    search.mockImplementation(async ({ limit, offset }) => ({ items: records.slice(offset, offset + limit), total: 100, has_more: offset + limit < 100 }));
+    const view = await render(<NativeComputersScreen />);
+    await waitFor(() => expect(view.getByTestId('native-computers-list').props.data).toHaveLength(50));
+    await act(async () => { fireEvent(view.getByTestId('native-computers-list'), 'onEndReached'); });
+    await waitFor(() => expect(view.getByTestId('native-computers-list').props.data).toHaveLength(100));
+    records[60] = { ...records[60], status: 'offline' };
+    await act(async () => { jest.advanceTimersByTime(60_000); });
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 100 }));
+    expect(view.getByTestId('native-computers-list').props.data).toHaveLength(100);
+    expect(view.getByTestId('native-computers-list').props.data[60].status).toBe('offline');
+    await view.unmount();
+  } finally { AppState.currentState = initialState; jest.useRealTimers(); }
 });

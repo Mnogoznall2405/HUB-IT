@@ -117,6 +117,33 @@ afterEach(() => {
 });
 
 describe('useVoiceRecorder', () => {
+  it('keeps the completion callback from the start of recording', async () => {
+    const { getUserMedia } = installSecureMediaEnvironment();
+    getUserMedia.mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+    const original = vi.fn(), other = vi.fn();
+    const { result, rerender } = renderHook(({ complete }) => useVoiceRecorder({ onRecordingComplete: complete }), { initialProps: { complete: original } });
+    await act(async () => { await result.current.startVoiceRecording(); });
+    rerender({ complete: other });
+    act(() => result.current.stopVoiceRecording());
+    expect(original).toHaveBeenCalledOnce();
+    expect(other).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('releases the microphone on unmount, pending permission=%s', async (pending) => {
+    const { getUserMedia } = installSecureMediaEnvironment();
+    const stop = vi.fn();
+    let resolve;
+    getUserMedia.mockReturnValue(new Promise(r => { resolve = r; }));
+    const { result, unmount } = renderHook(() => useVoiceRecorder());
+    let started;
+    act(() => { started = result.current.startVoiceRecording(); });
+    if (!pending) await act(async () => { resolve({ getTracks: () => [{ stop }] }); await started; });
+    unmount();
+    if (pending) await act(async () => { resolve({ getTracks: () => [{ stop }] }); await started; });
+    expect(stop).toHaveBeenCalled();
+    if (pending) expect(mediaRecorderInstances).toHaveLength(0);
+  });
+
   it('creates a mic analyser after getUserMedia and cleans resources on cancel', async () => {
     const { getUserMedia } = installSecureMediaEnvironment();
     const { stream, track } = createMockStream();

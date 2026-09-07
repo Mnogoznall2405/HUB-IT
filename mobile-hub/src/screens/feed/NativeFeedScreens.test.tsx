@@ -257,6 +257,38 @@ describe('NativeFeedEditorScreen', () => {
     (feedFiles.pickNativeFeedFiles as jest.Mock).mockResolvedValue([]);
   });
 
+  it('uses the loaded publication as the baseline and protects an edited body', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    mockedUseLocalSearchParams.mockReturnValue({ postId: samplePost.id });
+    (feedApi.getFeedPost as jest.Mock).mockResolvedValue({ ...samplePost, can_manage: true });
+    const view = await render(<NativeFeedEditorScreen />);
+    await view.findByTestId('feed-editor-body');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(alert).not.toHaveBeenCalled();
+    jest.mocked(router.back).mockClear();
+    await fireEvent.changeText(view.getByTestId('feed-editor-body'), 'Изменённый текст');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    alert.mockRestore();
+  });
+
+  it('protects a new publication and clears dirty state when its original text is restored', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const view = await render(<NativeFeedEditorScreen />);
+    await fireEvent.changeText(view.getByTestId('feed-editor-title'), 'Не потерять');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    await act(async () => alert.mock.calls[0][2]?.[0].onPress?.());
+    expect(view.getByTestId('feed-editor-title').props.value).toBe('Не потерять');
+    await fireEvent.changeText(view.getByTestId('feed-editor-title'), '');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(alert).toHaveBeenCalledTimes(1);
+    alert.mockRestore();
+  });
+
   it('publishes a new post with the native editor contract', async () => {
     const view = await render(<NativeFeedEditorScreen />);
     await act(async () => {

@@ -3,6 +3,7 @@ import {
   buildMyFilePublicUrl,
   formatMyFileSize,
   isMyFileProcessing,
+  isMyFileReady,
   MY_FILES_MAX_FILE_BYTES,
   myFileIcon,
   nativeMyFilePreviewKind,
@@ -79,4 +80,12 @@ it('allows only clean bounded native previews without executable markup renderin
     download_mime_type: 'text/plain', preview_kind: 'unsupported', preview_available: false,
     preview_status: 'unsupported', original_size_bytes: 2 * 1024 * 1024,
   }))).toBeNull();
+});
+
+it('distinguishes blocked and unavailable security scans from a clean ready file', () => {
+  expect(myFileStatusLabel(file({ status: 'failed', security_scan_status: 'blocked', error_text: 'File blocked by security scan' }))).toBe('Заблокирован проверкой безопасности');
+  expect(isMyFileReady(file({ security_scan_status: 'blocked' }))).toBe(false);
+  expect(myFileStatusLabel(file({ security_scan_status: 'error' }))).toBe('Готов · проверка безопасности недоступна');
+  expect(myFileStatusLabel(file({ security_scan_status: 'skipped' }))).toBe('Готов · проверка безопасности пропущена');
+  expect(isMyFileReady(file({ security_scan_status: 'error' }))).toBe(true);
 });

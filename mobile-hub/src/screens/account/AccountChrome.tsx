@@ -1,5 +1,6 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import type { ComponentProps, ReactNode } from 'react';
+import { useState, useContext, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -10,7 +11,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
@@ -24,6 +25,9 @@ export function AccountScreenScaffold({
   refreshing = false,
   onRefresh,
   scroll = true,
+  footer,
+  includeBottomNav = true,
+  backTestID = 'account-header-back',
 }: {
   title: string;
   onBack?: () => void;
@@ -33,8 +37,13 @@ export function AccountScreenScaffold({
   refreshing?: boolean;
   onRefresh?: () => void;
   scroll?: boolean;
+  footer?: ReactNode;
+  includeBottomNav?: boolean;
+  backTestID?: string;
 }) {
-  const bottomInset = useNativeBottomNavInset();
+  const navInset = useNativeBottomNavInset();
+  const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const bottomInset = includeBottomNav ? navInset : (safeInsets?.bottom || 0);
   const body = (
     <View style={[styles.body, { paddingBottom: bottomInset + 12 }]}>
       {children}
@@ -50,7 +59,7 @@ export function AccountScreenScaffold({
             accessibilityRole="button"
             accessibilityLabel="Назад"
             style={styles.backButton}
-            testID="account-header-back"
+            testID={backTestID}
           >
             <MaterialCommunityIcons name="arrow-left" size={22} color={tokens.textPrimary} />
           </Pressable>
@@ -66,35 +75,58 @@ export function AccountScreenScaffold({
         >
           <ScrollView
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={[styles.scroll, { paddingBottom: bottomInset + 12 }]}
+            contentContainerStyle={[styles.scroll, { paddingBottom: footer ? 12 : bottomInset + 12 }]}
             refreshControl={onRefresh ? (
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={tokens.primary} />
             ) : undefined}
           >
             {children}
           </ScrollView>
+          {footer ? <View style={{ padding: 12, paddingBottom: bottomInset + 12, backgroundColor: tokens.panelSolid }}>{footer}</View> : null}
         </KeyboardAvoidingView>
       ) : body}
     </SafeAreaView>
   );
 }
 
-export function AccountSectionCard({
-  tokens,
-  title,
-  description,
-  children,
-}: {
+export function AccountSubpage({ visible, title, tokens, onClose, children, footer }: {
+  visible: boolean;
+  title: string;
+  tokens: FluentTokens;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  if (!visible) return null;
+  return (
+    <Modal visible animationType="slide" onRequestClose={onClose}>
+      <AccountScreenScaffold title={title} tokens={tokens} onBack={onClose} footer={footer} includeBottomNav={false} backTestID="account-subpage-back">
+        {children}
+      </AccountScreenScaffold>
+    </Modal>
+  );
+}
+
+export function AccountSectionCard({ tokens, title, description, children, collapsible = false }: {
   tokens: FluentTokens;
   title?: string;
   description?: string;
   children: ReactNode;
+  collapsible?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return (
-    <View style={[styles.card, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-      {title ? <Text style={[styles.cardTitle, { color: tokens.textPrimary }]}>{title}</Text> : null}
-      {description ? <Text style={[styles.cardDescription, { color: tokens.textSecondary }]}>{description}</Text> : null}
-      <View style={title || description ? styles.cardBody : undefined}>{children}</View>
+    <View style={[styles.card, collapsible && !expanded ? { paddingVertical: 2 } : undefined, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+      {collapsible ? (
+        <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={[styles.cardTitle, { flex: 1, color: tokens.textPrimary }]}>{title}</Text>
+          <MaterialCommunityIcons name={expanded ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
+        </Pressable>
+      ) : title ? <Text style={[styles.cardTitle, { color: tokens.textPrimary }]}>{title}</Text> : null}
+      {!collapsible || expanded ? <>
+        {description ? <Text style={[styles.cardDescription, { color: tokens.textSecondary }]}>{description}</Text> : null}
+        <View style={title || description ? styles.cardBody : undefined}>{children}</View>
+      </> : null}
     </View>
   );
 }
@@ -118,7 +150,7 @@ export function AccountActionRow({
 }) {
   const color = danger ? tokens.error : tokens.textPrimary;
   return (
-    <Pressable testID={testID} onPress={onPress} style={styles.row}>
+    <Pressable testID={testID} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={styles.row}>
       {icon ? (
         <MaterialCommunityIcons name={icon} size={22} color={danger ? tokens.error : tokens.iconMuted} />
       ) : null}

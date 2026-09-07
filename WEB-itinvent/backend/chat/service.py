@@ -1790,6 +1790,7 @@ class ChatService:
         if len(normalized_emoji) > 32:
             raise ValueError("emoji too long")
         with chat_session() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=normalized_conversation_id)
             self._require_membership(
                 session=session,
                 conversation_id=normalized_conversation_id,
@@ -1801,7 +1802,7 @@ class ChatService:
                     ChatMessage.conversation_id == normalized_conversation_id,
                 )
             ).scalar_one_or_none()
-            if message is None:
+            if message is None or message.is_deleted:
                 raise LookupError(f"Message {normalized_message_id!r} not found")
             existing = session.execute(
                 select(ChatMessageReaction).where(
@@ -2034,7 +2035,7 @@ class ChatService:
             if attachment is None or attachment.message_id != normalized_message_id:
                 raise LookupError("Attachment not found")
             message = session.get(ChatMessage, attachment.message_id)
-            if message is None:
+            if message is None or bool(getattr(message, "is_deleted", False)):
                 raise LookupError("Message not found")
             self._require_membership(
                 session=session,
@@ -2148,7 +2149,7 @@ class ChatService:
             if attachment is None or attachment.message_id != normalized_message_id:
                 raise LookupError("Attachment not found")
             message = session.get(ChatMessage, attachment.message_id)
-            if message is None:
+            if message is None or bool(getattr(message, "is_deleted", False)):
                 raise LookupError("Message not found")
             self._require_membership(
                 session=session,
@@ -2407,6 +2408,7 @@ class ChatService:
         current_user_id: int,
         conversation_id: str,
         source_message_id: str,
+        client_message_id: Optional[str] = None,
         body: Optional[str] = None,
         body_format: str = "plain",
         reply_to_message_id: Optional[str] = None,
@@ -2431,6 +2433,7 @@ class ChatService:
                     current_user_id=int(current_user_id),
                     conversation_id=conversation_id,
                     source_message_id=normalized_source_message_id,
+                    written_paths=written_paths,
                     reply_to_message_id=reply_to_message_id,
                 )
             )
@@ -2450,11 +2453,20 @@ class ChatService:
                 current_user_id=int(current_user_id),
                 conversation_id=conversation_id,
                 source=source_snapshot,
+                client_message_id=client_message_id,
                 prepared_attachments=prepared_attachments,
                 reply_to_message_id=reply_to_message_id,
                 validate_member_user_ids=_validate_forward_member_access,
             )
             payload = persisted.payload
+            if persisted.dedup_hit:
+                # Materialization used fresh paths; discard unused copies on replay.
+                for path in written_paths:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                return payload
         except Exception:
             for path in written_paths:
                 try:
@@ -2587,12 +2599,12 @@ class ChatService:
         affected_user_ids: set[int] = {int(current_user_id)}
         system_message_id: str | None = None
         with chat_session() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation = self._require_membership(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             message = session.get(ChatMessage, normalized_message_id)
             if message is None or message.conversation_id != conversation.id:
                 raise LookupError("Message not found")
@@ -2681,12 +2693,12 @@ class ChatService:
 
         affected_user_ids: set[int] = {int(current_user_id)}
         with chat_session() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation = self._require_membership(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             message = session.get(ChatMessage, normalized_message_id)
             if message is None or message.conversation_id != conversation.id:
                 raise LookupError("Message not found")
@@ -3050,7 +3062,8 @@ class ChatService:
             body = task_title or "Карточка задачи"
         elif message_kind == "file" and not body:
             if attachments_count == 1:
-                body = _normalize_text(attachments[0].file_name) or "Файл"
+                attachment = attachments[0]
+                body = _normalize_text(attachment.get("file_name") if isinstance(attachment, dict) else attachment.file_name) or "Файл"
             elif attachments_count > 1:
                 body = f"Файлы: {attachments_count}"
             else:
@@ -3394,10 +3407,15 @@ class ChatService:
         if ";" in value:
             value = value.split(";", 1)[0].strip()
         normalized_media_kind = self._normalize_media_kind(media_kind)
-        if normalized_media_kind == "audio":
+        if normalized_media_kind == "audio" or (
+            value.startswith("audio/") and Path(file_name).suffix.lower() in {".webm", ".ogg", ".mp4"}
+        ):
             return self._normalize_audio_mime_type(mime_type=value, file_name=file_name)
-        if value and value != "application/octet-stream":
-            return value
+        # Canonicalize known file extensions instead of trusting arbitrary client
+        # Content-Type. Preserve the existing supported-MIME fallback for other names.
+        if Path(file_name).suffix.lower() not in CHAT_ALLOWED_EXTENSIONS:
+            if value in CHAT_ALLOWED_MIME_TYPES or any(value.startswith(prefix) for prefix in CHAT_ALLOWED_MIME_PREFIXES):
+                return value
         guessed, _ = mimetypes.guess_type(file_name)
         guessed_value = _normalize_text(guessed).lower()
         if ";" in guessed_value:

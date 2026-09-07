@@ -1,6 +1,6 @@
 ---
 name: better-ui
-description: Design engineering principles for making interfaces feel polished. Use when building UI components, reviewing frontend code, implementing animations, hover states, shadows, borders, micro-interactions, enter/exit animations, choosing or reviewing icons, or any visual detail work. Triggers on UI polish, design details, "make it feel better", "feels off", stagger animations, border radius, optical alignment, image outlines, box shadows, icons, icon stroke weight, icon states, motion restraint.
+description: Build or review UI polish, motion, icons and surfaces within the existing design system.
 ---
 
 # Details that make interfaces feel better
@@ -9,7 +9,7 @@ Great interfaces rarely come from a single thing. It's usually a collection of s
 
 When reviewing, slow the interface down: replay motion at 10% speed in the browser's Animations panel and walk every state: hover, focus, active, loading, empty. What feels off at 10% speed is what's subtly wrong at full speed.
 
-Preserve the project's component library, tokens, and density. Match its established motion language except where a principle below prescribes an exact interaction pattern.
+Preserve the project's component library, tokens, and density. Match its established motion language. Numeric examples below are starting points, not overrides of project tokens, accessibility needs or the user's requested behavior.
 
 Typography (text wrapping, font rendering, tabular numbers, spacing) is covered by the `better-typography` skill; use that for anything text-related. Accessibility (hit areas, focus states, keyboard support, ARIA, reduced motion) is covered by the `better-accessibility` skill. Layout structure (grouping, spacing between sections, breakpoints, spatial RTL) is covered by the `better-layout` skill.
 
@@ -50,15 +50,15 @@ Use a small fixed `translateY` instead of full height. Exits should be softer th
 
 ### 7. Contextual Icon Animations
 
-Animate icons with `opacity`, `scale`, and `blur` instead of toggling visibility. Use exactly these values: scale from `0.25` to `1`, opacity from `0` to `1`, blur from `4px` to `0px`. If the project has `motion` or `framer-motion` in `package.json`, match that package's import path (or the established nearby imports when both exist) and use `transition: { type: "spring", duration: 0.3, bounce: 0 }`; bounce must always be `0`. If no motion library is installed, keep both icons in the DOM (one absolute-positioned) and cross-fade with CSS transitions using `cubic-bezier(0.2, 0, 0, 1)`; this gives both enter and exit animations without any dependency.
+For an infrequent contextual icon change, consider a restrained opacity cross-fade using existing motion tokens and tooling. Add scale or blur only if it improves clarity. Use the installed motion library or CSS; do not introduce a dependency for this effect. Preserve reduced-motion behavior and a static state cue.
 
 ### 8. Image Outlines
 
-Add a subtle `1px` outline with low opacity to images for consistent depth. The color must be pure black in light mode (`oklch(0 0 0 / 0.1)`) and pure white in dark mode (`oklch(1 0 0 / 0.1)`), never a near-black like slate, zinc, or any tinted neutral. A tinted outline picks up the surface color underneath it and reads as dirt on the image edge.
+Use an image outline only when it improves separation from the surface. Start from the project border token and verify light/dark appearance; a low-opacity neutral 1px outline is one option, not a required color or style.
 
 ### 9. Scale on Press
 
-A subtle `scale(0.96)` on click gives buttons tactile feedback. Always use `0.96`. Never use a value smaller than `0.95`: anything below feels exaggerated. Add a `static` prop to disable it when motion would be distracting.
+Press feedback should match existing controls. A small scale change such as `scale(0.96)` is an optional example; use the project's established value or static feedback when more appropriate. Do not add a new prop or animate every button just to follow this example.
 
 ### 10. Skip Animation on Page Load
 
@@ -129,7 +129,7 @@ Consolidate a repeated systemic issue into one row and list every affected locat
 | Severity | Location | Before | After | Why |
 | --- | --- | --- | --- | --- |
 | LOW | `src/Button.tsx:19` | `<button className="...">` | Add `active:scale-[0.96] transition-transform` | Press feedback makes the control feel responsive |
-| MEDIUM | `src/button.css:24` | `scale(0.9)` on press | Raise to `scale(0.96)` | Anything below `0.95` feels exaggerated |
+| LOW | `src/button.css:24` | Press motion visibly disrupts a dense toolbar | Match the existing toolbar feedback | The observed distraction, not a universal scale threshold, justifies a change |
 
 ### Verification and Verdict
 

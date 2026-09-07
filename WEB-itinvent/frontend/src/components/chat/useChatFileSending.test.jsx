@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatAPI } from '../../api/client';
@@ -113,6 +113,44 @@ function Harness({
 describe('useChatFileSending', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    chatAPI.sendFiles.mockReset();
+  });
+
+  it('restores a failed upload only when its original conversation is opened', async () => {
+    let reject;
+    chatAPI.sendFiles.mockReturnValueOnce(new Promise((_, r) => { reject = r; }));
+    const file = new File(['bytes'], 'original.pdf');
+    const items = [{ file }];
+    const setSelectedUploadItems = vi.fn();
+    const args = {
+      selectedFiles: [file], selectedUploadItems: items, fileCaption: 'original caption',
+      fileUploadAbortRef: { current: null }, buildReplyPreview: vi.fn(), createOptimisticFileMessage: () => ({ id: 'pending' }),
+      setSelectedUploadItems,
+    };
+    for (const key of ['setFileCaption', 'setFileDialogOpen', 'setSendMediaAsFiles', 'setFileUploadProgress',
+      'setReplyMessage', 'setSendingFiles', 'applyOutgoingThreadMessage', 'removeThreadMessage', 'notifyApiError', 'revokeObjectUrls']) args[key] = vi.fn();
+    const { result, rerender } = renderHook(({ conversation, selected }) => useChatFileSending({
+      ...args, activeConversationId: conversation, selectedUploadItems: selected,
+    }), { initialProps: { conversation: 'A', selected: items } });
+    let sending;
+    act(() => { sending = result.current.sendFiles(); });
+    rerender({ conversation: 'B', selected: [] });
+    await act(async () => { reject(new Error('503')); await sending; });
+    expect(setSelectedUploadItems).toHaveBeenCalledExactlyOnceWith([]);
+    rerender({ conversation: 'A', selected: [] });
+    expect(setSelectedUploadItems).toHaveBeenLastCalledWith(items);
+    expect(args.setFileCaption).toHaveBeenLastCalledWith('original caption');
+  });
+
+  it('restores files and caption after failure so the same upload can be retried', async () => {
+    chatAPI.sendFiles.mockRejectedValueOnce(new Error('503')).mockResolvedValueOnce({ id: 'server' });
+    render(<Harness applyOutgoingThreadMessage={vi.fn()} patchThreadMessage={vi.fn()} />);
+    fireEvent.click(screen.getByText('send files'));
+    await waitFor(() => expect(chatAPI.sendFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText('selected file name').textContent).toBe('report.pdf'));
+    fireEvent.click(screen.getByText('send files'));
+    await waitFor(() => expect(chatAPI.sendFiles).toHaveBeenCalledTimes(2));
+    expect(chatAPI.sendFiles.mock.calls[1][2].body).toBe('caption');
   });
 
   it('keeps optimistic file message and replaces it with server response', async () => {

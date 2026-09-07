@@ -499,6 +499,7 @@ async def forward_chat_message(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             source_message_id=payload.source_message_id,
+            client_message_id=payload.client_message_id,
             body=payload.body,
             body_format=payload.body_format,
             reply_to_message_id=payload.reply_to_message_id,

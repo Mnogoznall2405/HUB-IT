@@ -22,6 +22,48 @@ function buildMessage(overrides = {}) {
 }
 
 describe('useMailQuickReply', () => {
+  it('keeps confirmed send successful when refreshing the list fails', async () => {
+    const onSent = vi.fn();
+    const onError = vi.fn();
+    const refreshFolderSummary = vi.fn();
+    const { result } = renderHook(() => useMailQuickReply({
+      mailAPI: { sendMessage: vi.fn().mockResolvedValue({}) },
+      resolveComposeMailboxId: (id) => id,
+      refreshList: vi.fn().mockRejectedValue(new Error('offline')),
+      refreshFolderSummary,
+      onSent,
+      onError,
+    }));
+    await act(async () => {
+      expect(await result.current.sendQuickReply(buildMessage(), 'Hello')).toBe(true);
+    });
+    expect(onSent).toHaveBeenCalledTimes(1);
+    expect(refreshFolderSummary).toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('отправлено'));
+    expect(result.current.draftEpoch).toBe(1);
+  });
+
+  it.each(['message', 'body', 'mailbox', 'mode'])('changes retry key when %s changes', async (change) => {
+    const sendMessage = vi.fn().mockRejectedValue(new Error('offline'));
+    const { result } = renderHook(() => useMailQuickReply({
+      mailAPI: { sendMessage }, resolveComposeMailboxId: (id) => id,
+    }));
+    const message = buildMessage();
+    await act(async () => { await result.current.sendQuickReply(message, 'Hello'); });
+    const next = buildMessage({
+      id: change === 'message' ? 'msg-2' : message.id,
+      compose_context: {
+        reply: { ...message.compose_context.reply, mailbox_id: change === 'mailbox' ? 'mb-2' : 'mb-1' },
+        reply_all: { ...message.compose_context.reply, cc: ['other@example.com'] },
+      },
+    });
+    await act(async () => {
+      await result.current.sendQuickReply(next, change === 'body' ? 'Changed' : 'Hello', {
+        mode: change === 'mode' ? 'reply_all' : 'reply',
+      });
+    });
+    expect(sendMessage.mock.calls[1][0].idempotencyKey).not.toBe(sendMessage.mock.calls[0][0].idempotencyKey);
+  });
   it('sends body argument and bumps draftEpoch only on success', async () => {
     const sendMessage = vi.fn().mockResolvedValue({});
     const { result } = renderHook(() => useMailQuickReply({

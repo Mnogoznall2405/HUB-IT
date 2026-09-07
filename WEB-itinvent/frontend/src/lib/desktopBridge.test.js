@@ -27,6 +27,25 @@ afterEach(() => {
 });
 
 describe('desktopBridge', () => {
+  it.each(['accepted', 'rejected', 'timeout'])('settles notification confirmation: %s', async (mode) => {
+    vi.useFakeTimers();
+    const transport = installTransport();
+    const { initializeDesktopBridge, showDesktopNotification } = await import('./desktopBridge');
+    const initialized = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialized;
+    const onResult = vi.fn();
+    showDesktopNotification({ id: 'chat:ack', title: 'Title', body: 'Body', route: '/chat', onResult });
+    expect(onResult).not.toHaveBeenCalled();
+    transport.emit({ type: 'notification.result', version: 1, id: 'chat:wrong', accepted: true });
+    expect(onResult).not.toHaveBeenCalled();
+    if (mode === 'timeout') await vi.advanceTimersByTimeAsync(10000);
+    else transport.emit({ type: 'notification.result', version: 1, id: 'chat:ack', accepted: mode === 'accepted' });
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(mode === 'accepted');
+    transport.emit({ type: 'notification.result', version: 1, id: 'chat:ack', accepted: true });
+    expect(onResult).toHaveBeenCalledTimes(1);
+  });
+
   it('stays disabled in a regular browser', async () => {
     const { initializeDesktopBridge, isDesktopBridgeReady } = await import('./desktopBridge');
 

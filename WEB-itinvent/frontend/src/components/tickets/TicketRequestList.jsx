@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -21,6 +21,7 @@ import {
 import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import { ticketsAPI } from '../../api/tickets';
+import useRequestGuard from '../../lib/useRequestGuard';
 import {
   STATUS_ROW_COLORS,
   TICKET_STATUS_OPTIONS,
@@ -50,6 +51,9 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
   const [statuses, setStatuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const exportingRef = useRef(false);
+  const beginExport = useRequestGuard();
 
   const params = useMemo(() => ({
     page,
@@ -61,19 +65,23 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
     sort_dir: 'desc',
   }), [objectIds, page, pageSize, search, statuses]);
 
+  const beginLoad = useRequestGuard(JSON.stringify(params));
   const load = useCallback(async () => {
+    const isCurrent = beginLoad();
     setLoading(true);
     setError('');
     try {
       const data = await ticketsAPI.listRequests(params);
+      if (!isCurrent()) return;
       setRows(Array.isArray(data?.items) ? data.items : []);
       setTotal(Number(data?.total || 0));
     } catch (err) {
+      if (!isCurrent()) return;
       setError(getErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [params]);
+  }, [beginLoad, params]);
 
   useEffect(() => {
     const timer = window.setTimeout(load, search.trim() ? 300 : 0);
@@ -81,8 +89,20 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
   }, [load, search]);
 
   const exportRows = async () => {
-    const blob = await ticketsAPI.exportRequests(params);
-    downloadBlob(blob, 'ticket-requests.xlsx');
+    if (exportingRef.current) return;
+    const isCurrent = beginExport();
+    exportingRef.current = true;
+    setExporting(true);
+    setError('');
+    try {
+      const blob = await ticketsAPI.exportRequests(params);
+      if (isCurrent()) downloadBlob(blob, 'ticket-requests.xlsx');
+    } catch (err) {
+      if (isCurrent()) setError(getErrorMessage(err));
+    } finally {
+      exportingRef.current = false;
+      if (isCurrent()) setExporting(false);
+    }
   };
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -135,7 +155,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
           </Select>
         </FormControl>
         <Button startIcon={<RefreshIcon />} onClick={load} disabled={loading}>Обновить</Button>
-        {canWrite ? <Button startIcon={<DownloadIcon />} onClick={exportRows}>Экспорт</Button> : null}
+        {canWrite ? <Button startIcon={<DownloadIcon />} onClick={exportRows} disabled={exporting}>{exporting ? 'Экспортируем…' : 'Экспорт'}</Button> : null}
       </Stack>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
@@ -177,7 +197,12 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
               >
                 <TableCell>{(page - 1) * pageSize + index + 1}</TableCell>
                 <TableCell>{formatDate(row.submitted_at)}</TableCell>
-                <TableCell>{row.employee_name || '-'}</TableCell>
+                <TableCell>
+                  <Button onClick={(event) => { event.stopPropagation(); onSelectRequest?.(row.id); }}
+                    aria-label={`Открыть заявку ${row.id}: ${row.employee_name || ''}`}>
+                    {row.employee_name || `Заявка ${row.id}`}
+                  </Button>
+                </TableCell>
                 <TableCell>{row.department || '-'}</TableCell>
                 <TableCell>{row.position || '-'}</TableCell>
                 <TableCell>{formatPassportCell(row.passport_series, row.passport_number)}</TableCell>

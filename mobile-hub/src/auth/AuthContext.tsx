@@ -27,6 +27,8 @@ export type BiometricUnlockResult = {
 type AuthContextValue = {
   user: HubUser | null;
   loading: boolean;
+  sessionRestoreState: 'idle' | 'checking' | 'unavailable' | 'expired';
+  retrySessionRestore: () => void;
   loginChallengeId: string | null;
   biometricEnabled: boolean;
   biometricEnrollmentAvailable: boolean;
@@ -82,15 +84,19 @@ async function restoreUserWithRetry(
   }
 }
 
-async function persistLoginResult(result: LoginResponse): Promise<void> {
+async function persistLoginResult(result: LoginResponse, assertCurrent: () => void): Promise<void> {
+  assertCurrent();
   if (result.client_device_id) {
     await tokenStore.setClientDeviceId(result.client_device_id);
+    assertCurrent();
   }
   const access = String(result.access_token || '').trim();
   const refresh = String(result.refresh_token || '').trim();
   if (result.status === 'authenticated' && access && refresh) {
     await tokenStore.setTokens(access, refresh);
+    assertCurrent();
     if (result.user?.id) await tokenStore.setSessionUserId(result.user.id);
+    assertCurrent();
   }
 }
 
@@ -99,8 +105,13 @@ function cacheSessionUserInBackground(user: HubUser): void {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const authGenerationRef = useRef(0);
+  const logoutPromise = useRef<Promise<void> | null>(null);
   const [user, setUser] = useState<HubUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionRestoreState, setSessionRestoreState] = useState<AuthContextValue['sessionRestoreState']>('idle');
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const restorePending = useRef(true);
   const [loginChallengeId, setLoginChallengeId] = useState<string | null>(null);
   const [twoFactorSetupChallengeId, setTwoFactorSetupChallengeId] = useState<string | null>(null);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -114,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const offlineMode = sessionOfflineMode || connectivityOffline;
 
   const markApiOnline = useCallback(() => {
+    setSessionRestoreState('idle');
     lastApiSuccessAtRef.current = Date.now();
     setSessionOfflineMode(false);
     setConnectivityOffline(false);
@@ -126,7 +138,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [offlineMode]);
 
   const refreshUser = useCallback(async () => {
+    const generation = authGenerationRef.current;
     const me = await authApi.fetchMe();
+    if (generation !== authGenerationRef.current) return;
     setUser(me);
     markApiOnline();
     cacheSessionUserInBackground(me);
@@ -140,6 +154,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     return subscribeSessionExpired(() => {
+      authGenerationRef.current += 1;
+      restorePending.current = false;
+      setSessionRestoreState('expired');
       chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
       setUser(null);
       setLoginChallengeId(null);
@@ -179,6 +196,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    const generation = authGenerationRef.current;
+    const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
     void (async () => {
       let cachedUser: HubUser | null = null;
       try {
@@ -188,7 +207,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           tokenStore.getCachedSessionUser(),
           getNativeConnectivitySnapshot(),
         ]);
-        if (!active) return;
+        if (!isCurrent()) return;
         setBiometricEnabled(biometrics);
         if (initialConnectivity.available) {
           const canReachNetwork = initialConnectivity.connected || initialConnectivity.online;
@@ -197,21 +216,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setVpnActive(initialConnectivity.transport === 'vpn');
           if (!canReachNetwork) {
             setSessionOfflineMode(true);
+            if (hasSession) setSessionRestoreState('unavailable');
             return;
           }
         }
-        if (!hasSession) return;
+        if (!hasSession) { setSessionRestoreState('idle'); return; }
+        setSessionRestoreState('checking');
         cachedUser = storedUser;
         try {
           await restoreUserWithRetry(async (timeoutMs) => {
+            if (!isCurrent()) return;
             const me = await authApi.fetchMe({ timeoutMs });
-            if (!active) return;
+            if (!isCurrent()) return;
             setUser(me);
             markApiOnline();
             cacheSessionUserInBackground(me);
           }, SESSION_RESTORE_TIMEOUT_MS);
         } catch (error) {
-          if (!active) return;
+          if (!isCurrent()) return;
           const status = Number(
             error && typeof error === 'object' && 'response' in error
               ? (error as { response?: { status?: number } }).response?.status
@@ -219,39 +241,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           );
           if (status === 401 || status === 403) {
             await tokenStore.clearTokens({ clearOfflineData: false });
+            if (!isCurrent()) return;
             setUser(null);
             setSessionOfflineMode(false);
+            setSessionRestoreState('expired');
           } else {
+            setSessionRestoreState('unavailable');
             setUser(null);
             setSessionOfflineMode(true);
           }
         }
       } catch {
-        if (active && !cachedUser) setUser(null);
+        if (isCurrent()) {
+          if (!cachedUser) setUser(null);
+          setSessionRestoreState('unavailable');
+        }
       } finally {
-        if (active) setLoading(false);
+        if (isCurrent()) { restorePending.current = false; setLoading(false); }
       }
     })();
     return () => {
       active = false;
     };
-  }, [markApiOnline]);
+  }, [markApiOnline, restoreAttempt]);
+
+  const retrySessionRestore = useCallback(() => {
+    if (restorePending.current || user || loginChallengeId) return;
+    restorePending.current = true;
+    authGenerationRef.current += 1;
+    setSessionOfflineMode(false);
+    setSessionRestoreState('checking');
+    setLoading(true);
+    setRestoreAttempt((attempt) => attempt + 1);
+  }, [user, loginChallengeId]);
 
   useEffect(() => {
-    if (!sessionOfflineMode || !connectivityKnownOnline) return undefined;
+    if (!sessionOfflineMode || !connectivityKnownOnline || logoutPromise.current) return undefined;
     let active = true;
+    const generation = authGenerationRef.current;
+    const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const retryDelays = [0, 2_000, 5_000, 15_000];
 
     const recover = async (attempt: number) => {
+      if (!isCurrent()) return;
       try {
         const me = await authApi.fetchMe({ timeoutMs: SESSION_RESTORE_TIMEOUT_MS });
-        if (!active) return;
+        if (!isCurrent()) return;
         setUser(me);
         markApiOnline();
         cacheSessionUserInBackground(me);
       } catch (error) {
-        if (!active) return;
+        if (!isCurrent()) return;
         const status = Number(
           error && typeof error === 'object' && 'response' in error
             ? (error as { response?: { status?: number } }).response?.status
@@ -259,9 +300,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         );
         if (status === 401 || status === 403) {
           await tokenStore.clearTokens({ clearOfflineData: false });
-          if (!active) return;
+          if (!isCurrent()) return;
           setUser(null);
           setSessionOfflineMode(false);
+          setSessionRestoreState('expired');
           return;
         }
         const nextAttempt = attempt + 1;
@@ -278,11 +320,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [connectivityKnownOnline, markApiOnline, sessionOfflineMode]);
 
+  const beginAuthentication = useCallback(() => {
+    if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
+    const generation = ++authGenerationRef.current;
+    setSessionOfflineMode(false);
+    return () => {
+      if (generation !== authGenerationRef.current || logoutPromise.current) {
+        throw new Error('Попытка входа отменена. Повторите вход.');
+      }
+    };
+  }, []);
+
   const login = useCallback(async (username: string, password: string) => {
+    const assertCurrent = beginAuthentication();
+    restorePending.current = false;
+    setLoading(false);
+    setSessionRestoreState('idle');
     const enrolledBiometricUserIdPromise = getBiometricLoginUserId().catch(() => null);
     const result = await authApi.login(username, password);
+    assertCurrent();
     setBiometricEnrollmentCode(null);
-    await persistLoginResult(result);
+    await persistLoginResult(result, assertCurrent);
     if (result.status === '2fa_setup_required') {
       const challengeId = String(result.login_challenge_id || '').trim();
       if (!challengeId) throw new Error('Сервер не выдал запрос настройки 2FA');
@@ -298,6 +356,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);
     const enrolledBiometricUserId = await enrolledBiometricUserIdPromise;
+    assertCurrent();
     const signedInUserId = Number(result.user?.id || 0);
     const preserveBiometrics = Boolean(
       enrolledBiometricUserId
@@ -305,6 +364,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       && enrolledBiometricUserId === signedInUserId,
     );
     if (!preserveBiometrics) await disableBiometricLogin();
+    assertCurrent();
     setBiometricEnabled(preserveBiometrics);
     markApiOnline();
     setOfflineCacheKey(null);
@@ -313,18 +373,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cacheSessionUserInBackground(result.user);
     }
     else await refreshUser();
+    assertCurrent();
     return result;
-  }, [markApiOnline, refreshUser]);
+  }, [beginAuthentication, markApiOnline, refreshUser]);
 
   const startTwoFactorSetup = useCallback(async () => {
     if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
-    return authApi.startTwoFactorSetup(twoFactorSetupChallengeId);
+    if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
+    const generation = authGenerationRef.current;
+    const result = await authApi.startTwoFactorSetup(twoFactorSetupChallengeId);
+    if (generation !== authGenerationRef.current || logoutPromise.current) {
+      throw new Error('Запрос настройки 2FA истёк. Войдите снова');
+    }
+    return result;
   }, [twoFactorSetupChallengeId]);
 
   const verifyTwoFactorSetup = useCallback(async (code: string) => {
+    const assertCurrent = beginAuthentication();
     if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
     const result = await authApi.verifyTwoFactorSetup(twoFactorSetupChallengeId, code);
-    await persistLoginResult(result);
+    await persistLoginResult(result, assertCurrent);
     setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);
@@ -334,15 +402,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(result.user);
       cacheSessionUserInBackground(result.user);
     } else await refreshUser();
+    assertCurrent();
     return Array.isArray(result.backup_codes) ? result.backup_codes : [];
-  }, [markApiOnline, refreshUser, twoFactorSetupChallengeId]);
+  }, [beginAuthentication, markApiOnline, refreshUser, twoFactorSetupChallengeId]);
 
   const verifyTwoFactor = useCallback(async (code: string, isBackup = false) => {
+    const assertCurrent = beginAuthentication();
     if (!loginChallengeId) throw new Error('Missing login challenge');
     const result = await authApi.verifyTwoFactorLogin(loginChallengeId, isBackup
       ? { backup_code: code }
       : { totp_code: code });
-    await persistLoginResult(result);
+    await persistLoginResult(result, assertCurrent);
     setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);
@@ -352,62 +422,88 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cacheSessionUserInBackground(result.user);
     }
     else await refreshUser();
-  }, [loginChallengeId, markApiOnline, refreshUser]);
+    assertCurrent();
+  }, [beginAuthentication, loginChallengeId, markApiOnline, refreshUser]);
+
+  const currentSessionGuard = useCallback(() => {
+    const generation = authGenerationRef.current;
+    const assertCurrent = () => {
+      if (generation !== authGenerationRef.current || logoutPromise.current) {
+        throw new Error('Сессия изменилась. Повторите действие после входа.');
+      }
+    };
+    assertCurrent();
+    return assertCurrent;
+  }, []);
 
   const enableBiometrics = useCallback(async () => {
+    const assertCurrent = currentSessionGuard();
     if (!user) throw new Error('Сначала завершите вход');
     if (!biometricEnrollmentCode) {
       throw new Error('Для включения отпечатка заново войдите в APK и подтвердите двухфакторный код');
     }
     const renewalToken = await authApi.enrollMobileBiometricSession(biometricEnrollmentCode);
+    assertCurrent();
     const credential = await enableBiometricLogin(user, renewalToken);
+    assertCurrent();
     setBiometricEnrollmentCode(null);
     setBiometricEnabled(true);
     setSessionOfflineMode(false);
     setOfflineCacheKey(credential.offlineCacheKey);
-  }, [biometricEnrollmentCode, user]);
+  }, [biometricEnrollmentCode, currentSessionGuard, user]);
 
   const skipBiometrics = useCallback(async () => {
+    const assertCurrent = currentSessionGuard();
     await authApi.revokeMobileBiometricSession().catch(() => undefined);
+    assertCurrent();
     await disableBiometricLogin();
+    assertCurrent();
     setBiometricEnrollmentCode(null);
     setBiometricEnabled(false);
     setSessionOfflineMode(false);
     setOfflineCacheKey(null);
-  }, []);
+  }, [currentSessionGuard]);
 
   const unlockOfflineCache = useCallback(async (): Promise<string> => {
+    const assertCurrent = currentSessionGuard();
     if (!user) throw new Error('Сначала войдите в HUB-IT');
     const credential = await unlockBiometricLogin();
+    assertCurrent();
     if (Number(credential.user.id) !== Number(user.id)) {
       await disableBiometricLogin();
+    assertCurrent();
       setBiometricEnabled(false);
       setOfflineCacheKey(null);
       throw new Error('Офлайн-данные принадлежат другому пользователю. Войдите заново.');
     }
     setOfflineCacheKey(credential.offlineCacheKey);
     return credential.offlineCacheKey;
-  }, [user]);
+  }, [currentSessionGuard, user]);
 
   const unlockWithBiometrics = useCallback(async (): Promise<BiometricUnlockResult> => {
+    const assertCurrent = beginAuthentication();
+    const generation = authGenerationRef.current;
     setLoading(true);
     try {
       const credential = await unlockBiometricLogin();
+      assertCurrent();
       setOfflineCacheKey(credential.offlineCacheKey);
       try {
         let currentUser: HubUser;
         if (credential.version === 2) {
           const renewed = await authApi.renewMobileBiometricSession(credential.renewalToken);
-          await persistLoginResult(renewed);
+          await persistLoginResult(renewed, assertCurrent);
           currentUser = renewed.user || await authApi.fetchMe();
         } else {
           currentUser = await authApi.fetchMe();
         }
+        assertCurrent();
         setUser(currentUser);
         cacheSessionUserInBackground(currentUser);
         markApiOnline();
         return { user: currentUser, offline: false };
       } catch (error: unknown) {
+        assertCurrent();
         const status = Number(
           error
           && typeof error === 'object'
@@ -425,11 +521,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { user: credential.user, offline: true };
       }
     } finally {
-      setLoading(false);
+      if (generation === authGenerationRef.current) setLoading(false);
     }
-  }, [markApiOnline, skipBiometrics]);
+  }, [beginAuthentication, markApiOnline, skipBiometrics]);
 
   const logout = useCallback(async () => {
+    if (logoutPromise.current) return logoutPromise.current;
+    authGenerationRef.current += 1;
+    const pending = (async () => {
     await endMobileSession();
     setUser(null);
     setLoginChallengeId(null);
@@ -438,6 +537,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBiometricEnabled(false);
     setSessionOfflineMode(false);
     setOfflineCacheKey(null);
+    })();
+    logoutPromise.current = pending;
+    try { await pending; }
+    finally { if (logoutPromise.current === pending) logoutPromise.current = null; }
   }, []);
 
   const hasPermission = useCallback(
@@ -449,6 +552,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       loading,
+      sessionRestoreState,
+      retrySessionRestore,
       loginChallengeId,
       biometricEnabled,
       biometricEnrollmentAvailable: Boolean(biometricEnrollmentCode),
@@ -471,6 +576,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [
       user,
       loading,
+      sessionRestoreState,
+      retrySessionRestore,
       loginChallengeId,
       biometricEnabled,
       biometricEnrollmentCode,

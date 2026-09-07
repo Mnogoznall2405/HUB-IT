@@ -82,6 +82,7 @@ describe('NativeAppSettingsScreen', () => {
 
   it('shows the exact native sections available without a network', async () => {
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
 
     await waitFor(() => {
       expect(view.getByTestId('native-offline-readiness')).toHaveTextContent(
@@ -113,6 +114,7 @@ describe('NativeAppSettingsScreen', () => {
     });
 
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
 
     await waitFor(() => {
       expect(view.getByTestId('native-offline-readiness')).toHaveTextContent(
@@ -123,6 +125,7 @@ describe('NativeAppSettingsScreen', () => {
 
   it('prepares native offline data from the settings screen', async () => {
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
 
     await waitFor(() => expect(view.getByText('Подготовить автономный режим')).toBeTruthy());
     await fireEvent.press(view.getByText('Подготовить автономный режим'));
@@ -147,6 +150,7 @@ describe('NativeAppSettingsScreen', () => {
 
   it('shows progress only on the command being executed', async () => {
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
     await waitFor(() => expect(view.getByTestId('native-offline-readiness')).toBeTruthy());
 
     let resolveNetwork: ((value: { connected: boolean; online: boolean }) => void) | undefined;
@@ -166,6 +170,8 @@ describe('NativeAppSettingsScreen', () => {
         expect.objectContaining({ busy: true, disabled: true }),
       );
     });
+    await fireEvent.press(view.getByTestId('account-subpage-back'));
+    await fireEvent.press(view.getByRole('button', { name: 'Обновления APK' }));
     expect(view.getByTestId('native-app-check-update').props.accessibilityState).toEqual(
       expect.objectContaining({ busy: false, disabled: false }),
     );
@@ -177,6 +183,7 @@ describe('NativeAppSettingsScreen', () => {
 
   it('shows live offline preparation progress and loaded item counts', async () => {
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
     await waitFor(() => expect(view.getByTestId('native-offline-readiness')).toBeTruthy());
 
     let reportProgress: ((event: Record<string, unknown>) => void) | undefined;
@@ -197,7 +204,7 @@ describe('NativeAppSettingsScreen', () => {
     await waitFor(() => {
       expect(view.getByTestId('native-offline-preparation-progress').props.accessibilityValue).toEqual({ min: 0, max: 100, now: 50 });
     });
-    expect(view.getByText('1 из 2 разделов')).toBeTruthy();
+    expect(view.getByText('Проверено 1 из 2 разделов · Готово 1 из 2')).toBeTruthy();
     expect(view.getAllByText('Адресная книга').length).toBeGreaterThan(0);
     expect(view.getByText('Загружается…')).toBeTruthy();
 
@@ -211,12 +218,13 @@ describe('NativeAppSettingsScreen', () => {
       });
     });
 
-    await waitFor(() => expect(view.getByText('2 из 2 разделов')).toBeTruthy());
+    await waitFor(() => expect(view.getByText('Проверено 2 из 2 разделов · Готово 2 из 2')).toBeTruthy());
     expect(view.getByText('2700 из 2700 сотрудников')).toBeTruthy();
   });
 
   it('shows the concrete safe stage when address-book preparation fails', async () => {
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
     await waitFor(() => expect(view.getByTestId('native-offline-readiness')).toBeTruthy());
 
     mockExecute.mockImplementation((command: string, _payload: unknown, executionOptions?: Record<string, unknown>) => {
@@ -256,8 +264,53 @@ describe('NativeAppSettingsScreen', () => {
       message: 'Скачиваем версию 1.1.21…',
     });
     const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Обновления APK' }));
 
     expect(view.getByTestId('native-app-update-progress')).toBeTruthy();
     expect(view.getByText('50% · 32.0 МБ из 64.0 МБ')).toBeTruthy();
   });
+});
+
+it('distinguishes attempted, partial and ready modules and retries only incomplete modules', async () => {
+  const view = await render(<NativeAppSettingsScreen />);
+  await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
+  await waitFor(() => expect(view.getByTestId('native-offline-readiness')).toBeTruthy());
+  mockExecute.mockImplementation((command: string, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+    if (command !== 'offline.prepareNative') return Promise.resolve({});
+    const report = options?.onOfflinePreparationProgress as (event: Record<string, unknown>) => void;
+    if (payload.dashboard) {
+      report({ key: 'dashboard', label: 'Главная', status: 'completed', complete: true, loaded: 1, total: 1, completedModules: 1, totalModules: 3 });
+      report({ key: 'mail', label: 'Почта', status: 'completed', complete: false, loaded: 20, total: 100, completedModules: 2, totalModules: 3 });
+      report({ key: 'addressBook', label: 'Адресная книга', status: 'failed', completedModules: 3, totalModules: 3 });
+      return Promise.resolve({ preparedModules: ['Главная'], failedModules: ['Адресная книга'], snapshotReady: false });
+    }
+    report({ key: 'mail', label: 'Почта', status: 'completed', complete: true, loaded: 100, total: 100, completedModules: 1, totalModules: 2 });
+    report({ key: 'addressBook', label: 'Адресная книга', status: 'completed', complete: true, loaded: 100, total: 100, completedModules: 2, totalModules: 2 });
+    return Promise.resolve({ preparedModules: ['Почта', 'Адресная книга'], failedModules: [], snapshotReady: true });
+  });
+  await fireEvent.press(view.getByText('Подготовить автономный режим'));
+  await waitFor(() => expect(view.getByText('Проверено 3 из 3 разделов · Готово 1 из 3')).toBeTruthy());
+  expect(view.getByText('Частично: 20 из 100')).toBeTruthy();
+  expect(view.getByTestId('native-offline-preparation-progress').props.accessibilityValue.now).toBe(33);
+  await fireEvent.press(view.getByTestId('native-offline-retry-incomplete'));
+  await waitFor(() => expect(view.getByText('Проверено 3 из 3 разделов · Готово 3 из 3')).toBeTruthy());
+  const calls = mockExecute.mock.calls.filter(([command]) => command === 'offline.prepareNative');
+  expect(calls[1][1]).toEqual(expect.objectContaining({ dashboard: false, mail: true, addressBook: true, tasks: false, feed: false }));
+  expect(view.queryByTestId('native-offline-retry-incomplete')).toBeNull();
+});
+
+it('marks a written copy as failed when final inventory cannot read its scope', async () => {
+  const view = await render(<NativeAppSettingsScreen />);
+  await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
+  await waitFor(() => expect(view.getByTestId('native-offline-readiness')).toBeTruthy());
+  mockExecute.mockImplementation((command: string, _payload: unknown, options?: Record<string, unknown>) => {
+    if (command !== 'offline.prepareNative') return Promise.resolve({});
+    const report = options?.onOfflinePreparationProgress as (event: Record<string, unknown>) => void;
+    report({ key: 'addressBook', label: 'Адресная книга', status: 'completed', complete: true, loaded: 100, total: 100, completedModules: 1, totalModules: 1 });
+    return Promise.resolve({ preparedModules: ['Адресная книга'], failedModules: [], snapshotReady: false, snapshotMissingScopes: ['address-book'] });
+  });
+  await fireEvent.press(view.getByText('Подготовить автономный режим'));
+  await waitFor(() => expect(view.getByText('Проверено 1 из 1 разделов · Готово 0 из 1')).toBeTruthy());
+  expect(view.getByText('Копия не прошла итоговую проверку. Повторите подготовку.')).toBeTruthy();
+  expect(view.getByTestId('native-offline-retry-incomplete')).toBeTruthy();
 });

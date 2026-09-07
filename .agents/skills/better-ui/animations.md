@@ -274,17 +274,13 @@ The non-absolute icon (InactiveIcon) defines the layout size. The absolute icon 
 | Icons in contextual toolbars | Icons that are always visible |
 | Loading/success state indicators | Icon labels (text next to icon) |
 
-**Important:** Always use exactly these values for contextual icon animations; do not deviate:
-- `scale`: `0.25` → `1` (never use `0.5` or `0.6`)
-- `opacity`: `0` → `1`
-- `filter`: `"blur(4px)"` → `"blur(0px)"`
-- `transition`: `{ type: "spring", duration: 0.3, bounce: 0 }`; **bounce must always be `0`**, never `0.1` or any other value
+**Example parameters:** The values in the snippets illustrate one motion style. Prefer the project's existing tokens and reduced-motion behavior; scale, blur, duration and bounce are not fixed requirements.
 
 ## Scale on Press
 
-A subtle scale-down on click gives buttons tactile feedback. Always use `scale(0.96)`. Never use a value smaller than `0.95`: anything below feels exaggerated. Use CSS transitions for interruptibility, so that if the user releases mid-press, it smoothly returns.
+A subtle scale-down on click gives buttons tactile feedback. For example, `scale(0.96)` may fit some controls; match existing project feedback and use static feedback when motion would distract. Use CSS transitions for interruptibility, so that if the user releases mid-press, it smoothly returns.
 
-Not every button needs this. Add a `static` prop to your button component that disables the scale effect when the motion would be distracting.
+Not every button needs this. Use the component's existing motion or accessibility controls to disable distracting effects; add a new prop only if the actual component contract needs it.
 
 ### CSS Example
 

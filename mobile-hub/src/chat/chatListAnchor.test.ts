@@ -33,3 +33,9 @@ describe('inverted chat list anchor', () => {
     expect(isNearBottomOffset(96)).toBe(false);
   });
 });
+
+it('preserves the visible message while reading history when new data arrives', () => {
+  expect(shouldUseMaintainVisibleContentPosition(false, false)).toBe(true);
+  expect(shouldRequestBottomAnchor('incoming', false)).toBe(false);
+  expect(shouldRequestBottomAnchor('composer-layout', false)).toBe(false);
+});

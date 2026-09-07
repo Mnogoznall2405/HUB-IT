@@ -4,7 +4,7 @@ Android-клиент HUB-IT: native авторизация/2FA, SecureStore, pus
 
 После входа Android показывает только native-enabled модули. Переходов в портал и WebView-fallback больше нет: старые `/web` и `/portal` ссылки перенаправляются на подходящий нативный экран, а недоступные в APK разделы — в нативное меню. Актуальный состав и проценты покрытия: [MOBILE_HUB_NATIVE_SCREEN_MIGRATION_MAP.md](../documentation/technical/MOBILE_HUB_NATIVE_SCREEN_MIGRATION_MAP.md).
 
-Текущий source-кандидат: Expo SDK 57, React Native 0.86, Android package `ru.zsgp.hubit.mobile`, версия `1.1.24`, `versionCode` 26, target/compile SDK 36.
+Текущий source-кандидат: Expo SDK 57, React Native 0.86, Android package `ru.zsgp.hubit.mobile`, версия `1.1.27`, `versionCode` 29, target/compile SDK 36.
 
 ## Установка и запуск
 
@@ -63,7 +63,7 @@ npm run build:apk:local
 
 Для первоначального создания постоянного ключа и двух backup используйте `scripts/prepare-release-signing.ps1`; скрипт требует пути вне Git, не перезаписывает существующие файлы и не принимает пароль через CLI. Подробная процедура и переход с debug-preview описаны в `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
 
-Готовый внутренний preview APK: `dist/hubit-mobile-preview.apk`. Для публикации рядом с HUB Desktop используется `scripts/mobile/publish-apk.ps1`; manifest и версионный APK размещаются под `/desktop-updates/mobile/preview/`. Preview 1.1.24 опубликован 2026-09-02. Подробности и rollback: `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
+Готовый внутренний preview APK: `dist/hubit-mobile-preview.apk`. Для публикации рядом с HUB Desktop используется `scripts/mobile/publish-apk.ps1`; manifest и версионный APK размещаются под `/desktop-updates/mobile/preview/`. Preview 1.1.27 (29) опубликован 2026-09-06; внешний manifest/APK и SHA-256 проверены. Проверка установки на Android остаётся отдельной. Подробности и rollback: `documentation/technical/MOBILE_HUB_APK_DISTRIBUTION.md`.
 
 Результат: `dist/hubit-mobile-preview.apk`; рядом создаётся `dist/hubit-mobile-preview.audit.json` с package/version, размером, SHA-256 APK, SHA-256 сертификата и режимом подписи. Сборка без четырёх `HUBIT_ANDROID_*` переменных завершается fail-fast.
 

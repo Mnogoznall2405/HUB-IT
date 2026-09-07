@@ -65,6 +65,14 @@ function renderPublicPage(token = 'public-token') {
 const futureExpiresAt = () => new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
 
 describe('SharedFile page', () => {
+  it('explains a temporary outage and retries without treating the link as expired', async () => {
+    mockGetPublicFile.mockRejectedValueOnce({ response: { status: 503 } });
+    renderPublicPage();
+    expect(await screen.findByText('Не удалось связаться с сервером. Повторите загрузку через некоторое время.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить загрузку' }));
+    await waitFor(() => expect(mockGetPublicFile).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('public.txt')).toBeInTheDocument();
+  });
   beforeEach(() => {
     mockGetPublicFile.mockReset();
     mockGetPublicPreviewMeta.mockReset();

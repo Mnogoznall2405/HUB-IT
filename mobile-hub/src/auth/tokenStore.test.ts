@@ -1,5 +1,8 @@
+import * as SecureStore from 'expo-secure-store';
 import {
   clearTokens,
+  getAccessToken,
+  getRefreshToken,
   getCachedSessionUser,
   getSessionUserId,
   setCachedSessionUser,
@@ -69,4 +72,56 @@ it('notifies mounted media when the access token changes', async () => {
   unsubscribe();
   await setTokens('ignored-access-token', 'ignored-refresh-token');
   expect(listener).toHaveBeenCalledTimes(1);
+});
+
+it('finishes delayed old credential deletion before persisting a newer login', async () => {
+  await setTokens('old-access', 'old-refresh');
+  const remove = jest.mocked(SecureStore.deleteItemAsync).getMockImplementation()!;
+  let release!: () => void;
+  let started!: () => void;
+  const deleting = new Promise<void>((resolve) => { started = resolve; });
+  jest.mocked(SecureStore.deleteItemAsync).mockImplementationOnce(async (key, options) => {
+    started();
+    await new Promise<void>((resolve) => { release = resolve; });
+    return remove(key, options);
+  });
+  const clearing = clearTokens();
+  await deleting;
+  const login = setTokens('new-access', 'new-refresh');
+  release();
+  await Promise.all([clearing, login]);
+  expect(await getAccessToken()).toBe('new-access');
+  expect(await getRefreshToken()).toBe('new-refresh');
+});
+
+it('holds readers until the entire token pair has been written', async () => {
+  await setTokens('old-access', 'old-refresh');
+  const write = jest.mocked(SecureStore.setItemAsync).getMockImplementation()!;
+  let release!: () => void;
+  let started!: () => void;
+  const writing = new Promise<void>((resolve) => { started = resolve; });
+  jest.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value, options) => {
+    await write(key, value, options);
+    started();
+    await new Promise<void>((resolve) => { release = resolve; });
+  });
+  const login = setTokens('new-access', 'new-refresh');
+  await writing;
+  let readFinished = false;
+  const read = Promise.all([getAccessToken(), getRefreshToken()]).then((pair) => { readFinished = true; return pair; });
+  await Promise.resolve();
+  expect(readFinished).toBe(false);
+  release();
+  await login;
+  expect(await read).toEqual(['new-access', 'new-refresh']);
+});
+
+it('continues processing after a rejected write and lets a later logout win', async () => {
+  jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('Synthetic storage failure'));
+  await expect(setTokens('failed-access', 'failed-refresh')).rejects.toThrow('Synthetic storage failure');
+  const login = setTokens('new-access', 'new-refresh');
+  const logout = clearTokens();
+  await Promise.all([login, logout]);
+  expect(await getAccessToken()).toBeNull();
+  expect(await getRefreshToken()).toBeNull();
 });

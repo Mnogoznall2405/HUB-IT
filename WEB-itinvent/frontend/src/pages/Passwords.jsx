@@ -1,3 +1,4 @@
+import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildOfficeUiTokens, getOfficeCodeBlockSx } from '../theme/officeUiTokens';
 import {
@@ -289,7 +290,10 @@ function Passwords() {
     }
   }, [isAdmin, notifyApiError]);
 
+  const beginEntries = useRequestGuard(JSON.stringify([query, selectedGroup, selectedTag, includeArchived]));
+
   const loadEntries = useCallback(async () => {
+    const isCurrent = beginEntries();
     setLoading(true);
     try {
       const [payload, groupsPayload] = await Promise.all([
@@ -301,6 +305,7 @@ function Passwords() {
         }),
         passwordsAPI.getGroups(),
       ]);
+      if (!isCurrent()) return;
       const configuredGroups = (Array.isArray(groupsPayload?.items) ? groupsPayload.items : [])
         .map((item) => normalizeText(item?.name))
         .filter(Boolean);
@@ -314,11 +319,12 @@ function Passwords() {
         setSelectedGroup('');
       }
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить список паролей.', { dedupeMode: 'recent' });
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag, syncUnlockedUntil]);
+  }, [beginEntries, debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag, syncUnlockedUntil]);
 
   useEffect(() => {
     loadEntries();

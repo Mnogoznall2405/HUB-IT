@@ -1,3 +1,4 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -7,7 +8,6 @@ import {
   AppState,
   FlatList,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -398,6 +398,7 @@ export function NativeDocflowInboxScreen() {
   return (
     <AccountScreenScaffold
       title="1С ДО"
+      rightAction={canCreate && profile?.configured ? <Pressable testID="native-docflow-create-assignment" accessibilityRole="button" accessibilityLabel="Создать поручение" onPress={() => router.push('/(shell)/docflow/create' as never)} style={styles.searchAction}><MaterialCommunityIcons name="plus" size={24} color={tokens.primary} /></Pressable> : undefined}
       tokens={tokens}
       scroll={false}
     >
@@ -408,6 +409,7 @@ export function NativeDocflowInboxScreen() {
         </View>
       ) : null}
 
+      {profile?.configured ? <Pressable testID="native-docflow-credentials-open" accessibilityRole="button" accessibilityLabel="Настроить подключение 1С" onPress={openCredentials} disabled={offlineMode} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}><MaterialCommunityIcons name="account-check-outline" size={20} color={tokens.primary} /><Text numberOfLines={1} style={{ flex: 1, color: tokens.textSecondary }}>{status} · {profile.login}</Text><MaterialCommunityIcons name="chevron-right" size={20} color={tokens.iconMuted} /></Pressable> : <>
       <View style={[styles.connection, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <View style={[styles.connectionIcon, { backgroundColor: profile?.configured ? tokens.accentSoft : tokens.actionBg }]}>
           <MaterialCommunityIcons name="account-key-outline" size={22} color={profile?.configured ? tokens.primary : tokens.iconMuted} />
@@ -421,6 +423,7 @@ export function NativeDocflowInboxScreen() {
         </Pressable>
       </View>
 
+      </>}
       {profile?.configured ? (
         <>
           <ScrollView
@@ -495,15 +498,7 @@ export function NativeDocflowInboxScreen() {
             ListFooterComponent={(
               <View style={styles.footerActions}>
                 {truncated ? <Text style={[styles.truncated, { color: tokens.textSecondary }]}>Показаны первые {TASK_LIMIT} заданий. Уточните поиск.</Text> : null}
-                {canCreate ? (
-                  <Pressable testID="native-docflow-create-assignment" onPress={() => router.push('/(shell)/docflow/create' as never)} accessibilityRole="button" style={[styles.webCreate, { borderColor: tokens.border }]}>
-                    <MaterialCommunityIcons name="file-document-plus-outline" size={21} color={tokens.primary} />
-                    <View style={styles.connectionBody}>
-                      <Text style={[styles.connectionTitle, { color: tokens.textPrimary }]}>Создать поручение</Text>
-                      <Text style={[styles.connectionMeta, { color: tokens.textSecondary }]}>Документ, исполнитель, контролёр, срок и важность заполняются нативно.</Text>
-                    </View>
-                  </Pressable>
-                ) : null}
+
               </View>
             )}
           />

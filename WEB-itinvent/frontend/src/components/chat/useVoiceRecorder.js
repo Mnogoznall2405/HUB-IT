@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const VOICE_MIME_TYPES = [
   'audio/webm;codecs=opus',
@@ -57,6 +57,9 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const recorderRef = useRef(null);
+  const generationRef = useRef(0);
+  const startingRef = useRef(false);
+  const completionRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -162,6 +165,9 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
     }
     stopVoiceLevelAnalysis();
     if (recorderRef.current) {
+      recorderRef.current.onstop = null;
+      recorderRef.current.ondataavailable = null;
+      recorderRef.current.onerror = null;
       try {
         if (recorderRef.current.state !== 'inactive') {
           recorderRef.current.stop();
@@ -183,8 +189,15 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
     startTimeRef.current = null;
   }, [stopVoiceLevelAnalysis]);
 
+  useEffect(() => () => {
+    generationRef.current += 1;
+    startingRef.current = false;
+    completionRef.current = null;
+    cleanup();
+  }, [cleanup]);
+
   const startRecording = useCallback(async () => {
-    if (recording) return;
+    if (recording || startingRef.current || recorderRef.current) return;
 
     // Проверка secure context (HTTPS или localhost) — getUserMedia требует secure context
     if (typeof window !== 'undefined' && !window.isSecureContext) {
@@ -203,6 +216,9 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
       return;
     }
 
+    const generation = generationRef.current;
+    const complete = onRecordingComplete;
+    startingRef.current = true;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -213,6 +229,8 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
         },
       });
     } catch (err) {
+      if (generation !== generationRef.current) return;
+      startingRef.current = false;
       console.error('[VoiceRecorder] getUserMedia error:', err?.name, err?.message, err);
       if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
         notifyWarning?.('Доступ к микрофону запрещён. Нажмите на значок 🔒 в адресной строке и разрешите доступ к микрофону.');
@@ -226,11 +244,19 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
       return;
     }
 
+    if (generation !== generationRef.current) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    startingRef.current = false;
+    completionRef.current = complete;
     streamRef.current = stream;
     chunksRef.current = [];
     mimeTypeRef.current = supportedMimeType;
 
-    const recorder = new MediaRecorder(stream, { mimeType: supportedMimeType });
+    let recorder;
+    try { recorder = new MediaRecorder(stream, { mimeType: supportedMimeType }); }
+    catch { cleanup(); notifyWarning?.('Не удалось начать запись голоса. Повторите попытку.'); return; }
     recorderRef.current = recorder;
     startVoiceLevelAnalysis(stream);
 
@@ -251,7 +277,8 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
       notifyWarning?.('Ошибка записи голосового сообщения.');
     };
 
-    recorder.start(250);
+    try { recorder.start(250); }
+    catch { cleanup(); notifyWarning?.('Не удалось начать запись голоса. Повторите попытку.'); return; }
     startTimeRef.current = Date.now();
     setRecording(true);
     setDuration(0);
@@ -261,7 +288,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
         setDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }
     }, 200);
-  }, [cleanup, notifyWarning, recording, startVoiceLevelAnalysis]);
+  }, [cleanup, notifyWarning, onRecordingComplete, recording, startVoiceLevelAnalysis]);
 
   const stopRecording = useCallback(() => {
     if (!recorderRef.current || recorderRef.current.state === 'inactive') {
@@ -286,7 +313,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
           type: mimeType,
           lastModified: Date.now(),
         });
-        onRecordingComplete?.({ file, blob, duration: durationSeconds, mimeType });
+        completionRef.current?.({ file, blob, duration: durationSeconds, mimeType });
       }
       cleanup();
       setRecording(false);
@@ -315,9 +342,12 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  }, [cleanup, onRecordingComplete, stopVoiceLevelAnalysis]);
+  }, [cleanup, stopVoiceLevelAnalysis]);
 
   const cancelRecording = useCallback(() => {
+    generationRef.current += 1;
+    startingRef.current = false;
+    completionRef.current = null;
     cleanup();
     setRecording(false);
     setDuration(0);

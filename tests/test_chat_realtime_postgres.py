@@ -5,6 +5,8 @@ import importlib
 import json
 import logging
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -41,12 +43,14 @@ def test_relay_keeps_large_event_out_of_notify_payload(monkeypatch):
     bus = _bus()
     inserted_batches: list[list[tuple]] = []
     notifications: list[tuple] = []
+    operations: list[str] = []
 
     class _Transaction:
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
+            operations.append("commit")
             return False
 
     class _Cursor:
@@ -57,6 +61,7 @@ def test_relay_keeps_large_event_out_of_notify_payload(monkeypatch):
             return False
 
         def execute(self, _query, params):
+            operations.append("insert")
             inserted_batches.append(list(params))
 
     class _Connection:
@@ -67,6 +72,11 @@ def test_relay_keeps_large_event_out_of_notify_payload(monkeypatch):
             return _Cursor()
 
         def execute(self, _query, params=None):
+            if "LOCK TABLE" in str(_query):
+                assert "SHARE ROW EXCLUSIVE" in str(_query)
+                operations.append("lock")
+                return
+            operations.append("notify")
             notifications.append(tuple(params or ()))
 
     event = {
@@ -80,6 +90,7 @@ def test_relay_keeps_large_event_out_of_notify_payload(monkeypatch):
     bus._publish_batch_sync(_Connection(), [(bus.node_id, encoded, 86400)])
 
     assert len(inserted_batches) == 1
+    assert operations == ["lock", "insert", "notify", "commit"]
     assert inserted_batches[0][0] == [bus.node_id]
     assert json.loads(inserted_batches[0][1][0]) == event
     assert len(inserted_batches[0][1][0].encode("utf-8")) > 8_000
@@ -993,6 +1004,121 @@ def test_presence_write_does_not_wait_for_relay_publisher_lock(monkeypatch):
     asyncio.run(_run())
 
     assert seen_connections == [presence_conn]
+
+
+@pytest.mark.parametrize("schema", ["chat", "public"])
+def test_production_relay_schema_check_does_not_execute_ddl(monkeypatch, schema):
+    from backend.config import config
+
+    monkeypatch.setattr(config.app, "environment", "production")
+    bus = _bus()
+    queries = []
+
+    class Connection:
+        def execute(self, query, params=None):
+            queries.append(str(query))
+            if params:
+                assert params[0] == schema
+            return self
+
+        def fetchone(self):
+            return (schema,)
+
+        def fetchall(self):
+            return [("chat_realtime_events", col) for col in
+                    ("id", "origin_node_id", "payload_json", "created_at", "expires_at")] + [
+                    ("chat_realtime_presence", col) for col in
+                    ("node_id", "connection_id", "user_id", "touched_at", "expires_at")]
+
+    bus._ensure_relay_table_sync(Connection())
+    assert queries and all(query.startswith("SELECT") for query in queries)
+
+
+def test_production_relay_missing_schema_fails_with_migration_instruction(monkeypatch):
+    from backend.config import config
+
+    monkeypatch.setattr(config.app, "environment", "production")
+    class Connection:
+        def execute(self, query, params=None):
+            assert str(query).startswith("SELECT")
+            return self
+
+        def fetchone(self):
+            return ("chat",)
+
+        def fetchall(self):
+            return []
+
+    with pytest.raises(RuntimeError, match="Alembic migrations"):
+        _bus()._ensure_relay_table_sync(Connection())
+
+
+def test_publishers_allocate_ids_only_after_previous_writer_commits():
+    """Two distinct bus objects share a database lock, not an asyncio lock."""
+    writer_lock = threading.Lock()
+    allocated = []
+    committed = []
+    first_insert = threading.Event()
+    second_attempt = threading.Event()
+    release_first = threading.Event()
+
+    class Connection:
+        def __init__(self, name):
+            self.name = name
+            self.locked = False
+            self.pending = []
+
+        def transaction(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            if exc[0] is None:
+                committed.extend(self.pending)
+            if self.locked:
+                writer_lock.release()
+
+        def execute(self, query, params=None):
+            if "LOCK TABLE" in str(query):
+                if self.name == "second":
+                    second_attempt.set()
+                assert writer_lock.acquire(timeout=3)
+                self.locked = True
+
+        def cursor(self):
+            connection = self
+            class Cursor:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    pass
+
+                def execute(self, _query, _params):
+                    allocated.append(len(allocated) + 1)
+                    connection.pending.append(allocated[-1])
+                    if connection.name == "first":
+                        first_insert.set()
+                        assert release_first.wait(3)
+                    else:
+                        second_attempt.set()
+            return Cursor()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_bus()._publish_batch_sync, Connection("first"), [("first", "{}", 60)])
+        try:
+            assert first_insert.wait(3)
+            second = pool.submit(_bus()._publish_batch_sync, Connection("second"), [("second", "{}", 60)])
+            assert second_attempt.wait(3)
+            assert allocated == [1]
+            assert committed == []
+        finally:
+            release_first.set()
+        first.result(timeout=3)
+        second.result(timeout=3)
+    assert committed == [1, 2]
 
 
 def test_presence_connection_reopens_after_write_failure(monkeypatch):

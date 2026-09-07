@@ -100,29 +100,33 @@ export function NativeMenuScreen() {
               <MaterialCommunityIcons name="camera-outline" size={19} color="#fff" />
             </View>
           </View>
-          <Text numberOfLines={2} style={[styles.profileName, { color: tokens.textPrimary }]}>
-            {getAccountDisplayName(user)}
-          </Text>
-          <Text numberOfLines={1} style={[styles.profileUsername, { color: tokens.textTertiary }]}>
-            @{String(user?.username || 'hub').replace(/^@/, '')}
-          </Text>
-          <Text numberOfLines={2} style={[styles.profileSub, { color: tokens.textSecondary }]}>
-            {getAccountSubtitle(user)}
-          </Text>
-          <HubConnectionInline showHub style={styles.connectionStatus} />
+          <View style={styles.profileDetails}>
+            <Text numberOfLines={2} style={[styles.profileName, { color: tokens.textPrimary }]}>
+              {getAccountDisplayName(user)}
+            </Text>
+            <Text numberOfLines={1} style={[styles.profileUsername, { color: tokens.textTertiary }]}>
+              @{String(user?.username || 'hub').replace(/^@/, '')}
+            </Text>
+            <Text numberOfLines={2} style={[styles.profileSub, { color: tokens.textSecondary }]}>
+              {getAccountSubtitle(user)}
+            </Text>
+            <HubConnectionInline showHub style={styles.connectionStatus} />
+          </View>
         </Pressable>
 
+        {workItems.length ? (
+          <MenuSection title="Работа" tokens={tokens}>
+            {workItems.map((item) => <ModuleRow key={item.path} item={item} tokens={tokens} />)}
+          </MenuSection>
+        ) : null}
+
+        {toolItems.length ? (
+          <MenuSection title="Инструменты" tokens={tokens}>
+            {toolItems.map((item) => <ModuleRow key={item.path} item={item} tokens={tokens} />)}
+          </MenuSection>
+        ) : null}
+
         <MenuSection title="Аккаунт" tokens={tokens}>
-          <MenuRow
-            testID="mobile-menu-action-profile"
-            label="Профиль"
-            accessibilityLabel="Открыть профиль"
-            icon="account-circle-outline"
-            iconColor="#4aa3ff"
-            iconBackground="rgba(74, 163, 255, 0.18)"
-            tokens={tokens}
-            onPress={() => router.push('/(shell)/menu/profile' as never)}
-          />
           <MenuRow
             testID="mobile-menu-action-settings"
             label="Настройки"
@@ -146,18 +150,6 @@ export function NativeMenuScreen() {
             />
           ) : null}
         </MenuSection>
-
-        {workItems.length ? (
-          <MenuSection title="Работа" tokens={tokens}>
-            {workItems.map((item) => <ModuleRow key={item.path} item={item} tokens={tokens} />)}
-          </MenuSection>
-        ) : null}
-
-        {toolItems.length ? (
-          <MenuSection title="Инструменты" tokens={tokens}>
-            {toolItems.map((item) => <ModuleRow key={item.path} item={item} tokens={tokens} />)}
-          </MenuSection>
-        ) : null}
 
         <MenuSection title="Система" tokens={tokens}>
           <MobileUpdateMenuRow updater={updater} tokens={tokens} />
@@ -336,17 +328,18 @@ const styles = StyleSheet.create({
   safe: { flex: 1 },
   scroll: { paddingHorizontal: 14, paddingTop: 12, gap: 22 },
   pressed: { opacity: 0.82 },
-  profileHero: { alignItems: 'center', paddingTop: 10, paddingHorizontal: 20, paddingBottom: 2 },
+  profileHero: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 8, paddingVertical: 8 },
+  profileDetails: { flex: 1, minWidth: 0 },
   avatarShell: {
-    width: 94,
-    height: 94,
-    borderRadius: 47,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatar: { width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center' },
-  avatarImage: { width: 88, height: 88, borderRadius: 44 },
+  avatar: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
+  avatarImage: { width: 52, height: 52, borderRadius: 26 },
   avatarText: { color: '#fff', fontWeight: '900', fontSize: 25 },
   cameraBadge: {
     position: 'absolute',
@@ -359,10 +352,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  profileName: { marginTop: 12, textAlign: 'center', fontSize: 24, lineHeight: 29, fontWeight: '900' },
-  profileUsername: { marginTop: 3, textAlign: 'center', fontSize: 14, lineHeight: 18, fontWeight: '600' },
-  profileSub: { marginTop: 4, textAlign: 'center', fontSize: 13, lineHeight: 18 },
-  connectionStatus: { alignSelf: 'center', marginTop: 7 },
+  profileName: { fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  profileUsername: { marginTop: 3, fontSize: 14, lineHeight: 18, fontWeight: '600' },
+  profileSub: { marginTop: 4, fontSize: 13, lineHeight: 18 },
+  connectionStatus: { alignSelf: 'flex-start', marginTop: 7 },
   section: { gap: 7 },
   sectionTitle: {
     paddingHorizontal: 8,

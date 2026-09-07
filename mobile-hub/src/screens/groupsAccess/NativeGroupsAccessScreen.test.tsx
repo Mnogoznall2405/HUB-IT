@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as groupsApi from '../../api/groupsAccessApi';
 import { NativeGroupsAccessScreen } from './NativeGroupsAccessScreen';
 
@@ -30,6 +30,20 @@ const group: groupsApi.GroupsAccessGroup = {
   description: '',
 };
 
+it('reveals the full folder path and group details without fetching again', async () => {
+  const longPath = 'Общие/Проекты/Архив подразделения/Документы большого проекта';
+  (groupsApi.listGroupsAccessGroups as jest.Mock).mockResolvedValue({ items: [{ ...group, folder_path: longPath }], total: 1, page: 1, limit: 40, has_more: false });
+  const view = await render(<NativeGroupsAccessScreen />);
+  await view.findByText(longPath);
+  expect(view.getByText(longPath).props.numberOfLines).toBe(2);
+  const requests = (groupsApi.listGroupsAccessGroups as jest.Mock).mock.calls.length;
+  await fireEvent.press(view.getByText('Показать подробности'));
+  expect(view.getByText(longPath).props.numberOfLines).toBeUndefined();
+  await fireEvent.press(view.getByText('Свернуть подробности'));
+  expect(view.getByText(longPath).props.numberOfLines).toBe(2);
+  expect(groupsApi.listGroupsAccessGroups).toHaveBeenCalledTimes(requests);
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockPermissions = ['groups_access.read'];
@@ -47,6 +61,7 @@ it('loads only the bounded folder snapshot and exposes its freshness', async () 
   await waitFor(() => expect(view.getByText('Общие/Проекты')).toBeTruthy());
   expect(groupsApi.getGroupsAccessStatus).toHaveBeenCalledWith({ signal: expect.anything() });
   expect(groupsApi.listGroupsAccessGroups).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 40, signal: expect.anything() }));
+  await fireEvent.press(view.getByRole('button', { name: 'О данных доступа' }));
   expect(view.getByText('608')).toBeTruthy();
   expect(view.getByText('515')).toBeTruthy();
   expect(view.queryByText('Обновить снимок')).toBeNull();
@@ -57,7 +72,7 @@ it('keeps the bounded group snapshot read-only without a web fallback', async ()
   const view = await render(<NativeGroupsAccessScreen />);
   await waitFor(() => expect(view.getByText('Общие/Проекты')).toBeTruthy());
   expect(view.queryByTestId('native-groups-access-open-web')).toBeNull();
-  expect(view.getByLabelText('Общие/Проекты, Запись, участников 12')).toBeTruthy();
+  expect(view.getByLabelText('Общие/Проекты, SPb, RW-Files, Запись, участников 12')).toBeTruthy();
   await view.unmount();
 });
 
@@ -78,6 +93,30 @@ it('shows a status error without hiding a successfully loaded folder list', asyn
   await waitFor(() => expect(view.getByText('Общие/Проекты')).toBeTruthy());
   await waitFor(() => expect(view.getByText('status unavailable')).toBeTruthy());
   await view.unmount();
+});
+
+it('ignores a late status response after switching offline', async () => {
+  let finish!: (value: unknown) => void;
+  (groupsApi.getGroupsAccessStatus as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  const view = await render(<NativeGroupsAccessScreen />);
+  await view.findByText('Общие/Проекты');
+  mockOfflineMode = true;
+  await view.rerender(<NativeGroupsAccessScreen />);
+  await act(async () => { finish({ last_sync_at: 'Устаревший снимок', branches: [], summary: {} }); });
+  expect(view.queryByText(/Устаревший снимок/)).toBeNull();
+});
+
+it('does not replace refreshed status with an older response', async () => {
+  let finish!: (value: unknown) => void;
+  (groupsApi.getGroupsAccessStatus as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
+    .mockResolvedValue({ last_sync_at: 'Новый снимок', branches: [], summary: {} });
+  const view = await render(<NativeGroupsAccessScreen />);
+  await view.findByText('Общие/Проекты');
+  await fireEvent(view.getByTestId('native-groups-access-groups-list'), 'refresh');
+  await view.findByText(/Новый снимок/);
+  await act(async () => { finish({ last_sync_at: 'Устаревший снимок', branches: [], summary: {} }); });
+  expect(view.queryByText(/Устаревший снимок/)).toBeNull();
+  expect(view.getByText(/Новый снимок/)).toBeTruthy();
 });
 
 it('aborts a stale next page when a debounced search replaces the list', async () => {

@@ -107,3 +107,34 @@ it('does not load MFU data without permission or while offline', async () => {
   expect(mfuApi.getMfuDevices).not.toHaveBeenCalled();
   await offline.unmount();
 });
+
+it('keeps additional filters discoverable and preserves them when collapsed', async () => {
+  const view = await render(<NativeMfuScreen />);
+  await waitFor(() => expect(view.getByText('Canon MF443')).toBeTruthy());
+  expect(view.queryByText('Ошибка SNMP')).toBeNull();
+  await fireEvent.press(view.getByTestId('native-mfu-filters'));
+  await fireEvent.press(view.getByText('Ошибка SNMP'));
+  await waitFor(() => expect(view.queryByText('Canon MF443')).toBeNull());
+  await fireEvent.press(view.getByTestId('native-mfu-filters'));
+  expect(view.queryByText('Ошибка SNMP')).toBeNull();
+  expect(view.queryByText('Canon MF443')).toBeNull();
+  await fireEvent.press(view.getByText('Все'));
+  await waitFor(() => expect(view.getByText('Canon MF443')).toBeTruthy());
+  await view.unmount();
+});
+
+it.each([
+  ['error', 'Ошибка опроса SNMP'],
+  ['no_data', 'Нет данных SNMP'],
+  ['unknown', 'Состояние SNMP неизвестно'],
+])('distinguishes %s SNMP data from live network availability', async (status, label) => {
+  (mfuApi.getMfuDevices as jest.Mock).mockResolvedValue({ ...payload, devices: [{ ...device, snmp: { ...device.snmp, status } }] });
+  const view = await render(<NativeMfuScreen />);
+  expect(view.getByText(new RegExp(label + ' · Последние данные:'))).toBeTruthy();
+  expect(view.getByText('Расходник 17%')).toBeTruthy();
+  expect(view.getByRole('button', { name: new RegExp(label + '.*Расходник 17%') })).toBeTruthy();
+  await fireEvent.press(view.getByText('Canon MF443'));
+  expect(view.getByText(label, { exact: true })).toBeTruthy();
+  expect(mfuApi.getMfuDevices).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});

@@ -58,6 +58,21 @@ function Harness({ upsertThreadMessages, syncConversationPreview }) {
 describe('useChatForwardMessages', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    chatAPI.forwardMessage.mockReset();
+  });
+
+  it('retries only the incomplete item with its original idempotency key', async () => {
+    chatAPI.forwardMessage.mockResolvedValueOnce({ id: 'f1' }).mockRejectedValueOnce(new Error('lost response'));
+    render(<Harness upsertThreadMessages={vi.fn()} syncConversationPreview={vi.fn()} />);
+    fireEvent.click(document.querySelector('button'));
+    await waitFor(() => expect(chatAPI.forwardMessage).toHaveBeenCalledTimes(2));
+    const failedKey = chatAPI.forwardMessage.mock.calls[1][2]?.client_message_id;
+    expect(failedKey).toBeTruthy();
+    chatAPI.forwardMessage.mockResolvedValueOnce({ id: 'f2' });
+    fireEvent.click(document.querySelector('button'));
+    await waitFor(() => expect(chatAPI.forwardMessage).toHaveBeenCalledTimes(3));
+    expect(chatAPI.forwardMessage.mock.calls.map(call => call[1])).toEqual(['m1', 'm2', 'm2']);
+    expect(chatAPI.forwardMessage.mock.calls[2][2].client_message_id).toBe(failedKey);
   });
 
   it('forwards queued messages in order and updates active thread', async () => {
@@ -77,8 +92,8 @@ describe('useChatForwardMessages', () => {
     fireEvent.click(document.querySelector('button'));
 
     await waitFor(() => expect(chatAPI.forwardMessage).toHaveBeenCalledTimes(2));
-    expect(chatAPI.forwardMessage).toHaveBeenNthCalledWith(1, 'target-1', 'm1');
-    expect(chatAPI.forwardMessage).toHaveBeenNthCalledWith(2, 'target-1', 'm2');
+    expect(chatAPI.forwardMessage).toHaveBeenNthCalledWith(1, 'target-1', 'm1', expect.objectContaining({ client_message_id: expect.any(String) }));
+    expect(chatAPI.forwardMessage).toHaveBeenNthCalledWith(2, 'target-1', 'm2', expect.objectContaining({ client_message_id: expect.any(String) }));
     expect(upsertThreadMessages).toHaveBeenCalledWith([
       { id: 'f1', body: 'First' },
       { id: 'f2', body: 'Second' },

@@ -1,3 +1,4 @@
+import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -576,7 +577,15 @@ function KnowledgeBase() {
     }
   }, [notifyApiError]);
 
+  const beginArticleDetail = useRequestGuard(JSON.stringify([selectedArticleId, articleFilters]));
+  const beginTemplateDetail = useRequestGuard(JSON.stringify([selectedTemplateId, templateFilters]));
+  const beginCardDetail = useRequestGuard(JSON.stringify([selectedCardId, cardFilters]));
+  const beginArticles = useRequestGuard(JSON.stringify([articleFilters, selectedArticleId]));
+  const beginTemplates = useRequestGuard(JSON.stringify([templateFilters, selectedTemplateId]));
+  const beginCards = useRequestGuard(JSON.stringify([cardFilters, selectedCardId]));
+
   const loadArticleDetail = useCallback(async (articleId, target = 'article') => {
+    const isCurrent = (target === 'template' ? beginTemplateDetail : beginArticleDetail)();
     const normalizedId = String(articleId || '').trim();
     if (!normalizedId) {
       if (target === 'template') setSelectedTemplate(null);
@@ -586,16 +595,19 @@ function KnowledgeBase() {
     setDetailLoading(`${target}:${normalizedId}`);
     try {
       const payload = await kbAPI.getArticle(normalizedId);
+      if (!isCurrent()) return;
       if (target === 'template') setSelectedTemplate(payload);
       else setSelectedArticle(payload);
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить карточку статьи KB.', { dedupeMode: 'none' });
     } finally {
-      setDetailLoading('');
+      if (isCurrent()) setDetailLoading((current) => current === `${target}:${normalizedId}` ? '' : current);
     }
-  }, [notifyApiError]);
+  }, [beginArticleDetail, beginTemplateDetail, notifyApiError]);
 
   const loadCardDetail = useCallback(async (cardId) => {
+    const isCurrent = beginCardDetail();
     const normalizedId = String(cardId || '').trim();
     if (!normalizedId) {
       setSelectedCard(null);
@@ -604,15 +616,18 @@ function KnowledgeBase() {
     setDetailLoading(`card:${normalizedId}`);
     try {
       const payload = await kbAPI.getCard(normalizedId);
+      if (!isCurrent()) return;
       setSelectedCard(payload);
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить KB-card.', { dedupeMode: 'none' });
     } finally {
-      setDetailLoading('');
+      if (isCurrent()) setDetailLoading((current) => current === `card:${normalizedId}` ? '' : current);
     }
-  }, [notifyApiError]);
+  }, [beginCardDetail, notifyApiError]);
 
   const loadArticles = useCallback(async () => {
+    const isCurrent = beginArticles();
     setArticlesLoading(true);
     try {
       const payload = await kbAPI.getArticles({
@@ -624,6 +639,7 @@ function KnowledgeBase() {
         limit: 100,
         offset: 0,
       });
+      if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setArticlesState({ items, total: Number(payload?.total || items.length) });
       const nextSelectedId = items.some((item) => item.id === selectedArticleId) ? selectedArticleId : (items[0]?.id || '');
@@ -634,13 +650,15 @@ function KnowledgeBase() {
         setSelectedArticle(null);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить статьи KB.', { dedupeMode: 'none' });
     } finally {
-      setArticlesLoading(false);
+      if (isCurrent()) setArticlesLoading(false);
     }
-  }, [articleFilters, loadArticleDetail, notifyApiError, selectedArticleId]);
+  }, [beginArticles, articleFilters, loadArticleDetail, notifyApiError, selectedArticleId]);
 
   const loadTemplates = useCallback(async () => {
+    const isCurrent = beginTemplates();
     setTemplatesLoading(true);
     try {
       const payload = await kbAPI.getArticles({
@@ -652,6 +670,7 @@ function KnowledgeBase() {
         limit: 100,
         offset: 0,
       });
+      if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setTemplatesState({ items, total: Number(payload?.total || items.length) });
       const nextSelectedId = items.some((item) => item.id === selectedTemplateId) ? selectedTemplateId : (items[0]?.id || '');
@@ -662,13 +681,15 @@ function KnowledgeBase() {
         setSelectedTemplate(null);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить шаблоны KB.', { dedupeMode: 'none' });
     } finally {
-      setTemplatesLoading(false);
+      if (isCurrent()) setTemplatesLoading(false);
     }
-  }, [loadArticleDetail, notifyApiError, selectedTemplateId, templateFilters]);
+  }, [beginTemplates, loadArticleDetail, notifyApiError, selectedTemplateId, templateFilters]);
 
   const loadCards = useCallback(async () => {
+    const isCurrent = beginCards();
     setCardsLoading(true);
     try {
       const payload = await kbAPI.getCards({
@@ -681,6 +702,7 @@ function KnowledgeBase() {
         limit: 100,
         offset: 0,
       });
+      if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setCardsState({ items, total: Number(payload?.total || items.length) });
       const nextSelectedId = items.some((item) => item.id === selectedCardId) ? selectedCardId : (items[0]?.id || '');
@@ -691,11 +713,12 @@ function KnowledgeBase() {
         setSelectedCard(null);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить KB-cards.', { dedupeMode: 'none' });
     } finally {
-      setCardsLoading(false);
+      if (isCurrent()) setCardsLoading(false);
     }
-  }, [cardFilters, loadCardDetail, notifyApiError, selectedCardId]);
+  }, [beginCards, cardFilters, loadCardDetail, notifyApiError, selectedCardId]);
 
   useEffect(() => {
     void loadReferenceData();

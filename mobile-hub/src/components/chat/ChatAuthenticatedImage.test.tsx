@@ -14,6 +14,35 @@ describe('ChatAuthenticatedImage', () => {
     mockedDownload.mockResolvedValue({ uri: 'file:///cache/chat-photo.img' } as never);
   });
 
+  it('never gives the next image a previous URI and ignores its late native load callback', async () => {
+    const onLoad = jest.fn();
+    const view = await render(<ChatAuthenticatedImage uri="https://hub.test/first.jpg" accessibilityLabel="First" onLoad={onLoad} />);
+    const first = await view.findByLabelText('First');
+    const oldLoad = first.props.onLoad;
+    let resolveSecond!: (value: Awaited<ReturnType<typeof downloadTrustedChatMedia>>) => void;
+    mockedDownload.mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
+    await view.rerender(<ChatAuthenticatedImage uri="https://hub.test/second.jpg" accessibilityLabel="Second" onLoad={onLoad} />);
+    expect(view.queryByLabelText('First')).toBeNull();
+    expect(view.queryByLabelText('Second')).toBeNull();
+    await act(async () => { oldLoad({ nativeEvent: { source: { width: 100, height: 100 } } }); });
+    expect(onLoad).not.toHaveBeenCalled();
+    await act(async () => { resolveSecond({ uri: 'file:///cache/second.img' } as never); });
+    expect(view.getByLabelText('Second').props.source.uri).toBe('file:///cache/second.img');
+  });
+
+  it('ignores an old download finishing after a newer photo and permits retry after a network failure', async () => {
+    let finishFirst!: (value: Awaited<ReturnType<typeof downloadTrustedChatMedia>>) => void;
+    mockedDownload.mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve; })).mockRejectedValueOnce(new Error('offline'));
+    const view = await render(<ChatAuthenticatedImage uri="https://hub.test/first.jpg" accessibilityLabel="Photo" />);
+    await view.rerender(<ChatAuthenticatedImage uri="https://hub.test/second.jpg" accessibilityLabel="Photo" />);
+    await waitFor(() => expect(view.getByLabelText('Повторить загрузку фото')).toBeTruthy());
+    await act(async () => { finishFirst({ uri: 'file:///cache/first.img' } as never); });
+    expect(view.queryByLabelText('Photo')).toBeNull();
+    mockedDownload.mockResolvedValueOnce({ uri: 'file:///cache/second.img' } as never);
+    await fireEvent.press(view.getByLabelText('Повторить загрузку фото'), { stopPropagation: jest.fn() });
+    await waitFor(() => expect(view.getByLabelText('Photo').props.source.uri).toBe('file:///cache/second.img'));
+  });
+
   it('renders protected chat media from an authenticated local cache file', async () => {
     const view = await render(
       <ChatAuthenticatedImage uri="https://hub.test/photo.jpg" accessibilityLabel="Cached photo" />,

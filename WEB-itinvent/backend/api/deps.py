@@ -259,7 +259,7 @@ def extract_websocket_access_token(websocket: WebSocket) -> Optional[str]:
     )
 
 
-def assert_access_token_still_valid(token: Optional[str]) -> None:
+def assert_access_token_still_valid(token: Optional[str], *, touch_session: bool = True) -> None:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -282,7 +282,7 @@ def assert_access_token_still_valid(token: Optional[str]) -> None:
         session_auth_context_service.delete_session_context(token_data.session_id)
         raise credentials_exception
     # Chat WS revalidate path: keep idle alive while the socket is active.
-    if token_data.session_id:
+    if token_data.session_id and touch_session:
         session_service.touch_session(token_data.session_id)
 
 

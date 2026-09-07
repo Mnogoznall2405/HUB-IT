@@ -57,3 +57,12 @@ describe('MessageActionsSheet reactions', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+it('keeps all actions in a scrollable menu inside a keyboard-sized viewport', async () => {
+  const view = await renderActions({ anchor: { x: 200, y: 650, width: 100, height: 70 } });
+  await fireEvent(view.getByTestId('chat-message-actions-viewport'), 'layout', { nativeEvent: { layout: { width: 320, height: 260 } } });
+  const style = StyleSheet.flatten(view.getByTestId('chat-message-actions-card').props.style);
+  expect(style.maxHeight).toBeLessThanOrEqual(236);
+  expect(style.top).toBeGreaterThanOrEqual(12);
+  expect(style.top + style.maxHeight).toBeLessThanOrEqual(260);
+});

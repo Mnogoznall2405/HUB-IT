@@ -1,12 +1,13 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,7 +19,7 @@ import { getMfuDevices, type MfuDevice, type MfuDevicesPayload } from '../../api
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import { NativeMfuDeviceCard } from '../../components/mfu/NativeMfuDeviceCard';
-import { filterMfuDevices, type MfuPingFilter, type MfuSnmpFilter } from '../../mfu/nativeMfuModel';
+import { filterMfuDevices, mfuSnmpStatusLabel, type MfuPingFilter, type MfuSnmpFilter } from '../../mfu/nativeMfuModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import type { FluentTokens } from '../../theme/fluentTokens';
@@ -36,10 +37,6 @@ function FilterChip({ label, selected, onPress, tokens }: { label: string; selec
       <Text style={[styles.chipText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
     </Pressable>
   );
-}
-
-function Stat({ label, value, tokens }: { label: string; value: number | string; tokens: FluentTokens }) {
-  return <View style={[styles.stat, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}><Text style={[styles.statValue, { color: tokens.textPrimary }]}>{value}</Text><Text style={[styles.statLabel, { color: tokens.textSecondary }]}>{label}</Text></View>;
 }
 
 function DetailField({ label, value, tokens }: { label: string; value: unknown; tokens: FluentTokens }) {
@@ -66,6 +63,19 @@ function DeviceDetails({
           <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Закрыть" style={styles.iconButton}><MaterialCommunityIcons name="close" size={23} color={tokens.iconMuted} /></Pressable>
         </View>
         <ScrollView contentContainerStyle={styles.sheetContent} showsVerticalScrollIndicator={false}>
+          <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Состояние</Text>
+          <DetailField label="Доступность по сети" value={`${device.ping.status === 'online' ? 'В сети' : device.ping.status === 'offline' ? 'Не в сети' : 'Неизвестно'}${device.ping.latency_ms !== null ? ` · ${Math.round(device.ping.latency_ms)} мс` : ''}`} tokens={tokens} />
+          <DetailField label="Последняя проверка ping" value={formatDateTime(device.ping.checked_at)} tokens={tokens} />
+          <DetailField label="Опрос SNMP" value={mfuSnmpStatusLabel(device.snmp.status)} tokens={tokens} />
+          <DetailField label="Последний успешный SNMP" value={formatDateTime(device.snmp.last_success_at)} tokens={tokens} />
+          {device.snmp.error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Ошибка SNMP: {device.snmp.error}</Text> : null}
+          <DetailField label="Счётчик страниц" value={device.snmp.page_total === null ? '' : Math.round(device.snmp.page_total)} tokens={tokens} />
+
+          <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Расходники</Text>
+          {device.snmp.supplies.length ? device.snmp.supplies.map((supply) => (
+            <View key={`${supply.index}|${supply.name}`} style={[styles.listRow, { borderColor: tokens.borderSoft }]}><Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>{supply.name}</Text><Text style={[styles.rowValue, { color: supply.percent !== null && supply.percent < 20 ? tokens.error : tokens.textSecondary }]}>{supply.percent === null ? 'Нет данных' : `${Math.round(supply.percent)}%`}</Text></View>
+          )) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Данные о расходниках отсутствуют.</Text>}
+
           <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Устройство</Text>
           <DetailField label="Инвентарный номер" value={device.inv_no} tokens={tokens} />
           <DetailField label="Серийный номер" value={device.serial_no || device.hw_serial_no} tokens={tokens} />
@@ -73,19 +83,6 @@ function DeviceDetails({
           <DetailField label="IP / hostname" value={[device.ip_address, device.hostname].filter(Boolean).join(' · ')} tokens={tokens} />
           <DetailField label="MAC" value={device.mac_address} tokens={tokens} />
           <DetailField label="Сотрудник" value={[device.employee_name, device.employee_dept].filter(Boolean).join(' · ')} tokens={tokens} />
-
-          <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Состояние</Text>
-          <DetailField label="Ping" value={`${device.ping.status}${device.ping.latency_ms !== null ? ` · ${Math.round(device.ping.latency_ms)} мс` : ''}`} tokens={tokens} />
-          <DetailField label="Последняя проверка ping" value={formatDateTime(device.ping.checked_at)} tokens={tokens} />
-          <DetailField label="SNMP" value={device.snmp.status} tokens={tokens} />
-          <DetailField label="Последний успешный SNMP" value={formatDateTime(device.snmp.last_success_at)} tokens={tokens} />
-          {device.snmp.error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Ошибка SNMP: {device.snmp.error}</Text> : null}
-          <DetailField label="Счётчик страниц" value={device.snmp.page_total === null ? '' : Math.round(device.snmp.page_total)} tokens={tokens} />
-
-          <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Расходники</Text>
-          {device.snmp.supplies.length ? device.snmp.supplies.map((supply) => (
-            <View key={`${supply.index}|${supply.name}`} style={[styles.listRow, { borderColor: tokens.borderSoft }]}><Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>{supply.name}</Text><Text style={[styles.rowValue, { color: supply.percent !== null && supply.percent < 20 ? tokens.error : tokens.textSecondary }]}>{supply.percent === null ? '—' : `${Math.round(supply.percent)}%`}</Text></View>
-          )) : <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Принтер не вернул данные о расходниках.</Text>}
 
           <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>История работ · {device.maintenance.total_operations}</Text>
           {device.maintenance.recent.length ? device.maintenance.recent.map((event, index) => (
@@ -105,6 +102,7 @@ export function NativeMfuScreen() {
   const canRead = hasPermission('mfu.read');
   const [payload, setPayload] = useState<MfuDevicesPayload | null>(null);
   const [query, setQuery] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [branch, setBranch] = useState('all');
   const [ping, setPing] = useState<MfuPingFilter>('all');
   const [snmp, setSnmp] = useState<MfuSnmpFilter>('all');
@@ -208,14 +206,22 @@ export function NativeMfuScreen() {
     <View style={styles.header}>
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Требуется сеть: снимок МФУ не сохраняется на устройстве.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
-      <View style={[styles.boundary, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}><MaterialCommunityIcons name="shield-check-outline" size={23} color={tokens.primary} /><View style={styles.flex}><Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Безопасный просмотр</Text><Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Состояние, расходники, счётчики и история доступны нативно. Списание расходника и запись работы пока не поддерживаются на мобильном устройстве.</Text></View></View>
-      {payload ? <View style={styles.stats}><Stat label="всего" value={payload.totals.devices} tokens={tokens} /><Stat label="в сети" value={payload.totals.online} tokens={tokens} /><Stat label="оффлайн" value={payload.totals.offline} tokens={tokens} /><Stat label="SNMP" value={payload.totals.snmp_ok} tokens={tokens} /></View> : null}
-      {payload?.generated_at ? <Text style={[styles.updated, { color: tokens.textSecondary }]}>Обновлено: {formatDateTime(payload.generated_at)}{payload.database_id ? ` · БД ${payload.database_id}` : ''}</Text> : null}
       {(payload?.list_truncated || payload?.source_maybe_truncated) ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Список может быть неполным. Уточните фильтр и повторите запрос.</Text> : null}
       <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}><MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} /><TextInput testID="native-mfu-search" value={query} onChangeText={(value) => setQuery(value.slice(0, 200))} editable={!offlineMode} placeholder="Модель, номер, IP или сотрудник" placeholderTextColor={tokens.textTertiary} accessibilityLabel="Поиск МФУ" style={[styles.searchInput, { color: tokens.textPrimary }]} />{query ? <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={20} color={tokens.iconMuted} /></Pressable> : null}</View>
+      <View style={styles.quickFilters}>
+        <FilterChip label="Все" selected={ping === 'all' && snmp === 'all' && branch === 'all'} onPress={() => { setPing('all'); setSnmp('all'); setBranch('all'); }} tokens={tokens} />
+        <FilterChip label="Оффлайн" selected={ping === 'offline'} onPress={() => setPing(ping === 'offline' ? 'all' : 'offline')} tokens={tokens} />
+        <FilterChip label="Расходник < 20%" selected={snmp === 'low_toner'} onPress={() => setSnmp(snmp === 'low_toner' ? 'all' : 'low_toner')} tokens={tokens} />
+        <Pressable testID="native-mfu-filters" accessibilityRole="button" accessibilityState={{ expanded: filtersOpen }} onPress={() => setFiltersOpen(!filtersOpen)} style={[styles.chip, { borderColor: tokens.border }]}>
+          <Text style={[styles.chipText, { color: tokens.primary }]}>Фильтры · {[branch !== 'all', ping !== 'all', snmp !== 'all'].filter(Boolean).length}</Text>
+        </Pressable>
+      </View>
+      {filtersOpen ? <View style={styles.header}>
       {payload?.branches.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Все филиалы" selected={branch === 'all'} onPress={() => setBranch('all')} tokens={tokens} />{payload.branches.map((item) => <FilterChip key={item} label={item} selected={branch === item} onPress={() => setBranch(item)} tokens={tokens} />)}</ScrollView> : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любая сеть" selected={ping === 'all'} onPress={() => setPing('all')} tokens={tokens} /><FilterChip label="В сети" selected={ping === 'online'} onPress={() => setPing('online')} tokens={tokens} /><FilterChip label="Оффлайн" selected={ping === 'offline'} onPress={() => setPing('offline')} tokens={tokens} /><FilterChip label="Неизвестно" selected={ping === 'unknown'} onPress={() => setPing('unknown')} tokens={tokens} /></ScrollView>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любой SNMP" selected={snmp === 'all'} onPress={() => setSnmp('all')} tokens={tokens} /><FilterChip label="Расходник < 20%" selected={snmp === 'low_toner'} onPress={() => setSnmp('low_toner')} tokens={tokens} /><FilterChip label="Нет данных" selected={snmp === 'no_data'} onPress={() => setSnmp('no_data')} tokens={tokens} /><FilterChip label="Ошибка SNMP" selected={snmp === 'error'} onPress={() => setSnmp('error')} tokens={tokens} /></ScrollView>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любая сеть" selected={ping === 'all'} onPress={() => setPing('all')} tokens={tokens} /><FilterChip label="В сети" selected={ping === 'online'} onPress={() => setPing('online')} tokens={tokens} /><FilterChip label="Не в сети" selected={ping === 'offline'} onPress={() => setPing('offline')} tokens={tokens} /><FilterChip label="Неизвестно" selected={ping === 'unknown'} onPress={() => setPing('unknown')} tokens={tokens} /></ScrollView>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любой SNMP" selected={snmp === 'all'} onPress={() => setSnmp('all')} tokens={tokens} /><FilterChip label="Мало расходника" selected={snmp === 'low_toner'} onPress={() => setSnmp('low_toner')} tokens={tokens} /><FilterChip label="Нет данных" selected={snmp === 'no_data'} onPress={() => setSnmp('no_data')} tokens={tokens} /><FilterChip label="Ошибка SNMP" selected={snmp === 'error'} onPress={() => setSnmp('error')} tokens={tokens} /></ScrollView>
+      </View> : null}
+      {payload ? <Text style={[styles.updated, { color: tokens.textSecondary }]}>Всего {payload.totals.devices} · В сети {payload.totals.online} · Оффлайн {payload.totals.offline}</Text> : null}
       <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Показано: {filtered.length}</Text>
       {loading && !payload ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Загружаем состояние устройств…</Text></View> : null}
       {!loading && error && !payload ? <Pressable testID="native-mfu-retry" onPress={refresh} disabled={offlineMode} accessibilityRole="button" style={[styles.primaryAction, { backgroundColor: tokens.primary, opacity: offlineMode ? 0.5 : 1 }]}><Text style={styles.primaryActionText}>Повторить</Text></Pressable> : null}
@@ -223,8 +229,12 @@ export function NativeMfuScreen() {
   );
 
   return (
-    <AccountScreenScaffold title="МФУ" tokens={tokens} scroll={false}>
-      <FlatList testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : styles.emptyList} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'API не вернул устройств МФУ для выбранной БД.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
+    <AccountScreenScaffold title="МФУ" tokens={tokens} scroll={false} rightAction={(
+      <Pressable accessibilityRole="button" accessibilityLabel="О разделе МФУ" onPress={() => Alert.alert('МФУ', `Доступны состояние, расходники, счётчики и история. Списание расходника и запись работы пока недоступны.${payload?.generated_at ? `\nОбновлено: ${formatDateTime(payload.generated_at)}` : ''}`)} style={styles.iconButton}>
+        <MaterialCommunityIcons name="information-outline" size={23} color={tokens.iconMuted} />
+      </Pressable>
+    )}>
+      <FlatList testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : styles.emptyList} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'В выбранной базе пока нет МФУ.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
       <Modal visible={Boolean(selected)} transparent animationType="slide" onRequestClose={closeDevice}>{selected ? <DeviceDetails device={selected} tokens={tokens} onClose={closeDevice} /> : null}</Modal>
     </AccountScreenScaffold>
   );
@@ -234,18 +244,12 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: { gap: 9, paddingBottom: 10 },
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  boundary: { minHeight: 82, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  boundaryTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
-  boundaryText: { marginTop: 2, fontSize: 11, lineHeight: 16 },
-  stats: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  stat: { width: '48%', minHeight: 70, flexGrow: 1, borderWidth: 1, borderRadius: 15, padding: 10, alignItems: 'center', justifyContent: 'center' },
-  statValue: { fontSize: 19, lineHeight: 24, fontWeight: '900' },
-  statLabel: { fontSize: 10, lineHeight: 14, fontWeight: '700' },
-  updated: { fontSize: 11, lineHeight: 16 },
+  updated: { fontSize: 12, lineHeight: 18 },
   search: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   filters: { gap: 7 },
+  quickFilters: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   chip: { minHeight: 42, borderRadius: 21, borderWidth: 1, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   chipText: { fontSize: 12, lineHeight: 17, fontWeight: '800' },
   count: { minHeight: 24, fontSize: 12, lineHeight: 18, fontWeight: '700' },
@@ -260,15 +264,15 @@ const styles = StyleSheet.create({
   sheet: { height: '92%', borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, paddingHorizontal: 16, paddingTop: 12 },
   sheetHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 8 },
   sheetTitle: { fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  sheetSubtitle: { marginTop: 2, fontSize: 11, lineHeight: 16 },
+  sheetSubtitle: { marginTop: 2, fontSize: 12, lineHeight: 18 },
   sheetContent: { paddingBottom: 32, gap: 9 },
   sectionTitle: { marginTop: 8, fontSize: 14, lineHeight: 19, fontWeight: '900' },
   field: { gap: 2 },
-  fieldLabel: { fontSize: 10, lineHeight: 14, fontWeight: '700' },
+  fieldLabel: { fontSize: 12, lineHeight: 18, fontWeight: '700' },
   fieldValue: { fontSize: 13, lineHeight: 18 },
   listRow: { minHeight: 48, borderBottomWidth: 1, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   historyRow: { minHeight: 48, borderBottomWidth: 1, paddingVertical: 8 },
   rowTitle: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   rowValue: { fontSize: 12, lineHeight: 17, fontWeight: '900' },
-  rowHint: { marginTop: 2, fontSize: 10, lineHeight: 14 },
+  rowHint: { marginTop: 2, fontSize: 12, lineHeight: 18 },
 });

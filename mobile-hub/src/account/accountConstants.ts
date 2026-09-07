@@ -153,12 +153,12 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
-    group: 'Мой диск',
+    group: 'Мои файлы',
     permissions: [
-      { value: 'my_files.read', label: 'Мой диск: просмотр' },
-      { value: 'my_files.write', label: 'Мой диск: загрузка и удаление' },
-      { value: 'my_files.share', label: 'Мой диск: публичные ссылки' },
-      { value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' },
+      { value: 'my_files.read', label: 'Мои файлы: просмотр' },
+      { value: 'my_files.write', label: 'Мои файлы: загрузка и удаление' },
+      { value: 'my_files.share', label: 'Мои файлы: публичные ссылки' },
+      { value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' },
     ],
   },
   {

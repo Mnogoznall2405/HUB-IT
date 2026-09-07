@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 import { canDeleteChatMessage, getMessagePreview } from './chatHelpers';
@@ -23,6 +23,12 @@ export default function useChatSelectedMessageActions({
   setReplyMessage,
   setThreadMenuAnchor,
 }) {
+  const selectionGeneration = useRef(0);
+  const selectionKey = selectedMessages.map(message => message.id).join(',');
+  useLayoutEffect(() => {
+    selectionGeneration.current += 1;
+    return () => { selectionGeneration.current += 1; };
+  }, [selectionKey, activeConversationIdRef?.current]);
   const replyToSelectedMessage = useCallback(() => {
     if (selectedMessages.length !== 1) return;
     const [message] = selectedMessages;
@@ -33,6 +39,7 @@ export default function useChatSelectedMessageActions({
   }, [clearSelectedMessages, focusComposer, selectedMessages, setReplyMessage]);
 
   const copySelectedMessages = useCallback(async () => {
+    const generation = selectionGeneration.current;
     const text = selectedMessages
       .map((message) => String(getMessagePreview(message) || '').trim())
       .filter(Boolean)
@@ -47,7 +54,7 @@ export default function useChatSelectedMessageActions({
     }
     try {
       await navigator.clipboard.writeText(text);
-      clearSelectedMessages();
+      if (selectionGeneration.current === generation) clearSelectedMessages();
     } catch {
       notifyWarning('Не удалось скопировать выбранные сообщения.');
     }
@@ -77,6 +84,8 @@ export default function useChatSelectedMessageActions({
   ]);
 
   const deleteSelectedMessages = useCallback(async () => {
+    const generation = selectionGeneration.current;
+    const sourceConversationId = activeConversationIdRef?.current;
     const deletable = selectedMessages.filter((message) => (
       canDeleteChatMessage(message, { conversationKind })
     ));
@@ -88,13 +97,14 @@ export default function useChatSelectedMessageActions({
 
     try {
       for (const message of deletable) {
-        const conversationId = String(message?.conversation_id || activeConversationIdRef?.current || '').trim();
+        const conversationId = String(message?.conversation_id || sourceConversationId || '').trim();
         const messageId = String(message?.id || '').trim();
         if (!conversationId || !messageId) continue;
         const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
         mergeMessageIntoThread?.(updated);
       }
-      clearSelectedMessages();
+      if (selectionGeneration.current === generation
+        && activeConversationIdRef?.current === sourceConversationId) clearSelectedMessages();
     } catch (error) {
       notifyApiError?.(error, 'Не удалось удалить сообщение.');
     }

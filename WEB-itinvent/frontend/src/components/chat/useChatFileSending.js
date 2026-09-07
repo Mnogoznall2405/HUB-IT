@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { chatAPI } from '../../api/client';
 import {
@@ -95,8 +95,43 @@ export default function useChatFileSending({
   setSendingFiles,
   setThreadMenuAnchor,
 }) {
+  const failedUploadsRef = useRef(new Map());
+  const restoredAttemptRef = useRef(null);
+  const [recoveryVersion, setRecoveryVersion] = useState(0);
+  const retainFailedUpload = useCallback((conversationId, snapshot) => {
+    const queue = failedUploadsRef.current.get(conversationId) || [];
+    failedUploadsRef.current.set(conversationId, [...queue, snapshot]);
+    setRecoveryVersion(value => value + 1);
+  }, []);
+  const mountedRef = useRef(true);
+  const preparationGenerationRef = useRef(0);
+  useLayoutEffect(() => {
+    preparationGenerationRef.current += 1;
+    return () => { preparationGenerationRef.current += 1; };
+  }, [activeConversationId]);
+  const beginPreparation = useCallback(() => {
+    const generation = preparationGenerationRef.current;
+    return () => mountedRef.current && preparationGenerationRef.current === generation;
+  }, []);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  useEffect(() => {
+    const queue = failedUploadsRef.current.get(activeConversationId);
+    const snapshot = queue?.[0];
+    if (!snapshot || sendingFiles || selectedUploadItems.length) return;
+    if (queue.length > 1) failedUploadsRef.current.set(activeConversationId, queue.slice(1));
+    else failedUploadsRef.current.delete(activeConversationId);
+    setSelectedUploadItems(snapshot.items);
+    restoredAttemptRef.current = { items: snapshot.items, conversationId: activeConversationId, attempt: snapshot.attempt };
+    setFileCaption(snapshot.caption);
+    setSendMediaAsFiles(snapshot.asFiles);
+    if (snapshot.reply && !replyMessage) setReplyMessage(snapshot.reply);
+    setFileDialogOpen(true);
+  }, [activeConversationId, recoveryVersion, sendingFiles, selectedUploadItems.length,
+    setSelectedUploadItems, setFileCaption, setSendMediaAsFiles, setFileDialogOpen, replyMessage, setReplyMessage]);
+
   const queueSelectedFiles = useCallback(async (files, options = {}) => {
     if (preparingFiles || sendingFiles) return false;
+    const isCurrent = beginPreparation();
 
     const incomingFiles = Array.from(files || []).filter(Boolean);
     if (incomingFiles.length === 0) return false;
@@ -168,6 +203,7 @@ export default function useChatFileSending({
         uniqueIncomingFiles,
         prepareOptions,
       );
+      if (!isCurrent()) return false;
       const preparedItems = Array.isArray(preparedResult?.items) ? preparedResult.items : [];
       const nextItems = [...existingItems, ...preparedItems];
       const totalBytes = nextItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
@@ -182,12 +218,14 @@ export default function useChatFileSending({
       }
       return true;
     } catch {
+      if (!isCurrent()) return false;
       notifyWarning?.('Не удалось подготовить файлы к отправке.');
       return false;
     } finally {
-      setPreparingFiles(false);
+      if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
+    beginPreparation,
     notifyWarning,
     preparingFiles,
     selectedUploadItems,
@@ -224,6 +262,7 @@ export default function useChatFileSending({
 
   const applySelectedImageEdit = useCallback(async (fileIndex, payload = {}) => {
     if (preparingFiles || sendingFiles || !payload?.file) return false;
+    const isCurrent = beginPreparation();
     const normalizedIndex = Number(fileIndex);
     if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
     const currentItem = selectedUploadItems[normalizedIndex];
@@ -232,6 +271,7 @@ export default function useChatFileSending({
     setPreparingFiles(true);
     try {
       const preparedEditedItem = await prepareChatUploadFile(payload.file);
+      if (!isCurrent()) return false;
       const nextItems = selectedUploadItems.map((item, index) => {
         if (index !== normalizedIndex) return item;
         return {
@@ -253,12 +293,14 @@ export default function useChatFileSending({
       setSendMediaAsFiles(false);
       return true;
     } catch {
+      if (!isCurrent()) return false;
       notifyWarning?.('Не удалось подготовить отредактированное фото к отправке.');
       return false;
     } finally {
-      setPreparingFiles(false);
+      if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
+    beginPreparation,
     notifyWarning,
     preparingFiles,
     selectedUploadItems,
@@ -270,6 +312,7 @@ export default function useChatFileSending({
 
   const resetSelectedImageEdit = useCallback(async (fileIndex) => {
     if (preparingFiles || sendingFiles) return false;
+    const isCurrent = beginPreparation();
     const normalizedIndex = Number(fileIndex);
     if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
     const currentItem = selectedUploadItems[normalizedIndex];
@@ -279,6 +322,7 @@ export default function useChatFileSending({
     setPreparingFiles(true);
     try {
       const restoredItem = await prepareChatUploadFile(originalFile);
+      if (!isCurrent()) return false;
       const nextItems = selectedUploadItems.map((item, index) => (
         index === normalizedIndex
           ? {
@@ -292,12 +336,14 @@ export default function useChatFileSending({
       setSelectedUploadItems(nextItems);
       return true;
     } catch {
+      if (!isCurrent()) return false;
       notifyWarning?.('Не удалось восстановить исходное фото.');
       return false;
     } finally {
-      setPreparingFiles(false);
+      if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
+    beginPreparation,
     notifyWarning,
     preparingFiles,
     selectedUploadItems,
@@ -365,6 +411,9 @@ export default function useChatFileSending({
     const snapshotUploadItems = buildChatSendUploadItems(selectedUploadItems, sendMediaAsFiles);
     const snapshotFiles = snapshotUploadItems.map((item) => item?.file).filter(Boolean);
     const snapshotCaption = fileCaption;
+    const restored = restoredAttemptRef.current;
+    const uploadAttempt = restored?.items === selectedUploadItems && restored.conversationId === conversationId
+      ? (restored.attempt || {}) : {};
     if (
       sendMediaAsFiles
       && getChatUploadItemsOriginalTotalBytes(selectedUploadItems) > CHAT_SEND_MEDIA_AS_FILES_MAX_BYTES
@@ -407,6 +456,8 @@ export default function useChatFileSending({
 
     try {
       const serverMessage = await chatAPI.sendFiles(conversationId, snapshotUploadItems, {
+        uploadAttempt,
+        client_message_id: snapshotUploadItems[0]?.voiceClientMessageId,
         body: snapshotCaption,
         reply_to_message_id: draftReplyMessage?.id || undefined,
         signal: abortController?.signal,
@@ -440,7 +491,12 @@ export default function useChatFileSending({
       if (optimisticMessage?.id) {
         removeThreadMessage(optimisticMessage.id);
       }
-      if (String(error?.code || '') !== 'ERR_CANCELED') {
+      if (String(error?.code || '') !== 'ERR_CANCELED' && mountedRef.current) {
+        retainFailedUpload(conversationId, {
+          items: [...selectedUploadItems], caption: snapshotCaption, asFiles: sendMediaAsFiles,
+          reply: draftReplyMessage,
+          attempt: uploadAttempt,
+        });
         notifyApiError(error, 'Не удалось отправить файлы в чат.');
       }
     } finally {
@@ -464,6 +520,7 @@ export default function useChatFileSending({
     patchThreadMessage,
     preparingFiles,
     removeThreadMessage,
+    retainFailedUpload,
     replyMessage,
     revokeObjectUrls,
     sendMediaAsFiles,
@@ -479,6 +536,23 @@ export default function useChatFileSending({
     setSelectedUploadItems,
     setSendingFiles,
   ]);
+
+  const sendVoiceFile = useCallback(async ({ file, duration, mimeType }) => {
+    const conversationId = String(activeConversationId || '').trim();
+    if (!conversationId || !file) return;
+    const clientMessageId = globalThis.crypto?.randomUUID?.()
+      || `voice-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const items = [{ file, originalFile: file, media_kind: 'audio', duration_seconds: duration,
+      mime_type: mimeType || file.type || 'audio/webm', voiceClientMessageId: clientMessageId }];
+    try {
+      const message = await chatAPI.sendFiles(conversationId, items, { client_message_id: clientMessageId });
+      if (message?.id && mountedRef.current) applyOutgoingThreadMessage(conversationId, message);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      retainFailedUpload(conversationId, { items, caption: '', asFiles: false, reply: null });
+      notifyApiError(error, 'Не удалось отправить голосовое сообщение. Запись сохранена для повтора.');
+    }
+  }, [activeConversationId, applyOutgoingThreadMessage, notifyApiError, retainFailedUpload]);
 
   const closeFileDialog = useCallback(() => {
     if (preparingFiles || sendingFiles) return;
@@ -550,6 +624,7 @@ export default function useChatFileSending({
     removeSelectedFile,
     resetSelectedImageEdit,
     sendFiles,
+    sendVoiceFile,
   };
 }
 

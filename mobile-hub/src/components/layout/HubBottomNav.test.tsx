@@ -1,5 +1,11 @@
 import { render } from '@testing-library/react-native';
 import { HubBottomNav } from './HubBottomNav';
+import { StyleSheet } from 'react-native';
+
+let mockFontScale = 1;
+jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({
+  __esModule: true, default: () => ({ width: 360, height: 800, scale: 1, fontScale: mockFontScale }),
+}));
 
 const mockUpdateState = {
   status: 'available',
@@ -48,6 +54,7 @@ jest.mock('../../updates/useMobileUpdater', () => ({
 
 describe('HubBottomNav update badge', () => {
   beforeEach(() => {
+    mockFontScale = 1;
     mockUpdateState.status = 'available';
   });
 
@@ -65,4 +72,15 @@ describe('HubBottomNav update badge', () => {
     expect(view.getByTestId('hub-bottom-nav-update-badge')).toBeTruthy();
     expect(view.getByTestId('hub-bottom-nav-update-spinner')).toBeTruthy();
   });
+});
+
+it('grows the bar and label allowance with system text size and hides it from accessibility when closed', async () => {
+  const view = await render(<HubBottomNav currentPath="/menu" />);
+  expect(StyleSheet.flatten(view.getByTestId('hub-bottom-nav-row').props.style).height).toBe(66);
+  mockFontScale = 2;
+  await view.rerender(<HubBottomNav currentPath="/menu" />);
+  expect(StyleSheet.flatten(view.getByTestId('hub-bottom-nav-row').props.style).height).toBe(104);
+  expect(view.getByText('Меню').props.numberOfLines).toBe(2);
+  await view.rerender(<HubBottomNav currentPath="/menu" hidden />);
+  expect(view.getByTestId('hub-bottom-nav', { includeHiddenElements: true }).props.importantForAccessibility).toBe('no-hide-descendants');
 });

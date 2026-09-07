@@ -1,3 +1,4 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -6,7 +7,6 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +19,7 @@ import {
   bulkMailMessageAction,
   deleteMailMessage,
   getMailConversations,
+  getMailConversation,
   getMailFolderSummary,
   getMailFolderTree,
   getMailMessages,
@@ -77,9 +78,14 @@ type NativeMailAdvancedFilters = {
   folderScope: 'current' | 'all';
 };
 
-type NativeMailUndo =
+type NativeMailUndo = { scope: string } & (
   | { kind: 'read'; messageId: string; mailboxId: string; previousRead: boolean; item: MailMessagePreview; index: number; label: string }
-  | { kind: 'delete'; messageId: string; mailboxId: string; targetFolder: string; label: string };
+  | { kind: 'delete'; messageId: string; mailboxId: string; targetFolder: string; label: string });
+
+function hasUnconfirmedMailResult(cause: unknown): boolean {
+  const status = (cause as { response?: { status?: number } } | null)?.response?.status;
+  return !status || status === 408 || status >= 500;
+}
 
 type MailListItem =
   | { kind: 'message'; key: string; value: MailMessagePreview }
@@ -236,8 +242,10 @@ export function NativeMailInboxScreen() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkBusyRef = useRef(false);
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const [swipeBusyId, setSwipeBusyId] = useState('');
+  const swipeBusyRef = useRef(false);
   const [undo, setUndo] = useState<NativeMailUndo | null>(null);
   const requestRef = useRef(0);
   const lastFocusLoadRef = useRef<{ key: string; pending: boolean; finishedAt: number } | null>(null);
@@ -262,8 +270,22 @@ export function NativeMailInboxScreen() {
   ].filter(Boolean).length, [advancedFilters]);
   const filtersActive = Boolean(debouncedQuery || unreadOnly || hasAttachments || advancedFilterCount);
   const selectionMode = selected.size > 0;
+  const listScope = JSON.stringify([user?.id, mailboxId, folder, debouncedQuery, unreadOnly, hasAttachments, advancedFilters, view]);
+  const listScopeRef = useRef(listScope);
+  const listGenerationRef = useRef(0);
+  if (listScopeRef.current !== listScope) listGenerationRef.current += 1;
+  listScopeRef.current = listScope;
+  const listGeneration = listGenerationRef.current;
+  const selectionKey = JSON.stringify([...selected].sort());
+  const selectionKeyRef = useRef(selectionKey);
+  const selectionGenerationRef = useRef(0);
+  if (selectionKeyRef.current !== selectionKey) selectionGenerationRef.current += 1;
+  selectionKeyRef.current = selectionKey;
+  const selectionGeneration = selectionGenerationRef.current;
+  useEffect(() => () => { listGenerationRef.current += 1; }, []);
+  useEffect(() => { setUndo(null); }, [listScope]);
   const selectedHasUnread = useMemo(() => items.some((entry) => (
-    entry.kind === 'message' && selected.has(entry.value.id) && entry.value.is_read === false
+    entry.kind === 'message' ? selected.has(entry.value.id) && entry.value.is_read === false : selected.has(entry.value.conversation_id) && Number(entry.value.unread_count) > 0
   )), [items, selected]);
 
   useEffect(() => {
@@ -330,13 +352,18 @@ export function NativeMailInboxScreen() {
       return;
     }
     try {
-      const [pageResult, summaryResult, folderTreeResult, mailboxesResult, viewPreferencesResult] = await Promise.all([
-        view === 'conversations' ? getMailConversations(filters) : getMailMessages(filters),
-        reset ? getMailFolderSummary(mailboxId) : Promise.resolve(null),
-        reset ? getMailFolderTree(mailboxId).catch(() => null) : Promise.resolve(null),
-        reset && mailboxes.length === 0 ? listMailboxes(true) : Promise.resolve(null),
-        reset ? getNativeMailPreferences().catch(() => null) : Promise.resolve(null),
+      const warnings: string[] = [];
+      const optional = async <T,>(request: Promise<T>, label: string): Promise<T | null> => {
+        try { return await request; }
+        catch { warnings.push(label); return null; }
+      };
+      const metadata = Promise.all([
+        reset ? optional(getMailFolderSummary(mailboxId), 'Не обновлены счётчики папок.') : Promise.resolve(null),
+        reset ? optional(getMailFolderTree(mailboxId), 'Не обновлён список папок.') : Promise.resolve(null),
+        reset && mailboxes.length === 0 ? optional(listMailboxes(true), 'Не обновлён список почтовых ящиков.') : Promise.resolve(null),
+        reset ? optional(getNativeMailPreferences(), 'Не обновлены настройки отображения.') : Promise.resolve(null),
       ]);
+      const pageResult = await (view === 'conversations' ? getMailConversations(filters) : getMailMessages(filters));
       if (requestId !== requestRef.current) return;
       const nextItems: MailListItem[] = view === 'conversations'
         ? (pageResult.items as MailConversationPreview[]).map((value) => ({ kind: 'conversation' as const, key: `c:${value.conversation_id}`, value }))
@@ -348,6 +375,11 @@ export function NativeMailInboxScreen() {
       setItems(cachedItems);
       setTotal(pageResult.total);
       setHasMore(pageResult.has_more);
+      setLoading(false);
+      setRefreshing(false);
+      setLoadingMore(false);
+      const [summaryResult, folderTreeResult, mailboxesResult, viewPreferencesResult] = await metadata;
+      if (requestId !== requestRef.current) return;
       if (summaryResult) {
         setSummary(summaryResult);
         if (mailboxId) {
@@ -365,7 +397,8 @@ export function NativeMailInboxScreen() {
       if (mailboxesResult) {
         setMailboxes(nextMailboxes);
       }
-      if (pageResult.search_limited) setError('Поиск выполнен по ограниченному окну писем. Уточните запрос.');
+      if (pageResult.search_limited) warnings.push('Поиск выполнен по ограниченному окну писем. Уточните запрос.');
+      setError(warnings.join(' '));
       if (userId) {
         void writeNativeCollectionSnapshot<NativeMailInboxSnapshot>('mail-inbox', userId, signature, {
           signature,
@@ -490,8 +523,9 @@ export function NativeMailInboxScreen() {
     item: MailMessagePreview,
     action: Exclude<NativeMailSwipeAction, null>,
   ) => {
-    if (swipeBusyId || offlineMode || selectionMode || (action === 'delete' && folder === 'trash')) return;
+    if (swipeBusyRef.current || swipeBusyId || offlineMode || selectionMode || (action === 'delete' && folder === 'trash')) return;
     const scopedMailboxId = String(item.mailbox_id || mailboxId);
+    swipeBusyRef.current = true;
     setSwipeBusyId(item.id);
     setUndo(null);
     setError('');
@@ -502,6 +536,7 @@ export function NativeMailInboxScreen() {
         const originalIndex = items.findIndex((entry) => entry.kind === 'message' && entry.value.id === item.id);
         if (previousRead) await markMailMessageUnread(item.id, scopedMailboxId);
         else await markMailMessageRead(item.id, scopedMailboxId);
+        if (listScope !== listScopeRef.current) return;
         if (unreadOnly && nextRead) {
           setItems((current) => current.filter((entry) => entry.kind !== 'message' || entry.value.id !== item.id));
           setTotal((current) => Math.max(0, current - 1));
@@ -513,6 +548,7 @@ export function NativeMailInboxScreen() {
         applyUnreadDelta(nextRead ? -1 : 1, scopedMailboxId);
         setUndo({
           kind: 'read',
+          scope: listScope,
           messageId: item.id,
           mailboxId: scopedMailboxId,
           previousRead,
@@ -522,12 +558,14 @@ export function NativeMailInboxScreen() {
         });
       } else {
         const result = await deleteMailMessage(item.id, scopedMailboxId, false);
+        if (listScope !== listScopeRef.current) return;
         const restoreId = extractNativeMailTrashRestoreId(result);
         setItems((current) => current.filter((entry) => entry.kind !== 'message' || entry.value.id !== item.id));
         setTotal((current) => Math.max(0, current - 1));
         if (restoreId) {
           setUndo({
             kind: 'delete',
+            scope: listScope,
             messageId: restoreId,
             mailboxId: scopedMailboxId,
             targetFolder: folder,
@@ -536,14 +574,23 @@ export function NativeMailInboxScreen() {
         }
       }
     } catch (cause) {
+      if (listScope !== listScopeRef.current) return;
+      if (hasUnconfirmedMailResult(cause)) {
+        await load({ reset: true });
+        if (listScope !== listScopeRef.current) return;
+        setError('Результат действия не подтверждён. Проверьте список писем и подключение перед повтором.');
+        return;
+      }
       setError(formatApiError(cause, action === 'delete' ? 'Не удалось удалить письмо.' : 'Не удалось изменить статус письма.'));
     } finally {
+      swipeBusyRef.current = false;
       setSwipeBusyId('');
     }
-  }, [applyUnreadDelta, folder, items, mailboxId, offlineMode, selectionMode, swipeBusyId, unreadOnly]);
+  }, [applyUnreadDelta, folder, items, listScope, load, mailboxId, offlineMode, selectionMode, swipeBusyId, unreadOnly]);
 
   const undoLastAction = useCallback(async () => {
-    if (!undo || swipeBusyId || offlineMode) return;
+    if (!undo || swipeBusyRef.current || swipeBusyId || offlineMode) return;
+    swipeBusyRef.current = true;
     const pending = undo;
     setUndo(null);
     setSwipeBusyId(pending.messageId);
@@ -551,10 +598,12 @@ export function NativeMailInboxScreen() {
     try {
       if (pending.kind === 'delete') {
         await restoreMailMessage(pending.messageId, pending.mailboxId, pending.targetFolder);
+        if (pending.scope !== listScopeRef.current) return;
         await load({ reset: true });
       } else {
         if (pending.previousRead) await markMailMessageRead(pending.messageId, pending.mailboxId);
         else await markMailMessageUnread(pending.messageId, pending.mailboxId);
+        if (pending.scope !== listScopeRef.current) return;
         if (unreadOnly && pending.previousRead === false) {
           setItems((current) => {
             if (current.some((entry) => entry.kind === 'message' && entry.value.id === pending.messageId)) return current;
@@ -575,29 +624,56 @@ export function NativeMailInboxScreen() {
         applyUnreadDelta(pending.previousRead ? -1 : 1, pending.mailboxId);
       }
     } catch (cause) {
+      if (pending.scope !== listScopeRef.current) return;
+      if (hasUnconfirmedMailResult(cause)) {
+        await load({ reset: true });
+        if (pending.scope !== listScopeRef.current) return;
+        setError('Результат отмены не подтверждён. Проверьте список писем и подключение перед повтором.');
+        return;
+      }
+      setUndo({ ...pending });
       setError(formatApiError(cause, 'Не удалось отменить действие. Обновите список писем.'));
     } finally {
+      swipeBusyRef.current = false;
       setSwipeBusyId('');
     }
   }, [applyUnreadDelta, load, offlineMode, swipeBusyId, undo, unreadOnly]);
 
   const runBulk = useCallback(async (action: 'read' | 'unread' | 'delete' | 'move', targetFolder = '', permanent = false) => {
-    const ids = [...selected];
-    if (!ids.length || bulkBusy || offlineMode) return;
+    let ids = [...selected];
+    if (!ids.length || bulkBusyRef.current || bulkBusy || offlineMode || listGeneration !== listGenerationRef.current) return;
+    bulkBusyRef.current = true;
     setBulkBusy(true);
     setError('');
     try {
-      const selectedMessages = items.filter((entry): entry is Extract<MailListItem, { kind: 'message' }> => (
+      let selectedMessages = items.filter((entry): entry is Extract<MailListItem, { kind: 'message' }> => (
         entry.kind === 'message' && selected.has(entry.value.id)
       ));
+      if (view === 'conversations') {
+        const messages = new Map<string, MailMessagePreview>();
+        for (const id of ids) {
+          const detail = await getMailConversation(id, { mailboxId, folder, folderScope: 'current' });
+          if (listGeneration !== listGenerationRef.current) return;
+          if (detail.conversation_complete !== true) {
+            throw new Error('Не удалось получить цепочку целиком. Действие не выполнено. Повторите позже или выберите отдельные письма.');
+          }
+          for (const message of detail.items) messages.set(message.id, message);
+        }
+        ids = [...messages.keys()];
+        selectedMessages = [...messages.values()].map((value) => ({ kind: 'message' as const, key: `m:${value.id}`, value }));
+        if (!ids.length) { setSelected(new Set()); setError('В выбранных цепочках нет писем текущей папки.'); return; }
+      }
+      if (listGeneration !== listGenerationRef.current) return;
       const result = await bulkMailMessageAction({ mailboxId, action, messageIds: ids, targetFolder, permanent });
+      if (listGeneration !== listGenerationRef.current) return;
       const failed = Math.max(0, Number(result.failed || 0));
       if (result.ok === false || failed > 0) {
         const failedIds = Array.isArray(result.errors)
           ? result.errors.map((entry) => String((entry as { message_id?: unknown })?.message_id || '')).filter(Boolean)
           : [];
-        setSelected(new Set(failedIds.length ? failedIds : ids));
+        setSelected(new Set(view === 'conversations' ? [...selected] : failedIds.length ? failedIds : ids));
         await load({ reset: true });
+        if (listGeneration !== listGenerationRef.current) return;
         setError(failed ? `Не удалось применить действие к ${failed} ${failed === 1 ? 'письму' : 'письмам'}.` : 'Не удалось применить действие к выбранным письмам.');
         return;
       }
@@ -609,19 +685,20 @@ export function NativeMailInboxScreen() {
       setSelected(new Set());
       await load({ reset: true });
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось применить действие к письмам.'));
+      if (listGeneration === listGenerationRef.current) setError(formatApiError(cause, 'Не удалось применить действие к письмам.'));
     } finally {
+      bulkBusyRef.current = false;
       setBulkBusy(false);
     }
-  }, [applyUnreadDelta, bulkBusy, folder, items, load, mailboxId, offlineMode, selected]);
+  }, [listGeneration, view, applyUnreadDelta, bulkBusy, folder, items, load, mailboxId, offlineMode, selected]);
 
   const confirmDelete = useCallback(() => {
     const permanent = folder === 'trash';
     Alert.alert(permanent ? 'Удалить выбранные письма навсегда?' : 'Удалить выбранные письма?', permanent ? 'Это действие нельзя отменить.' : 'Письма будут перемещены в папку «Удалённые».', [
       { text: 'Отмена', style: 'cancel' },
-      { text: 'Удалить', style: 'destructive', onPress: () => { void runBulk('delete', '', permanent); } },
+      { text: 'Удалить', style: 'destructive', onPress: () => { if (selectionGeneration === selectionGenerationRef.current) void runBulk('delete', '', permanent); } },
     ]);
-  }, [folder, runBulk]);
+  }, [folder, runBulk, selectionGeneration]);
 
   const markAllRead = useCallback(async () => {
     if (bulkBusy || offlineMode) return;
@@ -682,6 +759,7 @@ export function NativeMailInboxScreen() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: tokens.pageBg }]} edges={['top', 'left', 'right']}>
+      {selectionMode && view === 'conversations' ? <Text accessibilityRole="text" style={{ paddingHorizontal: 16, paddingVertical: 8, color: tokens.textSecondary }}>Действия применяются к найденным письмам выбранных цепочек в текущей папке.</Text> : null}
       {selectionMode ? (
         <View testID="native-mail-selection-header" style={[styles.selectionHeader, { backgroundColor: tokens.headerBandBg, borderBottomColor: tokens.borderSoft }]}>
           <SelectionAction icon="close" label="Отменить выбор" tokens={tokens} onPress={() => setSelected(new Set())} />
@@ -773,12 +851,13 @@ export function NativeMailInboxScreen() {
               showPreview={mailViewPreferences.show_preview_snippets}
               compact={mailViewPreferences.density === 'compact'}
               canDelete={folder !== 'trash'}
+              busy={swipeBusyId === item.value.id}
               actionsDisabled={offlineMode || Boolean(swipeBusyId)}
               onOpen={openMessage}
               onToggleSelected={toggleSelected}
               onAction={runSwipeAction}
             />
-          ) : <NativeMailInboxConversationRow item={item.value} tokens={tokens} showPreview={mailViewPreferences.show_preview_snippets} compact={mailViewPreferences.density === 'compact'} onOpen={openConversation} />}
+          ) : <NativeMailInboxConversationRow selected={selected.has(item.value.conversation_id)} selectionMode={selectionMode} onToggleSelected={toggleSelected} item={item.value} tokens={tokens} showPreview={mailViewPreferences.show_preview_snippets} compact={mailViewPreferences.density === 'compact'} onOpen={openConversation} />}
         />
       )}
       {!selectionMode && !undo ? (
@@ -795,7 +874,7 @@ export function NativeMailInboxScreen() {
       ) : null}
       {undo ? (
         <View accessibilityLiveRegion="polite" accessibilityRole="summary" style={[styles.undoBar, { bottom: bottomInset + 14, backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-          <Text numberOfLines={2} style={[styles.undoText, { color: tokens.textPrimary }]}>{undo.label}</Text>
+          <Text style={[styles.undoText, { color: tokens.textPrimary }]}>{undo.label}</Text>
           <Pressable testID="native-mail-undo" accessibilityRole="button" accessibilityLabel="Отменить последнее действие с письмом" disabled={Boolean(swipeBusyId) || offlineMode} onPress={() => { void undoLastAction(); }} style={styles.undoAction}>
             <Text style={[styles.undoActionText, { color: tokens.primary }]}>Отменить</Text>
           </Pressable>

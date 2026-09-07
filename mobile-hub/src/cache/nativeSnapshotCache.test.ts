@@ -71,7 +71,10 @@ jest.mock('expo-crypto', () => {
   class MockSealed {
     readonly mockValue: string;
     constructor(mockValue: string) { this.mockValue = mockValue; }
-    static fromCombined(mockValue: string) { return new MockSealed(mockValue); }
+    static fromCombined(mockValue: Uint8Array) {
+      if (!(mockValue instanceof Uint8Array)) throw new TypeError('fromCombined requires Uint8Array on Android SDK 57');
+      return new MockSealed(Buffer.from(mockValue).toString('base64'));
+    }
     async combined() { return this.mockValue; }
   }
   return {

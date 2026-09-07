@@ -7,13 +7,9 @@ import {
   buildEmployeeSubtitle,
   formatAbsenceLabel,
   getInitials,
-  isValidEmailRecipient,
-  pickPrimaryEmail,
   pickQuickActionPhone,
   type AddressBookEntry,
 } from './addressBookFormat';
-import { TelegramBrandIcon } from './MessengerBrandIcon';
-import { isPhoneDeepLinkReady } from './messengerLinks';
 
 function absenceTint(kind: string | null | undefined, tokens: FluentTokens) {
   const value = String(kind || '').toLowerCase();
@@ -30,11 +26,6 @@ export function AddressBookEntryRow({
   tokens,
   onSelect,
   onCall,
-  onOpenTelegram,
-  onComposeEmail,
-  onOpenChat,
-  showChatAction = false,
-  chatBusy = false,
 }: {
   item: AddressBookEntry;
   entryKey: string;
@@ -49,12 +40,9 @@ export function AddressBookEntryRow({
   chatBusy?: boolean;
 }) {
   const primaryPhone = pickQuickActionPhone(item);
-  const primaryEmail = pickPrimaryEmail(item);
   const subtitle = buildEmployeeSubtitle(item);
   const absenceLabel = formatAbsenceLabel(item.absence);
   const canCall = Boolean(primaryPhone?.telHref);
-  const canTelegram = Boolean(primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits));
-  const canMail = Boolean(primaryEmail?.value && isValidEmailRecipient(primaryEmail.value));
 
   return (
     <Pressable
@@ -71,7 +59,7 @@ export function AddressBookEntryRow({
         <AddressBookHighlight
           value={item.full_name}
           query={query}
-          numberOfLines={1}
+          numberOfLines={2}
           style={[styles.name, { color: tokens.textPrimary }]}
         />
         {subtitle ? (
@@ -107,35 +95,13 @@ export function AddressBookEntryRow({
             onPress={() => onCall(primaryPhone.telHref)}
           />
         ) : null}
-        {primaryPhone ? (
-          <IconAction
-            tokens={tokens}
-            label={`Открыть Telegram ${primaryPhone.value}`}
-            disabled={!canTelegram}
-            onPress={() => onOpenTelegram(primaryPhone.digits)}
-          >
-            <TelegramBrandIcon size={20} disabled={!canTelegram} />
-          </IconAction>
-        ) : null}
-        {primaryEmail ? (
-          <IconAction
-            tokens={tokens}
-            icon="email-outline"
-            label={`Написать в HUB ${primaryEmail.value}`}
-            disabled={!canMail}
-            onPress={() => onComposeEmail(primaryEmail.value)}
-          />
-        ) : null}
-        {showChatAction ? (
-          <IconAction
-            tokens={tokens}
-            icon="forum-outline"
-            label={`Написать в чат ${item.full_name || ''}`}
-            disabled={chatBusy}
-            testID={`address-book-chat-${entryKey}`}
-            onPress={() => onOpenChat?.()}
-          />
-        ) : null}
+        <IconAction
+          tokens={tokens}
+          icon="dots-horizontal"
+          label={`Все действия: ${item.full_name || 'сотрудник'}`}
+          testID={`address-book-more-${entryKey}`}
+          onPress={onSelect}
+        />
       </View>
     </Pressable>
   );

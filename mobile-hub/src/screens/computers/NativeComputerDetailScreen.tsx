@@ -108,7 +108,7 @@ export function NativeComputerDetailScreen() {
   if (!canRead) {
     return (
       <AccountScreenScaffold title="Компьютер" onBack={() => router.back()} tokens={tokens}>
-        <AccountSectionCard tokens={tokens} title="Нет доступа" description="Для карточки нужно право computers.read.">{null}</AccountSectionCard>
+        <AccountSectionCard tokens={tokens} collapsible title="Нет доступа" description="Для карточки нужно право computers.read.">{null}</AccountSectionCard>
       </AccountScreenScaffold>
     );
   }
@@ -146,7 +146,10 @@ export function NativeComputerDetailScreen() {
             </View>
           </View>
 
-          <AccountSectionCard tokens={tokens} title="Привязка и пользователь">
+          <AccountField tokens={tokens} label="Сотрудник" value={user} />
+          <AccountField tokens={tokens} label="Последний отчёт" value={formatComputerTimestamp(computer.last_seen_at)} />
+          {diskWarnings ? <Text accessibilityRole="alert" style={{ color: tokens.warning, marginBottom: 12 }}>Диски требуют внимания: {diskWarnings}. Откройте раздел «Диски».</Text> : null}
+          <AccountSectionCard tokens={tokens} collapsible title="Привязка и пользователь">
             <AccountField tokens={tokens} label="Пользователь" value={user} />
             <AccountField tokens={tokens} label="Филиал" value={computer.branch_name} />
             <AccountField tokens={tokens} label="Расположение" value={computer.location_name} />
@@ -155,7 +158,7 @@ export function NativeComputerDetailScreen() {
             <AccountField tokens={tokens} label="Модель по учёту" value={computer.inventory_model_name} />
           </AccountSectionCard>
 
-          <AccountSectionCard tokens={tokens} title="Система">
+          <AccountSectionCard tokens={tokens} collapsible title="Система">
             <AccountField tokens={tokens} label="Процессор" value={computer.cpu_model} />
             <AccountField tokens={tokens} label="Оперативная память" value={computer.ram_gb === null ? '' : `${computer.ram_gb} ГБ`} />
             <AccountField tokens={tokens} label="Загрузка CPU" value={computer.cpu_load_percent === null ? '' : `${computer.cpu_load_percent}%`} />
@@ -166,7 +169,7 @@ export function NativeComputerDetailScreen() {
             <AccountField tokens={tokens} label="Серийный номер" value={computer.system_serial} />
           </AccountSectionCard>
 
-          <AccountSectionCard tokens={tokens} title="Сеть" description={computer.ip_list.length ? `IP-адресов: ${computer.ip_list.length}` : undefined}>
+          <AccountSectionCard tokens={tokens} collapsible title="Сеть" description={computer.ip_list.length ? `IP-адресов: ${computer.ip_list.length}` : undefined}>
             <AccountField tokens={tokens} label="Основной IP" value={computer.ip_primary} />
             <AccountField tokens={tokens} label="Все IP" value={computer.ip_list.join(', ')} />
             <AccountField tokens={tokens} label="MAC" value={computer.mac_address} />
@@ -178,7 +181,7 @@ export function NativeComputerDetailScreen() {
             ))}
           </AccountSectionCard>
 
-          <AccountSectionCard tokens={tokens} title="Диски" description={diskWarnings ? `Требуют внимания: ${diskWarnings}` : undefined}>
+          <AccountSectionCard tokens={tokens} collapsible title="Диски" description={diskWarnings ? `Требуют внимания: ${diskWarnings}` : undefined}>
             {disks.length ? disks.slice(0, 12).map((disk, index) => (
               <View key={`${disk.serial_number}:${disk.mountpoint}:${index}`} style={[styles.subCard, { backgroundColor: tokens.panelInset }]}>
                 <Text style={[styles.subTitle, { color: tokens.textPrimary }]}>{disk.name || disk.mountpoint || `Диск ${index + 1}`}</Text>
@@ -191,7 +194,7 @@ export function NativeComputerDetailScreen() {
             )) : <Text style={[styles.muted, { color: tokens.textSecondary }]}>Данные о дисках не получены.</Text>}
           </AccountSectionCard>
 
-          <AccountSectionCard tokens={tokens} title="Outlook и изменения">
+          <AccountSectionCard tokens={tokens} collapsible title="Outlook и изменения">
             <AccountField tokens={tokens} label="Состояние Outlook" value={computer.outlook_status} />
             <AccountField tokens={tokens} label="Размер файлов Outlook" value={formatComputerBytes(computer.outlook_total_size_bytes)} />
             <AccountField tokens={tokens} label="Архивов" value={String(computer.outlook_archives_count)} />

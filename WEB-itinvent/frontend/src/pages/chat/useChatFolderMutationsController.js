@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import chatFoldersAPI from '../../api/chatFolders';
 
@@ -12,6 +12,11 @@ export default function useChatFolderMutationsController({
   setFolderManagerOpen,
   setFolderSaving,
 }) {
+  const currentFilter = useRef(conversationFilter);
+  useLayoutEffect(() => {
+    currentFilter.current = conversationFilter;
+    return () => { currentFilter.current = null; };
+  }, [conversationFilter]);
   const handleOpenFolderManager = useCallback((options = {}) => {
     setFolderManagerCreateMode(Boolean(options?.create));
     setFolderManagerOpen(true);
@@ -47,7 +52,7 @@ export default function useChatFolderMutationsController({
     setFolderSaving(true);
     try {
       await chatFoldersAPI.deleteFolder(folderId);
-      if (String(conversationFilter) === String(folderId)) {
+      if (currentFilter.current !== null && String(currentFilter.current) === String(folderId)) {
         handleActiveFolderChange('personal');
       }
       await loadChatFolders({ silent: true });
@@ -56,7 +61,7 @@ export default function useChatFolderMutationsController({
     } finally {
       setFolderSaving(false);
     }
-  }, [conversationFilter, handleActiveFolderChange, loadChatFolders, notifyApiError, setFolderSaving]);
+  }, [handleActiveFolderChange, loadChatFolders, notifyApiError, setFolderSaving]);
 
   const handleReorderChatFolder = useCallback(async (folderId, direction) => {
     const items = [...customFolders];

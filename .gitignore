@@ -34,6 +34,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.slopo-venv/
+
+# Local Slopo index / reports
+.slopo/
 
 # IDE
 .idea/

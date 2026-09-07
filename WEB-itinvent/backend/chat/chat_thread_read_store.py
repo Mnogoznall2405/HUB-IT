@@ -747,6 +747,7 @@ class ChatThreadReadStore:
                 )
                 .where(
                     ChatMessage.conversation_id == conversation.id,
+                    ChatMessage.is_deleted.is_(False),
                     or_(
                         func.lower(ChatMessage.body).contains(normalized_query),
                         func.lower(ChatMessageAttachment.file_name).contains(normalized_query),

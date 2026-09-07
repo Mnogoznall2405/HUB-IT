@@ -41,10 +41,23 @@ function AccountWorkspace({ area = 'settings' }) {
   const nativeShell = isNativeShellRuntime();
   const mobileApp = isMobileAppWebViewRuntime();
 
-  const blockingErrorNode = data.blockingError ? (
-    <Alert severity="error" onClose={() => data.setBlockingError('')}>
-      {data.blockingError}
-    </Alert>
+  const blockingErrorNode = data.blockingError || data.databasesError ? (
+    <Stack spacing={1}>
+      {data.blockingError ? (
+        <Alert severity="error" onClose={() => data.setBlockingError('')}>
+          {data.blockingError}
+        </Alert>
+      ) : null}
+      {data.databasesError ? (
+        <Alert severity="error" action={
+          <Button color="inherit" disabled={data.databasesLoading} onClick={data.retryDatabases}>
+            Повторить загрузку баз
+          </Button>
+        }>
+          {data.databasesError}
+        </Alert>
+      ) : null}
+    </Stack>
   ) : null;
 
   const securityContent = (

@@ -24,38 +24,47 @@ export const ChatMessageEnterMotion = memo(function ChatMessageEnterMotion({
   children,
 }: {
   motionKey: string;
-  kind: ChatMessageEnterKind;
+  kind?: ChatMessageEnterKind;
   reduceMotion: boolean;
   onFinished: (motionKey: string) => void;
   children: ReactNode;
 }) {
-  const progress = useRef(new Animated.Value(reduceMotion ? 1 : 0)).current;
+  const progress = useRef(new Animated.Value(reduceMotion || !kind ? 1 : 0)).current;
   const onFinishedRef = useRef(onFinished);
   onFinishedRef.current = onFinished;
 
   useEffect(() => {
-    if (reduceMotion) {
+    if (reduceMotion || !kind) {
       progress.setValue(1);
-      onFinishedRef.current(motionKey);
+      if (kind) onFinishedRef.current(motionKey);
       return undefined;
     }
 
     progress.setValue(0);
+    let stopped = false;
+    let consumed = false;
+    const consume = () => {
+      if (consumed) return;
+      consumed = true;
+      onFinishedRef.current(motionKey);
+    };
     const animation = Animated.timing(progress, {
       toValue: 1,
       duration: CHAT_MESSAGE_ENTER_DURATION_MS,
       easing: Easing.bezier(0.2, 0.01, 0.28, 0.91),
       useNativeDriver: true,
     });
-    animation.start(() => {
+    animation.start(({ finished }) => {
+      if (stopped || !finished) return;
       progress.setValue(1);
-      onFinishedRef.current(motionKey);
+      consume();
     });
     return () => {
+      stopped = true;
       animation.stop();
-      onFinishedRef.current(motionKey);
+      consume();
     };
-  }, [motionKey, progress, reduceMotion]);
+  }, [kind, motionKey, progress, reduceMotion]);
 
   const opacity = progress.interpolate({
     inputRange: [0, 1],
@@ -76,7 +85,7 @@ export const ChatMessageEnterMotion = memo(function ChatMessageEnterMotion({
 
   return (
     <Animated.View
-      testID={`chat-message-enter-${kind}`}
+      testID={kind ? `chat-message-enter-${kind}` : undefined}
       style={{
         opacity,
         transform: [{ translateY }, { translateX }, { scale }],

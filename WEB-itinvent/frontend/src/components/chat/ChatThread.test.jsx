@@ -20,6 +20,10 @@ import { buildChatUiTokens } from './chatUiTokens';
 
 vi.mock('emoji-picker-react', () => ({ default: () => null }));
 
+vi.mock('../../api/chatStickers', () => ({
+  chatStickersAPI: { listPacks: vi.fn(async () => ({ items: [] })) },
+}));
+
 const theme = createTheme();
 const ui = {
   textSecondary: '#64748b',
@@ -43,6 +47,28 @@ const ui = {
 const renderWithTheme = (node) => render(<ThemeProvider theme={theme}>{node}</ThemeProvider>);
 
 const getBubbleSurfaceByText = (text) => screen.getByText(text).closest('[data-chat-bubble-surface="true"]');
+
+describe('reply preview keyboard navigation', () => {
+  it.each(['Enter', ' '])('opens the quoted message using %s', (key) => {
+    const onScrollToMessage = vi.fn();
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={{
+          id: 'reply-1', kind: 'text', body: 'Ответ на сообщение',
+          reply_preview: { message_id: 'original-1', sender_name: 'Иван', body: 'Исходное сообщение' },
+        }}
+        onScrollToMessage={onScrollToMessage}
+      />,
+    );
+    const quote = screen.getByRole('button', { name: /Исходное сообщение/ });
+    quote.focus();
+    expect(quote).toHaveFocus();
+    fireEvent.keyDown(quote, { key });
+    expect(onScrollToMessage).toHaveBeenCalledExactlyOnceWith('original-1');
+  });
+});
 
 function installIntersectionObserverMock() {
   const OriginalIntersectionObserver = window.IntersectionObserver;
@@ -2447,8 +2473,8 @@ describe('ChatThread composer', () => {
 
   it('keeps the thread pinned to bottom when the composer height grows', async () => {
     let resizeObserverCallback = null;
-    const originalResizeObserver = global.ResizeObserver;
-    global.ResizeObserver = class ResizeObserverMock {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserverMock {
       constructor(callback) {
         resizeObserverCallback = callback;
       }
@@ -2520,7 +2546,7 @@ describe('ChatThread composer', () => {
 
       expect(scrollTop).toBe(scrollHeight - clientHeight);
     } finally {
-      global.ResizeObserver = originalResizeObserver;
+      globalThis.ResizeObserver = originalResizeObserver;
     }
   });
 

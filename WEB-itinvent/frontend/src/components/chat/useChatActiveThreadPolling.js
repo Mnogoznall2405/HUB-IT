@@ -2,11 +2,11 @@ import { useEffect, useRef } from 'react';
 
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
-import { CHAT_SWR_STALE_TIME_MS } from '../../pages/chat/chatPageConstants';
 import {
+  CHAT_SWR_STALE_TIME_MS,
   isChatReadConcurrencyFullError,
   resolveChatReadRetryAfterMs,
-} from '../../pages/chat/chatThreadTransport';
+} from '../../lib/chat/chatReadPolicy';
 
 export const CHAT_CONVERSATIONS_RECONCILE_COOLDOWN_MS = 10_000;
 

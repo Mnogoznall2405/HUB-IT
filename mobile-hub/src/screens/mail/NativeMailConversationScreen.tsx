@@ -1,7 +1,10 @@
+import { useMailQuickReplyDraft } from '../../mail/useMailQuickReplyDraft';
+import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
+import { createMailComposeTransfer } from '../../mail/nativeMailComposeTransfer';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   getMailConversation,
@@ -36,7 +39,7 @@ import {
 } from '../../mail/nativeMailAttachments';
 import { downloadMailAttachment, downloadMailAttachmentPreviewPdf } from '../../mail/nativeMailFiles';
 import { nativeMailComposeDestination } from '../../mail/nativeMailFeature';
-import { buildNativeMailOutgoingHtml, composeVariantForMode, mailSubject } from '../../mail/nativeMailModel';
+import { buildNativeMailOutgoingHtml, composeVariantForMode, mailDateLabel, mailPreviewSender, mailSubject } from '../../mail/nativeMailModel';
 import { publishNativeMailUnreadDelta } from '../../mail/nativeMailUnreadEvents';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -53,7 +56,13 @@ function quickReplyIdempotencyKey(): string {
 }
 
 export function NativeMailConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
+  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
+  const { user } = useAuth();
+  return <NativeMailConversationContent key={JSON.stringify([user?.id, first(params.mailboxId), first(params.conversationId), first(params.folder)])} />;
+}
+
+function NativeMailConversationContent() {
+  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
   const conversationId = first(params.conversationId);
   const mailboxId = first(params.mailboxId);
   const folder = first(params.folder) || 'inbox';
@@ -67,14 +76,29 @@ export function NativeMailConversationScreen() {
   const [error, setError] = useState('');
   const [busyAttachment, setBusyAttachment] = useState('');
   const [readStateBusy, setReadStateBusy] = useState(false);
-  const [quickReply, setQuickReply] = useState('');
+  const { ready: quickReplyReady, retryRestore: retryQuickReplyRestore, text: quickReply, setText: setQuickReply, storageError: quickReplyStorageError, saved: quickReplySaved, pending: quickReplyPending, prepareSend: prepareQuickReply, completeSend: completeQuickReply, resolvePending: resolveQuickReply, canTransfer: canTransferQuickReply, takeLocal, acknowledgeTransfer } = useMailQuickReplyDraft({ userId: allowed ? user?.id || 0 : 0, mailboxId: mailboxId, kind: 'conversation', entityId: conversationId });
   const [quickReplyBusy, setQuickReplyBusy] = useState(false);
+  const quickReplyInFlightRef = useRef(false);
+  const { requestLeave } = useUnsavedFormGuard(allowed && quickReply.length > 0 && !quickReplySaved, allowed && quickReplyBusy);
   const [imageViewerKey, setImageViewerKey] = useState('');
   const [imageViewerLoading, setImageViewerLoading] = useState(false);
-  const quickReplyKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [allCollapsed, setAllCollapsed] = useState(false);
+  const [expandedId, setExpandedId] = useState(first(params.messageId));
+  const scrollRef = useRef<ScrollView>(null);
+  const messagesTopRef = useRef(0);
+  const scrollPendingRef = useRef(true);
+  useLayoutEffect(() => {
+    setExpandedId(first(params.messageId));
+    setAllCollapsed(false);
+    scrollPendingRef.current = true;
+  }, [params.messageId]);
   const snapshotKey = `${mailboxId}:${folder}:${conversationId}`;
 
+  const requestRef = useRef(0);
+  useLayoutEffect(() => () => { requestRef.current += 1; }, []);
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    const isCurrent = () => requestId === requestRef.current;
     if (!allowed || !conversationId) {
       setLoading(false);
       return;
@@ -89,6 +113,7 @@ export function NativeMailConversationScreen() {
         Number.MAX_SAFE_INTEGER,
       )
       : null;
+    if (!isCurrent()) return;
     if (cached) {
       setConversation(cached.data);
       setCachedAt(cached.savedAt);
@@ -104,12 +129,14 @@ export function NativeMailConversationScreen() {
       return;
     }
     try {
-      const [detail, viewPreferences] = await Promise.all([
-        getMailConversation(conversationId, { mailboxId, folder, folderScope: 'current' }),
-        getNativeMailPreferences().catch(() => null),
-      ]);
+      const preferencesRequest = getNativeMailPreferences().catch(() => null);
+      const detail = await getMailConversation(conversationId, { mailboxId, folder, folderScope: 'current' });
+      if (!isCurrent()) return;
       setConversation(detail);
       setCachedAt(0);
+      setLoading(false);
+      const viewPreferences = await preferencesRequest;
+      if (!isCurrent()) return;
       if (Number(detail.unread_count || 0) > 0 && viewPreferences?.mark_read_on_select === true && !offlineMode) {
         setConversation((current) => current ? { ...current, unread_count: 0, items: current.items.map((item) => ({ ...item, is_read: true })) } : current);
         void setMailConversationRead(conversationId, true, { mailboxId, folder, folderScope: 'current' }).then((result) => {
@@ -118,20 +145,25 @@ export function NativeMailConversationScreen() {
           }
           if (folder === 'inbox') publishNativeMailUnreadDelta(-Math.max(0, Number(detail.unread_count || 0)));
         }).catch(() => {
+          if (!isCurrent()) return;
           setConversation((current) => current?.conversation_id === detail.conversation_id ? detail : current);
           setError('Переписка открылась, но не отметилась прочитанной.');
         });
       }
     } catch (cause) {
+      if (!isCurrent()) return;
       setError(formatApiError(cause, cached
         ? 'Показана сохранённая копия. Не удалось обновить переписку.'
         : 'Не удалось открыть переписку.'));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [allowed, conversationId, folder, mailboxId, offlineMode, snapshotKey, user?.id]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
   useEffect(() => {
     if (!conversation || offlineMode || !user?.id) return;
     void writeNativeEntitySnapshot('mail-conversation-details', user.id, snapshotKey, conversation);
@@ -169,12 +201,15 @@ export function NativeMailConversationScreen() {
   }, [conversation, imageViewerItem?.key, imageViewerItem?.uri, mailboxId, offlineMode]);
 
   const latest = conversation?.items?.[conversation.items.length - 1] || null;
-  const compose = useCallback((mode: 'reply' | 'reply_all' | 'forward') => {
-    if (!latest) return;
+  const visibleMessageId = allCollapsed ? '' : conversation?.items.some((item) => item.id === expandedId) ? expandedId : (latest?.id || '');
+  const visibleMessageIdRef = useRef(visibleMessageId);
+  visibleMessageIdRef.current = visibleMessageId;
+  const compose = useCallback((mode: 'reply' | 'reply_all' | 'forward', message = latest) => {
+    if (!message) return;
     router.push(nativeMailComposeDestination({
       mode,
-      mailboxId: latest.mailbox_id || mailboxId,
-      sourceMessageId: latest.id,
+      mailboxId: message.mailbox_id || mailboxId,
+      sourceMessageId: message.id,
     }) as never);
   }, [latest, mailboxId]);
 
@@ -270,9 +305,9 @@ export function NativeMailConversationScreen() {
     }
   }, [conversation, conversationId, folder, mailboxId, offlineMode, readStateBusy]);
 
-  const sendQuickReply = useCallback(async () => {
+  const sendQuickReply = useCallback(async (retryKey?: string): Promise<void> => {
     const body = quickReply.trim();
-    if (!latest || !body || quickReplyBusy || offlineMode) return;
+    if (!latest || !body || quickReplyInFlightRef.current || quickReplyBusy || offlineMode) return;
     const { variant, quoteHtml } = composeVariantForMode(latest, 'reply');
     const to = (variant.to || []).map(String).filter(Boolean);
     const fallbackRecipient = String(latest.sender_email || latest.sender || '').trim();
@@ -281,42 +316,48 @@ export function NativeMailConversationScreen() {
       setError('Не удалось определить получателя быстрого ответа. Откройте полный редактор.');
       return;
     }
-    const fingerprint = `${latest.id}\n${body}`;
-    if (quickReplyKeyRef.current?.fingerprint !== fingerprint) {
-      quickReplyKeyRef.current = { fingerprint, key: quickReplyIdempotencyKey() };
-    }
+    quickReplyInFlightRef.current = true;
     setQuickReplyBusy(true);
     setError('');
     try {
-      await sendMailMessage({
+      const sendPayload = {
         fromMailboxId: String(latest.compose_context?.mailbox_id || latest.mailbox_id || mailboxId),
-        composeMode: 'reply',
+        composeMode: 'reply' as const,
         to,
         cc: (variant.cc || []).map(String).filter(Boolean),
         subject: String(variant.subject || latest.subject || ''),
         body: buildNativeMailOutgoingHtml(body, quoteHtml),
         isHtml: true,
         replyToMessageId: latest.id,
-      }, { idempotencyKey: quickReplyKeyRef.current.key });
-      quickReplyKeyRef.current = null;
-      setQuickReply('');
+      };
+      const attempt = await prepareQuickReply(sendPayload, quickReplyIdempotencyKey, retryKey);
+      if (attempt.retry && !retryKey) {
+        Alert.alert('Повторить отправку?', 'Проверьте папку «Отправленные» перед повтором: письмо могло быть доставлено. Повтор может создать второе письмо.', [
+          { text: 'Вернуться', style: 'cancel' },
+          { text: 'Повторить отправку', onPress: () => { void sendQuickReply(attempt.key); } },
+        ]);
+        return;
+      }
+      await sendMailMessage(sendPayload, { idempotencyKey: attempt.key });
+      await completeQuickReply(attempt.key);
       await load();
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось отправить быстрый ответ. Повторная попытка будет безопасной.'));
+      setError(`${formatApiError(cause, 'Не удалось подтвердить отправку ответа.')}\nПроверьте папку «Отправленные» перед повтором: письмо могло быть доставлено.`);
     } finally {
+      quickReplyInFlightRef.current = false;
       setQuickReplyBusy(false);
     }
-  }, [latest, load, mailboxId, offlineMode, quickReply, quickReplyBusy]);
+  }, [latest, load, mailboxId, offlineMode, quickReply, quickReplyBusy, prepareQuickReply, completeQuickReply]);
 
   if (!allowed) {
-    return <AccountScreenScaffold title="Переписка" tokens={tokens} onBack={() => goBackOrReplace('/(shell)/mail')}><AccountSectionCard tokens={tokens} title="Нет доступа" description="Для почты нужно право mail.access.">{null}</AccountSectionCard></AccountScreenScaffold>;
+    return <AccountScreenScaffold title="Переписка" tokens={tokens} onBack={() => requestLeave(() => goBackOrReplace('/(shell)/mail'))}><AccountSectionCard tokens={tokens} title="Нет доступа" description="Для почты нужно право mail.access.">{null}</AccountSectionCard></AccountScreenScaffold>;
   }
 
   return (
     <AccountScreenScaffold
       title={conversation ? mailSubject(conversation) : 'Переписка'}
       tokens={tokens}
-      onBack={() => goBackOrReplace('/(shell)/mail')}
+      onBack={() => requestLeave(() => goBackOrReplace('/(shell)/mail'))}
       scroll={false}
     >
       <KeyboardAvoidingView
@@ -325,6 +366,7 @@ export function NativeMailConversationScreen() {
         {...chatKeyboardAvoidingProps()}
       >
       <ScrollView
+        ref={scrollRef}
         testID="native-mail-conversation-scroll"
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -344,13 +386,50 @@ export function NativeMailConversationScreen() {
             <Text style={[styles.summaryTitle, { color: tokens.textPrimary }]}>{mailSubject(conversation)}</Text>
             <Text style={[styles.summaryMeta, { color: tokens.textSecondary }]}>{conversation.messages_count || conversation.items.length} сообщений · {(conversation.participants || []).length} участников</Text>
           </View>
-          <View style={styles.messages}>
+          {conversation.items.some((item) => item.is_read === false) ? <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              const unread = conversation.items.find((item) => item.is_read === false);
+              if (unread) { scrollPendingRef.current = true; setAllCollapsed(false); setExpandedId(unread.id); }
+            }}
+            style={styles.readStateAction}
+          ><Text style={{ color: tokens.primary }}>К первому непрочитанному</Text></Pressable> : null}
+          <View style={styles.messages} onLayout={(event) => { messagesTopRef.current = event.nativeEvent.layout.y; }}>
             {conversation.items.map((message, index) => {
               const attachmentPrefix = `${message.id}:`;
               const cardBusy = busyAttachment.startsWith(attachmentPrefix) ? busyAttachment.slice(attachmentPrefix.length) : '';
               return (
+                <View key={message.id || index} onLayout={(event) => {
+                  if (message.id !== visibleMessageId || !scrollPendingRef.current) return;
+                  const y = event.nativeEvent.layout.y;
+                  requestAnimationFrame(() => {
+                    if (visibleMessageIdRef.current !== message.id || !scrollPendingRef.current) return;
+                    scrollPendingRef.current = false;
+                    scrollRef.current?.scrollTo({ y: messagesTopRef.current + y, animated: false });
+                  });
+                }}>
+                  <Pressable
+                    testID={`native-mail-expand-${message.id}`}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: message.id === visibleMessageId }}
+                    accessibilityLabel={`${message.id === visibleMessageId ? 'Свернуть письмо' : 'Раскрыть письмо'}. ${mailPreviewSender(message)}. ${mailDateLabel(message.received_at)}`}
+                    onPress={() => {
+                      const closing = message.id === visibleMessageId;
+                      scrollPendingRef.current = !closing;
+                      setAllCollapsed(closing);
+                      setExpandedId(message.id);
+                    }}
+                    style={[styles.collapsedHeader, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={1} style={{ color: tokens.textPrimary, fontWeight: message.is_read === false ? '800' : '500' }}>{mailPreviewSender(message)}</Text>
+                      <Text numberOfLines={1} style={{ color: tokens.textSecondary }}>{mailDateLabel(message.received_at)}{message.is_read === false ? ' · Непрочитанное' : ''}</Text>
+                      {message.id !== visibleMessageId && message.body_preview ? <Text numberOfLines={1} style={{ color: tokens.textSecondary }}>{message.body_preview}</Text> : null}
+                    </View>
+                    <MaterialCommunityIcons name={message.id === visibleMessageId ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
+                  </Pressable>
+                  {message.id === visibleMessageId ? <>
                 <NativeMailMessageCard
-                  key={message.id || index}
                   message={message}
                   tokens={tokens}
                   compact
@@ -360,6 +439,13 @@ export function NativeMailConversationScreen() {
                   onPreviewAttachment={(attachment) => { void useAttachment(message, attachment, 'preview'); }}
                   onSaveAllAttachments={(attachments) => { void saveAllAttachments(message, attachments); }}
                 />
+                  {!offlineMode ? <View style={styles.replyRow}>
+                    <ReplyAction icon="reply" label="Ответить" accessibilityLabel="Ответить на это письмо" tokens={tokens} onPress={() => compose('reply', message)} />
+                    <ReplyAction icon="reply-all" label="Ответить всем" accessibilityLabel="Ответить всем на это письмо" tokens={tokens} onPress={() => compose('reply_all', message)} />
+                    <ReplyAction icon="forward" label="Переслать" accessibilityLabel="Переслать это письмо" tokens={tokens} onPress={() => compose('forward', message)} />
+                  </View> : null}
+                  </> : null}
+                </View>
               );
             })}
           </View>
@@ -377,6 +463,7 @@ export function NativeMailConversationScreen() {
           </Pressable>
           {latest ? (
             <>
+              <Text style={[styles.summaryMeta, { color: tokens.textSecondary }]}>Действия с последним письмом</Text>
               <View style={styles.replyRow}>
                 <ReplyAction icon="reply-outline" label="Ответить" tokens={tokens} onPress={() => compose('reply')} />
                 <ReplyAction icon="reply-all-outline" label="Всем" tokens={tokens} onPress={() => compose('reply_all')} />
@@ -393,13 +480,26 @@ export function NativeMailConversationScreen() {
           inputTestID="native-mail-quick-reply"
           sendTestID="native-mail-send-quick-reply"
           value={quickReply}
+          error={quickReplyStorageError}
           busy={quickReplyBusy}
-          disabled={offlineMode}
+          pending={quickReplyPending}
+          onReview={() => router.push({ pathname: '/(shell)/mail', params: { mailboxId: mailboxId, folder: 'sent' } } as never)}
+          onResolve={(wasSent) => { if (quickReplyInFlightRef.current) return; void resolveQuickReply(wasSent).catch(() => setError('Не удалось сохранить результат проверки отправки.')); }}
+          disabled={offlineMode || !quickReplyReady}
+          restoring={!quickReplyReady && !quickReplyStorageError}
+          onRetryRestore={!quickReplyReady && quickReplyStorageError ? retryQuickReplyRestore : undefined}
           placeholder="Ответить на последнее письмо…"
           tokens={tokens}
           onChangeText={(value) => {
             setQuickReply(value);
-            if (quickReplyKeyRef.current?.fingerprint !== `${latest.id}\n${value.trim()}`) quickReplyKeyRef.current = null;
+          }}
+          onExpand={() => {
+            if (!canTransferQuickReply()) return;
+            if (!user?.id || !latest || quickReplyPending || quickReplyInFlightRef.current || quickReplyBusy) return;
+            const scopedMailboxId = String(latest.mailbox_id || mailboxId);
+            const transferId = createMailComposeTransfer({ userId: user.id, mailboxId: scopedMailboxId, messageId: latest.id, text: quickReply, onTaken: () => takeLocal(quickReply), onSaved: () => acknowledgeTransfer(quickReply) });
+            const destination = nativeMailComposeDestination({ mode: 'reply', mailboxId: scopedMailboxId, sourceMessageId: latest.id });
+            router.push({ ...destination, params: { ...destination.params, transferId } } as never);
           }}
           onSend={() => { void sendQuickReply(); }}
         />
@@ -426,8 +526,8 @@ export function NativeMailConversationScreen() {
   );
 }
 
-function ReplyAction({ icon, label, tokens, onPress }: { icon: React.ComponentProps<typeof MaterialCommunityIcons>['name']; label: string; tokens: ReturnType<typeof useFluentTokens>; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.replyAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, opacity: pressed ? 0.75 : 1 }]}><MaterialCommunityIcons name={icon} size={21} color={tokens.primary} /><Text style={[styles.replyText, { color: tokens.primary }]}>{label}</Text></Pressable>;
+function ReplyAction({ icon, label, accessibilityLabel, tokens, onPress }: { accessibilityLabel?: string; icon: React.ComponentProps<typeof MaterialCommunityIcons>['name']; label: string; tokens: ReturnType<typeof useFluentTokens>; onPress: () => void }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel || label} onPress={onPress} style={({ pressed }) => [styles.replyAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, opacity: pressed ? 0.75 : 1 }]}><MaterialCommunityIcons name={icon} size={21} color={tokens.primary} /><Text style={[styles.replyText, { color: tokens.primary }]}>{label}</Text></Pressable>;
 }
 
 const styles = StyleSheet.create({
@@ -442,6 +542,7 @@ const styles = StyleSheet.create({
   summaryTitle: { fontSize: 22, lineHeight: 28, fontWeight: '900' },
   summaryMeta: { marginTop: 4, fontSize: 12, fontWeight: '700' },
   messages: { gap: 10 },
+  collapsedHeader: { minHeight: 64, borderWidth: 1, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   readStateAction: { minHeight: 48, marginTop: 10, borderWidth: 1, borderRadius: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   readStateText: { fontSize: 12, fontWeight: '900' },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },

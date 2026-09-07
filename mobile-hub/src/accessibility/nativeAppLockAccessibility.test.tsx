@@ -48,6 +48,7 @@ jest.mock('../native/haptics', () => ({
 }));
 
 import { AppLockGate } from '../auth/AppLockGate';
+import { FluentThemeContext, getFluentTokens } from '../theme/fluentTokens';
 
 it('keeps the biometric lock controls scrollable after returning from background', async () => {
   const originalState = Object.getOwnPropertyDescriptor(AppState, 'currentState');
@@ -59,7 +60,9 @@ it('keeps the biometric lock controls scrollable after returning from background
     return { remove };
   });
 
-  const screen = await render(<AppLockGate />);
+  const light = getFluentTokens('light');
+  const dark = getFluentTokens('dark');
+  const screen = await render(<FluentThemeContext.Provider value={light}><AppLockGate /></FluentThemeContext.Provider>);
   await waitFor(() => expect(stateListener).toBeDefined());
   await waitFor(() => expect(mockSubscribeSettings).toHaveBeenCalled());
   await act(async () => undefined);
@@ -71,6 +74,13 @@ it('keeps the biometric lock controls scrollable after returning from background
   expect(screen.getByRole('alert')).toHaveTextContent('Не удалось подтвердить отпечаток');
   expect(screen.getByRole('button', { name: 'Разблокировать HUB-IT отпечатком пальца' }))
     .toBeEnabled();
+
+  expect(screen.getByRole('header')).toHaveStyle({ color: light.textPrimary });
+  expect(screen.getByRole('alert')).toHaveStyle({ color: light.error });
+  await screen.rerender(<FluentThemeContext.Provider value={dark}><AppLockGate /></FluentThemeContext.Provider>);
+  expect(screen.getByRole('header')).toHaveStyle({ color: dark.textPrimary });
+  expect(screen.getByRole('alert')).toHaveStyle({ color: dark.error });
+  expect(mockUnlock).toHaveBeenCalledTimes(1);
 
   await screen.unmount();
   expect(remove).toHaveBeenCalled();

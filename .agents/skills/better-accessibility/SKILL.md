@@ -1,6 +1,6 @@
 ---
 name: better-accessibility
-description: Accessibility engineering for product interfaces, from focus states and keyboard support to ARIA, forms, and screen readers. Use when building or reviewing UI components, modals, menus, forms, custom widgets, or when the user says "make this accessible" or reports keyboard or screen-reader issues. Triggers on accessibility, a11y, WCAG, aria, focus ring, focus-visible, focus trap, keyboard navigation, tab order, tabindex, screen reader, sr-only, aria-live, alt text, hit area, touch target, prefers-reduced-motion, autoplay, toast duration, skip link, semantic HTML, aria-label, form errors, disabled buttons, "not keyboard accessible".
+description: Build or review keyboard, focus, screen-reader and accessible interaction behavior in product interfaces.
 ---
 
 # Accessibility that comes with the craft
@@ -58,7 +58,7 @@ Icon-only buttons need a descriptive `aria-label`. Visible label text must appea
 
 ### 9. Don't Rely on Color Alone
 
-Status needs a redundant cue: icon, text, or underline alongside the color. Determine which WCAG contrast requirement applies from the content and state, then use `better-colors` to measure the rendered foreground/background pair. When contrast fails, report the pair and requirement it misses; do not change the project's colors unless asked.
+Status needs a redundant cue: icon, text, or underline alongside the color. Determine which WCAG contrast requirement applies from the content and state, then use `better-colors` to measure the rendered foreground/background pair. When contrast fails, report the pair and requirement it misses; do not change the project's colors unless asked. A request to implement identified accessibility or contrast findings authorizes the necessary scoped color adjustments. A review-only request does not. Preserve existing tokens and avoid unrelated palette changes.
 
 ### 10. Honor prefers-reduced-motion
 

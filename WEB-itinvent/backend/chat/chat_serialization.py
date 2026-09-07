@@ -457,6 +457,17 @@ class ChatSerialization:
                 },
             )
         read_by_count = len(read_receipts)
+        forward_preview = dict((forward_previews or {}).get(
+            _normalize_text(getattr(message, "forward_from_message_id", None))) or {})
+        if forward_preview and not is_deleted:
+            # Content belongs to the shared copy, never to future edits of its source.
+            snapshot = self._service._forward_preview_payload(
+                message=message, attachments=list(attachments or []), users_by_id=users_by_id,
+            )
+            forward_preview = {**snapshot, "id": forward_preview["id"],
+                               "sender_name": forward_preview["sender_name"]}
+        else:
+            forward_preview = None
         return {
             "id": message.id,
             "conversation_id": message.conversation_id,
@@ -477,7 +488,7 @@ class ChatSerialization:
             "delivery_status": ("read" if read_by_count > 0 else "sent") if is_own else None,
             "read_by_count": read_by_count if is_own else 0,
             "reply_preview": dict((reply_previews or {}).get(_normalize_text(getattr(message, "reply_to_message_id", None))) or {}) or None,
-            "forward_preview": dict((forward_previews or {}).get(_normalize_text(getattr(message, "forward_from_message_id", None))) or {}) or None,
+            "forward_preview": forward_preview,
             "task_preview": None if is_deleted else self._service._deserialize_task_preview(getattr(message, "task_preview_json", None)),
             "attachments": attachment_payload,
             "action_card": None if is_deleted else self._resolve_message_action_card(

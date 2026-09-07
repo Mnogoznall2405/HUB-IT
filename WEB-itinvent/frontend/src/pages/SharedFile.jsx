@@ -55,6 +55,8 @@ const isRateLimitedError = (error) => Number(error?.response?.status) === 429;
 
 const resolvePublicFileError = (error) => {
   if (isRateLimitedError(error)) return RATE_LIMIT_MESSAGE;
+  const status = Number(error?.response?.status || 0);
+  if (!status || status >= 500) return 'Не удалось связаться с сервером. Повторите загрузку через некоторое время.';
   return 'Файл недоступен или срок хранения истёк.';
 };
 
@@ -514,6 +516,7 @@ function PreviewPanel({ payload, token }) {
 }
 
 export default function SharedFile() {
+  const [retryEpoch, setRetryEpoch] = useState(0);
   const { token = '' } = useParams();
   const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -546,7 +549,7 @@ export default function SharedFile() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, retryEpoch]);
 
   const countdownLabel = useMemo(
     () => formatCountdown(payload?.expires_at, nowMs),
@@ -702,6 +705,7 @@ export default function SharedFile() {
             >
               {error}
             </Alert>
+            <Button onClick={() => setRetryEpoch((value) => value + 1)}>Повторить загрузку</Button>
           </Paper>
         ) : null}
 

@@ -29,6 +29,13 @@ router = APIRouter()
 _IMMUTABLE_STICKER_CACHE_HEADERS = {
     "Cache-Control": "private, max-age=31536000, immutable",
 }
+_SAFE_INLINE_MIME_TYPES = {
+    "application/pdf", "text/plain", "text/csv", "text/tab-separated-values",
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp",
+    "video/mp4", "video/webm", "video/quicktime", "video/x-m4v",
+    "audio/ogg", "audio/mpeg", "audio/wav", "audio/x-wav", "audio/aac",
+    "audio/mp4", "audio/webm", "audio/flac", "audio/x-flac", "audio/opus",
+}
 
 
 def _save_attachment_to_my_files(
@@ -108,16 +115,15 @@ async def download_chat_attachment(
         )
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
-    headers = (
-        _IMMUTABLE_STICKER_CACHE_HEADERS
-        if str(attachment.get("media_kind") or "").strip().lower() == "sticker"
-        else None
-    )
+    headers = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"}
+    if str(attachment.get("media_kind") or "").strip().lower() == "sticker":
+        headers.update(_IMMUTABLE_STICKER_CACHE_HEADERS)
+    mime_type = str(attachment.get("mime_type") or "application/octet-stream").split(";", 1)[0].strip().lower()
     return FileResponse(
         path=attachment["path"],
         filename=attachment["file_name"],
-        media_type=attachment["mime_type"],
-        content_disposition_type="inline" if inline else "attachment",
+        media_type=mime_type,
+        content_disposition_type="inline" if inline and mime_type in _SAFE_INLINE_MIME_TYPES else "attachment",
         headers=headers,
     )
 

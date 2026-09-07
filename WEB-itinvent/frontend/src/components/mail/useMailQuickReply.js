@@ -41,26 +41,25 @@ export default function useMailQuickReply({
   const [draftEpoch, setDraftEpoch] = useState(0);
   const sendingLockRef = useRef(false);
   const idempotencyKeyRef = useRef('');
+  const payloadRef = useRef('');
 
   const sendQuickReply = useCallback(async (selectedMessage, body, { mode = 'reply' } = {}) => {
     if (!selectedMessage?.id) return false;
     if (!body?.trim()) return false;
     if (sendingLockRef.current) return false;
     sendingLockRef.current = true;
-    if (!idempotencyKeyRef.current) {
-      idempotencyKeyRef.current = createMailSendIdempotencyKey();
-    }
     const normalizedBody = String(body).trim();
 
     setQuickReplySending(true);
     onSendingStart?.();
+    let sent = false;
     try {
       const contextKey = mode === 'reply_all' ? 'reply_all' : 'reply';
       const context = selectedMessage?.compose_context?.[contextKey]
         || selectedMessage?.compose_context?.reply
         || {};
       const to = toRecipientEmails(context?.to);
-      await mailAPI.sendMessage({
+      const payload = {
         from_mailbox_id: resolveComposeMailboxId(context?.mailbox_id || selectedMessage?.mailbox_id),
         to: to.length > 0 ? to : getQuickReplyFallbackSender(selectedMessage),
         cc: toRecipientEmails(context?.cc),
@@ -72,16 +71,32 @@ export default function useMailQuickReply({
         ),
         is_html: true,
         reply_to_message_id: selectedMessage.id,
-        idempotencyKey: idempotencyKeyRef.current,
-      });
+      };
+      const fingerprint = JSON.stringify(payload);
+      if (!idempotencyKeyRef.current || payloadRef.current !== fingerprint) {
+        idempotencyKeyRef.current = createMailSendIdempotencyKey();
+        payloadRef.current = fingerprint;
+      }
+      await mailAPI.sendMessage({ ...payload, idempotencyKey: idempotencyKeyRef.current });
+      sent = true;
       idempotencyKeyRef.current = '';
+      payloadRef.current = '';
       setDraftEpoch((value) => value + 1);
-      invalidateMailClientCache?.();
-      await refreshList?.({ silent: true, force: true });
-      await refreshFolderSummary?.();
       onSent?.();
+      const refreshResults = await Promise.allSettled([
+        Promise.resolve().then(() => invalidateMailClientCache?.()),
+        Promise.resolve().then(() => refreshList?.({ silent: true, force: true })),
+        Promise.resolve().then(() => refreshFolderSummary?.()),
+      ]);
+      if (refreshResults.some((result) => result.status === 'rejected')) {
+        onError?.('Письмо отправлено, но обновить список писем не удалось. Обновите список.');
+      }
       return true;
     } catch (requestError) {
+      if (sent) {
+        onError?.('Письмо отправлено, но обновить список писем не удалось. Обновите список.');
+        return true;
+      }
       const fallback = 'Не удалось отправить быстрый ответ.';
       if (!(await handleMailCredentialsRequired?.(requestError, fallback))) {
         onError?.(getMailSendErrorMessage(requestError, fallback));

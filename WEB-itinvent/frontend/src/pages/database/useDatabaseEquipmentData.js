@@ -58,6 +58,10 @@ export function useDatabaseEquipmentData({
 }) {
   const initialLoadStartedRef = useRef(false);
   const dataModeRef = useRef(dataMode);
+  const generationRef = useRef(0);
+  const loadingMoreRef = useRef(null);
+  const currentScopeRef = useRef(getDbCacheScope);
+  currentScopeRef.current = getDbCacheScope;
   const modeSnapshotsRef = useRef({
     [DATA_MODE_EQUIPMENT]: null,
     [DATA_MODE_CONSUMABLES]: null,
@@ -216,7 +220,12 @@ export function useDatabaseEquipmentData({
   } = {}) => {
     const resolvedTotalPages = Number(totalPagesOverride || equipmentPagesTotal || 1);
     const initialPage = startPage ?? nextEquipmentPage;
-    if (!initialPage || initialPage > resolvedTotalPages || loadingMoreEquipment) return undefined;
+    if (!initialPage || initialPage > resolvedTotalPages || loadingMoreRef.current !== null) return undefined;
+    const generation = generationRef.current;
+    const scope = getDbCacheScope();
+    const isCurrent = () => generation === generationRef.current
+      && mode === dataModeRef.current && scope === currentScopeRef.current();
+    loadingMoreRef.current = generation;
 
     setLoadingMoreEquipment(true);
     return (async () => {
@@ -227,6 +236,7 @@ export function useDatabaseEquipmentData({
 
       while (cursor <= resolvedTotalPages && loadedPagesInRun < Math.max(1, maxPages)) {
         const pageResult = await fetchEquipmentGroupedPage(cursor, { force, mode });
+        if (!isCurrent()) return;
         mergedChunk = mergeGroupedEquipment(mergedChunk, pageResult.grouped || {});
         latestServerTotal = Number(pageResult.total || latestServerTotal || 0);
         cursor += 1;
@@ -235,6 +245,7 @@ export function useDatabaseEquipmentData({
 
       if (loadedPagesInRun > 0) {
         setAllEquipment((prev) => {
+          if (!isCurrent()) return prev;
           const nextGrouped = mergeGroupedEquipment(prev, mergedChunk);
           setLoadedCount(countGroupedItems(nextGrouped));
           return nextGrouped;
@@ -244,14 +255,15 @@ export function useDatabaseEquipmentData({
       setServerTotal(latestServerTotal || 0);
       setNextEquipmentPage(cursor <= resolvedTotalPages ? cursor : null);
     })().catch((error) => {
-      console.error('Error loading additional equipment pages:', error);
+      if (isCurrent()) console.error('Error loading additional equipment pages:', error);
     }).finally(() => {
-      setLoadingMoreEquipment(false);
+      if (loadingMoreRef.current === generation) loadingMoreRef.current = null;
+      if (isCurrent()) setLoadingMoreEquipment(false);
     });
   }, [
     nextEquipmentPage,
     equipmentPagesTotal,
-    loadingMoreEquipment,
+    getDbCacheScope,
     serverTotal,
     fetchEquipmentGroupedPage,
   ]);
@@ -261,8 +273,15 @@ export function useDatabaseEquipmentData({
     mode = dataModeRef.current,
     selectedBranchOverride = selectedBranch,
   } = {}) => {
+    const generation = ++generationRef.current;
+    const scope = getDbCacheScope();
+    const isCurrent = () => generation === generationRef.current
+      && mode === dataModeRef.current && scope === currentScopeRef.current();
+    loadingMoreRef.current = null;
+    setLoadingMoreEquipment(false);
     try {
       const firstPageResult = await fetchEquipmentGroupedPage(1, { force, mode });
+      if (!isCurrent()) return;
       const firstGrouped = firstPageResult.grouped || {};
       const firstLoadedCount = countGroupedItems(firstGrouped);
       const totalFromServer = Number(firstPageResult.total || firstLoadedCount || 0);
@@ -303,7 +322,7 @@ export function useDatabaseEquipmentData({
         });
       }
     } catch (error) {
-      console.error('Error fetching equipment:', error);
+      if (isCurrent()) console.error('Error fetching equipment:', error);
     }
   }, [
     fetchEquipmentGroupedPage,
@@ -311,18 +330,25 @@ export function useDatabaseEquipmentData({
     pageLimit,
     prefetchPages,
     selectedBranch,
+    getDbCacheScope,
   ]);
 
   const refreshCurrentDbData = useCallback(async ({ force = false } = {}) => {
+    const generation = generationRef.current;
+    const scope = getDbCacheScope();
     await Promise.all([
       fetchEquipmentTypes({ force }),
       fetchStatuses({ force }),
       fetchBranches({ force }),
     ]);
-    await fetchAllEquipment({ force, mode: dataModeRef.current });
-  }, [fetchEquipmentTypes, fetchStatuses, fetchBranches, fetchAllEquipment]);
+    if (generation === generationRef.current && scope === currentScopeRef.current()) {
+      await fetchAllEquipment({ force, mode: dataModeRef.current });
+    }
+  }, [fetchEquipmentTypes, fetchStatuses, fetchBranches, fetchAllEquipment, getDbCacheScope]);
 
   const resetEquipmentData = useCallback(() => {
+    generationRef.current += 1;
+    loadingMoreRef.current = null;
     setInitialLoadDone(false);
     setEquipment({});
     setAllEquipment({});
@@ -332,6 +358,7 @@ export function useDatabaseEquipmentData({
     setEquipmentPagesTotal(1);
     setNextEquipmentPage(null);
     setLoadingMoreEquipment(false);
+    setModeLoading(false);
   }, []);
 
   const resetAllModeData = useCallback(() => {
@@ -349,6 +376,9 @@ export function useDatabaseEquipmentData({
     persistCurrentModeSnapshot();
 
     dataModeRef.current = nextMode;
+    generationRef.current += 1;
+    loadingMoreRef.current = null;
+    setLoadingMoreEquipment(false);
 
     const cachedSnapshot = modeSnapshotsRef.current[nextMode];
     if (cachedSnapshot?.initialLoadDone) {
@@ -359,11 +389,10 @@ export function useDatabaseEquipmentData({
 
     setModeLoading(true);
     applyModeSnapshot(createEmptyModeSnapshot());
-    try {
-      await fetchAllEquipment({ force: false, mode: nextMode });
-    } finally {
-      setModeLoading(false);
-    }
+    const pending = fetchAllEquipment({ force: false, mode: nextMode });
+    const generation = generationRef.current;
+    await pending;
+    if (generation === generationRef.current) setModeLoading(false);
   }, [applyModeSnapshot, fetchAllEquipment, persistCurrentModeSnapshot]);
 
   useEffect(() => {

@@ -179,6 +179,8 @@ type OfflineModuleDescriptor = {
 - cached identity по-прежнему не раскрывается до успешного biometric unlock;
 - `/auth/me`, refresh, повтор запроса и короткий transport-retry делят единый бюджет 5 секунд вместо отдельных полных таймаутов;
 - 401/403 по-прежнему очищают недействительную сессию, а transport timeout сохраняет локальные credentials для offline unlock;
+- успешная серверная проверка больше не держит стартовый loader на best-effort записи cached identity; локальная проверка владельца биометрии выполняется параллельно password login;
+- стартовый экран показывает брендированное состояние защищённого входа, а предупреждение о возможном замедлении появляется только при фактически обнаруженном Android transport `vpn`;
 - некритичные push-token, badge и offline-queue синхронизации запускаются в первый idle-период после начального render, поэтому не конкурируют с переходом по уведомлению;
 - добавлены регрессии на известный offline, общий timeout budget, cold push destination и idle scheduling;
 - физические p50/p95 и cold push route TTI остаются обязательными перед release.

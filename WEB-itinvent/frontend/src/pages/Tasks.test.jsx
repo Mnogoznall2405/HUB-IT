@@ -678,7 +678,7 @@ describe('Tasks page detail workspace', () => {
     expect(within(listView).getByText('Дата изменения')).toBeInTheDocument();
     expect(within(listView).getByText('Крайний срок')).toBeInTheDocument();
     expect(within(listView).getByText('Постановщик')).toBeInTheDocument();
-    expect(within(listView).getByText('Исполнитель')).toBeInTheDocument();
+    expect(within(listView).getByText('Исполнители')).toBeInTheDocument();
     expect(within(listView).getByText('Проект')).toBeInTheDocument();
     expect(within(listView).getByText('Теги')).toBeInTheDocument();
 
@@ -1103,7 +1103,7 @@ describe('Tasks page detail workspace', () => {
       expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
     });
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
 
     await waitFor(() => {
       expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
@@ -1153,7 +1153,7 @@ describe('Tasks page detail workspace', () => {
     expect(await within(dialog).findByText('first.txt')).toBeInTheDocument();
     expect(within(dialog).getByText('second.txt')).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
 
     await waitFor(() => {
       expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
@@ -1376,7 +1376,7 @@ describe('Tasks page detail workspace', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
     });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
 
     await waitFor(() => {
       expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({

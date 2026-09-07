@@ -81,3 +81,48 @@ describe('biometric login credential', () => {
     await expect(getAppLockSettings()).resolves.toEqual({ enabled: false, timeoutSeconds: 60 });
   });
 });
+
+it('finishes a protected write before a later disable removes all credential state', async () => {
+  const write = jest.mocked(SecureStore.setItemAsync).getMockImplementation()!;
+  let release!: () => void;
+  let started!: () => void;
+  const writing = new Promise<void>((resolve) => { started = resolve; });
+  jest.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value, options) => {
+    started();
+    await new Promise<void>((resolve) => { release = resolve; });
+    return write(key, value, options);
+  });
+  const enable = enableBiometricLogin(user, renewalToken);
+  await writing;
+  const disable = disableBiometricLogin();
+  release();
+  await Promise.all([enable, disable]);
+  expect(await isBiometricLoginEnabled()).toBe(false);
+  expect(await getBiometricLoginUserId()).toBeNull();
+  expect(await SecureStore.getItemAsync('hubit_biometric_login_credential_v1')).toBeNull();
+});
+
+it('can disable while fingerprint is pending and rejects its old result', async () => {
+  const credential = await enableBiometricLogin(user, renewalToken);
+  let release!: (value: string) => void;
+  let started!: () => void;
+  const reading = new Promise<void>((resolve) => { started = resolve; });
+  jest.mocked(SecureStore.getItemAsync).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; started(); }));
+  const unlock = unlockBiometricLogin();
+  const rejected = expect(unlock).rejects.toThrow('Настройки входа изменились');
+  await reading;
+  await disableBiometricLogin();
+  release(JSON.stringify(credential));
+  await rejected;
+  expect(await isBiometricLoginEnabled()).toBe(false);
+});
+
+it('does not re-enable app lock after a preceding disable and accepts a later enrollment', async () => {
+  await enableBiometricLogin(user, renewalToken);
+  const disable = disableBiometricLogin();
+  const settings = setAppLockSettings({ enabled: true, timeoutSeconds: 30 });
+  await expect(settings).rejects.toThrow('Сначала включите вход по отпечатку');
+  await disable;
+  await enableBiometricLogin(user, renewalToken);
+  expect(await getAppLockSettings()).toEqual({ enabled: false, timeoutSeconds: 900 });
+});

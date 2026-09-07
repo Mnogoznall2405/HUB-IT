@@ -1,14 +1,14 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const accountState = vi.hoisted(() => ({ activeSection: 'app', mobileApp: false }));
+const accountState = vi.hoisted(() => ({ activeSection: 'app', mobileApp: false, databasesError: '', retryDatabases: vi.fn() }));
 
 vi.mock('../../lib/mobileAppBridge', () => ({
   isMobileAppWebViewRuntime: () => accountState.mobileApp,
 }));
 
 vi.mock('../../components/account/AccountCategoryLayout', () => ({
-  default: ({ children }) => <main>{children}</main>,
+  default: ({ children, blockingError }) => <main>{blockingError}{children}</main>,
 }));
 
 vi.mock('../../components/desktop/DesktopInstallerDownload', () => ({
@@ -53,6 +53,8 @@ vi.mock('./hooks/useAccountSectionData', () => ({
     backupCodes: [],
     backupCodesDialogOpen: false,
     blockingError: '',
+    databasesError: accountState.databasesError,
+    retryDatabases: accountState.retryDatabases,
     setBackupCodesDialogOpen: vi.fn(),
     setBlockingError: vi.fn(),
     user: {},
@@ -65,6 +67,16 @@ describe('Application settings', () => {
   beforeEach(() => {
     accountState.activeSection = 'app';
     accountState.mobileApp = false;
+    accountState.databasesError = '';
+    accountState.retryDatabases.mockClear();
+  });
+
+  it('offers a manual retry when database loading fails', () => {
+    accountState.databasesError = 'Не удалось загрузить список баз данных.';
+    render(<Settings />);
+    expect(screen.getByText(accountState.databasesError)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить загрузку баз' }));
+    expect(accountState.retryDatabases).toHaveBeenCalledTimes(1);
   });
 
   it('shows self-update controls inside APK instead of a second APK download card', () => {

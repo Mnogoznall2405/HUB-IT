@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { chatAPI } from '../../api/client';
 
@@ -20,19 +20,41 @@ export default function useChatMessageSearch({
   const messageSearchBeforeIdRef = useRef('');
   const notifyApiErrorRef = useRef(notifyApiError);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [messageSearch, setMessageSearch] = useState('');
+  const [messageSearch, setMessageSearchState] = useState('');
   const [messageSearchResults, setMessageSearchResults] = useState([]);
   const [messageSearchLoading, setMessageSearchLoading] = useState(false);
   const [messageSearchHasMore, setMessageSearchHasMore] = useState(false);
   notifyApiErrorRef.current = notifyApiError;
 
+  const invalidateSearch = useCallback(() => {
+    requestSeqRef.current += 1;
+    setMessageSearchLoading(false);
+  }, []);
+
+  const setMessageSearch = useCallback((value) => {
+    invalidateSearch();
+    setMessageSearchState(value);
+    setMessageSearchResults([]);
+    setMessageSearchHasMore(false);
+    messageSearchBeforeIdRef.current = '';
+  }, [invalidateSearch]);
+
+  useLayoutEffect(() => {
+    invalidateSearch();
+    setMessageSearchResults([]);
+    setMessageSearchHasMore(false);
+    messageSearchBeforeIdRef.current = '';
+    return () => { requestSeqRef.current += 1; };
+  }, [activeConversationId, invalidateSearch]);
+
   const resetMessageSearch = useCallback(() => {
+    invalidateSearch();
     setSearchOpen(false);
     setMessageSearch('');
     setMessageSearchResults([]);
     setMessageSearchHasMore(false);
     messageSearchBeforeIdRef.current = '';
-  }, []);
+  }, [invalidateSearch, setMessageSearch]);
 
   const runMessageSearch = useCallback(async ({ reset = false } = {}) => {
     const conversationId = String(activeConversationIdRef.current || activeConversationId || '').trim();
@@ -95,8 +117,9 @@ export default function useChatMessageSearch({
   }, [loadChatDialogsModule, setMessageMenuAnchor, setMessageMenuMessage, setThreadMenuAnchor]);
 
   const closeSearchDialog = useCallback(() => {
+    invalidateSearch();
     setSearchOpen(false);
-  }, []);
+  }, [invalidateSearch]);
 
   const loadMoreSearchResults = useCallback(async () => {
     if (!messageSearchHasMore || messageSearchLoading) return;

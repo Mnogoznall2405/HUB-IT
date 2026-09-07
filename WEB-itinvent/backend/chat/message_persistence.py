@@ -122,6 +122,8 @@ class ForwardMessagePersistenceResult:
     message_id: str
     member_user_ids: list[int]
 
+    dedup_hit: bool = False
+
 
 class ChatSystemMessagePersistence:
     """Owns system message row persistence inside the caller's transaction."""
@@ -799,9 +801,11 @@ class ChatForwardMessagePersistence:
         conversation_id: str,
         source: ForwardMessageSnapshot,
         prepared_attachments: list[dict[str, Any]],
+        client_message_id: str | None = None,
         reply_to_message_id: str | None = None,
         validate_member_user_ids: Callable[[list[int]], None] | None = None,
     ) -> ForwardMessagePersistenceResult:
+        normalized_client_message_id = _normalize_text(client_message_id) or None
         normalized_kind = _normalize_text(source.kind, "text")
         normalized_body_format = _normalize_text(source.body_format, "plain")
         normalized_forward_from_message_id = (
@@ -813,13 +817,33 @@ class ChatForwardMessagePersistence:
         payload: dict[str, Any] = {}
         serialize_context: tuple[str, str, list[int], int, list[dict[str, Any]]] | None = None
         with self._session_factory() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation = self._require_membership(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             member_user_ids = self._conversation_member_ids(session, conversation.id)
+            if normalized_client_message_id:
+                existing = session.execute(select(ChatMessage).where(
+                    ChatMessage.conversation_id == conversation.id,
+                    ChatMessage.sender_user_id == int(current_user_id),
+                    ChatMessage.client_message_id == normalized_client_message_id,
+                )).scalar_one_or_none()
+                if existing is not None:
+                    if existing.forward_from_message_id != normalized_forward_from_message_id:
+                        raise ValueError("client_message_id belongs to another message")
+                    attachments = list(session.execute(select(ChatMessageAttachment).where(
+                        ChatMessageAttachment.message_id == existing.id,
+                    )).scalars())
+                    payload = self._build_message_payload_for_members(
+                        session=session, conversation=conversation, message=existing,
+                        current_user_id=int(current_user_id), member_user_ids=member_user_ids,
+                        attachments=attachments,
+                    )
+                    return ForwardMessagePersistenceResult(payload=payload, message_id=existing.id,
+                        member_user_ids=member_user_ids, dedup_hit=True)
+
             if validate_member_user_ids is not None:
                 validate_member_user_ids(member_user_ids)
             reply_to_message = self._resolve_reply_message(
@@ -831,6 +855,7 @@ class ChatForwardMessagePersistence:
             next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
             message = ChatMessage(
                 id=str(uuid4()),
+                client_message_id=normalized_client_message_id,
                 conversation_id=conversation.id,
                 sender_user_id=int(current_user_id),
                 kind=normalized_kind,

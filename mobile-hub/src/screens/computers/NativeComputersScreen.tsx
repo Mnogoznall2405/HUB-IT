@@ -75,15 +75,6 @@ function FilterChip({
   );
 }
 
-function SummaryCard({ label, value, color, tokens }: { label: string; value: number; color: string; tokens: ReturnType<typeof useFluentTokens> }) {
-  return (
-    <View style={[styles.summaryCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-      <Text style={[styles.summaryValue, { color }]}>{value}</Text>
-      <Text style={[styles.summaryLabel, { color: tokens.textSecondary }]}>{label}</Text>
-    </View>
-  );
-}
-
 export function NativeComputersScreen() {
   const params = useLocalSearchParams<{ q?: string | string[] }>();
   const initialQuery = firstParam(params.q);
@@ -139,8 +130,19 @@ export function NativeComputersScreen() {
     else if (!reset) setLoadingMore(true);
     if (!silent) setError('');
     const filters = { scope, q: query, status, changedOnly, hideVm172, signal: controller.signal };
+    // A background refresh covers the loaded window, not just its first page.
+    const refreshCount = reset && silent ? Math.max(PAGE_SIZE, itemCountRef.current) : PAGE_SIZE;
+    const loadPage = async () => {
+      let page = await searchComputers({ ...filters, limit: Math.min(500, refreshCount), offset });
+      while (reset && silent && page.has_more && page.items.length < refreshCount) {
+        const next = await searchComputers({ ...filters, limit: Math.min(500, refreshCount - page.items.length), offset: page.items.length });
+        if (!next.items.length) break;
+        page = { ...next, items: [...page.items, ...next.items] };
+      }
+      return page;
+    };
     const results = await Promise.allSettled([
-      searchComputers({ ...filters, limit: PAGE_SIZE, offset }),
+      loadPage(),
       ...(reset ? [getComputersSummary(filters)] : []),
     ]);
     if (requestId !== requestRef.current || controller.signal.aborted || !mountedRef.current) return;
@@ -257,9 +259,6 @@ export function NativeComputersScreen() {
     <View style={styles.headerContent}>
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Автономный режим: уже загруженный список остаётся на экране, обновление недоступно.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.summaryStrip}>
-        {summaryCards.map((card) => <SummaryCard key={card.label} {...card} tokens={tokens} />)}
-      </ScrollView>
       <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
         <MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} />
         <TextInput
@@ -292,12 +291,15 @@ export function NativeComputersScreen() {
           />
         ))}
       </ScrollView>
+      <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>{summaryCards.map((card) => `${card.label}: ${card.value}`).join(' · ')}</Text>
+      <AccountSectionCard tokens={tokens} title="Дополнительные фильтры" collapsible>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
         <FilterChip label="Моя база" selected={scope === 'selected'} onPress={() => setScope('selected')} tokens={tokens} />
         {canReadAll ? <FilterChip testID="native-computers-scope-all" label="Все базы" selected={scope === 'all'} onPress={() => setScope('all')} tokens={tokens} /> : null}
         <FilterChip label="С изменениями" selected={changedOnly} onPress={() => setChangedOnly((value) => !value)} tokens={tokens} />
-        <FilterChip label="Скрыть VM 172" selected={hideVm172} onPress={() => setHideVm172((value) => !value)} tokens={tokens} />
+        <FilterChip label="Скрыть ПК только с IP 172.16–31.*" selected={hideVm172} onPress={() => setHideVm172((value) => !value)} tokens={tokens} />
       </ScrollView>
+      </AccountSectionCard>
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {total}</Text>
         <Pressable
@@ -349,10 +351,6 @@ const styles = StyleSheet.create({
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   headerContent: { gap: 9, paddingBottom: 10 },
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  summaryStrip: { gap: 8 },
-  summaryCard: { width: 92, minHeight: 66, borderWidth: 1, borderRadius: 14, paddingHorizontal: 11, paddingVertical: 9 },
-  summaryValue: { fontSize: 20, lineHeight: 25, fontWeight: '900' },
-  summaryLabel: { marginTop: 2, fontSize: 11, lineHeight: 15, fontWeight: '700' },
   searchBox: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   filters: { gap: 7 },

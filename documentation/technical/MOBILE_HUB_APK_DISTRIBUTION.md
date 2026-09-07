@@ -1,6 +1,6 @@
 # HUB-IT Mobile — публикация APK рядом с HUB Desktop
 
-Дата: 2026-09-04
+Дата: 2026-09-05
 Канал текущего прототипа: `preview`
 
 ## Публичные адреса
@@ -8,13 +8,13 @@
 - manifest: `https://hubit.zsgp.ru/desktop-updates/mobile/preview/latest.json`;
 - APK: `https://hubit.zsgp.ru/desktop-updates/mobile/preview/<version>/HUB-IT-Mobile-Preview-<version>.apk`.
 
-Preview отделён от Desktop stable feed и будущего Android stable feed. Версия 1.1.25 опубликована 2026-09-04 и подписана тем же debug-сертификатом, что предыдущие версии preview, только для совместимого внутреннего upgrade. Обычная команда сборки требует постоянный release keystore; после одноразовой миграции stable-канал должен всегда использовать один и тот же защищённый ключ.
+Preview отделён от Desktop stable feed и будущего Android stable feed. Версия 1.1.26 опубликована 2026-09-05 и подписана тем же debug-сертификатом, что предыдущие версии preview, только для совместимого внутреннего upgrade. Обычная команда сборки требует постоянный release keystore; после одноразовой миграции stable-канал должен всегда использовать один и тот же защищённый ключ.
 
 Единый источник версии сборки — `mobile-hub/package.json`: поле `version` задаёт `versionName`, а `hubit.androidVersionCode` — Android `versionCode`. `app.config.ts` читает оба значения оттуда. Локальная сборка до запуска Gradle проверяет совпадение generated `android/app/build.gradle` и `release-notes/<version>.json`; при `-SkipPrebuild` рассинхронизация останавливает сборку с требованием выполнить обычный Expo prebuild.
 
-Source 1.1.25 по умолчанию отключает HTTPS App Links для preview/debug: production `/.well-known/assetlinks.json` ещё не опубликован и debug-сертификат не может быть ему делегирован. Флаг `HUBIT_ANDROID_ENABLE_APP_LINKS=1` допустим только при постоянной release-подписи и совпадающем production fingerprint.
+Source 1.1.26 по умолчанию отключает HTTPS App Links для preview/debug: production `/.well-known/assetlinks.json` ещё не опубликован и debug-сертификат не может быть ему делегирован. Флаг `HUBIT_ANDROID_ENABLE_APP_LINKS=1` допустим только при постоянной release-подписи и совпадающем production fingerprint.
 
-Текущий опубликованный preview: `1.1.25`, `versionCode=27`, 65 011 108 байт, SHA-256 `d57f4998eabb27fcb33c574303442dd01c43f7559dc7fc56e399c4ba1778fd81`. Публичный manifest и APK проверены: `200`, JSON/`application/vnd.android.package-archive`, размер и hash совпадают; Range-запрос проверен: `206`, 1024 байта. Подпись остаётся debug-preview тем же сертификатом, что предыдущие версии канала, только для совместимого внутреннего upgrade; предыдущий manifest 1.1.24 сохранён для rollback.
+Текущий опубликованный preview: `1.1.26`, `versionCode=28`, 65 077 536 байт, SHA-256 `adf4a72cea490ef4dd1192dcec6538ede94ac147f24a127003e66fe2c00daef7`. Публичный manifest и APK проверены: `200`, JSON/`application/vnd.android.package-archive`, размер и hash совпадают; Range-запрос проверен: `206`, 1024 байта. Подпись остаётся debug-preview тем же сертификатом, что предыдущие версии канала, только для совместимого внутреннего upgrade; предыдущий manifest 1.1.25 сохранён для rollback.
 
 ## Что показывает frontend
 
@@ -133,3 +133,15 @@ node scripts/mobile/verify-published-apk.mjs
 - восстановить `web.config` из резервной копии, созданной `enable_mobile_apk_feed.ps1`;
 - вернуть предыдущую сборку frontend;
 - версионный APK-каталог удалять только отдельной операцией после проверки точного пути и отсутствия потребителей.
+
+
+### 06.09 — публикация preview 1.1.27 (29)
+
+После 265/1600 успешных тестов, TypeScript и Android export штатная ARM64/ARMv7 сборка завершилась успешно за 7m21s. APK 65295484 байта, SHA-256 926d40bb1dc3247e335c7ad8c55a24cd885d90ca3cbd0b4185cb45258b43d438; прежний signer fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c, режим debug-preview. Файлы: mobile-hub/dist/hubit-mobile-preview.apk и соседний audit.json.
+
+Перед разрешённой публикацией выполнен ValidateOnly, appcmd подтвердил hubit/desktop-updates → C:\inetpub\wwwroot\hub-desktop-updates, текущий feed 1.1.26 и отсутствие каталога 1.1.27. Штатный publish-apk.ps1 сохранил прежний latest в .manifest-history; версия 1.1.26 оставлена. Откат — manage-apk-feed.ps1 -Action RestoreManifest с сохранённым манифестом 1.1.26.
+
+Внешний verify-published-apk.mjs: manifest/APK HTTP200, schema2, 1.1.27/29, size/hash/signer совпали, verified=true. URL: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.27/HUB-IT-Mobile-Preview-1.1.27.apk . Серверные процессы и конфигурация не менялись. Не подтверждены установленное обновление, аппаратная биометрия, Android offline/restart и визуальная приёмка. x86_64 сборка ещё выполняется и не заменяет телефонный feed.
+
+
+Эмуляторный APK 1.1.27 (29) также собран и выложен отдельным файлом: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.27/HUB-IT-Mobile-Emulator-x86_64-1.1.27.apk . Только ABI x86_64, 49175320 байт, SHA-256 01ffe1c1ca54ac2bf7ac706f13734d257bec9294d3ad7b6125046f74e60f068d, прежняя подпись. Внешнее скачивание HTTP200, размер и SHA-256 совпали. Телефонный latest не изменён этим дополнительным файлом. Встроенные assets/index.android.bundle обеих сборок идентичны: SHA-256 36d0645315526120dd39c5b1b349411b273d19bfd1e90437f256cb7d2f60abe3. Локально mobile-hub/dist/hubit-mobile-emulator-x86_64.apk и audit.json. Эмулятор не устанавливался и APK на Android не запускался.

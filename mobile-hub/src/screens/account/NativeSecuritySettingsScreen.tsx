@@ -63,7 +63,7 @@ export function NativeSecuritySettingsScreen() {
   }, [load]);
 
   const handleRegenerateCodes = useCallback(() => {
-    Alert.alert('Новые backup-коды', 'Текущие коды перестанут работать.', [
+    Alert.alert('Новые резервные коды', 'Текущие коды перестанут работать.', [
       { text: 'Отмена', style: 'cancel' },
       {
         text: 'Сгенерировать',
@@ -73,9 +73,9 @@ export function NativeSecuritySettingsScreen() {
             try {
               const codes = await authSecurityApi.regenerateBackupCodes();
               setBackupCodes(codes);
-              setStatus({ error: '', message: 'Новые backup-коды готовы. Сохраните их в надёжном месте.' });
+              setStatus({ error: '', message: 'Новые резервные коды готовы. Сохраните их в надёжном месте.' });
             } catch (error) {
-              setStatus({ error: formatApiError(error, 'Не удалось сгенерировать backup-коды.'), message: '' });
+              setStatus({ error: formatApiError(error, 'Не удалось сгенерировать резервные коды.'), message: '' });
             } finally {
               setBusy('');
             }
@@ -86,7 +86,7 @@ export function NativeSecuritySettingsScreen() {
   }, []);
 
   const handleReset2fa = useCallback(() => {
-    Alert.alert('Сбросить 2FA?', 'Будут отозваны backup-коды и доверенные устройства.', [
+    Alert.alert('Сбросить 2FA?', 'Будут отозваны резервные коды и доверенные устройства.', [
       { text: 'Отмена', style: 'cancel' },
       {
         text: 'Сбросить',
@@ -180,7 +180,7 @@ export function NativeSecuritySettingsScreen() {
             tokens={tokens}
             disabled={Boolean(busy)}
             loading={busy === 'codes'}
-            label="Новые backup-коды"
+            label="Новые резервные коды"
             onPress={handleRegenerateCodes}
           />
           <AccountSecondaryButton

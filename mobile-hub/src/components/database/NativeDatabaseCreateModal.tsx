@@ -1,5 +1,6 @@
+import { NativeModal as Modal } from '../ui/NativeModal';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   createConsumable,
   createEquipment,

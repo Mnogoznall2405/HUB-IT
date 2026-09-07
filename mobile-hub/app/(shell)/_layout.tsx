@@ -30,6 +30,7 @@ function ShellTabs() {
             tabBar={() => <HubBottomNav currentPath={activePath} hidden={hideBottomNav} />}
             screenOptions={{
               headerShown: false,
+              animation: 'none',
               freezeOnBlur: true,
               sceneStyle: { backgroundColor: tokens.pageBg },
               tabBarStyle: { position: 'absolute', height: 0, elevation: 0 },
@@ -44,7 +45,7 @@ function ShellTabs() {
             <Tabs.Screen name="tasks" options={{ title: 'Задачи', href: null }} />
             <Tabs.Screen name="mail" options={{ title: 'Почта', href: null }} />
             <Tabs.Screen name="database" options={{ title: 'Инвентарь', href: null }} />
-            <Tabs.Screen name="my-files" options={{ title: 'Мой диск', href: null }} />
+            <Tabs.Screen name="my-files" options={{ title: 'Мои файлы', href: null }} />
             <Tabs.Screen name="company-structure" options={{ title: 'Структура', href: null }} />
             <Tabs.Screen name="docflow" options={{ title: '1С ДО', href: null }} />
             <Tabs.Screen name="scan-center" options={{ title: 'Scan Center', href: null }} />

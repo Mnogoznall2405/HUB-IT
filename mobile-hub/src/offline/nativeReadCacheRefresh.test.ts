@@ -74,6 +74,13 @@ const mockWriteChatInbox = jest.mocked(writeNativeChatInboxSnapshot);
 const mockCoverageSuccess = jest.mocked(recordNativeOfflineCoverageSuccess);
 const mockCoverageFailure = jest.mocked(recordNativeOfflineCoverageFailure);
 
+it('fails refresh when the coverage status could not be committed', async () => {
+  mockCoverageSuccess.mockResolvedValueOnce(false);
+  const result = await refreshNativeReadCaches({ userId: 17, permissions: ['address_book.read'], force: true });
+  expect(result.refreshed).toEqual([]);
+  expect(result.failed).toEqual(['Адресная книга']);
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockReadAddressBook.mockResolvedValue(null);

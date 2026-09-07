@@ -35,6 +35,7 @@ import type { NativeMyFilesInboxSnapshot } from '../myFiles/nativeMyFilesSnapsho
 import type { NativeCompanyStructureTreeSnapshot } from '../companyStructure/nativeCompanyStructureSnapshot';
 import { writeNativeChatInboxSnapshot } from '../chat/nativeChatInboxSnapshot';
 import { refreshNativeReadCaches } from './nativeReadCacheRefresh';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
   readNativeOfflineCoverage,
   recordNativeOfflineCoverageFailure,
@@ -84,6 +85,7 @@ export type OfflinePreparationProgressEvent = {
   loaded?: number;
   total?: number;
   unit?: string;
+  complete?: boolean;
   errorCode?: string;
   errorMessage?: string;
 };
@@ -444,7 +446,8 @@ async function prepareAddressBook(userId: number): Promise<PreparationMetric> {
   let directory: Awaited<ReturnType<typeof getCompleteAddressBook>>;
   try {
     directory = await getCompleteAddressBook();
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure('address-book', 'download', error);
     throw new OfflinePreparationStageError(
       'address-book-download',
       'Не удалось скачать адресную книгу',
@@ -463,7 +466,8 @@ async function prepareAddressBook(userId: number): Promise<PreparationMetric> {
   let stored = false;
   try {
     stored = await writeNativeAddressBookSnapshot(userId, directory);
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure('address-book', 'storage', error);
     stored = false;
   }
   if (!stored) {
@@ -557,12 +561,16 @@ export async function prepareNativeOfflineData(
     });
     try {
       const metric = await prepare();
-      await recordNativeOfflineCoverageSuccess(userId, key, {
+      const coverageStored = await recordNativeOfflineCoverageSuccess(userId, key, {
         status: metric.complete === false ? 'partial' : 'complete',
         loaded: metric.loaded,
         total: metric.total ?? null,
         unit: metric.unit,
       });
+      if (!coverageStored) {
+        await recordSnapshotFailure('offline-coverage-manifest', 'coverage-write', new Error('Offline coverage manifest write failed'));
+        throw new OfflinePreparationStageError(`${key}-coverage`, 'Данные сохранены, но статус автономной готовности записать не удалось');
+      }
       completedModules += 1;
       reportProgress(onProgress, {
         key,
@@ -574,6 +582,7 @@ export async function prepareNativeOfflineData(
       });
       result.preparedModules.push(MODULE_LABELS[key]);
     } catch (error) {
+      await recordSnapshotFailure(key, 'prepare', error);
       completedModules += 1;
       const failure = error instanceof OfflinePreparationStageError
         ? error

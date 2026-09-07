@@ -216,6 +216,10 @@ def test_completion_materializer_removes_materialized_files_when_caller_fails():
                 raise RuntimeError("message creation failed")
 
         assert not final_path.exists()
+        assert part_path.read_bytes() == payload
+        with materializer.materialize(_manifest(payload_size=len(payload), original_size=len(payload))) as retried:
+            assert retried[0]["path"].read_bytes() == payload
+        assert not part_path.exists()
 
 
 def test_completion_materializer_removes_partial_final_file_when_decode_fails():

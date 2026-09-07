@@ -3,6 +3,7 @@ import {
   readEncryptedNativeSnapshot,
   writeEncryptedNativeSnapshot,
 } from '../cache/nativeSnapshotStorage';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 
 const OFFLINE_COVERAGE_SCOPE = 'offline-coverage-manifest';
 const MAX_COVERAGE_ENTRIES = 64;
@@ -194,14 +195,16 @@ async function readManifest(userId: number): Promise<NativeOfflineCoverageManife
   let raw: string | null;
   try {
     raw = await readEncryptedNativeSnapshot(OFFLINE_COVERAGE_SCOPE, userId);
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure(OFFLINE_COVERAGE_SCOPE, 'coverage-read', error);
     return null;
   }
   if (!raw) return null;
   try {
     const manifest = normalizeManifest(JSON.parse(raw), userId);
     if (manifest) return manifest;
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure(OFFLINE_COVERAGE_SCOPE, 'coverage-parse', error);
     // The encrypted value is readable but its payload is no longer a valid manifest.
   }
   await deleteEncryptedNativeSnapshot(OFFLINE_COVERAGE_SCOPE, userId).catch(() => undefined);
@@ -219,7 +222,8 @@ async function storeManifest(manifest: NativeOfflineCoverageManifest): Promise<b
       manifest.userId,
       JSON.stringify(manifest),
     );
-  } catch {
+  } catch (error) {
+    await recordSnapshotFailure(OFFLINE_COVERAGE_SCOPE, 'coverage-write', error);
     return false;
   }
 }

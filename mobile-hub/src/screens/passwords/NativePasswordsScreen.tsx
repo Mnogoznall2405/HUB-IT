@@ -1,15 +1,16 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import * as ScreenCapture from 'expo-screen-capture';
-import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react';
+import { type ComponentProps, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   KeyboardAvoidingView,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -106,6 +107,15 @@ function SheetActionButton({
   );
 }
 
+function PasswordVisibilityCountdown({ until, color }: { until: number; color: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [until]);
+  return <Text style={{ color, fontSize: 12, lineHeight: 18 }}>Скроется через {Math.max(0, Math.ceil((until - now) / 1000))} с</Text>;
+}
+
 export function NativePasswordsScreen() {
   const { biometricEnabled, hasPermission, offlineMode, user } = useAuth();
   const { preferences } = usePreferences();
@@ -128,6 +138,7 @@ export function NativePasswordsScreen() {
   const [captureError, setCaptureError] = useState('');
   const [unlockedUntil, setUnlockedUntil] = useState('');
   const [revealedPassword, setRevealedPassword] = useState('');
+  const [secretVisibleUntil, setSecretVisibleUntil] = useState(0);
   const [actionBusy, setActionBusy] = useState<'unlock' | 'show' | 'copy' | 'edit' | 'save' | ''>('');
   const [actionError, setActionError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
@@ -137,10 +148,12 @@ export function NativePasswordsScreen() {
   const mountedRef = useRef(true);
   const focusedRef = useRef(false);
   const requestRef = useRef(0);
+  const secretGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const hideSecretTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearEntrySecret = useCallback(() => {
+    secretGeneration.current += 1;
     if (hideSecretTimerRef.current) clearTimeout(hideSecretTimerRef.current);
     hideSecretTimerRef.current = null;
     setRevealedPassword('');
@@ -165,6 +178,10 @@ export function NativePasswordsScreen() {
     setLoading(false);
     setRefreshing(false);
   }, [clearEntrySecret]);
+
+  useLayoutEffect(() => {
+    clearVaultState();
+  }, [user?.id, canRead, canWrite, offlineMode, biometricEnabled, clearVaultState]);
 
   const protectScreen = useCallback(async () => {
     setCaptureReady(false);
@@ -248,7 +265,7 @@ export function NativePasswordsScreen() {
       return;
     }
     if (captureReady) void load();
-  }, [canRead, captureReady, clearVaultState, load, offlineMode]);
+  }, [user?.id, canWrite, biometricEnabled, canRead, captureReady, clearVaultState, load, offlineMode]);
 
   useFocusEffect(useCallback(() => {
     focusedRef.current = true;
@@ -289,12 +306,15 @@ export function NativePasswordsScreen() {
   }, [unlockedUntil]);
 
   const confirmBiometricUnlock = useCallback(async () => {
+    const generation = secretGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === secretGeneration.current;
     if (offlineMode) throw new Error('Для доступа к паролю требуется подключение к HUB.');
     if (!biometricEnabled) {
       throw new Error('Включите вход по отпечатку в разделе «Настройки → Безопасность».');
     }
     if (hasActiveUnlock()) return unlockedUntil;
     const credential = await unlockBiometricLogin();
+    if (!isCurrent()) throw new Error('Защищённая операция отменена.');
     if (credential.version !== 2 || !credential.renewalToken) {
       throw new Error('Переподключите вход по отпечатку в разделе «Настройки → Безопасность».');
     }
@@ -302,41 +322,52 @@ export function NativePasswordsScreen() {
       throw new Error('Отпечаток настроен для другой учётной записи. Войдите заново.');
     }
     const result = await unlockPasswordVaultWithBiometrics(credential.renewalToken);
+    if (!isCurrent()) throw new Error('Защищённая операция отменена.');
     if (!result.unlocked_until) throw new Error('Сервер не подтвердил разблокировку хранилища.');
     setUnlockedUntil(result.unlocked_until);
     return result.unlocked_until;
   }, [biometricEnabled, hasActiveUnlock, offlineMode, unlockedUntil, user?.id]);
 
   const unlockVault = useCallback(async () => {
+    const generation = secretGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === secretGeneration.current;
     if (actionBusy) return;
     setActionBusy('unlock');
     setActionError('');
     setActionMessage('');
     try {
       await confirmBiometricUnlock();
+      if (!isCurrent()) return;
       setActionMessage('Хранилище разблокировано на 5 минут.');
     } catch (cause) {
+      if (!isCurrent()) return;
       setUnlockedUntil('');
       setActionError(formatApiError(cause, 'Не удалось подтвердить отпечаток.'));
     } finally {
-      setActionBusy('');
+      if (isCurrent()) setActionBusy('');
     }
   }, [actionBusy, confirmBiometricUnlock]);
 
   const revealPassword = useCallback(async (purpose: 'show' | 'copy') => {
+    const generation = secretGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === secretGeneration.current;
     if (!selected || actionBusy) return;
     setActionBusy(purpose);
     setActionError('');
     setActionMessage('');
     try {
       await confirmBiometricUnlock();
+      if (!isCurrent()) return;
       const result = await revealPasswordVaultEntry(selected.id, purpose);
+      if (!isCurrent()) return;
       setUnlockedUntil(result.unlocked_until);
       if (purpose === 'copy') {
         await Clipboard.setStringAsync(result.password);
+        if (!isCurrent()) return;
         setRevealedPassword('');
         setActionMessage('Пароль скопирован.');
       } else {
+        setSecretVisibleUntil(Date.now() + REVEALED_PASSWORD_TTL_MS);
         setRevealedPassword(result.password);
         if (hideSecretTimerRef.current) clearTimeout(hideSecretTimerRef.current);
         hideSecretTimerRef.current = setTimeout(() => {
@@ -345,21 +376,25 @@ export function NativePasswordsScreen() {
         }, REVEALED_PASSWORD_TTL_MS);
       }
     } catch (cause) {
+      if (!isCurrent()) return;
       setUnlockedUntil('');
       setRevealedPassword('');
       setActionError(formatApiError(cause, 'Не удалось получить пароль.'));
     } finally {
-      setActionBusy('');
+      if (isCurrent()) setActionBusy('');
     }
   }, [actionBusy, confirmBiometricUnlock, selected]);
 
   const beginEditing = useCallback(async () => {
+    const generation = secretGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === secretGeneration.current;
     if (!selected || !canWrite || actionBusy) return;
     setActionBusy('edit');
     setActionError('');
     setActionMessage('');
     try {
       await confirmBiometricUnlock();
+      if (!isCurrent()) return;
       setEditDraft({
         group: selected.group,
         tags: selected.tags.map((item) => `#${item}`).join(', '),
@@ -369,10 +404,11 @@ export function NativePasswordsScreen() {
       });
       setEditing(true);
     } catch (cause) {
+      if (!isCurrent()) return;
       setUnlockedUntil('');
       setActionError(formatApiError(cause, 'Не удалось подтвердить отпечаток.'));
     } finally {
-      setActionBusy('');
+      if (isCurrent()) setActionBusy('');
     }
   }, [actionBusy, canWrite, confirmBiometricUnlock, selected]);
 
@@ -381,6 +417,8 @@ export function NativePasswordsScreen() {
   }, []);
 
   const saveEntry = useCallback(async () => {
+    const generation = secretGeneration.current;
+    const isCurrent = () => mountedRef.current && generation === secretGeneration.current;
     if (!selected || actionBusy) return;
     const normalizedGroup = editDraft.group.trim();
     const normalizedLogin = editDraft.login.trim();
@@ -393,6 +431,7 @@ export function NativePasswordsScreen() {
     setActionMessage('');
     try {
       await confirmBiometricUnlock();
+      if (!isCurrent()) return;
       const password = editDraft.password;
       const updated = await updatePasswordVaultEntry(selected.id, {
         group: normalizedGroup,
@@ -401,6 +440,7 @@ export function NativePasswordsScreen() {
         description: editDraft.description.trim(),
         ...(password ? { password } : {}),
       });
+      if (!isCurrent()) return;
       setEntries((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
       setSelected(updated);
       setEditDraft(EMPTY_DRAFT);
@@ -408,10 +448,11 @@ export function NativePasswordsScreen() {
       setEditing(false);
       setActionMessage(password ? 'Запись и пароль обновлены.' : 'Запись обновлена.');
     } catch (cause) {
+      if (!isCurrent()) return;
       setUnlockedUntil('');
       setActionError(formatApiError(cause, 'Не удалось сохранить запись.'));
     } finally {
-      setActionBusy('');
+      if (isCurrent()) setActionBusy('');
     }
   }, [actionBusy, confirmBiometricUnlock, editDraft, selected]);
 
@@ -460,13 +501,6 @@ export function NativePasswordsScreen() {
     <View style={styles.headerContent}>
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Автономный режим: хранилище не кэшируется и требует сеть.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
-      <View style={[styles.securityBanner, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="shield-lock-outline" size={23} color={tokens.primary} />
-        <View style={styles.flex}>
-          <Text style={[styles.securityTitle, { color: tokens.textPrimary }]}>Защищено отпечатком</Text>
-          <Text style={[styles.securityDescription, { color: tokens.textSecondary }]}>Пароль загружается только для выбранной записи после подтверждения. Он не попадает в офлайн-кэш и скрывается при сворачивании приложения.</Text>
-        </View>
-      </View>
       <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
         <MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} />
         <TextInput
@@ -507,6 +541,7 @@ export function NativePasswordsScreen() {
     <AccountScreenScaffold
       title="Пароли"
       tokens={tokens}
+      rightAction={<Pressable accessibilityRole="button" accessibilityLabel="Защита паролей" onPress={() => Alert.alert('Защищено отпечатком', 'Пароль загружается после подтверждения личности. Он не сохраняется в офлайн-кэше и скрывается при сворачивании приложения.')} style={styles.iconButton}><MaterialCommunityIcons name="shield-lock-outline" size={23} color={tokens.primary} /></Pressable>}
       scroll={false}
     >
       <FlatList
@@ -627,7 +662,7 @@ export function NativePasswordsScreen() {
                     <View style={[styles.unlockBanner, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
                       <MaterialCommunityIcons name={vaultUnlocked ? 'lock-open-check-outline' : 'fingerprint'} size={25} color={vaultUnlocked ? tokens.success : tokens.primary} />
                       <View style={styles.flex}>
-                        <Text style={[styles.unlockTitle, { color: tokens.textPrimary }]}>{vaultUnlocked ? 'Разблокировано на 5 минут' : 'Требуется отпечаток'}</Text>
+                        <Text style={[styles.unlockTitle, { color: tokens.textPrimary }]}>{vaultUnlocked ? `Доступ до ${new Date(unlockedUntil).toLocaleTimeString('ru-RU')}` : 'Требуется отпечаток'}</Text>
                         <Text style={[styles.unlockDescription, { color: tokens.textSecondary }]}>{vaultUnlocked ? 'Можно показать, скопировать или изменить запись.' : 'Подтвердите личность перед доступом к секрету.'}</Text>
                       </View>
                       {!vaultUnlocked ? (
@@ -646,9 +681,6 @@ export function NativePasswordsScreen() {
                     </View>
 
                     <AccountField tokens={tokens} label="Логин" value={selected.login} />
-                    <AccountField tokens={tokens} label="Группа" value={selected.group} />
-                    <AccountField tokens={tokens} label="Теги" value={selected.tags.map((item) => `#${item}`).join(', ')} />
-                    <AccountField tokens={tokens} label="Описание" value={selected.description} />
                     <View style={[styles.passwordField, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
                       <Text style={[styles.passwordLabel, { color: tokens.textSecondary }]}>Пароль</Text>
                       <Text
@@ -660,6 +692,7 @@ export function NativePasswordsScreen() {
                       >
                         {revealedPassword || '••••••••••••'}
                       </Text>
+                      {revealedPassword ? <PasswordVisibilityCountdown until={secretVisibleUntil} color={tokens.textSecondary} /> : null}
                     </View>
                     <View style={styles.actionRow}>
                       <SheetActionButton
@@ -691,7 +724,6 @@ export function NativePasswordsScreen() {
                           onPress={() => { void beginEditing(); }}
                           tokens={tokens}
                           disabled={Boolean(actionBusy) || offlineMode}
-                          primary
                         />
                       ) : null}
                     </View>
@@ -701,6 +733,9 @@ export function NativePasswordsScreen() {
                         <Text style={[styles.busyText, { color: tokens.textSecondary }]}>Защищённая операция…</Text>
                       </View>
                     ) : null}
+                    <AccountField tokens={tokens} label="Группа" value={selected.group} />
+                    <AccountField tokens={tokens} label="Теги" value={selected.tags.map((item) => `#${item}`).join(', ')} />
+                    <AccountField tokens={tokens} label="Описание" value={selected.description} />
                     <AccountField tokens={tokens} label="Обновлено" value={selected.updated_at} />
                     <AccountField tokens={tokens} label="Состояние" value={selected.is_archived ? 'Архив' : 'Активна'} />
                   </>
@@ -719,15 +754,12 @@ const styles = StyleSheet.create({
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   headerContent: { gap: 9, paddingBottom: 10 },
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  securityBanner: { minHeight: 82, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  securityTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
-  securityDescription: { marginTop: 2, fontSize: 11, lineHeight: 16 },
   searchBox: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   filters: { gap: 7 },
   filterChip: { minHeight: 40, borderRadius: 20, borderWidth: 1, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   filterText: { fontSize: 12, fontWeight: '800' },
-  countRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  countRow: { flexWrap: 'wrap', minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   count: { fontSize: 12, fontWeight: '700' },
   loading: { minHeight: 120, alignItems: 'center', justifyContent: 'center', gap: 9 },
   list: { gap: 9, paddingBottom: 8 },
@@ -743,19 +775,19 @@ const styles = StyleSheet.create({
   noticeBox: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   unlockBanner: { minHeight: 76, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   unlockTitle: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  unlockDescription: { marginTop: 2, fontSize: 11, lineHeight: 15 },
+  unlockDescription: { marginTop: 2, fontSize: 12, lineHeight: 18 },
   unlockIconButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   passwordField: { minHeight: 70, borderWidth: 1, borderRadius: 14, paddingHorizontal: 13, paddingVertical: 10, gap: 3 },
-  passwordLabel: { fontSize: 11, lineHeight: 15, fontWeight: '700' },
+  passwordLabel: { fontSize: 12, lineHeight: 18, fontWeight: '700' },
   passwordValue: { fontSize: 16, lineHeight: 22, fontWeight: '700' },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  sheetAction: { minWidth: 120, minHeight: 46, flexGrow: 1, borderWidth: 1, borderRadius: 13, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  sheetActionText: { fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  sheetAction: { flexBasis: 120, minWidth: 0, minHeight: 46, flexGrow: 1, borderWidth: 1, borderRadius: 13, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  sheetActionText: { flexShrink: 1, textAlign: 'center', fontSize: 12, lineHeight: 17, fontWeight: '800' },
   busyRow: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   busyText: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   editor: { gap: 8 },
   editorHint: { fontSize: 12, lineHeight: 17 },
-  inputLabel: { marginTop: 2, fontSize: 11, lineHeight: 15, fontWeight: '800' },
+  inputLabel: { marginTop: 2, fontSize: 12, lineHeight: 18, fontWeight: '800' },
   editorInput: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
   editorTextarea: { minHeight: 88 },
   secretInputRow: { minHeight: 50, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center' },

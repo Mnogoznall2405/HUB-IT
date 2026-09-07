@@ -108,9 +108,11 @@ export default function useChatGroupActionsController({
         return next;
       });
       clearStoredConversationState({ conversationId, invalidateThread: true });
-      closeInfoAndContextPanels();
-      setActiveConversationId('');
-      if (isMobile) openMobileInboxView();
+      if (String(activeConversationIdRef.current || '').trim() === conversationId) {
+        closeInfoAndContextPanels();
+        setActiveConversationId('');
+        if (isMobile) openMobileInboxView();
+      }
       return payload;
     } catch (error) {
       notifyApiError(error, 'Не удалось выйти из группы.');

@@ -454,7 +454,6 @@ function ScreenshotStrip({
       cancelled = true;
     };
     // intentionally ignore `items` to avoid re-fetch loops; openFileName is the trigger
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openFileName, host, getMedia]);
 
   if (!items.length) return null;
@@ -1687,6 +1686,7 @@ export default function FileEgress() {
   const [error, setError] = useState('');
   const [selectedHost, setSelectedHost] = useState('');
   const [hostTab, setHostTab] = useState('files');
+  const [reportHtml, setReportHtml] = useState(null);
   const [channel, setChannel] = useState('all');
 
   const load = useCallback(async () => {
@@ -1802,10 +1802,7 @@ export default function FileEgress() {
     try {
       const res = await fsEgressAPI.getTelegramReport(host);
       const html = typeof res.data === 'string' ? res.data : String(res.data || '');
-      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setReportHtml(html);
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || 'Не удалось открыть отчёт');
     }
@@ -1813,6 +1810,13 @@ export default function FileEgress() {
 
   return (
     <MainLayout>
+      <Dialog open={reportHtml !== null} onClose={() => setReportHtml(null)} maxWidth="lg" fullWidth>
+        <DialogContent>
+          <Button onClick={() => setReportHtml(null)}>Закрыть отчёт</Button>
+          <Box component="iframe" title="Отчёт по переписке" sandbox="" srcDoc={reportHtml || ''}
+            sx={{ width: '100%', height: '70dvh', border: 0 }} />
+        </DialogContent>
+      </Dialog>
       <PageShell fullHeight sx={{ p: { xs: 1.25, md: 1.75 }, minHeight: 0 }}>
         <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
           <Stack

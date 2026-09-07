@@ -1,10 +1,14 @@
+import { useMailQuickReplyDraft } from '../../mail/useMailQuickReplyDraft';
+import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
+import { createMailComposeTransfer } from '../../mail/nativeMailComposeTransfer';
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import * as Print from 'expo-print';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { initialWindowMetrics, SafeAreaView } from 'react-native-safe-area-context';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext, SafeAreaView } from 'react-native-safe-area-context';
 import {
   deleteMailMessage,
   getMailConversation,
@@ -98,6 +102,12 @@ function quickReplyIdempotencyKey(): string {
 }
 
 export function NativeMailMessageScreen() {
+  const params = useLocalSearchParams<{ messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
+  const { user } = useAuth();
+  return <NativeMailMessageContent key={JSON.stringify([user?.id, first(params.mailboxId), first(params.messageId), first(params.folder)])} />;
+}
+
+function NativeMailMessageContent() {
   const params = useLocalSearchParams<{ messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[]; sequence?: string | string[] }>();
   const messageId = first(params.messageId);
   const mailboxIdParam = first(params.mailboxId);
@@ -109,7 +119,8 @@ export function NativeMailMessageScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
-  const safeAreaBottom = initialWindowMetrics?.insets.bottom || 0;
+  const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const safeAreaBottom = safeInsets?.bottom || 0;
   const allowed = hasPermission('mail.access');
   const [message, setMessage] = useState<MailMessageDetail | null>(null);
   const [folderTree, setFolderTree] = useState<MailFolderNode[]>([]);
@@ -126,12 +137,13 @@ export function NativeMailMessageScreen() {
   const [summary, setSummary] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [threadStats, setThreadStats] = useState<{ messages: number; unread: number } | null>(null);
-  const [quickReply, setQuickReply] = useState('');
+  const { ready: quickReplyReady, retryRestore: retryQuickReplyRestore, text: quickReply, setText: setQuickReply, storageError: quickReplyStorageError, saved: quickReplySaved, pending: quickReplyPending, prepareSend: prepareQuickReply, completeSend: completeQuickReply, resolvePending: resolveQuickReply, canTransfer: canTransferQuickReply, takeLocal, acknowledgeTransfer } = useMailQuickReplyDraft({ userId: allowed ? user?.id || 0 : 0, mailboxId: String(message?.mailbox_id || mailboxIdParam), kind: 'message', entityId: messageId });
   const [quickReplyBusy, setQuickReplyBusy] = useState(false);
+  const quickReplyInFlightRef = useRef(false);
+  const { requestLeave } = useUnsavedFormGuard(allowed && quickReply.length > 0 && !quickReplySaved, allowed && quickReplyBusy);
   const [quickReplyStatus, setQuickReplyStatus] = useState('');
   const [imageViewerKey, setImageViewerKey] = useState('');
   const [imageViewerLoading, setImageViewerLoading] = useState(false);
-  const quickReplyKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const autoReadMessageIdRef = useRef('');
   const moveTargets = useMemo(
     () => buildNativeMailFolderOptions(folderTree).filter((folder) => folder.id !== String(message?.folder || folderParam || '')),
@@ -141,7 +153,11 @@ export function NativeMailMessageScreen() {
   const imageViewerItem = imageViewerItems.find((item) => item.key === imageViewerKey) || null;
   const snapshotKey = `${mailboxIdParam}:${messageId}`;
 
+  const requestRef = useRef(0);
+  useLayoutEffect(() => () => { requestRef.current += 1; }, []);
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    const isCurrent = () => requestId === requestRef.current;
     if (!allowed || !messageId) {
       setLoading(false);
       return;
@@ -158,6 +174,7 @@ export function NativeMailMessageScreen() {
         Number.MAX_SAFE_INTEGER,
       )
       : null;
+    if (!isCurrent()) return;
     if (cached) {
       setMessage(cached.data);
       setCachedAt(cached.savedAt);
@@ -173,10 +190,11 @@ export function NativeMailMessageScreen() {
       return;
     }
     try {
-      const [detail, treeResult] = await Promise.all([
-        getMailMessage(messageId, mailboxIdParam),
-        getMailFolderTree(mailboxIdParam).catch(() => null),
-      ]);
+      void getMailFolderTree(mailboxIdParam).then((treeResult) => {
+        if (isCurrent()) setFolderTree(treeResult.items);
+      }).catch(() => undefined);
+      const detail = await getMailMessage(messageId, mailboxIdParam);
+      if (!isCurrent()) return;
       setMessage(detail);
       setCachedAt(0);
       void hydrateNativeMailImages(
@@ -184,9 +202,9 @@ export function NativeMailMessageScreen() {
         String(detail.mailbox_id || mailboxIdParam),
         detail.attachments || [],
       ).then((attachments) => {
+        if (!isCurrent()) return;
         setMessage((current) => current?.id === detail.id ? { ...current, attachments } : current);
       }).catch(() => undefined);
-      if (treeResult) setFolderTree(treeResult.items);
       const loadThreadStats = () => {
         if (!detail.conversation_id) return Promise.resolve();
         return getMailConversation(detail.conversation_id, {
@@ -194,6 +212,7 @@ export function NativeMailMessageScreen() {
           folder: String(detail.folder || folderParam || 'inbox'),
           folderScope: 'current',
         }).then((conversation) => {
+          if (!isCurrent()) return;
           setThreadStats({
             messages: Math.max(1, Number(conversation.messages_count || conversation.items?.length || 1)),
             unread: Math.max(0, Number(conversation.unread_count || 0)),
@@ -212,6 +231,10 @@ export function NativeMailMessageScreen() {
           void loadThreadStats();
         }).catch(() => {
           clearPendingMailReadOverride(detail.id, detailMailboxId);
+          if (!isCurrent()) {
+            if (isInbox) publishNativeMailUnreadDelta(1);
+            return;
+          }
           autoReadMessageIdRef.current = '';
           setMessage((current) => current?.id === detail.id ? { ...current, is_read: false } : current);
           if (isInbox) publishNativeMailUnreadDelta(1);
@@ -222,15 +245,19 @@ export function NativeMailMessageScreen() {
         void loadThreadStats();
       }
     } catch (cause) {
+      if (!isCurrent()) return;
       setError(formatApiError(cause, cached
         ? 'Показана сохранённая копия. Не удалось обновить письмо.'
         : 'Не удалось открыть письмо.'));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [allowed, folderParam, mailboxIdParam, messageId, offlineMode, snapshotKey, user?.id]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
   useEffect(() => {
     if (!allowed || offlineMode || !messageId) return undefined;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -262,10 +289,8 @@ export function NativeMailMessageScreen() {
   }, [message, offlineMode, snapshotKey, user?.id]);
   useEffect(() => {
     autoReadMessageIdRef.current = '';
-    setQuickReply('');
     setQuickReplyStatus('');
     setImageViewerKey('');
-    quickReplyKeyRef.current = null;
   }, [messageId]);
 
   useEffect(() => {
@@ -321,9 +346,9 @@ export function NativeMailMessageScreen() {
     }) as never);
   }, [mailboxIdParam, message]);
 
-  const sendQuickReply = useCallback(async () => {
+  const sendQuickReply = useCallback(async (retryKey?: string): Promise<void> => {
     const body = quickReply.trim();
-    if (!message || !body || quickReplyBusy || offlineMode) return;
+    if (!message || !body || quickReplyInFlightRef.current || quickReplyBusy || offlineMode) return;
     const { variant, quoteHtml } = composeVariantForMode(message, 'reply');
     const to = (variant.to || []).map(String).filter(Boolean);
     const fallbackRecipient = String(message.sender_email || message.sender_person?.email || message.sender || '').trim();
@@ -332,33 +357,39 @@ export function NativeMailMessageScreen() {
       setError('Не удалось определить получателя быстрого ответа. Откройте полный редактор.');
       return;
     }
-    const fingerprint = `${message.id}\n${body}`;
-    if (quickReplyKeyRef.current?.fingerprint !== fingerprint) {
-      quickReplyKeyRef.current = { fingerprint, key: quickReplyIdempotencyKey() };
-    }
+    quickReplyInFlightRef.current = true;
     setQuickReplyBusy(true);
     setQuickReplyStatus('');
     setError('');
     try {
-      await sendMailMessage({
+      const sendPayload = {
         fromMailboxId: String(message.compose_context?.mailbox_id || message.mailbox_id || mailboxIdParam),
-        composeMode: 'reply',
+        composeMode: 'reply' as const,
         to,
         cc: (variant.cc || []).map(String).filter(Boolean),
         subject: String(variant.subject || message.subject || ''),
         body: buildNativeMailOutgoingHtml(body, quoteHtml),
         isHtml: true,
         replyToMessageId: message.id,
-      }, { idempotencyKey: quickReplyKeyRef.current.key });
-      quickReplyKeyRef.current = null;
-      setQuickReply('');
+      };
+      const attempt = await prepareQuickReply(sendPayload, quickReplyIdempotencyKey, retryKey);
+      if (attempt.retry && !retryKey) {
+        Alert.alert('Повторить отправку?', 'Проверьте папку «Отправленные» перед повтором: письмо могло быть доставлено. Повтор может создать второе письмо.', [
+          { text: 'Вернуться', style: 'cancel' },
+          { text: 'Повторить отправку', onPress: () => { void sendQuickReply(attempt.key); } },
+        ]);
+        return;
+      }
+      await sendMailMessage(sendPayload, { idempotencyKey: attempt.key });
+      await completeQuickReply(attempt.key);
       setQuickReplyStatus('Ответ отправлен');
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось отправить быстрый ответ. Повторная попытка будет безопасной.'));
+      setError(`${formatApiError(cause, 'Не удалось подтвердить отправку ответа.')}\nПроверьте папку «Отправленные» перед повтором: письмо могло быть доставлено.`);
     } finally {
+      quickReplyInFlightRef.current = false;
       setQuickReplyBusy(false);
     }
-  }, [mailboxIdParam, message, offlineMode, quickReply, quickReplyBusy]);
+  }, [mailboxIdParam, message, offlineMode, quickReply, quickReplyBusy, prepareQuickReply, completeQuickReply]);
 
   const openAdjacentMessage = useCallback((targetMessageId: string) => {
     if (!targetMessageId) return;
@@ -540,7 +571,7 @@ export function NativeMailMessageScreen() {
       <View style={styles.readerTopBar}>
         <Pressable
           testID="native-mail-reader-back"
-          onPress={() => goBackOrReplace('/(shell)/mail')}
+          onPress={() => requestLeave(() => goBackOrReplace('/(shell)/mail'))}
           accessibilityRole="button"
           accessibilityLabel="Назад"
           style={styles.readerTopAction}
@@ -819,14 +850,27 @@ export function NativeMailMessageScreen() {
           sendTestID="native-mail-message-send-quick-reply"
           value={quickReply}
           busy={quickReplyBusy}
-          disabled={offlineMode}
+          pending={quickReplyPending}
+          onReview={() => router.push({ pathname: '/(shell)/mail', params: { mailboxId: String(message?.mailbox_id || mailboxIdParam), folder: 'sent' } } as never)}
+          onResolve={(wasSent) => { if (quickReplyInFlightRef.current) return; void resolveQuickReply(wasSent).catch(() => setError('Не удалось сохранить результат проверки отправки.')); }}
+          disabled={offlineMode || !quickReplyReady}
+          restoring={!quickReplyReady && !quickReplyStorageError}
+          onRetryRestore={!quickReplyReady && quickReplyStorageError ? retryQuickReplyRestore : undefined}
           placeholder="Ответить на письмо…"
           status={quickReplyStatus}
+          error={quickReplyStorageError}
           tokens={tokens}
           onChangeText={(value) => {
             setQuickReply(value);
             setQuickReplyStatus('');
-            if (quickReplyKeyRef.current?.fingerprint !== `${message.id}\n${value.trim()}`) quickReplyKeyRef.current = null;
+          }}
+          onExpand={() => {
+            if (!canTransferQuickReply()) return;
+            if (!user?.id || !message || quickReplyPending || quickReplyInFlightRef.current || quickReplyBusy) return;
+            const scopedMailboxId = String(message.mailbox_id || mailboxIdParam);
+            const transferId = createMailComposeTransfer({ userId: user.id, mailboxId: scopedMailboxId, messageId: message.id, text: quickReply, onTaken: () => takeLocal(quickReply), onSaved: () => acknowledgeTransfer(quickReply) });
+            const destination = nativeMailComposeDestination({ mode: 'reply', mailboxId: scopedMailboxId, sourceMessageId: message.id });
+            router.push({ ...destination, params: { ...destination.params, transferId } } as never);
           }}
           onSend={() => { void sendQuickReply(); }}
         />

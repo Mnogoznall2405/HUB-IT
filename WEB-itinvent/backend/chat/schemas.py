@@ -336,6 +336,7 @@ class EditMessageRequest(BaseModel):
 
 
 class ForwardMessageRequest(BaseModel):
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     source_message_id: str = Field(..., min_length=1, max_length=64)
     body_format: Literal["plain", "markdown"] = "plain"
     body: Optional[str] = Field(default=None, max_length=12000)

@@ -83,7 +83,8 @@ export default function useChatThreadMessageMerge({
     if (!normalizedConversationId || !message?.id) return false;
 
     upsertThreadMessage(message, { replaceId });
-    if (message?.is_own && !message?.isOptimistic) {
+    const isActiveConversation = normalizedConversationId === String(activeConversationIdRef.current || '').trim();
+    if (isActiveConversation && message?.is_own && !message?.isOptimistic) {
       setViewerLastReadMessageId(String(message.id || '').trim());
       setViewerLastReadAt(String(message.created_at || '').trim());
     }
@@ -91,11 +92,12 @@ export default function useChatThreadMessageMerge({
       syncConversationPreview(normalizedConversationId, message, previewOverrides);
       if (promote) promoteConversationToTop(normalizedConversationId);
     });
-    if (scroll) {
+    if (scroll && isActiveConversation) {
       queueAutoScroll('bottom_instant', scrollSource, { userInitiated: true });
     }
     return true;
   }, [
+    activeConversationIdRef,
     promoteConversationToTop,
     queueAutoScroll,
     setViewerLastReadAt,

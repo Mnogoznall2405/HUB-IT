@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import hubTasksAPI from '../../../api/hubTasks';
 import { statusMeta } from '../taskFormatters';
 
@@ -146,11 +146,17 @@ export default function useTaskWorkflowActions({
     }
   }, [handleWorkflowConflict, refreshTasksAndDetails, setError, submitSaving, submitTask]);
 
+  const selectedTaskRef = useRef({ id: selectedTaskId });
+  if (selectedTaskRef.current.id !== selectedTaskId) {
+    selectedTaskRef.current = { id: selectedTaskId };
+  }
+
   const handleDeleteTask = async (task) => {
     if (!task?.id || !window.confirm(`Удалить "${task?.title || 'задачу'}"?`)) return;
+    const selection = selectedTaskRef.current;
     try {
       await hubTasksAPI.deleteTask(task.id);
-      if (String(selectedTaskId || '') === String(task.id)) {
+      if (selectedTaskRef.current === selection && String(selection.id || '') === String(task.id)) {
         closeTaskDetails();
       }
       await loadTasks();

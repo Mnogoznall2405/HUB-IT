@@ -1325,7 +1325,17 @@ def test_system_message_persistence_advances_sequence_and_read_counters(chat_env
     assert int(states[1].last_read_seq) == 1
     assert int(states[1].unread_count) == 0
     assert int(states[2].unread_count) == 1
-    assert int(states[3].unread_count) == 0
+    # Joining starts at the previous tip; the new membership event is unread.
+    assert int(states[3].unread_count) == 1
+    assert int(states[3].last_read_seq) == 0
+
+    created = service.send_message(
+        current_user_id=2,
+        conversation_id=group["id"],
+        body="First message after joining",
+    )
+    _enqueue_and_apply_delivery_state(service, created)
+    assert service.get_unread_summary(current_user_id=3)["messages_unread_total"] == 2
 
 
 def test_group_avatar_file_path_requires_group_membership(chat_env):
@@ -1486,3 +1496,228 @@ def test_mention_still_creates_hub_row_when_ordinary_disabled(chat_env, monkeypa
         and int(item.get("unread") or 0) == 1
     ]
     assert mention_unread == []
+
+
+def test_deleted_file_is_hidden_from_download_assets_and_search(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    message = service.send_files(current_user_id=1, conversation_id=cid,
+        body="unique-deleted-caption", uploads=[_upload("private.txt", b"private", "text/plain")])
+    attachment_id = message["attachments"][0]["id"]
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=message["id"])
+    with pytest.raises(LookupError, match="Message not found"):
+        service.get_attachment_for_download(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    with pytest.raises(LookupError, match="Message not found"):
+        service.get_attachment_preview(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    with pytest.raises(LookupError, match="Message not found"):
+        service.download_attachment_preview_pdf(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    assert service.list_conversation_attachments(current_user_id=2, conversation_id=cid, kind="file")["items"] == []
+    summary = service.get_conversation_assets_summary(current_user_id=2, conversation_id=cid)
+    assert summary["files_count"] == 0
+    assert summary["recent_files"] == []
+    assert service.search_messages(current_user_id=2, conversation_id=cid, q="unique-deleted-caption")["items"] == []
+    history = service.get_messages(current_user_id=2, conversation_id=cid)["items"]
+    assert any(item["id"] == message["id"] and item["is_deleted"] for item in history)
+
+
+def test_upload_canonicalizes_document_mime(chat_env):
+    service = chat_env["service"]
+    created = service.send_files(current_user_id=1, conversation_id=chat_env["direct"]["id"],
+        uploads=[_upload("notes.txt", b"ordinary test text", "text/html")])
+    assert created["attachments"][0]["mime_type"] == "text/plain"
+    assert service._normalize_mime_type("audio/webm", file_name="voice.webm") == "audio/webm"
+    assert service._normalize_mime_type("image/png", file_name="blob") == "image/png"
+
+
+def test_ownership_rechecks_actor_after_conversation_lock(chat_env, monkeypatch):
+    service = chat_env["service"]
+    group = service.create_group_conversation(current_user_id=1, title="Ownership", member_user_ids=[2, 3])
+    original_lock = service._lock_conversation_for_write
+    def lock_after_other_transfer(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        # Deterministically model the preceding transaction winning the lock.
+        actor = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=1)
+        winner = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        actor.member_role = "moderator"
+        winner.member_role = "owner"
+        session.flush()
+        return conversation
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock_after_other_transfer)
+    with pytest.raises(PermissionError, match="Group owner access denied"):
+        service.transfer_group_ownership(current_user_id=1, conversation_id=group["id"], owner_user_id=3)
+
+
+def test_upload_completion_database_failure_preserves_chunks_for_retry(chat_env, monkeypatch):
+    service = chat_env["service"]
+    payload = b"retryable upload"
+    upload = service.create_upload_session(current_user_id=1, conversation_id=chat_env["direct"]["id"],
+        files=[{"file_name": "retry.txt", "mime_type": "text/plain", "size": len(payload)}])
+    sid = upload["session_id"]
+    fid = upload["files"][0]["file_id"]
+    service.upload_session_chunk(current_user_id=1, session_id=sid, file_id=fid,
+        chunk_index=0, offset=0, payload=payload)
+    part = service._upload_session_part_path(sid, fid)
+    persistence = service._file_message_persistence
+    persist = persistence.persist_file_message
+    def fail_persistence(**kwargs):
+        raise RuntimeError("temporary persistence failure")
+    monkeypatch.setattr(persistence, "persist_file_message", fail_persistence)
+    with pytest.raises(RuntimeError, match="temporary persistence failure"):
+        service.complete_upload_session(current_user_id=1, session_id=sid)
+    assert part.read_bytes() == payload
+    monkeypatch.setattr(persistence, "persist_file_message", persist)
+    message = service.complete_upload_session(current_user_id=1, session_id=sid)
+    assert not part.exists()
+    download = service.get_attachment_for_download(current_user_id=2, message_id=message["id"],
+        attachment_id=message["attachments"][0]["id"])
+    assert Path(download["path"]).read_bytes() == payload
+    assert service.complete_upload_session(current_user_id=1, session_id=sid)["id"] == message["id"]
+
+
+def test_forward_retry_reuses_committed_message_and_attachment(chat_env):
+    service = chat_env["service"]
+    conv = chat_env["direct"]["id"]
+    original = service.send_files(current_user_id=1, conversation_id=conv, body="source",
+        uploads=[_upload("retry.pdf", b"%PDF-1.4 retry", "application/pdf")], defer_push_notifications=True)
+    first = service.forward_message(current_user_id=2, conversation_id=conv,
+        source_message_id=original["id"], client_message_id="forward-retry-test", defer_push_notifications=True)
+    second = service.forward_message(current_user_id=2, conversation_id=conv,
+        source_message_id=original["id"], client_message_id="forward-retry-test", defer_push_notifications=True)
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == conv)).scalar_one() == 2
+
+
+def test_forward_rechecks_membership_after_lock(chat_env, monkeypatch):
+    service = chat_env["service"]
+    group = service.create_group_conversation(current_user_id=1, title="Forward lock", member_user_ids=[2, 3])
+    original = service.send_files(current_user_id=1, conversation_id=group["id"], body="source",
+        uploads=[_upload("source.pdf", b"%PDF-1.4 source", "application/pdf")], defer_push_notifications=True)
+    persistence = service._forward_message_persistence
+    original_lock = persistence._lock_conversation_for_write
+    def lock_after_removal(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        actor = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        actor.left_at = chat_service_module._utc_now()
+        session.flush()
+        return conversation
+    monkeypatch.setattr(persistence, "_lock_conversation_for_write", lock_after_removal)
+    with pytest.raises(PermissionError):
+        service.forward_message(current_user_id=2, conversation_id=group["id"], source_message_id=original["id"], defer_push_notifications=True)
+
+
+@pytest.mark.parametrize("kind", ["text", "file"])
+def test_forward_rejects_deleted_source(chat_env, kind):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    if kind == "file":
+        source = service.send_files(current_user_id=1, conversation_id=cid,
+            uploads=[_upload("private.txt", b"private", "text/plain")])
+    else:
+        source = service.send_message(current_user_id=1, conversation_id=cid, body="private")
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=source["id"])
+    before = set(service._attachments_root.rglob("*"))
+    with pytest.raises(LookupError, match="Source message not found"):
+        service.forward_message(current_user_id=2, conversation_id=cid, source_message_id=source["id"])
+    assert set(service._attachments_root.rglob("*")) == before
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == cid)).scalar_one() == 1
+
+
+@pytest.mark.parametrize("failure_at", [1, 2])
+def test_forward_cleans_partial_materialization(chat_env, monkeypatch, failure_at):
+    materializer = importlib.import_module("backend.chat.chat_forward_materializer")
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    source = service.send_files(current_user_id=1, conversation_id=cid,
+        uploads=[_upload("one.txt", b"one", "text/plain"), _upload("two.txt", b"two", "text/plain")])
+    before = set(service._attachments_root.rglob("*"))
+    original_copy = materializer.shutil.copy2
+    calls = []
+    def failing_copy(src, dst):
+        calls.append(dst)
+        if len(calls) == failure_at:
+            Path(dst).write_bytes(b"partial")
+            raise OSError("simulated disk failure")
+        return original_copy(src, dst)
+    monkeypatch.setattr(materializer.shutil, "copy2", failing_copy)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        service.forward_message(current_user_id=2, conversation_id=cid, source_message_id=source["id"])
+    assert set(service._attachments_root.rglob("*")) == before
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == cid)).scalar_one() == 1
+
+
+@pytest.mark.parametrize("operation", ["edit", "delete"])
+def test_message_write_rechecks_membership_after_lock(chat_env, monkeypatch, operation):
+    service = chat_env["service"]
+    cid = service.create_group_conversation(current_user_id=1, title="Write lock", member_user_ids=[2])["id"]
+    message = service.send_message(current_user_id=2, conversation_id=cid, body="original")
+    original_lock = service._lock_conversation_for_write
+    def lock_after_departure(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        member = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        member.left_at = chat_service_module._utc_now()
+        session.flush()
+        return conversation
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock_after_departure)
+    with pytest.raises(PermissionError):
+        if operation == "edit":
+            service.edit_message(current_user_id=2, conversation_id=cid, message_id=message["id"], body="changed")
+        else:
+            service.delete_message(current_user_id=2, conversation_id=cid, message_id=message["id"])
+    with chat_db_module.chat_session() as session:
+        row = session.get(chat_models_module.ChatMessage, message["id"])
+        assert row.body == "original"
+        assert not row.is_deleted
+
+
+def test_voice_file_replay_returns_original_message(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    def send():
+        return service.send_files(current_user_id=1, conversation_id=cid,
+            uploads=[_upload("voice.webm", b"voice", "audio/webm")],
+            files_meta=[{"media_kind": "audio", "duration_seconds": 4}],
+            client_message_id="voice-retry", defer_push_notifications=True)
+    first = send()
+    second = send()
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    assert second["attachments"][0]["media_kind"] == "audio"
+
+
+@pytest.mark.parametrize("kind", ["text", "file"])
+def test_forward_preview_uses_shared_snapshot(chat_env, kind):
+    service = chat_env["service"]
+    source_id = chat_env["direct"]["id"]
+    target_id = service.create_group_conversation(current_user_id=1, title="Shared", member_user_ids=[3])["id"]
+    if kind == "text":
+        source = service.send_message(current_user_id=1, conversation_id=source_id, body="shared version")
+    else:
+        source = service.send_files(current_user_id=1, conversation_id=source_id,
+            uploads=[_upload("shared.txt", b"shared", "text/plain")])
+    forwarded = service.forward_message(current_user_id=1, conversation_id=target_id, source_message_id=source["id"])
+    if kind == "text":
+        service.edit_message(current_user_id=1, conversation_id=source_id, message_id=source["id"], body="private later edit")
+    else:
+        with chat_db_module.chat_session() as session:
+            attachment = session.get(chat_models_module.ChatMessageAttachment, source["attachments"][0]["id"])
+            attachment.file_name = "private-later-name.txt"
+    item = next(m for m in service.get_messages(current_user_id=3, conversation_id=target_id)["items"] if m["id"] == forwarded["id"])
+    assert item["forward_preview"]["body"] == ("shared version" if kind == "text" else "shared.txt")
+    assert item["forward_preview"]["id"] == source["id"]
+
+
+def test_reaction_rejects_deleted_message(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    message = service.send_message(current_user_id=1, conversation_id=cid, body="message")
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=message["id"])
+    with pytest.raises(LookupError):
+        service.toggle_reaction(current_user_id=2, conversation_id=cid, message_id=message["id"], emoji="x")
+    assert service.get_message_reactions(message_id=message["id"])["reactions"] == []

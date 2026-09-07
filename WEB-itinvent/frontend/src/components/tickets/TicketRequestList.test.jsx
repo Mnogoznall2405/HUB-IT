@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { ticketsAPI } from '../../api/tickets';
 import { describe, expect, it, vi } from 'vitest';
 import TicketRequestList from './TicketRequestList';
 import { STATUS_ROW_COLORS } from './ticketUi';
@@ -38,6 +39,18 @@ vi.mock('../../api/tickets', () => ({
 }));
 
 describe('TicketRequestList', () => {
+  it('keeps the latest search when an older response finishes last', async () => {
+    const pending = [];
+    ticketsAPI.listRequests.mockImplementationOnce(() => new Promise((resolve) => pending.push(resolve)));
+    render(<TicketRequestList />);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    ticketsAPI.listRequests.mockResolvedValueOnce({ items: [{ id: 2, employee_name: 'New employee' }], total: 1 });
+    fireEvent.change(screen.getByLabelText('Поиск'), { target: { value: 'New' } });
+    expect(await screen.findByText('New employee')).toBeInTheDocument();
+    await act(async () => pending[0]({ items: [{ id: 1, employee_name: 'Old employee' }], total: 1 }));
+    expect(screen.queryByText('Old employee')).not.toBeInTheDocument();
+    expect(screen.getByText('New employee')).toBeInTheDocument();
+  });
   it('renders Excel columns and applies row color by status', async () => {
     render(<TicketRequestList objects={[]} canWrite />);
 

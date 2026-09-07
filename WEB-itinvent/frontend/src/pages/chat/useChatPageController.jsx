@@ -45,9 +45,7 @@ import useChatAiController from './useChatAiController';
 import useChatConversationsController from './useChatConversationsController';
 import useChatDraftsAndPinned from './useChatDraftsAndPinned';
 import useChatFoldersController from './useChatFoldersController';
-import useChatMobileNavigation from './useChatMobileNavigation';
 import useChatThreadController from './useChatThreadController';
-import useChatSocketController from './useChatSocketController';
 
 export {
   loadChatDialogsModule,
@@ -128,39 +126,21 @@ export { default as useChatBottomInstantFrameCleanup } from './useChatBottomInst
 export default function useChatPageController({
   thread: threadControllerArgs,
   conversations: conversationsControllerArgs,
-  mobile: mobileControllerArgs,
   folders: foldersControllerArgs,
   ai: aiControllerArgs,
   drafts: draftsControllerArgs,
-  socket: socketControllerArgs,
 } = {}) {
   const thread = useChatThreadController(threadControllerArgs || {});
-  const sidebar = conversationsControllerArgs
-    ? useChatConversationsController(conversationsControllerArgs)
-    : {};
-  const mobile = mobileControllerArgs
-    ? useChatMobileNavigation(mobileControllerArgs)
-    : {};
-  const folders = foldersControllerArgs
-    ? useChatFoldersController(foldersControllerArgs)
-    : {};
-  const ai = aiControllerArgs
-    ? useChatAiController(aiControllerArgs)
-    : {};
-  const drafts = draftsControllerArgs
-    ? useChatDraftsAndPinned(draftsControllerArgs)
-    : {};
-  const socket = socketControllerArgs
-    ? useChatSocketController(socketControllerArgs)
-    : {};
+  const sidebar = useChatConversationsController(conversationsControllerArgs || {});
+  const folders = useChatFoldersController(foldersControllerArgs || {});
+  const ai = useChatAiController(aiControllerArgs || {});
+  const drafts = useChatDraftsAndPinned(draftsControllerArgs || {});
 
   return {
     thread,
     sidebar,
-    mobile,
     folders,
     ai,
     drafts,
-    socket,
   };
 }

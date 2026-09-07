@@ -16,9 +16,24 @@
 - Auth/session drop counters: in-process metrics under `auth_session` in `GET /api/v1/system/request-metrics` (admin). Client beacons: `POST /api/v1/auth/session-telemetry` (`client_auth_required`, `client_refresh_failed`).
 - Internal idle is clamped to **≥7 days** (`SESSION_IDLE_TIMEOUT_INTERNAL_DAYS`); refresh/absolute TTL clamped to **≥7 days** (`JWT_REFRESH_EXPIRE_DAYS`).
 - Parallel refresh race: `REFRESH_ROTATION_GRACE_SECONDS` reuses the newly issued token pair for a short window (`refresh_grace_hit`).
+- Refresh rotation prepares tokens without registering them, then atomically consumes the old refresh, registers the replacement, saves the grace response and revokes the old JTI in the existing runtime table. Concurrent callers receive the committed winner; there is no 250 ms polling deadline. Failures before commit leave the old refresh usable. A lost response after commit can still be recovered only within the configured grace window.
 - Diagnostics: `GET /api/v1/auth/session-status` (session_id, last_seen_at, idle_expires_at, absolute_expires_at, refresh_expires_at, closed_reason) and `GET /api/v1/auth/session-policy`.
 - On api/chat startup: recompute `idle_expires_at` for active sessions (`reapply_idle_policy_for_active_sessions`).
 - Web UI: proactive silent `/auth/refresh` ~every 12 minutes while logged in (and on tab focus).
+- Web/Desktop/PWA silent refresh, Desktop resume, realtime recovery and REST `401` retries share one in-flight refresh per JS context. Separate tabs/processes are reconciled by the server's atomic rotation.
+- Android preserves credentials on refresh transport errors, HTTP `429`/`5xx`, incomplete responses and local persistence errors. Only definitive `401`/`403` or a missing refresh credential expire the local session; the interceptor propagates transient refresh errors so bootstrap can retry instead of treating the original access-token `401` as logout.
+
+## Desktop persistent sign-in: next policy decision
+
+The refresh recovery fix does not change the seven-day absolute session lifetime, external idle policy, 2FA or the three-session limit. Desktop still uses the shared web cookie session.
+
+Proposed next stage, not implemented or enabled:
+- Remember a confirmed Desktop installation after the existing full login, using a server-revocable device credential protected by Windows for the current OS user. Continue issuing finite access/refresh tokens.
+- Renew normal expiry after restart/sleep without a password prompt; explicit logout, device/admin revocation, password/2FA reset and account deactivation must stop renewal.
+- Decide how the three-session limit should interact with persistent Desktop sign-in before enabling renewal. Automatically renewing an evicted session would otherwise evict another client repeatedly.
+- Keep this capability specific to Desktop; do not infer trust merely from a client header or extend all browser sessions as a side effect.
+
+Deployment of the recovery fix requires updating both backend and split Chat runtimes that expose the auth router, publishing the shared frontend and distributing a rebuilt Android app. There is no schema migration or `.env` change. The current IIS site serves `WEB-itinvent/frontend/dist` directly: validation builds must use an isolated frontend copy, including its Vite plugins that write to `dist`.
 
 ## Required Env
 - `APP_DATABASE_URL` is required for production auth runtime state.

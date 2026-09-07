@@ -1,6 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
+import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import type { NativeMailSwipeAction } from '../../mail/nativeMailModel';
 import { resolveNativeMailSwipeAction } from '../../mail/nativeMailModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
@@ -24,32 +25,59 @@ export function NativeMailSwipeRow({
   canDelete: boolean;
   disabled: boolean;
   tokens: FluentTokens;
-  onAction: (action: Exclude<NativeMailSwipeAction, null>) => void;
+  onAction: (action: Exclude<NativeMailSwipeAction, null>) => void | Promise<void>;
 }) {
+  const reduceMotion = useReducedMotion();
   const translateX = useRef(new Animated.Value(0)).current;
-  const resetPosition = useCallback(() => translateX.setValue(0), [translateX]);
-  useEffect(() => {
-    resetPosition();
-  }, [disabled, isRead, resetPosition]);
+  const actionInProgress = useRef(false);
+  const current = useRef({ disabled, canDelete, isRead, onAction });
+  current.current = { disabled, canDelete, isRead, onAction };
+  const resetPosition = useCallback(() => {
+    translateX.stopAnimation();
+    if (reduceMotion) {
+      translateX.setValue(0);
+      return;
+    }
+    Animated.spring(translateX, { toValue: 0, speed: 28, bounciness: 0, useNativeDriver: true }).start();
+  }, [reduceMotion, translateX]);
+  useEffect(() => { resetPosition(); }, [disabled, isRead, resetPosition]);
+  useEffect(() => () => translateX.stopAnimation(), [translateX]);
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_event, gesture) => (
-      !disabled
+      !current.current.disabled && !actionInProgress.current
       && Math.abs(gesture.dx) >= 12
       && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.25
+      && (gesture.dx > 0 || current.current.canDelete)
     ),
-    onPanResponderMove: (_event, gesture) => translateX.setValue(clamp(gesture.dx)),
-    onPanResponderRelease: (_event, gesture) => {
-      const action = resolveNativeMailSwipeAction(gesture.dx, { isRead, canDelete });
-      resetPosition();
-      if (action) onAction(action);
+    onPanResponderGrant: () => translateX.stopAnimation(),
+    onPanResponderMove: (_event, gesture) => {
+      if (!current.current.disabled && !actionInProgress.current) {
+        translateX.setValue(current.current.canDelete ? clamp(gesture.dx) : Math.max(0, clamp(gesture.dx)));
+      }
     },
+    onPanResponderRelease: (_event, gesture) => {
+      resetPosition();
+      if (current.current.disabled || actionInProgress.current
+        || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.25) return;
+      const action = resolveNativeMailSwipeAction(gesture.dx, current.current);
+      if (!action) return;
+      actionInProgress.current = true;
+      // The owner reports API errors. Keep a synchronous lock until it finishes.
+      const complete = () => { actionInProgress.current = false; };
+      try {
+        void Promise.resolve(current.current.onAction(action)).then(complete, complete);
+      } catch {
+        complete();
+      }
+    },
+    onPanResponderTerminationRequest: () => true,
     onPanResponderTerminate: resetPosition,
-  }), [canDelete, disabled, isRead, onAction, resetPosition, translateX]);
+  }), [resetPosition, translateX]);
 
   const readLabel = isRead ? 'Не прочитано' : 'Прочитано';
   return (
     <View style={[styles.host, { backgroundColor: tokens.panelInset }]}>
-      <View style={[StyleSheet.absoluteFill, styles.underlay]} pointerEvents="none">
+      <View style={[StyleSheet.absoluteFill, styles.underlay]} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
         <View style={[styles.action, { backgroundColor: tokens.primary }]}>
           <MaterialCommunityIcons name={isRead ? 'email-outline' : 'email-open-outline'} size={21} color="#fff" />
           <Text style={styles.actionText}>{readLabel}</Text>

@@ -56,7 +56,10 @@ export function NativeMailHtmlBody({
   flat?: boolean;
   tokens: FluentTokens;
 }) {
-  const { height: windowHeight } = useWindowDimensions();
+  const { height: windowHeight, fontScale } = useWindowDimensions();
+  const textZoom = Math.round((Number.isFinite(fontScale) && fontScale > 0 ? fontScale : 1) * 100);
+  const [textOnly, setTextOnly] = useState(false);
+  const [renderFailed, setRenderFailed] = useState(false);
   const [allowExternalImages, setAllowExternalImages] = useState(false);
   const [contentHeight, setContentHeight] = useState(compact ? 260 : 420);
   const [longContent, setLongContent] = useState(false);
@@ -74,6 +77,11 @@ export function NativeMailHtmlBody({
     setLongContent(false);
   }, [bodyHtml, compact]);
 
+  useEffect(() => {
+    setRenderFailed(false);
+    setTextOnly(false);
+  }, [bodyHtml]);
+
   const openExternalLink = useCallback(async (value: unknown) => {
     const url = getSafeNativeMailExternalUrl(value);
     if (!url) return;
@@ -90,10 +98,17 @@ export function NativeMailHtmlBody({
     return false;
   }, [openExternalLink]);
 
-  const longContentHeight = Math.max(compact ? 360 : 520, Math.min(900, Math.round(windowHeight * 0.72)));
+  const longContentHeight = Math.max(160, Math.min(900, Math.round(windowHeight * 0.72)));
 
   return (
     <View style={styles.container}>
+      {Platform.OS !== 'web' ? <View>
+        {renderFailed ? <Text accessibilityRole="alert" style={{ color: tokens.textSecondary }}>Не удалось показать оформление. Текст письма доступен ниже.</Text> : null}
+        <Pressable accessibilityRole="button" accessibilityLabel={textOnly || renderFailed ? 'Показать оформление письма' : 'Читать письмо как текст'}
+          onPress={() => { setTextOnly(!(textOnly || renderFailed)); setRenderFailed(false); }} style={styles.privacyAction}>
+          <Text style={{ color: tokens.primary }}>{textOnly || renderFailed ? 'Показать оформление' : 'Читать как текст'}</Text>
+        </Pressable>
+      </View> : null}
       {prepared.hasBlockedExternalImages || allowExternalImages ? (
         <View style={[styles.privacyBar, { backgroundColor: tokens.panelInset }]}>
           <Text style={[styles.privacyText, { color: tokens.textSecondary }]}>
@@ -114,7 +129,7 @@ export function NativeMailHtmlBody({
           </Pressable>
         </View>
       ) : null}
-      {Platform.OS === 'web' ? (
+      {Platform.OS === 'web' || textOnly || renderFailed ? (
         <Text testID="native-mail-html-web-fallback" selectable style={[styles.webFallback, { color: tokens.textPrimary }]}>{webFallback}</Text>
       ) : <View style={[
         styles.webFrame,
@@ -126,6 +141,8 @@ export function NativeMailHtmlBody({
           source={{ html: prepared.document, baseUrl: 'about:blank' }}
           originWhitelist={['about:blank', 'data:text/html*', 'http://*', 'https://*', 'mailto:*', 'tel:*']}
           onShouldStartLoadWithRequest={(request) => handleNavigation(request.url)}
+          onError={() => setRenderFailed(true)}
+          onRenderProcessGone={() => setRenderFailed(true)}
           javaScriptEnabled
           injectedJavaScript={MAIL_HEIGHT_BRIDGE}
           onMessage={(event) => {
@@ -157,12 +174,12 @@ export function NativeMailHtmlBody({
           setSupportMultipleWindows={false}
           nestedScrollEnabled={longContent}
           scrollEnabled={longContent}
-          textZoom={100}
+          textZoom={textZoom}
           accessibilityLabel={String(plainText || '').trim() || 'Содержимое HTML-письма'}
-          style={{ height: contentHeight, backgroundColor: flat ? tokens.pageBg : tokens.panelSolid }}
+          style={{ height: longContent ? longContentHeight : contentHeight, backgroundColor: flat ? tokens.pageBg : tokens.panelSolid }}
         />
       </View>}
-      {longContent ? (
+      {longContent && !textOnly && !renderFailed ? (
         <Text testID="native-mail-long-html-hint" style={[styles.longContentHint, { color: tokens.textTertiary }]}>Длинное письмо: прокручивайте содержимое внутри блока.</Text>
       ) : null}
     </View>

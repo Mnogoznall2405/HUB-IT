@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import useRequestGuard from '../../lib/useRequestGuard';
 import {
   Alert,
   Autocomplete,
@@ -121,6 +122,7 @@ export default function TicketEmployeeCard({
   const [success, setSuccess] = useState('');
 
   const canEditPersonal = canWrite && canReadPersonal;
+  const beginEmployee = useRequestGuard(JSON.stringify([open, canReadPersonal]));
 
   const loadEmployees = useCallback(async () => {
     if (!open) return;
@@ -210,19 +212,23 @@ export default function TicketEmployeeCard({
   };
 
   const openEmployee = async (id) => {
+    const isCurrent = beginEmployee();
     setError('');
     setSuccess('');
     setZupSelected(null);
     setZupSearch('');
     try {
       const employee = await ticketsAPI.getEmployee(id);
+      if (!isCurrent()) return;
       applyEmployee(employee, '');
     } catch (err) {
+      if (!isCurrent()) return;
       setError(getErrorMessage(err));
     }
   };
 
   const importFromZup = async (person) => {
+    beginEmployee();
     if (!person?.employee_code) {
       setError('У выбранного сотрудника ЗУП нет кода.');
       return;
@@ -366,6 +372,7 @@ export default function TicketEmployeeCard({
               if (value?.id) {
                 void openEmployee(value.id);
               } else {
+                beginEmployee();
                 setSelectedId(null);
                 setSelectedDocumentId(null);
                 setForm(EMPTY_FORM);
@@ -383,6 +390,7 @@ export default function TicketEmployeeCard({
             <Button
               size="small"
               onClick={() => {
+                beginEmployee();
                 setManualOpen((prev) => !prev);
                 if (!manualOpen) {
                   setSelectedId(null);

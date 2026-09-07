@@ -216,23 +216,6 @@ export function NativeWarehouse1CScreen() {
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Требуется сеть: каталог 1С не сохраняется на устройстве.</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
       {statusError ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{statusError}</Text> : null}
-      <View style={[styles.boundary, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="database-search-outline" size={23} color={tokens.primary} />
-        <View style={styles.flex}>
-          <Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Без live-запросов к 1С</Text>
-          <Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Доступен безопасный поиск по снимку справочников. Остатки, движения, сотрудники, вложения и сверка пока не поддерживаются на мобильном устройстве.</Text>
-        </View>
-      </View>
-      <View style={[styles.statusCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
-        <View style={[styles.statusIcon, { backgroundColor: tokens.panelInset }]}><MaterialCommunityIcons name="database-clock-outline" size={22} color={statusColor} /></View>
-        <View style={styles.flex}>
-          <Text accessibilityLiveRegion="polite" style={[styles.statusTitle, { color: statusColor }]}>{statusMessage.title}</Text>
-          <Text style={[styles.statusDetail, { color: tokens.textSecondary }]}>{statusMessage.detail}</Text>
-          {status && status.status !== 'unknown' ? (
-            <Text style={[styles.statusCounts, { color: tokens.textSecondary }]}>Номенклатура: {status.nomenclature_count} · Склады: {status.warehouses_count}</Text>
-          ) : null}
-        </View>
-      </View>
       <View accessibilityRole="tablist" style={styles.modes}>
         <ModeButton label="Номенклатура" selected={kind === 'nomenclature'} onPress={() => { setKind('nomenclature'); setQueryDraft(''); setQuery(''); }} tokens={tokens} />
         <ModeButton label="Склады" selected={kind === 'warehouses'} onPress={() => { setKind('warehouses'); setQueryDraft(''); setQuery(''); }} tokens={tokens} />
@@ -252,6 +235,26 @@ export function NativeWarehouse1CScreen() {
         />
         {queryDraft ? <Pressable onPress={() => { setQueryDraft(''); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={20} color={tokens.iconMuted} /></Pressable> : null}
       </View>
+      <Text accessibilityLiveRegion="polite" style={{ color: statusColor, fontSize: 12 }}>{statusMessage.title} · {statusMessage.detail}</Text>
+      <AccountSectionCard tokens={tokens} title="О каталоге" collapsible>
+      <View style={[styles.boundary, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+        <MaterialCommunityIcons name="database-search-outline" size={23} color={tokens.primary} />
+        <View style={styles.flex}>
+          <Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Без live-запросов к 1С</Text>
+          <Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Доступен безопасный поиск по снимку справочников. Остатки, движения, сотрудники, вложения и сверка пока не поддерживаются на мобильном устройстве.</Text>
+        </View>
+      </View>
+      <View style={[styles.statusCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
+        <View style={[styles.statusIcon, { backgroundColor: tokens.panelInset }]}><MaterialCommunityIcons name="database-clock-outline" size={22} color={statusColor} /></View>
+        <View style={styles.flex}>
+          <Text accessibilityLiveRegion="polite" style={[styles.statusTitle, { color: statusColor }]}>{statusMessage.title}</Text>
+          <Text style={[styles.statusDetail, { color: tokens.textSecondary }]}>{statusMessage.detail}</Text>
+          {status && status.status !== 'unknown' ? (
+            <Text style={[styles.statusCounts, { color: tokens.textSecondary }]}>Номенклатура: {status.nomenclature_count} · Склады: {status.warehouses_count}</Text>
+          ) : null}
+        </View>
+      </View>
+      </AccountSectionCard>
       {query.length < 2 ? <Text style={[styles.hint, { color: tokens.textSecondary }]}>Введите минимум 2 символа.</Text> : null}
       {query.length >= 2 ? <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {items.length}</Text> : null}
       {items.length >= SEARCH_LIMIT ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Показаны первые {SEARCH_LIMIT} совпадений. Уточните запрос, если нужной записи нет.</Text> : null}

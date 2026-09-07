@@ -23,6 +23,7 @@ export const chatMessageSendingAPI = {
     const payload = {
       source_message_id: sourceMessageId,
     };
+    if (options?.client_message_id) payload.client_message_id = options.client_message_id;
     const body = String(options?.body || '').trim();
     if (body) payload.body = body;
     if (options?.body_format) payload.body_format = options.body_format;

@@ -1,4 +1,5 @@
 import { getCompleteAddressBook, type AddressBookSearchResponse } from '../api/addressBookApi';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
   getCurrentDatabase,
   listAvailableDatabases,
@@ -248,7 +249,8 @@ async function refreshEquipment(userId: number, force: boolean): Promise<Refresh
         },
       );
       if (!listStored) throw new Error('quick list snapshot was not committed');
-    } catch {
+    } catch (error) {
+      await recordSnapshotFailure('database', 'catalog-refresh', error);
       failedDatabases.push(database.name || database.id);
     }
   }
@@ -290,15 +292,17 @@ async function runRefresh(options: RefreshNativeReadCachesOptions): Promise<Nati
   for (const [moduleId, label, refresh] of requested) {
     try {
       const metric = await refresh();
-      await recordNativeOfflineCoverageSuccess(options.userId, moduleId, {
+      const coverageStored = await recordNativeOfflineCoverageSuccess(options.userId, moduleId, {
         status: metric.status || 'complete',
         loaded: metric.loaded,
         total: metric.total,
         unit: metric.unit,
         savedAt: metric.savedAt,
       });
+      if (!coverageStored) throw new Error('Offline coverage manifest write failed');
       result.refreshed.push(label);
     } catch (error) {
+      await recordSnapshotFailure(moduleId, 'refresh', error);
       await recordNativeOfflineCoverageFailure(options.userId, moduleId, {
         errorCode: `${moduleId}-refresh-failed`,
         errorMessage: error instanceof Error ? error.message : `Не удалось обновить раздел «${label}»`,

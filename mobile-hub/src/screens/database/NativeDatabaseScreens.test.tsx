@@ -332,7 +332,9 @@ it('keeps QR navigation available offline because parsing does not require a ser
   (Clipboard.getStringAsync as jest.Mock).mockResolvedValue('INV_NO: INV-1');
 
   const view = await render(<NativeDatabaseScreen />);
-  await waitFor(() => expect(view.getByTestId('native-database-paste-qr')).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId('native-database-more')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-database-more'));
+  expect(view.getByTestId('native-database-paste-qr')).toBeTruthy();
   fireEvent.press(view.getByTestId('native-database-paste-qr'));
 
   await waitFor(() => expect(router.push).toHaveBeenCalledWith({
@@ -407,6 +409,8 @@ it('keeps the inventory toolbar and equipment card readable without icon-only pr
   expect(view.getByTestId('native-database-header-selector')).toBeTruthy();
   expect(view.getByTestId('native-database-header-selector').props.accessibilityLabel).toContain('Основная');
   expect(view.getByText('Добавить')).toBeTruthy();
+  expect(view.queryByText('Обновить')).toBeNull();
+  await fireEvent.press(view.getByTestId('native-database-more'));
   expect(view.getByText('Обновить')).toBeTruthy();
   expect(view.getByText('Инв. № INV-1')).toBeTruthy();
   expect(view.getByText('OptiPlex').props.numberOfLines).toBe(2);
@@ -451,7 +455,10 @@ it('hides recent cards while the user is searching so results stay in focus', as
     snapshot: { ...equipment, inv_no: 'RECENT-1', model_name: 'Недавний компьютер' },
   }]);
   const view = await render(<NativeDatabaseScreen />);
-  await waitFor(() => expect(view.getByText('Недавний компьютер')).toBeTruthy());
+  await waitFor(() => expect(view.getByText('Недавние')).toBeTruthy());
+  expect(view.queryByText('Недавний компьютер')).toBeNull();
+  await fireEvent.press(view.getByLabelText('Недавние карточки'));
+  expect(view.getByText('Недавний компьютер')).toBeTruthy();
 
   await act(async () => { fireEvent.changeText(view.getByTestId('native-database-search'), 'Dell'); });
 
@@ -462,7 +469,9 @@ it('hides recent cards while the user is searching so results stay in focus', as
 it('accepts the established inventory QR payload from the clipboard', async () => {
   (Clipboard.getStringAsync as jest.Mock).mockResolvedValueOnce('INV_NO: INV-1');
   const view = await render(<NativeDatabaseScreen />);
-  await waitFor(() => expect(view.getByTestId('native-database-paste-qr')).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId('native-database-more')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-database-more'));
+  expect(view.getByTestId('native-database-paste-qr')).toBeTruthy();
   await act(async () => { fireEvent.press(view.getByTestId('native-database-paste-qr')); });
   await waitFor(() => expect(router.push).toHaveBeenCalledWith({
     pathname: '/(shell)/database/[invNo]',
@@ -791,4 +800,17 @@ it('adds a consumable from server directories without opening web', async () => 
     qty: 3,
     model_name: 'HP 59A',
   }), 'ITINVENT'));
+});
+
+it('selects equipment through a visible button and cancels selection without navigation', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-database-select'));
+  await fireEvent.press(view.getByTestId('native-equipment-INV-1'));
+  expect(view.getByText('Выбрано: 1')).toBeTruthy();
+  expect(router.push).not.toHaveBeenCalled();
+  await fireEvent.press(view.getByTestId('native-database-selection-clear'));
+  expect(view.queryByTestId('native-database-selection')).toBeNull();
+  expect(view.getByTestId('native-database-select').props.accessibilityState.selected).toBe(false);
 });

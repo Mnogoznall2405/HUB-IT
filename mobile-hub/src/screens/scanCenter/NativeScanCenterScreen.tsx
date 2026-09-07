@@ -326,6 +326,15 @@ export function NativeScanCenterScreen() {
     return [];
   }, [agents, hosts, incidents, reviewItems, section]);
   const currentTotal = section === 'overview' ? 0 : totals[section];
+  const hasListFilter = Boolean(query || (section === 'incidents' && incidentStatus)
+    || (section === 'agents' && agentOnline) || (section === 'hosts' && (hostStatus || hostSeverity)));
+  const resetListFilters = () => {
+    setQueryDraft('');
+    setQuery('');
+    if (section === 'incidents') setIncidentStatus('');
+    if (section === 'agents') setAgentOnline('');
+    if (section === 'hosts') { setHostStatus(''); setHostSeverity(''); }
+  };
   const attention = useMemo(() => buildScanAttentionItems(dashboard), [dashboard]);
   const dashboardTotals = dashboard?.totals || {};
   const performance = dashboard?.performance;
@@ -526,7 +535,17 @@ export function NativeScanCenterScreen() {
               </Pressable>
             </View>
           ) : (
-            <View style={styles.loading}><MaterialCommunityIcons name="check-circle-outline" size={40} color={tokens.success} /><Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>Ничего не найдено</Text><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Измените фильтр или обновите список.</Text></View>
+            <View style={styles.loading}>
+              <MaterialCommunityIcons name="magnify" size={40} color={tokens.iconMuted} />
+              <Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>{hasListFilter ? 'Нет совпадений' : 'В этом списке пока нет данных'}</Text>
+              <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{hasListFilter
+                ? 'По текущему запросу и фильтрам записей нет. Это не результат проверки всех компьютеров.'
+                : 'Список заполнится после получения данных от Scan Center. Пустой список не подтверждает отсутствие угроз.'}</Text>
+              <Pressable onPress={hasListFilter ? resetListFilters : refreshCurrent} accessibilityRole="button"
+                accessibilityLabel={hasListFilter ? 'Сбросить поиск и фильтры' : 'Обновить список'} style={[styles.retryButton, { backgroundColor: tokens.primary }]}>
+                <Text style={styles.retryText}>{hasListFilter ? 'Сбросить фильтры' : 'Обновить'}</Text>
+              </Pressable>
+            </View>
           )}
           ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footerLoader} color={tokens.primary} /> : null}
         />

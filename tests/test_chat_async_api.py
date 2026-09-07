@@ -187,6 +187,7 @@ def test_ai_run_is_scheduled_only_for_ai_conversations(monkeypatch):
 def test_forward_chat_message_route_passes_body_format(monkeypatch):
     current_user = _build_chat_user()
     payload = chat_schemas_module.ForwardMessageRequest(
+        client_message_id="forward-retry",
         source_message_id="msg-source",
         body="## Forward comment",
         body_format="markdown",
@@ -229,6 +230,7 @@ def test_forward_chat_message_route_passes_body_format(monkeypatch):
     assert len(async_boundary_calls) == 1
     assert async_boundary_calls[0]["func"] is _direct
     assert async_boundary_calls[0]["kwargs"]["source_message_id"] == "msg-source"
+    assert async_boundary_calls[0]["kwargs"]["client_message_id"] == "forward-retry"
     assert async_boundary_calls[0]["kwargs"]["body_format"] == "markdown"
     assert scheduled == [{
         "conversation_id": "conv-1",

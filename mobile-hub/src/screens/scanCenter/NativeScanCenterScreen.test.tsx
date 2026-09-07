@@ -100,3 +100,14 @@ it('does not request Scan runtime without scan.read', async () => {
   expect(scanApi.getScanDashboard).not.toHaveBeenCalled();
   expect(scanApi.listScanIncidents).not.toHaveBeenCalled();
 });
+
+it('distinguishes an empty filtered result and clears the actual API filter', async () => {
+  (scanApi.listScanIncidents as jest.Mock).mockResolvedValue({ items: [], total: 0, has_more: false });
+  const view = await render(<NativeScanCenterScreen />);
+  await fireEvent.press(await view.findByTestId('native-scan-tab-incidents'));
+  expect(await view.findByText('Нет совпадений')).toBeTruthy();
+  await fireEvent.press(view.getByLabelText('Сбросить поиск и фильтры'));
+  await waitFor(() => expect(scanApi.listScanIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ status: '', q: '' })));
+  expect(await view.findByText('В этом списке пока нет данных')).toBeTruthy();
+  expect(view.getByLabelText('Обновить список')).toBeTruthy();
+});

@@ -9,6 +9,7 @@ import {
 
 type RetryConfig = InternalAxiosRequestConfig & {
   _retry?: boolean;
+  _hubitSessionGeneration?: number;
   _hubitDeadlineAtMs?: number;
   hubitTotalTimeoutMs?: number;
 };
@@ -51,7 +52,16 @@ function createTotalTimeoutError(config: RetryConfig): Error {
   });
 }
 
+function assertRequestSession(config: RetryConfig): void {
+  if (config._hubitSessionGeneration !== tokenStore.getSessionGeneration()) {
+    throw new Error('Mobile session changed during request');
+  }
+}
+
 apiClient.interceptors.request.use(async (config) => {
+  const request = config as RetryConfig;
+  if (request._hubitSessionGeneration === undefined) request._hubitSessionGeneration = tokenStore.getSessionGeneration();
+  assertRequestSession(request);
   applyRemainingTotalTimeout(config as RetryConfig);
   if (isNativeOfflineMutationBlocked(config.method)) {
     throw createNativeOfflineReadOnlyError();
@@ -78,6 +88,7 @@ apiClient.interceptors.request.use(async (config) => {
     config.timeout = MAIL_EXCHANGE_TIMEOUT_MS;
   }
   const accessToken = await tokenStore.getAccessToken();
+  assertRequestSession(request);
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
@@ -85,8 +96,7 @@ apiClient.interceptors.request.use(async (config) => {
   return config;
 });
 
-let refreshPromise: Promise<string | null> | null = null;
-let expireSessionPromise: Promise<void> | null = null;
+const refreshPromises = new Map<string, Promise<string | null>>();
 
 function isAuthRequestWithoutRefresh(url: string | undefined): boolean {
   const normalized = String(url || '').split('?')[0];
@@ -101,17 +111,8 @@ function isAuthRequestWithoutRefresh(url: string | undefined): boolean {
   ].some((path) => normalized.endsWith(path));
 }
 
-async function expireSession(): Promise<void> {
-  if (!expireSessionPromise) {
-    expireSessionPromise = tokenStore.clearTokens()
-      .finally(() => {
-        publishSessionExpired();
-      })
-      .finally(() => {
-        expireSessionPromise = null;
-      });
-  }
-  await expireSessionPromise;
+async function expireSession(expectedRefresh: string | null): Promise<void> {
+  await tokenStore.clearExpiredTokens(expectedRefresh, publishSessionExpired);
 }
 
 function boundedRefreshTimeout(timeoutMs?: number): number {
@@ -120,8 +121,7 @@ function boundedRefreshTimeout(timeoutMs?: number): number {
   return Math.min(AUTH_REFRESH_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
-async function refreshAccessToken(timeoutMs?: number): Promise<string | null> {
-  const refreshToken = await tokenStore.getRefreshToken();
+async function refreshAccessToken(refreshToken: string, timeoutMs?: number): Promise<string | null> {
   if (!refreshToken) return null;
   const clientDeviceId = await tokenStore.getClientDeviceId();
   const response = await axios.post(
@@ -139,7 +139,9 @@ async function refreshAccessToken(timeoutMs?: number): Promise<string | null> {
   const access = String(response.data?.access_token || '').trim();
   const refresh = String(response.data?.refresh_token || '').trim();
   if (!access || !refresh) throw new Error('Incomplete mobile refresh response');
-  await tokenStore.setTokens(access, refresh);
+  if (!await tokenStore.replaceRefreshedTokens(refreshToken, access, refresh)) {
+    throw new Error('Mobile session changed during refresh');
+  }
   return access;
 }
 
@@ -157,13 +159,15 @@ function accessTokenExpiresSoon(accessToken: string): boolean {
   }
 }
 
-async function sharedRefreshAccessToken(timeoutMs?: number): Promise<string | null> {
-  if (!refreshPromise) {
-    refreshPromise = refreshAccessToken(timeoutMs).finally(() => {
-      refreshPromise = null;
-    });
-  }
-  return refreshPromise;
+async function sharedRefreshAccessToken(refreshToken: string | null, timeoutMs?: number): Promise<string | null> {
+  if (!refreshToken) return null;
+  const existing = refreshPromises.get(refreshToken);
+  if (existing) return existing;
+  const pending = refreshAccessToken(refreshToken, timeoutMs).finally(() => {
+    refreshPromises.delete(refreshToken);
+  });
+  refreshPromises.set(refreshToken, pending);
+  return pending;
 }
 
 export async function getAuthenticatedAccessToken(
@@ -177,29 +181,34 @@ export async function getAuthenticatedAccessToken(
   const shouldRefresh = Boolean(options.forceRefresh) || !currentAccessToken || accessTokenExpiresSoon(currentAccessToken);
   if (!shouldRefresh) return currentAccessToken;
 
+  const expectedRefresh = await tokenStore.getRefreshToken();
   let refreshedAccessToken: string | null = null;
   try {
-    refreshedAccessToken = await sharedRefreshAccessToken(options.refreshTimeoutMs);
+    refreshedAccessToken = await sharedRefreshAccessToken(expectedRefresh, options.refreshTimeoutMs);
   } catch (refreshError) {
+    if (await tokenStore.getRefreshToken() !== expectedRefresh) throw new Error('Mobile session changed during refresh');
     if (axios.isAxiosError(refreshError) && !refreshError.response) {
       if (currentAccessToken && !options.forceRefresh) return currentAccessToken;
       throw refreshError;
     }
     const status = axios.isAxiosError(refreshError) ? refreshError.response?.status : undefined;
     if ((status === 401 || status === 403) && !options.preserveSessionOnRefreshFailure) {
-      await expireSession();
+      await expireSession(expectedRefresh);
     }
     throw refreshError;
   }
   if (!refreshedAccessToken) {
-    if (!options.preserveSessionOnRefreshFailure) await expireSession();
+    if (!options.preserveSessionOnRefreshFailure) await expireSession(expectedRefresh);
     throw new Error('Authenticated mobile session expired');
   }
   return refreshedAccessToken;
 }
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    assertRequestSession(response.config as RetryConfig);
+    return response;
+  },
   async (error: AxiosError) => {
     const config = error.config as RetryConfig | undefined;
     if (!config || config._retry || error.response?.status !== 401) {
@@ -208,6 +217,7 @@ apiClient.interceptors.response.use(
     if (isAuthRequestWithoutRefresh(config.url)) {
       return Promise.reject(error);
     }
+    assertRequestSession(config);
     config._retry = true;
     const refreshBudget = remainingTotalTimeoutMs(config);
     if (refreshBudget !== null && refreshBudget <= 0) {
@@ -222,6 +232,7 @@ apiClient.interceptors.response.use(
     } catch (refreshError) {
       return Promise.reject(refreshError);
     }
+    assertRequestSession(config);
     const retryBudget = remainingTotalTimeoutMs(config);
     if (retryBudget !== null && retryBudget <= 0) {
       return Promise.reject(createTotalTimeoutError(config));

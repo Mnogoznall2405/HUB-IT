@@ -1,5 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
+import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatApiError } from '../../api/formatError';
@@ -112,6 +113,13 @@ export function NativeTaskCreateScreen() {
   const [assigneesLoading, setAssigneesLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const defaultProjectRef = useRef('');
+  const dirty = Boolean(title || description || dueDate || checklistText || checklistItems.length
+    || files.length || selectedAssigneeIds.length || observerIds.length || controllerId
+    || objectId || departmentId || newProjectName || newObjectName
+    || priority !== 'normal' || emailReminder !== 'default' || visibility !== 'private'
+    || projectId !== defaultProjectRef.current);
+  const { requestLeave, leaveSaved } = useUnsavedFormGuard(allowed && dirty, allowed && (saving || projectSaving || objectSaving));
   const incomingShareAppliedRef = useRef(false);
   const debouncedAssigneeQuery = useDebouncedValue(assigneeQuery);
   const protocolDate = useMemo(() => todayProtocolDate(), []);
@@ -131,9 +139,11 @@ export function NativeTaskCreateScreen() {
   }, []);
 
   const goBack = useCallback(() => {
-    if (router.canGoBack()) router.back();
-    else goBackOrReplace('/(shell)/tasks');
-  }, []);
+    requestLeave(() => {
+      if (router.canGoBack()) router.back();
+      else goBackOrReplace('/(shell)/tasks');
+    });
+  }, [requestLeave]);
 
   useEffect(() => {
     if (!allowed) return;
@@ -149,7 +159,8 @@ export function NativeTaskCreateScreen() {
       .then(([nextProjects, nextAssignees, nextControllers, nextObjects, nextDepartments]) => {
         if (!active) return;
         setProjects(nextProjects);
-        setProjectId(String(findDefaultProject(nextProjects)?.id || ''));
+        defaultProjectRef.current = String(findDefaultProject(nextProjects)?.id || '');
+        setProjectId(defaultProjectRef.current);
         setAssignees(nextAssignees);
         setControllers(nextControllers);
         setObjects(nextObjects);
@@ -339,20 +350,22 @@ export function NativeTaskCreateScreen() {
       if (uploadFailures.length) {
         Alert.alert('Задача создана', `Не загрузились файлы: ${uploadFailures.slice(0, 3).join(', ')}`);
       }
-      if (firstId) {
-        router.replace({
-          pathname: '/(shell)/tasks/[taskId]',
-          params: { taskId: firstId },
-        } as never);
-      } else {
-        router.replace('/(shell)/tasks' as never);
-      }
+      leaveSaved(() => {
+        if (firstId) {
+          router.replace({
+            pathname: '/(shell)/tasks/[taskId]',
+            params: { taskId: firstId },
+          } as never);
+        } else {
+          router.replace('/(shell)/tasks' as never);
+        }
+      });
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось создать задачу.'));
     } finally {
       setSaving(false);
     }
-  }, [checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
+  }, [leaveSaved, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
 
   if (!allowed) {
     return (
@@ -371,6 +384,13 @@ export function NativeTaskCreateScreen() {
   return (
     <AccountScreenScaffold
       title="Новая задача"
+      footer={(<AccountPrimaryButton
+        tokens={tokens}
+        testID="native-task-create-submit"
+        label={saving ? 'Создание…' : 'Создать задачу'}
+        disabled={saving || offlineMode}
+        onPress={() => { void submit(); }}
+      />)}
       tokens={tokens}
       onBack={goBack}
     >
@@ -396,60 +416,9 @@ export function NativeTaskCreateScreen() {
           maxLength={300}
         />
         <View style={styles.fieldGap} />
-        <HubTextField
-          testID="native-task-create-description"
-          label="Описание"
-          value={description}
-          onChangeText={setDescription}
-          multiline
-          numberOfLines={5}
-          maxLength={12000}
-          style={styles.descriptionField}
-        />
-        <View style={styles.fieldGap} />
-        <HubTextField
-          testID="native-task-create-due"
-          label="Срок"
-          value={dueDate}
-          onChangeText={changeDueDate}
-          placeholder="ГГГГ-ММ-ДД"
-          keyboardType="numbers-and-punctuation"
-          maxLength={10}
-          accessibilityHint="Оставьте пустым, если срок не нужен"
-        />
-        <Text style={[styles.helper, { color: tokens.textSecondary }]}>Дата протокола: {protocolDate}</Text>
-        {dueDate.trim() ? (
-          <View style={styles.subsection}>
-            <Text style={[styles.subsectionLabel, { color: tokens.textSecondary }]}>Email-напоминание о сроке</Text>
-            <View style={styles.choiceWrap}>
-              {EMAIL_REMINDER_OPTIONS.map((option) => (
-                <ChoiceChip
-                  key={option.value}
-                  testID={`native-task-email-reminder-${option.value}`}
-                  label={option.label}
-                  selected={emailReminder === option.value}
-                  tokens={tokens}
-                  onPress={() => setEmailReminder(option.value)}
-                />
-              ))}
-            </View>
-          </View>
-        ) : null}
       </AccountSectionCard>
 
-      <AccountSectionCard tokens={tokens} title="Приоритет">
-        <View style={styles.choiceWrap}>
-          {TASK_PRIORITY_OPTIONS.map((option) => (
-            <ChoiceChip
-              key={option.value}
-              label={option.label}
-              selected={priority === option.value}
-              tokens={tokens}
-              onPress={() => setPriority(option.value)}
-            />
-          ))}
-        </View>
-      </AccountSectionCard>
+
 
       <AccountSectionCard
         tokens={tokens}
@@ -537,7 +506,61 @@ export function NativeTaskCreateScreen() {
         </View>
       </AccountSectionCard>
 
-      <AccountSectionCard tokens={tokens} title="Контролёр">
+      <AccountSectionCard tokens={tokens} title="Описание и срок">
+        <HubTextField
+          testID="native-task-create-due"
+          label="Срок"
+          value={dueDate}
+          onChangeText={changeDueDate}
+          placeholder="ГГГГ-ММ-ДД"
+          keyboardType="numbers-and-punctuation"
+          maxLength={10}
+          accessibilityHint="Оставьте пустым, если срок не нужен"
+        />
+        <Text style={[styles.helper, { color: tokens.textSecondary }]}>Дата протокола: {protocolDate}</Text>
+        {dueDate.trim() ? (
+          <View style={styles.subsection}>
+            <Text style={[styles.subsectionLabel, { color: tokens.textSecondary }]}>Email-напоминание о сроке</Text>
+            <View style={styles.choiceWrap}>
+              {EMAIL_REMINDER_OPTIONS.map((option) => (
+                <ChoiceChip
+                  key={option.value}
+                  testID={`native-task-email-reminder-${option.value}`}
+                  label={option.label}
+                  selected={emailReminder === option.value}
+                  tokens={tokens}
+                  onPress={() => setEmailReminder(option.value)}
+                />
+              ))}
+            </View>
+          </View>
+        ) : null}
+        <HubTextField
+          testID="native-task-create-description"
+          label="Описание"
+          value={description}
+          onChangeText={setDescription}
+          multiline
+          numberOfLines={5}
+          maxLength={12000}
+          style={styles.descriptionField}
+        />
+        <View style={styles.fieldGap} />
+      </AccountSectionCard>
+      <AccountSectionCard tokens={tokens} collapsible title="Приоритет">
+        <View style={styles.choiceWrap}>
+          {TASK_PRIORITY_OPTIONS.map((option) => (
+            <ChoiceChip
+              key={option.value}
+              label={option.label}
+              selected={priority === option.value}
+              tokens={tokens}
+              onPress={() => setPriority(option.value)}
+            />
+          ))}
+        </View>
+      </AccountSectionCard>
+      <AccountSectionCard tokens={tokens} collapsible title="Контролёр">
         <View style={styles.choiceWrap}>
           <ChoiceChip label="Без контролёра" selected={controllerId === null} tokens={tokens} onPress={() => setControllerId(null)} />
           {controllers.map((item) => (
@@ -547,7 +570,7 @@ export function NativeTaskCreateScreen() {
       </AccountSectionCard>
 
       {projectId && (visibleObjects.length > 0 || canCreateObject) ? (
-        <AccountSectionCard tokens={tokens} title="Объект">
+        <AccountSectionCard tokens={tokens} collapsible title="Объект">
           <View style={styles.choiceWrap}>
             <ChoiceChip label="Без объекта" selected={!objectId} tokens={tokens} onPress={() => setObjectId('')} />
             {visibleObjects.map((item) => (
@@ -580,7 +603,7 @@ export function NativeTaskCreateScreen() {
       ) : null}
 
       {canReadDepartments ? (
-        <AccountSectionCard tokens={tokens} title="Отдел" description="Доступность списка определяется серверными правами на справочник отделов.">
+        <AccountSectionCard tokens={tokens} collapsible title="Отдел" description="Доступность списка определяется серверными правами на справочник отделов.">
           {departments.length ? (
             <View style={styles.choiceWrap}>
               <ChoiceChip testID="native-task-department-none" label="Без отдела" selected={!departmentId} tokens={tokens} onPress={() => selectDepartment('')} />
@@ -601,7 +624,7 @@ export function NativeTaskCreateScreen() {
         </AccountSectionCard>
       ) : null}
 
-      <AccountSectionCard tokens={tokens} title="Наблюдатели" description="Получают обновления задачи без назначения исполнителем.">
+      <AccountSectionCard tokens={tokens} collapsible title="Наблюдатели" description="Получают обновления задачи без назначения исполнителем.">
         <View style={styles.peopleList}>
           {assignees.filter((item) => !selectedAssigneeIds.includes(Number(item.id))).map((item) => {
             const selected = observerIds.includes(Number(item.id));
@@ -616,7 +639,7 @@ export function NativeTaskCreateScreen() {
       </AccountSectionCard>
 
       {departmentId ? (
-        <AccountSectionCard tokens={tokens} title="Видимость">
+        <AccountSectionCard tokens={tokens} collapsible title="Видимость">
           <View style={styles.choiceWrap}>
             {([
               ['private', 'Только участники'],
@@ -627,7 +650,7 @@ export function NativeTaskCreateScreen() {
         </AccountSectionCard>
       ) : null}
 
-      <AccountSectionCard tokens={tokens} title={`Чек-лист (${checklistItems.length})`}>
+      <AccountSectionCard tokens={tokens} collapsible title={`Чек-лист (${checklistItems.length})`}>
         <HubTextField testID="native-task-create-checklist-input" label="Новый пункт" value={checklistText} onChangeText={setChecklistText} returnKeyType="done" onSubmitEditing={addChecklistItem} />
         <View style={styles.inlineActions}><AccountSecondaryButton tokens={tokens} label="Добавить пункт" disabled={!checklistText.trim()} onPress={addChecklistItem} /></View>
         {checklistItems.map((item) => (
@@ -638,7 +661,7 @@ export function NativeTaskCreateScreen() {
         ))}
       </AccountSectionCard>
 
-      <AccountSectionCard tokens={tokens} title={`Файлы (${files.length})`} description="До 20 МБ на файл.">
+      <AccountSectionCard tokens={tokens} collapsible title={`Файлы (${files.length})`} description="До 20 МБ на файл.">
         <AccountSecondaryButton tokens={tokens} label="Добавить файл" onPress={() => { void addFile(); }} />
         {files.map((file) => (
           <View key={`${file.uri}:${file.name}`} style={[styles.checklistRow, { borderBottomColor: tokens.borderSoft }]}> 
@@ -648,13 +671,7 @@ export function NativeTaskCreateScreen() {
         ))}
       </AccountSectionCard>
 
-      <AccountPrimaryButton
-        tokens={tokens}
-        testID="native-task-create-submit"
-        label={saving ? 'Создание…' : 'Создать задачу'}
-        disabled={saving || offlineMode}
-        onPress={() => { void submit(); }}
-      />
+
     </AccountScreenScaffold>
   );
 }

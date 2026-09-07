@@ -100,6 +100,10 @@ export function NativeMailMessageCard({
       </View>
       {detailsExpanded ? (
         <View testID="native-mail-recipient-details-expanded" style={[styles.recipientDetails, showFlatReader ? styles.readerRecipientDetails : null, { backgroundColor: tokens.panelInset }]}> 
+          {senderEmail ? <View style={styles.recipientDetailRow}>
+            <Text style={[styles.recipientDetailLabel, { color: tokens.textTertiary }]}>От кого</Text>
+            <Text selectable style={[styles.recipientDetailValue, { color: tokens.textPrimary }]}>{senderEmail}</Text>
+          </View> : null}
           {recipientGroups.map((group) => (
             <View key={group.label} style={styles.recipientDetailRow}>
               <Text style={[styles.recipientDetailLabel, { color: tokens.textTertiary }]}>{group.label}</Text>
@@ -121,6 +125,7 @@ export function NativeMailMessageCard({
       {readerAccessory}
       {hasRichBody ? (
         <NativeMailHtmlBody
+          key={`${message.mailbox_id || ''}:${message.id}`}
           bodyHtml={String(message.body_html)}
           plainText={message.body_text || message.body_preview}
           attachments={message.attachments}
@@ -202,9 +207,11 @@ function NativeMailAttachmentSection({
                 <MaterialCommunityIcons name={visual.icon} size={24} color={visual.color} />
               </View>
               <View style={styles.attachmentText}>
-                <Text numberOfLines={1} style={[styles.attachmentName, { color: tokens.textPrimary }]}>{attachment.name || 'Вложение'}</Text>
+                <Text numberOfLines={2} style={[styles.attachmentName, { color: tokens.textPrimary }]}>{attachment.name || 'Вложение'}</Text>
                 <Text style={[styles.attachmentSize, { color: tokens.textTertiary }]}>{sizeLabel ? `${visual.label} · ${sizeLabel}` : visual.label}</Text>
               </View>
+            </View>
+            <View style={styles.attachmentActions}>
               <Pressable
                 onPress={() => onOpenAttachment?.(attachment)}
                 disabled={busy || attachment.downloadable === false}
@@ -260,33 +267,34 @@ const styles = StyleSheet.create({
   readerSender: { fontSize: 20, lineHeight: 26, fontWeight: '700' },
   date: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
   senderEmail: { marginTop: 1, fontSize: 12, lineHeight: 17 },
-  recipientSummary: { minHeight: 28, marginTop: 1, marginLeft: -6, paddingLeft: 6, flexDirection: 'row', alignItems: 'center' },
-  readerRecipientSummary: { alignSelf: 'flex-start', gap: 5, marginTop: 1, paddingRight: 6 },
+  recipientSummary: { minHeight: 44, marginTop: 1, marginLeft: -6, paddingLeft: 6, flexDirection: 'row', alignItems: 'center' },
+  readerRecipientSummary: { alignSelf: 'stretch', flexWrap: 'wrap', gap: 5, marginTop: 1, paddingRight: 6 },
   recipients: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17 },
   readerDate: { maxWidth: 190, fontSize: 15, lineHeight: 21 },
   readerMetaDot: { fontSize: 13 },
   readerParticipantCount: { fontSize: 15, lineHeight: 21 },
-  recipientDetails: { marginTop: 10, marginLeft: 50, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, gap: 7 },
-  readerRecipientDetails: { marginLeft: 68, marginTop: 12 },
-  recipientDetailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  recipientDetailLabel: { width: 76, fontSize: 12, lineHeight: 18, fontWeight: '700' },
-  recipientDetailValue: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 18 },
+  recipientDetails: { marginTop: 10, marginLeft: 0, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, gap: 7 },
+  readerRecipientDetails: { marginLeft: 0, marginTop: 12 },
+  recipientDetailRow: { gap: 2 },
+  recipientDetailLabel: { fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  recipientDetailValue: { minWidth: 0, fontSize: 12, lineHeight: 18 },
   subject: { marginTop: 15, fontSize: 20, lineHeight: 26, fontWeight: '900' },
   body: { marginTop: 18, fontSize: 16, lineHeight: 25 },
   readerBody: { marginTop: 28 },
   attachments: { marginTop: 20, gap: 8 },
-  attachmentsHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  attachmentsHeader: { minHeight: 44, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   attachmentsTitle: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
   saveAllAction: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 8 },
   saveAllText: { fontSize: 12, lineHeight: 17, fontWeight: '800' },
   attachmentCard: { overflow: 'hidden', borderWidth: 1, borderRadius: 12 },
   imagePreviewButton: { width: '100%' },
   imagePreview: { width: '100%', height: 190 },
-  attachmentRow: { minHeight: 58, paddingLeft: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  attachmentRow: { minHeight: 58, paddingHorizontal: 10, paddingTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
   attachmentIconTile: { width: 38, height: 38, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   attachmentText: { flex: 1, minWidth: 0 },
   attachmentName: { fontSize: 13, fontWeight: '800' },
   attachmentSize: { marginTop: 2, fontSize: 11 },
+  attachmentActions: { flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', paddingHorizontal: 6, gap: 8 },
   attachmentAction: { width: 44, height: 52, alignItems: 'center', justifyContent: 'center' },
   pressed: { transform: [{ scale: 0.96 }], opacity: 0.84 },
   disabled: { opacity: 0.48 },

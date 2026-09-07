@@ -867,6 +867,7 @@ export function ChatPageContent({
     conversationId: activeConversationId,
     messages: activeThreadMessages,
     enabled: Boolean(activeConversationId && !activeThreadMessagesLoading),
+    socketStatus,
     scrollRootRef: threadScrollRef,
     viewerLastReadMessageId,
     markRead: markConversationReadLive,

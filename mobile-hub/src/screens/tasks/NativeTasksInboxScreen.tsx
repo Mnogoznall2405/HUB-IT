@@ -1,3 +1,4 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -6,7 +7,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,

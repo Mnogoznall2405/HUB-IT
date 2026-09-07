@@ -156,14 +156,21 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
       role={replyMessageId ? 'button' : undefined}
       tabIndex={replyMessageId ? 0 : undefined}
       onClick={handleClick}
+      onKeyDown={(event) => {
+        if (!replyMessageId || typeof onScrollToMessage !== 'function') return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        handleClick(event);
+      }}
       className={joinClasses(
-        'mb-2 border-l-[3px] px-3 py-2',
+        'mb-2 border-l-[3px] px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
         compactMobile ? 'rounded-[14px]' : 'rounded-[12px]',
       )}
       style={{
         borderLeftColor: isOwn ? (ui.bubbleOwnPreviewBorder || alpha('#fff', 0.72)) : theme.palette.primary.main,
         backgroundColor: isOwn ? (ui.bubbleOwnPreviewBg || alpha('#fff', 0.08)) : alpha(theme.palette.primary.main, 0.08),
         cursor: replyMessageId ? 'pointer' : 'default',
+        outlineColor: isOwn ? ui.bubbleOwnText : theme.palette.primary.main,
       }}
     >
       <p

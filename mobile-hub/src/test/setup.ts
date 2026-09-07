@@ -31,7 +31,10 @@ jest.mock('expo-crypto', () => {
       this.encodedValue = encodedValue;
     }
 
-    static fromCombined(value: string) { return new MockSealedData(value); }
+    static fromCombined(value: Uint8Array) {
+      if (!(value instanceof Uint8Array)) throw new TypeError('fromCombined requires Uint8Array on Android SDK 57');
+      return new MockSealedData(Buffer.from(value).toString('base64'));
+    }
     async combined() { return this.encodedValue; }
   }
   return {
@@ -56,6 +59,7 @@ jest.mock('expo-router', () => {
       replace: jest.fn(),
       back: jest.fn(),
       navigate: jest.fn(),
+      setParams: jest.fn(),
       canGoBack: jest.fn(() => true),
     },
     Redirect: () => null,
@@ -73,9 +77,11 @@ jest.mock('expo-router', () => {
   };
 });
 
-jest.mock('@react-navigation/native', () => {
+jest.mock('expo-router/react-navigation', () => {
   const React = require('react');
   return {
+    useNavigation: () => ({ dispatch: jest.fn() }),
+    usePreventRemove: jest.fn(),
     useFocusEffect: (callback: () => void | (() => void)) => {
       React.useEffect(() => {
         const cleanup = callback();

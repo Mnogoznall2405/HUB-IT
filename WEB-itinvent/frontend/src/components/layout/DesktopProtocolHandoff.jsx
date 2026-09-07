@@ -58,7 +58,7 @@ export default function DesktopProtocolHandoff() {
       data-testid="desktop-protocol-handoff"
       sx={{
         position: 'sticky',
-        top: 0,
+        top: 'var(--hubit-global-banner-offset, 0px)',
         zIndex: 20,
         mx: { xs: 1, sm: 2 },
         mt: { xs: 1, sm: 1.5 },

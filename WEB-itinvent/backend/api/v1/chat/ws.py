@@ -23,6 +23,21 @@ from backend.services.authorization_service import PERM_CHAT_READ
 router = APIRouter()
 
 
+async def _ws_session_watchdog(websocket: WebSocket, token: Optional[str], *, interval_sec: float) -> None:
+    """Revalidate even if the peer only receives frames or a command is slow."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            await run_in_threadpool(assert_access_token_still_valid, token, touch_session=False)
+        except HTTPException:
+            await websocket.close(code=4401, reason="session expired")
+            return
+        except Exception:
+            # A store outage is a transport failure, not a definitive logout.
+            await websocket.close(code=1011, reason="session validation unavailable")
+            return
+
+
 async def _ws_post_connect_bootstrap(
     *,
     connection_id: str,
@@ -68,6 +83,7 @@ async def chat_websocket(websocket: WebSocket):
         return
 
     connection_id = ""
+    session_watchdog = None
     try:
         connection_id, first_connection = await chat_api().chat_realtime.connect(
             websocket, user_id=int(current_user.id)
@@ -98,6 +114,13 @@ async def chat_websocket(websocket: WebSocket):
             return
 
         ws_access_token = extract_websocket_access_token(websocket)
+        session_watchdog = asyncio.create_task(
+            _ws_session_watchdog(
+                websocket, ws_access_token,
+                interval_sec=max(0.1, float(chat_api().CHAT_WS_SESSION_REVALIDATE_SEC)),
+            ),
+            name=f"chat-ws-session:{connection_id}",
+        )
         ws_token_check_counter = 0
         last_token_check_at = time.monotonic()
         while True:
@@ -257,6 +280,9 @@ async def chat_websocket(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        if session_watchdog is not None:
+            session_watchdog.cancel()
+            await asyncio.gather(session_watchdog, return_exceptions=True)
         disconnect_state = chat_api().chat_realtime.disconnect(connection_id)
         if disconnect_state.get("last_connection"):
             try:

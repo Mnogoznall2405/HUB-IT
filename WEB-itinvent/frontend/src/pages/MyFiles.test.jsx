@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -94,8 +94,8 @@ vi.mock('../components/layout/PageShell', () => ({
 }));
 
 vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
-  default: ({ open, title, kind }) => (
-    open ? <div data-testid="document-preview-dialog">{title}:{kind}</div> : null
+  default: ({ open, title, kind, onClose }) => (
+    open ? <div data-testid="document-preview-dialog">{title}:{kind}<button onClick={onClose}>Close preview</button></div> : null
   ),
 }));
 
@@ -139,6 +139,35 @@ function renderPage() {
 import MyFiles from './MyFiles';
 
 describe('MyFiles page', () => {
+  it('does not start another polling request while the previous one is pending', async () => {
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    try {
+      mockListFiles.mockResolvedValue({ items: [{ ...readyFile, status: 'processing' }] });
+      renderPage();
+      await screen.findByText('report.txt');
+      await waitFor(() => expect(intervalSpy.mock.calls.some((call) => call[1] === 4000)).toBe(true));
+      const poll = intervalSpy.mock.calls.find((call) => call[1] === 4000)[0];
+      let finish;
+      mockListFiles.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      act(() => { poll(); poll(); });
+      expect(mockListFiles).toHaveBeenCalledTimes(2);
+      await act(async () => finish({ items: [readyFile] }));
+    } finally {
+      intervalSpy.mockRestore();
+    }
+  });
+  it('does not reopen a closed preview after its download finishes', async () => {
+    let resolveDownload;
+    mockDownloadPreviewContent.mockImplementationOnce(() => new Promise((resolve) => { resolveDownload = resolve; }));
+    mockListFiles.mockResolvedValue({ items: [{ ...readyFile, id: 'pdf-1', download_file_name: 'report.pdf',
+      mime_type: 'application/pdf', download_mime_type: 'application/pdf', preview_kind: 'pdf', preview_available: true, preview_status: 'ready' }] });
+    renderPage();
+    fireEvent.click(await screen.findByTestId('my-files-preview-pdf-1'));
+    await waitFor(() => expect(resolveDownload).toBeTypeOf('function'));
+    fireEvent.click(screen.getByText('Close preview'));
+    await act(async () => resolveDownload({ data: new Blob(['pdf'], { type: 'application/pdf' }), headers: {} }));
+    expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     mockListFiles.mockReset();
     mockGetQuota.mockReset();

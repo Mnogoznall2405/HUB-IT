@@ -1,6 +1,7 @@
-import { router } from 'expo-router';
-import { useMemo, useRef, useState, type ComponentRef } from 'react';
-import { Image, Platform, StyleSheet, Text, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { TextInput as PaperTextInput } from 'react-native-paper';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
+import { AppState, Image, Platform, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../../src/auth/AuthContext';
 import { formatApiError } from '../../src/api/formatError';
 import { filterNavItems, firstNavRoute } from '../../src/navigation/navItems';
@@ -15,6 +16,8 @@ export default function LoginScreen() {
   const tokens = useAppFluentTokens();
   const styles = useMemo(() => createStyles(tokens), [tokens]);
   const {
+    sessionRestoreState,
+    retrySessionRestore,
     biometricEnabled,
     login,
     hasPermission,
@@ -23,14 +26,36 @@ export default function LoginScreen() {
   } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [helpVisible, setHelpVisible] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [biometricSubmitting, setBiometricSubmitting] = useState(false);
   const [invalidField, setInvalidField] = useState<'username' | 'password' | ''>('');
   const usernameRef = useRef<ComponentRef<typeof HubTextField>>(null);
   const passwordRef = useRef<ComponentRef<typeof HubTextField>>(null);
+  const attemptInProgressRef = useRef(false);
+  const restoreVisible = useRef(false);
+  useEffect(() => {
+    if (sessionRestoreState === 'unavailable' || sessionRestoreState === 'checking') restoreVisible.current = true;
+    if (!restoreVisible.current || !user || attemptInProgressRef.current) return;
+    restoreVisible.current = false;
+    const home = firstNavRoute(filterNavItems((permission) => user.permissions.includes(permission), user.role));
+    router.replace(postAuthDestination(Platform.OS, home) as never);
+  }, [sessionRestoreState, user]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') setPasswordVisible(false);
+    });
+    return () => subscription.remove();
+  }, []);
+  useFocusEffect(useCallback(() => () => setPasswordVisible(false), []));
 
   const onBiometricLogin = async () => {
+    if (attemptInProgressRef.current) return;
+    attemptInProgressRef.current = true;
+    setPasswordVisible(false);
     setError('');
     setBiometricSubmitting(true);
     try {
@@ -45,11 +70,13 @@ export default function LoginScreen() {
     } catch (e: unknown) {
       setError(formatApiError(e, 'Не удалось войти по отпечатку'));
     } finally {
+      attemptInProgressRef.current = false;
       setBiometricSubmitting(false);
     }
   };
 
   const onSubmit = async () => {
+    if (attemptInProgressRef.current) return;
     if (!username.trim()) {
       setInvalidField('username');
       setError('Введите логин');
@@ -63,6 +90,8 @@ export default function LoginScreen() {
       return;
     }
     setInvalidField('');
+    attemptInProgressRef.current = true;
+    setPasswordVisible(false);
     setError('');
     setSubmitting(true);
     try {
@@ -86,6 +115,7 @@ export default function LoginScreen() {
     } catch (e: unknown) {
       setError(formatApiError(e, 'Не удалось войти'));
     } finally {
+      attemptInProgressRef.current = false;
       setSubmitting(false);
     }
   };
@@ -103,10 +133,20 @@ export default function LoginScreen() {
         <Text style={styles.title} accessibilityRole="header">HUB-IT</Text>
         <Text style={styles.subtitle}>Внутренний портал · hubit.zsgp.ru</Text>
       </View>
+      {sessionRestoreState === 'unavailable' || sessionRestoreState === 'checking' || sessionRestoreState === 'expired' ? <HubCard>
+        <Text accessibilityRole="alert" style={{ color: tokens.textPrimary }}>
+          {sessionRestoreState === 'expired' ? 'Сессия завершена. Войдите снова.' : sessionRestoreState === 'checking' ? 'Проверяем сохранённый вход…' : 'Не удалось проверить сохранённый вход. Проверьте подключение и повторите.'}
+        </Text>
+        {sessionRestoreState !== 'expired' ? <HubButton
+          onPress={retrySessionRestore}
+          disabled={sessionRestoreState === 'checking' || submitting || biometricSubmitting}
+        >Повторить проверку входа</HubButton> : null}
+      </HubCard> : null}
       <HubCard style={styles.card}>
         <HubTextField
           ref={usernameRef}
           label="Логин"
+          editable={!submitting && !biometricSubmitting}
           value={username}
           onChangeText={(value) => {
             setUsername(value);
@@ -131,7 +171,17 @@ export default function LoginScreen() {
             setPassword(value);
             if (invalidField === 'password') setInvalidField('');
           }}
-          secureTextEntry
+          secureTextEntry={!passwordVisible}
+          editable={!submitting && !biometricSubmitting}
+          autoCorrect={false}
+          autoCapitalize="none"
+          right={<PaperTextInput.Icon
+            icon={passwordVisible ? 'eye-off-outline' : 'eye-outline'}
+            accessibilityLabel={passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
+            forceTextInputFocus={false}
+            disabled={submitting || biometricSubmitting}
+            onPress={() => setPasswordVisible((visible) => !visible)}
+          />}
           autoComplete="current-password"
           textContentType="password"
           returnKeyType="done"
@@ -147,9 +197,9 @@ export default function LoginScreen() {
         ) : null}
         <HubButton
           mode="contained"
-          onPress={onSubmit}
+          onPress={() => { void onSubmit(); }}
           loading={submitting}
-          disabled={submitting}
+          disabled={submitting || biometricSubmitting}
           style={styles.button}
         >
           Войти
@@ -164,7 +214,7 @@ export default function LoginScreen() {
             <HubButton
               mode="outlined"
               icon="fingerprint"
-              onPress={onBiometricLogin}
+              onPress={() => { void onBiometricLogin(); }}
               loading={biometricSubmitting}
               disabled={submitting || biometricSubmitting}
               style={styles.button}
@@ -176,6 +226,20 @@ export default function LoginScreen() {
               Без интернета откроются только ранее загруженные данные в режиме чтения.
             </Text>
           </>
+        ) : null}
+        <HubButton
+          mode="text"
+          accessibilityState={{ expanded: helpVisible }}
+          onPress={() => { setPasswordVisible(false); setHelpVisible((visible) => !visible); }}
+        >
+          Не удаётся войти?
+        </HubButton>
+        {helpVisible ? (
+          <View style={styles.help}>
+            <Text style={styles.helpText}>Проверьте логин, раскладку клавиатуры и регистр букв в пароле.</Text>
+            <Text style={styles.helpText}>Если сервер недоступен, проверьте интернет и доступ к корпоративной сети.</Text>
+            <Text style={styles.helpText}>Если забыли пароль или потеряли доступ к аутентификатору, обратитесь к администратору HUB-IT. Не передавайте пароль и одноразовые коды.</Text>
+          </View>
         ) : null}
       </HubCard>
     </HubScreen>
@@ -205,5 +269,7 @@ const createStyles = (tokens: FluentTokens) => StyleSheet.create({
     marginTop: 8,
     textAlign: 'center',
   },
+  help: { gap: 8, marginTop: 8 },
+  helpText: { color: tokens.textSecondary, fontSize: 14, lineHeight: 21 },
   error: { color: tokens.error, marginBottom: 8 },
 });

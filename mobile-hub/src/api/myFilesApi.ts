@@ -102,15 +102,15 @@ export function normalizeMyFile(value: unknown): MyFileRecord | null {
   };
 }
 
-export async function listMyFiles(): Promise<MyFileRecord[]> {
-  const { data } = await apiClient.get('/my-files');
+export async function listMyFiles(signal?: AbortSignal): Promise<MyFileRecord[]> {
+  const { data } = await apiClient.get('/my-files', { signal });
   return (Array.isArray(asRecord(data).items) ? asRecord(data).items as unknown[] : [])
     .map(normalizeMyFile)
     .filter((item): item is MyFileRecord => Boolean(item));
 }
 
-export async function getMyFilesQuota(): Promise<MyFilesQuota> {
-  const { data } = await apiClient.get('/my-files/quota');
+export async function getMyFilesQuota(signal?: AbortSignal): Promise<MyFilesQuota> {
+  const { data } = await apiClient.get('/my-files/quota', { signal });
   const row = asRecord(data);
   const used = Math.max(0, asNumber(row.used_bytes));
   const limit = Math.max(0, asNumber(row.limit_bytes));

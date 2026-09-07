@@ -232,6 +232,7 @@ it('restores a previously opened 1C DO task card offline', async () => {
 
   const view = await render(<NativeDocflowDetailScreen taskRef={task.ref} />);
 
+  await fireEvent.press(await view.findByRole('button', { name: 'Связанный документ' }));
   expect(await view.findByText('Договор №7')).toBeTruthy();
   expect(docflowApi.getDocflowTask).not.toHaveBeenCalled();
 });
@@ -279,9 +280,11 @@ it('tests and saves personal 1C credentials in the native protected form', async
 
 it('loads detail progressively and opens its original file natively', async () => {
   const view = await render(<NativeDocflowDetailScreen taskRef={task.ref} />);
+  await fireEvent.press(await view.findByRole('button', { name: 'Связанный документ' }));
   await waitFor(() => expect(view.getByText('Договор №7')).toBeTruthy());
   expect(docflowApi.getDocflowTask).toHaveBeenNthCalledWith(1, task.ref, false);
   expect(docflowApi.getDocflowTask).toHaveBeenNthCalledWith(2, task.ref, true);
+  await fireEvent.press(view.getByRole('button', { name: /^Файлы ·/ }));
   await act(async () => {
     fireEvent.press(view.getByTestId('native-docflow-file-open-file-1'));
     await Promise.resolve();

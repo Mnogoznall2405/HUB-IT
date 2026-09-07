@@ -45,6 +45,25 @@ upload_*, attachment_media, realtime   Infra (existing)
 | `api/v1/chat/link_preview.py` | Thin HTTP route → `link_preview_service` |
 | `api/v1/chat/_common.py` | Re-exports from `realtime_publisher` (backward compat for tests) |
 
+## WebSocket session and PostgreSQL relay guarantees
+
+- A per-connection watchdog revalidates the session independently of inbound
+  commands and is cancelled when the endpoint exits. Timer checks do not touch
+  the session idle deadline; command checks retain their existing activity policy.
+  Revoked/expired credentials close with `4401`; an unavailable validation store
+  closes with `1011` so clients can reconnect without treating it as logout.
+- Relay publishers take a transaction-scoped `SHARE ROW EXCLUSIVE` table lock
+  before allocating relay IDs. This serializes write commits across processes,
+  allowing listeners to safely advance their `id > cursor` watermark. Readers
+  remain concurrent. Every relay publisher must run the updated implementation;
+  mixed old publishers can still produce commit-order gaps between themselves.
+  Batches amortize the lock cost; measure publish p95/p99 and throughput on an
+  isolated PostgreSQL instance before sizing production capacity.
+- Production publisher/presence reconnects only validate required migrated
+  tables and columns. Apply the existing Chat Alembic migrations before starting
+  runtime. The existing non-production schema bootstrap remains available when
+  the application is explicitly configured for development.
+
 ## Task canvas realtime
 
 Совместная доска задачи использует существующий Chat realtime runtime и не требует отдельного процесса:
@@ -55,6 +74,19 @@ upload_*, attachment_media, realtime   Infra (existing)
 - долговременное состояние и optimistic revision остаются в Hub REST API и `hub_task_canvases`.
 
 Комнаты имеют вид `task-canvas:<task_id>`. Протокол передаёт presence/cursor как volatile-события, а сцены объединяются на клиентах через Excalidraw reconciliation. После reconnect клиент сначала получает сохранённый snapshot, затем запрашивает актуальную сцену у участников комнаты. Если realtime недоступен, доска продолжает работать через REST-автосохранение без курсоров.
+
+## Повтор пересылки
+
+`POST /chat/conversations/{conversation_id}/messages/forward` принимает необязательный
+`client_message_id` длиной до 128 символов. Клиент сохраняет ключ для каждого элемента
+текущего пакета и повторно использует его при потере ответа; уже подтверждённые элементы
+не отправляет заново. Новый намеренный пакет получает новые ключи.
+
+Проверка участия выполняется после блокировки conversation. Повтор с тем же ключом
+для того же отправителя и conversation возвращает существующее сообщение без повторных
+вложений и уведомлений. Используется существующее поле и ограничение уникальности
+`client_message_id`; новая миграция не требуется. Старые клиенты без ключа сохраняют
+прежнее поведение пересылки.
 
 ## Regression gate
 

@@ -38,7 +38,7 @@ export const PERSONAL_SETTINGS_SECTIONS: AccountSection[] = [
   {
     key: 'security',
     label: 'Безопасность',
-    description: '2FA, backup-коды и устройства',
+    description: '2FA, резервные коды и устройства',
     icon: 'shield-outline',
     nativeHref: '/(shell)/menu/settings/security',
   },

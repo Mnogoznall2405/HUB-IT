@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { Animated, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import type { ChatMessage } from '../../api/types';
 import {
   placeMessageActionMenu,
@@ -58,6 +59,18 @@ export function MessageActionsSheet({
 }: Props) {
   const { styles } = useChatStyles(createStyles);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const reduceMotion = useReducedMotion();
+  const opacity = useRef(new Animated.Value(1)).current;
+  const overlayRef = useRef<View>(null);
+  const [viewport, setViewport] = useState({ x: 0, y: 0, width: windowWidth, height: windowHeight });
+  useEffect(() => {
+    if (!message || reduceMotion) { opacity.setValue(1); return; }
+    opacity.setValue(0);
+    const animation = Animated.timing(opacity, { toValue: 1, duration: 160, useNativeDriver: true });
+    animation.start();
+    return () => animation.stop();
+  }, [message?.id, opacity, reduceMotion]);
   const [menuSize, setMenuSize] = useState({ width: Math.min(320, windowWidth - 24), height: 360 });
   const [reactionsExpanded, setReactionsExpanded] = useState(false);
   const visibleReactions = reactionsExpanded
@@ -77,11 +90,13 @@ export function MessageActionsSheet({
   );
   const canDelete = Boolean(isAvailable && isOwn && message?.kind !== 'system');
   const canReply = Boolean(isAvailable && message?.kind !== 'system');
-  const padding = Math.max(12, initialWindowMetrics?.insets.top || 0, initialWindowMetrics?.insets.bottom || 0);
+  const padding = Math.max(12, insets?.top || 0, insets?.bottom || 0);
+  const availableHeight = Math.max(48, viewport.height - padding * 2);
+  const menuWidth = Math.min(320, Math.max(48, viewport.width - padding * 2));
   const position = placeMessageActionMenu({
-    anchor,
-    viewport: { width: windowWidth, height: windowHeight },
-    menu: menuSize,
+    anchor: anchor ? { ...anchor, x: anchor.x - viewport.x, y: anchor.y - viewport.y } : null,
+    viewport,
+    menu: { width: menuWidth, height: Math.min(menuSize.height, availableHeight) },
     align: isOwn ? 'end' : 'start',
     padding,
   });
@@ -100,15 +115,20 @@ export function MessageActionsSheet({
   if (!message) return null;
 
   return (
-    <View style={styles.overlay} accessibilityViewIsModal>
+    <View testID="chat-message-actions-viewport" ref={overlayRef} style={styles.overlay} accessibilityViewIsModal onLayout={(event) => {
+      const { width, height } = event.nativeEvent.layout;
+      setViewport((current) => ({ ...current, width, height }));
+      overlayRef.current?.measureInWindow((x, y) => setViewport((current) => ({ ...current, x, y })));
+    }}>
       <Pressable
         style={StyleSheet.absoluteFill}
         onPress={close}
         accessibilityRole="button"
         accessibilityLabel="Закрыть действия с сообщением"
       />
-      <View
-        style={[styles.card, { top: position.top, left: position.left, width: menuSize.width }]}
+      <Animated.View
+        testID="chat-message-actions-card"
+        style={[styles.card, { top: position.top, left: position.left, width: menuWidth, maxHeight: availableHeight, opacity, transform: [{ scale: opacity.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] }]}
         onLayout={(event) => {
           const height = event.nativeEvent.layout.height;
           if (Math.abs(height - menuSize.height) > 4) {
@@ -116,6 +136,7 @@ export function MessageActionsSheet({
           }
         }}
       >
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }}>
         <Text style={styles.title}>Действия с сообщением</Text>
         {isAvailable ? (
           <View
@@ -160,7 +181,7 @@ export function MessageActionsSheet({
             </Pressable>
           </View>
         ) : null}
-        <ScrollView style={styles.cardScroll}>
+        <View style={styles.cardScroll}>
           {canReply ? (
             <ActionButton label="Ответить" icon="↩" onPress={() => run(onReply)} />
           ) : null}
@@ -207,8 +228,9 @@ export function MessageActionsSheet({
             <Text style={styles.unavailable}>Для этого сообщения действия недоступны</Text>
           ) : null}
           <ActionButton label="Отмена" onPress={close} />
+        </View>
         </ScrollView>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -258,7 +280,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     paddingBottom: 12,
     backgroundColor: chatTokens.panelBg,
   },
-  cardScroll: { maxHeight: 360 },
+  cardScroll: {},
   title: {
     marginHorizontal: 8,
     marginBottom: 10,

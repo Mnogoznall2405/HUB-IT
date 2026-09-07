@@ -1,5 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
+import { Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as departmentsApi from '../../api/departmentsApi';
 import * as taskApi from '../../api/taskApi';
@@ -285,6 +286,7 @@ describe('Native Tasks screens', () => {
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
 
     await waitFor(() => expect(view.getByText('Установить обновления и проверить сервисы.')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-task-tab-discussion'));
     expect(view.getByText('Сохранённый комментарий')).toBeTruthy();
     expect(view.getByText(/Копия от/)).toBeTruthy();
     expect(taskApi.getTask).not.toHaveBeenCalled();
@@ -295,10 +297,10 @@ describe('Native Tasks screens', () => {
     await waitFor(() => {
       expect(view.getByText('Установить обновления и проверить сервисы.')).toBeTruthy();
     });
-    expect(view.getByTestId('native-task-action-start')).toBeTruthy();
+    expect(view.getByTestId('native-task-primary-start')).toBeTruthy();
     expect(view.queryByTestId('native-task-action-approve')).toBeNull();
     await act(async () => {
-      fireEvent.press(view.getByTestId('native-task-action-start'));
+      fireEvent.press(view.getByTestId('native-task-primary-start'));
     });
     await waitFor(() => expect(view.getByTestId('native-task-action-confirm')).toBeTruthy());
     await act(async () => {
@@ -310,8 +312,35 @@ describe('Native Tasks screens', () => {
     });
   });
 
+  it('opens secondary task actions separately and keeps confirmation cancellable', async () => {
+    (taskApi.getTask as jest.Mock).mockResolvedValueOnce({ ...detailTask, capabilities: { can_review: true } });
+    const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+    await waitFor(() => expect(view.getByTestId('native-task-primary-approve')).toBeTruthy());
+    expect(view.queryByTestId('native-task-action-reject')).toBeNull();
+    await fireEvent.press(view.getByTestId('native-task-actions-more'));
+    expect(view.queryByTestId('native-task-action-approve')).toBeNull();
+    await fireEvent.press(view.getByTestId('native-task-action-reject'));
+    expect(view.getByTestId('native-task-action-confirm')).toBeTruthy();
+    expect(taskApi.reviewTask).not.toHaveBeenCalled();
+    await fireEvent.press(view.getByTestId('account-subpage-back'));
+    expect(view.queryByTestId('native-task-action-confirm')).toBeNull();
+    expect(taskApi.reviewTask).not.toHaveBeenCalled();
+  });
+
+  it('mounts a bounded part of a large legacy discussion', async () => {
+    (taskApi.getTaskComments as jest.Mock).mockResolvedValue(Array.from({ length: 1000 }, (_, i) => ({ id: `large-${i}`, body: `Synthetic comment ${i}`, full_name: 'Test author' })));
+    const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+    await waitFor(() => expect(view.getByTestId('native-task-tab-discussion')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-task-tab-discussion'));
+    await waitFor(() => expect(view.getByText('Synthetic comment 0')).toBeTruthy());
+    expect(view.getAllByText(/^Synthetic comment /).length).toBeLessThan(100);
+    expect(view.queryByText('Synthetic comment 999')).toBeNull();
+  });
+
   it('adds a comment from the native detail composer', async () => {
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+    await waitFor(() => expect(view.getByTestId('native-task-tab-discussion')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-task-tab-discussion'));
     await waitFor(() => expect(view.getByText('Проверьте резервную копию')).toBeTruthy());
     expect(view.getByTestId('native-task-detail-keyboard-host')).toBeTruthy();
     await act(async () => {
@@ -328,6 +357,8 @@ describe('Native Tasks screens', () => {
 
   it('shows status history and copies a canonical task link', async () => {
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+    await waitFor(() => expect(view.getByRole('button', { name: /^История статусов/ })).toBeTruthy());
+    await fireEvent.press(view.getByRole('button', { name: /^История статусов/ }));
     await waitFor(() => expect(view.getByText('Новая → В работе')).toBeTruthy());
     await act(async () => { fireEvent.press(view.getByTestId('native-task-copy-link')); });
     expect(Clipboard.setStringAsync).toHaveBeenCalledWith('https://hubit.zsgp.ru/tasks?task=task-1');
@@ -420,6 +451,8 @@ describe('Native Tasks screens', () => {
       capabilities: { ...detailTask.capabilities, can_upload_files: true },
     });
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+    await waitFor(() => expect(view.getByTestId('native-task-tab-files')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-task-tab-files'));
     await waitFor(() => expect(view.getByTestId('native-task-attachment-upload')).toBeTruthy());
     await act(async () => {
       fireEvent.press(view.getByTestId('native-task-attachment-upload'));
@@ -437,8 +470,8 @@ describe('Native Tasks screens', () => {
     (taskApi.getTask as jest.Mock).mockResolvedValueOnce(submitReady);
     (taskApi.submitTask as jest.Mock).mockResolvedValue({ ...submitReady, status: 'review', capabilities: {} });
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
-    await waitFor(() => expect(view.getByTestId('native-task-action-submit')).toBeTruthy());
-    await act(async () => { fireEvent.press(view.getByTestId('native-task-action-submit')); });
+    await waitFor(() => expect(view.getByTestId('native-task-primary-submit')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-primary-submit')); });
     await act(async () => { fireEvent.press(view.getByTestId('native-task-submit-file')); });
     await waitFor(() => expect(view.getByText(/report\.pdf/)).toBeTruthy());
     await act(async () => { fireEvent.press(view.getByTestId('native-task-action-confirm')); });
@@ -452,6 +485,8 @@ describe('Native Tasks screens', () => {
     });
     const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
 
+    await waitFor(() => expect(view.getByTestId('native-task-tab-discussion')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-task-tab-discussion'));
     await waitFor(() => expect(view.getByTestId('native-task-open-discussion')).toBeTruthy());
     expect(taskApi.getTaskComments).not.toHaveBeenCalled();
     await act(async () => {
@@ -463,6 +498,37 @@ describe('Native Tasks screens', () => {
       pathname: '/(shell)/chat/[conversationId]',
       params: { conversationId: 'task-conversation-1' },
     });
+  });
+
+  it('does not treat the default project as an edit but protects an unfinished checklist item', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const view = await render(<NativeTaskCreateScreen />);
+    await view.findByTestId('native-task-assignee-7');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(alert).not.toHaveBeenCalled();
+    jest.mocked(router.back).mockClear();
+    await fireEvent.press(view.getByText('Чек-лист (0)'));
+    await fireEvent.changeText(view.getByTestId('native-task-create-checklist-input'), 'Проверить кабель');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    alert.mockRestore();
+  });
+
+  it('protects unfinished task input and lets the user stay or explicitly discard it', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const view = await render(<NativeTaskCreateScreen />);
+    await view.findByTestId('native-task-assignee-7');
+    await fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Несохранённая задача');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    await act(async () => alert.mock.calls[0][2]?.[0].onPress?.());
+    expect(view.getByTestId('native-task-create-title').props.value).toBe('Несохранённая задача');
+    await fireEvent.press(view.getByLabelText('Назад'));
+    await act(async () => alert.mock.calls[1][2]?.[1].onPress?.());
+    expect(router.back).toHaveBeenCalledTimes(1);
+    alert.mockRestore();
   });
 
   it('creates a task with the real project and assignee contract', async () => {
@@ -492,6 +558,9 @@ describe('Native Tasks screens', () => {
   it('creates a task with controller, observer, object, visibility, checklist and file', async () => {
     setAuth(['tasks.read', 'tasks.create', 'settings.read']);
     const view = await render(<NativeTaskCreateScreen />);
+    for (const title of ['Контролёр', 'Наблюдатели', 'Объект', 'Отдел', 'Чек-лист (0)', 'Файлы (0)']) {
+      await fireEvent.press(view.getByRole('button', { name: title }));
+    }
     await waitFor(() => expect(view.getByTestId('native-task-controller-8')).toBeTruthy());
     await act(async () => {
       fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Расширенная задача');
@@ -522,6 +591,7 @@ describe('Native Tasks screens', () => {
   it('sends a custom email deadline reminder and department scope through the confirmed create contract', async () => {
     setAuth(['tasks.read', 'tasks.create', 'settings.read']);
     const view = await render(<NativeTaskCreateScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Отдел' }));
     await waitFor(() => expect(view.getByTestId('native-task-department-department-1')).toBeTruthy());
     await act(async () => {
       fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Задача с напоминанием');
@@ -529,6 +599,7 @@ describe('Native Tasks screens', () => {
       fireEvent.press(view.getByTestId('native-task-assignee-7'));
       fireEvent.press(view.getByTestId('native-task-department-department-1'));
     });
+    await fireEvent.press(view.getByRole('button', { name: 'Видимость' }));
     await waitFor(() => expect(view.getByTestId('native-task-email-reminder-6')).toBeTruthy());
     await act(async () => {
       fireEvent.press(view.getByTestId('native-task-email-reminder-6'));
@@ -562,6 +633,7 @@ describe('Native Tasks screens', () => {
 
   it('hides object creation without tasks.write permission', async () => {
     const createOnly = await render(<NativeTaskCreateScreen />);
+    await fireEvent.press(createOnly.getByRole('button', { name: 'Объект' }));
     await waitFor(() => expect(createOnly.getByText('Серверная')).toBeTruthy());
     expect(createOnly.queryByTestId('native-task-new-object-name')).toBeNull();
   });
@@ -569,6 +641,7 @@ describe('Native Tasks screens', () => {
   it('creates and selects an object with tasks.write permission', async () => {
     setAuth(['tasks.read', 'tasks.write']);
     const writer = await render(<NativeTaskCreateScreen />);
+    await fireEvent.press(writer.getByRole('button', { name: 'Объект' }));
     await waitFor(() => expect(writer.getByTestId('native-task-new-object-name')).toBeTruthy());
     await act(async () => {
       fireEvent.changeText(writer.getByTestId('native-task-new-object-name'), 'Новая серверная');

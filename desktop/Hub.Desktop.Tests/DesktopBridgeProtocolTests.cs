@@ -9,6 +9,20 @@ namespace Hub.Desktop.Tests;
 
 public sealed class DesktopBridgeProtocolTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void NotificationResultPreservesIdAndActualDeliveryOutcome(bool accepted)
+    {
+        using var document = JsonDocument.Parse(DesktopBridgeProtocol.CreateNotificationResultMessage("chat:ack", accepted));
+        var root = document.RootElement;
+        Assert.Equal(4, root.EnumerateObject().Count());
+        Assert.Equal("notification.result", root.GetProperty("type").GetString());
+        Assert.Equal(1, root.GetProperty("version").GetInt32());
+        Assert.Equal("chat:ack", root.GetProperty("id").GetString());
+        Assert.Equal(accepted, root.GetProperty("accepted").GetBoolean());
+    }
+
     [Fact]
     public void AcceptsExactReadyMessageForCurrentVersion()
     {

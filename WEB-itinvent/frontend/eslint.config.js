@@ -10,6 +10,8 @@ export default [
   js.configs.recommended,
   {
     files: ['src/components/chat/**/*.{js,jsx}'],
+    // Tests may exercise page models; the production dependency boundary remains strict.
+    ignores: ['**/*.test.{js,jsx}'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [{

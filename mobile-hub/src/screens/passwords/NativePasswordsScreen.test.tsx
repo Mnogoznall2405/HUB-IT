@@ -8,11 +8,12 @@ import { NativePasswordsScreen } from './NativePasswordsScreen';
 
 let mockPermissions = ['passwords.read', 'passwords.write'];
 let mockOfflineMode = false;
+let mockUserId = 7;
 let mockBiometricEnabled = true;
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 7, role: 'operator', is_2fa_enabled: true },
+    user: { id: mockUserId, role: 'operator', is_2fa_enabled: true },
     biometricEnabled: mockBiometricEnabled,
     offlineMode: mockOfflineMode,
     hasPermission: (permission: string) => mockPermissions.includes(permission),
@@ -51,6 +52,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockPermissions = ['passwords.read', 'passwords.write'];
   mockOfflineMode = false;
+  mockUserId = 7;
   mockBiometricEnabled = true;
   (passwordsApi.listPasswordVaultEntries as jest.Mock).mockResolvedValue({
     items: [entry], groups: ['Серверы'], tags: ['prod'], unlocked_until: '',
@@ -205,4 +207,66 @@ it('clears the revealed secret as soon as the app leaves the foreground', async 
   expect(view.queryByTestId('native-passwords-secret')).toBeNull();
   await view.unmount();
   appStateSpy.mockRestore();
+});
+
+it('shows a countdown and removes it when the password expires', async () => {
+  const view = await render(<NativePasswordsScreen />);
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  jest.useFakeTimers();
+  try {
+    await fireEvent.press(view.getByText('Показать'));
+    expect(view.getByText('Скроется через 30 с')).toBeTruthy();
+    await act(async () => { jest.advanceTimersByTime(1000); });
+    expect(view.getByText('Скроется через 29 с')).toBeTruthy();
+    await act(async () => { jest.advanceTimersByTime(29000); });
+    expect(view.queryByLabelText('Пароль показан')).toBeNull();
+    expect(view.queryByText(/Скроется через/)).toBeNull();
+    await view.unmount();
+  } finally { jest.useRealTimers(); }
+});
+
+it('does not copy a late secret response after going to background', async () => {
+  let background!: (state: AppStateStatus) => void;
+  const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => { background = listener; return { remove: jest.fn() } as never; });
+  let finish!: (value: unknown) => void;
+  (passwordsApi.revealPasswordVaultEntry as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const view = await render(<NativePasswordsScreen />);
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  await fireEvent.press(view.getByText('Копировать'));
+  await act(async () => { background('background'); });
+  await act(async () => { finish({ password: 'synthetic-late-value', unlocked_until: new Date(Date.now() + 300000).toISOString() }); });
+  expect(Clipboard.setStringAsync).not.toHaveBeenCalled();
+  await view.unmount();
+  spy.mockRestore();
+});
+
+it('does not start server unlock from biometric completion after background', async () => {
+  let background!: (state: AppStateStatus) => void;
+  const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => { background = listener; return { remove: jest.fn() } as never; });
+  let finish!: (value: unknown) => void;
+  (unlockBiometricLogin as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const view = await render(<NativePasswordsScreen />);
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  await fireEvent.press(view.getByText('Показать'));
+  await act(async () => { background('background'); });
+  await act(async () => { finish({ version: 2, user: { id: 7 }, renewalToken: 'synthetic-credential' }); });
+  expect(passwordsApi.unlockPasswordVaultWithBiometrics).not.toHaveBeenCalled();
+  expect(passwordsApi.revealPasswordVaultEntry).not.toHaveBeenCalled();
+  await view.unmount();
+  spy.mockRestore();
+});
+
+it.each(['user', 'write-permission'])('rejects a late copy response after changing %s', async (scope) => {
+  let finish!: (value: unknown) => void;
+  (passwordsApi.revealPasswordVaultEntry as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const view = await render(<NativePasswordsScreen />);
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  await fireEvent.press(view.getByText('Копировать'));
+  if (scope === 'user') mockUserId = 8;
+  else mockPermissions = ['passwords.read'];
+  await view.rerender(<NativePasswordsScreen />);
+  await act(async () => { finish({ password: 'synthetic-late-value', unlocked_until: new Date(Date.now() + 300000).toISOString() }); });
+  expect(Clipboard.setStringAsync).not.toHaveBeenCalled();
+  expect(view.queryByTestId('native-passwords-secret')).toBeNull();
+  await view.unmount();
 });

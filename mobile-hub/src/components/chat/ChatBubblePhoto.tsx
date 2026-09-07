@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { StyleSheet, View, type ImageLoadEventData, type NativeSyntheticEvent } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import {
   resolveChatPhotoFrame,
 } from '../../chat/chatBubbleLayout';
@@ -20,29 +19,16 @@ export function ChatBubblePhoto({
   children?: React.ReactNode;
 }) {
   const { styles } = useChatStyles(createStyles);
-  const [frame, setFrame] = useState(() => resolveChatPhotoFrame({ maxWidth, maxHeight }));
-
-  useEffect(() => {
-    setFrame(resolveChatPhotoFrame({ maxWidth, maxHeight }));
-  }, [maxHeight, maxWidth, uri]);
-
-  const handleLoad = (event: NativeSyntheticEvent<ImageLoadEventData>) => {
-    const source = event.nativeEvent?.source;
-    setFrame(resolveChatPhotoFrame({
-      maxWidth,
-      maxHeight,
-      sourceWidth: source?.width,
-      sourceHeight: source?.height,
-    }));
-  };
+  // Reserve the same frame before loading and after confirmation of an upload.
+  // Full-size viewing remains available by tapping the attachment.
+  const frame = resolveChatPhotoFrame({ maxWidth, maxHeight });
 
   return (
-    <View style={[styles.frame, { width: frame.width, height: frame.height, borderRadius: radius }]}>
+    <View testID="chat-photo-frame" style={[styles.frame, { width: frame.width, height: frame.height, borderRadius: radius }]}>
       <ChatAuthenticatedImage
         uri={uri}
         style={styles.image}
-        resizeMode="cover"
-        onLoad={handleLoad}
+        resizeMode="contain"
         accessible={false}
       />
       {children}

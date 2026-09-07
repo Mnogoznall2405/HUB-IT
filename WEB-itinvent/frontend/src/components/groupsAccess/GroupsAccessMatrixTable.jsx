@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo, useRef } from 'react';
-import { Box, Chip, Paper, Typography } from '@mui/material';
+import { Box, ButtonBase, Chip, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { FixedSizeGrid as VirtualGrid } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
@@ -270,10 +270,16 @@ const GroupsAccessMatrixTable = ({
                 return (
                   <Box
                     key={groupDn || group.cn}
+                    component={ButtonBase}
+                    aria-label={`Выбрать группу ${title}`}
+                    aria-pressed={Boolean(selected)}
                     onClick={() => onSelectGroup?.(group)}
                     title={title}
                     sx={{
                       width: columnWidth,
+                      display: 'block',
+                      textAlign: 'left',
+                      '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
                       flexShrink: 0,
                       px: 0.5,
                       py: 0.5,

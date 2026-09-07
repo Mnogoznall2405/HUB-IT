@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { KeyboardAvoidingView, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
+import { useChatKeyboardMotion } from '../../chat/useChatKeyboardMotion';
 
 export function ChatKeyboardAvoidingHost({
   children,
@@ -9,6 +10,7 @@ export function ChatKeyboardAvoidingHost({
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
+  useChatKeyboardMotion();
   return (
     <KeyboardAvoidingView
       testID="chat-keyboard-avoiding"

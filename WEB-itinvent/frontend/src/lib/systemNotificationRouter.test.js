@@ -60,9 +60,27 @@ describe('systemNotificationRouter', () => {
     window.Notification = MockNotification;
   });
 
+  it.each([true, false])('records native delivery only after host confirmation: %s', (accepted) => {
+    desktopBridgeMocks.available = true;
+    let finish;
+    desktopBridgeMocks.show.mockImplementation(({ onResult }) => { finish = onResult; return true; });
+    const envelope = createEnvelope({ id: `task:confirmation-${accepted}` });
+    routeSystemNotification(envelope);
+    expect(hasDeliveredSystemNotification(envelope.id)).toBe(false);
+    expect(routeSystemNotification(envelope)).toBeNull();
+    finish(accepted);
+    expect(hasDeliveredSystemNotification(envelope.id)).toBe(accepted);
+    if (!accepted) {
+      desktopBridgeMocks.show.mockReturnValue(false);
+      permission = 'denied';
+      routeSystemNotification(envelope);
+      expect(desktopBridgeMocks.show).toHaveBeenCalledTimes(2);
+    }
+  });
+
   it('sends only the bridge v1 minimum and deduplicates the same id', () => {
     desktopBridgeMocks.available = true;
-    desktopBridgeMocks.show.mockReturnValue(true);
+    desktopBridgeMocks.show.mockImplementation(({ onResult }) => { onResult(true); return true; });
     const envelope = createEnvelope();
 
     expect(routeSystemNotification(envelope)).toEqual({
@@ -76,6 +94,7 @@ describe('systemNotificationRouter', () => {
       title: 'Новая задача',
       body: 'Проверьте комментарий',
       route: '/tasks?task=task-1&task_tab=comments',
+      onResult: expect.any(Function),
     });
     expect(hasDeliveredSystemNotification('task:task-1')).toBe(true);
   });

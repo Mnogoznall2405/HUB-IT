@@ -45,12 +45,13 @@ beforeEach(() => {
 
 it('loads freshness and debounced nomenclature search from the bounded catalog API', async () => {
   const view = await render(<NativeWarehouse1CScreen />);
-  await waitFor(() => expect(view.getByText('Каталог актуален')).toBeTruthy());
+  await waitFor(() => expect(view.getByText(/Каталог актуален/)).toBeTruthy());
   await fireEvent.changeText(view.getByTestId('native-warehouse-1c-search'), ' мон ');
   await waitFor(() => expect(view.getByText('Монитор')).toBeTruthy());
   expect(warehouseApi.searchWarehouse1CCatalog).toHaveBeenCalledWith(expect.objectContaining({
     kind: 'nomenclature', query: 'мон', limit: 30, signal: expect.anything(),
   }));
+  await fireEvent.press(view.getByRole('button', { name: 'О каталоге' }));
   expect(view.getByText('Номенклатура: 120 · Склады: 7')).toBeTruthy();
   await view.unmount();
 });
@@ -82,7 +83,7 @@ it('shows stale and incomplete catalog states without calling them empty', async
     ...status, status: 'incomplete', complete: false, warehouses_truncated: true,
   });
   const view = await render(<NativeWarehouse1CScreen />);
-  await waitFor(() => expect(view.getByText('Каталог загружен не полностью')).toBeTruthy());
+  await waitFor(() => expect(view.getByText(/Каталог загружен не полностью/)).toBeTruthy());
   expect(view.queryByText('По запросу ничего не найдено.')).toBeNull();
   await view.unmount();
 });

@@ -49,7 +49,7 @@ export const navigationItems: MobileNavItem[] = [
   ...whenNative(NATIVE_COMPANY_STRUCTURE_ENABLED, { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: 'file-tree-outline', permission: 'company_structure.read', group: 'tools' }),
   ...whenNative(NATIVE_PASSWORDS_ENABLED, { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: 'key-outline', permission: 'passwords.read', group: 'tools' }),
   ...whenNative(NATIVE_GROUPS_ACCESS_ENABLED, { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: 'folder-account-outline', permission: 'groups_access.read', group: 'tools' }),
-  ...whenNative(NATIVE_MY_FILES_ENABLED, { path: '/my-files', label: 'Мой диск', shortLabel: 'Диск', icon: 'folder-open-outline', permission: 'my_files.read', group: 'tools' }),
+  ...whenNative(NATIVE_MY_FILES_ENABLED, { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: 'folder-open-outline', permission: 'my_files.read', group: 'tools' }),
   ...whenNative(NATIVE_DATABASE_ENABLED, { path: '/database', label: 'Инвентарь', shortLabel: 'Учёт', icon: 'database', permission: 'database.read', group: 'tools' }),
   ...whenNative(NATIVE_MFU_ENABLED, { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: 'printer-outline', permission: 'mfu.read', group: 'tools' }),
   ...whenNative(NATIVE_COMPUTERS_ENABLED, { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: 'desktop-classic', permission: 'computers.read', group: 'tools' }),

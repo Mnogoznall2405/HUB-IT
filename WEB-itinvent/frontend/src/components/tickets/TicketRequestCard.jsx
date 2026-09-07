@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import useRequestGuard from '../../lib/useRequestGuard';
 import {
   Alert,
   Box,
@@ -59,12 +60,17 @@ export default function TicketRequestCard({
     submitted_at: '',
   });
 
+  const beginLoad = useRequestGuard(requestId);
+  const beginSave = useRequestGuard(requestId);
   const load = useCallback(async () => {
+    const isCurrent = beginLoad();
     if (!requestId) return;
+    setRequest(null);
     setLoading(true);
     setError('');
     try {
       const requestData = await ticketsAPI.getRequest(requestId);
+      if (!isCurrent()) return;
       setRequest(requestData);
       setNextStatus(requestData.status || '');
       setForm({
@@ -77,13 +83,16 @@ export default function TicketRequestCard({
         submitted_at: requestData.submitted_at ? String(requestData.submitted_at).slice(0, 10) : '',
       });
     } catch (err) {
+      if (!isCurrent()) return;
       setError(getErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [requestId]);
+  }, [beginLoad, requestId]);
 
   useEffect(() => {
+    setSaving(false);
+    setStatusComment('');
     if (!requestId) {
       setRequest(null);
       return;
@@ -93,6 +102,7 @@ export default function TicketRequestCard({
 
   const saveFields = async () => {
     if (!request) return;
+    const isCurrent = beginSave();
     setSaving(true);
     setError('');
     try {
@@ -112,12 +122,12 @@ export default function TicketRequestCard({
           comment: statusComment,
         });
       }
-      await load();
       onChanged?.();
+      if (isCurrent()) await load();
     } catch (err) {
-      setError(getErrorMessage(err));
+      if (isCurrent()) setError(getErrorMessage(err));
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
   };
 

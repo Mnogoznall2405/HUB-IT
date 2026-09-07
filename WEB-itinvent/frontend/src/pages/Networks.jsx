@@ -1,4 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import useRequestGuard from '../lib/useRequestGuard';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Accordion,
@@ -138,13 +139,15 @@ const parseDownloadFilename = (contentDisposition, fallbackName = 'map-points.pd
       // ignore malformed header
     }
   }
-  const simpleMatch = source.match(/filename=\"([^\"]+)\"/i) || source.match(/filename=([^;]+)/i);
+  const simpleMatch = source.match(/filename="([^"]+)"/i) || source.match(/filename=([^;]+)/i);
   return simpleMatch?.[1] ? String(simpleMatch[1]).trim() : String(fallbackName || 'map-points.pdf');
 };
 
 const buildMapExportFileName = (map) => {
   const rawBase = String(map?.title || map?.file_name || 'map').replace(/\.[^.]+$/, '').trim();
   const sanitized = rawBase
+    // Windows filenames cannot contain control characters.
+    // eslint-disable-next-line no-control-regex
     .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
     .replace(/\s+/g, ' ')
     .replace(/[. ]+$/g, '')
@@ -1084,7 +1087,10 @@ function Networks() {
     }
   }, [notifyError]);
 
+  const beginPorts = useRequestGuard(JSON.stringify([branchIdNum, selectedDeviceId]));
+
   const loadPorts = useCallback(async (deviceId, force = false) => {
+    const isCurrent = beginPorts();
     if (!deviceId) {
       setPorts([]);
       return;
@@ -1094,8 +1100,9 @@ function Networks() {
       async () => (await networksAPI.getPorts(deviceId)).ports || [],
       { staleTimeMs: SWR_STALE_MS, force }
     );
+    if (!isCurrent()) return;
     setPorts(Array.isArray(data) ? data : []);
-  }, []);
+  }, [beginPorts]);
 
   const loadAllBranchPorts = useCallback(async (id, force = false) => {
     if (!id) {
@@ -3063,8 +3070,8 @@ function Networks() {
                         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.2 }}>
                           Для интерактивной работы выберите карту-изображение (PNG/JPG).
                         </Typography>
-                        <Button variant="contained" startIcon={<DownloadIcon />} onClick={() => mapBlobUrl && window.open(mapBlobUrl, '_blank', 'noopener,noreferrer')}>
-                          Открыть PDF
+                        <Button variant="contained" startIcon={<DownloadIcon />} component="a" href={mapBlobUrl || undefined} download="network-map.pdf">
+                          Скачать PDF
                         </Button>
                       </Paper>
                     ) : (

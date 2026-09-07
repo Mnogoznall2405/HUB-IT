@@ -42,6 +42,14 @@ export type AppLockSettings = {
   timeoutSeconds: number;
 };
 
+let credentialGeneration = 0;
+let credentialOperations: Promise<unknown> = Promise.resolve();
+function credentialOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = credentialOperations.then(operation);
+  credentialOperations = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 type AppLockSettingsListener = (settings: AppLockSettings) => void;
 const appLockSettingsListeners = new Set<AppLockSettingsListener>();
 
@@ -98,7 +106,7 @@ export async function getBiometricCapability(): Promise<BiometricCapability> {
   };
 }
 
-export async function isBiometricLoginEnabled(): Promise<boolean> {
+async function isBiometricLoginEnabledInternal(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
   try {
     return (await SecureStore.getItemAsync(BIOMETRIC_ENABLED_KEY)) === '1';
@@ -107,7 +115,7 @@ export async function isBiometricLoginEnabled(): Promise<boolean> {
   }
 }
 
-export async function getBiometricLoginUserId(): Promise<number | null> {
+async function getBiometricLoginUserIdInternal(): Promise<number | null> {
   if (Platform.OS === 'web') return null;
   try {
     const userId = Number(await SecureStore.getItemAsync(BIOMETRIC_USER_ID_KEY));
@@ -117,7 +125,7 @@ export async function getBiometricLoginUserId(): Promise<number | null> {
   }
 }
 
-export async function enableBiometricLogin(
+async function enableBiometricLoginInternal(
   user: HubUser,
   renewalToken: string,
 ): Promise<BiometricCredential> {
@@ -160,16 +168,21 @@ export async function enableBiometricLogin(
 }
 
 export async function unlockBiometricLogin(): Promise<StoredBiometricCredential> {
+  const generation = credentialGeneration;
+  await credentialOperation(async () => undefined);
   const raw = await SecureStore.getItemAsync(BIOMETRIC_CREDENTIAL_KEY, protectedStoreOptions);
-  const credential = raw ? parseCredential(raw) : null;
-  if (!credential) {
-    await disableBiometricLogin();
-    throw new Error('Вход по отпечатку недоступен. Войдите по логину и паролю.');
-  }
-  return credential;
+  return credentialOperation(async () => {
+    if (generation !== credentialGeneration) throw new Error('Настройки входа изменились. Повторите вход.');
+    const credential = raw ? parseCredential(raw) : null;
+    if (!credential) {
+      await disableBiometricLoginInternal();
+      throw new Error('Вход по отпечатку недоступен. Войдите по логину и паролю.');
+    }
+    return credential;
+  });
 }
 
-export async function disableBiometricLogin(): Promise<void> {
+async function disableBiometricLoginInternal(): Promise<void> {
   await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY).catch(() => undefined);
   await SecureStore.deleteItemAsync(BIOMETRIC_CREDENTIAL_KEY).catch(() => undefined);
   await SecureStore.deleteItemAsync(BIOMETRIC_USER_ID_KEY).catch(() => undefined);
@@ -187,11 +200,13 @@ function normalizeAppLockTimeout(value: unknown): number {
 }
 
 function notifyAppLockSettings(settings: AppLockSettings): void {
-  for (const listener of appLockSettingsListeners) listener(settings);
+  for (const listener of appLockSettingsListeners) {
+    try { listener(settings); } catch { /* Observers cannot invalidate storage changes. */ }
+  }
 }
 
-export async function getAppLockSettings(): Promise<AppLockSettings> {
-  if (Platform.OS === 'web' || !(await isBiometricLoginEnabled())) {
+async function getAppLockSettingsInternal(): Promise<AppLockSettings> {
+  if (Platform.OS === 'web' || !(await isBiometricLoginEnabledInternal())) {
     return { enabled: false, timeoutSeconds: 60 };
   }
   const [enabledValue, timeoutValue] = await Promise.all([
@@ -205,18 +220,21 @@ export async function getAppLockSettings(): Promise<AppLockSettings> {
   };
 }
 
-export async function setAppLockSettings(settings: AppLockSettings): Promise<AppLockSettings> {
-  if (settings.enabled && !(await isBiometricLoginEnabled())) {
+async function setAppLockSettingsInternal(settings: AppLockSettings): Promise<AppLockSettings> {
+  if (settings.enabled && !(await isBiometricLoginEnabledInternal())) {
     throw new Error('Сначала включите вход по отпечатку');
   }
   const normalized = {
     enabled: Boolean(settings.enabled),
     timeoutSeconds: normalizeAppLockTimeout(settings.timeoutSeconds),
   };
-  await Promise.all([
+  const results = await Promise.allSettled([
     SecureStore.setItemAsync(APP_LOCK_ENABLED_KEY, normalized.enabled ? '1' : '0'),
     SecureStore.setItemAsync(APP_LOCK_TIMEOUT_KEY, String(normalized.timeoutSeconds)),
   ]);
+  for (const result of results) {
+    if (result.status === 'rejected') throw result.reason;
+  }
   notifyAppLockSettings(normalized);
   return normalized;
 }
@@ -237,4 +255,30 @@ export function shouldLockAfterBackground(
 
 export async function unlockBiometricAppLock(): Promise<void> {
   await unlockBiometricLogin();
+}
+
+export function isBiometricLoginEnabled(...args: Parameters<typeof isBiometricLoginEnabledInternal>): ReturnType<typeof isBiometricLoginEnabledInternal> {
+  return credentialOperation(() => isBiometricLoginEnabledInternal(...args));
+}
+
+export function getBiometricLoginUserId(...args: Parameters<typeof getBiometricLoginUserIdInternal>): ReturnType<typeof getBiometricLoginUserIdInternal> {
+  return credentialOperation(() => getBiometricLoginUserIdInternal(...args));
+}
+
+export function enableBiometricLogin(...args: Parameters<typeof enableBiometricLoginInternal>): ReturnType<typeof enableBiometricLoginInternal> {
+  credentialGeneration += 1;
+  return credentialOperation(() => enableBiometricLoginInternal(...args));
+}
+
+export function disableBiometricLogin(...args: Parameters<typeof disableBiometricLoginInternal>): ReturnType<typeof disableBiometricLoginInternal> {
+  credentialGeneration += 1;
+  return credentialOperation(() => disableBiometricLoginInternal(...args));
+}
+
+export function getAppLockSettings(...args: Parameters<typeof getAppLockSettingsInternal>): ReturnType<typeof getAppLockSettingsInternal> {
+  return credentialOperation(() => getAppLockSettingsInternal(...args));
+}
+
+export function setAppLockSettings(...args: Parameters<typeof setAppLockSettingsInternal>): ReturnType<typeof setAppLockSettingsInternal> {
+  return credentialOperation(() => setAppLockSettingsInternal(...args));
 }

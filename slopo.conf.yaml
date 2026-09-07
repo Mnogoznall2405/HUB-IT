@@ -1,0 +1,31 @@
+source_dir: .
+source_dir_exclude:
+  - ".git/**"
+  - ".slopo-venv/**"
+  - "tools/**"
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/.expo/**"
+  - "**/.venv/**"
+  - "**/__pycache__/**"
+  - "**/bin/**"
+  - "**/obj/**"
+  - "**/tests/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "documentation/**"
+
+db_file: .slopo/slopo.db
+report_dir: .slopo/report
+ignore_file: .slopo/slopo.ignore.txt
+agent_log_file: .slopo/agent.log
+
+# Free OpenRouter embedding model; OPENROUTER_API_KEY is loaded from .env.
+embedding_model: openrouter/liquid/lfm2.5-embedding-350m:free
+embedding_dimensions: 1024
+embedding_batch_size: 50
+embedding_batch_chars: 50000
+similarity_threshold: 0.92
+rerank_threshold: 0.94
+body_node_count_threshold: 10

@@ -1,3 +1,4 @@
+import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -7,7 +8,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -139,10 +139,14 @@ export function NativeDatabaseScreen() {
     () => equipment.filter((item) => selectedInvNos.has(item.inv_no)),
     [equipment, selectedInvNos],
   );
-  const selectionMode = selectedEquipment.length > 0;
+  const [selectionRequested, setSelectionRequested] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const selectionMode = selectionRequested || selectedEquipment.length > 0;
 
   useEffect(() => {
     setSelectedInvNos(new Set());
+    setSelectionRequested(false);
   }, [currentDatabase?.id, mode]);
 
   useEffect(() => {
@@ -671,46 +675,6 @@ export function NativeDatabaseScreen() {
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.textSecondary }]}>{notice}</Text> : null}
 
-      {!query.trim() && (mode === 'acts' ? recentActs.length : recentCards.length) ? (
-        <View style={styles.recentSection}>
-          <Text style={[styles.recentLabel, { color: tokens.textSecondary }]}>Недавние</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.recentStrip}
-            accessibilityLabel="Недавно открытые карточки"
-            accessibilityHint="Проведите в сторону, чтобы увидеть остальные карточки"
-          >
-            {(mode === 'acts' ? recentActs : recentCards).map((recent) => 'doc_no' in recent ? (
-              <Pressable
-                key={`${recent.db_id}:${recent.doc_no}`}
-                testID={`native-database-recent-act-${recent.doc_no}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Открыть недавний акт ${recent.doc_number || recent.doc_no}`}
-                onPress={() => { if (recent.snapshot) void openActFile(recent.snapshot); }}
-                disabled={!recent.snapshot}
-                style={[styles.recentCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: recent.snapshot ? 1 : 0.55 }]}
-              >
-                <Text numberOfLines={2} style={[styles.recentTitle, { color: tokens.textPrimary }]}>Акт {recent.doc_number || recent.doc_no}</Text>
-                <Text numberOfLines={1} style={[styles.recentMeta, { color: tokens.textSecondary }]}>{recent.last_action_label || 'Просмотрено'}</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                key={`${recent.db_id}:${recent.inv_no}`}
-                testID={`native-database-recent-${recent.inv_no}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Открыть недавнюю карточку ${recent.inv_no}`}
-                onPress={() => openEquipment(recent.snapshot || recent.inv_no)}
-                style={[styles.recentCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
-              >
-                <Text numberOfLines={2} style={[styles.recentTitle, { color: tokens.textPrimary }]}>{recent.snapshot?.model_name || `Инв. № ${recent.inv_no}`}</Text>
-                <Text numberOfLines={1} style={[styles.recentMeta, { color: tokens.textSecondary }]}>{recent.last_action_label || 'Просмотрено'}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-      ) : null}
-
       <View style={[styles.modeTabs, { backgroundColor: tokens.panelInset }]} accessibilityRole="tablist">
         {(['equipment', 'consumables', 'acts'] as const).map((value) => {
           const selected = mode === value;
@@ -760,15 +724,7 @@ export function NativeDatabaseScreen() {
         >
           <MaterialCommunityIcons name="qrcode-scan" size={22} color={accentColor} />
         </Pressable>
-        <Pressable
-          testID="native-database-paste-qr"
-          onPress={() => { void pasteInventoryCode(); }}
-          accessibilityRole="button"
-          accessibilityLabel="Вставить инвентарный QR-код из буфера"
-          style={[styles.searchAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
-        >
-          <MaterialCommunityIcons name="content-paste" size={21} color={accentColor} />
-        </Pressable>
+
       </View>
 
       <View style={styles.countRow}>
@@ -788,36 +744,71 @@ export function NativeDatabaseScreen() {
               <Text style={[styles.resultActionText, { color: accentColor }]}>Загрузить</Text>
             </Pressable>
           ) : null}
+          <Pressable testID="native-database-more" accessibilityRole="button" accessibilityLabel="Ещё действия с инвентарём" accessibilityState={{ expanded: moreOpen }} onPress={() => setMoreOpen(!moreOpen)} style={[styles.resultAction, { borderColor: tokens.border }]}>
+            <MaterialCommunityIcons name="dots-horizontal" size={22} color={accentColor} />
+          </Pressable>
+          {canWrite && !offlineMode && mode === 'equipment' ? <Pressable testID="native-database-select" accessibilityRole="button" accessibilityState={{ selected: selectionMode }} onPress={() => { setSelectionRequested(!selectionMode); setSelectedInvNos(new Set()); }} style={[styles.resultAction, { borderColor: tokens.border }]}><Text style={[styles.resultActionText, { color: accentColor }]}>{selectionMode ? 'Отмена' : 'Выбрать'}</Text></Pressable> : null}
+
+        </View>
+      </View>
+
+      {moreOpen ? <View style={styles.countActions}>
+        <Pressable
+          testID="native-database-paste-qr"
+          onPress={() => { void pasteInventoryCode(); }}
+          accessibilityRole="button"
+          accessibilityLabel="Вставить инвентарный QR-код из буфера"
+          style={[styles.resultAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
+        >
+          <MaterialCommunityIcons name="content-paste" size={21} color={accentColor} /><Text style={[styles.resultActionText, { color: accentColor }]}>Вставить QR</Text>
+        </Pressable>
           <Pressable testID="native-database-refresh" onPress={() => { void loadContent(true); }} disabled={loading || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить результаты" accessibilityState={{ disabled: loading || offlineMode }} style={[styles.resultAction, { borderColor: tokens.border, opacity: loading || offlineMode ? 0.5 : 1 }]}>
             <MaterialCommunityIcons name="refresh" size={19} color={accentColor} />
             <Text style={[styles.resultActionText, { color: accentColor }]}>Обновить</Text>
           </Pressable>
-        </View>
-      </View>
-
-      {mode === 'equipment' && selectionMode ? (
-        <View testID="native-database-selection" style={[styles.selectionPanel, { backgroundColor: tokens.panelInset, borderColor: tokens.border }]}> 
-          <View style={styles.selectionHeader}>
-            <Text accessibilityLiveRegion="polite" style={[styles.selectionTitle, { color: tokens.textPrimary }]}>Выбрано: {selectedEquipment.length}</Text>
-            <Pressable testID="native-database-selection-clear" accessibilityRole="button" accessibilityLabel="Снять выбор со всех карточек" onPress={() => setSelectedInvNos(new Set())} style={styles.selectionClear}>
-              <MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} />
-              <Text style={[styles.selectionClearText, { color: tokens.textSecondary }]}>Снять</Text>
-            </Pressable>
-          </View>
-          <Text style={[styles.selectionHint, { color: tokens.textSecondary }]}>Групповые операции выполняются сервером одним запросом. Обслуживание остаётся доступно только в отдельной карточке.</Text>
-          <NativeEquipmentActions
-            equipment={selectedEquipment[0]}
-            targets={selectedEquipment}
-            databaseId={currentDatabase?.id}
-            canWrite={canWrite}
-            canDeleteEquipment={false}
-            offline={offlineMode}
-            surface="general"
-            tokens={tokens}
-            testIDPrefix="native-database-bulk"
-            onChanged={() => loadContent(true)}
-            onDeleted={() => undefined}
-          />
+      </View> : null}
+      {!query.trim() && !selectionMode && mode !== 'consumables' && (mode === 'acts' ? recentActs.length : recentCards.length) ? (
+        <View style={styles.recentSection}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Недавние карточки" accessibilityState={{ expanded: recentOpen }} onPress={() => setRecentOpen(!recentOpen)} style={styles.recentToggle}>
+            <Text style={[styles.recentLabel, { color: tokens.textSecondary }]}>Недавние</Text>
+            <MaterialCommunityIcons name={recentOpen ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
+          </Pressable>
+          {recentOpen ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.recentStrip}
+              accessibilityLabel="Недавно открытые карточки"
+              accessibilityHint="Проведите в сторону, чтобы увидеть остальные карточки"
+            >
+              {(mode === 'acts' ? recentActs : recentCards).map((recent) => 'doc_no' in recent ? (
+                <Pressable
+                  key={`${recent.db_id}:${recent.doc_no}`}
+                  testID={`native-database-recent-act-${recent.doc_no}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Открыть недавний акт ${recent.doc_number || recent.doc_no}`}
+                  onPress={() => { if (recent.snapshot) void openActFile(recent.snapshot); }}
+                  disabled={!recent.snapshot}
+                  style={[styles.recentCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: recent.snapshot ? 1 : 0.55 }]}
+                >
+                  <Text numberOfLines={2} style={[styles.recentTitle, { color: tokens.textPrimary }]}>Акт {recent.doc_number || recent.doc_no}</Text>
+                  <Text numberOfLines={1} style={[styles.recentMeta, { color: tokens.textSecondary }]}>{recent.last_action_label || 'Просмотрено'}</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  key={`${recent.db_id}:${recent.inv_no}`}
+                  testID={`native-database-recent-${recent.inv_no}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Открыть недавнюю карточку ${recent.inv_no}`}
+                  onPress={() => openEquipment(recent.snapshot || recent.inv_no)}
+                  style={[styles.recentCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}
+                >
+                  <Text numberOfLines={2} style={[styles.recentTitle, { color: tokens.textPrimary }]}>{recent.snapshot?.model_name || `Инв. № ${recent.inv_no}`}</Text>
+                  <Text numberOfLines={1} style={[styles.recentMeta, { color: tokens.textSecondary }]}>{recent.last_action_label || 'Просмотрено'}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
         </View>
       ) : null}
 
@@ -863,6 +854,33 @@ export function NativeDatabaseScreen() {
           renderItem={renderEquipmentAct}
         />
       )}
+      {mode === 'equipment' && selectedEquipment.length > 0 ? (
+        <View testID="native-database-selection" style={[styles.selectionPanel, { backgroundColor: tokens.panelInset, borderColor: tokens.border }]}>
+          <View style={styles.selectionHeader}>
+            <Text accessibilityLiveRegion="polite" style={[styles.selectionTitle, { color: tokens.textPrimary }]}>Выбрано: {selectedEquipment.length}</Text>
+            <Pressable testID="native-database-selection-clear" accessibilityRole="button" accessibilityLabel="Снять выбор со всех карточек" onPress={() => { setSelectedInvNos(new Set()); setSelectionRequested(false); }} style={styles.selectionClear}>
+              <MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} />
+              <Text style={[styles.selectionClearText, { color: tokens.textSecondary }]}>Снять</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.selectionActions} keyboardShouldPersistTaps="handled">
+            <NativeEquipmentActions
+              equipment={selectedEquipment[0]}
+              targets={selectedEquipment}
+              databaseId={currentDatabase?.id}
+              canWrite={canWrite}
+              canDeleteEquipment={false}
+              offline={offlineMode}
+              surface="general"
+              tokens={tokens}
+              testIDPrefix="native-database-bulk"
+              onChanged={() => loadContent(true)}
+              onDeleted={() => undefined}
+            />
+          </ScrollView>
+        </View>
+      ) : null}
+
       <Modal
         visible={databasePickerOpen}
         transparent
@@ -1049,7 +1067,9 @@ const styles = StyleSheet.create({
   warning: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   error: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   notice: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '600' },
-  recentSection: { marginBottom: 9 },
+  recentSection: { marginBottom: 4 },
+  recentToggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  selectionActions: { maxHeight: 150 },
   recentLabel: { marginBottom: 6, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   recentStrip: { gap: 8, paddingRight: 20, paddingBottom: 2 },
   recentCard: { width: 184, minHeight: 68, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, justifyContent: 'center' },
@@ -1068,12 +1088,11 @@ const styles = StyleSheet.create({
   countActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
   resultAction: { minHeight: 44, borderRadius: 11, borderWidth: 1, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   resultActionText: { fontSize: 12, lineHeight: 16, fontWeight: '800' },
-  selectionPanel: { borderWidth: 1, borderRadius: 14, padding: 11, marginBottom: 9 },
+  selectionPanel: { borderWidth: 1, borderRadius: 14, padding: 11, marginTop: 9 },
   selectionHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   selectionTitle: { fontSize: 14, fontWeight: '900' },
   selectionClear: { minHeight: 44, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 5 },
   selectionClearText: { fontSize: 12, fontWeight: '800' },
-  selectionHint: { marginBottom: 9, fontSize: 11, lineHeight: 16 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   listContent: { paddingBottom: 8 },
   emptyContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 60 },

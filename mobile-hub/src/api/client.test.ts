@@ -267,3 +267,82 @@ describe('mobile API refresh', () => {
     expect(adapter).not.toHaveBeenCalled();
   });
 });
+
+it.each(['success', 'unauthorized', 'network'] as const)('does not replace or expire a new login when old refresh finishes: %s', async (outcome) => {
+  await tokenStore.setTokens('old-access', 'old-refresh');
+  let finish!: (value: unknown) => void;
+  let fail!: (error: unknown) => void;
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  jest.spyOn(axios, 'post').mockImplementationOnce(() => new Promise((resolve, reject) => {
+    finish = resolve; fail = reject; started();
+  }) as never);
+  const expired = jest.fn();
+  const unsubscribe = subscribeSessionExpired(expired);
+  try {
+    const pending = getAuthenticatedAccessToken({ forceRefresh: true });
+    const rejected = expect(pending).rejects.toThrow('Mobile session changed during refresh');
+    await requested;
+    await tokenStore.setTokens('new-login-access', 'new-login-refresh');
+    if (outcome === 'success') finish(response({}, { access_token: 'stale-access', refresh_token: 'stale-refresh' }));
+    else fail({ isAxiosError: true, response: outcome === 'unauthorized' ? response({}, {}, 401) : undefined });
+    await rejected;
+    expect(await tokenStore.getAccessToken()).toBe('new-login-access');
+    expect(await tokenStore.getRefreshToken()).toBe('new-login-refresh');
+    expect(expired).not.toHaveBeenCalled();
+  } finally { unsubscribe(); }
+});
+
+it('does not restore credentials after logout while refresh was in flight', async () => {
+  await tokenStore.setTokens('old-access', 'old-refresh');
+  let finish!: (value: unknown) => void;
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  jest.spyOn(axios, 'post').mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; started(); }) as never);
+  const pending = getAuthenticatedAccessToken({ forceRefresh: true });
+  const rejected = expect(pending).rejects.toThrow('Mobile session changed during refresh');
+  await requested;
+  await tokenStore.clearTokens();
+  finish(response({}, { access_token: 'stale-access', refresh_token: 'stale-refresh' }));
+  await rejected;
+  expect(await tokenStore.getAccessToken()).toBeNull();
+});
+
+it('does not replay an old mutation under a newly signed-in account after a delayed 401', async () => {
+  await tokenStore.setTokens('old-access', 'old-refresh');
+  let rejectRequest!: () => void;
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  const adapter = jest.fn((config: InternalAxiosRequestConfig) => new Promise((_resolve, reject) => {
+    rejectRequest = () => reject({ config, response: response(config, {}, 401), isAxiosError: true });
+    started();
+  }));
+  apiClient.defaults.adapter = adapter as never;
+  const refresh = jest.spyOn(axios, 'post');
+  const pending = apiClient.post('/chat/conversations/old/messages', { body_text: 'Synthetic' });
+  const rejected = expect(pending).rejects.toThrow('Mobile session changed during request');
+  await requested;
+  await tokenStore.setTokens('new-access', 'new-refresh');
+  rejectRequest();
+  await rejected;
+  expect(adapter).toHaveBeenCalledTimes(1);
+  expect(refresh).not.toHaveBeenCalled();
+  expect(await tokenStore.getAccessToken()).toBe('new-access');
+});
+
+it('rejects an old successful response instead of exposing its data after account change', async () => {
+  await tokenStore.setTokens('old-access', 'old-refresh');
+  let finish!: () => void;
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => new Promise((resolve) => {
+    finish = () => resolve(response(config, { private: 'synthetic-old-user-data' }));
+    started();
+  })) as never;
+  const pending = apiClient.get('/mail/messages');
+  const rejected = expect(pending).rejects.toThrow('Mobile session changed during request');
+  await requested;
+  await tokenStore.setTokens('new-access', 'new-refresh');
+  finish();
+  await rejected;
+});

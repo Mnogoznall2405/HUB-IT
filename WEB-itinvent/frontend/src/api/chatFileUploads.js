@@ -151,6 +151,7 @@ const uploadChatFilesMultipart = async (conversationId, files = [], options = {}
   if (options?.reply_to_message_id) {
     formData.append('reply_to_message_id', options.reply_to_message_id);
   }
+  if (options?.client_message_id) formData.append('client_message_id', options.client_message_id);
   const response = await apiClient.post(
     `/chat/conversations/${encodeURIComponent(conversationId)}/messages/files`,
     formData,
@@ -164,6 +165,15 @@ const uploadChatFilesMultipart = async (conversationId, files = [], options = {}
 
 export const chatFileUploadsAPI = {
   sendFiles: async (conversationId, files = [], options = {}) => {
+    const attempt = options?.uploadAttempt || {};
+    if (attempt.completeSessionId) {
+      return chatUploadSessionsAPI.completeUploadSession(attempt.completeSessionId, { signal: options?.signal });
+    }
+    const multipart = () => {
+      attempt.multipartKey ||= options?.client_message_id || globalThis.crypto?.randomUUID?.()
+        || `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return uploadChatFilesMultipart(conversationId, files, { ...options, client_message_id: attempt.multipartKey });
+    };
     const normalizedFiles = (Array.isArray(files) ? files : [])
       .map((file) => normalizeChatUploadEntry(file))
       .filter(Boolean);
@@ -172,8 +182,9 @@ export const chatFileUploadsAPI = {
       return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
     }
 
-    if (!canUseChatUploadSessions(normalizedFiles)) {
-      return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
+    // The multipart endpoint supports replay keys; upload sessions own separate IDs.
+    if (attempt.multipartKey || options?.client_message_id || !canUseChatUploadSessions(normalizedFiles)) {
+      return multipart();
     }
 
     let session = null;
@@ -205,7 +216,7 @@ export const chatFileUploadsAPI = {
       }
     } catch (error) {
       if (!signal?.aborted && shouldFallbackChatUploadSession(error)) {
-        return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
+        return multipart();
       }
       throw error;
     }
@@ -327,12 +338,13 @@ export const chatFileUploadsAPI = {
       });
       await Promise.all(workers);
       syncLoadedBytes();
+      attempt.completeSessionId = sessionId;
       const message = await chatUploadSessionsAPI.completeUploadSession(sessionId, { signal });
       completed = true;
       emitChatUploadProgress(options?.onUploadProgress, totalBytes, totalBytes);
       return message;
     } catch (error) {
-      if (sessionId && !completed && isAbortError(error)) {
+      if (sessionId && !attempt.completeSessionId && !completed && isAbortError(error)) {
         try {
           await chatUploadSessionsAPI.cancelUploadSession(sessionId);
         } catch {

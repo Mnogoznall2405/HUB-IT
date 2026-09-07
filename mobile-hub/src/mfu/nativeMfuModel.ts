@@ -52,3 +52,10 @@ export function filterMfuDevices(devices: MfuDevice[], options: {
     ].join(' ')).includes(query);
   });
 }
+
+export function mfuSnmpStatusLabel(status: string): string {
+  if (status === 'ok') return 'Данные получены';
+  if (status === 'error') return 'Ошибка опроса SNMP';
+  if (status === 'no_data') return 'Нет данных SNMP';
+  return 'Состояние SNMP неизвестно';
+}

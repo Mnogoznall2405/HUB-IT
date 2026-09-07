@@ -6,7 +6,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Pressable,
-  ScrollView,
+  FlatList,
   StyleSheet,
   Text,
   TextInput,
@@ -75,6 +75,7 @@ import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import {
   AccountField,
   AccountLoading,
+  AccountSubpage,
   AccountScreenScaffold,
   AccountSectionCard,
 } from '../account/AccountChrome';
@@ -122,6 +123,8 @@ type TaskPresencePeer = {
 };
 
 export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
+  const [detailTab, setDetailTab] = useState<'overview' | 'discussion' | 'files'>('overview');
+  const [actionsOpen, setActionsOpen] = useState(false);
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -755,14 +758,27 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
           </Pressable>
         </View>
       ) : (
-        <View style={styles.flex}>
-          <ScrollView
+        <View style={[styles.flex, { paddingBottom: bottomInset }]}>
+          <FlatList
+            testID="native-task-content-list"
+            data={detailTab === 'discussion' && !task.capabilities?.can_open_discussion ? comments : []}
+            keyExtractor={(comment) => String(comment.id)}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={7}
+            renderItem={({ item: comment }) => (
+              <View style={[styles.comment, { borderColor: tokens.borderSoft }]}>
+                <Text style={[styles.commentAuthor, { color: tokens.textPrimary }]}>{commentAuthor(comment)}</Text>
+                <Text style={[styles.commentDate, { color: tokens.textTertiary }]}>{formatTaskDate(comment.created_at)}</Text>
+                <Text style={[styles.commentBody, { color: tokens.textPrimary }]}>{comment.body}</Text>
+              </View>
+            )}
             style={styles.flex}
-            contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 88 }]}
+            contentContainerStyle={[styles.content, { paddingBottom: 12 }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             refreshControl={undefined}
-          >
+            ListHeaderComponent={<>
             {refreshing ? <ActivityIndicator color={tokens.primary} /> : null}
             {offlineMode ? (
               <Text accessibilityRole="alert" style={[styles.offlineText, { color: tokens.warning }]}>
@@ -778,6 +794,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
               <Text accessibilityRole="header" style={[styles.title, { color: tokens.textPrimary }]}>
                 {task.title || 'Задача'}
               </Text>
+              <Text style={{ color: tokens.textSecondary }}>{taskPerson(task, 'assignee')} · {formatTaskDate(task.due_at)}</Text>
               <View style={styles.badgeRow}>
                 <TaskBadge label={taskStatusLabel(task.status)} color={tokens.primary} tokens={tokens} />
                 <TaskBadge label={taskPriorityLabel(task.priority)} color={task.priority === 'urgent' ? tokens.error : tokens.warning} tokens={tokens} />
@@ -795,12 +812,268 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                   )).join(', ')}
                 </Text>
               ) : null}
+
+            </View>
+
+            <View style={styles.actions} accessibilityRole="tablist">
+              {([['overview', 'Описание'], ['discussion', 'Обсуждение'], ['files', 'Файлы']] as const).map(([key, label]) => (
+                <Pressable key={key} testID={`native-task-tab-${key}`} accessibilityRole="tab" accessibilityState={{ selected: detailTab === key }} onPress={() => setDetailTab(key)} style={[styles.actionButton, { backgroundColor: detailTab === key ? tokens.selected : tokens.panelSolid, borderColor: tokens.border }]}><Text style={{ color: tokens.textPrimary }}>{label}</Text></Pressable>
+              ))}
+            </View>
+            {detailTab === 'overview' ? <>
               <Text style={[styles.description, { color: tokens.textSecondary }]}>
                 {String(task.description || '').trim() || 'Описание задачи не заполнено.'}
               </Text>
-            </View>
+            <AccountSectionCard tokens={tokens} title="Участники и срок">
+              <AccountField tokens={tokens} label="Постановщик" value={taskPerson(task, 'created_by')} />
+              <AccountField tokens={tokens} label="Исполнители" value={taskPerson(task, 'assignee')} />
+              <AccountField tokens={tokens} label="Контролёр" value={taskPerson(task, 'controller')} />
+              <AccountField tokens={tokens} label="Срок" value={formatTaskDate(task.due_at)} />
+              {task.project_name ? <AccountField tokens={tokens} label="Проект" value={task.project_name} /> : null}
+              {task.object_name ? <AccountField tokens={tokens} label="Объект" value={task.object_name} /> : null}
+            </AccountSectionCard>
 
-            {editOpen ? (
+            <AccountSectionCard
+              tokens={tokens}
+              title={`Чек-лист · ${(task.checklist_items || []).filter((item) => item.done).length}/${(task.checklist_items || []).length}`}
+              description={task.capabilities?.can_update_checklist ? 'Отмечайте выполненные пункты — состояние сразу синхронизируется с HUB-IT.' : 'Чек-лист доступен только для просмотра.'}
+            >
+              {(task.checklist_items || []).length ? (task.checklist_items || []).map((item) => (
+                <View key={item.id} style={[styles.checklistRow, { borderColor: tokens.borderSoft }]}>
+                  <Pressable
+                    testID={`native-task-checklist-toggle-${item.id}`}
+                    onPress={() => toggleChecklistItem(item)}
+                    disabled={!task.capabilities?.can_update_checklist || checklistBusy || offlineMode}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: item.done, disabled: !task.capabilities?.can_update_checklist || checklistBusy || offlineMode }}
+                    style={styles.checklistMain}
+                  >
+                    <MaterialCommunityIcons name={item.done ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'} size={23} color={item.done ? tokens.success : tokens.iconMuted} />
+                    <Text style={[styles.checklistText, { color: tokens.textPrimary, textDecorationLine: item.done ? 'line-through' : 'none' }]}>{item.text}</Text>
+                  </Pressable>
+                  {task.capabilities?.can_update_checklist ? (
+                    <Pressable
+                      testID={`native-task-checklist-remove-${item.id}`}
+                      onPress={() => removeChecklistItem(item)}
+                      disabled={checklistBusy || offlineMode}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Удалить пункт: ${item.text}`}
+                      style={styles.inlineIconButton}
+                    >
+                      <MaterialCommunityIcons name="close" size={20} color={tokens.error} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              )) : <Text style={{ color: tokens.textSecondary }}>Пунктов пока нет.</Text>}
+              {task.capabilities?.can_update_checklist ? (
+                <View style={styles.addRow}>
+                  <TextInput
+                    testID="native-task-checklist-input"
+                    value={checklistText}
+                    onChangeText={setChecklistText}
+                    onSubmitEditing={addChecklistItem}
+                    editable={!checklistBusy && !offlineMode}
+                    maxLength={500}
+                    placeholder="Новый пункт"
+                    placeholderTextColor={tokens.textTertiary}
+                    accessibilityLabel="Новый пункт чек-листа"
+                    style={[styles.addInput, { color: tokens.textPrimary, borderColor: tokens.border }]}
+                  />
+                  <Pressable
+                    testID="native-task-checklist-add"
+                    onPress={addChecklistItem}
+                    disabled={checklistBusy || offlineMode || !checklistText.trim()}
+                    accessibilityRole="button"
+                    accessibilityLabel="Добавить пункт чек-листа"
+                    accessibilityState={{ disabled: checklistBusy || offlineMode || !checklistText.trim() }}
+                    style={[styles.addButton, { backgroundColor: tokens.primary, opacity: checklistBusy || offlineMode || !checklistText.trim() ? 0.5 : 1 }]}
+                  >
+                    {checklistBusy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="plus" size={22} color="#fff" />}
+                  </Pressable>
+                </View>
+              ) : null}
+            </AccountSectionCard>
+
+            <AccountSectionCard tokens={tokens} collapsible title={`История статусов (${statusLog.length})`}>
+              {statusLogError ? (
+                <Text accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>{statusLogError}</Text>
+              ) : null}
+              {statusLog.length ? statusLog.map((item, index) => (
+                <View key={String(item.id || `${item.changed_at || ''}-${index}`)} style={[styles.historyRow, { borderColor: tokens.borderSoft }]}>
+                  <MaterialCommunityIcons name="history" size={20} color={tokens.primary} />
+                  <View style={styles.flex}>
+                    <Text style={[styles.historyTitle, { color: tokens.textPrimary }]}>
+                      {taskStatusLabel(item.old_status)} → {taskStatusLabel(item.new_status)}
+                    </Text>
+                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>
+                      {String(item.changed_by_username || '').trim() || 'Система'} · {formatTaskDate(item.changed_at)}
+                    </Text>
+                  </View>
+                </View>
+              )) : !statusLogError ? (
+                <Text style={{ color: tokens.textSecondary }}>Изменений статуса пока нет.</Text>
+              ) : null}
+            </AccountSectionCard>
+
+            {canDeleteTask ? (
+              <AccountSectionCard tokens={tokens} title="Удаление задачи" description="Удаление доступно автору задачи и администратору.">
+                {deleteConfirmOpen ? (
+                  <View style={styles.deleteConfirm}>
+                    <Text accessibilityRole="alert" style={{ color: tokens.error, fontWeight: '700' }}>
+                      Удалить задачу без возможности восстановления?
+                    </Text>
+                    <View style={styles.confirmActions}>
+                      <Pressable
+                        testID="native-task-delete-cancel"
+                        onPress={() => setDeleteConfirmOpen(false)}
+                        disabled={deleteBusy}
+                        accessibilityRole="button"
+                        style={[styles.confirmButton, { borderColor: tokens.border }]}
+                      >
+                        <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>Отмена</Text>
+                      </Pressable>
+                      <Pressable
+                        testID="native-task-delete-confirm"
+                        onPress={() => { void confirmDeleteTask(); }}
+                        disabled={deleteBusy || offlineMode}
+                        accessibilityRole="button"
+                        accessibilityState={{ busy: deleteBusy, disabled: deleteBusy || offlineMode }}
+                        style={[styles.confirmButton, { backgroundColor: tokens.error, opacity: deleteBusy || offlineMode ? 0.55 : 1 }]}
+                      >
+                        {deleteBusy ? <ActivityIndicator size="small" color="#fff" /> : null}
+                        <Text style={styles.confirmLabel}>Удалить</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : (
+                  <Pressable
+                    testID="native-task-delete-open"
+                    onPress={() => setDeleteConfirmOpen(true)}
+                    disabled={offlineMode}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: offlineMode }}
+                    style={[styles.uploadButton, { borderColor: tokens.error, opacity: offlineMode ? 0.55 : 1 }]}
+                  >
+                    <MaterialCommunityIcons name="delete-outline" size={20} color={tokens.error} />
+                    <Text style={{ color: tokens.error, fontWeight: '800' }}>Удалить задачу</Text>
+                  </Pressable>
+                )}
+              </AccountSectionCard>
+            ) : null}
+
+            </> : null}
+            {detailTab === 'files' ? <>
+            <AccountSectionCard tokens={tokens} title={`Файлы · ${(task.attachments || []).length}`} description="Открывайте оригиналы или прикрепляйте новый файл размером до 20 МБ.">
+              {(task.attachments || []).length ? (task.attachments || []).map((attachment) => (
+                <Pressable
+                  key={attachment.id}
+                  testID={`native-task-attachment-${attachment.id}`}
+                  onPress={() => { void openAttachment(attachment); }}
+                  disabled={fileBusy || offlineMode}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Открыть файл ${attachment.file_name}`}
+                  accessibilityState={{ disabled: fileBusy || offlineMode }}
+                  style={[styles.fileRow, { borderColor: tokens.borderSoft }]}
+                >
+                  <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
+                  <View style={styles.flex}>
+                    <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{attachment.file_name}</Text>
+                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{taskFileSize(attachment.file_size)} · {formatTaskDate(attachment.uploaded_at)}</Text>
+                  </View>
+                  <MaterialCommunityIcons name="open-in-new" size={19} color={tokens.iconMuted} />
+                </Pressable>
+              )) : <Text style={{ color: tokens.textSecondary }}>Файлов пока нет.</Text>}
+              {task.capabilities?.can_upload_files ? (
+                <Pressable
+                  testID="native-task-attachment-upload"
+                  onPress={() => { void uploadAttachment(); }}
+                  disabled={fileBusy || offlineMode}
+                  accessibilityRole="button"
+                  accessibilityState={{ busy: fileBusy, disabled: fileBusy || offlineMode }}
+                  style={[styles.uploadButton, { borderColor: tokens.primary, opacity: fileBusy || offlineMode ? 0.55 : 1 }]}
+                >
+                  {fileBusy ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="paperclip" size={20} color={tokens.primary} />}
+                  <Text style={{ color: tokens.primary, fontWeight: '800' }}>Прикрепить файл</Text>
+                </Pressable>
+              ) : null}
+            </AccountSectionCard>
+
+            </> : null}
+            {detailTab === 'discussion' ? <>
+            {task.capabilities?.can_open_discussion ? (
+              <AccountSectionCard
+                tokens={tokens}
+                title="Обсуждение"
+                description="Комментарии задачи ведутся в корпоративном чате."
+              >
+                <Pressable
+                  testID="native-task-open-discussion"
+                  onPress={() => { void openDiscussion(); }}
+                  disabled={discussionBusy || offlineMode}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: discussionBusy || offlineMode, busy: discussionBusy }}
+                  style={[
+                    styles.discussionButton,
+                    { backgroundColor: tokens.primary, opacity: discussionBusy || offlineMode ? 0.6 : 1 },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="forum-outline" size={20} color="#fff" />
+                  <Text style={styles.confirmLabel}>{discussionBusy ? 'Открываем…' : 'Открыть чат задачи'}</Text>
+                </Pressable>
+              </AccountSectionCard>
+            ) : (
+              <AccountSectionCard tokens={tokens} title={`Комментарии (${comments.length})`}>
+                {comments.length === 0 ? (
+                  <Text style={{ color: tokens.textSecondary }}>Комментариев пока нет.</Text>
+                ) : null}
+              </AccountSectionCard>
+            )}
+            </> : null}
+            </>}
+          />
+          {getTaskActions(task.capabilities).length ? (
+            <View style={[styles.actions, { padding: 8, backgroundColor: tokens.panelSolid }]}>
+              {getTaskActions(task.capabilities).slice(0, 1).map((action) => <Pressable key={action.key} testID={`native-task-primary-${action.key}`} disabled={offlineMode || actionBusy} accessibilityRole="button" accessibilityState={{ disabled: offlineMode || actionBusy }} onPress={() => { setPendingAction(action); setActionComment(''); setError(''); }} style={[styles.actionButton, { backgroundColor: action.tone === 'danger' ? tokens.error : tokens.primary, opacity: offlineMode || actionBusy ? 0.5 : 1 }]}><Text style={styles.confirmLabel}>{action.label}</Text></Pressable>)}
+              {getTaskActions(task.capabilities).length > 1 ? <Pressable testID="native-task-actions-more" accessibilityRole="button" onPress={() => setActionsOpen(true)} style={[styles.actionButton, { borderColor: tokens.border }]}><Text style={{ color: tokens.textPrimary }}>Ещё действия</Text></Pressable> : null}
+            </View>
+          ) : null}
+
+
+          {detailTab === 'discussion' && !task.capabilities?.can_open_discussion ? (
+            <View style={[styles.composer, { backgroundColor: tokens.navBg, borderTopColor: tokens.borderSoft }]}>
+              <TextInput
+                testID="native-task-comment-input"
+                value={commentText}
+                onChangeText={setCommentText}
+                placeholder="Комментарий"
+                placeholderTextColor={tokens.textTertiary}
+                accessibilityLabel="Новый комментарий"
+                multiline
+                editable={!offlineMode}
+                style={[styles.composerInput, { color: tokens.textPrimary, borderColor: tokens.border }]}
+              />
+              <Pressable
+                testID="native-task-comment-send"
+                onPress={() => { void sendComment(); }}
+                disabled={commentSending || offlineMode || !commentText.trim()}
+                accessibilityRole="button"
+                accessibilityLabel="Отправить комментарий"
+                accessibilityState={{ disabled: commentSending || offlineMode || !commentText.trim() }}
+                style={[
+                  styles.sendButton,
+                  { backgroundColor: tokens.primary, opacity: commentSending || offlineMode || !commentText.trim() ? 0.5 : 1 },
+                ]}
+              >
+                {commentSending ? <ActivityIndicator size="small" color="#fff" /> : (
+                  <MaterialCommunityIcons name="send" size={19} color="#fff" />
+                )}
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      )}
+            {task && editOpen ? (<AccountSubpage visible title="Редактировать задачу" tokens={tokens} onClose={() => { if (!editBusy) setEditOpen(false); }}>
+{error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
               <AccountSectionCard tokens={tokens} title="Редактирование" description="Изменения сохраняются в общей задаче HUB-IT.">
                 <Text style={[styles.fieldLabel, { color: tokens.textSecondary }]}>Название</Text>
                 <TextInput
@@ -1033,126 +1306,22 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                   </Pressable>
                 </View>
               </AccountSectionCard>
-            ) : null}
+            </AccountSubpage>) : null}
 
-            <AccountSectionCard tokens={tokens} title="Участники и срок">
-              <AccountField tokens={tokens} label="Постановщик" value={taskPerson(task, 'created_by')} />
-              <AccountField tokens={tokens} label="Исполнители" value={taskPerson(task, 'assignee')} />
-              <AccountField tokens={tokens} label="Контролёр" value={taskPerson(task, 'controller')} />
-              <AccountField tokens={tokens} label="Срок" value={formatTaskDate(task.due_at)} />
-              {task.project_name ? <AccountField tokens={tokens} label="Проект" value={task.project_name} /> : null}
-              {task.object_name ? <AccountField tokens={tokens} label="Объект" value={task.object_name} /> : null}
-            </AccountSectionCard>
-
-            <AccountSectionCard
-              tokens={tokens}
-              title={`Чек-лист · ${(task.checklist_items || []).filter((item) => item.done).length}/${(task.checklist_items || []).length}`}
-              description={task.capabilities?.can_update_checklist ? 'Отмечайте выполненные пункты — состояние сразу синхронизируется с HUB-IT.' : 'Чек-лист доступен только для просмотра.'}
-            >
-              {(task.checklist_items || []).length ? (task.checklist_items || []).map((item) => (
-                <View key={item.id} style={[styles.checklistRow, { borderColor: tokens.borderSoft }]}>
-                  <Pressable
-                    testID={`native-task-checklist-toggle-${item.id}`}
-                    onPress={() => toggleChecklistItem(item)}
-                    disabled={!task.capabilities?.can_update_checklist || checklistBusy || offlineMode}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: item.done, disabled: !task.capabilities?.can_update_checklist || checklistBusy || offlineMode }}
-                    style={styles.checklistMain}
-                  >
-                    <MaterialCommunityIcons name={item.done ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'} size={23} color={item.done ? tokens.success : tokens.iconMuted} />
-                    <Text style={[styles.checklistText, { color: tokens.textPrimary, textDecorationLine: item.done ? 'line-through' : 'none' }]}>{item.text}</Text>
-                  </Pressable>
-                  {task.capabilities?.can_update_checklist ? (
-                    <Pressable
-                      testID={`native-task-checklist-remove-${item.id}`}
-                      onPress={() => removeChecklistItem(item)}
-                      disabled={checklistBusy || offlineMode}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Удалить пункт: ${item.text}`}
-                      style={styles.inlineIconButton}
-                    >
-                      <MaterialCommunityIcons name="close" size={20} color={tokens.error} />
-                    </Pressable>
-                  ) : null}
-                </View>
-              )) : <Text style={{ color: tokens.textSecondary }}>Пунктов пока нет.</Text>}
-              {task.capabilities?.can_update_checklist ? (
-                <View style={styles.addRow}>
-                  <TextInput
-                    testID="native-task-checklist-input"
-                    value={checklistText}
-                    onChangeText={setChecklistText}
-                    onSubmitEditing={addChecklistItem}
-                    editable={!checklistBusy && !offlineMode}
-                    maxLength={500}
-                    placeholder="Новый пункт"
-                    placeholderTextColor={tokens.textTertiary}
-                    accessibilityLabel="Новый пункт чек-листа"
-                    style={[styles.addInput, { color: tokens.textPrimary, borderColor: tokens.border }]}
-                  />
-                  <Pressable
-                    testID="native-task-checklist-add"
-                    onPress={addChecklistItem}
-                    disabled={checklistBusy || offlineMode || !checklistText.trim()}
-                    accessibilityRole="button"
-                    accessibilityLabel="Добавить пункт чек-листа"
-                    accessibilityState={{ disabled: checklistBusy || offlineMode || !checklistText.trim() }}
-                    style={[styles.addButton, { backgroundColor: tokens.primary, opacity: checklistBusy || offlineMode || !checklistText.trim() ? 0.5 : 1 }]}
-                  >
-                    {checklistBusy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="plus" size={22} color="#fff" />}
-                  </Pressable>
-                </View>
-              ) : null}
-            </AccountSectionCard>
-
-            <AccountSectionCard tokens={tokens} title={`Файлы · ${(task.attachments || []).length}`} description="Открывайте оригиналы или прикрепляйте новый файл размером до 20 МБ.">
-              {(task.attachments || []).length ? (task.attachments || []).map((attachment) => (
-                <Pressable
-                  key={attachment.id}
-                  testID={`native-task-attachment-${attachment.id}`}
-                  onPress={() => { void openAttachment(attachment); }}
-                  disabled={fileBusy || offlineMode}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Открыть файл ${attachment.file_name}`}
-                  accessibilityState={{ disabled: fileBusy || offlineMode }}
-                  style={[styles.fileRow, { borderColor: tokens.borderSoft }]}
-                >
-                  <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
-                  <View style={styles.flex}>
-                    <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{attachment.file_name}</Text>
-                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{taskFileSize(attachment.file_size)} · {formatTaskDate(attachment.uploaded_at)}</Text>
-                  </View>
-                  <MaterialCommunityIcons name="open-in-new" size={19} color={tokens.iconMuted} />
-                </Pressable>
-              )) : <Text style={{ color: tokens.textSecondary }}>Файлов пока нет.</Text>}
-              {task.capabilities?.can_upload_files ? (
-                <Pressable
-                  testID="native-task-attachment-upload"
-                  onPress={() => { void uploadAttachment(); }}
-                  disabled={fileBusy || offlineMode}
-                  accessibilityRole="button"
-                  accessibilityState={{ busy: fileBusy, disabled: fileBusy || offlineMode }}
-                  style={[styles.uploadButton, { borderColor: tokens.primary, opacity: fileBusy || offlineMode ? 0.55 : 1 }]}
-                >
-                  {fileBusy ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="paperclip" size={20} color={tokens.primary} />}
-                  <Text style={{ color: tokens.primary, fontWeight: '800' }}>Прикрепить файл</Text>
-                </Pressable>
-              ) : null}
-            </AccountSectionCard>
-
-            {getTaskActions(task.capabilities).length ? (
+            {task && actionsOpen ? (<AccountSubpage visible title="Действия задачи" tokens={tokens} onClose={() => setActionsOpen(false)}>
               <AccountSectionCard
                 tokens={tokens}
                 title="Действия"
                 description="Доступны только операции, разрешённые сервером."
               >
                 <View style={styles.actions}>
-                  {getTaskActions(task.capabilities).map((action) => (
+                  {getTaskActions(task.capabilities).slice(1).map((action) => (
                     <Pressable
                       key={action.key}
                       testID={`native-task-action-${action.key}`}
                       disabled={offlineMode || actionBusy}
                       onPress={() => {
+                        setActionsOpen(false);
                         setPendingAction(action);
                         setActionComment('');
                         setError('');
@@ -1175,9 +1344,10 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                   ))}
                 </View>
               </AccountSectionCard>
-            ) : null}
+            </AccountSubpage>) : null}
 
-            {pendingAction ? (
+            {pendingAction ? (<AccountSubpage visible title={pendingAction.label} tokens={tokens} onClose={() => { if (!actionBusy) { setPendingAction(null); setActionFile(null); } }}>
+{error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
               <AccountSectionCard
                 tokens={tokens}
                 title={pendingAction.label}
@@ -1243,144 +1413,8 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
                   </Pressable>
                 </View>
               </AccountSectionCard>
-            ) : null}
+            </AccountSubpage>) : null}
 
-            <AccountSectionCard tokens={tokens} title={`История статусов (${statusLog.length})`}>
-              {statusLogError ? (
-                <Text accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>{statusLogError}</Text>
-              ) : null}
-              {statusLog.length ? statusLog.map((item, index) => (
-                <View key={String(item.id || `${item.changed_at || ''}-${index}`)} style={[styles.historyRow, { borderColor: tokens.borderSoft }]}>
-                  <MaterialCommunityIcons name="history" size={20} color={tokens.primary} />
-                  <View style={styles.flex}>
-                    <Text style={[styles.historyTitle, { color: tokens.textPrimary }]}>
-                      {taskStatusLabel(item.old_status)} → {taskStatusLabel(item.new_status)}
-                    </Text>
-                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>
-                      {String(item.changed_by_username || '').trim() || 'Система'} · {formatTaskDate(item.changed_at)}
-                    </Text>
-                  </View>
-                </View>
-              )) : !statusLogError ? (
-                <Text style={{ color: tokens.textSecondary }}>Изменений статуса пока нет.</Text>
-              ) : null}
-            </AccountSectionCard>
-
-            {canDeleteTask ? (
-              <AccountSectionCard tokens={tokens} title="Удаление задачи" description="Удаление доступно автору задачи и администратору.">
-                {deleteConfirmOpen ? (
-                  <View style={styles.deleteConfirm}>
-                    <Text accessibilityRole="alert" style={{ color: tokens.error, fontWeight: '700' }}>
-                      Удалить задачу без возможности восстановления?
-                    </Text>
-                    <View style={styles.confirmActions}>
-                      <Pressable
-                        testID="native-task-delete-cancel"
-                        onPress={() => setDeleteConfirmOpen(false)}
-                        disabled={deleteBusy}
-                        accessibilityRole="button"
-                        style={[styles.confirmButton, { borderColor: tokens.border }]}
-                      >
-                        <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>Отмена</Text>
-                      </Pressable>
-                      <Pressable
-                        testID="native-task-delete-confirm"
-                        onPress={() => { void confirmDeleteTask(); }}
-                        disabled={deleteBusy || offlineMode}
-                        accessibilityRole="button"
-                        accessibilityState={{ busy: deleteBusy, disabled: deleteBusy || offlineMode }}
-                        style={[styles.confirmButton, { backgroundColor: tokens.error, opacity: deleteBusy || offlineMode ? 0.55 : 1 }]}
-                      >
-                        {deleteBusy ? <ActivityIndicator size="small" color="#fff" /> : null}
-                        <Text style={styles.confirmLabel}>Удалить</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ) : (
-                  <Pressable
-                    testID="native-task-delete-open"
-                    onPress={() => setDeleteConfirmOpen(true)}
-                    disabled={offlineMode}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: offlineMode }}
-                    style={[styles.uploadButton, { borderColor: tokens.error, opacity: offlineMode ? 0.55 : 1 }]}
-                  >
-                    <MaterialCommunityIcons name="delete-outline" size={20} color={tokens.error} />
-                    <Text style={{ color: tokens.error, fontWeight: '800' }}>Удалить задачу</Text>
-                  </Pressable>
-                )}
-              </AccountSectionCard>
-            ) : null}
-
-            {task.capabilities?.can_open_discussion ? (
-              <AccountSectionCard
-                tokens={tokens}
-                title="Обсуждение"
-                description="Комментарии задачи ведутся в корпоративном чате."
-              >
-                <Pressable
-                  testID="native-task-open-discussion"
-                  onPress={() => { void openDiscussion(); }}
-                  disabled={discussionBusy || offlineMode}
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: discussionBusy || offlineMode, busy: discussionBusy }}
-                  style={[
-                    styles.discussionButton,
-                    { backgroundColor: tokens.primary, opacity: discussionBusy || offlineMode ? 0.6 : 1 },
-                  ]}
-                >
-                  <MaterialCommunityIcons name="forum-outline" size={20} color="#fff" />
-                  <Text style={styles.confirmLabel}>{discussionBusy ? 'Открываем…' : 'Открыть чат задачи'}</Text>
-                </Pressable>
-              </AccountSectionCard>
-            ) : (
-              <AccountSectionCard tokens={tokens} title={`Комментарии (${comments.length})`}>
-                {comments.length === 0 ? (
-                  <Text style={{ color: tokens.textSecondary }}>Комментариев пока нет.</Text>
-                ) : comments.map((comment) => (
-                  <View key={String(comment.id)} style={[styles.comment, { borderColor: tokens.borderSoft }]}>
-                    <Text style={[styles.commentAuthor, { color: tokens.textPrimary }]}>{commentAuthor(comment)}</Text>
-                    <Text style={[styles.commentDate, { color: tokens.textTertiary }]}>{formatTaskDate(comment.created_at)}</Text>
-                    <Text style={[styles.commentBody, { color: tokens.textPrimary }]}>{comment.body}</Text>
-                  </View>
-                ))}
-              </AccountSectionCard>
-            )}
-          </ScrollView>
-
-          {!task.capabilities?.can_open_discussion ? (
-            <View style={[styles.composer, { backgroundColor: tokens.navBg, borderTopColor: tokens.borderSoft }]}>
-              <TextInput
-                testID="native-task-comment-input"
-                value={commentText}
-                onChangeText={setCommentText}
-                placeholder="Комментарий"
-                placeholderTextColor={tokens.textTertiary}
-                accessibilityLabel="Новый комментарий"
-                multiline
-                editable={!offlineMode}
-                style={[styles.composerInput, { color: tokens.textPrimary, borderColor: tokens.border }]}
-              />
-              <Pressable
-                testID="native-task-comment-send"
-                onPress={() => { void sendComment(); }}
-                disabled={commentSending || offlineMode || !commentText.trim()}
-                accessibilityRole="button"
-                accessibilityLabel="Отправить комментарий"
-                accessibilityState={{ disabled: commentSending || offlineMode || !commentText.trim() }}
-                style={[
-                  styles.sendButton,
-                  { backgroundColor: tokens.primary, opacity: commentSending || offlineMode || !commentText.trim() ? 0.5 : 1 },
-                ]}
-              >
-                {commentSending ? <ActivityIndicator size="small" color="#fff" /> : (
-                  <MaterialCommunityIcons name="send" size={19} color="#fff" />
-                )}
-              </Pressable>
-            </View>
-          ) : null}
-        </View>
-      )}
       </KeyboardAvoidingView>
     </AccountScreenScaffold>
   );

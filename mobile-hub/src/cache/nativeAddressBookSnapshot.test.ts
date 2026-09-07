@@ -58,6 +58,16 @@ beforeEach(() => {
   mockBeforeSnapshotRead = null;
 });
 
+it('keeps both concurrent replacements valid and publishes the last complete revision', async () => {
+  const first = directory(20, 3);
+  const second = directory(20, 4);
+  expect(await Promise.all([
+    writeNativeAddressBookSnapshot(17, first),
+    writeNativeAddressBookSnapshot(17, second),
+  ])).toEqual([true, true]);
+  expect((await readNativeAddressBookSnapshot(17))?.data).toEqual(second);
+});
+
 it('persists and restores a complete address book larger than 15 MB', async () => {
   const value = directory(1_050_000, 15);
 

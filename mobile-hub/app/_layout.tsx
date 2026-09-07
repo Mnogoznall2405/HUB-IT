@@ -1,3 +1,4 @@
+import { useReducedMotion } from '../src/accessibility/useReducedMotion';
 import '../src/notifications/notificationBackgroundTask';
 import '../src/lifecycle/mobileBackgroundSync';
 import { Stack } from 'expo-router';
@@ -31,6 +32,7 @@ export default function RootLayout() {
 }
 
 function ThemedRoot() {
+  const reduceMotion = useReducedMotion();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const dark = tokens.scheme === 'dark';
@@ -46,7 +48,7 @@ function ThemedRoot() {
           <AppLifecycle />
           <AppPrivacyShield />
           <Stack
-            screenOptions={{
+            screenOptions={{ animation: reduceMotion ? 'none' : 'slide_from_right',
               headerShown: false,
               contentStyle: { backgroundColor: tokens.pageBg },
             }}

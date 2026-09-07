@@ -1069,8 +1069,8 @@ def test_refresh_rejects_replayed_refresh_token(monkeypatch):
         ),
     )
     monkeypatch.setattr(auth.auth_runtime_store_service, "is_jti_revoked", lambda jti: False)
-    monkeypatch.setattr(auth.auth_runtime_store_service, "consume_refresh_token", lambda jti: None)
-    monkeypatch.setattr(auth.auth_runtime_store_service, "wait_refresh_rotation_grace", lambda jti: None)
+    monkeypatch.setattr(auth.auth_runtime_store_service, "get_json", lambda namespace, key: None)
+    monkeypatch.setattr(auth.auth_runtime_store_service, "get_refresh_rotation_grace", lambda jti: None)
 
     app = FastAPI()
     app.include_router(auth.router, prefix="/auth")
@@ -1095,10 +1095,10 @@ def test_refresh_grace_reuses_rotated_tokens(monkeypatch):
             device_id="session:session-1",
         ),
     )
-    monkeypatch.setattr(auth.auth_runtime_store_service, "consume_refresh_token", lambda jti: None)
+    monkeypatch.setattr(auth.auth_runtime_store_service, "get_json", lambda namespace, key: None)
     monkeypatch.setattr(
         auth.auth_runtime_store_service,
-        "wait_refresh_rotation_grace",
+        "get_refresh_rotation_grace",
         lambda jti: {
             "access_token": "grace-access",
             "refresh_token": "grace-refresh",

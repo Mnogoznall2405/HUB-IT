@@ -388,7 +388,7 @@ const Vcs = () => {
     return (
         <MainLayout title="ВКС терминалы">
             <PageShell sx={{ p: { xs: 2, md: 4 }, maxWidth: 1400, mx: 'auto', flexGrow: 1 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
+                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2, justifyContent: 'space-between', alignItems: { xs: 'stretch', md: 'center' }, mb: 4 }}>
                     <Box>
                         <Typography
                             variant="h4"
@@ -484,7 +484,9 @@ const Vcs = () => {
                     let tableRows = [];
                     try {
                         tableRows = JSON.parse(infoContent);
-                    } catch (e) { }
+                    } catch {
+                        // Legacy non-JSON descriptions do not contain table rows.
+                    }
                     if (!Array.isArray(tableRows) || tableRows.length === 0) return null;
 
                     return (
@@ -657,10 +659,10 @@ const Vcs = () => {
 
                                         {canManageVcs && (
                                             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
-                                                <IconButton size="small" onClick={() => handleOpenDialog(comp)} color="info">
+                                                <IconButton aria-label={`Редактировать терминал ${comp.name}`} size="small" onClick={() => handleOpenDialog(comp)} color="info">
                                                     <EditIcon fontSize="small" />
                                                 </IconButton>
-                                                <IconButton size="small" onClick={() => handleDelete(comp.id, comp.name)} color="error">
+                                                <IconButton aria-label={`Удалить терминал ${comp.name}`} size="small" onClick={() => handleDelete(comp.id, comp.name)} color="error">
                                                     <DeleteIcon fontSize="small" />
                                                 </IconButton>
                                             </Box>
@@ -802,7 +804,7 @@ const Vcs = () => {
                                                 <TableCell sx={{ p: 1 }}><TextField fullWidth size="small" multiline rows={2} value={row.contact1 || ''} onChange={(e) => handleTableEdit(index, 'contact1', e.target.value)} /></TableCell>
                                                 <TableCell sx={{ p: 1 }}><TextField fullWidth size="small" multiline rows={2} value={row.contact2 || ''} onChange={(e) => handleTableEdit(index, 'contact2', e.target.value)} /></TableCell>
                                                 <TableCell align="right" sx={{ p: 1 }}>
-                                                    <IconButton color="error" size="small" onClick={() => handleTableDeleteRow(index)}>
+                                                    <IconButton aria-label={`Удалить строку ${index + 1}`} color="error" size="small" onClick={() => handleTableDeleteRow(index)}>
                                                         <DeleteIcon fontSize="small" />
                                                     </IconButton>
                                                 </TableCell>

@@ -1,5 +1,7 @@
+import { russianPlural } from '../../utils/russianPlural';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,6 +12,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {
@@ -70,7 +73,7 @@ import {
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { shareNativeText } from '../../share/nativeOutgoingShare';
 import { useFluentTokens } from '../../theme/fluentTokens';
-import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
+import { AccountScreenScaffold, AccountSectionCard, AccountSubpage } from '../account/AccountChrome';
 
 const PROCESSING_POLL_MS = 4_000;
 
@@ -78,6 +81,12 @@ type BusyFile = { id: string; action: MyFileCardAction } | null;
 type UploadState = { name: string; index: number; totalFiles: number; progress: number | null } | null;
 
 export function NativeMyFilesScreen() {
+  const { user, hasPermission } = useAuth();
+  const scope = ['my_files.read', 'my_files.write', 'my_files.share'].map(permission => hasPermission(permission)).join('|');
+  return <NativeMyFilesContent key={`${user?.id || 0}|${scope}`} />;
+}
+
+function NativeMyFilesContent() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -85,7 +94,14 @@ export function NativeMyFilesScreen() {
   const canWrite = hasPermission('my_files.write');
   const canShare = hasPermission('my_files.share');
   const userId = Number(user?.id || 0);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [items, setItems] = useState<MyFileRecord[]>([]);
+  const [fileQuery, setFileQuery] = useState('');
+  const filteredFiles = useMemo(() => {
+    const query = fileQuery.trim().toLocaleLowerCase('ru-RU');
+    if (!query) return items;
+    return items.filter((item) => `${item.original_file_name}\n${item.download_file_name}`.toLocaleLowerCase('ru-RU').includes(query));
+  }, [fileQuery, items]);
   const [offlineFileIds, setOfflineFileIds] = useState<Set<string>>(() => new Set());
   const [quota, setQuota] = useState<MyFilesQuota | null>(null);
   const [retentionDays, setRetentionDays] = useState(1);
@@ -96,65 +112,106 @@ export function NativeMyFilesScreen() {
   const [busyFile, setBusyFile] = useState<BusyFile>(null);
   const [preview, setPreview] = useState<NativeMyFilePreviewState>(null);
   const [error, setError] = useState('');
+  const [listUnavailable, setListUnavailable] = useState(false);
   const [notice, setNotice] = useState('');
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const uploadAbortRef = useRef<AbortController | null>(null);
   const uploadLockRef = useRef(false);
+  const uploadGeneration = useRef(0);
   const fileActionLockRef = useRef(false);
   const mountedRef = useRef(true);
+  const focusedRef = useRef(false);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       uploadAbortRef.current?.abort();
+      loadAbortRef.current?.abort();
     };
   }, []);
 
-  const loadData = useCallback(async ({ refresh = false, silent = false } = {}) => {
+  useLayoutEffect(() => {
+    uploadGeneration.current += 1;
+    uploadAbortRef.current?.abort();
+  }, [userId, canWrite, offlineMode]);
+
+  const loadData = useCallback(async ({ refresh = false, silent = false, poll = false } = {}) => {
+    if (poll && (!focusedRef.current || loadAbortRef.current)) return;
+    loadAbortRef.current?.abort();
+    const requestId = ++loadRequestRef.current;
     if (!canRead) {
       setLoading(false);
       return;
     }
-    if (refresh) setRefreshing(true);
-    else if (!silent) setLoading(true);
-    if (!silent) setError('');
-    let cached = false;
-    if (userId) {
-      const snapshot = await readNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId);
-      if (!mountedRef.current) return;
-      if (snapshot) {
-        cached = true;
-        setItems(snapshot.data.items);
-        setQuota(snapshot.data.quota);
-        setLoading(false);
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const current = () => mountedRef.current && requestId === loadRequestRef.current && !controller.signal.aborted;
+    try {
+      if (refresh) setRefreshing(true);
+      else if (!silent) setLoading(true);
+      if (!silent) setError('');
+      let cached = false;
+      if (userId && (!silent || offlineMode)) {
+        const snapshot = await readNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId);
+        if (!current()) return;
+        if (snapshot) {
+          cached = true;
+          setListUnavailable(false);
+          setItems(snapshot.data.items);
+          setQuota(snapshot.data.quota);
+          setLoading(false);
+        }
       }
-    }
-    if (offlineMode) {
-      if (!cached && !silent) setError('Нет подключения и сохранённого списка файлов.');
+      if (offlineMode) {
+        setListUnavailable(!cached);
+        if (!cached && !silent) setError('Нет подключения и сохранённого списка файлов.');
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+      const [filesResult, quotaResult] = await Promise.allSettled([listMyFiles(controller.signal), getMyFilesQuota(controller.signal)]);
+      if (!current()) return;
+      const errors: string[] = [];
+      setListUnavailable(filesResult.status === 'rejected');
+      if (filesResult.status === 'fulfilled') setItems(filesResult.value);
+      else errors.push(formatApiError(filesResult.reason, 'Не удалось загрузить список файлов.'));
+      if (quotaResult.status === 'fulfilled') setQuota(quotaResult.value);
+      else errors.push(formatApiError(quotaResult.reason, 'Не удалось загрузить квоту.'));
+      setError(errors.join(' '));
+      if (userId && filesResult.status === 'fulfilled' && quotaResult.status === 'fulfilled') {
+        void writeNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId, {
+          items: filesResult.value,
+          quota: quotaResult.value,
+        });
+      }
       setLoading(false);
       setRefreshing(false);
-      return;
+    } catch (cause) {
+      if (current()) {
+        setListUnavailable(true);
+        setError(formatApiError(cause, 'Не удалось обновить список файлов.'));
+      }
+    } finally {
+      if (requestId === loadRequestRef.current) {
+        loadAbortRef.current = null;
+        if (current()) { setLoading(false); setRefreshing(false); }
+      }
     }
-    const [filesResult, quotaResult] = await Promise.allSettled([listMyFiles(), getMyFilesQuota()]);
-    if (!mountedRef.current) return;
-    const errors: string[] = [];
-    if (filesResult.status === 'fulfilled') setItems(filesResult.value);
-    else errors.push(formatApiError(filesResult.reason, 'Не удалось загрузить список файлов.'));
-    if (quotaResult.status === 'fulfilled') setQuota(quotaResult.value);
-    else errors.push(formatApiError(quotaResult.reason, 'Не удалось загрузить квоту.'));
-    setError(errors.join(' '));
-    if (userId && filesResult.status === 'fulfilled' && quotaResult.status === 'fulfilled') {
-      void writeNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId, {
-        items: filesResult.value,
-        quota: quotaResult.value,
-      });
-    }
-    setLoading(false);
-    setRefreshing(false);
   }, [canRead, offlineMode, userId]);
 
-  useEffect(() => { void loadData(); }, [loadData]);
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
+    void loadData();
+    return () => {
+      focusedRef.current = false;
+      loadAbortRef.current?.abort();
+      loadAbortRef.current = null;
+      loadRequestRef.current += 1;
+    };
+  }, [loadData]));
 
   useEffect(() => {
     let active = true;
@@ -175,7 +232,7 @@ export function NativeMyFilesScreen() {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       setAppActive(state === 'active');
-      if (state === 'active') void loadData({ silent: true });
+      if (state === 'active' && focusedRef.current) void loadData({ silent: true, poll: true });
     });
     return () => subscription.remove();
   }, [loadData]);
@@ -183,13 +240,15 @@ export function NativeMyFilesScreen() {
   const hasProcessing = useMemo(() => items.some(isMyFileProcessing), [items]);
   useEffect(() => {
     if (!hasProcessing || offlineMode || !appActive) return undefined;
-    const timer = setInterval(() => { void loadData({ silent: true }); }, PROCESSING_POLL_MS);
+    const timer = setInterval(() => { void loadData({ silent: true, poll: true }); }, PROCESSING_POLL_MS);
     return () => clearInterval(timer);
   }, [appActive, hasProcessing, loadData, offlineMode]);
 
   const startUpload = useCallback(async (source: 'files' | 'folder' = 'files') => {
     if (!canWrite || offlineMode || uploadState || packingFolder || uploadLockRef.current) return;
     uploadLockRef.current = true;
+    const generation = uploadGeneration.current;
+    const current = () => mountedRef.current && generation === uploadGeneration.current;
     setError('');
     setNotice('');
     try {
@@ -197,6 +256,7 @@ export function NativeMyFilesScreen() {
       const files = source === 'folder'
         ? [await pickNativeMyFilesFolder()].filter((file): file is NonNullable<typeof file> => Boolean(file))
         : await pickNativeMyFiles();
+      if (!current()) return;
       setPackingFolder(false);
       if (!files.length) return;
       const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
@@ -207,19 +267,20 @@ export function NativeMyFilesScreen() {
       uploadAbortRef.current = controller;
       let uploaded = 0;
       for (let index = 0; index < files.length; index += 1) {
+        if (!current() || controller.signal.aborted) return;
         const file = files[index];
         setUploadState({ name: file.name, index: index + 1, totalFiles: files.length, progress: 0 });
         await uploadNativeMyFile(file, retentionDays, {
           signal: controller.signal,
           onProgress: ({ progress }) => {
-            if (mountedRef.current) setUploadState({ name: file.name, index: index + 1, totalFiles: files.length, progress });
+            if (current()) setUploadState({ name: file.name, index: index + 1, totalFiles: files.length, progress });
           },
         });
         uploaded += 1;
       }
-      if (mountedRef.current) setNotice(`Файлов добавлено в очередь: ${uploaded}. Идёт проверка безопасности.`);
+      if (current()) setNotice(`Файлов добавлено в очередь: ${uploaded}. Идёт проверка безопасности.`);
     } catch (cause) {
-      if (!mountedRef.current) return;
+      if (!current()) return;
       if (cause instanceof Error && cause.name === 'AbortError') {
         setNotice('Загрузка отменена. Список обновлён, чтобы проверить состояние файла.');
       } else {
@@ -231,7 +292,7 @@ export function NativeMyFilesScreen() {
       if (mountedRef.current) {
         setPackingFolder(false);
         setUploadState(null);
-        await loadData({ silent: true });
+        if (current()) await loadData({ silent: true });
       }
     }
   }, [canWrite, loadData, offlineMode, packingFolder, quota, retentionDays, uploadState]);
@@ -242,7 +303,7 @@ export function NativeMyFilesScreen() {
     operation: () => Promise<void>,
     options: { allowOffline?: boolean } = {},
   ) => {
-    if (busyFile || (offlineMode && !options.allowOffline) || fileActionLockRef.current) return;
+    if (!mountedRef.current || busyFile || (offlineMode && !options.allowOffline) || fileActionLockRef.current) return;
     fileActionLockRef.current = true;
     setBusyFile({ id: item.id, action });
     setError('');
@@ -250,7 +311,7 @@ export function NativeMyFilesScreen() {
     try {
       await operation();
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось выполнить действие с файлом.'));
+      if (mountedRef.current) setError(formatApiError(cause, 'Не удалось выполнить действие с файлом.'));
     } finally {
       fileActionLockRef.current = false;
       if (mountedRef.current) setBusyFile(null);
@@ -260,6 +321,7 @@ export function NativeMyFilesScreen() {
   const openFile = useCallback((item: MyFileRecord) => {
     void runFileAction(item, 'open', async () => {
       const file = await downloadNativeMyFile(item, { userId });
+      if (!mountedRef.current) return;
       await openNativeFile(file, myFileMimeType(item));
     }, { allowOffline: true });
   }, [runFileAction, userId]);
@@ -270,11 +332,13 @@ export function NativeMyFilesScreen() {
       if (!previewKind) throw new Error('Предпросмотр этого файла недоступен');
       if (previewKind === 'text') {
         const file = await downloadNativeMyFile(item, { userId });
+        if (!mountedRef.current) return;
         const text = await readNativeMyFileTextPreview(file);
         if (mountedRef.current) setPreview({ kind: 'text', fileName: myFileName(item), text });
         return;
       }
       const offlineFile = userId ? await getNativeMyFilesOfflineFile(userId, item) : null;
+      if (!mountedRef.current) return;
       const mimeType = myFileMimeType(item).split(';', 1)[0].trim().toLowerCase();
       if (offlineFile && previewKind === 'image' && mimeType.startsWith('image/')) {
         if (mountedRef.current) setPreview({ kind: 'image', fileName: myFileName(item), imageUri: offlineFile.uri });
@@ -287,9 +351,11 @@ export function NativeMyFilesScreen() {
       const cached = userId
         ? await readNativeEntitySnapshot<NativeMyFileDetailSnapshot>('my-file-details', userId, item.id)
         : null;
+      if (!mountedRef.current) return;
       let metadata = cached?.data.preview;
       if (!offlineMode) {
         metadata = await getMyFilePreview(item.id);
+        if (!mountedRef.current) return;
         if (userId) {
           void writeNativeEntitySnapshot<NativeMyFileDetailSnapshot>('my-file-details', userId, item.id, {
             preview: metadata,
@@ -298,6 +364,7 @@ export function NativeMyFilesScreen() {
       }
       if (!metadata) throw new Error('Предпросмотр ещё не сохранён. Откройте файл один раз при наличии интернета');
       const downloaded = await downloadNativeMyFilePreview(item, metadata);
+      if (!mountedRef.current) return;
       if (previewKind === 'pdf') {
         await openNativeFile(downloaded.file, downloaded.mimeType);
         return;
@@ -311,6 +378,7 @@ export function NativeMyFilesScreen() {
   const shareFile = useCallback((item: MyFileRecord) => {
     void runFileAction(item, 'share-file', async () => {
       const file = await downloadNativeMyFile(item, { userId });
+      if (!mountedRef.current) return;
       await shareNativeFile(file, myFileName(item), myFileMimeType(item));
     }, { allowOffline: true });
   }, [runFileAction, userId]);
@@ -319,6 +387,7 @@ export function NativeMyFilesScreen() {
     void runFileAction(item, 'save-offline', async () => {
       if (!userId) throw new Error('Не удалось определить владельца файла');
       const source = await downloadNativeMyFile(item, { userId });
+      if (!mountedRef.current) return;
       await pinNativeMyFileOffline(userId, item, source);
       if (mountedRef.current) {
         setOfflineFileIds((current) => new Set(current).add(item.id));
@@ -344,6 +413,7 @@ export function NativeMyFilesScreen() {
 
   const deliverShareLink = useCallback(async (item: MyFileRecord, rotate: boolean) => {
     const share = await createMyFileShare(item.id, rotate);
+    if (!mountedRef.current) return;
     const url = buildMyFilePublicUrl(share.token, HUB_WEB_ORIGIN);
     await shareNativeText({ title: myFileName(item), text: 'Публичная ссылка HUB-IT', url });
     if (mountedRef.current) {
@@ -456,7 +526,7 @@ export function NativeMyFilesScreen() {
 
   if (!canRead) {
     return (
-      <AccountScreenScaffold title="Мой диск" tokens={tokens}>
+      <AccountScreenScaffold title="Мои файлы" tokens={tokens}>
         <AccountSectionCard tokens={tokens} title="Нет доступа" description="Для раздела нужно право my_files.read.">{null}</AccountSectionCard>
       </AccountScreenScaffold>
     );
@@ -465,31 +535,25 @@ export function NativeMyFilesScreen() {
   const quotaPercent = quota?.limit_bytes ? Math.min(100, Math.round((quota.used_bytes / quota.limit_bytes) * 100)) : 0;
   return (
     <AccountScreenScaffold
-      title="Мой диск"
+      title="Мои файлы"
       tokens={tokens}
       scroll={false}
     >
       <NativeMyFilePreviewModal preview={preview} tokens={tokens} onClose={() => setPreview(null)} />
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показан сохранённый список. Файлы со статусом «Офлайн» можно открыть и отправить без сети.</Text> : null}
-      {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
-      {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.success }]}>{notice}</Text> : null}
+      {error && !uploadOpen ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
+      {notice && !uploadOpen ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.success }]}>{notice}</Text> : null}
 
-      <View style={[styles.quotaCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <View style={styles.quotaHeading}>
-          <View>
-            <Text style={[styles.quotaTitle, { color: tokens.textPrimary }]}>Личное хранилище</Text>
-            <Text style={[styles.quotaValue, { color: tokens.textSecondary }]}>
-              {quota ? `${formatMyFileSize(quota.used_bytes)} из ${formatMyFileSize(quota.limit_bytes)}` : 'Квота временно недоступна'}
-            </Text>
-          </View>
-          <Text style={[styles.quotaPercent, { color: tokens.primary }]}>{quota ? `${quotaPercent}%` : '—'}</Text>
-        </View>
-        <View style={[styles.quotaTrack, { backgroundColor: tokens.panelInset }]}>
-          <View style={[styles.quotaFill, { backgroundColor: quotaPercent >= 90 ? tokens.warning : tokens.primary, width: `${quotaPercent}%` }]} />
-        </View>
-        <Text style={[styles.retentionHint, { color: tokens.textTertiary }]}>Файлы автоматически удаляются после выбранного срока, максимум через 30 дней.</Text>
-      </View>
-
+      <Text style={{ color: quotaPercent >= 90 ? tokens.warning : tokens.textSecondary, marginBottom: 10 }}>
+        {quota ? `${formatMyFileSize(quota.used_bytes)} из ${formatMyFileSize(quota.limit_bytes)} · ${quotaPercent}%` : 'Квота временно недоступна'}
+      </Text>
+      {canWrite ? <Pressable testID="native-my-files-open-upload" accessibilityRole="button" accessibilityLabel="Загрузить" onPress={() => setUploadOpen(true)} style={[styles.uploadButton, { backgroundColor: tokens.primary, marginBottom: 10 }]}>
+        <Text style={styles.uploadButtonText}>{uploadState || packingFolder ? 'Загрузка…' : 'Загрузить'}</Text>
+      </Pressable> : null}
+      <AccountSubpage visible={uploadOpen} title="Загрузка файлов" tokens={tokens} onClose={() => { if (!uploadAbortRef.current) uploadGeneration.current += 1; setUploadOpen(false); }}>
+        {error ? <Text accessibilityRole="alert" style={{ color: tokens.error }}>{error}</Text> : null}
+        {notice ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.success }}>{notice}</Text> : null}
+        <Text style={{ color: tokens.textSecondary, marginBottom: 12 }}>Выберите срок хранения перед загрузкой. После его окончания файлы автоматически удаляются, максимум через 30 дней.</Text>
       {canWrite ? (
         <View style={styles.uploadBlock}>
           <Text style={[styles.sectionLabel, { color: tokens.textSecondary }]}>Срок хранения нового файла</Text>
@@ -505,7 +569,7 @@ export function NativeMyFilesScreen() {
                   disabled={Boolean(uploadState)}
                   style={[styles.retentionChip, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}
                 >
-                  <Text style={[styles.retentionText, { color: selected ? '#fff' : tokens.textPrimary }]}>{days} {days === 1 ? 'день' : 'дней'}</Text>
+                  <Text style={[styles.retentionText, { color: selected ? '#fff' : tokens.textPrimary }]}>{days} {russianPlural(days, ['день', 'дня', 'дней'])}</Text>
                 </Pressable>
               );
             })}
@@ -553,11 +617,23 @@ export function NativeMyFilesScreen() {
         </View>
       ) : null}
 
+      </AccountSubpage>
+
       <View style={styles.listHeading}>
-        <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Файлы · {items.length}</Text>
+        <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>{fileQuery.trim() ? `Найдено: ${filteredFiles.length} из ${items.length}` : `Файлы · ${items.length}`}</Text>
         <Pressable onPress={refreshFiles} disabled={refreshing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить список файлов" style={styles.refreshButton}>
           {refreshing ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="refresh" size={21} color={tokens.primary} />}
         </Pressable>
+      </View>
+
+      <View style={[styles.fileSearch, { borderColor: tokens.borderSoft, backgroundColor: tokens.panelSolid }]}>
+        <MaterialCommunityIcons name="magnify" size={22} color={tokens.iconMuted} />
+        <TextInput value={fileQuery} onChangeText={setFileQuery} accessibilityLabel="Поиск файлов по названию"
+          placeholder="Название файла" placeholderTextColor={tokens.textTertiary} autoCorrect={false}
+          style={[styles.fileSearchInput, { color: tokens.textPrimary }]} />
+        {fileQuery ? <Pressable accessibilityRole="button" accessibilityLabel="Очистить поиск файлов" onPress={() => setFileQuery('')} style={styles.refreshButton}>
+          <MaterialCommunityIcons name="close" size={22} color={tokens.iconMuted} />
+        </Pressable> : null}
       </View>
 
       {loading && !items.length ? (
@@ -565,16 +641,17 @@ export function NativeMyFilesScreen() {
       ) : (
         <FlatList
           testID="native-my-files-list"
-          data={items}
+          data={filteredFiles}
+          keyboardShouldPersistTaps="handled"
           keyExtractor={(item) => item.id}
           refreshing={refreshing}
           onRefresh={refreshFiles}
-          contentContainerStyle={items.length ? styles.listContent : styles.emptyContent}
+          contentContainerStyle={filteredFiles.length ? styles.listContent : styles.emptyContent}
           ListEmptyComponent={(
             <View style={styles.emptyBody}>
               <MaterialCommunityIcons name="folder-open-outline" size={42} color={tokens.iconMuted} />
-              <Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>{error ? 'Список не загрузился' : 'Файлов пока нет'}</Text>
-              <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{error ? 'Проверьте соединение и повторите.' : 'Загрузите файлы — после проверки безопасности они появятся здесь.'}</Text>
+              <Text style={[styles.emptyTitle, { color: tokens.textPrimary }]}>{listUnavailable && !items.length ? 'Список не загрузился' : fileQuery.trim() ? 'Файлы не найдены' : 'Файлов пока нет'}</Text>
+              <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{listUnavailable && !items.length ? 'Проверьте соединение и повторите.' : fileQuery.trim() ? 'Попробуйте другое название или очистите поиск.' : 'Загрузите файлы — после проверки безопасности они появятся здесь.'}</Text>
             </View>
           )}
           renderItem={renderFile}
@@ -585,6 +662,8 @@ export function NativeMyFilesScreen() {
 }
 
 const styles = StyleSheet.create({
+  fileSearch: { minHeight: 48, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: 12, paddingLeft: 10, marginBottom: 10 },
+  fileSearchInput: { flex: 1, minWidth: 0, minHeight: 48, paddingHorizontal: 8, fontSize: 15 },
   headerAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   warning: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   error: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },

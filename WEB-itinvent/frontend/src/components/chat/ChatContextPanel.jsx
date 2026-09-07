@@ -600,7 +600,7 @@ function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = n
 }
 
 function ConversationNotificationsToggle({ muted, disabled, onChange }) {
-  const enabled = !Boolean(muted);
+  const enabled = !muted;
   const toggleDisabled = Boolean(disabled) || typeof onChange !== 'function';
 
   return (

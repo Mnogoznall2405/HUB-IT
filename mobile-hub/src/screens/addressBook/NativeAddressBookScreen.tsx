@@ -447,27 +447,7 @@ export function NativeAddressBookScreen() {
       title="Адресная книга"
       tokens={tokens}
       scroll={false}
-      rightAction={isAdmin ? (
-        <Pressable
-          testID="address-book-sync"
-          onPress={() => { void handleSync(); }}
-          disabled={syncing}
-          accessibilityRole="button"
-          accessibilityLabel="Обновить из 1С"
-          style={styles.headerAction}
-        >
-          {syncing ? (
-            <ActivityIndicator color={tokens.primary} />
-          ) : (
-            <MaterialCommunityIcons name="refresh" size={22} color={tokens.primary} />
-          )}
-        </Pressable>
-      ) : undefined}
     >
-      <Text style={[styles.count, { color: tokens.textSecondary }]}>{countLabel}</Text>
-      <Text style={[styles.updated, { color: tokens.textTertiary }]}>
-        Обновлено: {formatDateTime(status?.updated_at)}
-      </Text>
       <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
         <TextInput
@@ -481,11 +461,19 @@ export function NativeAddressBookScreen() {
           returnKeyType="search"
         />
         {query ? (
-          <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск">
+          <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.headerAction}>
             <MaterialCommunityIcons name="close" size={18} color={tokens.iconMuted} />
           </Pressable>
         ) : null}
       </View>
+      <Text style={[styles.count, { color: tokens.textSecondary }]}>{countLabel}</Text>
+      <Text style={[styles.updated, { color: tokens.textTertiary }]}>
+        Обновлено: {formatDateTime(status?.updated_at)}
+      </Text>
+      {isAdmin ? <Pressable testID="address-book-sync" onPress={() => { void handleSync(); }} disabled={syncing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить из 1С" accessibilityState={{ disabled: syncing || offlineMode, busy: syncing }} style={{ minHeight: 44, flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        {syncing ? <ActivityIndicator color={tokens.primary} /> : <MaterialCommunityIcons name="database-sync-outline" size={20} color={tokens.primary} />}
+        <Text style={{ color: tokens.primary }}>Синхронизировать с 1С</Text>
+      </Pressable> : null}
       <AccountStatusText tokens={tokens} error={error} message={message} />
       {status?.last_error ? (
         <Text style={[styles.warning, { color: tokens.warning }]}>

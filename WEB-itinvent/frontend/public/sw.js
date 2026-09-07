@@ -485,7 +485,8 @@ async function cleanupOldCaches() {
   const keys = await caches.keys();
   await Promise.all(
     keys
-      .filter((key) => !validCaches.has(key))
+      .filter((key) => ['hubit-app-shell-', 'hubit-app-assets-', 'hubit-chat-media-', 'itinvent-push-runtime-']
+        .some((prefix) => key.startsWith(prefix)) && !validCaches.has(key))
       .map((key) => caches.delete(key)),
   );
 }
@@ -533,7 +534,8 @@ async function handleNavigationRequest(request, event) {
     })
     .catch(() => null);
 
-  return networkResponse || await cachedResponse() || buildOfflineShellResponse();
+  if (networkResponse && ![502, 503, 504].includes(networkResponse.status)) return networkResponse;
+  return await cachedResponse() || networkResponse || buildOfflineShellResponse();
 }
 
 async function handleStaticAssetRequest(request) {
@@ -879,10 +881,9 @@ async function broadcastRuntimeState(reason = 'snapshot') {
 }
 
 self.addEventListener('install', (event) => {
-  // Activate immediately so notificationclick fixes are not stuck behind a
-  // waiting worker while shell precache is still running.
+  // Existing clients keep their worker/assets until they apply the update.
+  // A first installation activates normally when no previous worker exists.
   event.waitUntil((async () => {
-    await self.skipWaiting();
     try {
       await cacheShellAssets();
     } catch {

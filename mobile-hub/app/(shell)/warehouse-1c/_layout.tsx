@@ -1,5 +1,7 @@
+import { useReducedMotion } from '../../../src/accessibility/useReducedMotion';
 import { Stack } from 'expo-router';
 
 export default function Warehouse1CLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  const reduceMotion = useReducedMotion();
+  return <Stack screenOptions={{ animation: reduceMotion ? 'none' : 'slide_from_right', headerShown: false }} />;
 }

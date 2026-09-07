@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
@@ -123,10 +124,32 @@ export function NativeAppearanceSettingsScreen() {
         <Text style={{ color: tokens.textSecondary, marginBottom: 8, fontWeight: '700' }}>
           Выбрано {selectedPaths.length} из {Math.min(4, availableItems.length)}
         </Text>
+        <View testID="native-nav-preview" style={{ flexDirection: 'row', backgroundColor: tokens.panelInset, borderRadius: 12, paddingVertical: 12, marginBottom: 12 }}>
+          {[...selectedPaths.map((path) => availableItems.find((item) => item.path === path)?.shortLabel || availableItems.find((item) => item.path === path)?.label || path), 'Меню'].map((label, index) => (
+            <View key={index} style={{ flex: 1, alignItems: 'center', paddingHorizontal: 2 }}>
+              <MaterialCommunityIcons name={index < selectedPaths.length ? availableItems.find((item) => item.path === selectedPaths[index])?.icon || 'circle-outline' : 'menu'} size={22} color={tokens.primary} />
+              <Text style={{ color: tokens.textSecondary, fontSize: 11, textAlign: 'center' }}>{label}</Text>
+            </View>
+          ))}
+        </View>
+        {selectedPaths.map((path, index) => {
+          const label = availableItems.find((item) => item.path === path)?.label || path;
+          return <View key={path} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+            <Text style={{ flex: 1, color: tokens.textPrimary }}>{index + 1}. {label}</Text>
+            {([-1, 1] as const).map((direction) => {
+              const disabled = savingNav || index + direction < 0 || index + direction >= selectedPaths.length;
+              return <Pressable key={direction} testID={`native-nav-move-${index}-${direction}`} accessibilityRole="button" accessibilityLabel={`${label}: ${direction < 0 ? 'выше' : 'ниже'}`} accessibilityState={{ disabled }} disabled={disabled} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center', opacity: disabled ? 0.4 : 1 }} onPress={() => setSelectedPaths((current) => {
+                const next = [...current];
+                [next[index], next[index + direction]] = [next[index + direction], next[index]];
+                return next;
+              })}><MaterialCommunityIcons name={direction < 0 ? 'arrow-up' : 'arrow-down'} size={20} color={tokens.primary} /></Pressable>;
+            })}
+          </View>;
+        })}
         <View style={styles.grid}>
           {availableItems.map((item) => {
             const selected = selectedSet.has(item.path);
-            const disabled = !selected && selectedPaths.length >= 4;
+            const disabled = savingNav || (!selected && selectedPaths.length >= 4);
             return (
               <Pressable
                 key={item.path}

@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { memo, useCallback, type ComponentProps } from 'react';
+import { memo, useCallback, useState, type ComponentProps } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { MyFileRecord } from '../../api/myFilesApi';
 import {
@@ -53,13 +53,14 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
   onRevoke: (item: MyFileRecord) => void;
   onDelete: (item: MyFileRecord) => void;
 }) {
+  const [nameExpanded, setNameExpanded] = useState(false);
   const ready = isMyFileReady(item);
   const previewKind = nativeMyFilePreviewKind(item);
   const processing = isMyFileProcessing(item);
   const busy = Boolean(busyAction);
-  const statusColor = item.status === 'failed'
+  const statusColor = item.status === 'failed' || item.security_scan_status === 'blocked'
     ? tokens.error
-    : ready
+    : ready && item.security_scan_status === 'clean'
       ? tokens.success
       : tokens.warning;
   const fileName = myFileName(item);
@@ -82,10 +83,13 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
           <MaterialCommunityIcons name={myFileIcon(item)} size={26} color={tokens.primary} />
         </View>
         <View style={styles.titleBody}>
-          <Text numberOfLines={2} style={[styles.title, { color: tokens.textPrimary }]}>{fileName}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={`${nameExpanded ? 'Свернуть название файла' : 'Показать полное название файла'}: ${fileName}`} accessibilityState={{ expanded: nameExpanded }} onPress={() => setNameExpanded(value => !value)} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text numberOfLines={nameExpanded ? undefined : 2} style={[styles.title, { flex: 1, color: tokens.textPrimary }]}>{fileName}</Text>
+            <MaterialCommunityIcons name={nameExpanded ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
+          </Pressable>
           <View style={styles.statusRow}>
             {processing ? <ActivityIndicator size="small" color={statusColor} /> : <View style={[styles.statusDot, { backgroundColor: statusColor }]} />}
-            <Text numberOfLines={2} style={[styles.status, { color: statusColor }]}>{myFileStatusLabel(item)}</Text>
+            <Text style={[styles.status, { color: statusColor }]}>{myFileStatusLabel(item)}</Text>
             {item.is_shared ? (
               <View style={[styles.sharedBadge, { backgroundColor: tokens.selected }]}>
                 <MaterialCommunityIcons name="link-variant" size={14} color={tokens.primary} />
@@ -109,7 +113,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
         </View>
         <View style={styles.metaBlock}>
           <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Хранится до</Text>
-          <Text numberOfLines={1} style={[styles.metaValue, { color: tokens.textPrimary }]}>{formatMyFileDate(item.expires_at)}</Text>
+          <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{formatMyFileDate(item.expires_at)}</Text>
         </View>
       </View>
 
@@ -153,7 +157,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             onPress={handleSaveOffline}
           />
         ) : null}
-        {ready && availableOffline ? (
+        {availableOffline ? (
           <Action
             testID={`native-my-file-remove-offline-${item.id}`}
             label="Удалить офлайн-копию"
@@ -277,17 +281,17 @@ const styles = StyleSheet.create({
   title: { fontSize: 15, lineHeight: 20, fontWeight: '800' },
   statusRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
-  status: { flexShrink: 1, fontSize: 11, lineHeight: 15, fontWeight: '800' },
+  status: { flexShrink: 1, fontSize: 12, lineHeight: 18, fontWeight: '800' },
   sharedBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
-  sharedText: { fontSize: 10, fontWeight: '800' },
+  sharedText: { fontSize: 12, fontWeight: '800' },
   offlineBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
-  offlineText: { fontSize: 10, fontWeight: '800' },
-  metaRow: { flexDirection: 'row', gap: 12 },
-  metaBlock: { flex: 1, minWidth: 0 },
-  metaLabel: { fontSize: 10, lineHeight: 14 },
+  offlineText: { fontSize: 12, fontWeight: '800' },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  metaBlock: { flexGrow: 1, flexBasis: 140, minWidth: 0 },
+  metaLabel: { fontSize: 12, lineHeight: 18 },
   metaValue: { marginTop: 2, fontSize: 12, lineHeight: 16, fontWeight: '700' },
   shareExpiry: { fontSize: 11, lineHeight: 16, fontWeight: '700' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  action: { minHeight: 44, borderRadius: 11, borderWidth: 1, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  actionText: { fontSize: 11, fontWeight: '800' },
+  action: { maxWidth: '100%', minHeight: 44, borderRadius: 11, borderWidth: 1, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  actionText: { flexShrink: 1, fontSize: 12, fontWeight: '800' },
 });

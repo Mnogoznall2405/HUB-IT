@@ -249,6 +249,7 @@ class ChatGroupService:
 
         affected_user_ids: set[int] = {int(current_user_id)}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, actor_member = self._service._require_group_manager(
                 session=session,
                 conversation_id=conversation_id,
@@ -256,7 +257,6 @@ class ChatGroupService:
             )
             if _normalize_text(conversation.kind) == "task":
                 raise ValueError("Task discussion members are managed by Hub tasks")
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             actor = self._service._require_active_user(int(current_user_id))
             active_member_ids = set(self._service._conversation_member_ids(session, conversation.id))
             candidate_user_ids = [user_id for user_id in requested_user_ids if user_id not in active_member_ids]
@@ -334,12 +334,12 @@ class ChatGroupService:
 
         affected_user_ids: set[int] = {int(current_user_id), normalized_target_user_id}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, actor_member = self._service._require_group_manager(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             actor_role = _normalize_member_role(actor_member.member_role)
             target_member = self._service._get_active_membership(
                 session=session,
@@ -405,12 +405,12 @@ class ChatGroupService:
 
         affected_user_ids: set[int] = {int(current_user_id), normalized_target_user_id}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, _ = self._service._require_group_owner(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             target_member = self._service._get_active_membership(
                 session=session,
                 conversation_id=conversation.id,
@@ -457,12 +457,12 @@ class ChatGroupService:
 
         affected_user_ids: set[int] = {int(current_user_id), next_owner_user_id}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, actor_member = self._service._require_group_owner(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             next_owner_member = self._service._get_active_membership(
                 session=session,
                 conversation_id=conversation.id,
@@ -499,12 +499,12 @@ class ChatGroupService:
         
         affected_user_ids: set[int] = {int(current_user_id)}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, actor_member = self._service._require_group_membership(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             if _normalize_member_role(actor_member.member_role) == "owner":
                 raise PermissionError("Transfer ownership before leaving the group")
 
@@ -545,12 +545,12 @@ class ChatGroupService:
 
         affected_user_ids: set[int] = {int(current_user_id)}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, _ = self._service._require_group_owner(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             if _normalize_text(conversation.title) == normalized_title:
                 return self._service._build_conversation_detail_payload(session, conversation, int(current_user_id))
 
@@ -581,12 +581,12 @@ class ChatGroupService:
         normalized_avatar_url = _normalize_text(avatar_url) or None
         affected_user_ids: set[int] = {int(current_user_id)}
         with chat_session() as session:
+            self._service._lock_conversation_for_write(session=session, conversation_id=conversation_id)
             conversation, _ = self._service._require_group_owner(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
-            conversation = self._service._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             conversation.avatar_url = normalized_avatar_url
             member_ids_after = self._service._conversation_member_ids(session, conversation.id)
             affected_user_ids.update(member_ids_after)

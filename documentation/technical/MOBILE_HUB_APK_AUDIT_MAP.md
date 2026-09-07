@@ -109,7 +109,7 @@ flowchart TD
 
 | Контур | Текущее поведение | Риск | Приоритет |
 |---|---|---|---:|
-| Cold start / auth | известный Android offline сразу открывает защищённый gate; `/auth/me`, refresh и transport-retry делят единый бюджет 5 с | физический p95 ещё не измерен | закрыто кодом, device-check ожидается |
+| Cold start / auth | известный Android offline сразу открывает защищённый gate; `/auth/me`, refresh и transport-retry делят единый бюджет 5 с; best-effort cache write не удерживает loader, password login перекрывает локальную biometric-проверку, при Android VPN показывается отдельная подсказка | физический p95 ещё не измерен | закрыто кодом, device-check ожидается |
 | HUB-индикатор | успешная auth/REST-сессия означает «На связи», realtime-сбой показывается отдельно | физическая смена состояний ещё не проверена | закрыто кодом, device-check ожидается |
 | Непрочитанное | nav, Android badge и Dashboard делят один snapshot; Chat использует `/chat/unread-summary` | стартовый контур сокращён с 7 до 4 HTTP-запросов | закрыто кодом |
 | Пользователи админки | bounded `/auth/users/search`, страницы 50/30 | физический p95 ещё не измерен | закрыто кодом, device-check ожидается |

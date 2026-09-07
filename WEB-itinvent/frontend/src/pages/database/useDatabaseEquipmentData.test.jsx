@@ -88,6 +88,46 @@ describe('useDatabaseEquipmentData', () => {
     );
   });
 
+  it('ignores pending equipment prefetch after switching to consumables', async () => {
+    let finish;
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(({ page }) => page === 1
+      ? Promise.resolve({ grouped: { HQ: { Office: [firstItem] } }, total: 2, pages: 2 })
+      : new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps()));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    await act(async () => { await result.current.switchDataMode(DATA_MODE_CONSUMABLES); });
+    await act(async () => { finish({ grouped: { Remote: { Stock: [firstItem] } }, total: 2 }); });
+    expect(result.current.allEquipment).toEqual({ Consumables: { Stock: [secondItem] } });
+    expect(result.current.serverTotal).toBe(1);
+    expect(result.current.nextEquipmentPage).toBeNull();
+  });
+
+  it('ignores a first page completed after the database is reset', async () => {
+    let finish;
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    act(() => { result.current.resetAllModeData(); });
+    await act(async () => { finish({ grouped: { HQ: { Office: [firstItem] } }, total: 1, pages: 1 }); });
+    expect(result.current.allEquipment).toEqual({});
+    expect(result.current.initialLoadDone).toBe(false);
+  });
+
+  it('keeps a newer refresh when an older first page finishes last', async () => {
+    const pending = [];
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    let refresh;
+    act(() => { refresh = result.current.fetchAllEquipment({ force: true }); });
+    await act(async () => {
+      pending[1]({ grouped: { Remote: { Stock: [secondItem] } }, total: 1, pages: 1 });
+      await refresh;
+    });
+    await act(async () => { pending[0]({ grouped: { HQ: { Office: [firstItem] } }, total: 1, pages: 1 }); });
+    expect(result.current.allEquipment).toEqual({ Remote: { Stock: [secondItem] } });
+  });
+
   it('filters displayed equipment by selected branch without shrinking allEquipment', async () => {
     const { result, rerender } = renderHook((props) => useDatabaseEquipmentData(props), {
       initialProps: createProps({ prefetchPages: 0 }),
