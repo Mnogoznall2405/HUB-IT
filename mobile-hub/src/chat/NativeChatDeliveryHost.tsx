@@ -8,6 +8,7 @@ import { isNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
 import { recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { readNativeEntitySnapshot } from '../cache/nativeSnapshotCache';
 import { chatSocket } from './chatSocket';
+import { NATIVE_CHAT_ENABLED } from './nativeChatFeature';
 import { publishNativeChatUploadProgress } from './nativeChatOutbox';
 import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
 import { isNativeChatDeliveryBlocked, subscribeNativeChatDeliveryGate } from './nativeChatDeliveryGate';
@@ -20,7 +21,7 @@ import {
 export function NativeChatDeliveryHost() {
   const { user, hasPermission, offlineMode } = useAuth();
   const userId = Number(user?.id || 0);
-  const allowed = hasPermission('chat.read') && hasPermission('chat.write');
+  const allowed = NATIVE_CHAT_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
   const access = useRef({ userId, allowed, offlineMode });
   useLayoutEffect(() => { access.current = { userId, allowed, offlineMode }; }, [userId, allowed, offlineMode]);
   useEffect(() => {

@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as api from '../../api/chatApi';
 import { clearNativeChatOutbox, createNativeChatOutbox } from '../../chat/nativeChatOutbox';
-import { NativeChatOutboxScreen } from './NativeChatOutboxScreen';
+import { NativeChatOutboxWithDelivery as NativeChatOutboxScreen } from '../../test/NativeChatWithDelivery';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
 
 let mockAllowed = true;

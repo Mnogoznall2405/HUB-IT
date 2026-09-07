@@ -378,6 +378,7 @@ export function NativeChatInboxScreen() {
   }, [load, loadFolders]));
 
   useEffect(() => {
+    const requestId = ++searchRequestRef.current;
     const query = search.trim();
     if (!query || workspace === 'ai') {
       setSearchItems(null);
@@ -392,7 +393,6 @@ export function NativeChatInboxScreen() {
       setSearching(false);
       return undefined;
     }
-    const requestId = ++searchRequestRef.current;
     setSearching(true);
     const timer = setTimeout(() => {
       void Promise.all([
