@@ -13,7 +13,7 @@ let mockUserId = 7;
 jest.mock('../../auth/AuthContext', () => ({ useAuth: () => ({ user: { id: mockUserId }, hasPermission: () => mockAllowed, offlineMode: mockOffline }) }));
 jest.mock('../../api/chatApi', () => ({ sendTextMessage: jest.fn(), sendFileMessage: jest.fn() }));
 jest.mock('../../chat/nativeChatDraftFiles', () => ({
-  persistNativeChatDraftFiles: (_user: number, files: unknown) => files,
+  persistNativeChatDraftFiles: async (_user: number, files: unknown) => files,
   deleteUnreferencedChatFiles: async () => undefined,
   inspectNativeChatDraftFiles: jest.fn(),
 }));

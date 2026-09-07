@@ -21,6 +21,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
 import { formatApiError } from '../../api/formatError';
+import { recordDiagnosticEvent } from '../../diagnostics/diagnostics';
 import type {
   ChatAiBot,
   ChatAttachment,
@@ -152,8 +153,14 @@ import {
 import { type ChatTokens, useChatStyles, useChatTokens } from '../../theme/chatTokens';
 import {
   readNativeEntitySnapshot,
-  writeNativeEntitySnapshot,
 } from '../../cache/nativeSnapshotCache';
+import {
+  getNativeChatThreadHistoryGeneration,
+  mergeNativeChatThreadHistory,
+  scheduleNativeChatThreadSnapshotWrite,
+  type NativeChatThreadSnapshot,
+} from '../../chat/nativeChatThreadHistory';
+import { createNativeChatLeaveController } from '../../chat/nativeChatLeaveThread';
 
 function createClientMessageId(): string {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
@@ -174,18 +181,7 @@ type FailedAttachmentAction = {
   action: 'open' | 'share' | 'save';
 };
 
-type ChatThreadSnapshot = {
-  conversation: ChatConversationSummary | null;
-  title: string;
-  messages: ChatMessage[];
-  hasOlder: boolean;
-  olderCursor: string | null;
-  hasNewer: boolean;
-  newerCursor: string | null;
-  unreadBoundaryId: string | null;
-  focusAnchorId: string | null;
-  pinnedMessageId: string | null;
-};
+type ChatThreadSnapshot = NativeChatThreadSnapshot;
 
 const CHAT_LIST_MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 };
 
@@ -193,7 +189,7 @@ function chatMessageKey(message: ChatMessage): string {
   return chatMessageMotionKey(message);
 }
 
-function ChatEmptyState() {
+function ChatEmptyState({ message }: { message: string }) {
   const { styles } = useChatStyles(createStyles);
   return (
     <Text
@@ -201,7 +197,7 @@ function ChatEmptyState() {
       style={[styles.empty, styles.invertedListEmpty]}
       accessibilityRole="text"
     >
-      Сообщений пока нет
+      {message}
     </Text>
   );
 }
@@ -216,7 +212,8 @@ export function NativeChatThreadScreen({
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, hasPermission, offlineMode } = useAuth();
-  const canWrite = !offlineMode && hasPermission('chat.write');
+  const canCompose = hasPermission('chat.write');
+  const canWrite = canCompose;
   const reduceMotion = useReducedMotion();
   const reduceMotionRef = useRef(reduceMotion);
   reduceMotionRef.current = reduceMotion;
@@ -224,10 +221,10 @@ export function NativeChatThreadScreen({
   const [voiceRecording, setVoiceRecording] = useState(false);
   const cancelVoiceRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
-  const sendScope = useMemo(() => Symbol('chat-send-scope'), [conversationId, user?.id, canWrite]);
+  const sendScope = useMemo(() => Symbol('chat-send-scope'), [conversationId, user?.id, canCompose, offlineMode]);
   const currentSendScopeRef = useRef(sendScope);
   useLayoutEffect(() => { currentSendScopeRef.current = sendScope; }, [sendScope]);
-  const isCurrentSendScope = useCallback(() => mountedRef.current && canWrite && currentSendScopeRef.current === sendScope, [canWrite, sendScope]);
+  const isCurrentSendScope = useCallback(() => mountedRef.current && canCompose && currentSendScopeRef.current === sendScope, [canCompose, sendScope]);
   const serverPinKnownRef = useRef(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const loadingOlderRef = useRef(false);
@@ -324,6 +321,7 @@ export function NativeChatThreadScreen({
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [threadHydrated, setThreadHydrated] = useState(false);
+  const [historyUnavailableOffline, setHistoryUnavailableOffline] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
   const [newerCursor, setNewerCursor] = useState<string | null>(null);
@@ -381,33 +379,42 @@ export function NativeChatThreadScreen({
   const { requestLeave } = useUnsavedFormGuard(
     Boolean(text.length || composerMode || attachmentDraftFiles.length) && !draftAutosave.saved,
   );
+  const leaveInFlightRef = useRef(false);
+  const leaveControllerRef = useRef(createNativeChatLeaveController({
+    navigateAway: () => undefined,
+  }));
+  const loadGenerationRef = useRef(0);
+  const accumulatedMessagesRef = useRef<ChatMessage[]>([]);
+  const historyMayHaveGapsRef = useRef(false);
   const leaveThread = useCallback(() => {
-    const latestIncoming = findLatestIncomingMessage(messagesRef.current, user?.id);
-    const navigateAway = () => {
-      notifyNativeChatConversationRead(conversationId);
-      Keyboard.dismiss();
-      requestLeave(() => {
-        if (router.canGoBack?.()) router.back();
-        else router.replace('/(shell)/chat');
-      });
-    };
-    if (!latestIncoming?.id) {
-      navigateAway();
-      return;
-    }
-    if (offlineMode) {
-      navigateAway();
-      return;
-    }
-    markedReadRef.current = latestIncoming.id;
-    void chatApi.markConversationRead(conversationId, latestIncoming.id)
-      .catch(() => {
-        if (mountedRef.current && markedReadRef.current === latestIncoming.id) {
-          markedReadRef.current = '';
+    leaveControllerRef.current = createNativeChatLeaveController({
+      offline: offlineMode,
+      navigateAway: () => {
+        notifyNativeChatConversationRead(conversationId);
+        Keyboard.dismiss();
+        requestLeave(() => {
+          if (router.canGoBack?.()) router.back();
+          else router.replace('/(shell)/chat');
+        });
+      },
+      markRead: async (messageId) => {
+        markedReadRef.current = messageId;
+        try {
+          await chatApi.markConversationRead(conversationId, messageId);
+        } catch {
+          if (markedReadRef.current === messageId) markedReadRef.current = '';
         }
-      })
-      .finally(navigateAway);
+      },
+    });
+    leaveControllerRef.current.leave(findLatestIncomingMessage(messagesRef.current, user?.id));
   }, [conversationId, offlineMode, requestLeave, user?.id]);
+
+  useEffect(() => {
+    leaveInFlightRef.current = false;
+    loadGenerationRef.current += 1;
+    accumulatedMessagesRef.current = [];
+    historyMayHaveGapsRef.current = false;
+  }, [conversationId, user?.id]);
 
   const anchorToBottom = useCallback((animated = false, complete = false) => {
     listRef.current?.scrollToOffset({ offset: 0, animated });
@@ -540,13 +547,23 @@ export function NativeChatThreadScreen({
   }, [conversationId]);
 
   const loadInitial = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const scopeUserId = Number(user?.id || 0);
+    const scopeConversationId = conversationId;
+    const isCurrentLoad = () => (
+      mountedRef.current
+      && loadGenerationRef.current === generation
+      && Number(user?.id || 0) === scopeUserId
+      && conversationId === scopeConversationId
+    );
     messageAnimationReadyRef.current = false;
     setLoading(true);
     setError('');
+    setHistoryUnavailableOffline(false);
     let hadCachedSnapshot = false;
     let loadedLiveMessages = false;
     try {
-      const userId = Number(user?.id || 0);
+      const userId = scopeUserId;
       const cached = userId
         ? await readNativeEntitySnapshot<ChatThreadSnapshot>(
           'chat-thread-details',
@@ -555,10 +572,12 @@ export function NativeChatThreadScreen({
           Number.MAX_SAFE_INTEGER,
         )
         : null;
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
       if (cached) {
         hadCachedSnapshot = true;
         const normalized = mergeMessages([], cached.data.messages || [], user?.id);
+        accumulatedMessagesRef.current = normalized;
+        historyMayHaveGapsRef.current = Boolean(cached.data.historyMayHaveGaps);
         knownMessageIdsRef.current = new Set(normalized.map((entry) => entry.id));
         setMessages(normalized);
         setConversation(cached.data.conversation || null);
@@ -580,13 +599,27 @@ export function NativeChatThreadScreen({
       try {
         const queued = await outbox.read();
         const uploads = await outbox.readUploads();
-        if (!mountedRef.current) return;
+        if (!isCurrentLoad()) return;
         uploads.forEach(({ id, upload }) => pendingAttachmentUploadsRef.current.set(id, upload));
-        setMessages((current) => mergeMessages(queued, current, userId));
+        setMessages((current) => {
+          const merged = mergeMessages(queued, current, userId);
+          accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+            accumulatedMessagesRef.current,
+            merged,
+            userId,
+          );
+          return merged;
+        });
       } catch {
-        if (mountedRef.current) setDraftError('Не удалось восстановить исходящие сообщения. Откройте диалог снова, чтобы повторить.');
+        if (isCurrentLoad()) setDraftError('Не удалось восстановить исходящие сообщения. Откройте диалог снова, чтобы повторить.');
       }
-      if (offlineMode) return;
+      if (offlineMode) {
+        if (!hadCachedSnapshot && isCurrentLoad()) {
+          setHistoryUnavailableOffline(true);
+          setThreadHydrated(true);
+        }
+        return;
+      }
 
       const conversationResultPromise = chatApi.getConversation(conversationId).then(
         (value) => ({ value, error: null as unknown }),
@@ -599,13 +632,19 @@ export function NativeChatThreadScreen({
           lightweight: false,
         })
         : await chatApi.getMessagesPage(conversationId, { limit: 80 });
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
       loadedLiveMessages = true;
       const normalized = mergeMessages([], page.items, user?.id);
       void outbox.acknowledge(normalized).catch(() => undefined);
       setMessages((current) => {
         const merged = mergeMessages(current, normalized, user?.id);
         knownMessageIdsRef.current = new Set(merged.map((entry) => entry.id));
+        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+          accumulatedMessagesRef.current,
+          merged,
+          user?.id,
+        );
+        historyMayHaveGapsRef.current = Boolean(page.has_older || page.has_newer || historyMayHaveGapsRef.current);
         return merged;
       });
       messageAnimationReadyRef.current = true;
@@ -619,7 +658,6 @@ export function NativeChatThreadScreen({
         const serverPinnedMessageId = String(rawPinnedMessageId || '').trim() || null;
         serverPinKnownRef.current = true;
         setPinnedMessageId(serverPinnedMessageId);
-        const userId = Number(user?.id || 0);
         if (userId) void setPinnedChatMessageId(userId, conversationId, serverPinnedMessageId);
       }
       setUnreadBoundaryId(getUnreadBoundaryMessageId(normalized, page.viewer_last_read_message_id));
@@ -640,7 +678,7 @@ export function NativeChatThreadScreen({
       }
 
       const conversationResult = await conversationResultPromise;
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
       if (conversationResult.value) {
         const liveConversation = conversationResult.value;
         setConversation(liveConversation);
@@ -653,31 +691,41 @@ export function NativeChatThreadScreen({
         }
         if (isAiConversation(liveConversation)) {
           void chatApi.getAiBots().then((bots) => {
-            if (mountedRef.current) setAiBots(bots);
+            if (isCurrentLoad()) setAiBots(bots);
           }).catch(() => undefined);
         }
       }
     } catch (cause) {
-      if (mountedRef.current && !hadCachedSnapshot && !loadedLiveMessages) {
-        setError(formatApiError(cause, 'Не удалось загрузить сообщения'));
+      if (isCurrentLoad() && !hadCachedSnapshot && !loadedLiveMessages) {
+        if (offlineMode) {
+          setHistoryUnavailableOffline(true);
+          setThreadHydrated(true);
+        } else {
+          setError(formatApiError(cause, 'Не удалось загрузить сообщения'));
+        }
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (isCurrentLoad()) setLoading(false);
     }
   }, [conversationId, markRead, messageId, offlineMode, outbox, requestBottomAnchor, user?.id]);
 
   useEffect(() => {
     const userId = Number(user?.id || 0);
     if (!threadHydrated || userId <= 0) return undefined;
+    const generation = getNativeChatThreadHistoryGeneration();
     const timer = setTimeout(() => {
-      void writeNativeEntitySnapshot<ChatThreadSnapshot>(
-        'chat-thread-details',
+      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+        accumulatedMessagesRef.current,
+        messages.filter((message) => !message.local_status),
+        user?.id,
+      );
+      void scheduleNativeChatThreadSnapshotWrite(
         userId,
         conversationId,
         {
           conversation,
           title,
-          messages: messages.filter((message) => !message.local_status),
+          messages: accumulatedMessagesRef.current,
           hasOlder,
           olderCursor,
           hasNewer,
@@ -685,10 +733,40 @@ export function NativeChatThreadScreen({
           unreadBoundaryId,
           focusAnchorId,
           pinnedMessageId,
+          historyMayHaveGaps: historyMayHaveGapsRef.current || hasOlder || hasNewer,
         },
+        { generation, currentUserId: user?.id },
       );
     }, 250);
-    return () => clearTimeout(timer);
+    // Do not cancel the durable write on unmount — only cancel the debounce timer
+    // by flushing immediately when the screen goes away.
+    return () => {
+      clearTimeout(timer);
+      if (!threadHydrated || userId <= 0) return;
+      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+        accumulatedMessagesRef.current,
+        messages.filter((message) => !message.local_status),
+        user?.id,
+      );
+      void scheduleNativeChatThreadSnapshotWrite(
+        userId,
+        conversationId,
+        {
+          conversation,
+          title,
+          messages: accumulatedMessagesRef.current,
+          hasOlder,
+          olderCursor,
+          hasNewer,
+          newerCursor,
+          unreadBoundaryId,
+          focusAnchorId,
+          pinnedMessageId,
+          historyMayHaveGaps: historyMayHaveGapsRef.current || hasOlder || hasNewer,
+        },
+        { generation, currentUserId: user?.id },
+      );
+    };
   }, [
     conversation,
     conversationId,
@@ -721,7 +799,16 @@ export function NativeChatThreadScreen({
       }
       page.items.forEach((item) => knownMessageIdsRef.current.add(item.id));
       setHoldVisiblePosition(true);
-      setMessages((current) => mergeMessages(current, page.items, user?.id));
+      setMessages((current) => {
+        const merged = mergeMessages(current, page.items, user?.id);
+        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+          accumulatedMessagesRef.current,
+          page.items,
+          user?.id,
+        );
+        historyMayHaveGapsRef.current = Boolean(historyMayHaveGapsRef.current || page.has_older);
+        return merged;
+      });
       setHasOlder(page.has_older);
       setOlderCursor(page.older_cursor_message_id);
       requestAnimationFrame(() => {
@@ -751,7 +838,16 @@ export function NativeChatThreadScreen({
         return;
       }
       page.items.forEach((item) => knownMessageIdsRef.current.add(item.id));
-      setMessages((current) => mergeMessages(current, page.items, user?.id));
+      setMessages((current) => {
+        const merged = mergeMessages(current, page.items, user?.id);
+        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+          accumulatedMessagesRef.current,
+          page.items,
+          user?.id,
+        );
+        historyMayHaveGapsRef.current = Boolean(historyMayHaveGapsRef.current || page.has_newer);
+        return merged;
+      });
       setHasNewer(page.has_newer);
       setNewerCursor(page.newer_cursor_message_id);
       if (!page.has_newer) {
@@ -996,8 +1092,16 @@ export function NativeChatThreadScreen({
       const saved = await outbox.send(pending, (...args) => {
         if (!isCurrentSendScope()) throw new Error('Отправка приостановлена: доступ к диалогу изменился');
         return chatApi.sendTextMessage(...args);
-      }, () => { if (isCurrentSendScope()) onPersisted?.(); });
+      }, () => { if (isCurrentSendScope()) onPersisted?.(); }, { deliver: !offlineMode });
       if (!isCurrentSendScope()) return;
+      if (offlineMode || saved.local_status === 'failed') {
+        setMessages((current) => current.map((message) => (
+          message.id === pendingId
+            ? { ...message, local_status: 'failed', delivery_status: undefined }
+            : message
+        )));
+        return;
+      }
       knownMessageIdsRef.current.add(saved.id);
       setMessages((current) => mergeMessages(
         current,
@@ -1026,7 +1130,7 @@ export function NativeChatThreadScreen({
         ]);
       }
     }
-  }, [isCurrentSendScope, conversationId, outbox, requestBottomAnchor, stopOutgoingTyping, user]);
+  }, [isCurrentSendScope, conversationId, offlineMode, outbox, requestBottomAnchor, stopOutgoingTyping, user]);
 
   const startReply = useCallback((message: ChatMessage) => {
     if (composerBusyRef.current) return;
@@ -1039,10 +1143,14 @@ export function NativeChatThreadScreen({
 
   const startEdit = useCallback((message: ChatMessage) => {
     if (composerBusyRef.current) return;
+    if (offlineMode) {
+      Alert.alert('Нет сети', 'Редактирование сообщения на сервере недоступно офлайн. Локальный черновик можно продолжить.');
+      return;
+    }
     if (composerMode?.type !== 'edit') draftBeforeEditRef.current = text;
     setComposerMode({ type: 'edit', message });
     setText(message.body_text || '');
-  }, [composerBusy, composerMode?.type, text]);
+  }, [composerBusy, composerMode?.type, offlineMode, text]);
 
   const cancelComposerMode = useCallback(() => {
     if (composerBusyRef.current) return;
@@ -1127,6 +1235,10 @@ export function NativeChatThreadScreen({
     if (!body) return;
 
     if (composerMode?.type === 'edit') {
+      if (offlineMode) {
+        Alert.alert('Нет сети', 'Сохранение правки на сервере недоступно офлайн.');
+        return;
+      }
       if (composerMode.message.is_deleted) {
         Alert.alert('Сообщение удалено', 'Сохранить изменения нельзя. Текст правки остался в поле ввода. Отмена редактирования вернёт ваш обычный черновик.');
         return;
@@ -1171,7 +1283,7 @@ export function NativeChatThreadScreen({
     });
     try { await sending; }
     finally { if (pendingComposerSendRef.current === submission) pendingComposerSendRef.current = null; }
-  }, [composerMode, conversationId, sendBody, text, user?.id]);
+  }, [composerMode, conversationId, offlineMode, sendBody, text, user?.id]);
 
   const setAttachmentTransfersForIds = useCallback((
     attachmentIds: string[],
@@ -1330,6 +1442,27 @@ export function NativeChatThreadScreen({
         status: cancelled ? 'cancelled' : 'failed',
         cancellable: false,
       });
+      if (!cancelled && mountedRef.current) {
+        if (!uploadPrepared) {
+          void recordDiagnosticEvent('native_file_error');
+          Alert.alert(
+            'Не удалось сохранить вложение',
+            formatApiError(
+              cause,
+              'Файл не удалось сохранить на устройстве. Сообщение не поставлено в очередь — повторите отправку.',
+            ),
+          );
+        } else if (!(upload.replyToMessageId && axios.isAxiosError(cause) && cause.response?.status === 404
+          && cause.response.data?.detail === 'Quoted message not found')) {
+          Alert.alert(
+            'Не удалось отправить вложение',
+            formatApiError(
+              cause,
+              'Файл сохранён в очереди. Можно повторить отправку без повторного выбора.',
+            ),
+          );
+        }
+      }
       if (upload.replyToMessageId && axios.isAxiosError(cause) && cause.response?.status === 404
         && cause.response.data?.detail === 'Quoted message not found') {
         Alert.alert('Исходное сообщение недоступно', 'Ответ и вложения сохранены в очереди. Перед повтором проверьте переписку: прежняя отправка могла пройти без подтверждения. Можно отправить их заново без цитаты.', [
@@ -1466,7 +1599,10 @@ export function NativeChatThreadScreen({
     setSearchCompleted(false);
     if (offlineMode) {
       const normalizedQuery = query.toLocaleLowerCase('ru-RU');
-      setSearchResults(messages.filter((message) => (
+      const corpus = accumulatedMessagesRef.current.length
+        ? accumulatedMessagesRef.current
+        : messages;
+      setSearchResults(corpus.filter((message) => (
         String(message.body_text || '').toLocaleLowerCase('ru-RU').includes(normalizedQuery)
       )));
       setSearchCompleted(true);
@@ -1489,7 +1625,14 @@ export function NativeChatThreadScreen({
   }, [conversationId, messages, offlineMode, searchQuery, searching]);
 
   const focusSearchResult = useCallback(async (message: ChatMessage) => {
-    if (offlineMode && messages.some((item) => item.id === message.id)) {
+    if (offlineMode && (
+      messages.some((item) => item.id === message.id)
+      || accumulatedMessagesRef.current.some((item) => item.id === message.id)
+    )) {
+      // Prefer showing from accumulated history when the current window lacks the hit.
+      if (!messages.some((item) => item.id === message.id)) {
+        setMessages(accumulatedMessagesRef.current);
+      }
       setFocusAnchorId(message.id);
       setSearchOpen(false);
       setSearchResults([]);
@@ -1505,7 +1648,19 @@ export function NativeChatThreadScreen({
       });
       if (!mountedRef.current) return;
       const normalized = mergeMessages([], page.items, user?.id);
-      knownMessageIdsRef.current = new Set(normalized.map((item) => item.id));
+      knownMessageIdsRef.current = new Set([
+        ...knownMessageIdsRef.current,
+        ...normalized.map((item) => item.id),
+      ]);
+      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+        accumulatedMessagesRef.current,
+        normalized,
+        user?.id,
+      );
+      historyMayHaveGapsRef.current = Boolean(
+        historyMayHaveGapsRef.current || page.has_older || page.has_newer,
+      );
+      // Display window only — durable history stays in accumulatedMessagesRef.
       setMessages(normalized);
       setHasOlder(page.has_older);
       setOlderCursor(page.older_cursor_message_id);
@@ -1533,6 +1688,11 @@ export function NativeChatThreadScreen({
       setFocusAnchorId(normalizedId);
       return;
     }
+    if (accumulatedMessagesRef.current.some((message) => message.id === normalizedId)) {
+      setMessages(accumulatedMessagesRef.current);
+      setFocusAnchorId(normalizedId);
+      return;
+    }
     await focusSearchResult({
       id: normalizedId,
       conversation_id: conversationId,
@@ -1553,7 +1713,18 @@ export function NativeChatThreadScreen({
       const page = await chatApi.getMessagesPage(conversationId, { limit: 80 });
       if (!mountedRef.current) return;
       const normalized = mergeMessages([], page.items, user?.id);
-      knownMessageIdsRef.current = new Set(normalized.map((item) => item.id));
+      knownMessageIdsRef.current = new Set([
+        ...knownMessageIdsRef.current,
+        ...normalized.map((item) => item.id),
+      ]);
+      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+        accumulatedMessagesRef.current,
+        normalized,
+        user?.id,
+      );
+      historyMayHaveGapsRef.current = Boolean(
+        historyMayHaveGapsRef.current || page.has_older || page.has_newer,
+      );
       setMessages(normalized);
       setHasOlder(page.has_older);
       setOlderCursor(page.older_cursor_message_id);
@@ -2180,6 +2351,10 @@ export function NativeChatThreadScreen({
   }, [retryPendingAttachmentUpload, runAttachmentAction]);
 
   const loadMoreMediaManifest = useCallback(async (restart = false) => {
+    if (offlineMode) {
+      mediaManifestHasMoreRef.current = false;
+      return;
+    }
     if (mediaManifestLoadingRef.current) return;
     if (!restart && !mediaManifestHasMoreRef.current) return;
     const generation = mediaManifestGenerationRef.current;
@@ -2200,7 +2375,7 @@ export function NativeChatThreadScreen({
     } finally {
       if (generation === mediaManifestGenerationRef.current) mediaManifestLoadingRef.current = false;
     }
-  }, [conversationId]);
+  }, [conversationId, offlineMode]);
 
   const openMediaViewer = useCallback((
     nextItem: ChatMediaItem,
@@ -2209,16 +2384,19 @@ export function NativeChatThreadScreen({
     const imageKind = isImageChatAttachment(nextItem.attachment);
     mediaManifestGenerationRef.current += 1;
     mediaManifestLoadingRef.current = false;
-    mediaManifestHasMoreRef.current = true;
+    mediaManifestHasMoreRef.current = !offlineMode;
     mediaManifestCursorRef.current = null;
     mediaManifestKindRef.current = imageKind ? 'image' : 'video';
-    const localItems = collectThreadMedia(messagesRef.current).filter((entry) => (
+    const localCorpus = accumulatedMessagesRef.current.length
+      ? accumulatedMessagesRef.current
+      : messagesRef.current;
+    const localItems = collectThreadMedia(localCorpus).filter((entry) => (
       isImageChatAttachment(entry.attachment) === imageKind
     ));
     setMediaViewerItems(mergeChatMediaItems(seedItems, localItems, [nextItem]));
     setMediaViewer(nextItem);
-    void loadMoreMediaManifest(true);
-  }, [loadMoreMediaManifest]);
+    if (!offlineMode) void loadMoreMediaManifest(true);
+  }, [loadMoreMediaManifest, offlineMode]);
 
   const closeMediaViewer = useCallback(() => {
     mediaManifestGenerationRef.current += 1;
@@ -2435,6 +2613,13 @@ export function NativeChatThreadScreen({
     () => buildChatThreadRowDecorations(messages, unreadBoundaryId),
     [messages, unreadBoundaryId],
   );
+  const listEmptyMessage = historyUnavailableOffline
+    ? 'Переписка не сохранена на устройстве'
+    : 'Сообщений пока нет';
+  const listEmptyComponent = useCallback(
+    () => <ChatEmptyState message={listEmptyMessage} />,
+    [listEmptyMessage],
+  );
   const selectedMessageIdsRef = useRef(selectedMessageIds);
   selectedMessageIdsRef.current = selectedMessageIds;
   const highlightedMessageIdRef = useRef(highlightedMessageId);
@@ -2442,6 +2627,7 @@ export function NativeChatThreadScreen({
   const messageActionsRef = useRef({
     discardPendingMessage,
     canWrite,
+    offlineMode,
     cancelAttachmentTransfer,
     conversationKind: conversation?.kind,
     currentUserId: user?.id,
@@ -2464,6 +2650,7 @@ export function NativeChatThreadScreen({
   messageActionsRef.current = {
     discardPendingMessage,
     canWrite,
+    offlineMode,
     cancelAttachmentTransfer,
     conversationKind: conversation?.kind,
     currentUserId: user?.id,
@@ -2543,15 +2730,18 @@ export function NativeChatThreadScreen({
         onDiscard={() => actions.discardPendingMessage(item)}
         onConfirmAction={(actionId) => void actions.runAiAction(actionId, 'confirm')}
         onCancelAction={(actionId) => void actions.runAiAction(actionId, 'cancel')}
+        awaitingConnection={actions.offlineMode && item.local_status === 'failed'}
         onRetry={(item.local_status === 'failed' || item.local_status === 'cancelled')
-          ? item.attachments?.length
-            ? () => actions.retryPendingAttachmentUpload(item)
-            : () => void actions.sendBody(
-              item.body_text || '',
-              item.client_message_id || undefined,
-              item.reply_preview || undefined,
-              false,
-            )
+          ? (actions.offlineMode
+            ? undefined
+            : item.attachments?.length
+              ? () => actions.retryPendingAttachmentUpload(item)
+              : () => void actions.sendBody(
+                item.body_text || '',
+                item.client_message_id || undefined,
+                item.reply_preview || undefined,
+                false,
+              ))
           : undefined}
       />
     );
@@ -2786,7 +2976,7 @@ export function NativeChatThreadScreen({
             removeClippedSubviews={false}
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             keyboardShouldPersistTaps="handled"
-            ListEmptyComponent={ChatEmptyState}
+            ListEmptyComponent={listEmptyComponent}
             ListFooterComponent={olderMessagesLoader}
           />
           <EdgeBackSwipeOverlay
@@ -2812,6 +3002,15 @@ export function NativeChatThreadScreen({
 
         {canWrite ? (
           <>
+          {offlineMode ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={styles.draftError}
+              testID="native-chat-offline-composer-hint"
+            >
+              Нет сети: черновик и очередь доставки доступны локально
+            </Text>
+          ) : null}
           {draftError ? <View>
             <Text accessibilityRole="alert" style={styles.draftError}>{draftError}</Text>
             {draftHydrated ? <Pressable

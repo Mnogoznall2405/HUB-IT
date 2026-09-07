@@ -29,11 +29,23 @@ it('reads the legacy plain Chat snapshot during migration', async () => {
   await expect(readNativeChatInboxSnapshot(17)).resolves.toEqual({ savedAt: 10, data: page(false) });
 });
 
-it('does not shrink a complete Chat snapshot to the first online page', async () => {
+it('merges a fresh incomplete page into a complete Chat snapshot without shrinking it', async () => {
   jest.mocked(readNativeCollectionSnapshot).mockResolvedValueOnce({ savedAt: 10, data: page(false) });
 
   await expect(writeNativeChatInboxSnapshot(17, page(true))).resolves.toBe(true);
-  expect(writeNativeCollectionSnapshot).not.toHaveBeenCalled();
+  expect(writeNativeCollectionSnapshot).toHaveBeenCalledWith(
+    'chat-inbox',
+    17,
+    'default',
+    expect.objectContaining({
+      has_more: false,
+      next_cursor: null,
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: 'complete' }),
+        expect.objectContaining({ id: 'partial' }),
+      ]),
+    }),
+  );
 });
 
 it('commits a complete refreshed Chat catalog', async () => {

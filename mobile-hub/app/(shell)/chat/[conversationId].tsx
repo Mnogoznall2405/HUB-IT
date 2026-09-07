@@ -11,5 +11,5 @@ export default function ShellChatConversationRoute() {
   const focusMessageId = Array.isArray(messageId) ? messageId[0] : messageId;
   if (!NATIVE_CHAT_ENABLED) return <Redirect href="/(shell)/menu" />;
   if (!id) return <Redirect href="/(shell)/chat" />;
-  return <NativeChatThreadScreen conversationId={id} messageId={focusMessageId} />;
+  return <NativeChatThreadScreen key={id} conversationId={id} messageId={focusMessageId} />;
 }

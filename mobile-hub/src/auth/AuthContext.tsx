@@ -8,9 +8,10 @@ import { endMobileSession } from './logout';
 import {
   getNativeConnectivitySnapshot,
   subscribeNativeConnectivity,
-  type NativeConnectivitySnapshot,
 } from '../network/nativeConnectivity';
+import { createDeferredOfflineConnectivityController } from '../network/nativeConnectivityGrace';
 import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
+import { bumpNativeChatThreadHistoryGeneration } from '../chat/nativeChatThreadHistory';
 import {
   disableBiometricLogin,
   enableBiometricLogin,
@@ -53,7 +54,6 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 const SESSION_RESTORE_RETRY_DELAY_MS = 300;
 const SESSION_RESTORE_TIMEOUT_MS = 5_000;
-const RECENT_API_SUCCESS_GRACE_MS = 30_000;
 
 function isTransportFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return true;
@@ -169,27 +169,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    const applyConnectivity = (snapshot: NativeConnectivitySnapshot) => {
-      if (!active || !snapshot.available) return;
-      // VALIDATED is often absent on corporate Wi-Fi/VPN even while HUB is
-      // reachable. A connected network is enough to probe the authenticated API.
-      const canReachNetwork = snapshot.connected || snapshot.online;
-      setVpnActive(snapshot.transport === 'vpn');
-      if (
-        !canReachNetwork
-        && lastApiSuccessAtRef.current > 0
-        && Date.now() - lastApiSuccessAtRef.current <= RECENT_API_SUCCESS_GRACE_MS
-      ) {
-        return;
-      }
-      setConnectivityOffline(!canReachNetwork);
-      setConnectivityKnownOnline(canReachNetwork);
-    };
-    void getNativeConnectivitySnapshot().then(applyConnectivity).catch(() => undefined);
-    const subscription = subscribeNativeConnectivity(applyConnectivity);
+    const controller = createDeferredOfflineConnectivityController({
+      getLastApiSuccessAt: () => lastApiSuccessAtRef.current,
+      setOffline: setConnectivityOffline,
+      setKnownOnline: setConnectivityKnownOnline,
+      setVpnActive,
+      recheck: getNativeConnectivitySnapshot,
+    });
+    void getNativeConnectivitySnapshot().then(controller.apply).catch(() => undefined);
+    const subscription = subscribeNativeConnectivity(controller.apply);
     return () => {
-      active = false;
+      controller.dispose();
       subscription.remove();
     };
   }, []);
@@ -530,6 +520,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authGenerationRef.current += 1;
     const pending = (async () => {
     await endMobileSession();
+    bumpNativeChatThreadHistoryGeneration();
     setUser(null);
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);

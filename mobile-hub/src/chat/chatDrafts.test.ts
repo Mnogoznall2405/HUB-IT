@@ -160,3 +160,46 @@ it('restores reply, edit context and attachment references without requiring bod
   await clearNativeChatDraft(7, 'chat-a');
   expect(await getNativeChatDraftState(7, 'chat-a')).toBeNull();
 });
+
+it('keeps the previous draft when durable attachment copy fails asynchronously', async () => {
+  await clearAllNativeChatDrafts();
+  await setNativeChatDraft(7, 'chat-a', 'Сохранённый текст');
+  const source = new File(Paths.cache, 'draft-copy-fail');
+  source.write('Новое вложение');
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(() => (
+    Promise.reject(new Error('synthetic copy failure'))
+  ));
+  try {
+    await expect(setNativeChatDraft(7, 'chat-a', 'Новый текст', {
+      files: [{
+        uri: source.uri,
+        name: 'Файл.txt',
+        mimeType: 'text/plain',
+        size: source.size,
+        source: 'document',
+      }],
+    })).rejects.toThrow('Не удалось сохранить вложение на устройстве');
+    expect(await getNativeChatDraft(7, 'chat-a')).toBe('Сохранённый текст');
+    expect(source.exists).toBe(true);
+  } finally {
+    copySpy.mockRestore();
+  }
+});
+
+it('does not replace a saved draft when metadata write fails after a successful copy', async () => {
+  await clearAllNativeChatDrafts();
+  await setNativeChatDraft(7, 'chat-a', 'Прежний черновик');
+  const source = new File(Paths.cache, 'draft-meta-fail');
+  source.write('Новые байты');
+  jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('Storage unavailable'));
+  await expect(setNativeChatDraft(7, 'chat-a', 'Новый текст', {
+    files: [{
+      uri: source.uri,
+      name: 'Файл.txt',
+      mimeType: 'text/plain',
+      size: source.size,
+      source: 'document',
+    }],
+  })).rejects.toThrow('Storage unavailable');
+  expect(await getNativeChatDraft(7, 'chat-a')).toBe('Прежний черновик');
+});

@@ -108,36 +108,61 @@ export async function deleteUnreferencedChatFiles(candidates: string[]) {
   }
 }
 
+function cleanupIncompleteCopy(destination: File) {
+  try {
+    if (destination.exists) destination.delete();
+  } catch {
+    // Incomplete destination cleanup must not hide the original copy failure.
+  }
+}
+
 /** Keep picked files in app-private documents, not the OS-evictable picker cache. */
-export function persistNativeChatDraftFiles(userId: number, files: NativePickedFile[]): NativePickedFile[] {
+export async function persistNativeChatDraftFiles(
+  userId: number,
+  files: NativePickedFile[],
+): Promise<NativePickedFile[]> {
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Не удалось сохранить файлы черновика');
   const directory = new Directory(root(), String(userId));
   directory.create({ intermediates: true, idempotent: true });
-  return files.map((picked) => {
+  const persisted: NativePickedFile[] = [];
+  for (const picked of files) {
     const source = new File(picked.uri);
     const key = JSON.stringify([userId, source.uri]);
     const version = source.exists ? JSON.stringify([source.size, source.modificationTime]) : null;
     const previous = copies.get(key);
     const cached = previous ? new File(previous.uri) : null;
     if (previous && cached?.exists && cached.size === previous.size && (version === null || previous.version === version)) {
-      return { ...picked, uri: previous.uri, size: previous.size };
+      persisted.push({ ...picked, uri: previous.uri, size: previous.size });
+      continue;
     }
     if (!source.exists) throw new Error('Файл черновика недоступен. Выберите его снова.');
     if (source.uri.startsWith(`${directory.uri.replace(/\/$/, '')}/`)) {
       if (picked.size > 0 && source.size !== picked.size) throw new Error('Размер вложения изменился. Выберите файл снова.');
-      return { ...picked, size: source.size };
+      persisted.push({ ...picked, size: source.size });
+      continue;
     }
     const destination = new File(directory, randomUUID());
     try {
-      source.copy(destination);
-      if (!destination.exists || destination.size !== source.size) throw new Error('Не удалось проверить копию вложения');
-    } catch {
-      if (destination.exists) destination.delete();
+      // expo-file-system File.copy() returns Promise<void>; never check size before it settles.
+      await source.copy(destination);
+      if (!destination.exists || destination.size !== source.size) {
+        throw new Error('Не удалось проверить копию вложения');
+      }
+    } catch (error) {
+      cleanupIncompleteCopy(destination);
+      if (error instanceof Error && (
+        error.message === 'Не удалось проверить копию вложения'
+        || error.message === 'Файл черновика недоступен. Выберите его снова.'
+        || error.message === 'Размер вложения изменился. Выберите файл снова.'
+      )) {
+        throw error;
+      }
       throw new Error('Не удалось сохранить вложение на устройстве. Повторите сохранение.');
     }
     copies.set(key, { uri: destination.uri, version: version!, size: destination.size });
-    return { ...picked, uri: destination.uri, size: destination.size };
-  });
+    persisted.push({ ...picked, uri: destination.uri, size: destination.size });
+  }
+  return persisted;
 }
 
 export function clearNativeChatDraftFiles() {

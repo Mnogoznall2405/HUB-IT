@@ -51,6 +51,7 @@ import {
   isAiConversation,
   type ChatWorkspaceKey,
 } from '../../chat/chatAiWorkspace';
+import { filterConversationsByLocalQuery } from '../../chat/nativeChatLocalSearch';
 import { ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { AiConversationActionsSheet } from '../../components/chat/AiConversationActionsSheet';
 import type { ChatAiBot } from '../../api/types';
@@ -384,6 +385,13 @@ export function NativeChatInboxScreen() {
       setSearching(false);
       return undefined;
     }
+    // Immediate local filter so offline/saved titles stay findable (OFF-06).
+    setSearchItems(filterConversationsByLocalQuery(items, query));
+    setSearchMessages([]);
+    if (offlineMode) {
+      setSearching(false);
+      return undefined;
+    }
     const requestId = ++searchRequestRef.current;
     setSearching(true);
     const timer = setTimeout(() => {
@@ -392,17 +400,26 @@ export function NativeChatInboxScreen() {
         chatApi.searchMessagesGlobal(query, 20).catch(() => []),
       ]).then(([page, messages]) => {
         if (!mountedRef.current || requestId !== searchRequestRef.current) return;
-        setSearchItems(page.items);
+        const remote = page.items || [];
+        const local = filterConversationsByLocalQuery(items, query);
+        const byId = new Map<string, ChatConversationSummary>();
+        [...local, ...remote].forEach((item) => {
+          if (item?.id) byId.set(item.id, item);
+        });
+        setSearchItems([...byId.values()]);
         setSearchMessages(messages);
         setSearching(false);
       }).catch((cause) => {
         if (!mountedRef.current || requestId !== searchRequestRef.current) return;
         setSearching(false);
-        setError(formatApiError(cause, 'Не удалось найти диалоги'));
+        // Keep local results; only surface an error when nothing local matched.
+        if (!filterConversationsByLocalQuery(items, query).length) {
+          setError(formatApiError(cause, 'Не удалось найти диалоги'));
+        }
       });
     }, 350);
     return () => clearTimeout(timer);
-  }, [search, workspace]);
+  }, [items, offlineMode, search, workspace]);
 
   const unreadCounts = useMemo(
     () => buildFolderUnreadCounts(items, customFolders, conversationIdsByFolder, systemUnreadCounts),
@@ -415,8 +432,11 @@ export function NativeChatInboxScreen() {
     if (workspace === 'ai') {
       return filterAiConversations(items, { archived: aiArchiveOpen, query: search });
     }
-    const source = searchItems ?? items;
-    const scoped = search.trim()
+    const query = search.trim();
+    const source = query
+      ? (searchItems ?? filterConversationsByLocalQuery(items, query))
+      : items;
+    const scoped = query
       ? source
       : filterConversationsByFolder(source, activeFolderKey, conversationIdsByFolder);
     return [...scoped].sort((left, right) => {

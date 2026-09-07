@@ -153,13 +153,15 @@ export async function setNativeChatDraft(
     const stored = await loadDrafts();
     const candidates = stored.filter((item) => item.userId === normalizedUserId && item.conversationId === normalizedConversationId)
       .flatMap((item) => item.context?.files?.map((file) => file.uri) || []);
-    const drafts = stored.filter((item) => (
+    // Keep the previous draft on disk until the replacement copy + metadata write both succeed.
+    const nextDrafts = stored.filter((item) => (
       item.userId !== normalizedUserId || item.conversationId !== normalizedConversationId
     ));
     if (normalizedText.trim() || context?.mode || context?.files?.length) {
       const storedContext = context?.files?.length
-        ? { ...context, files: persistNativeChatDraftFiles(normalizedUserId, context.files) } : context;
-      drafts.push({
+        ? { ...context, files: await persistNativeChatDraftFiles(normalizedUserId, context.files) }
+        : context;
+      nextDrafts.push({
         userId: normalizedUserId,
         conversationId: normalizedConversationId,
         text: normalizedText,
@@ -167,8 +169,8 @@ export async function setNativeChatDraft(
         ...(storedContext ? { context: storedContext } : {}),
       });
     }
-    await saveDrafts(drafts);
-    const retained = new Set(drafts.flatMap((item) => item.context?.files?.map((file) => file.uri) || []));
+    await saveDrafts(nextDrafts);
+    const retained = new Set(nextDrafts.flatMap((item) => item.context?.files?.map((file) => file.uri) || []));
     const removed = candidates.filter((uri) => !retained.has(uri));
     await deleteUnreferencedChatFiles(removed).catch(() => undefined);
   });

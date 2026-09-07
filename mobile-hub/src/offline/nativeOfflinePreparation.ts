@@ -15,7 +15,7 @@ import {
   getMailUnreadSnapshot,
   pollHubNotifications,
 } from '../api/notificationApi';
-import { getConversationPage, listChatFolders } from '../api/chatApi';
+import { getConversationPage, getMessagesPage, listChatFolders } from '../api/chatApi';
 import { getTasksPage } from '../api/taskApi';
 import { getDocflowProfile, listDocflowTasks } from '../api/docflowApi';
 import { getCompleteAddressBook } from '../api/addressBookApi';
@@ -25,6 +25,7 @@ import { getCompanyStructureTree } from '../api/companyStructureApi';
 import {
   readNativeSnapshot,
   writeNativeCollectionSnapshot,
+  writeNativeEntitySnapshot,
   writeNativeSnapshot,
 } from '../cache/nativeSnapshotCache';
 import {
@@ -45,6 +46,8 @@ import {
 const FEED_PAGE_SIZE = 200;
 const TASK_PAGE_SIZE = 200;
 const CHAT_PAGE_SIZE = 200;
+const CHAT_THREAD_PREPARE_LIMIT = 12;
+const CHAT_THREAD_MESSAGE_LIMIT = 80;
 const MAIL_PAGE_SIZE = 200;
 const DOCFLOW_PAGE_SIZE = 100;
 
@@ -288,6 +291,30 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
     inboxStored = await writeNativeChatInboxSnapshot(userId, candidate);
     if (!inboxStored) break;
     page = candidate;
+    await yieldToEventLoop();
+  }
+  // Limited recent-thread history: catalog readiness is not thread readiness (OFF-08).
+  for (const conversation of page.items.slice(0, CHAT_THREAD_PREPARE_LIMIT)) {
+    const conversationId = String(conversation.id || '').trim();
+    if (!conversationId) continue;
+    try {
+      const messagesPage = await getMessagesPage(conversationId, { limit: CHAT_THREAD_MESSAGE_LIMIT });
+      await writeNativeEntitySnapshot('chat-thread-details', userId, conversationId, {
+        conversation,
+        title: conversation.title || 'Chat',
+        messages: messagesPage.items || [],
+        hasOlder: Boolean(messagesPage.has_older),
+        olderCursor: messagesPage.older_cursor_message_id || null,
+        hasNewer: Boolean(messagesPage.has_newer),
+        newerCursor: messagesPage.newer_cursor_message_id || null,
+        unreadBoundaryId: null,
+        focusAnchorId: null,
+        pinnedMessageId: conversation.pinned_message_id || null,
+        historyMayHaveGaps: Boolean(messagesPage.has_older || messagesPage.has_newer),
+      });
+    } catch {
+      // Keep the previous thread snapshot if a fresh download fails.
+    }
     await yieldToEventLoop();
   }
   return {

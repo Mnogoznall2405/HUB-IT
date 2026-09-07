@@ -232,18 +232,48 @@ export async function downloadTrustedChatMedia(
   const pending = chatMediaDownloads.get(destination.uri);
   if (pending) return pending;
   const download = withChatMediaDownloadSlot(async () => {
-    if (destination.exists) destination.delete();
-    maintainAttachmentCache();
+    const hadExisting = destination.exists && destination.size > 0;
+    if (!hadExisting) {
+      if (destination.exists) destination.delete();
+      maintainAttachmentCache();
+      try {
+        const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
+          idempotent: true,
+          signal: options.signal,
+          preserveSessionOnAuthFailure: true,
+        });
+        maintainAttachmentCache(downloaded.uri, downloaded.size);
+        return downloaded;
+      } catch (error) {
+        if (destination.exists) destination.delete();
+        throw error;
+      }
+    }
+
+    // Refresh without deleting the working original until the replacement is verified.
+    const staging = await attachmentCacheFile(`pending-${sanitizeNativeFileName(cacheName)}`);
+    if (staging.exists) staging.delete();
     try {
-      const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
+      const downloaded = await downloadAuthenticatedFile(sourceUrl, staging, {
         idempotent: true,
         signal: options.signal,
         preserveSessionOnAuthFailure: true,
       });
-      maintainAttachmentCache(downloaded.uri, downloaded.size);
-      return downloaded;
+      if (typeof downloaded.move === 'function') {
+        await downloaded.move(destination, { overwrite: true });
+      } else if (typeof downloaded.copy === 'function') {
+        await downloaded.copy(destination, { overwrite: true });
+        if (staging.exists) staging.delete();
+      } else {
+        throw new Error('Не удалось заменить локальную копию вложения');
+      }
+      maintainAttachmentCache(destination.uri, destination.size);
+      return destination;
     } catch (error) {
-      if (destination.exists) destination.delete();
+      if (staging.exists) staging.delete();
+      if (destination.exists && destination.size > 0) {
+        maintainAttachmentCache(destination.uri, destination.size);
+      }
       throw error;
     }
   }, options.signal).finally(() => {

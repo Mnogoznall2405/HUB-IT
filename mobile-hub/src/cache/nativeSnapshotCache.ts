@@ -105,6 +105,13 @@ const CACHE_PREFIX = 'hubit_native_snapshot_v1';
 // cache limit evicts it. Online screens still revalidate these snapshots immediately.
 const DEFAULT_MAX_AGE_MS = Number.MAX_SAFE_INTEGER;
 const MAX_ENTITY_ENTRIES = 1000;
+let entityWriteClock = 0;
+
+function nextEntitySavedAt(): number {
+  const now = Date.now();
+  entityWriteClock = Math.max(now, entityWriteClock + 1);
+  return entityWriteClock;
+}
 const MAX_COLLECTION_ENTRIES = 8;
 // JSON chunks are intentionally much smaller than the encrypted-file limit.
 // A chunk is JSON-escaped once more inside its shard envelope, so keeping it at
@@ -628,7 +635,7 @@ export async function writeNativeEntitySnapshot<T>(
   const previous = entityWriteLocks.get(lockKey) || Promise.resolve();
   let current: Promise<void>;
   current = previous.catch(() => undefined).then(async () => {
-    const now = Date.now();
+    const now = nextEntitySavedAt();
     const storageScope = entityShardScope(scope, key);
     const stored = await writeNativeSnapshot(
       storageScope as NativeSnapshotScope,
@@ -672,19 +679,27 @@ export async function writeNativeEntitySnapshot<T>(
       ...manifestEntries,
       ...migratedEntries,
     ];
-    const entityKeys = candidates.filter((entry, index) => (
-      entry.key === key
-      || (
-        candidates.findIndex((candidate) => candidate.key === entry.key) === index
-      )
-    )).slice(0, MAX_ENTITY_ENTRIES);
+    // One entry per entity key (newest wins; the write in progress always wins for `key`).
+    const byKey = new Map<string, { key: string; savedAt: number; storageScope: string }>();
+    for (const entry of candidates) {
+      if (entry.key === key) continue;
+      const previous = byKey.get(entry.key);
+      if (!previous || entry.savedAt >= previous.savedAt) byKey.set(entry.key, entry);
+    }
+    byKey.set(key, { key, savedAt: now, storageScope });
+    const entityKeys = [...byKey.values()]
+      .sort((left, right) => right.savedAt - left.savedAt || left.key.localeCompare(right.key))
+      .slice(0, MAX_ENTITY_ENTRIES);
     const retainedScopes = new Set(entityKeys.map((entry) => entry.storageScope));
+    const evicted = [...manifestEntries, ...migratedEntries]
+      .filter((entry) => !retainedScopes.has(entry.storageScope));
+    // Persist the deduped index before deleting any shards. A failed index write must
+    // not remove previously reachable offline details.
+    const indexStored = await writeNativeSnapshot(scope, owner, { entityKeys } satisfies NativeEntitySnapshotManifest);
+    if (!indexStored) return;
     await Promise.allSettled(
-      [...manifestEntries, ...migratedEntries]
-        .filter((entry) => !retainedScopes.has(entry.storageScope))
-        .map((entry) => deleteEncryptedNativeSnapshot(entry.storageScope, owner)),
+      evicted.map((entry) => deleteEncryptedNativeSnapshot(entry.storageScope, owner)),
     );
-    await writeNativeSnapshot(scope, owner, { entityKeys } satisfies NativeEntitySnapshotManifest);
   }).finally(() => {
     if (entityWriteLocks.get(lockKey) === current) entityWriteLocks.delete(lockKey);
   });

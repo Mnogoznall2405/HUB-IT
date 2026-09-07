@@ -202,6 +202,22 @@ it('restores an upload and its preview from a durable copy after cache removal',
   expect(await restored.readUploads()).toEqual([]);
 });
 
+it('queues for later delivery without calling the network send', async () => {
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  const saved = await queue.send(message, send, undefined, { deliver: false });
+  expect(send).not.toHaveBeenCalled();
+  expect(saved.local_status).toBe('failed');
+  expect(await queue.read()).toEqual([expect.objectContaining({
+    client_message_id: 'one',
+    local_status: 'failed',
+  })]);
+  const restored = createNativeChatOutbox(7, 'chat-a');
+  expect(await restored.read()).toHaveLength(1);
+  send.mockResolvedValueOnce({ ...message, id: 'server-one', local_status: undefined });
+  await expect(restored.send(message, send)).resolves.toMatchObject({ id: 'server-one' });
+  expect(send).toHaveBeenCalledTimes(1);
+});
+
 it('reconciles a lost acknowledgement only with an own server message in the same conversation', async () => {
   send.mockRejectedValueOnce(new Error('Lost acknowledgement'));
   const outbox = createNativeChatOutbox(7, 'chat-a');
@@ -242,4 +258,126 @@ it('rejects discard while transport is active', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   done({ ...message, id: 'server-one' });
   await pending;
+});
+
+it('does not write queue metadata or allow transport until deferred File.copy settles', async () => {
+  const source = new File(Paths.cache, 'deferred-outbox');
+  source.write('Отложенная копия');
+  const file = {
+    uri: source.uri,
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  let releaseCopy!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  const originalCopy = File.prototype.copy;
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(function (this: File, destination) {
+    return gate.then(async () => {
+      await originalCopy.call(this, destination);
+    });
+  });
+  const setItem = jest.mocked(SecureStore.setItemAsync);
+  const writesBeforeRelease = setItem.mock.calls.length;
+
+  try {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    const pending = queue.prepareUpload(message, { files: [file], body: 'Подпись' });
+    let settled = false;
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(setItem.mock.calls.length).toBe(writesBeforeRelease);
+    expect(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')).toBeNull();
+
+    releaseCopy();
+    const durable = await pending;
+    queue.finishUpload('one');
+    expect(settled).toBe(true);
+    expect(durable.files[0].uri).not.toBe(source.uri);
+    expect(await new File(durable.files[0].uri).text()).toBe('Отложенная копия');
+    expect(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')).toContain(durable.files[0].uri);
+  } finally {
+    copySpy.mockRestore();
+  }
+});
+
+it('does not start network upload when durable copy fails asynchronously', async () => {
+  const source = new File(Paths.cache, 'outbox-copy-fail');
+  source.write('Исходник');
+  const file = {
+    uri: source.uri,
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(() => (
+    Promise.reject(new Error('synthetic copy failure'))
+  ));
+  try {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    await expect(queue.prepareUpload(message, { files: [file], body: 'Подпись' })).rejects.toThrow(
+      'Не удалось сохранить вложение на устройстве',
+    );
+    expect(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')).toBeNull();
+    expect(source.exists).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+  } finally {
+    copySpy.mockRestore();
+  }
+});
+
+it('rejects a late prepareUpload after logout without resurrecting the previous session', async () => {
+  const source = new File(Paths.cache, 'logout-during-copy');
+  source.write('Сессия завершена');
+  const file = {
+    uri: source.uri,
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  let releaseCopy!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  const originalCopy = File.prototype.copy;
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(function (this: File, destination) {
+    return gate.then(async () => {
+      await originalCopy.call(this, destination);
+    });
+  });
+
+  try {
+    const old = createNativeChatOutbox(7, 'chat-a');
+    const pending = old.prepareUpload(message, { files: [file], body: 'Подпись' });
+    await clearNativeChatOutbox();
+    releaseCopy();
+    await expect(pending).rejects.toThrow('Сеанс очереди сообщений завершён');
+    expect(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  } finally {
+    copySpy.mockRestore();
+  }
+});
+
+it('reuses the same queued client id on prepareUpload retry without creating a second row', async () => {
+  const source = new File(Paths.cache, 'retry-same-id');
+  source.write('Повтор');
+  const file = {
+    uri: source.uri,
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  const first = await queue.prepareUpload(message, { files: [file], body: 'Подпись' });
+  queue.finishUpload('one');
+  const second = await queue.prepareUpload(message, { files: [file], body: 'Подпись' });
+  queue.finishUpload('one');
+  expect(second).toEqual(first);
+  expect(await queue.readUploads()).toHaveLength(1);
+  expect((await queue.readUploads())[0].id).toBe('one');
 });

@@ -40,7 +40,11 @@ import { ChatMarkdownBody } from './ChatMarkdownBody';
 import { ChatVoiceNote } from './ChatVoiceNote';
 import { PresenceAvatar } from './PresenceAvatar';
 
-export function buildChatMessageAccessibilityLabel(message: ChatMessage, isOwn: boolean): string {
+export function buildChatMessageAccessibilityLabel(
+  message: ChatMessage,
+  isOwn: boolean,
+  options: { awaitingConnection?: boolean } = {},
+): string {
   const senderName = message.sender?.full_name || message.sender?.username;
   const attachments = message.is_deleted ? [] : message.attachments || [];
   const voiceAttachment = attachments.find((attachment) => isAudioChatAttachment(attachment));
@@ -52,7 +56,7 @@ export function buildChatMessageAccessibilityLabel(message: ChatMessage, isOwn: 
   const delivery = message.local_status === 'sending'
     ? 'Отправляется'
     : message.local_status === 'failed'
-      ? 'Не отправлено'
+      ? (options.awaitingConnection ? 'Ожидает подключения' : 'Не отправлено')
       : message.local_status === 'cancelled'
         ? 'Отправка отменена'
       : isOwn
@@ -101,12 +105,14 @@ export const ChatBubble = memo(function ChatBubble({
   onSenderPress,
   groupPosition = 'single',
   showSenderAvatars = false,
+  awaitingConnection = false,
 }: {
   message: ChatMessage;
   isOwn: boolean;
   selected?: boolean;
   highlighted?: boolean;
   showSenderAvatars?: boolean;
+  awaitingConnection?: boolean;
   onPress?: () => void;
   onLongPress?: () => void;
   onActionsPress?: () => void;
@@ -134,7 +140,7 @@ export const ChatBubble = memo(function ChatBubble({
   const reactions = message.reactions || [];
   const isDeleted = Boolean(message.is_deleted);
   const attachments = isDeleted ? [] : message.attachments || [];
-  const accessibilityLabel = buildChatMessageAccessibilityLabel(message, isOwn);
+  const accessibilityLabel = buildChatMessageAccessibilityLabel(message, isOwn, { awaitingConnection });
   const actionCard = message.action_card as {
     id?: string;
     status?: string;
@@ -474,7 +480,11 @@ export const ChatBubble = memo(function ChatBubble({
             accessibilityLabel="Повторить отправку сообщения"
           >
             <Text style={styles.retryText}>
-              {message.local_status === 'cancelled' ? 'Отправка отменена · повторить' : 'Не отправлено · повторить'}
+              {message.local_status === 'cancelled'
+                ? 'Отправка отменена · повторить'
+                : awaitingConnection
+                  ? 'Ожидает подключения'
+                  : 'Не отправлено · повторить'}
             </Text>
           </Pressable>
         ) : null}

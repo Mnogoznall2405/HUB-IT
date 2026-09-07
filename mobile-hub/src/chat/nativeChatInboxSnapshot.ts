@@ -31,8 +31,26 @@ export async function writeNativeChatInboxSnapshot(
 ): Promise<boolean> {
   if (!isConversationPage(page)) return false;
   const existing = await readNativeChatInboxSnapshot(userId);
-  // A first online page must not replace a previously complete offline catalog.
-  if (page.has_more && existing?.data.has_more === false) return true;
+  // A first online page must not replace a previously complete offline catalog,
+  // but fresh items from that page still need to be merged in (OFF-08).
+  if (page.has_more && existing?.data.has_more === false) {
+    const byId = new Map<string, ChatConversationPage['items'][number]>();
+    [...(existing.data.items || []), ...(page.items || [])].forEach((item) => {
+      const id = String(item?.id || '').trim();
+      if (id) byId.set(id, item);
+    });
+    return writeNativeCollectionSnapshot(
+      'chat-inbox',
+      userId,
+      NATIVE_CHAT_INBOX_SNAPSHOT_KEY,
+      {
+        ...existing.data,
+        items: [...byId.values()],
+        has_more: false,
+        next_cursor: null,
+      },
+    );
+  }
   return writeNativeCollectionSnapshot(
     'chat-inbox',
     userId,

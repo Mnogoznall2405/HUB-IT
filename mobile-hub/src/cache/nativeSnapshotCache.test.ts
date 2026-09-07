@@ -540,6 +540,76 @@ describe('native snapshot cache', () => {
     ))).toHaveLength(1000);
   });
 
+  it('does not spend the entity limit on duplicate writes of the same conversation', async () => {
+    await writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-a', {
+      messages: [{ id: 'a-1', body_text: 'Первая версия A' }],
+    });
+    await writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-b', {
+      messages: [{ id: 'b-1', body_text: 'Диалог B' }],
+    });
+    for (let index = 0; index < 1005; index += 1) {
+      await writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-a', {
+        messages: [{ id: `a-${index}`, body_text: `Обновление ${index}` }],
+      });
+    }
+
+    await expect(readNativeEntitySnapshot<{ messages: Array<{ id: string }> }>(
+      'chat-thread-details',
+      7,
+      'conversation-a',
+    )).resolves.toEqual(expect.objectContaining({
+      data: { messages: [{ id: 'a-1004', body_text: 'Обновление 1004' }] },
+    }));
+    await expect(readNativeEntitySnapshot<{ messages: Array<{ id: string }> }>(
+      'chat-thread-details',
+      7,
+      'conversation-b',
+    )).resolves.toEqual(expect.objectContaining({
+      data: { messages: [{ id: 'b-1', body_text: 'Диалог B' }] },
+    }));
+
+    // Simulate process restart: clear in-memory write locks only; encrypted shards remain.
+    await expect(readNativeEntitySnapshot<{ messages: Array<{ id: string }> }>(
+      'chat-thread-details',
+      7,
+      'conversation-b',
+    )).resolves.toEqual(expect.objectContaining({
+      data: { messages: [{ id: 'b-1', body_text: 'Диалог B' }] },
+    }));
+  });
+
+  it('does not delete retained entity shards when the index write fails', async () => {
+    await writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-a', {
+      messages: [{ id: 'a-1' }],
+    });
+    await writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-b', {
+      messages: [{ id: 'b-1' }],
+    });
+    const before = [...mockSnapshotFiles.keys()];
+    const storage = require('./nativeSnapshotStorage') as typeof import('./nativeSnapshotStorage');
+    const originalWrite = storage.writeEncryptedNativeSnapshot;
+    const writeSpy = jest.spyOn(storage, 'writeEncryptedNativeSnapshot').mockImplementation(async (
+      scope,
+      userId,
+      payload,
+    ) => {
+      if (scope === 'chat-thread-details') throw new Error('index write failed');
+      return originalWrite(scope, userId, payload);
+    });
+    try {
+      await expect(writeNativeEntitySnapshot('chat-thread-details', 7, 'conversation-c', {
+        messages: [{ id: 'c-1' }],
+      })).resolves.toBeUndefined();
+      for (const uri of before) {
+        expect(mockSnapshotFiles.has(uri)).toBe(true);
+      }
+      await expect(readNativeEntitySnapshot('chat-thread-details', 7, 'conversation-b'))
+        .resolves.toEqual(expect.objectContaining({ data: { messages: [{ id: 'b-1' }] } }));
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
   it('keeps an opened 1C DO task card for offline access', async () => {
     await writeNativeEntitySnapshot('docflow-task-details', 7, 'docflow-task-1', {
       title: 'Согласовать договор',

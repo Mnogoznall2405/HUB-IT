@@ -40,6 +40,15 @@ jest.mock('expo-file-system', () => {
     get lastModified() { return mockFiles.get(this.uri)?.modifiedAt || 0; }
     get creationTime() { return this.lastModified; }
     delete() { mockFiles.delete(this.uri); }
+    async copy(destination: MockFile, options?: { overwrite?: boolean }) {
+      if (destination.exists && !options?.overwrite) throw new Error('Destination exists');
+      mockFiles.set(destination.uri, mockFiles.get(this.uri) || { size: 0, modifiedAt: Date.now() });
+    }
+    async move(destination: MockFile, options?: { overwrite?: boolean }) {
+      await this.copy(destination, options);
+      this.delete();
+      this.uri = destination.uri;
+    }
   }
 
   return {

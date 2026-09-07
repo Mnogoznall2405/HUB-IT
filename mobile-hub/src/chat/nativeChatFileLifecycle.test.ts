@@ -31,7 +31,7 @@ it('reports an unlinked crash file without deleting it or scanning another user'
 
 it('protects active picker copies and counts missing durable references without changing metadata', async () => {
   const picked = pickedFile();
-  const durable = persistNativeChatDraftFiles(7, [picked])[0];
+  const durable = (await persistNativeChatDraftFiles(7, [picked]))[0];
   const unpin = pinNativeChatDraftFiles([picked]);
   try { expect(await inspectNativeChatDraftFiles(7)).toMatchObject({ linked: 1, unlinked: 0 }); }
   finally { unpin(); }
@@ -43,7 +43,7 @@ it('protects active picker copies and counts missing durable references without 
 });
 
 it('refuses to label orphan files when reference metadata is corrupt', async () => {
-  const durable = persistNativeChatDraftFiles(7, [pickedFile()])[0];
+  const durable = (await persistNativeChatDraftFiles(7, [pickedFile()]))[0];
   await SecureStore.setItemAsync(CHAT_OUTBOX_STORAGE_KEY, '{bad');
   await expect(inspectNativeChatDraftFiles(7)).rejects.toThrow('Не удалось проверить ссылки');
   expect(new File(durable.uri).exists).toBe(true);

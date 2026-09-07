@@ -1,7 +1,7 @@
 import * as motion from '../../accessibility/useReducedMotion';
 import { clearNativeChatOutbox, createNativeChatOutbox } from '../../chat/nativeChatOutbox';
 jest.mock('../../chat/nativeChatDraftFiles', () => ({
-  persistNativeChatDraftFiles: (_userId: number, files: unknown) => files,
+  persistNativeChatDraftFiles: async (_userId: number, files: unknown) => files,
   clearNativeChatDraftFiles: jest.fn(),
   deleteUnreferencedChatFiles: jest.fn(async () => undefined),
   pinNativeChatDraftFiles: () => () => undefined,

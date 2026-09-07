@@ -116,7 +116,14 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       }
       return previous.upload;
     }
-    const durableUpload = upload ? { ...upload, files: persistNativeChatDraftFiles(userId, upload.files) } : undefined;
+    let durableUpload: NativeChatQueuedUpload | undefined;
+    if (upload) {
+      // Await every durable copy before writing queue metadata or allowing network upload.
+      const durableFiles = await persistNativeChatDraftFiles(userId, upload.files);
+      assertCurrent();
+      assertNotDiscarded(message.client_message_id || '');
+      durableUpload = { ...upload, files: durableFiles };
+    }
     const durableMessage = durableUpload ? { ...message, attachments: message.attachments?.map((attachment, index) => ({
       ...attachment, local_uri: durableUpload.files[index]?.uri || attachment.local_uri,
     })) } : message;
@@ -203,7 +210,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       return entries.filter((entry) => entry.userId === userId && entry.message.conversation_id === conversationId)
         .map((entry): ChatMessage => ({ ...entry.message, local_status: 'failed' }));
     }),
-    send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void): Promise<ChatMessage> => {
+    send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void, options?: { deliver?: boolean }): Promise<ChatMessage> => {
       const key = JSON.stringify([lease, userId, conversationId, message.client_message_id]);
       try { assertNotDiscarded(message.client_message_id || ''); }
       catch (error) { return Promise.reject(error); }
@@ -213,6 +220,9 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         await put(message);
         assertCurrent();
         onPersisted?.();
+        if (options?.deliver === false) {
+          return { ...message, local_status: 'failed' as const };
+        }
         const saved = await sendText(conversationId, message.body_text || '', {
           clientMessageId: message.client_message_id || undefined,
           replyToMessageId: message.reply_preview?.id,
