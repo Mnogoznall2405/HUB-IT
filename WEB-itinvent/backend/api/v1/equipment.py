@@ -638,14 +638,97 @@ def _normalize_local_file_path(raw_path: str) -> str:
     return os.path.normpath(urllib.parse.unquote(text))
 
 
+_UNKNOWN_EMPLOYEE_TOKENS: set[str] = {
+    "без",
+    "безв",
+    "бн",
+    "нет",
+    "неизвестно",
+    "неуказан",
+    "неизвестен",
+    "нд",
+    "na",
+    "none",
+    "unknown",
+    "отсутствует",
+    "недоступен",
+}
+
+
+def _normalize_employee_name_token(name: str) -> str:
+    """Remove spaces, dots and punctuation for placeholder detection."""
+    text = re.sub(r"[\s.\-–—/]+", "", str(name or "").strip().lower())
+    return re.sub(r"[^a-zа-яё0-9]", "", text)
+
+
+def _is_unknown_employee_name(name: str) -> bool:
+    """Detect placeholder/unknown employee names like 'Без', 'Без В.', 'N/A'."""
+    token = _normalize_employee_name_token(name)
+    if not token:
+        return True
+    return token in _UNKNOWN_EMPLOYEE_TOKENS
+
+
+def _is_plausible_name_match(input_name: str, display_name: str) -> bool:
+    """
+    Validate that a non-strict name lookup actually matches the input.
+    Rejects short fragments that are only substrings of a longer surname,
+    e.g. 'Без' should not match 'Безлепкин Сергей Валериевич'.
+    """
+    input_lower = input_name.lower().strip()
+    display_lower = display_name.lower().strip()
+    if display_lower == input_lower:
+        return True
+    if display_lower.startswith(input_lower + " "):
+        return True
+
+    input_parts = input_lower.split()
+    display_parts = display_lower.split()
+    if not input_parts or not display_parts:
+        return False
+    if input_parts[0] != display_parts[0]:
+        return False
+    if len(input_parts) == 1:
+        return True
+
+    # Compare initials: "Зубков А.А." should match "Зубков Андрей Алексеевич".
+    display_idx = 1
+    for raw_part in input_parts[1:]:
+        initials = re.findall(r"[a-zа-яё]", re.sub(r"[.\s]+", "", raw_part))
+        if not initials:
+            continue
+        for initial in initials:
+            matched = False
+            while display_idx < len(display_parts):
+                if display_parts[display_idx].startswith(initial):
+                    matched = True
+                    display_idx += 1
+                    break
+                display_idx += 1
+            if not matched:
+                return False
+    return True
+
+
 def _resolve_owner_no_by_name(owner_name: str, db_id: Optional[str]) -> Optional[int]:
     name = str(owner_name or "").strip()
     if not name:
         return None
+    if _is_unknown_employee_name(name):
+        return None
     owner_no = queries.get_owner_no_by_name(name, strict=True, db_id=db_id)
+    if owner_no is not None:
+        return int(owner_no)
+    owner_no = queries.get_owner_no_by_name(name, strict=False, db_id=db_id)
     if owner_no is None:
-        owner_no = queries.get_owner_no_by_name(name, strict=False, db_id=db_id)
-    return int(owner_no) if owner_no is not None else None
+        return None
+    owner_payload = queries.get_owner_by_no(owner_no, db_id) or {}
+    display_name = str(
+        owner_payload.get("OWNER_DISPLAY_NAME") or owner_payload.get("owner_display_name") or ""
+    ).strip()
+    if display_name and _is_plausible_name_match(name, display_name):
+        return int(owner_no)
+    return None
 
 
 class EquipmentUpdateRequest(BaseModel):
@@ -2188,7 +2271,7 @@ async def send_uploaded_act_email(
         employee_names = []
         for raw in [payload.from_employee, payload.to_employee]:
             name = str(raw or "").strip()
-            if not name:
+            if not name or _is_unknown_employee_name(name):
                 continue
             if name.lower() not in [existing.lower() for existing in employee_names]:
                 employee_names.append(name)
