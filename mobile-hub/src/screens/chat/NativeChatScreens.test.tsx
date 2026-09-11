@@ -15,12 +15,13 @@ import * as nativeFilePicker from '../../files/nativeFilePicker';
 import * as nativeSnapshotCache from '../../cache/nativeSnapshotCache';
 import * as nativeChatInboxSnapshot from '../../chat/nativeChatInboxSnapshot';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
-import { NativeChatThreadScreen } from './NativeChatThreadScreen';
+import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockSocketHandlers = new Map<string, Set<(payload: unknown) => void>>();
 let mockOfflineMode = false;
 let mockChatUserId = 1;
 let mockChatWriteAllowed = true;
+const mockThreadSnapshots = new Map<string, unknown>();
 
 function emitSocket(event: string, payload: unknown) {
   mockSocketHandlers.get(event)?.forEach((handler) => handler(payload));
@@ -142,8 +143,14 @@ describe('native Chat screens', () => {
     mockChatWriteAllowed = true;
     jest.mocked(nativeSnapshotCache.readNativeSnapshot).mockResolvedValue(null);
     jest.mocked(nativeSnapshotCache.writeNativeSnapshot).mockResolvedValue(true);
-    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockResolvedValue(null);
-    jest.mocked(nativeSnapshotCache.writeNativeEntitySnapshot).mockResolvedValue(undefined);
+    mockThreadSnapshots.clear();
+    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockImplementation(async (scope, userId, id) => {
+      const data = mockThreadSnapshots.get(JSON.stringify([scope, userId, id]));
+      return (data ? { savedAt: Date.now(), data } : null) as never;
+    });
+    jest.mocked(nativeSnapshotCache.writeNativeEntitySnapshot).mockImplementation(async (scope, userId, id, data) => {
+      mockThreadSnapshots.set(JSON.stringify([scope, userId, id]), JSON.parse(JSON.stringify(data)));
+    });
     jest.mocked(nativeChatInboxSnapshot.readNativeChatInboxSnapshot).mockResolvedValue(null);
     jest.mocked(nativeChatInboxSnapshot.writeNativeChatInboxSnapshot).mockResolvedValue(true);
     mockedChatApi.getConversations.mockResolvedValue([{

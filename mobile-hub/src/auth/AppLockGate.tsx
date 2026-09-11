@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as ScreenCapture from 'expo-screen-capture';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   Image,
@@ -17,6 +17,7 @@ import { HubButton } from '../components/ui/HubButton';
 import { type FluentTokens, useAppFluentTokens } from '../theme/fluentTokens';
 import { hapticError, hapticSuccess } from '../native/haptics';
 import { useAuth } from './AuthContext';
+import { setNativeChatDeliveryBlocked } from '../chat/nativeChatDeliveryGate';
 import {
   getAppLockSettings,
   shouldLockAfterBackground,
@@ -35,6 +36,10 @@ export function AppLockGate() {
   const { biometricEnabled, logout, user } = useAuth();
   const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
   const [locked, setLocked] = useState(false);
+  useLayoutEffect(() => {
+    setNativeChatDeliveryBlocked(!user || locked);
+    return () => setNativeChatDeliveryBlocked(true);
+  }, [user?.id, locked]);
   const [unlocking, setUnlocking] = useState(false);
   const [error, setError] = useState('');
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -77,6 +82,7 @@ export function AppLockGate() {
         if (shouldLockAfterBackground(backgroundAtRef.current, Date.now(), settings)) {
           automaticAttemptRef.current = false;
           setError('');
+          setNativeChatDeliveryBlocked(true);
           setLocked(true);
         } else {
           backgroundAtRef.current = 0;

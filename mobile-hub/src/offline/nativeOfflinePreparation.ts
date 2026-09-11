@@ -25,7 +25,6 @@ import { getCompanyStructureTree } from '../api/companyStructureApi';
 import {
   readNativeSnapshot,
   writeNativeCollectionSnapshot,
-  writeNativeEntitySnapshot,
   writeNativeSnapshot,
 } from '../cache/nativeSnapshotCache';
 import {
@@ -35,6 +34,10 @@ import {
 import type { NativeMyFilesInboxSnapshot } from '../myFiles/nativeMyFilesSnapshot';
 import type { NativeCompanyStructureTreeSnapshot } from '../companyStructure/nativeCompanyStructureSnapshot';
 import { writeNativeChatInboxSnapshot } from '../chat/nativeChatInboxSnapshot';
+import {
+  getNativeChatThreadHistoryGeneration,
+  scheduleNativeChatThreadSnapshotWrite,
+} from '../chat/nativeChatThreadHistory';
 import { refreshNativeReadCaches } from './nativeReadCacheRefresh';
 import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
@@ -264,6 +267,9 @@ async function prepareTasks(userId: number, isAdmin: boolean): Promise<Preparati
 }
 
 async function prepareChat(userId: number): Promise<PreparationMetric> {
+  // Capture ownership before network I/O; a late response must not recreate
+  // thread history after logout has invalidated the session generation.
+  const historyGeneration = getNativeChatThreadHistoryGeneration();
   const [firstPage, folders] = await Promise.all([
     getConversationPage({ limit: CHAT_PAGE_SIZE }),
     listChatFolders(),
@@ -295,11 +301,14 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
   }
   // Limited recent-thread history: catalog readiness is not thread readiness (OFF-08).
   for (const conversation of page.items.slice(0, CHAT_THREAD_PREPARE_LIMIT)) {
+    if (historyGeneration !== getNativeChatThreadHistoryGeneration()) break;
     const conversationId = String(conversation.id || '').trim();
     if (!conversationId) continue;
     try {
       const messagesPage = await getMessagesPage(conversationId, { limit: CHAT_THREAD_MESSAGE_LIMIT });
-      await writeNativeEntitySnapshot('chat-thread-details', userId, conversationId, {
+      // Preparation is another history producer, not an authoritative replacement
+      // of all previously visited pages. Share the same serialized merge writer.
+      await scheduleNativeChatThreadSnapshotWrite(userId, conversationId, {
         conversation,
         title: conversation.title || 'Chat',
         messages: messagesPage.items || [],
@@ -311,7 +320,7 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
         focusAnchorId: null,
         pinnedMessageId: conversation.pinned_message_id || null,
         historyMayHaveGaps: Boolean(messagesPage.has_older || messagesPage.has_newer),
-      });
+      }, { generation: historyGeneration, currentUserId: userId });
     } catch {
       // Keep the previous thread snapshot if a fresh download fails.
     }

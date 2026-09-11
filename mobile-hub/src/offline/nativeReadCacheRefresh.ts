@@ -101,7 +101,10 @@ async function refreshChat(userId: number, force: boolean): Promise<RefreshMetri
     readNativeChatInboxSnapshot(userId),
     readNativeSnapshot('chat-folders', userId),
   ]);
-  if (!force && inbox && folders && isFresh(Math.min(inbox.savedAt, folders.savedAt))) {
+  // Freshness only applies to a complete catalog; a recently stored first page
+  // must not postpone the remaining pages for the entire refresh interval.
+  if (!force && inbox && folders && inbox.data.has_more === false
+    && isFresh(Math.min(inbox.savedAt, folders.savedAt))) {
     return {
       loaded: inbox.data.items.length,
       total: inbox.data.has_more ? null : inbox.data.items.length,

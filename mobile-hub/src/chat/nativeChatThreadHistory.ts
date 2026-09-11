@@ -43,7 +43,9 @@ export function getNativeChatThreadHistoryGeneration(): number {
 
 function capThreadHistory(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length <= CHAT_THREAD_HISTORY_MAX_MESSAGES) return messages;
-  return messages.slice(messages.length - CHAT_THREAD_HISTORY_MAX_MESSAGES);
+  // mergeMessages is newest-first (the native list is inverted). Keep the head,
+  // otherwise a full cache permanently drops every newly received message.
+  return messages.slice(0, CHAT_THREAD_HISTORY_MAX_MESSAGES);
 }
 
 /** Merge a display window into the durable history without treating gaps as a continuous full archive. */

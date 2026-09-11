@@ -4,18 +4,24 @@ import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View }
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { IconButton } from 'react-native-paper';
 import { useAuth } from '../../auth/AuthContext';
-import * as chatApi from '../../api/chatApi';
 import { createNativeChatOutbox, readNativeChatOutbox, subscribeNativeChatOutbox, type NativeChatOutboxEntry } from '../../chat/nativeChatOutbox';
-import { buildAttachmentsFormData } from '../../files/nativeFilePicker';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useChatTokens } from '../../theme/chatTokens';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
 
 type Row = NativeChatOutboxEntry & { busy: boolean };
+function deliveryLabel(row: Row) {
+  if (row.delivery?.confirmed) return 'Отправлено. Сохраняется в истории';
+  if (row.busy) return 'Отправляется…';
+  if (row.delivery?.state === 'queued') return 'Ожидает доставки';
+  if (row.delivery?.state === 'retry') return 'Связь прервалась. Ожидает повтора';
+  if (row.delivery?.state === 'cancelled') return 'Отправка отменена';
+  return 'Ожидает ручного повтора';
+}
 export function NativeChatOutboxScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const allowed = hasPermission('chat.read');
-  const canSend = hasPermission('chat.write') && !offlineMode;
+  const canSend = hasPermission('chat.write');
   const userId = Number(user?.id || 0);
   const access = useRef({ userId, allowed, canSend });
   access.current = { userId, allowed, canSend };
@@ -74,42 +80,50 @@ export function NativeChatOutboxScreen() {
 
   const run = useCallback(async (row: Row, discard = false) => {
     if (busy.current || row.busy || !active.current || row.userId !== userId
-      || access.current.userId !== userId || !access.current.allowed || (!discard && !access.current.canSend)) return;
+      || access.current.userId !== userId || !access.current.allowed
+      || (!discard && !access.current.canSend) || row.delivery?.confirmed) return;
     busy.current = true;
     const operationScope = scope.current;
     const id = row.message.client_message_id!;
     setBusyId(`${row.message.conversation_id}:${id}`); setActionError('');
-    const assertSendAccess = () => {
-      if (!active.current || scope.current !== operationScope || access.current.userId !== userId
-        || !access.current.allowed || !access.current.canSend) throw new Error('Отправка приостановлена');
-    };
     const session = createNativeChatOutbox(userId, row.message.conversation_id);
-    let uploadPrepared = false;
     try {
       if (discard) await session.discard(id);
-      else if (row.upload) {
-        const upload = await session.prepareUpload(row.message, row.upload);
-        uploadPrepared = true;
-        assertSendAccess();
-        await chatApi.sendFileMessage(row.message.conversation_id, buildAttachmentsFormData(upload.files, {
-          body: upload.body, clientMessageId: id, replyToMessageId: upload.replyToMessageId,
-          mediaKind: upload.mediaKind, durationSeconds: upload.durationSeconds,
-        }));
-        await session.completeUpload(id).catch(() => undefined);
-      } else await session.send(row.message, (...args) => {
-        assertSendAccess();
-        return chatApi.sendTextMessage(...args);
-      });
+      else await session.retryDelivery(id);
     } catch {
-      if (active.current && scope.current === operationScope) setActionError(discard ? 'Не удалось убрать сообщение. Повторите действие.' : 'Не удалось отправить. Сообщение осталось в очереди.');
+      if (active.current && scope.current === operationScope) setActionError('Не удалось изменить очередь. Сообщение сохранено; повторите действие.');
     } finally {
-      if (uploadPrepared) session.finishUpload(id);
       if (scope.current === operationScope) {
         busy.current = false;
         if (active.current) setBusyId('');
       }
     }
-  }, [allowed, canSend, userId]);
+  }, [userId]);
+  const cancel = (row: Row) => {
+    if (!active.current || row.userId !== access.current.userId || !access.current.allowed) return;
+    void createNativeChatOutbox(row.userId, row.message.conversation_id).cancelDelivery(row.message.client_message_id!).catch(() => {
+      if (active.current) setActionError('Не удалось отменить доставку. Повторите действие.');
+    });
+  };
+  const withoutQuote = (row: Row) => {
+    const operationScope = scope.current;
+    const current = () => active.current && scope.current === operationScope && access.current.userId === row.userId
+      && access.current.allowed && access.current.canSend;
+    Alert.alert('Отправить без цитаты?', 'Проверьте переписку: прежняя отправка могла пройти без подтверждения. Будет создано новое сообщение.', [
+      { text: 'Оставить', style: 'cancel' },
+      { text: 'Отправить', onPress: () => {
+        if (!current() || busy.current) return;
+        busy.current = true;
+        const session = createNativeChatOutbox(row.userId, row.message.conversation_id);
+        const replacementId = `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+        void session.detachReply(row.message.client_message_id!, replacementId, current).then(async () => {
+          if (current()) await session.retryDelivery(replacementId);
+        }).catch(() => {
+          if (current()) setActionError('Не удалось изменить ответ. Проверьте очередь перед повтором.');
+        }).finally(() => { if (scope.current === operationScope) busy.current = false; });
+      } },
+    ]);
+  };
 
   const discard = (row: Row) => {
     const confirmationScope = scope.current;
@@ -134,7 +148,7 @@ export function NativeChatOutboxScreen() {
       {inspection ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.textPrimary }]}>{inspection}</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.textPrimary }]}>{error}</Text> : null}
       {actionError ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.textPrimary }]}>{actionError}</Text> : null}
-      {offlineMode ? <Text style={[styles.notice, { color: tokens.textPrimary }]}>Для повторной отправки подключитесь к сети.</Text> : null}
+      {offlineMode ? <Text style={[styles.notice, { color: tokens.textPrimary }]}>Новые сообщения отправятся после подключения, пока приложение открыто и разблокировано. Старые ошибки требуют ручного повтора.</Text> : null}
       {loading ? <ActivityIndicator accessibilityLabel="Загрузка очереди" /> : <FlatList
         data={rows.filter((row) => row.userId === userId)} keyExtractor={(row) => `${row.message.conversation_id}:${row.message.client_message_id}`}
         contentContainerStyle={{ padding: 12, paddingBottom: bottom + 16 }}
@@ -143,11 +157,17 @@ export function NativeChatOutboxScreen() {
           <Pressable accessibilityRole="button" accessibilityLabel={`Открыть диалог: ${item.title || 'Диалог'}`} style={styles.open} onPress={() => router.push({ pathname: '/(shell)/chat/[conversationId]', params: { conversationId: item.message.conversation_id } })}>
             <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>{item.title || 'Диалог'}</Text>
             <Text numberOfLines={3} style={{ color: tokens.textPrimary }}>{item.message.body_text || 'Вложение без подписи'}</Text>
-            <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{item.busy || busyId === `${item.message.conversation_id}:${item.message.client_message_id}` ? 'Выполняется…' : 'Ожидает повтора'}{item.upload ? ` · Файлов: ${item.upload.files.length}` : ''}</Text>
+            <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{deliveryLabel(item)}{item.upload ? ` · Файлов: ${item.upload.files.length}` : ''}</Text>
           </Pressable>
           <View style={styles.actions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Повторить отправку" disabled={!canSend || item.busy || Boolean(busyId)} style={styles.action} onPress={() => { void run(item); }}><Text style={{ color: !canSend || item.busy || busyId ? tokens.textSecondary : tokens.composerActionBg }}>Повторить</Text></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="Убрать сообщение из очереди" disabled={item.busy || Boolean(busyId)} style={styles.action} onPress={() => discard(item)}><Text style={{ color: tokens.textSecondary }}>Убрать</Text></Pressable>
+            {item.delivery && ['queued', 'retry', 'sending'].includes(item.delivery.state) ? <Pressable
+              accessibilityRole="button" accessibilityLabel="Отменить доставку" disabled={Boolean(busyId)} style={styles.action}
+              onPress={() => cancel(item)}><Text style={{ color: tokens.textSecondary }}>Отменить</Text></Pressable> : null}
+            {item.delivery?.replyMissing ? <Pressable accessibilityRole="button" accessibilityLabel="Отправить без цитаты"
+              disabled={!canSend || item.busy || Boolean(busyId)} style={styles.action}
+              onPress={() => withoutQuote(item)}><Text style={{ color: tokens.composerActionBg }}>Без цитаты</Text></Pressable> : null}
+            <Pressable accessibilityRole="button" accessibilityLabel="Повторить отправку" disabled={!canSend || item.busy || Boolean(busyId) || Boolean(item.delivery?.confirmed) || ['queued', 'retry'].includes(item.delivery?.state || '')} style={styles.action} onPress={() => { void run(item); }}><Text style={{ color: !canSend || item.busy || busyId ? tokens.textSecondary : tokens.composerActionBg }}>Повторить</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Убрать сообщение из очереди" disabled={item.busy || Boolean(busyId) || Boolean(item.delivery?.confirmed)} style={styles.action} onPress={() => discard(item)}><Text style={{ color: tokens.textSecondary }}>Убрать</Text></Pressable>
           </View>
         </View>}
       />}
