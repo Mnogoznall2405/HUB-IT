@@ -25,6 +25,8 @@ import {
   TableHead,
   TableRow,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -43,6 +45,7 @@ import DocumentPreviewDialog from '../../components/documentPreview/DocumentPrev
 import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
+import EmployeeComparePanel from './EmployeeComparePanel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import HubNomenclatureMatchDialog from './HubNomenclatureMatchDialog';
 import { exportEmployeeEquipmentWorkbook } from './employeeEquipmentExcel';
@@ -620,6 +623,7 @@ export default function EmployeeEquipmentDialog({
   const [warehouseInfo, setWarehouseInfo] = useState(null);
   const [warehouseCandidates, setWarehouseCandidates] = useState([]);
   const [warehouseBalances, setWarehouseBalances] = useState([]);
+  const [warehouseBalancesMeta, setWarehouseBalancesMeta] = useState(null);
   const [warehouseLoaded, setWarehouseLoaded] = useState(false);
   const [employmentStatus, setEmploymentStatus] = useState('');
   const [employmentLabel, setEmploymentLabel] = useState('');
@@ -627,6 +631,7 @@ export default function EmployeeEquipmentDialog({
   const [hubMatchRow, setHubMatchRow] = useState(null);
   const [hubMatchWarehouse, setHubMatchWarehouse] = useState(null);
   const [sharedFilter, setSharedFilter] = useState('');
+  const [viewMode, setViewMode] = useState('compare');
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState('');
 
@@ -651,6 +656,7 @@ export default function EmployeeEquipmentDialog({
     setWarehouseInfo(null);
     setWarehouseCandidates([]);
     setWarehouseBalances([]);
+    setWarehouseBalancesMeta(null);
     setWarehouseLoaded(false);
     setEmploymentStatus('');
     setEmploymentLabel('');
@@ -664,6 +670,7 @@ export default function EmployeeEquipmentDialog({
       setHubError('');
       setHubLoading(false);
       setSharedFilter('');
+      setViewMode('compare');
       resetWarehouseState();
       return undefined;
     }
@@ -673,6 +680,7 @@ export default function EmployeeEquipmentDialog({
     setHubError('');
     if (!canLoadHub) setHubItems([]);
     setSharedFilter('');
+    setViewMode('compare');
     resetWarehouseState();
 
     const hubPromise = canLoadHub
@@ -712,6 +720,7 @@ export default function EmployeeEquipmentDialog({
           setWarehouseInfo(data?.warehouse || null);
           setWarehouseCandidates(Array.isArray(data?.candidates) ? data.candidates : []);
           setWarehouseBalances(Array.isArray(data?.balances) ? data.balances : []);
+          setWarehouseBalancesMeta(data?.balances_meta || null);
           setEmploymentStatus(data?.employment_status || '');
           setEmploymentLabel(data?.employment_label || '');
           setWarehouseLoaded(true);
@@ -728,6 +737,7 @@ export default function EmployeeEquipmentDialog({
             .then((balancesData) => {
               if (cancelled) return;
               setWarehouseBalances(Array.isArray(balancesData?.balances) ? balancesData.balances : []);
+              setWarehouseBalancesMeta(balancesData?.balances_meta || null);
               if (balancesData?.employment_status || balancesData?.employment_label) {
                 setEmploymentStatus(balancesData.employment_status || '');
                 setEmploymentLabel(balancesData.employment_label || '');
@@ -753,6 +763,7 @@ export default function EmployeeEquipmentDialog({
           setWarehouseInfo(null);
           setWarehouseCandidates([]);
           setWarehouseBalances([]);
+          setWarehouseBalancesMeta(null);
           setEmploymentStatus('');
           setEmploymentLabel('');
           setWarehouseLoaded(true);
@@ -786,6 +797,7 @@ export default function EmployeeEquipmentDialog({
       setWarehouseInfo(data?.warehouse || null);
       setWarehouseCandidates(Array.isArray(data?.candidates) ? data.candidates : []);
       setWarehouseBalances(Array.isArray(data?.balances) ? data.balances : []);
+      setWarehouseBalancesMeta(data?.balances_meta || null);
       if (data?.employment_status || data?.employment_label) {
         setEmploymentStatus(data.employment_status || '');
         setEmploymentLabel(data.employment_label || '');
@@ -798,6 +810,7 @@ export default function EmployeeEquipmentDialog({
       setWarehouseInfo(null);
       setWarehouseCandidates([]);
       setWarehouseBalances([]);
+      setWarehouseBalancesMeta(null);
       setWarehouseLoaded(true);
     } finally {
       setWarehouseLoading(false);
@@ -960,9 +973,51 @@ export default function EmployeeEquipmentDialog({
           placeholder="Инв. №, модель, серийник, парт. №, номенклатура 1С…"
           value={sharedFilter}
           onChange={(event) => setSharedFilter(event.target.value)}
-          sx={{ mb: 2, flexShrink: 0 }}
+          sx={{ mb: 1.5, flexShrink: 0 }}
         />
 
+        {canViewWarehouse1C ? (
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={viewMode}
+            onChange={(event, value) => {
+              if (value) setViewMode(value);
+            }}
+            sx={{ mb: 1.5, flexShrink: 0 }}
+          >
+            <ToggleButton value="compare" sx={{ textTransform: 'none', px: 2 }}>
+              Сравнение
+            </ToggleButton>
+            <ToggleButton value="lists" sx={{ textTransform: 'none', px: 2 }}>
+              Списки
+            </ToggleButton>
+          </ToggleButtonGroup>
+        ) : null}
+
+        {canViewWarehouse1C && viewMode === 'compare' ? (
+          <EmployeeComparePanel
+            hubItems={hubItems}
+            balances={warehouseBalances}
+            balancesMeta={warehouseBalancesMeta}
+            loading={warehouseLoading}
+            balancesLoading={warehouseBalancesLoading}
+            error={warehouseError}
+            status={warehouseLoaded ? warehouseStatus : ''}
+            warehouse={warehouseInfo}
+            candidates={warehouseCandidates}
+            filterText={sharedFilter}
+            employmentStatus={employmentStatus}
+            employmentLabel={employmentLabel}
+            isMobile={isMobile}
+            hubLoading={hubLoading}
+            onSelectCandidate={handleSelectCandidate}
+            onOpenWarehousePage={handleOpenWarehousePage}
+            onOpenBalanceRow={handleOpenBalanceRow}
+            onOpenInWarehouse1C={handleOpenBalanceInWarehouse1C}
+            onOpenInvNo={onOpenInvNo ? handleOpenInvNo : null}
+          />
+        ) : (
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={2}
@@ -1040,6 +1095,7 @@ export default function EmployeeEquipmentDialog({
             </Box>
           ) : null}
         </Stack>
+        )}
       </DialogContent>
       {exportError ? (
         <Alert severity="error" sx={{ mx: 2, mb: 0 }}>{exportError}</Alert>

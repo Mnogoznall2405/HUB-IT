@@ -189,6 +189,7 @@ describe('EmployeeEquipmentDialog', () => {
       </MemoryRouter>,
     );
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Списки' }));
     expect(await screen.findByText('Сотрудник не найден в справочнике Хаба.')).toBeInTheDocument();
     await waitFor(() => expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2));
 
@@ -203,6 +204,39 @@ describe('EmployeeEquipmentDialog', () => {
       warehouseRef: 'wh-1',
       loadBalances: true,
     });
+  });
+
+  it('opens the compare view by default and joins rows by part number', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' },
+        { INV_NO: 'INV-2', MODEL_NAME: 'Monitor', PART_NO: '11' },
+      ],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [
+          { nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+          { nomenclature_ref: 'n2', nomenclature_code: '20', nomenclature_name: 'Кабель', qty_balance: 2 },
+        ],
+        balances_meta: { status: 'ok' },
+      });
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(await screen.findByText('Кабель')).toBeInTheDocument();
+    expect(await screen.findByText('Monitor')).toBeInTheDocument();
+    expect(screen.getByText('Сходится: 1')).toBeInTheDocument();
+    expect(screen.getByText('Только в 1С: 1')).toBeInTheDocument();
+    expect(screen.getByText('Только в Хабе: 1')).toBeInTheDocument();
   });
 
   it('exports both visible tables to Excel after they finish loading', async () => {
@@ -222,6 +256,8 @@ describe('EmployeeEquipmentDialog', () => {
       });
 
     renderDialog(false, true);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Списки' }));
 
     const exportButton = await screen.findByRole('button', { name: 'Выгрузить в Excel' });
     await waitFor(() => expect(exportButton).not.toBeDisabled());
