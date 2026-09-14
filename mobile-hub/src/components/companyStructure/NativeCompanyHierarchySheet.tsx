@@ -49,6 +49,10 @@ export const NativeCompanyHierarchySheet = memo(function NativeCompanyHierarchyS
         </View>
 
         <FlatList
+
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-company-hierarchy-list"
           data={rows}
           keyExtractor={({ node }) => node.id}

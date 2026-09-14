@@ -928,4 +928,82 @@ describe('desktopBridge', () => {
     unsubscribe();
     window.removeEventListener(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT, completedListener);
   });
+
+  it.each(['file.shared', 'file.dropped'])('collects %s payloads into pending desktop files', async (type) => {
+    const transport = installTransport();
+    const {
+      consumeDesktopSharedFiles,
+      DESKTOP_SHARED_FILES_EVENT,
+      initializeDesktopBridge,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementation(() => Promise.resolve(new Response(new Blob(['hello']))));
+    const listener = vi.fn();
+    window.addEventListener(DESKTOP_SHARED_FILES_EVENT, listener);
+
+    transport.emit({
+      type,
+      version: 1,
+      files: [
+        { name: 'a.txt', size: 5, url: `${window.location.origin}/__desktop_share__/tok1`, relativePath: null },
+        { name: 'b.txt', size: 5, url: `${window.location.origin}/__desktop_share__/tok2`, relativePath: 'Docs/b.txt' },
+      ],
+    });
+
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${window.location.origin}/__desktop_share__/tok1`,
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    const files = consumeDesktopSharedFiles();
+    expect(files).toHaveLength(2);
+    expect(files[0].name).toBe('a.txt');
+    expect(files[1].webkitRelativePath).toBe('Docs/b.txt');
+    expect(consumeDesktopSharedFiles()).toHaveLength(0);
+    window.removeEventListener(DESKTOP_SHARED_FILES_EVENT, listener);
+    fetchSpy.mockRestore();
+  });
+
+  it('ignores shared file messages with foreign origins and failed fetches', async () => {
+    const transport = installTransport();
+    const {
+      consumeDesktopSharedFiles,
+      DESKTOP_SHARED_FILES_EVENT,
+      initializeDesktopBridge,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('x', { status: 404 }));
+    const listener = vi.fn();
+    window.addEventListener(DESKTOP_SHARED_FILES_EVENT, listener);
+
+    transport.emit({
+      type: 'file.shared',
+      version: 1,
+      files: [
+        { name: 'evil.txt', size: 1, url: 'https://evil.example/__desktop_share__/x', relativePath: null },
+      ],
+    });
+    transport.emit({
+      type: 'file.shared',
+      version: 1,
+      files: [
+        { name: 'gone.txt', size: 1, url: `${window.location.origin}/__desktop_share__/tok404`, relativePath: null },
+      ],
+    });
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listener).not.toHaveBeenCalled();
+    expect(consumeDesktopSharedFiles()).toHaveLength(0);
+    window.removeEventListener(DESKTOP_SHARED_FILES_EVENT, listener);
+    fetchSpy.mockRestore();
+  });
 });

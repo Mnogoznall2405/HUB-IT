@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useMemo } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { bottomNavMetrics } from '../../navigation/bottomNavMetrics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
@@ -27,6 +27,13 @@ export function HubBottomNav({
 }) {
   const insets = useSafeAreaInsets();
   const { fontScale } = useWindowDimensions();
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  const isHidden = hidden || keyboardVisible;
   const metrics = bottomNavMetrics(fontScale);
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
@@ -49,9 +56,9 @@ export function HubBottomNav({
 
   return (
     <View
-      pointerEvents={hidden ? 'none' : 'auto'}
-      accessibilityElementsHidden={hidden}
-      importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'}
+      pointerEvents={isHidden ? 'none' : 'auto'}
+      accessibilityElementsHidden={isHidden}
+      importantForAccessibility={isHidden ? 'no-hide-descendants' : 'auto'}
       style={[
         styles.wrap,
         {
@@ -59,7 +66,7 @@ export function HubBottomNav({
           borderColor: tokens.borderSoft,
           bottom: Math.max(insets.bottom, 9),
           shadowColor: tokens.scheme === 'dark' ? '#000' : '#0f172a',
-          transform: [{ translateY: hidden ? metrics.contentHeight + insets.bottom + 24 : 0 }],
+          transform: [{ translateY: isHidden ? metrics.contentHeight + insets.bottom + 24 : 0 }],
         },
       ]}
       testID="hub-bottom-nav"
@@ -116,7 +123,7 @@ function NavAction({
   return (
     <Pressable
       onPress={onPress}
-      style={styles.action}
+      style={({ pressed }) => [styles.action, pressed && { backgroundColor: tokens.actionHover, opacity: 0.8, borderRadius: 18 }]}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
       accessibilityLabel={`${item.label}${showUpdateBadge ? '. Доступно обновление приложения' : ''}`}

@@ -2,6 +2,7 @@
  * Main Layout component - AppBar and Sidebar navigation.
  */
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { DesktopHandoffSlot } from './DesktopProtocolHandoff';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Alert,
@@ -56,6 +57,27 @@ import {
   createNavigateToastAction,
   normalizeToastAction,
 } from '../feedback/toastActions';
+import {
+  buildMailArrivalToastPayload,
+  resolveForegroundPushDecision,
+  resolveMailArrivalDelivery,
+} from '../../lib/layoutPushDecisions';
+import {
+  clearConnectionRestoredMarker,
+  consumeConnectionRestoredMarker,
+  formatOfflineLastSync,
+  groupItemsByRelativeDate,
+  normalizeDbId,
+  persistConnectionRestoredMarker,
+} from '../../lib/mainLayoutHelpers';
+import {
+  applyMailUnreadDeltaToCounts,
+  buildNextUnreadCounts,
+  parseHubUnreadCounts,
+  resolveChatUnreadDeltaToast,
+  resolveMailUnreadResult,
+  shouldNotifyMailArrival,
+} from '../../lib/unreadCounts';
 import {
   autoEnableWindowsNotificationsIfGranted,
   clearNotificationPermissionBannerDismissed,
@@ -112,6 +134,7 @@ import {
 import {
   DESKTOP_CAPABILITIES_CHANGED_EVENT,
   DESKTOP_OPEN_COMMAND_PALETTE_EVENT,
+  DESKTOP_SHARED_FILES_EVENT,
   DESKTOP_WINDOW_STATE_CHANGED_EVENT,
   isDesktopCapabilityAvailable,
   requestDesktopCheckForUpdates,
@@ -164,85 +187,11 @@ const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const SIDEBAR_IT_EXPANDED_KEY = 'sidebar_it_expanded';
 const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
-const normalizeDbId = (value) => String(value ?? '').trim();
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
 // Was 90s — new mail badge / mail-needs-refresh waited almost a minute+.
 const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
 const CONNECTION_RESTORED_STATUS_MS = 4_200;
-const CONNECTION_RESTORED_MARKER_MAX_AGE_MS = 15_000;
-const CONNECTION_RESTORED_STORAGE_KEY = 'hubit:connection-restored-at';
-
-const consumeConnectionRestoredMarker = () => {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.onLine) return false;
-  try {
-    const restoredAt = Number(window.sessionStorage.getItem(CONNECTION_RESTORED_STORAGE_KEY) || 0);
-    window.sessionStorage.removeItem(CONNECTION_RESTORED_STORAGE_KEY);
-    return restoredAt > 0
-      && Date.now() >= restoredAt
-      && Date.now() - restoredAt <= CONNECTION_RESTORED_MARKER_MAX_AGE_MS;
-  } catch {
-    return false;
-  }
-};
-
-const persistConnectionRestoredMarker = () => {
-  try {
-    window.sessionStorage.setItem(CONNECTION_RESTORED_STORAGE_KEY, String(Date.now()));
-  } catch {
-    // Session storage is optional in hardened WebViews and private browser modes.
-  }
-};
-
-const clearConnectionRestoredMarker = () => {
-  try {
-    window.sessionStorage.removeItem(CONNECTION_RESTORED_STORAGE_KEY);
-  } catch {
-    // Session storage is optional in hardened WebViews and private browser modes.
-  }
-};
-
-const formatOfflineLastSync = (value) => {
-  const timestamp = Number(value || 0);
-  if (!timestamp || !Number.isFinite(timestamp)) return '';
-  try {
-    return new Intl.DateTimeFormat('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(timestamp));
-  } catch {
-    return '';
-  }
-};
-
-const groupItemsByRelativeDate = (items, dateKey) => {
-  const now = new Date();
-  const todayStr = now.toDateString();
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toDateString();
-  const groups = { today: [], yesterday: [], earlier: [] };
-
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    const rawValue = String(item?.[dateKey] || '').trim();
-    const parsed = new Date(rawValue);
-    if (Number.isNaN(parsed.getTime())) {
-      groups.earlier.push(item);
-      return;
-    }
-    if (parsed.toDateString() === todayStr) groups.today.push(item);
-    else if (parsed.toDateString() === yesterdayStr) groups.yesterday.push(item);
-    else groups.earlier.push(item);
-  });
-
-  return [
-    { key: 'today', label: 'Сегодня', items: groups.today },
-    { key: 'yesterday', label: 'Вчера', items: groups.yesterday },
-    { key: 'earlier', label: 'Ранее', items: groups.earlier },
-  ].filter((section) => section.items.length > 0);
-};
 
 function MainLayout({
   children,
@@ -256,6 +205,7 @@ function MainLayout({
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
+  const isCompactChatViewport = useMediaQuery(theme.breakpoints.down('md'), { defaultMatches: true });
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { defaultMatches: false });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -324,10 +274,6 @@ function MainLayout({
   const topBannerRef = useRef(null);
   const appBarRef = useRef(null);
   const [topBannerOffset, setTopBannerOffset] = useState(0);
-  useEffect(() => {
-    document.documentElement.style.setProperty('--hubit-global-banner-offset', `${topBannerOffset}px`);
-    return () => document.documentElement.style.removeProperty('--hubit-global-banner-offset');
-  }, [topBannerOffset]);
   const [appBarHeight, setAppBarHeight] = useState(0);
   const notificationsOpenRef = useRef(false);
   const pendingNavigationTimerRef = useRef(null);
@@ -409,10 +355,12 @@ function MainLayout({
   const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute;
   const isMobileChatRoute = isPhone && isChatRoute;
   const isDesktopChatRoute = !isPhone && isChatRoute;
+  const integratedChatHeader = isDesktopChatRoute && !isCompactChatViewport
+    && taskDiscussionRouteParams.get('task_layout') !== 'split';
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
   const isEdgeToEdgeContent = contentMode === 'edge-to-edge' || isEdgeToEdgeMobileContent;
   const notificationsOnlyHeader = headerMode === 'notifications-only';
-  const hiddenHeader = headerMode === 'hidden' || isPhone;
+  const hiddenHeader = headerMode === 'hidden' || isPhone || integratedChatHeader;
   const minimalHeader = isPhone && headerMode === 'minimal';
   const unreadHubNotificationCount = useMemo(
     () => (
@@ -457,15 +405,20 @@ function MainLayout({
     const handleDesktopCapabilities = () => {
       setDesktopActionsAvailable(isDesktopCapabilityAvailable('desktop-actions'));
     };
+    const handleDesktopSharedFiles = () => {
+      navigate('/my-files');
+    };
     window.addEventListener('keydown', handleShortcut);
     window.addEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
     window.addEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+    window.addEventListener(DESKTOP_SHARED_FILES_EVENT, handleDesktopSharedFiles);
     return () => {
       window.removeEventListener('keydown', handleShortcut);
       window.removeEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
       window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+      window.removeEventListener(DESKTOP_SHARED_FILES_EVENT, handleDesktopSharedFiles);
     };
-  }, []);
+  }, [navigate]);
 
   const executeHubCommand = useCallback((command) => {
     setCommandPaletteOpen(false);
@@ -795,84 +748,20 @@ function MainLayout({
   }, []);
 
   const showForegroundPushToast = useCallback((detail = {}) => {
-    const channel = String(detail?.channel || '').trim().toLowerCase() || 'system';
-    const data = detail?.data && typeof detail.data === 'object' ? detail.data : {};
-    const route = String(detail?.route || data?.route || '/').trim() || '/';
-    const title = String(detail?.title || '').trim();
-    const body = String(detail?.body || '').trim();
-
-    if (channel === 'chat') {
-      const conversationId = String(data?.conversation_id || '').trim();
-      const messageId = String(data?.message_id || '').trim();
-      const conversationKind = String(data?.conversation_kind || '').trim();
-      const taskId = String(data?.task_id || '').trim();
-      const pushTag = String(detail?.tag || '').trim();
-      const dedupeKey = `chat:${messageId || pushTag || conversationId}`;
-      const skipBecauseSocketConnected = shouldSkipChatPushForegroundNotification();
-      if (skipBecauseSocketConnected) {
-        setChatForegroundDiagnostic('chat_socket_connected');
-        return;
-      }
-      const navigateTo = route !== '/'
-        ? route
-        : buildChatNotificationRoute({ conversationId, messageId, conversationKind, taskId });
-      if (isMobileChatRoute && isNotificationSurfaceVisible()) {
-        setChatForegroundDiagnostic('mobile_chat_route_visible');
-        return;
-      }
-      const isActiveVisibleConversation = (
-        (isChatRoute || isTaskDiscussionRoute)
-        && activeChatConversationId === conversationId
-        && isNotificationSurfaceVisible()
-      );
-      if (isActiveVisibleConversation) {
-        setChatForegroundDiagnostic('active_visible_conversation');
-        return;
-      }
-      if (!claimChatMessageNotification(messageId)) {
-        return;
-      }
-      notifyInfoRef.current?.(body || title || 'Новое сообщение', {
-        title: title || 'Собеседник',
-        source: 'chat',
-        channel: 'system',
-        dedupeMode: 'recent',
-        dedupeKey,
-        action: createNavigateToastAction(navigateTo, 'Открыть чат'),
-        durationMs: 5200,
-      });
-      return;
-    }
-
-    if (channel === 'mail') {
-      const messageId = String(data?.message_id || '').trim();
-      notifyInfoRef.current?.(body || title || 'Новое письмо', {
-        title: title || 'Почта',
-        source: 'mail',
-        channel: 'system',
-        dedupeMode: 'recent',
-        dedupeKey: `mail:${messageId || String(detail?.tag || '').trim() || route}`,
-        action: createNavigateToastAction(route, 'Открыть письмо'),
-        durationMs: 5200,
-      });
-      return;
-    }
-
-    const notificationId = String(data?.notification_id || '').trim();
-    const actionLabel = channel === 'tasks'
-      ? 'Открыть задачу'
-      : channel === 'announcements'
-        ? 'Открыть публикацию'
-        : 'Открыть';
-    notifyInfoRef.current?.(body || title || 'Новое уведомление', {
-      title: title || 'Уведомление',
-      source: 'hub',
-      channel: 'system',
-      dedupeMode: 'recent',
-      dedupeKey: `hub:${notificationId || String(detail?.tag || '').trim() || route}`,
-      action: createNavigateToastAction(route, actionLabel),
-      durationMs: 5200,
+    const decision = resolveForegroundPushDecision(detail, {
+      activeChatConversationId,
+      isChatRoute,
+      isMobileChatRoute,
+      isTaskDiscussionRoute,
+      isVisible: isNotificationSurfaceVisible(),
+      skipChatPush: shouldSkipChatPushForegroundNotification(),
     });
+    if (decision.kind === 'suppress') {
+      if (decision.reason) setChatForegroundDiagnostic(decision.reason);
+      return;
+    }
+    if (decision.kind === 'claim-chat' && !claimChatMessageNotification(decision.messageId)) return;
+    notifyInfoRef.current?.(decision.body, decision.options);
   }, [activeChatConversationId, isChatRoute, isMobileChatRoute, isTaskDiscussionRoute]);
 
   useEffect(() => {
@@ -900,41 +789,26 @@ function MainLayout({
     const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
     const isVisible = isNotificationSurfaceVisible();
     const currentPushNotificationState = getChatNotificationState();
-    const suppressHiddenLocalSystemNotification = Boolean(
-      !isVisible
-      && currentPushNotificationState.pushSubscribed
-      && currentPushNotificationState.backgroundCapable,
-    );
+    const delivery = resolveMailArrivalDelivery({
+      isVisible,
+      pushSubscribed: currentPushNotificationState.pushSubscribed,
+      backgroundCapable: currentPushNotificationState.backgroundCapable,
+      windowsState: currentWindowsNotificationState,
+    });
     if (!isNotificationChannelEnabled({ channel: 'mail' }, notificationPreferencesRef.current)) return;
     items.slice().reverse().forEach((item) => {
-      const messageId = String(item?.id || '').trim();
       const notificationId = getMailSystemNotificationId(item);
-      if (!messageId || !notificationId) return;
+      const { title, body } = getMailNotificationDisplay(item);
+      const payload = buildMailArrivalToastPayload(item, { notificationId, title, body });
+      if (!payload) return;
       if (hasShownMailSystemNotification(notificationId)) return;
       if (!rememberRecentMailNotification(notificationId)) return;
-      const { title, body } = getMailNotificationDisplay(item);
-      const routeParts = [
-        `folder=${encodeURIComponent(String(item?.folder || 'inbox'))}`,
-        `message=${encodeURIComponent(messageId)}`,
-      ];
-      const mailboxId = String(item?.mailbox_id || '').trim();
-      if (mailboxId) routeParts.push(`mailbox_id=${encodeURIComponent(mailboxId)}`);
-      const route = `/mail?${routeParts.join('&')}`;
-      if (isVisible) {
+      if (delivery === 'toast') {
         markMailSystemNotificationShown(notificationId);
-        notifyInfoRef.current?.(body, {
-          title,
-          source: 'mail',
-          channel: 'mail',
-          action: createNavigateToastAction(route, 'Открыть письмо'),
-          dedupeMode: 'recent',
-          dedupeKey: `mail:${notificationId}`,
-          durationMs: 5200,
-        });
+        notifyInfoRef.current?.(payload.body, payload.toastOptions);
         return;
       }
-      if (suppressHiddenLocalSystemNotification) return;
-      if (currentWindowsNotificationState.enabled && currentWindowsNotificationState.permission === 'granted') {
+      if (delivery === 'system') {
         createMailSystemNotification(
           { ...item, folder: String(item?.folder || 'inbox') },
           { onNavigate: (target) => navigate(target) },
@@ -1265,44 +1139,26 @@ useEffect(() => {
       try {
         const previousCounts = unreadCountsRef.current || {};
         const mailUnreadMutationVersionAtStart = mailUnreadMutationVersionRef.current;
-        let notifTotal = 0;
-        let annUnread = 0;
-        let annAckPending = 0;
-        let tasksOpenTotal = 0;
-        let tasksOpen = 0;
-        let tasksNew = 0;
-        let tasksAssigneeOpen = 0;
-        let tasksCreatedOpen = 0;
-        let tasksControllerOpen = 0;
-        let tasksReviewRequired = 0;
-        let tasksOverdue = 0;
-        let tasksWithUnreadComments = 0;
-        let chatMessagesUnreadTotal = Number(chatUnreadSummaryRef.current?.messages_unread_total || 0);
-        let chatConversationsUnread = Number(chatUnreadSummaryRef.current?.conversations_unread || 0);
-        let mailUnread = 0;
-        let mailState = String(previousCounts.mail_state || 'unknown');
-        let mailAsOf = previousCounts.mail_as_of || null;
+        const hub = {};
+        const mail = {
+          unread: 0,
+          state: String(previousCounts.mail_state || 'unknown'),
+          asOf: previousCounts.mail_as_of || null,
+        };
+        const chat = {
+          messagesUnreadTotal: Number(chatUnreadSummaryRef.current?.messages_unread_total || 0),
+          conversationsUnread: Number(chatUnreadSummaryRef.current?.conversations_unread || 0),
+        };
         let mailUnreadResolved = !hasMailPermission;
 
         const applyHubCounts = (data) => {
-          const counts = data || {};
-          if (counts.hub_chat_ordinary) {
+          const parsed = parseHubUnreadCounts(data);
+          if (parsed.hubChatOrdinary) {
             ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
-              counts.hub_chat_ordinary,
+              parsed.hubChatOrdinary,
             );
           }
-          notifTotal = Number(counts.notifications_unread_total || 0);
-          annUnread = Number(counts.announcements_unread || 0);
-          annAckPending = Number(counts.announcements_ack_pending || 0);
-          tasksOpenTotal = Number(counts.tasks_open_total || counts.tasks_open || 0);
-          tasksOpen = Number(counts.tasks_open || counts.tasks_open_total || 0);
-          tasksNew = Number(counts.tasks_new || 0);
-          tasksAssigneeOpen = Number(counts.tasks_assignee_open || 0);
-          tasksCreatedOpen = Number(counts.tasks_created_open || 0);
-          tasksControllerOpen = Number(counts.tasks_controller_open || 0);
-          tasksReviewRequired = Number(counts.tasks_review_required || 0);
-          tasksOverdue = Number(counts.tasks_overdue || 0);
-          tasksWithUnreadComments = Number(counts.tasks_with_unread_comments || 0);
+          Object.assign(hub, parsed);
         };
 
         const promises = [];
@@ -1325,27 +1181,23 @@ useEffect(() => {
           );
 
           if (shouldReuseMailUnread) {
-            mailUnread = Number(previousCounts.mail_unread || 0);
-            mailState = String(previousCounts.mail_state || 'unknown');
-            mailAsOf = previousCounts.mail_as_of || null;
+            mail.unread = Number(previousCounts.mail_unread || 0);
+            mail.state = String(previousCounts.mail_state || 'unknown');
+            mail.asOf = previousCounts.mail_as_of || null;
             mailUnreadResolved = true;
           } else {
             promises.push(mailAPI.getUnreadCount({
               force: forceMailUnread,
             }).then((data) => {
-              if (mailUnreadMutationVersionRef.current !== mailUnreadMutationVersionAtStart) {
-                const currentCounts = unreadCountsRef.current || {};
-                mailUnread = Number(currentCounts.mail_unread || 0);
-                mailState = String(currentCounts.mail_state || 'unknown');
-                mailAsOf = currentCounts.mail_as_of || null;
-              } else {
-                const nextState = String(data?.state || 'ok');
-                mailUnread = ['unknown', 'error'].includes(nextState) && !data?.as_of
-                  ? Number(previousCounts.mail_unread || 0)
-                  : Number(data?.unread_count || 0);
-                mailState = nextState;
-                mailAsOf = data?.as_of || null;
-              }
+              const resolved = resolveMailUnreadResult({
+                data,
+                previousCounts,
+                mutationRaced: mailUnreadMutationVersionRef.current !== mailUnreadMutationVersionAtStart,
+                currentCounts: unreadCountsRef.current,
+              });
+              mail.unread = resolved.mailUnread;
+              mail.state = resolved.mailState;
+              mail.asOf = resolved.mailAsOf;
               mailUnreadResolved = true;
               mailUnreadFetchedAtRef.current = Date.now();
             }));
@@ -1354,68 +1206,53 @@ useEffect(() => {
 
         if (hasChatPermission && !CHAT_WS_ENABLED) {
           promises.push(chatAPI.getUnreadSummary().then((data) => {
-            chatMessagesUnreadTotal = Number(data?.messages_unread_total || 0);
-            chatConversationsUnread = Number(data?.conversations_unread || 0);
+            chat.messagesUnreadTotal = Number(data?.messages_unread_total || 0);
+            chat.conversationsUnread = Number(data?.conversations_unread || 0);
           }));
         }
 
         await Promise.allSettled(promises);
 
         const previousChatMessagesUnread = Number(previousCounts.chat_messages_unread_total || 0);
-        const nextCounts = {
-          notifications_unread_total: notifTotal + mailUnread,
-          announcements_unread: annUnread,
-          announcements_ack_pending: annAckPending,
-          tasks_open_total: tasksOpenTotal,
-          tasks_open: tasksOpen,
-          tasks_new: tasksNew,
-          tasks_assignee_open: tasksAssigneeOpen,
-          tasks_created_open: tasksCreatedOpen,
-          tasks_controller_open: tasksControllerOpen,
-          tasks_review_required: tasksReviewRequired,
-          tasks_overdue: tasksOverdue,
-          tasks_with_unread_comments: tasksWithUnreadComments,
-          chat_messages_unread_total: CHAT_WS_ENABLED ? Number(previousCounts.chat_messages_unread_total || 0) : chatMessagesUnreadTotal,
-          chat_conversations_unread: CHAT_WS_ENABLED ? Number(previousCounts.chat_conversations_unread || 0) : chatConversationsUnread,
-          mail_unread: mailUnread,
-          mail_state: mailState,
-          mail_as_of: mailAsOf,
-        };
+        const nextCounts = buildNextUnreadCounts({
+          hub,
+          mail,
+          chat,
+          previousCounts,
+          chatWsEnabled: CHAT_WS_ENABLED,
+        });
         unreadCountsRef.current = nextCounts;
         const previousMailUnread = Number(previousCounts.mail_unread || 0);
         const hadMailUnreadBaseline = mailUnreadBaselineReadyRef.current;
         if (hasMailPermission && mailUnreadResolved && !hadMailUnreadBaseline) {
           mailUnreadBaselineReadyRef.current = true;
         }
-        if (mailUnreadResolved && hadMailUnreadBaseline && mailUnread > previousMailUnread) {
+        if (shouldNotifyMailArrival({
+          resolved: mailUnreadResolved,
+          hadBaseline: hadMailUnreadBaseline,
+          nextUnread: mail.unread,
+          previousUnread: previousMailUnread,
+        })) {
           window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
           await showMailArrivalNotifications({
             previousUnread: previousMailUnread,
-            nextUnread: mailUnread,
+            nextUnread: mail.unread,
           });
         }
         // Non-WS fallback: toast from chat unread summary delta (not hub ordinary rows).
         if (hasChatPermission && !CHAT_WS_ENABLED) {
           const hadChatUnreadBaseline = chatUnreadBaselineReadyRef.current;
+          const deltaToast = resolveChatUnreadDeltaToast({
+            chatMessagesUnreadTotal: chat.messagesUnreadTotal,
+            previousChatMessagesUnread,
+            hadBaseline: hadChatUnreadBaseline,
+            isVisible: isNotificationSurfaceVisible(),
+            isOnChatRoute: location.pathname.startsWith('/chat'),
+          });
           if (!hadChatUnreadBaseline) {
             chatUnreadBaselineReadyRef.current = true;
-          } else if (chatMessagesUnreadTotal > previousChatMessagesUnread) {
-            const delta = chatMessagesUnreadTotal - previousChatMessagesUnread;
-            const toastMessage = delta === 1
-              ? 'Новое сообщение в чате'
-              : `Новые сообщения в чате: ${delta}`;
-            const isVisible = isNotificationSurfaceVisible();
-            if (isVisible && !location.pathname.startsWith('/chat')) {
-              notifyInfoRef.current?.(toastMessage, {
-                title: 'Чат',
-                source: 'chat',
-                channel: 'system',
-                dedupeMode: 'recent',
-                dedupeKey: `chat-unread-delta:${chatMessagesUnreadTotal}`,
-                action: createNavigateToastAction('/chat', 'Открыть чат'),
-                durationMs: 5200,
-              });
-            }
+          } else if (deltaToast?.message) {
+            notifyInfoRef.current?.(deltaToast.message, deltaToast.options);
           }
         }
         setUnreadCounts(nextCounts);
@@ -1443,25 +1280,13 @@ useEffect(() => {
   ]);
 
   const applyMailUnreadDelta = useCallback((detail = {}) => {
-    const unreadDelta = Number(detail?.unreadDelta || 0);
-    if (Number.isFinite(unreadDelta) && unreadDelta !== 0) {
+    const applied = applyMailUnreadDeltaToCounts(unreadCountsRef.current, detail?.unreadDelta);
+    if (applied) {
       mailUnreadMutationVersionRef.current += 1;
-      const previousCounts = unreadCountsRef.current || {};
-      const previousMailUnread = Math.max(0, Number(previousCounts.mail_unread || 0));
-      const nextMailUnread = Math.max(0, previousMailUnread + unreadDelta);
-      const hubUnread = Math.max(
-        0,
-        Number(previousCounts.notifications_unread_total || 0) - previousMailUnread,
-      );
-      const nextCounts = {
-        ...previousCounts,
-        notifications_unread_total: hubUnread + nextMailUnread,
-        mail_unread: nextMailUnread,
-      };
-      unreadCountsRef.current = nextCounts;
+      unreadCountsRef.current = applied.nextCounts;
       mailUnreadFetchedAtRef.current = Date.now();
       mailUnreadBaselineReadyRef.current = true;
-      setUnreadCounts(nextCounts);
+      setUnreadCounts(applied.nextCounts);
     }
 
     if (detail?.nextIsRead) {
@@ -2420,7 +2245,7 @@ useEffect(() => {
   );
 
   const shellValue = useMemo(() => ({
-    headerMode,
+    headerMode: integratedChatHeader ? 'hidden' : headerMode,
     drawerOpen,
     openDrawer: () => setDrawerOpen(true),
     closeDrawer: () => setDrawerOpen(false),
@@ -2445,6 +2270,7 @@ useEffect(() => {
     handleDatabaseChange,
     handleOpenNotifications,
     headerMode,
+    integratedChatHeader,
     notificationsBadgeValue,
     showDatabaseSelector,
     showNotificationsButton,
@@ -3038,6 +2864,7 @@ useEffect(() => {
             sx={{ flexShrink: 0 }}
           />
         ) : null}
+        <DesktopHandoffSlot />
         {children}
         {pendingNavigation ? (
           <BrandedRouteLoader

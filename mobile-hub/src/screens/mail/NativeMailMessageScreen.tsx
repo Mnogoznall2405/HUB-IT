@@ -155,17 +155,19 @@ function NativeMailMessageContent() {
 
   const requestRef = useRef(0);
   useLayoutEffect(() => () => { requestRef.current += 1; }, []);
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     const requestId = ++requestRef.current;
     const isCurrent = () => requestId === requestRef.current;
     if (!allowed || !messageId) {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+      setSummary('');
+      setThreadStats(null);
+    }
     setError('');
-    setSummary('');
-    setThreadStats(null);
     const cached = user?.id
       ? await readNativeEntitySnapshot<MailMessageDetail>(
         'mail-message-details',
@@ -271,7 +273,7 @@ function NativeMailMessageContent() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void load();
+        void load(true);
       }, 100);
     };
     const releases = [

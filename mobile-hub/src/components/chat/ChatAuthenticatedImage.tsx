@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { Image } from 'expo-image';
 import {
   ActivityIndicator,
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -9,13 +9,13 @@ import {
   type ImageLoadEventData,
   type ImageResizeMode,
   type ImageStyle,
-  type NativeSyntheticEvent,
   type StyleProp,
 } from 'react-native';
 import { downloadTrustedChatMedia } from '../../files/nativeAttachmentDownloads';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 
 type ImageLoadState = 'loading' | 'ready' | 'failed';
+export type ChatImageLoadEvent = { nativeEvent: ImageLoadEventData };
 
 function isLocalUri(uri: string): boolean {
   return /^(file|content):/i.test(String(uri || '').trim());
@@ -50,7 +50,7 @@ function ChatImageSource({
   resizeMode?: ImageResizeMode;
   accessibilityLabel?: string;
   accessible?: boolean;
-  onLoad?: (event: NativeSyntheticEvent<ImageLoadEventData>) => void;
+  onLoad?: (event: ChatImageLoadEvent) => void;
   loadingFallback?: ReactNode;
   errorFallback?: ReactNode;
 }) {
@@ -153,11 +153,19 @@ function ChatImageSource({
       key={`${sourceUri}:${requestVersion}`}
       source={{ uri: sourceUri }}
       style={style}
-      resizeMode={resizeMode}
+      contentFit={resizeMode === 'stretch' ? 'fill' : resizeMode === 'center' ? 'none' : resizeMode === 'repeat' ? 'cover' : resizeMode}
+      cachePolicy="memory"
+      recyclingKey={`${sourceUri}:${requestVersion}`}
       accessibilityLabel={accessibilityLabel}
       accessible={accessible}
       onLoad={(event) => {
-        if (mountedRef.current && imageRequestId === requestIdRef.current) onLoad?.(event);
+        if (mountedRef.current && imageRequestId === requestIdRef.current) {
+          onLoad?.({ nativeEvent: { source: {
+            uri: event.source.url,
+            width: event.source.width,
+            height: event.source.height,
+          } } });
+        }
       }}
       onError={() => {
         if (mountedRef.current && imageRequestId === requestIdRef.current) handleImageError();

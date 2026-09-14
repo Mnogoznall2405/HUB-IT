@@ -35,8 +35,9 @@ export function shouldLockInboxRefresh(dx: number, dy: number): boolean {
   return Math.abs(dx) >= 8 && Math.abs(dx) >= Math.abs(dy);
 }
 
-export function shouldTriggerFolderSwipe(dx: number): boolean {
-  return Math.abs(dx) >= FOLDER_SWIPE_TRIGGER_DP;
+export function shouldTriggerFolderSwipe(dx: number, velocityX = 0): boolean {
+  return Math.abs(dx) >= FOLDER_SWIPE_TRIGGER_DP
+    || (Math.abs(dx) >= 28 && Math.abs(velocityX) >= 0.5 && Math.sign(dx) === Math.sign(velocityX));
 }
 
 export function folderSwipeDirection(dx: number): 'next' | 'prev' {

@@ -20,7 +20,15 @@ export type OfflineCommand = {
 
 type Listener = (count: number) => void;
 const listeners = new Set<Listener>();
-let drainPromise: Promise<number> | null = null;
+const drainPromises = new Map<number, Promise<number>>();
+let storageMutation: Promise<unknown> = Promise.resolve();
+let generation = 0;
+
+function mutate<T>(operation: () => Promise<T>): Promise<T> {
+  const pending = storageMutation.catch(() => undefined).then(operation);
+  storageMutation = pending;
+  return pending;
+}
 
 function normalizeQueue(value: unknown, now = Date.now()): OfflineCommand[] {
   if (!Array.isArray(value)) return [];
@@ -91,6 +99,7 @@ export function isRetryableOfflineError(error: unknown): boolean {
 }
 
 export async function getOfflineCommandCount(userId?: number): Promise<number> {
+  await storageMutation.catch(() => undefined);
   const queue = await loadQueue();
   return userId ? queue.filter((item) => item.userId === userId).length : queue.length;
 }
@@ -111,21 +120,25 @@ export async function queueConversationRead(
   if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0 || !normalizedConversationId || !normalizedMessageId) {
     throw new Error('Некорректная команда offline-очереди');
   }
-  const queue = await loadQueue();
-  const id = `${normalizedUserId}:${normalizedConversationId}:${normalizedMessageId}`;
-  if (!queue.some((item) => item.id === id)) {
-    queue.push({
-      id,
-      type: 'chat.mark_read',
-      userId: normalizedUserId,
-      conversationId: normalizedConversationId,
-      messageId: normalizedMessageId,
-      createdAt: Date.now(),
-      attempts: 0,
-    });
-  }
-  await saveQueue(queue);
-  return getOfflineCommandCount(normalizedUserId);
+  const lease = generation;
+  return mutate(async () => {
+    if (lease !== generation) return 0;
+    const queue = await loadQueue();
+    const id = `${normalizedUserId}:${normalizedConversationId}:${normalizedMessageId}`;
+    if (!queue.some((item) => item.id === id)) {
+      queue.push({
+        id,
+        type: 'chat.mark_read',
+        userId: normalizedUserId,
+        conversationId: normalizedConversationId,
+        messageId: normalizedMessageId,
+        createdAt: Date.now(),
+        attempts: 0,
+      });
+    }
+    await saveQueue(queue);
+    return normalizeQueue(queue).filter(item => item.userId === normalizedUserId).length;
+  });
 }
 
 export async function markConversationReadResilient(
@@ -133,10 +146,12 @@ export async function markConversationReadResilient(
   conversationId: string,
   messageId: string,
 ): Promise<'sent' | 'queued'> {
+  const lease = generation;
   try {
     await chatApi.markConversationRead(conversationId, messageId);
     return 'sent';
   } catch (error) {
+    if (lease !== generation) throw error;
     if (!isRetryableOfflineError(error)) throw error;
     await queueConversationRead(userId, conversationId, messageId);
     return 'queued';
@@ -144,35 +159,43 @@ export async function markConversationReadResilient(
 }
 
 export async function drainOfflineCommandQueue(userId: number): Promise<number> {
-  if (drainPromise) return drainPromise;
-  drainPromise = (async () => {
-    const queue = await loadQueue();
-    const remaining: OfflineCommand[] = [];
-    let networkUnavailable = false;
+  const existing = drainPromises.get(userId);
+  if (existing) return existing;
+  const lease = generation;
+  const pending = (async () => {
+    const queue = await mutate(loadQueue);
     for (const command of queue) {
-      if (command.userId !== userId || networkUnavailable) {
-        remaining.push(command);
-        continue;
-      }
+      if (lease !== generation) return 0;
+      if (command.userId !== userId) continue;
+      let retry = false;
       try {
         await chatApi.markConversationRead(command.conversationId, command.messageId);
       } catch (error) {
-        if (isRetryableOfflineError(error)) {
-          networkUnavailable = true;
-          remaining.push({ ...command, attempts: command.attempts + 1 });
-        }
+        retry = isRetryableOfflineError(error);
         // Definitive 4xx means the command is obsolete or forbidden and must not poison the queue.
       }
+      await mutate(async () => {
+        if (lease !== generation) return;
+        const current = await loadQueue();
+        await saveQueue(retry
+          ? current.map(item => item.id === command.id ? { ...item, attempts: item.attempts + 1 } : item)
+          : current.filter(item => item.id !== command.id));
+      });
+      if (retry) break;
     }
-    await saveQueue(remaining);
-    return remaining.filter((item) => item.userId === userId).length;
+    return getOfflineCommandCount(userId);
   })().finally(() => {
-    drainPromise = null;
+    if (drainPromises.get(userId) === pending) drainPromises.delete(userId);
   });
-  return drainPromise;
+  drainPromises.set(userId, pending);
+  return pending;
 }
 
 export async function clearOfflineCommandQueue(): Promise<void> {
-  await SecureStore.deleteItemAsync(STORAGE_KEY);
-  notify(0);
+  generation += 1;
+  drainPromises.clear();
+  await mutate(async () => {
+    await SecureStore.deleteItemAsync(STORAGE_KEY);
+    notify(0);
+  });
 }

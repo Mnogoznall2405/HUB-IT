@@ -158,6 +158,48 @@ def enrich_equipment_current_acts(
                                   OR LOWER(LTRIM(COALESCE(current_owner.current_owner_comment, N''))) + N' '
                                       LIKE N'акт №' + CONVERT(NVARCHAR(32), d.DOC_NO) + N'[^0-9]%'
                                   OR (
+                                      -- Object/site uploads often write
+                                      -- "Акт объект Владивосток (вагон) 337 Фамилия...".
+                                      -- Require digit boundaries + current surname so
+                                      -- later reassignments do not inherit the old act.
+                                      NULLIF(
+                                          LTRIM(RTRIM(COALESCE(item_owner.OWNER_LNAME, N''))),
+                                          N''
+                                      ) IS NOT NULL
+                                      AND LOWER(
+                                          LTRIM(COALESCE(current_owner.current_owner_comment, N''))
+                                      ) LIKE N'акт%'
+                                      AND LOWER(
+                                          LTRIM(COALESCE(current_owner.current_owner_comment, N''))
+                                      ) + N' '
+                                          LIKE N'%[^0-9]' + CONVERT(NVARCHAR(32), d.DOC_NO) +
+                                              N'[^0-9]%'
+                                      AND LOWER(
+                                          COALESCE(current_owner.current_owner_comment, N'')
+                                      ) LIKE
+                                          N'%' + LOWER(LTRIM(RTRIM(item_owner.OWNER_LNAME))) +
+                                              N'%'
+                                  )
+                                  OR (
+                                      -- Legacy/manual uploads often leave DOCS.EMPL_NO NULL
+                                      -- and only put "Акт <DOC_NO> ... Фамилия..." in ADDINFO.
+                                      -- CI_HISTORY may be written weeks/months later, so do not
+                                      -- require DOC_DATE near assignment; surname + DOC_NO
+                                      -- bound to this item keep reassignments from inheriting
+                                      -- someone else's act.
+                                      NULLIF(
+                                          LTRIM(RTRIM(COALESCE(item_owner.OWNER_LNAME, N''))),
+                                          N''
+                                      ) IS NOT NULL
+                                      AND LOWER(LTRIM(COALESCE(d.ADDINFO, N''))) LIKE N'акт%'
+                                      AND LOWER(COALESCE(d.ADDINFO, N'')) + N' '
+                                          LIKE N'%[^0-9]' + CONVERT(NVARCHAR(32), d.DOC_NO) +
+                                              N'[^0-9]%'
+                                      AND LOWER(COALESCE(d.ADDINFO, N'')) LIKE
+                                          N'%' + LOWER(LTRIM(RTRIM(item_owner.OWNER_LNAME))) +
+                                              N'%'
+                                  )
+                                  OR (
                                       -- A small set of old transfers wrote no history
                                       -- comment. Accept only a same-day document created
                                       -- immediately before assignment and naming the owner.

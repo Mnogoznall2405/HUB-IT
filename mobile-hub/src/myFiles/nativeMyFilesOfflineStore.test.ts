@@ -2,6 +2,7 @@ import { File } from 'expo-file-system';
 import type { MyFileRecord } from '../api/myFilesApi';
 import {
   clearNativeMyFilesOffline,
+  listNativeMyFilesOffline,
   getNativeMyFilesOfflineFile,
   getNativeMyFilesOfflineIds,
   pinNativeMyFileOffline,
@@ -80,9 +81,9 @@ jest.mock('../cache/nativeSnapshotStorage', () => ({
 const readyFile: MyFileRecord = {
   id: 'f-1', original_file_name: 'report.pdf', download_file_name: 'report.pdf',
   mime_type: 'application/pdf', download_mime_type: 'application/pdf', original_size_bytes: 1024,
-  stored_size_bytes: 1024, saved_size_bytes: 0, retention_days: 7, status: 'ready', storage_mode: 'stored',
+  stored_size_bytes: 1024, saved_size_bytes: 0, retention_days: 7, folder_id: null, status: 'ready', storage_mode: 'stored',
   error_text: '', security_scan_status: 'clean', preview_kind: 'pdf', preview_available: true,
-  preview_status: 'ready', preview_max_bytes: 0, is_shared: false, share_expires_at: null,
+  preview_status: 'ready', preview_max_bytes: 0, is_shared: false, is_favorite: false, share_expires_at: null,
   created_at: null, updated_at: '2026-09-02T10:00:00Z', expires_at: '2030-09-02T10:00:00Z',
 };
 
@@ -143,4 +144,27 @@ it('clears persistent My Files data for the signed-out user', async () => {
 
   await expect(getNativeMyFilesOfflineFile(7, readyFile)).resolves.toBeNull();
   expect([...mockFiles.keys()].some((uri) => uri.includes('/user-7/'))).toBe(false);
+});
+
+it('lists pinned records without requiring a cached folder and isolates owners',async()=>{
+ mockFiles.set('file:///cache/report.pdf',1024);
+ await pinNativeMyFileOffline(7,{...readyFile,folder_id:'nested-folder'},new File('file:///cache/report.pdf'));
+ await expect(listNativeMyFilesOffline(7)).resolves.toEqual([expect.objectContaining({id:readyFile.id,folder_id:'nested-folder',download_file_name:'report.pdf'})]);
+ await expect(listNativeMyFilesOffline(8)).resolves.toEqual([]);
+ const manifest=JSON.parse(mockManifests.get('my-files-offline-manifest:7')!);
+ expect(manifest.entries[0].record.folder_id).toBe('nested-folder');
+ delete manifest.entries[0].record;
+ mockManifests.set('my-files-offline-manifest:7',JSON.stringify(manifest));
+ await expect(listNativeMyFilesOffline(7)).resolves.toEqual([expect.objectContaining({id:readyFile.id,download_file_name:'report.pdf',original_size_bytes:1024})]);
+});
+it('excludes missing, wrong-sized and expired pinned files from the local list',async()=>{
+ mockFiles.set('file:///cache/report.pdf',1024);
+ const file=await pinNativeMyFileOffline(7,readyFile,new File('file:///cache/report.pdf'));
+ mockFiles.set(file.uri,1); await expect(listNativeMyFilesOffline(7)).resolves.toEqual([]);
+ mockFiles.delete(file.uri); await expect(listNativeMyFilesOffline(7)).resolves.toEqual([]);
+ mockFiles.set(file.uri,1024);
+ const manifest=JSON.parse(mockManifests.get('my-files-offline-manifest:7')!);
+ manifest.entries[0].expiresAt='2000-01-01T00:00:00Z';
+ mockManifests.set('my-files-offline-manifest:7',JSON.stringify(manifest));
+ await expect(listNativeMyFilesOffline(7)).resolves.toEqual([]);
 });

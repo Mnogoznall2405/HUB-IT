@@ -57,13 +57,15 @@ class SandboxExecutorError(RuntimeError):
 class ExternalQuotaVerifier:
     """Invoke a fixed root-owned verifier without a shell.
 
-    The helper is an operations boundary: it must verify an already enforced
-    XFS/ext4 project quota and print exactly ``verified:<bytes>``. Merely
+    The helper is an operations boundary: it must verify a kernel-enforced
+    project quota and print exactly ``verified:<bytes>``. With provision=True,
+    the restricted helper assigns quota to a new empty workspace first. Merely
     checking free space or a writable marker is intentionally insufficient.
     """
 
-    def __init__(self, executable: Path) -> None:
+    def __init__(self, executable: Path, *, provision: bool = False) -> None:
         self.executable = executable
+        self.provision = provision
 
     def __call__(self, workspace: Path, quota_bytes: int) -> bool:
         helper = self.executable.resolve(strict=True)
@@ -74,7 +76,7 @@ class ExternalQuotaVerifier:
             return False
         try:
             completed = subprocess.run(
-                [str(helper), "verify", str(workspace), str(int(quota_bytes))],
+                [str(helper), "ensure" if self.provision else "verify", str(workspace), str(int(quota_bytes))],
                 shell=False,
                 check=True,
                 capture_output=True,
@@ -370,11 +372,16 @@ class ConcreteSandboxJobExecutor:
             )
             with control:
                 prompt_payload = {
-                    "messageID": str(uuid5(NAMESPACE_URL, f"hub-ai-sandbox-prompt:{job.id}")),
+                    # OpenCode requires msg_ IDs, ordered by a 48-bit time prefix.
+                    "messageID": (
+                        f"msg_{(int(job.created_at.timestamp() * 1000) << 12) & ((1 << 48) - 1):012x}"
+                        + uuid5(NAMESPACE_URL, f"hub-ai-sandbox-prompt:{job.id}").hex[:14]
+                    ),
                     "parts": [{"type": "text", "text": prompt}],
                 }
                 if opencode_session_id:
                     try:
+                        control.wait_for_session(session_id=opencode_session_id, startup_timeout_seconds=30)
                         control.prompt_async(
                             session_id=opencode_session_id,
                             prompt=prompt_payload,
@@ -434,6 +441,8 @@ class ConcreteSandboxJobExecutor:
     ) -> str:
         deadline = time.monotonic() + max(1, min(int(response_timeout_seconds), 900))
         text_parts: dict[str, str] = {}
+        part_metadata: dict[str, Mapping[str, Any]] = {}
+        message_roles: dict[str, str] = {}
         active_tools: dict[str, float] = {}
         event_queue: Queue[Mapping[str, Any]] = Queue(maxsize=1024)
         reader_stop = Event()
@@ -471,7 +480,9 @@ class ConcreteSandboxJobExecutor:
                     continue
                 event_type = str(event.get("type") or "")
                 properties = event.get("properties") if isinstance(event.get("properties"), dict) else {}
-                event_session_id = str(properties.get("sessionID") or properties.get("session_id") or "")
+                nested = properties.get("part") or properties.get("info")
+                nested = nested if isinstance(nested, dict) else {}
+                event_session_id = str(properties.get("sessionID") or properties.get("session_id") or nested.get("sessionID") or "")
                 if event_session_id and event_session_id != opencode_session_id:
                     continue
                 if event_type in {"permission.asked", "permission.updated", "permission.requested"}:
@@ -484,10 +495,20 @@ class ConcreteSandboxJobExecutor:
                         worker_control=worker_control,
                         deadline=deadline,
                     )
+                elif event_type == "message.updated":
+                    message_id = str(nested.get("id") or "")
+                    if message_id:
+                        message_roles[message_id] = str(nested.get("role") or "")
+                elif event_type == "message.part.delta":
+                    if properties.get("field") == "text" and properties.get("partID"):
+                        part_id = str(properties["partID"])
+                        text_parts[part_id] = text_parts.get(part_id, "") + str(properties.get("delta") or "")
                 elif event_type == "message.part.updated":
                     part = properties.get("part") if isinstance(properties.get("part"), dict) else properties
+                    part_id = str(part.get("id") or "")
+                    if part_id:
+                        part_metadata[part_id] = part
                     if str(part.get("type") or "") == "text":
-                        part_id = str(part.get("id") or len(text_parts))
                         text_parts[part_id] = str(part.get("text") or properties.get("delta") or "")
                     elif str(part.get("type") or "") == "tool":
                         tool_id = str(part.get("id") or part.get("callID") or "")
@@ -502,7 +523,17 @@ class ConcreteSandboxJobExecutor:
                 elif event_type == "session.error":
                     raise SandboxExecutorError("OpenCode session failed")
                 elif event_type == "session.idle":
-                    return "\n".join(value for value in text_parts.values() if value).strip()
+                    # Deltas use field="text" for both text and reasoning.
+                    # Publish only confirmed assistant text, never unknown parts
+                    # or echoed user/synthetic messages from the session stream.
+                    return "\n".join(
+                        value for part_id, value in text_parts.items()
+                        if value
+                        and (part := part_metadata.get(part_id, {})).get("type") == "text"
+                        and not part.get("synthetic")
+                        and not part.get("ignored")
+                        and message_roles.get(str(part.get("messageID") or "")) == "assistant"
+                    ).strip()
             try:
                 control.abort(session_id=opencode_session_id)
             except Exception:
@@ -566,10 +597,17 @@ class ConcreteSandboxJobExecutor:
         metadata = dict(nested.get("metadata")) if isinstance(nested.get("metadata"), dict) else {}
         tool_input = tool_payload.get("input") if isinstance(tool_payload.get("input"), dict) else {}
         metadata.update({key: value for key, value in tool_input.items() if key not in metadata})
+        # OpenCode reports container-absolute paths; HUB policy accepts only
+        # workspace-relative paths. Strip precisely the fixed mount prefix,
+        # preserving traversal components for the policy to reject.
+        for key in ("path", "file", "file_path", "filepath", "directory", "cwd", "root"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.startswith("/workspace/"):
+                metadata[key] = value[len("/workspace/"):]
         if tool.strip().lower() == "bash" and not metadata.get("command") and patterns:
             metadata["command"] = str(patterns[0])
         if tool.strip().lower() == "edit" and not metadata.get("path") and patterns:
-            metadata["path"] = str(patterns[0])
+            metadata["path"] = str(metadata.get("filepath") or patterns[0])
         permission = worker_control.create_permission(
             job_id=job.id,
             session_id=session.id,

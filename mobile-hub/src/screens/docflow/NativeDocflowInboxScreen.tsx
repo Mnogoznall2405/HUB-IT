@@ -9,7 +9,6 @@ import {
   FlatList,
   type ListRenderItemInfo,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -33,6 +32,7 @@ import {
 } from '../../cache/nativeSnapshotCache';
 import { NativeDocflowTaskCard } from '../../components/docflow/NativeDocflowTaskCard';
 import { HubTextField } from '../../components/ui/HubTextField';
+import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { resolveNativeDocflowError } from '../../docflow/docflowError';
 import {
   DOCFLOW_SCOPE_OPTIONS,
@@ -104,15 +104,16 @@ export function NativeDocflowInboxScreen() {
   const taskRequestRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
   const snapshotSignature = useMemo(() => JSON.stringify({ scope, query }), [query, scope]);
+  const offlineProfileSignature = offlineMode ? snapshotSignature : '';
 
-  const loadTasks = useCallback(async (nextProfile: DocflowCredentialProfile | null, refresh = false) => {
+  const loadTasks = useCallback(async (nextProfile: DocflowCredentialProfile | null, refresh = false, silent = false) => {
     if (!canRead || !nextProfile?.configured) {
       setLoadingTasks(false);
       setRefreshing(false);
       return;
     }
     const requestId = ++taskRequestRef.current;
-    if (refresh) setRefreshing(true); else setLoadingTasks(true);
+    if (refresh) setRefreshing(true); else if (!silent) setLoadingTasks(true);
     setError('');
     setCorrelationId('');
     const userId = Number(user?.id || 0);
@@ -166,6 +167,7 @@ export function NativeDocflowInboxScreen() {
   }, [canRead, offlineMode, query, scope, snapshotSignature, user?.id]);
 
   const loadProfile = useCallback(async () => {
+    const requestId = ++profileRequestRef.current;
     if (!canRead) {
       setLoadingProfile(false);
       return;
@@ -173,8 +175,9 @@ export function NativeDocflowInboxScreen() {
     if (offlineMode) {
       const userId = Number(user?.id || 0);
       const snapshot = userId
-        ? await readNativeCollectionSnapshot<DocflowInboxSnapshot>('docflow-inbox', userId, snapshotSignature)
+        ? await readNativeCollectionSnapshot<DocflowInboxSnapshot>('docflow-inbox', userId, offlineProfileSignature)
         : null;
+      if (requestId !== profileRequestRef.current) return;
       if (snapshot) {
         setProfile(snapshot.data.profile);
         setTasks(snapshot.data.result.items);
@@ -186,7 +189,6 @@ export function NativeDocflowInboxScreen() {
       setLoadingProfile(false);
       return;
     }
-    const requestId = ++profileRequestRef.current;
     setLoadingProfile(true);
     setError('');
     try {
@@ -208,7 +210,7 @@ export function NativeDocflowInboxScreen() {
         setLoadingProfile(false);
       }
     }
-  }, [canRead, offlineMode, snapshotSignature, user?.id]);
+  }, [canRead, offlineMode, offlineProfileSignature, user?.id]);
 
   const refreshAll = useCallback(async () => {
     if (!canRead || offlineMode) return;
@@ -232,7 +234,10 @@ export function NativeDocflowInboxScreen() {
     }
   }, [canRead, loadTasks, offlineMode]);
 
-  useEffect(() => { void loadProfile(); }, [loadProfile]);
+  useEffect(() => {
+    void loadProfile();
+    return () => { profileRequestRef.current += 1; };
+  }, [loadProfile]);
   useEffect(() => {
     if (profile?.configured) void loadTasks(profile);
   }, [loadTasks, profile?.configured, profile?.login]);
@@ -243,7 +248,7 @@ export function NativeDocflowInboxScreen() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void loadTasks(profile, true);
+        void loadTasks(profile, false, true);
       }, 180);
     };
     const releases = [
@@ -426,31 +431,13 @@ export function NativeDocflowInboxScreen() {
       </>}
       {profile?.configured ? (
         <>
-          <ScrollView
-            testID="native-docflow-scope-tabs"
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.scopeTabsViewport}
-            contentContainerStyle={styles.scopeTabs}
-            accessibilityRole="tablist"
-          >
-            {DOCFLOW_SCOPE_OPTIONS.map((option) => {
-              const selected = option.value === scope;
-              return (
-                <Pressable
-                  key={option.value}
-                  testID={`native-docflow-scope-${option.value}`}
-                  onPress={() => setScope(option.value)}
-                  disabled={loadingTasks}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected, disabled: loadingTasks }}
-                  style={[styles.scopeTab, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}
-                >
-                  <Text style={[styles.scopeText, { color: selected ? '#fff' : tokens.textPrimary }]}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          <NativeSegmentedControl
+            options={DOCFLOW_SCOPE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+            selected={scope}
+            onSelect={(value) => { if (!loadingTasks) setScope(value as typeof scope); }}
+            tokens={tokens}
+            testIDPrefix="native-docflow-scope"
+          />
           <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
             <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
             <TextInput
@@ -478,6 +465,9 @@ export function NativeDocflowInboxScreen() {
             {asOf ? <Text style={[styles.metaText, { color: tokens.textSecondary }]}>Обновлено: {formatDocflowDate(asOf)}</Text> : null}
           </View>
           <FlatList
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            windowSize={7}
             testID="native-docflow-list"
             style={styles.taskList}
             data={tasks}
@@ -588,10 +578,7 @@ const styles = StyleSheet.create({
   connectionMeta: { marginTop: 2, fontSize: 11, lineHeight: 15 },
   connectionAction: { minHeight: 44, borderRadius: 12, borderWidth: 1, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
   connectionActionText: { fontSize: 11, fontWeight: '800' },
-  scopeTabsViewport: { flexGrow: 0, flexShrink: 0, maxHeight: 52 },
-  scopeTabs: { gap: 7, paddingBottom: 8 },
-  scopeTab: { minHeight: 44, borderRadius: 22, borderWidth: 1, paddingHorizontal: 15, alignItems: 'center', justifyContent: 'center' },
-  scopeText: { fontSize: 12, fontWeight: '800' },
+
   search: { minHeight: 48, borderRadius: 14, borderWidth: 1, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
   searchInput: { flex: 1, minWidth: 0, fontSize: 14, paddingVertical: 8 },
   searchAction: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },

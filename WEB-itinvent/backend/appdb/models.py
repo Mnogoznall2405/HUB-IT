@@ -12,6 +12,8 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    Numeric,
+    ForeignKey,
     LargeBinary,
     String,
     Text,
@@ -54,6 +56,82 @@ def _table_args(*constraints, schema: str | None = None):
 
 class AppBase(DeclarativeBase):
     """Declarative base for app-owned internal tables."""
+
+
+class AppConstructionWeekPlan(AppBase):
+    __tablename__ = "construction_week_plans"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+    object_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    baseline_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionDayCrew(AppBase):
+    __tablename__ = "construction_day_crews"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+    object_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    work_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionPlanningAudit(AppBase):
+    __tablename__ = "construction_planning_audit"
+    __table_args__ = _table_args(Index("ix_construction_planning_audit_scope", "object_id", "period", "id"), schema=APP_SCHEMA)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    period: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionWorkItem(AppBase):
+    __tablename__ = "construction_work_items"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_work_scope", "object_id", "group_ref"),
+        CheckConstraint("version >= 1", name="ck_app_construction_work_version"),
+        schema=APP_SCHEMA,
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AppConstructionWorkEntry(AppBase):
+    __tablename__ = "construction_work_entries"
+    __table_args__ = _table_args(
+        UniqueConstraint("work_id", "work_date", name="uq_app_construction_work_day"),
+        CheckConstraint("quantity >= 0", name="ck_app_construction_work_quantity"),
+        schema=APP_SCHEMA,
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("app.construction_work_items.id"), nullable=False)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionWorkAudit(AppBase):
+    __tablename__ = "construction_work_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_work_audit", "work_id", "id"), schema=APP_SCHEMA,
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("app.construction_work_items.id"), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class AppUser(AppBase):
@@ -209,8 +287,10 @@ class AppConstructionObjectRoleAssignment(AppBase):
     __tablename__ = "construction_object_role_assignments"
     __table_args__ = _table_args(
         CheckConstraint(
-            "role_key IN ('project_lead', 'pto_manager', 'umto_coordinator')",
-            name="ck_app_construction_object_role_key",
+            "role_key IN ("
+            "'project_lead', 'pto_manager', 'umto_coordinator', 'chief_project_engineer'"
+            ")",
+            name="ck_app_construction_object_role_key_v2",
         ),
         Index("ix_app_construction_object_roles_object", "object_id", "role_key"),
         Index("ix_app_construction_object_roles_employee", "employee_code"),
@@ -227,6 +307,49 @@ class AppConstructionObjectRoleAssignment(AppBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionDirectionRoleAssignment(AppBase):
+    """Versioned direction-level role (site manager) for a linked 1C group."""
+
+    __tablename__ = "construction_direction_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ('site_manager')",
+            name="ck_app_construction_direction_role_key",
+        ),
+        Index(
+            "ix_app_construction_direction_roles_object_group",
+            "object_id",
+            "group_ref",
+            "role_key",
+        ),
+        Index("ix_app_construction_direction_roles_employee", "employee_code"),
+        Index(
+            "uq_app_construction_direction_active_role",
+            "object_id",
+            "group_ref",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     role_key: Mapped[str] = mapped_column(String(32), nullable=False)
     employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
     employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -609,11 +732,20 @@ class AppPasswordVaultAudit(AppBase):
 class AppMyFileBlob(AppBase):
     __tablename__ = "my_file_blobs"
     __table_args__ = _table_args(
+        UniqueConstraint(
+            "owner_user_id",
+            "original_sha256",
+            name="uq_app_my_file_blobs_owner_original_sha",
+        ),
         Index("ix_app_my_file_blobs_ref_count", "ref_count"),
+        Index("ix_app_my_file_blobs_owner_user_id", "owner_user_id"),
+        Index("ix_app_my_file_blobs_original_sha256", "original_sha256"),
         schema=APP_SCHEMA,
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     storage_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="stored")
     stored_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -693,6 +825,33 @@ class AppDocumentPreviewJob(AppBase):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class AppMyFileFolder(AppBase):
+    __tablename__ = "my_file_folders"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_folders_owner_parent", "owner_user_id", "parent_id"),
+        Index("ix_app_my_file_folders_owner_deleted", "owner_user_id", "deleted_at"),
+        Index("ix_app_my_file_folders_share_token_hash", "share_token_hash"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(f"{APP_SCHEMA}.my_file_folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    share_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    share_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    share_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AppMyFile(AppBase):
     __tablename__ = "my_files"
     __table_args__ = _table_args(
@@ -701,6 +860,7 @@ class AppMyFile(AppBase):
         Index("ix_app_my_files_expires_status", "expires_at", "status"),
         Index("ix_app_my_files_share_token_hash", "share_token_hash"),
         Index("ix_app_my_files_original_sha256", "original_sha256"),
+        Index("ix_app_my_files_folder", "folder_id"),
         schema=APP_SCHEMA,
     )
 
@@ -718,6 +878,11 @@ class AppMyFile(AppBase):
     storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     original_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     blob_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    folder_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(f"{APP_SCHEMA}.my_file_folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     spool_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     security_scan_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
@@ -727,6 +892,7 @@ class AppMyFile(AppBase):
     share_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     share_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
@@ -756,13 +922,15 @@ class AppMyFileDownloadGrant(AppBase):
     __tablename__ = "my_file_download_grants"
     __table_args__ = _table_args(
         Index("ix_app_my_file_download_grants_file_id", "file_id"),
+        Index("ix_app_my_file_download_grants_folder_id", "folder_id"),
         Index("ix_app_my_file_download_grants_owner_created", "owner_user_id", "created_at"),
         Index("ix_app_my_file_download_grants_expires_at", "expires_at"),
         schema=APP_SCHEMA,
     )
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -869,6 +1037,17 @@ class AppAiBot(AppBase):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     bot_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiBotAccess(AppBase):
+    __tablename__ = "ai_bot_access"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    bot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 

@@ -17,7 +17,7 @@ import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 
-import { formatFileSize } from './chatHelpers';
+import { CHAT_MESSAGE_BODY_MAX_LENGTH, formatFileSize } from './chatHelpers';
 import {
   isChatImageFile,
   isChatMediaFile,
@@ -669,7 +669,7 @@ export default function ChatFileUploadPanel({
                   multiline
                   minRows={1}
                   maxRows={4}
-                  inputProps={{ 'aria-label': 'Подпись', maxLength: 12000, enterKeyHint: 'send' }}
+                  inputProps={{ 'aria-label': 'Подпись', maxLength: CHAT_MESSAGE_BODY_MAX_LENGTH, enterKeyHint: 'send' }}
                   sx={{
                     flex: 1,
                     color: tokens.inputText,

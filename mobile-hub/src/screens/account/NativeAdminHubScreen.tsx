@@ -24,7 +24,7 @@ export function NativeAdminHubScreen() {
           {null}
         </AccountSectionCard>
       ) : (
-        <AccountSectionCard tokens={tokens} description="В APK показаны только нативные разделы администрирования.">
+        <AccountSectionCard tokens={tokens} description="Управление учётными записями и настройками HUB-IT.">
           {sections.map((section) => (
             <AccountActionRow
               key={section.key}

@@ -19,6 +19,14 @@ import {
 } from './chatMedia';
 
 describe('chat media helpers', () => {
+  it('uses the server video poster and never decodes the video original as an image', () => {
+    expect(pickChatAttachmentPreviewUrl({ id: 'video', kind: 'video',
+      variant_urls: { poster: '/files/poster.jpg' }, original_url: '/files/clip.mp4',
+    })).toBe('/files/poster.jpg');
+    expect(pickChatAttachmentPreviewUrl({ id: 'video', mime_type: 'video/mp4',
+      original_url: '/files/clip.mp4', download_url: '/files/download',
+    })).toBeNull();
+  });
   it('detects image and video attachments for the in-app viewer', () => {
     expect(isImageChatAttachment({ id: '1', kind: 'image', mime_type: 'image/jpeg' })).toBe(true);
     expect(isVideoChatAttachment({ id: '2', mime_type: 'video/mp4' })).toBe(true);

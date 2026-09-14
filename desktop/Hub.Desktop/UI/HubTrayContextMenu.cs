@@ -149,8 +149,26 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
         }
     }
 
-    private static HubTrayPalette CreatePalette(DesktopThemeMode mode) =>
-        mode == DesktopThemeMode.Light
+    private static HubTrayPalette CreatePalette(DesktopThemeMode mode)
+    {
+        if (mode == DesktopThemeMode.HighContrast)
+        {
+            var window = System.Drawing.SystemColors.Window;
+            var windowText = System.Drawing.SystemColors.WindowText;
+            var highlight = System.Drawing.SystemColors.Highlight;
+            var menuHighlight = System.Drawing.SystemColors.MenuHighlight;
+            var button = System.Drawing.SystemColors.ButtonFace;
+            var destructive = Color.FromArgb(180, 35, 24);
+            return new HubTrayPalette(
+                SystemColorToGdi(window),
+                SystemColorToGdi(windowText),
+                SystemColorToGdi(button),
+                SystemColorToGdi(highlight),
+                SystemColorToGdi(menuHighlight),
+                destructive);
+        }
+
+        return mode == DesktopThemeMode.Light
             ? new HubTrayPalette(
                 Color.FromArgb(255, 255, 255),
                 Color.FromArgb(20, 35, 48),
@@ -165,6 +183,10 @@ internal sealed class HubTrayContextMenu : ContextMenuStrip
                 Color.FromArgb(37, 42, 49),
                 Color.FromArgb(56, 189, 248),
                 Color.FromArgb(255, 119, 119));
+    }
+
+    private static Color SystemColorToGdi(System.Drawing.Color color) =>
+        Color.FromArgb(color.R, color.G, color.B);
 
     private sealed class HubTrayMenuRenderer(HubTrayPalette palette)
         : ToolStripProfessionalRenderer(new HubTrayColorTable(palette))

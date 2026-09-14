@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { canAccessAdminSection } from '../../account/accountNavigation';
 import * as departmentsApi from '../../api/departmentsApi';
@@ -18,12 +18,16 @@ import {
 import { goBackOrReplace } from './accountBack';
 
 export function NativeAdminDepartmentsScreen() {
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = canAccessAdminSection('departments', { user, hasPermission });
   const [departments, setDepartments] = useState<departmentsApi.DepartmentRecord[]>([]);
   const [selectedId, setSelectedId] = useState('');
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const memberRequestRef = useRef(0);
+  const departmentRequestRef = useRef(0);
   const [memberships, setMemberships] = useState<departmentsApi.DepartmentMember[]>([]);
   const [draftManagerIds, setDraftManagerIds] = useState<number[]>([]);
   const [search, setSearch] = useState('');
@@ -34,16 +38,20 @@ export function NativeAdminDepartmentsScreen() {
   const [status, setStatus] = useState({ error: '', message: '' });
 
   const loadDepartments = useCallback(async () => {
+    const lease = ++departmentRequestRef.current;
+    if (!allowed || offlineMode) { setLoading(false); return; }
     setLoading(true);
     try {
       const items = await departmentsApi.listDepartments();
+      if (lease !== departmentRequestRef.current) return;
       setDepartments(items);
     } catch (error) {
+      if (lease !== departmentRequestRef.current) return;
       setStatus({ error: formatApiError(error, 'Не удалось загрузить отделы.'), message: '' });
     } finally {
-      setLoading(false);
+      if (lease === departmentRequestRef.current) setLoading(false);
     }
-  }, []);
+  }, [allowed, offlineMode, user?.id]);
 
   const filteredDepartments = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('ru');
@@ -60,32 +68,39 @@ export function NativeAdminDepartmentsScreen() {
   }, [filteredDepartments]);
 
   const loadMembers = useCallback(async (departmentId: string) => {
-    if (!departmentId) {
-      setMemberships([]);
-      setDraftManagerIds([]);
+    const lease = ++memberRequestRef.current;
+    const current = () => lease === memberRequestRef.current && selectedIdRef.current === departmentId;
+    setMemberships([]);
+    setDraftManagerIds([]);
+    if (!departmentId || !allowed || offlineMode) {
+      setMembersLoading(false);
       return;
     }
     setMembersLoading(true);
     try {
       const items = await departmentsApi.getDepartmentMembers(departmentId);
+      if (!current()) return;
       setMemberships(items);
       setDraftManagerIds(items
         .filter((item) => String(item.role || '') === 'manager' && item.is_active !== false)
         .map((item) => Number(item.user_id))
         .filter((item) => Number.isInteger(item) && item > 0));
     } catch (error) {
+      if (!current()) return;
       setStatus({ error: formatApiError(error, 'Не удалось загрузить состав отдела.'), message: '' });
     } finally {
-      setMembersLoading(false);
+      if (current()) setMembersLoading(false);
     }
-  }, []);
+  }, [allowed, offlineMode, user?.id]);
 
   useEffect(() => {
     if (allowed) void loadDepartments();
+    return () => { departmentRequestRef.current += 1; };
   }, [allowed, loadDepartments]);
 
   useEffect(() => {
     if (allowed) void loadMembers(selectedId);
+    return () => { memberRequestRef.current += 1; };
   }, [allowed, loadMembers, selectedId]);
 
   const members = useMemo(() => {
@@ -107,21 +122,24 @@ export function NativeAdminDepartmentsScreen() {
   }, [memberships]);
 
   const saveManagers = useCallback(async () => {
-    if (!selectedId) return;
+    if (!selectedId || membersLoading || saving || offlineMode || !allowed) return;
+    const lease = memberRequestRef.current;
     setSaving(true);
     try {
       await departmentsApi.setDepartmentManagers(selectedId, draftManagerIds);
+      if (lease !== memberRequestRef.current) return;
       setStatus({ error: '', message: 'Руководители сохранены.' });
       await loadMembers(selectedId);
     } catch (error) {
+      if (lease !== memberRequestRef.current) return;
       setStatus({ error: formatApiError(error, 'Не удалось сохранить руководителей.'), message: '' });
     } finally {
       setSaving(false);
     }
-  }, [draftManagerIds, loadMembers, selectedId]);
+  }, [allowed, draftManagerIds, loadMembers, membersLoading, offlineMode, saving, selectedId]);
 
   const confirmSync = useCallback((source: 'users' | 'ad') => {
-    if (syncing) return;
+    if (syncing || offlineMode || !allowed) return;
     const fromAd = source === 'ad';
     Alert.alert(
       fromAd ? 'Синхронизировать отделы из AD?' : 'Синхронизировать отделы из пользователей?',
@@ -159,7 +177,7 @@ export function NativeAdminDepartmentsScreen() {
         },
       ],
     );
-  }, [loadDepartments, syncing]);
+  }, [allowed, loadDepartments, offlineMode, syncing]);
 
   if (!allowed) {
     return (
@@ -180,17 +198,18 @@ export function NativeAdminDepartmentsScreen() {
       refreshing={loading}
     >
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+      {offlineMode ? <Text accessibilityRole="alert" style={{ color: tokens.warning }}>Нет подключения. Управление отделами доступно после восстановления сети.</Text> : null}
       <View style={styles.actions}>
         <AccountSecondaryButton
           tokens={tokens}
-          disabled={Boolean(syncing)}
+          disabled={Boolean(syncing) || offlineMode}
           loading={syncing === 'users'}
           label="Синхронизация из пользователей"
           onPress={() => confirmSync('users')}
         />
         <AccountSecondaryButton
           tokens={tokens}
-          disabled={Boolean(syncing)}
+          disabled={Boolean(syncing) || offlineMode}
           loading={syncing === 'ad'}
           label="Синхронизация из AD"
           onPress={() => confirmSync('ad')}
@@ -246,7 +265,7 @@ export function NativeAdminDepartmentsScreen() {
         })}
         <AccountPrimaryButton
           tokens={tokens}
-          disabled={!selectedId}
+          disabled={!selectedId || membersLoading || offlineMode}
           loading={saving}
           label="Сохранить руководителей"
           onPress={() => { void saveManagers(); }}

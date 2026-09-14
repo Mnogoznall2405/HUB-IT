@@ -5,7 +5,6 @@ import {
   FlatList,
   type ListRenderItemInfo,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -44,6 +43,8 @@ import {
 } from '../account/AccountChrome';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { FeedPostCard } from '../../feed/FeedPostCard';
+import { NativeAppliedChip, NativeFilterButton } from '../../components/ui/NativeFilterControls';
+import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import {
   FEED_FILTERS,
   FEED_PAGE_SIZE,
@@ -114,7 +115,7 @@ export function NativeFeedInboxScreen() {
   const [tags, setTags] = useState<FeedTag[]>([]);
   const [categoryId, setCategoryId] = useState('');
   const [tag, setTag] = useState('');
-  const [taxonomyOpen, setTaxonomyOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [categoryAdminOpen, setCategoryAdminOpen] = useState(false);
   const [categoryName, setCategoryName] = useState('');
   const [editingCategoryId, setEditingCategoryId] = useState('');
@@ -129,6 +130,7 @@ export function NativeFeedInboxScreen() {
   const [error, setError] = useState('');
   const requestRef = useRef(0);
   const itemsLengthRef = useRef(0);
+  const serverOffsetRef = useRef(0);
   const itemsRef = useRef<FeedPost[]>([]);
   const unreadTotalRef = useRef(0);
   const debouncedQuery = useDebouncedValue(query);
@@ -138,7 +140,7 @@ export function NativeFeedInboxScreen() {
 
   const loadPage = useCallback(async ({ reset = false }: { reset?: boolean } = {}) => {
     const requestId = ++requestRef.current;
-    const offset = reset ? 0 : itemsLengthRef.current;
+    const offset = reset ? 0 : serverOffsetRef.current;
     if (reset) {
       if (itemsLengthRef.current > 0) setRefreshing(true);
       else setLoading(true);
@@ -180,6 +182,7 @@ export function NativeFeedInboxScreen() {
           });
         cached = true;
         setItems(nextItems);
+        serverOffsetRef.current = nextItems.length;
         setTotal(snapshot.data.signature === signature ? snapshot.data.total : nextItems.length);
         setUnreadTotal(snapshot.data.unreadTotal);
         setLoading(false);
@@ -187,7 +190,7 @@ export function NativeFeedInboxScreen() {
     }
     if (offlineMode) {
       if (requestId === requestRef.current) {
-        if (!cached) setError('Нет подключения и сохранённой ленты.');
+        if (!cached && reset) { setItems([]); setTotal(0); setError('Нет подключения и сохранённой ленты.'); }
         setLoading(false);
         setRefreshing(false);
         setLoadingMore(false);
@@ -196,8 +199,7 @@ export function NativeFeedInboxScreen() {
     }
     try {
       if (isManagedFilter(filter)) {
-        if (!reset) return;
-        const payload = await listManagedFeedPosts(filter, 100);
+        const payload = await listManagedFeedPosts(filter, 100, { offset, q: debouncedQuery.trim(), category_id: categoryId, tag });
         if (requestId !== requestRef.current) return;
         const normalizedQuery = debouncedQuery.trim().toLocaleLowerCase('ru-RU');
         const filtered = payload.items.filter((post) => (
@@ -205,13 +207,15 @@ export function NativeFeedInboxScreen() {
           && (!categoryId || post.category_id === categoryId)
           && (!tag || (post.tags || []).includes(tag))
         ));
-        setItems(filtered);
-        setTotal(filtered.length);
+        const nextItems = [...new Map((reset ? filtered : [...itemsRef.current, ...filtered]).map((post) => [post.id, post])).values()];
+        serverOffsetRef.current = offset + payload.items.length;
+        setItems(nextItems);
+        setTotal(payload.total);
         if (userId) {
           void writeNativeCollectionSnapshot('feed-inbox', userId, signature, {
             signature,
-            items: filtered,
-            total: filtered.length,
+            items: nextItems,
+            total: payload.total,
             unreadTotal: unreadTotalRef.current,
           } satisfies NativeFeedInboxSnapshot);
         }
@@ -228,7 +232,8 @@ export function NativeFeedInboxScreen() {
         offset,
       });
       if (requestId !== requestRef.current) return;
-      const nextItems = reset ? payload.items : [...itemsRef.current, ...payload.items];
+      const nextItems = [...new Map((reset ? payload.items : [...itemsRef.current, ...payload.items]).map((post) => [post.id, post])).values()];
+      serverOffsetRef.current = offset + payload.items.length;
       setItems(nextItems);
       setTotal(payload.total);
       const nextUnreadTotal = filter === 'all' && !debouncedQuery.trim()
@@ -451,89 +456,95 @@ export function NativeFeedInboxScreen() {
       </View>
 
       <View style={styles.filters}>
-        {[...FEED_FILTERS, ...(canManage ? MANAGED_FILTERS : [])].map((item) => {
-          const active = filter === item.id;
-          return (
-            <Pressable
-              key={item.id}
-              testID={`feed-filter-${item.id}`}
-              onPress={() => setFilter(item.id)}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: active }}
-              style={[
-                styles.filterChip,
-                {
-                  backgroundColor: active ? tokens.primary : tokens.panelSolid,
-                  borderColor: active ? tokens.primary : tokens.borderSoft,
-                },
-              ]}
-            >
-              <Text style={{ color: active ? '#fff' : tokens.textPrimary, fontWeight: '800', fontSize: 12 }}>
-                {item.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-        <Pressable
+        <NativeFilterButton
           testID="feed-taxonomy-toggle"
-          accessibilityRole="button"
-          accessibilityState={{ expanded: taxonomyOpen }}
-          onPress={() => setTaxonomyOpen((value) => !value)}
-          style={[styles.filterChip, { backgroundColor: categoryId || tag ? tokens.accentSoft : tokens.panelSolid, borderColor: tokens.borderSoft }]}
-        >
-          <Text style={{ color: tokens.primary, fontWeight: '800', fontSize: 12 }}>Категории и теги</Text>
-        </Pressable>
+          count={[filter !== 'all', Boolean(categoryId), Boolean(tag)].filter(Boolean).length}
+          tokens={tokens}
+          onPress={() => setFiltersOpen(true)}
+        />
+        {filter !== 'all' ? (
+          <NativeAppliedChip
+            label={[...FEED_FILTERS, ...MANAGED_FILTERS].find((item) => item.id === filter)?.label || filter}
+            tokens={tokens}
+            onRemove={() => setFilter('all')}
+          />
+        ) : null}
+        {categoryId ? (
+          <NativeAppliedChip
+            label={categories.find((item) => item.id === categoryId)?.name || 'Категория'}
+            tokens={tokens}
+            onRemove={() => setCategoryId('')}
+          />
+        ) : null}
+        {tag ? <NativeAppliedChip label={`#${tag}`} tokens={tokens} onRemove={() => setTag('')} /> : null}
       </View>
 
-      {taxonomyOpen ? (
-        <ScrollView
-          nestedScrollEnabled
-          keyboardShouldPersistTaps="handled"
-          style={[styles.taxonomyPanel, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}
-          contentContainerStyle={styles.taxonomyContent}
-        >
-          <Text style={[styles.taxonomyTitle, { color: tokens.textPrimary }]}>Категория</Text>
-          <View accessibilityRole="radiogroup" style={styles.filters}>
-            <Pressable accessibilityRole="radio" accessibilityState={{ selected: !categoryId }} onPress={() => setCategoryId('')} style={[styles.filterChip, { backgroundColor: !categoryId ? tokens.primary : tokens.panelMuted, borderColor: !categoryId ? tokens.primary : tokens.borderSoft }]}><Text style={{ color: !categoryId ? '#fff' : tokens.textPrimary, fontWeight: '800', fontSize: 12 }}>Все</Text></Pressable>
-            {categories.filter((item) => item.is_active !== false).map((category) => {
-              const active = categoryId === category.id;
-              return <Pressable key={category.id} testID={`feed-category-${category.id}`} accessibilityRole="radio" accessibilityState={{ selected: active }} onPress={() => setCategoryId(category.id)} style={[styles.filterChip, { backgroundColor: active ? tokens.primary : tokens.panelMuted, borderColor: active ? tokens.primary : tokens.borderSoft }]}><Text style={{ color: active ? '#fff' : tokens.textPrimary, fontWeight: '800', fontSize: 12 }}>{category.name}</Text></Pressable>;
-            })}
-          </View>
-          <Text style={[styles.taxonomyTitle, { color: tokens.textPrimary }]}>Тег</Text>
-          <View accessibilityRole="radiogroup" style={styles.filters}>
-            <Pressable accessibilityRole="radio" accessibilityState={{ selected: !tag }} onPress={() => setTag('')} style={[styles.filterChip, { backgroundColor: !tag ? tokens.primary : tokens.panelMuted, borderColor: !tag ? tokens.primary : tokens.borderSoft }]}><Text style={{ color: !tag ? '#fff' : tokens.textPrimary, fontWeight: '800', fontSize: 12 }}>Все</Text></Pressable>
-            {tags.slice(0, 20).map((item) => {
-              const active = tag === item.name;
-              return <Pressable key={item.id} testID={`feed-tag-${item.id}`} accessibilityRole="radio" accessibilityState={{ selected: active }} onPress={() => setTag(item.name)} style={[styles.filterChip, { backgroundColor: active ? tokens.primary : tokens.panelMuted, borderColor: active ? tokens.primary : tokens.borderSoft }]}><Text style={{ color: active ? '#fff' : tokens.textPrimary, fontWeight: '800', fontSize: 12 }}>#{item.name}</Text></Pressable>;
-            })}
-          </View>
-          {canModerate ? (
-            <>
-              <Pressable testID="feed-category-admin-toggle" accessibilityRole="button" accessibilityState={{ expanded: categoryAdminOpen }} onPress={() => setCategoryAdminOpen((value) => !value)} style={[styles.adminToggle, { borderColor: tokens.borderSoft }]}><MaterialCommunityIcons name="shape-outline" size={19} color={tokens.primary} /><Text style={{ color: tokens.primary, fontWeight: '800' }}>Управление категориями</Text></Pressable>
-              {categoryAdminOpen ? (
-                <View style={styles.categoryAdmin}>
-                  <View style={styles.categoryForm}>
-                    <TextInput testID="feed-category-name" value={categoryName} onChangeText={setCategoryName} placeholder="Название категории" placeholderTextColor={tokens.textTertiary} style={[styles.categoryInput, { color: tokens.textPrimary, borderColor: tokens.border }]} />
-                    <Pressable testID="feed-category-save" accessibilityRole="button" accessibilityState={{ disabled: categoryName.trim().length < 2 || categoryBusy || offlineMode }} disabled={categoryName.trim().length < 2 || categoryBusy || offlineMode} onPress={() => { void saveCategory(); }} style={[styles.categorySave, { backgroundColor: tokens.primary }]}><MaterialCommunityIcons name="check" size={20} color="#fff" /></Pressable>
-                  </View>
-                  {categories.map((category) => (
-                    <View key={category.id} style={[styles.categoryRow, { borderBottomColor: tokens.borderSoft, opacity: category.is_active === false ? 0.55 : 1 }]}>
-                      <Text numberOfLines={1} style={{ color: tokens.textPrimary, fontWeight: '700', flex: 1 }}>{category.name}{category.is_active === false ? ' · скрыта' : ''}</Text>
-                      <Pressable accessibilityRole="button" accessibilityLabel={`Переименовать категорию ${category.name}`} onPress={() => { setEditingCategoryId(category.id); setCategoryName(category.name); }} style={styles.iconButton}><MaterialCommunityIcons name="pencil-outline" size={19} color={tokens.primary} /></Pressable>
-                      {category.is_active !== false ? (
-                        <Pressable accessibilityRole="button" accessibilityLabel={`Скрыть категорию ${category.name}`} onPress={() => deactivateCategory(category)} style={styles.iconButton}><MaterialCommunityIcons name="eye-off-outline" size={19} color={tokens.error} /></Pressable>
-                      ) : (
-                        <Pressable accessibilityRole="button" accessibilityLabel={`Восстановить категорию ${category.name}`} onPress={() => { void activateCategory(category); }} style={styles.iconButton}><MaterialCommunityIcons name="eye-outline" size={19} color={tokens.primary} /></Pressable>
-                      )}
+      <NativeFilterSheet
+        visible={filtersOpen}
+        title="Фильтры ленты"
+        subtitle="Публикации, категории и теги"
+        tokens={tokens}
+        onClose={() => setFiltersOpen(false)}
+        onReset={() => { setFilter('all'); setCategoryId(''); setTag(''); }}
+        sections={[
+          {
+            kind: 'options' as const,
+            key: 'filter',
+            title: 'Показать',
+            selected: filter,
+            onSelect: (value) => setFilter(value as FeedInboxFilterId),
+            testIDPrefix: 'feed-filter',
+            options: [...FEED_FILTERS, ...(canManage ? MANAGED_FILTERS : [])].map((item) => ({ value: item.id, label: item.label })),
+          },
+          {
+            kind: 'options' as const,
+            key: 'category',
+            title: 'Категория',
+            selected: categoryId,
+            onSelect: setCategoryId,
+            testIDPrefix: 'feed-category',
+            options: [{ value: '', label: 'Все' }, ...categories.filter((item) => item.is_active !== false).map((item) => ({ value: item.id, label: item.name }))],
+          },
+          ...(tags.length ? [{
+            kind: 'options' as const,
+            key: 'tag',
+            title: 'Тег',
+            selected: tag,
+            onSelect: setTag,
+            testIDPrefix: 'feed-tag',
+            options: [{ value: '', label: 'Все' }, ...tags.slice(0, 20).map((item) => ({ value: item.name, label: `#${item.name}` }))],
+          }] : []),
+          ...(canModerate ? [{
+            kind: 'custom' as const,
+            key: 'category-admin',
+            title: 'Управление категориями',
+            children: (
+              <View>
+                <Pressable testID="feed-category-admin-toggle" accessibilityRole="button" accessibilityState={{ expanded: categoryAdminOpen }} onPress={() => setCategoryAdminOpen((value) => !value)} style={[styles.adminToggle, { borderColor: tokens.borderSoft }]}><MaterialCommunityIcons name="shape-outline" size={19} color={tokens.primary} /><Text style={{ color: tokens.primary, fontWeight: '800' }}>Изменить список категорий</Text></Pressable>
+                {categoryAdminOpen ? (
+                  <View style={styles.categoryAdmin}>
+                    <View style={styles.categoryForm}>
+                      <TextInput testID="feed-category-name" value={categoryName} onChangeText={setCategoryName} placeholder="Название категории" placeholderTextColor={tokens.textTertiary} style={[styles.categoryInput, { color: tokens.textPrimary, borderColor: tokens.border }]} />
+                      <Pressable testID="feed-category-save" accessibilityRole="button" accessibilityState={{ disabled: categoryName.trim().length < 2 || categoryBusy || offlineMode }} disabled={categoryName.trim().length < 2 || categoryBusy || offlineMode} onPress={() => { void saveCategory(); }} style={[styles.categorySave, { backgroundColor: tokens.primary }]}><MaterialCommunityIcons name="check" size={20} color="#fff" /></Pressable>
                     </View>
-                  ))}
-                </View>
-              ) : null}
-            </>
-          ) : null}
-        </ScrollView>
-      ) : null}
+                    {categories.map((category) => (
+                      <View key={category.id} style={[styles.categoryRow, { borderBottomColor: tokens.borderSoft, opacity: category.is_active === false ? 0.55 : 1 }]}>
+                        <Text numberOfLines={1} style={{ color: tokens.textPrimary, fontWeight: '700', flex: 1 }}>{category.name}{category.is_active === false ? ' · скрыта' : ''}</Text>
+                        <Pressable accessibilityRole="button" accessibilityLabel={`Переименовать категорию ${category.name}`} onPress={() => { setEditingCategoryId(category.id); setCategoryName(category.name); }} style={styles.iconButton}><MaterialCommunityIcons name="pencil-outline" size={19} color={tokens.primary} /></Pressable>
+                        {category.is_active !== false ? (
+                          <Pressable accessibilityRole="button" accessibilityLabel={`Скрыть категорию ${category.name}`} onPress={() => deactivateCategory(category)} style={styles.iconButton}><MaterialCommunityIcons name="eye-off-outline" size={19} color={tokens.error} /></Pressable>
+                        ) : (
+                          <Pressable accessibilityRole="button" accessibilityLabel={`Восстановить категорию ${category.name}`} onPress={() => { void activateCategory(category); }} style={styles.iconButton}><MaterialCommunityIcons name="eye-outline" size={19} color={tokens.primary} /></Pressable>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ),
+          }] : []),
+        ]}
+      />
 
       <AccountStatusText tokens={tokens} error={error} />
 
@@ -541,6 +552,9 @@ export function NativeFeedInboxScreen() {
         <AccountLoading tokens={tokens} />
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           style={styles.list}
           testID="feed-post-list"
           data={items}
@@ -549,7 +563,7 @@ export function NativeFeedInboxScreen() {
           refreshing={refreshing}
           onRefresh={() => { void loadPage({ reset: true }); }}
           onEndReached={() => {
-            if (!loadingMore && items.length < total) void loadPage({ reset: false });
+            if (!offlineMode && !loadingMore && !refreshing && !loading && serverOffsetRef.current < total) void loadPage({ reset: false });
           }}
           onEndReachedThreshold={0.4}
           contentContainerStyle={items.length === 0 ? styles.emptyList : styles.listContent}
@@ -590,17 +604,7 @@ const styles = StyleSheet.create({
   },
   search: { flex: 1, minHeight: 40, fontSize: 15 },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  filterChip: {
-    minHeight: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  taxonomyPanel: { maxHeight: 320, borderWidth: 1, borderRadius: 14, marginBottom: 8 },
-  taxonomyContent: { padding: 10, gap: 8 },
-  taxonomyTitle: { fontSize: 13, fontWeight: '800' },
+
   adminToggle: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   categoryAdmin: { gap: 6 },
   categoryForm: { flexDirection: 'row', alignItems: 'center', gap: 8 },

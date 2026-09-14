@@ -1,4 +1,4 @@
-import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Badge,
@@ -53,6 +53,8 @@ const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 const DESKTOP_EMOJI_PANEL_WIDTH = 'clamp(300px, 36%, 384px)';
+const DESKTOP_EMOJI_DOCK_MIN_WIDTH = 800;
+const resolveDesktopEmojiPanelWidth = (availableWidth) => Math.min(384, Math.max(300, availableWidth * 0.36));
 const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
@@ -445,6 +447,24 @@ function ChatThread({
   const { openDrawer, headerMode } = useMainLayoutShell();
   const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
   const composerDockRef = useRef(null);
+  const threadRootRef = useRef(null);
+  const [threadAvailableWidth, setThreadAvailableWidth] = useState(0);
+  const [desktopEmojiDocked, setDesktopEmojiDocked] = useState(false);
+  useLayoutEffect(() => {
+    if (compactMobile || !threadRootRef.current) return undefined;
+    const root = threadRootRef.current;
+    const measure = () => {
+      const width = root.getBoundingClientRect().width;
+      const docked = desktopEmojiPickerOpen && width >= DESKTOP_EMOJI_DOCK_MIN_WIDTH;
+      setDesktopEmojiDocked(docked);
+      setThreadAvailableWidth(width - (docked ? resolveDesktopEmojiPanelWidth(width) : 0));
+    };
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [activeConversationId, activeConversation?.id, desktopEmojiPickerOpen, compactMobile]);
   const lastScrollTopRef = useRef(0);
   const lastProgrammaticScrollRef = useRef({ at: 0, priority: 0 });
   const composerFocusedRef = useRef(false);
@@ -483,7 +503,14 @@ function ChatThread({
     ? JUMP_TO_LATEST_FAB_ICON_PX.mobile
     : JUMP_TO_LATEST_FAB_ICON_PX.desktop;
   const density = ui.density || {};
-  const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
+  const wideMessageLayout = !isMobile && !compactMobile && threadAvailableWidth >= 880;
+  const contentMaxWidth = wideMessageLayout ? 760 : Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
+  const conversationUi = useMemo(() => ({
+    ...ui,
+    wideMessageLayout,
+    contentMaxWidth,
+    density: { ...ui.density, contentMaxWidth },
+  }), [ui, wideMessageLayout, contentMaxWidth]);
   const aiRunStatus = String(aiStatus?.status || '').trim();
   const aiRunActive = aiRunStatus === 'queued' || aiRunStatus === 'running';
   const isAiConversation = String(activeConversation?.kind || '').trim() === 'ai';
@@ -1262,6 +1289,14 @@ function ChatThread({
   return (
     <Box
       data-testid="chat-thread-root"
+      ref={threadRootRef}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !desktopEmojiPickerOpen || compactMobile) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseEmojiPicker?.();
+        composerRef?.current?.focus?.();
+      }}
       className="chat-native-shell"
       onTouchStart={handleThreadTouchStart}
       onTouchMove={handleThreadTouchMove}
@@ -1288,7 +1323,7 @@ function ChatThread({
         display: 'flex',
         flexDirection: 'column',
         boxSizing: 'border-box',
-        paddingInlineEnd: desktopEmojiPickerOpen && !compactMobile
+        paddingInlineEnd: desktopEmojiPickerOpen && !compactMobile && desktopEmojiDocked
           ? DESKTOP_EMOJI_PANEL_WIDTH
           : 0,
         bgcolor: compactMobile ? ui.threadBg : (ui.desktopShellBg || ui.threadBg),
@@ -1400,7 +1435,7 @@ function ChatThread({
           <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
             <ChatMessageList
               theme={theme}
-              ui={ui}
+              ui={conversationUi}
               isMobile={isMobile}
               compactMobile={compactMobile}
               mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
@@ -1594,7 +1629,7 @@ function ChatThread({
       ) : (
         <ChatComposer
           theme={theme}
-          ui={ui}
+          ui={conversationUi}
           compactMobile={compactMobile}
           activeConversationId={activeConversationId}
           selectedFiles={selectedFiles}
@@ -1648,6 +1683,7 @@ function ChatThread({
       {desktopEmojiPickerOpen && !compactMobile ? (
         <Box
           data-testid="chat-desktop-emoji-panel"
+          data-layout={desktopEmojiDocked ? 'docked' : 'overlay'}
           role="dialog"
           aria-label="Эмодзи, стикеры и GIF"
           sx={{
@@ -1656,13 +1692,26 @@ function ChatThread({
             insetInlineEnd: 0,
             zIndex: 20,
             width: DESKTOP_EMOJI_PANEL_WIDTH,
+            maxWidth: '100%',
             minWidth: 0,
+            display: 'flex',
+            flexDirection: 'column',
             overflow: 'hidden',
             bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
             borderInlineStart: `1px solid ${ui.borderSoft || theme.palette.divider}`,
             boxShadow: `-14px 0 32px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.28 : 0.16)}`,
           }}
         >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, pl: 1.5, pr: 0.5, flexShrink: 0 }}>
+            <Typography variant="caption" sx={{ flex: 1, minWidth: 0 }}>Эмодзи, стикеры и GIF</Typography>
+            <IconButton aria-label="Закрыть панель эмодзи" onClick={() => {
+              onCloseEmojiPicker?.();
+              composerRef?.current?.focus?.();
+            }} size="small" sx={{ width: 36, height: 36 }}>
+              <CloseRoundedIcon fontSize="small" />
+            </IconButton>
+          </Box>
+          <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Suspense fallback={null}>
             <LazyChatEmojiPanel
               open
@@ -1676,6 +1725,7 @@ function ChatThread({
               onClose={onCloseEmojiPicker}
             />
           </Suspense>
+          </Box>
         </Box>
       ) : null}
     </Box>

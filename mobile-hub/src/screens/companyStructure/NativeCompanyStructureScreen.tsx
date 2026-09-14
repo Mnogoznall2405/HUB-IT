@@ -34,6 +34,7 @@ import { openExternalUrl } from '../../addressBook/messengerLinks';
 import { useAuth } from '../../auth/AuthContext';
 import {
   readNativeEntitySnapshot,
+  readNativeEntitySnapshots,
   readNativeSnapshot,
   writeNativeEntitySnapshot,
   writeNativeSnapshot,
@@ -130,6 +131,19 @@ export function NativeCompanyStructureScreen() {
   const selectedIdRef = useRef('');
   const activeBlockIdRef = useRef('');
   const peopleCacheRef = useRef(new Map<string, { items: CompanyStructurePerson[]; total: number }>());
+  const [peopleRevision, setPeopleRevision] = useState(0);
+  const [offlinePeople, setOfflinePeople] = useState(new Map<string, NativeCompanyStructurePeopleSnapshot>());
+  const userId = Number(user?.id || 0);
+  useEffect(() => {
+    let active = true;
+    setOfflinePeople(new Map());
+    if (offlineMode && userId) void readNativeEntitySnapshots<NativeCompanyStructurePeopleSnapshot>(
+      'company-structure-people', userId,
+    ).then((snapshots) => {
+      if (active) setOfflinePeople(new Map(snapshots.map((snapshot) => [snapshot.key, snapshot.data])));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [offlineMode, userId]);
 
   const treeIndex = useMemo(() => buildCompanyStructureIndex(tree), [tree]);
   const selectedNode = treeIndex.nodeById.get(selectedId) || null;
@@ -268,6 +282,7 @@ export function NativeCompanyStructureScreen() {
         cached = true;
         const next = { items: snapshot.data.items, total: snapshot.data.total };
         peopleCacheRef.current.set(id, next);
+        setPeopleRevision((revision) => revision + 1);
         setPeople(next.items);
         setPeopleTotal(next.total);
         setPeopleLoading(false);
@@ -288,6 +303,7 @@ export function NativeCompanyStructureScreen() {
       const next = { items: payload.items, total: payload.total };
       peopleCacheRef.current.delete(id);
       peopleCacheRef.current.set(id, next);
+      setPeopleRevision((revision) => revision + 1);
       while (peopleCacheRef.current.size > 24) {
         const oldest = peopleCacheRef.current.keys().next().value;
         if (oldest === undefined) break;
@@ -334,6 +350,7 @@ export function NativeCompanyStructureScreen() {
     }
     if (offlineMode) {
       const needle = normalized.toLocaleLowerCase('ru-RU');
+      searchRequestRef.current += 1;
       const localItems: CompanyStructureSearchItem[] = [];
       treeIndex.nodeById.forEach((node) => {
         const haystack = `${companyNodeTitle(node)} ${node.person_name} ${node.person_position}`.toLocaleLowerCase('ru-RU');
@@ -351,7 +368,7 @@ export function NativeCompanyStructureScreen() {
           path,
         });
       });
-      peopleCacheRef.current.forEach((cachedPeople, nodeId) => {
+      new Map([...offlinePeople, ...peopleCacheRef.current]).forEach((cachedPeople, nodeId) => {
         const path = companyNodePathFromIndex(treeIndex, nodeId).map((part) => ({ id: part.id, title: companyNodeTitle(part) }));
         cachedPeople.items.forEach((person) => {
           const haystack = `${person.full_name} ${person.position} ${person.department} ${person.department_location}`.toLocaleLowerCase('ru-RU');
@@ -391,8 +408,8 @@ export function NativeCompanyStructureScreen() {
         if (requestId === searchRequestRef.current) setSearchLoading(false);
       });
     }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [canRead, offlineMode, query, treeIndex]);
+    return () => { clearTimeout(timer); searchRequestRef.current += 1; };
+  }, [canRead, offlineMode, offlinePeople, peopleRevision, query, treeIndex]);
 
   const closePeople = useCallback(() => {
     setPeopleOpen(false);
@@ -760,6 +777,9 @@ export function NativeCompanyStructureScreen() {
         </View>
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-company-list"
           data={listItems}
           keyExtractor={(entry) => entry.kind === 'node'

@@ -1,3 +1,4 @@
+import { getSessionGeneration } from '../auth/tokenStore';
 import { getCompleteAddressBook, type AddressBookSearchResponse } from '../api/addressBookApi';
 import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
@@ -52,7 +53,7 @@ type RefreshMetric = {
   savedAt?: string;
 };
 
-const refreshRequests = new Map<number, Promise<NativeReadCacheRefreshResult>>();
+const refreshRequests = new Map<string, Promise<NativeReadCacheRefreshResult>>();
 
 function isFresh(savedAt: number): boolean {
   return Number.isFinite(savedAt)
@@ -74,8 +75,10 @@ function uniqueEquipment(items: EquipmentRecord[]): EquipmentRecord[] {
   });
 }
 
-async function refreshAddressBook(userId: number, force: boolean): Promise<RefreshMetric> {
+async function refreshAddressBook(userId: number, force: boolean, assertCurrent: () => void): Promise<RefreshMetric> {
+  assertCurrent();
   const existing = await readNativeAddressBookSnapshot<AddressBookSearchResponse>(userId);
+  assertCurrent();
   if (!force && existing && isFresh(existing.savedAt)) {
     const loaded = Array.isArray(existing.data.items) ? existing.data.items.length : 0;
     return {
@@ -85,7 +88,8 @@ async function refreshAddressBook(userId: number, force: boolean): Promise<Refre
       savedAt: new Date(existing.savedAt).toISOString(),
     };
   }
-  const directory = await getCompleteAddressBook();
+  const directory = await getCompleteAddressBook(undefined, assertCurrent);
+  assertCurrent();
   const stored = await writeNativeAddressBookSnapshot(userId, directory);
   if (!stored) throw new Error('Не удалось сохранить полную адресную книгу');
   return {
@@ -101,7 +105,10 @@ async function refreshChat(userId: number, force: boolean): Promise<RefreshMetri
     readNativeChatInboxSnapshot(userId),
     readNativeSnapshot('chat-folders', userId),
   ]);
-  if (!force && inbox && folders && isFresh(Math.min(inbox.savedAt, folders.savedAt))) {
+  // Freshness only applies to a complete catalog; a recently stored first page
+  // must not postpone the remaining pages for the entire refresh interval.
+  if (!force && inbox && folders && inbox.data.has_more === false
+    && isFresh(Math.min(inbox.savedAt, folders.savedAt))) {
     return {
       loaded: inbox.data.items.length,
       total: inbox.data.has_more ? null : inbox.data.items.length,
@@ -140,8 +147,10 @@ async function refreshChat(userId: number, force: boolean): Promise<RefreshMetri
   };
 }
 
-async function refreshNotifications(userId: number, force: boolean, includeMail: boolean): Promise<RefreshMetric> {
+async function refreshNotifications(userId: number, force: boolean, includeMail: boolean, assertCurrent: () => void): Promise<RefreshMetric> {
+  assertCurrent();
   const existing = await readNativeSnapshot('notifications', userId);
+  assertCurrent();
   if (!force && existing && isFresh(existing.savedAt)) {
     const data = existing.data as { hubItems?: unknown[]; mailItems?: unknown[] };
     const loaded = (data.hubItems?.length || 0) + (data.mailItems?.length || 0);
@@ -156,6 +165,7 @@ async function refreshNotifications(userId: number, force: boolean, includeMail:
     pollHubNotifications({ limit: 200, unreadOnly: false }),
     includeMail ? getMailNotificationFeed(50) : Promise.resolve(null),
   ]);
+  assertCurrent();
   const stored = await writeNativeSnapshot('notifications', userId, {
     hubItems: hub.items,
     mailItems: mail?.items || [],
@@ -167,17 +177,21 @@ async function refreshNotifications(userId: number, force: boolean, includeMail:
   return { loaded, total: loaded, unit: 'уведомлений' };
 }
 
-async function loadCompleteEquipmentCatalog(databaseId: string): Promise<{
+async function loadCompleteEquipmentCatalog(databaseId: string, assertCurrent: () => void): Promise<{
   equipment: EquipmentRecord[];
   total: number;
 }> {
+  assertCurrent();
   const firstPage = await listEquipment(1, EQUIPMENT_CATALOG_PAGE_SIZE, databaseId);
+  assertCurrent();
   const pages = Math.max(1, Number(firstPage.pages || 1));
   const collected = [...firstPage.equipment];
   let expectedTotal = Math.max(Number(firstPage.total || 0), collected.length);
 
   for (let page = 2; page <= pages; page += 1) {
+    assertCurrent();
     const nextPage = await listEquipment(page, EQUIPMENT_CATALOG_PAGE_SIZE, databaseId);
+    assertCurrent();
     collected.push(...nextPage.equipment);
     expectedTotal = Math.max(expectedTotal, Number(nextPage.total || 0));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -190,11 +204,13 @@ async function loadCompleteEquipmentCatalog(databaseId: string): Promise<{
   return { equipment, total: expectedTotal };
 }
 
-async function refreshEquipment(userId: number, force: boolean): Promise<RefreshMetric> {
+async function refreshEquipment(userId: number, force: boolean, assertCurrent: () => void): Promise<RefreshMetric> {
+  assertCurrent();
   const [databases, currentDatabase] = await Promise.all([
     listAvailableDatabases(),
     getCurrentDatabase(),
   ]);
+  assertCurrent();
   const targets = [currentDatabase, ...databases]
     .filter((database, index, items) => Boolean(database?.id) && (
       items.findIndex((candidate) => candidate.id === database.id) === index
@@ -210,15 +226,18 @@ async function refreshEquipment(userId: number, force: boolean): Promise<Refresh
   let loaded = 0;
   const catalogSavedAtValues: number[] = [];
   for (const database of targets) {
+    assertCurrent();
     try {
       const existing = await readNativeEquipmentCatalogSnapshot(userId, database.id);
+      assertCurrent();
       if (!force && existing && isFresh(existing.savedAt)) {
         loaded += existing.data.equipment.length;
         catalogSavedAtValues.push(existing.savedAt);
         continue;
       }
 
-      const catalog = await loadCompleteEquipmentCatalog(database.id);
+      const catalog = await loadCompleteEquipmentCatalog(database.id, assertCurrent);
+      assertCurrent();
       const stored = await writeNativeEquipmentCatalogSnapshot(
         userId,
         database.id,
@@ -229,6 +248,7 @@ async function refreshEquipment(userId: number, force: boolean): Promise<Refresh
       loaded += catalog.equipment.length;
       catalogSavedAtValues.push(Date.now());
 
+      assertCurrent();
       const signature = nativeDatabaseListSignature(database.id, 'equipment', '');
       const firstScreenPage = catalog.equipment.slice(0, DATABASE_SCREEN_PAGE_SIZE);
       const listStored = await writeNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
@@ -250,6 +270,7 @@ async function refreshEquipment(userId: number, force: boolean): Promise<Refresh
       );
       if (!listStored) throw new Error('quick list snapshot was not committed');
     } catch (error) {
+      assertCurrent();
       await recordSnapshotFailure('database', 'catalog-refresh', error);
       failedDatabases.push(database.name || database.id);
     }
@@ -267,7 +288,9 @@ async function refreshEquipment(userId: number, force: boolean): Promise<Refresh
   };
 }
 
-async function runRefresh(options: RefreshNativeReadCachesOptions): Promise<NativeReadCacheRefreshResult> {
+async function runRefresh(options: RefreshNativeReadCachesOptions, generation: number): Promise<NativeReadCacheRefreshResult> {
+  const isCurrent = () => getSessionGeneration() === generation;
+  const assertCurrent = () => { if (!isCurrent()) throw new Error('Read cache refresh session changed'); };
   const allowed = new Set(options.permissions.map((permission) => String(permission || '').trim()));
   const requested: Array<readonly [string, string, () => Promise<RefreshMetric>]> = [];
   if (allowed.has('chat.read')) {
@@ -278,20 +301,23 @@ async function runRefresh(options: RefreshNativeReadCachesOptions): Promise<Nati
       options.userId,
       options.force === true,
       allowed.has('mail.access'),
+      assertCurrent,
     )]);
   }
   if (allowed.has('address_book.read')) {
-    requested.push(['addressBook', 'Адресная книга', () => refreshAddressBook(options.userId, options.force === true)]);
+    requested.push(['addressBook', 'Адресная книга', () => refreshAddressBook(options.userId, options.force === true, assertCurrent)]);
   }
   if (allowed.has('database.read')) {
-    requested.push(['database', 'Инвентарь', () => refreshEquipment(options.userId, options.force === true)]);
+    requested.push(['database', 'Инвентарь', () => refreshEquipment(options.userId, options.force === true, assertCurrent)]);
   }
   const result: NativeReadCacheRefreshResult = { refreshed: [], failed: [] };
   // Large encrypted snapshots share the Android crypto/file-system bridge.
   // Serialize them to avoid address-book and Inventory allocations competing.
   for (const [moduleId, label, refresh] of requested) {
+    if (!isCurrent()) return { refreshed: [], failed: [] };
     try {
       const metric = await refresh();
+      assertCurrent();
       const coverageStored = await recordNativeOfflineCoverageSuccess(options.userId, moduleId, {
         status: metric.status || 'complete',
         loaded: metric.loaded,
@@ -299,14 +325,18 @@ async function runRefresh(options: RefreshNativeReadCachesOptions): Promise<Nati
         unit: metric.unit,
         savedAt: metric.savedAt,
       });
+      assertCurrent();
       if (!coverageStored) throw new Error('Offline coverage manifest write failed');
       result.refreshed.push(label);
     } catch (error) {
+      if (!isCurrent()) return { refreshed: [], failed: [] };
       await recordSnapshotFailure(moduleId, 'refresh', error);
+      if (!isCurrent()) return { refreshed: [], failed: [] };
       await recordNativeOfflineCoverageFailure(options.userId, moduleId, {
         errorCode: `${moduleId}-refresh-failed`,
         errorMessage: error instanceof Error ? error.message : `Не удалось обновить раздел «${label}»`,
       });
+      if (!isCurrent()) return { refreshed: [], failed: [] };
       result.failed.push(label);
     }
   }
@@ -320,11 +350,14 @@ export async function refreshNativeReadCaches(
   if (!Number.isInteger(userId) || userId <= 0) {
     throw new Error('Authenticated user is required');
   }
-  const pending = refreshRequests.get(userId);
+  const generation = getSessionGeneration();
+  const permissions = [...new Set(options.permissions.map(permission => String(permission || '').trim()))].sort();
+  const key = JSON.stringify([userId, generation, permissions, options.force === true]);
+  const pending = refreshRequests.get(key);
   if (pending) return pending;
-  const request = runRefresh({ ...options, userId }).finally(() => {
-    if (refreshRequests.get(userId) === request) refreshRequests.delete(userId);
+  const request = runRefresh({ ...options, userId, permissions }, generation).finally(() => {
+    if (refreshRequests.get(key) === request) refreshRequests.delete(key);
   });
-  refreshRequests.set(userId, request);
+  refreshRequests.set(key, request);
   return request;
 }

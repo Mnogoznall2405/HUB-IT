@@ -17,7 +17,7 @@ from backend.appdb.models import AppAiPendingAction
 from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
-    PERM_CHAT_AI_SANDBOX,
+    PERM_CHAT_AI_USE,
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
     PERM_TASKS_CREATE,
@@ -792,6 +792,8 @@ def create_pending_action(
 ) -> dict[str, Any]:
     now = _utc_now()
     with app_session() as session:
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(conversation_id, requester_user_id, db=session, lock=True)
         row = AppAiPendingAction(
             id=str(uuid4()),
             action_type=_normalize_text(action_type),
@@ -1564,6 +1566,8 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             raise LookupError("Action was not found")
         if int(row.requester_user_id or 0) != current_user_id:
             raise PermissionError("Only the action initiator can confirm it")
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(row.conversation_id, current_user_id, db=session, lock=True)
         if _set_expired_if_needed(row):
             session.flush()
             return _action_to_card(row)
@@ -1597,6 +1601,7 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
         result = {"success": False, "message": str(error)}
     else:
         try:
+            require_conversation_access(row.conversation_id, current_user_id)
             if row.action_type == ACTION_TRANSFER:
                 _require_permission(current_user, PERM_DATABASE_WRITE)
                 result = _execute_transfer(payload=payload, database_id=database_id, current_user=current_user)
@@ -1636,7 +1641,7 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             elif row.action_type == ACTION_OFFICE_TASK_STATUS:
                 result = _execute_office_task_status(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_SANDBOX_PERMISSION:
-                _require_permission(current_user, PERM_CHAT_AI_SANDBOX)
+                _require_permission(current_user, PERM_CHAT_AI_USE)
                 permission_id = _normalize_text(payload.get("permission_id"))
                 if not permission_id:
                     raise ValueError("Sandbox permission id is missing")
@@ -1709,7 +1714,7 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
         _set_expired_if_needed(row)
         if row.status == ACTION_STATUS_PENDING:
             if row.action_type == ACTION_SANDBOX_PERMISSION:
-                _require_permission(current_user, PERM_CHAT_AI_SANDBOX)
+                _require_permission(current_user, PERM_CHAT_AI_USE)
                 payload = _json_loads(row.payload_json, {}) or {}
                 sandbox_permission_id = _normalize_text(payload.get("permission_id"))
                 if not sandbox_permission_id:

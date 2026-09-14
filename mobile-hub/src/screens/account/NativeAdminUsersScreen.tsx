@@ -1,6 +1,8 @@
+import { useNativeAdminData } from './useNativeAdminData';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  FlatList,
   Pressable,
   StyleSheet,
   Switch,
@@ -103,7 +105,19 @@ function draftFromUser(item: userAdminApi.AdminUser): UserDraft {
   };
 }
 
+const adminScreenReady = async () => true;
 export function NativeAdminUsersScreen() {
+  const access = useAuth();
+  const { preferences } = usePreferences();
+  const tokens = useFluentTokens(preferences.theme_mode);
+  const lifecycle = useNativeAdminData('users', adminScreenReady);
+  if (!lifecycle.ready) return <AccountScreenScaffold title="Администрирование" tokens={tokens} onBack={() => goBackOrReplace('/(shell)/menu/admin')}><Text style={{ color: tokens.textSecondary }}>Раздел доступен при наличии прав и подключения к сети.</Text></AccountScreenScaffold>;
+  return <NativeAdminUsersScreenContent key={`${access.user?.id}:${access.user?.role}`} />;
+}
+function NativeAdminUsersScreenContent() {
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -130,6 +144,7 @@ export function NativeAdminUsersScreen() {
   const delegatesRequestRef = useRef(0);
 
   const loadUsers = useCallback(async (offset = 0) => {
+    if (!mounted.current) return;
     const requestId = usersRequestRef.current + 1;
     usersRequestRef.current = requestId;
     setLoading(true);
@@ -214,6 +229,7 @@ export function NativeAdminUsersScreen() {
   }, [delegateLinks, delegateSearchResults]);
 
   const saveDraft = useCallback(async () => {
+    if (!mounted.current) return;
     if (!draft) return;
     const username = draft.username.trim();
     if (username.length < 3) {
@@ -250,6 +266,7 @@ export function NativeAdminUsersScreen() {
     try {
       if (draft.id) {
         await userAdminApi.updateUser(draft.id, payload);
+        if (!mounted.current) return;
         profileSaved = true;
         await userAdminApi.updateTaskDelegates(draft.id, delegateLinks.map((item) => ({
           delegate_user_id: item.delegate_user_id,
@@ -290,6 +307,7 @@ export function NativeAdminUsersScreen() {
     setDelegatesLoading(true);
     try {
       const links = await userAdminApi.getTaskDelegates(item.id);
+      if (!mounted.current) return;
       setDelegateLinks(links);
       const delegateIds = links.map((link) => link.delegate_user_id);
       if (delegateIds.length > 0) {
@@ -339,6 +357,7 @@ export function NativeAdminUsersScreen() {
           text: isActive ? 'Включить' : 'Отключить',
           style: isActive ? 'default' : 'destructive',
           onPress: () => {
+            if (!mounted.current) return;
             void (async () => {
               try {
                 await userAdminApi.updateUser(item.id, { is_active: isActive });
@@ -559,7 +578,11 @@ export function NativeAdminUsersScreen() {
       onBack={() => goBackOrReplace('/(shell)/menu/admin')}
       onRefresh={() => { void loadUsers(0); }}
       refreshing={loading}
+      scroll={false}
     >
+      <FlatList data={users} keyExtractor={item => String(item.id)} initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
+        keyboardShouldPersistTaps="handled" refreshing={loading} onRefresh={() => { void loadUsers(0); }}
+        contentContainerStyle={{ gap: 10 }} ListHeaderComponent={<View style={{ gap: 10 }}>
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <HubTextField label="Поиск" value={search} onChangeText={setSearch} />
       <View style={styles.filters}>
@@ -591,7 +614,14 @@ export function NativeAdminUsersScreen() {
         setDraft(emptyDraft());
       }} />
       <Text style={[styles.resultMeta, { color: tokens.textSecondary }]}>Показано: {users.length} из {usersTotal}</Text>
-      {loading && users.length === 0 ? <AccountLoading tokens={tokens} /> : users.map((item) => (
+        </View>}
+        ListEmptyComponent={<>{loading ? <AccountLoading tokens={tokens} /> : null}
+
+      {!loading && users.length === 0 ? (
+        <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Пользователи не найдены.</Text>
+      ) : null}
+        </>}
+        renderItem={({ item }) => (
         <Pressable
           key={item.id}
           onPress={() => { void openUser(item); }}
@@ -617,10 +647,8 @@ export function NativeAdminUsersScreen() {
             )}
           </View>
         </Pressable>
-      ))}
-      {!loading && users.length === 0 ? (
-        <Text style={[styles.delegateHint, { color: tokens.textSecondary }]}>Пользователи не найдены.</Text>
-      ) : null}
+        )}
+        ListFooterComponent={<>
       {usersHasMore ? (
         <AccountSecondaryButton
           tokens={tokens}
@@ -629,6 +657,7 @@ export function NativeAdminUsersScreen() {
           onPress={() => { void loadUsers(users.length); }}
         />
       ) : null}
+        </>} />
     </AccountScreenScaffold>
   );
 }

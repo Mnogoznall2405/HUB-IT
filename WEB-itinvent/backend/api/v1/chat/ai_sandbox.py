@@ -13,7 +13,7 @@ from backend.ai_sandbox.service import SandboxDisabledError
 from backend.api.deps import require_permission
 from backend.api.v1.chat._shim import chat_api
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_CHAT_AI_SANDBOX
+from backend.services.authorization_service import PERM_CHAT_AI_USE
 
 
 router = APIRouter()
@@ -37,7 +37,7 @@ def _raise_sandbox_error(exc: Exception) -> None:
 )
 async def get_ai_sandbox_conversation(
     conversation_id: str,
-    current_user: User = Depends(require_permission(PERM_CHAT_AI_SANDBOX)),
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
 ):
     try:
         return await chat_api()._run_chat_call(
@@ -56,7 +56,7 @@ async def get_ai_sandbox_conversation(
 async def respond_ai_sandbox_permission(
     permission_id: str,
     payload: SandboxPermissionResponseRequest,
-    current_user: User = Depends(require_permission(PERM_CHAT_AI_SANDBOX)),
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
 ):
     try:
         return await chat_api()._run_chat_call(
@@ -77,7 +77,7 @@ async def respond_ai_sandbox_permission(
 )
 async def attach_ai_sandbox_archive(
     conversation_id: str,
-    current_user: User = Depends(require_permission(PERM_CHAT_AI_SANDBOX)),
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
 ):
     try:
         return await chat_api()._run_chat_call(
@@ -96,7 +96,7 @@ async def attach_ai_sandbox_archive(
 )
 async def attach_ai_sandbox_file(
     file_id: str,
-    current_user: User = Depends(require_permission(PERM_CHAT_AI_SANDBOX)),
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
 ):
     try:
         return await chat_api()._run_chat_call(

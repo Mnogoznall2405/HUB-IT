@@ -1,4 +1,5 @@
 import * as authApi from '../api/authApi';
+import { Image } from 'expo-image';
 import { clearAllNativeChatDrafts } from '../chat/chatDrafts';
 import { chatSocket } from '../chat/chatSocket';
 import { clearNativeDatabaseFileCache } from '../database/nativeDatabaseFiles';
@@ -100,6 +101,8 @@ describe('endMobileSession', () => {
     expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: true });
     expect(disableBiometricLogin).toHaveBeenCalledTimes(1);
     expect(clearAttachmentCache).toHaveBeenCalledTimes(1);
+    expect(Image.clearMemoryCache).toHaveBeenCalledTimes(1);
+    expect(Image.clearDiskCache).toHaveBeenCalledTimes(1);
     expect(clearNativeMailCache).toHaveBeenCalledTimes(1);
     expect(clearNativeTaskFileCache).toHaveBeenCalledTimes(1);
     expect(clearNativeMyFilesCache).toHaveBeenCalledTimes(1);

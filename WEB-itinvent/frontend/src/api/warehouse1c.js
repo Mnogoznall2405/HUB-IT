@@ -51,6 +51,10 @@ export const normalizeWarehouse1cListResponse = (payload) => {
     ? body.items
     : (Array.isArray(body.rows) ? body.rows : []);
   const sources = [envelopeMeta, body];
+  const incompleteReason = readFirstDefined(sources, ['incomplete_reason', 'incompleteReason']);
+  const ambiguousWarehouses = toOptionalCount(
+    readFirstDefined(sources, ['ambiguous_warehouses', 'ambiguousWarehouses']),
+  );
 
   return {
     items,
@@ -62,6 +66,8 @@ export const normalizeWarehouse1cListResponse = (payload) => {
       truncated: toOptionalBoolean(readFirstDefined(sources, ['truncated'])),
       asOf: readFirstDefined(sources, ['as_of', 'asOf']),
       source: readFirstDefined(sources, ['source']),
+      ...(incompleteReason !== undefined ? { incompleteReason } : {}),
+      ...(ambiguousWarehouses !== undefined ? { ambiguousWarehouses } : {}),
     },
   };
 };
@@ -273,6 +279,14 @@ export const warehouse1cAPI = {
       },
       timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
+    });
+    return data;
+  },
+
+  getDismissedWarehouses: async ({ limit = 1000 } = {}) => {
+    const { data } = await apiClient.get('/warehouse-1c/dismissed-warehouses', {
+      params: { limit },
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
     return data;
   },

@@ -1,3 +1,4 @@
+import { useNativeFormDraft } from '../../drafts/useNativeFormDraft';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
@@ -191,7 +192,7 @@ function AttachmentEditorRow({
 export function NativeFeedEditorScreen() {
   const params = useLocalSearchParams<{ postId?: string | string[] }>();
   const postId = String(Array.isArray(params.postId) ? params.postId[0] : params.postId || '').trim();
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canWrite = hasPermission('announcements.write');
@@ -242,6 +243,9 @@ export function NativeFeedEditorScreen() {
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const createRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
 
+  const [createdPostId, setCreatedPostId] = useState('');
+  const localState = { createdPostId, title, preview, body, priority, requiresAck, isPinned, commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate, audienceScope, audienceRoles, audienceUserIds, publishedFrom, expiresAt, pinnedUntil, pollEnabled, pollQuestion, pollOptions, pollAllowsMultiple, pollAnonymous, pollClosesAt, existingAttachments, newFiles, attachmentOrder, coverKey, createRequest: createRequestRef.current };
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: `feed-editor-${postId || 'new'}`, state: localState, ready: canEdit && !loading, paused: busy || attachmentBusy || transformingBody, restore: (saved) => { setCreatedPostId(saved.createdPostId); setTitle(saved.title); setPreview(saved.preview); setBody(saved.body); setPriority(saved.priority); setRequiresAck(saved.requiresAck); setIsPinned(saved.isPinned); setCommentsEnabled(saved.commentsEnabled); setReactionsEnabled(saved.reactionsEnabled); setTagsText(saved.tagsText); setCategoryId(saved.categoryId); setIsActive(saved.isActive); setNotifyOnUpdate(saved.notifyOnUpdate); setAudienceScope(saved.audienceScope); setAudienceRoles(saved.audienceRoles); setAudienceUserIds(saved.audienceUserIds); setPublishedFrom(saved.publishedFrom); setExpiresAt(saved.expiresAt); setPinnedUntil(saved.pinnedUntil); setPollEnabled(saved.pollEnabled); setPollQuestion(saved.pollQuestion); setPollOptions(saved.pollOptions); setPollAllowsMultiple(saved.pollAllowsMultiple); setPollAnonymous(saved.pollAnonymous); setPollClosesAt(saved.pollClosesAt); setExistingAttachments(saved.existingAttachments); setNewFiles(saved.newFiles); setAttachmentOrder(saved.attachmentOrder); setCoverKey(saved.coverKey); createRequestRef.current = saved.createRequest; } });
   const formFingerprint = JSON.stringify([title, preview, body, priority, requiresAck, isPinned,
     commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate,
     audienceScope, audienceRoles, audienceUserIds, publishedFrom, expiresAt, pinnedUntil,
@@ -256,7 +260,13 @@ export function NativeFeedEditorScreen() {
   }, [formFingerprint, loading, postId, source]);
   const dirty = Boolean(baseline.current?.postId === postId
     && baseline.current.fingerprint !== formFingerprint);
-  const { requestLeave, leaveSaved } = useUnsavedFormGuard(canEdit && dirty, canEdit && (busy || attachmentBusy || transformingBody));
+  const { requestLeave, leaveSaved } = useUnsavedFormGuard(canEdit && dirty, canEdit && (busy || attachmentBusy || transformingBody), {
+    title: 'Сохранить черновик и выйти?',
+    message: 'Форма и вложения останутся на этом устройстве. Отправка на сервер не выполняется.',
+    confirmLabel: 'Сохранить и выйти',
+    beforeLeave: async () => { if (canEdit) await draft.write(); },
+    onLeaveError: (cause) => setError(cause instanceof Error ? cause.message : 'Не удалось сохранить черновик. Форма остаётся открытой.'),
+  });
 
   const pollLocked = Boolean(source?.poll && Number(source.poll.total_votes || 0) > 0);
   const debouncedRecipientQuery = useDebouncedValue(recipientQuery, RECIPIENT_SEARCH_DELAY_MS);
@@ -300,7 +310,7 @@ export function NativeFeedEditorScreen() {
   }, [requestLeave]);
 
   useEffect(() => {
-    if (!canEdit) return;
+    if (!canEdit || offlineMode) return;
     let active = true;
     setRecipientsLoading(true);
     setRecipientsError('');
@@ -320,10 +330,10 @@ export function NativeFeedEditorScreen() {
       if (active) setRecipientsLoading(false);
     });
     return () => { active = false; };
-  }, [canEdit, debouncedRecipientQuery, selectedRecipientIdsKey]);
+  }, [canEdit, debouncedRecipientQuery, selectedRecipientIdsKey, offlineMode]);
 
   useEffect(() => {
-    if (!canEdit) return;
+    if (!canEdit || offlineMode) return;
     let active = true;
     void Promise.all([listFeedCategories(false), listFeedTags()])
       .then(([items, tagItems]) => {
@@ -333,10 +343,10 @@ export function NativeFeedEditorScreen() {
       })
       .catch((cause) => { if (active) setError(formatApiError(cause, 'Не удалось загрузить категории.')); });
     return () => { active = false; };
-  }, [canEdit]);
+  }, [canEdit, offlineMode]);
 
   useEffect(() => {
-    if (!canEdit || !postId) {
+    if (!canEdit || !postId || offlineMode) {
       setLoading(false);
       return;
     }
@@ -393,7 +403,7 @@ export function NativeFeedEditorScreen() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [canEdit, postId]);
+  }, [canEdit, postId, offlineMode]);
 
   const payload = useMemo<FeedEditorPayload>(() => ({
     title: title.trim(),
@@ -512,12 +522,12 @@ export function NativeFeedEditorScreen() {
     return createRequestRef.current.id;
   }, [filesForAtomicCreate, payload]);
 
-  const syncAttachments = useCallback(async (targetPostId: string) => {
-    let currentExisting = [...existingAttachments];
-    let remainingFiles = [...newFiles];
-    let currentOrder = [...attachmentOrder];
-    let currentCoverKey = coverKey;
-    for (const file of newFiles) {
+  const syncAttachments = useCallback(async (targetPostId: string, prepared = localState) => {
+    let currentExisting = [...prepared.existingAttachments];
+    let remainingFiles = [...prepared.newFiles];
+    let currentOrder = [...prepared.attachmentOrder];
+    let currentCoverKey = prepared.coverKey;
+    for (const file of prepared.newFiles) {
       const attachment = await uploadFeedAttachment(targetPostId, file);
       const attachmentId = String(attachment.id || '').trim();
       const oldKey = newAttachmentKey(file.uri);
@@ -533,6 +543,7 @@ export function NativeFeedEditorScreen() {
       setNewFiles(remainingFiles);
       setAttachmentOrder(currentOrder);
       setCoverKey(currentCoverKey);
+      await draft.write({ ...prepared, existingAttachments: currentExisting, createdPostId: postId ? createdPostId : targetPostId, newFiles: remainingFiles, attachmentOrder: currentOrder, coverKey: currentCoverKey, createRequest: createRequestRef.current });
     }
     const knownAttachmentIds = new Set(currentExisting.map((attachment) => String(attachment.id || '')).filter(Boolean));
     const attachmentIds = currentOrder
@@ -553,7 +564,7 @@ export function NativeFeedEditorScreen() {
     setNewFiles([]);
     setAttachmentOrder(orderedAttachments.map((attachment) => existingAttachmentKey(String(attachment.id || ''))));
     setCoverKey(coverAttachmentId ? existingAttachmentKey(coverAttachmentId) : '');
-  }, [attachmentOrder, coverKey, existingAttachments, newFiles]);
+  }, [draft, localState, postId, createdPostId]);
 
   const pickAttachments = useCallback(async () => {
     if (busy || offlineMode) return;
@@ -623,12 +634,13 @@ export function NativeFeedEditorScreen() {
     ]);
   }, [attachmentBusy, postId]);
 
-  const openSaved = useCallback((post: FeedPost) => {
+  const openSaved = useCallback(async (post: FeedPost) => {
+    await draft.clear();
     leaveSaved(() => router.replace({ pathname: '/(shell)/feed/[postId]', params: { postId: post.id } } as never));
-  }, [leaveSaved]);
+  }, [draft, leaveSaved]);
 
   const save = useCallback(async (mode: 'draft' | 'published') => {
-    if (busy || offlineMode) return;
+    if (busy || offlineMode || !draft.restored) return;
     const validationError = validate();
     if (validationError) {
       setError(validationError);
@@ -638,23 +650,28 @@ export function NativeFeedEditorScreen() {
     setError('');
     setMessage('');
     try {
+      const requestId = !postId ? createRequestIdFor(mode) : undefined;
+      const prepared = await draft.write({ ...localState, createRequest: createRequestRef.current });
       let saved: FeedPost;
-      if (postId) {
-        saved = await updateFeedPost(postId, payload);
-        await syncAttachments(postId);
+      if (postId || createdPostId) {
+        const targetId = postId || createdPostId;
+        saved = await updateFeedPost(targetId, payload);
+        await syncAttachments(targetId, prepared);
       } else if (mode === 'draft') {
-        saved = await createFeedDraft({ ...payload, status: 'draft', client_request_id: createRequestIdFor('draft') });
-        await syncAttachments(saved.id);
+        saved = await createFeedDraft({ ...payload, status: 'draft', client_request_id: requestId });
+        setCreatedPostId(saved.id);
+        await draft.write({ ...prepared, createdPostId: saved.id, createRequest: createRequestRef.current });
+        await syncAttachments(saved.id, { ...prepared, createdPostId: saved.id });
       } else {
-        saved = await createFeedPost({ ...payload, status: 'published', client_request_id: createRequestIdFor('published') }, filesForAtomicCreate);
+        saved = await createFeedPost({ ...payload, status: 'published', client_request_id: requestId }, filesForAtomicCreate.map((file) => prepared.newFiles[newFiles.indexOf(file)] || file));
       }
-      openSaved(saved);
+      await openSaved(saved);
     } catch (cause) {
       setError(formatApiError(cause, mode === 'draft' ? 'Не удалось сохранить черновик.' : 'Не удалось сохранить публикацию.'));
     } finally {
       setBusy(false);
     }
-  }, [busy, createRequestIdFor, filesForAtomicCreate, offlineMode, openSaved, payload, postId, syncAttachments, validate]);
+  }, [createdPostId, draft, localState, busy, createRequestIdFor, filesForAtomicCreate, offlineMode, openSaved, payload, postId, syncAttachments, validate]);
 
   const publishDraft = useCallback(async () => {
     if (!postId || busy || offlineMode) return;
@@ -666,22 +683,23 @@ export function NativeFeedEditorScreen() {
     setBusy(true);
     setError('');
     try {
+      const prepared = await draft.write();
       await updateFeedPost(postId, payload);
-      await syncAttachments(postId);
-      openSaved(await publishFeedPost(postId));
+      await syncAttachments(postId, prepared);
+      await openSaved(await publishFeedPost(postId));
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось опубликовать черновик.'));
     } finally {
       setBusy(false);
     }
-  }, [busy, offlineMode, openSaved, payload, postId, syncAttachments, validate]);
+  }, [draft, busy, offlineMode, openSaved, payload, postId, syncAttachments, validate]);
 
   const archive = useCallback(async () => {
     if (!postId || busy || offlineMode) return;
     setBusy(true);
     setError('');
     try {
-      openSaved(await archiveFeedPost(postId));
+      await openSaved(await archiveFeedPost(postId));
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось архивировать публикацию.'));
     } finally {
@@ -695,6 +713,7 @@ export function NativeFeedEditorScreen() {
 
   return (
     <AccountScreenScaffold title={postId ? 'Редактирование' : 'Новая публикация'} tokens={tokens} onBack={goBack}>
+      {draft.status ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{draft.status}</Text> : null}
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.status, { color: tokens.warning }]}>Автономный режим: сохранение публикаций отключено.</Text> : null}
       <AccountStatusText tokens={tokens} error={error} message={message} />
       {loading ? <AccountLoading tokens={tokens} /> : postId && source?.can_manage === false ? (

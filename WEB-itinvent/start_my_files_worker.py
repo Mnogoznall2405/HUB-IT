@@ -98,6 +98,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _request_stop)
 
     settings = config.my_files_security
+    lanes = max(1, int(settings.max_processing_global))
     logger.info(
         "My-files worker started: antivirus=%s provider=%s fail_closed=%s zstd_threads=%s max_processing=%s",
         settings.antivirus_enabled,
@@ -106,7 +107,11 @@ def main() -> None:
         settings.zstd_threads,
         settings.max_processing_global,
     )
-    try:
+
+    def _worker_lane() -> None:
+        # Каждая полоса сама забирает задачи: claim сериализуется
+        # _reservation_lock + SELECT ... FOR UPDATE SKIP LOCKED, а общий
+        # параллелизм ограничен счётчиком scanning/processing внутри claim.
         while not stop_event.is_set():
             try:
                 processed = my_files_service.process_next_job()
@@ -117,6 +122,18 @@ def main() -> None:
                 stop_event.wait(10)
                 continue
             stop_event.wait(0.2 if processed else 3)
+
+    threads = [
+        threading.Thread(target=_worker_lane, name=f"my-files-job-{index}", daemon=True)
+        for index in range(lanes)
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        while not stop_event.is_set():
+            stop_event.wait(0.5)
+        for thread in threads:
+            thread.join(timeout=5)
     finally:
         if worker_lock is not None:
             worker_lock.close()

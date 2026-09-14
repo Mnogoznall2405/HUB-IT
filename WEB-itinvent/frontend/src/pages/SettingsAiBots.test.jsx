@@ -98,7 +98,6 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
 
     expect(flattened).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: 'chat.ai.use', label: 'Chat: AI access' }),
-      expect.objectContaining({ value: 'chat.ai.sandbox', label: 'Chat: OpenCode sandbox access' }),
       expect.objectContaining({ value: 'settings.ai.manage', label: 'Settings: AI bots manage' }),
     ]));
   });
@@ -152,9 +151,10 @@ describe('AiBotsAdminSection', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByText(/OpenRouter:/i)).toBeInTheDocument();
-    expect(screen.getByText(/PM2:/i)).toBeInTheDocument();
+    expect(screen.getByText('Настройки агентов')).toBeInTheDocument();
     expect(screen.getByText(/AI-боты ещё не созданы/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Создать бота' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Возможности' }));
     expect(screen.getByLabelText(/Инструменты ITinvent/i)).toBeInTheDocument();
     expect(screen.getByText(/Данные ITinvent/i)).toBeInTheDocument();
   });
@@ -205,7 +205,7 @@ describe('AiBotsAdminSection', () => {
     );
 
     fireEvent.click(screen.getByText('Corp Assistant'));
-    expect(screen.getAllByText(/пока инструменты не будут включены/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Инструменты не выбраны/)).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]);
     fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);

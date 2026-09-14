@@ -1,8 +1,8 @@
 {
   "name": "mobile-hub",
-  "version": "1.1.27",
+  "version": "1.1.39",
   "hubit": {
-    "androidVersionCode": 29
+    "androidVersionCode": 41
   },
   "main": "expo-router/entry",
   "scripts": {
@@ -29,6 +29,8 @@
     "@noble/hashes": "^2.4.0",
     "@react-navigation/native": "^7.0.14",
     "axios": "^1.19.0",
+    "decode-uri-component": "file:./vendor/decode-uri-component-compat",
+    "decode-uri-component-safe": "npm:decode-uri-component@0.5.0",
     "expo": "~57.0.19",
     "expo-application": "~57.0.2",
     "expo-asset": "~57.0.13",
@@ -43,6 +45,7 @@
     "expo-file-system": "~57.0.5",
     "expo-font": "~57.0.1",
     "expo-haptics": "~57.0.2",
+    "expo-image": "~57.0.4",
     "expo-image-manipulator": "~57.0.15",
     "expo-image-picker": "~57.0.15",
     "expo-intent-launcher": "~57.0.1",
@@ -85,6 +88,7 @@
     "typescript": "~6.0.3"
   },
   "overrides": {
+    "decode-uri-component": "$decode-uri-component",
     "xcode": {
       "uuid": "11.1.1"
     }

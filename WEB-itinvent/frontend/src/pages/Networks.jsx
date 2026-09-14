@@ -1,4 +1,4 @@
-﻿import useRequestGuard from '../lib/useRequestGuard';
+import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -71,6 +71,40 @@ import { useNotification } from '../contexts/NotificationContext';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
+  buildMapExportFileName,
+  downloadBlobFile,
+  formatSocketPort,
+  mapPanelSelectMenuProps,
+  normalizeMacField,
+  parseDownloadFilename,
+  socketKey,
+} from '../lib/networksHelpers';
+import {
+  buildPendingManualMeta,
+  buildSelectedPointPortOptions,
+  collectAvailableSites,
+  collectMatchedDeviceIds,
+  countDevicePorts,
+  countMatchedDevicePorts,
+  filterPointsForMap,
+  filterSockets,
+  findExactSocketMatches,
+  findEditingPort,
+  findPortOptionsBySocketInput,
+  findSocketOptionsByInput,
+  isBranchWidePortSearch as isBranchWidePortSearchFor,
+  makePortDraft,
+  resolveDisplayedPorts,
+  resolveFocusPointId,
+  resolveOptionValue,
+  resolvePendingLookupStatus,
+  resolvePortById,
+  resolveSocketForPort,
+  selectFreeSockets,
+  selectPointsForMap,
+  selectPortsWithSocket,
+} from './networks/networkResolution';
+import {
   buildOfficeUiTokens,
   getOfficeActionTraySx,
   getOfficeDialogPaperSx,
@@ -80,100 +114,6 @@ import {
 } from '../theme/officeUiTokens';
 
 const SWR_STALE_MS = 60_000;
-
-const socketKey = (value) => String(value || '').toLowerCase().replace(/\s+/g, '');
-
-const normalizeMacToken = (value) => {
-  const hex = String(value || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
-  if (hex.length !== 12) return '';
-  return hex.match(/.{2}/g).join(':');
-};
-
-const extractNormalizedMacs = (rawValue) => {
-  const text = String(rawValue || '');
-  const matches = text.match(/(?:[0-9A-Fa-f]{2}(?:[:-])){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}/g) || [];
-  const out = [];
-  for (const raw of matches) {
-    const normalized = normalizeMacToken(raw);
-    if (normalized && !out.includes(normalized)) {
-      out.push(normalized);
-    }
-  }
-  return out;
-};
-
-const normalizeMacField = (rawValue) => {
-  const macs = extractNormalizedMacs(rawValue);
-  if (macs.length > 0) return macs.join('\n');
-  return String(rawValue || '').trim();
-};
-
-const pointSortComparator = (a, b) => {
-  const aSocket = String(a?.patch_panel_port || '');
-  const bSocket = String(b?.patch_panel_port || '');
-  const socketCmp = aSocket.localeCompare(bSocket, 'ru', { numeric: true, sensitivity: 'base' });
-  if (socketCmp !== 0) return socketCmp;
-  const aPort = String(a?.port_name || '');
-  const bPort = String(b?.port_name || '');
-  const portCmp = aPort.localeCompare(bPort, 'ru', { numeric: true, sensitivity: 'base' });
-  if (portCmp !== 0) return portCmp;
-  return Number(a?.id || 0) - Number(b?.id || 0);
-};
-
-const formatSocketPort = (pointLike) => {
-  const socket = String(pointLike?.patch_panel_port || '').trim();
-  const port = String(pointLike?.port_name || '').trim();
-  if (port && socket) return `PORT ${port} · Розетка ${socket}`;
-  if (socket) return `Розетка ${socket}`;
-  if (port) return `PORT ${port}`;
-  return 'Точка';
-};
-
-const parseDownloadFilename = (contentDisposition, fallbackName = 'map-points.pdf') => {
-  const source = String(contentDisposition || '');
-  const utf8Match = source.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1]);
-    } catch {
-      // ignore malformed header
-    }
-  }
-  const simpleMatch = source.match(/filename="([^"]+)"/i) || source.match(/filename=([^;]+)/i);
-  return simpleMatch?.[1] ? String(simpleMatch[1]).trim() : String(fallbackName || 'map-points.pdf');
-};
-
-const buildMapExportFileName = (map) => {
-  const rawBase = String(map?.title || map?.file_name || 'map').replace(/\.[^.]+$/, '').trim();
-  const sanitized = rawBase
-    // Windows filenames cannot contain control characters.
-    // eslint-disable-next-line no-control-regex
-    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/[. ]+$/g, '')
-    .trim();
-  return `${sanitized || 'map'}-points.pdf`;
-};
-
-const downloadBlobFile = (blob, filename) => {
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = String(filename || 'file.bin');
-  document.body.appendChild(link);
-  link.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(link);
-};
-
-const mapPanelSelectMenuProps = {
-  disableScrollLock: true,
-  PaperProps: {
-    sx: {
-      maxHeight: 320,
-    },
-  },
-};
 
 function Networks() {
   const navigate = useNavigate();
@@ -588,206 +528,90 @@ function Networks() {
     );
   }, [branches, branchSearch, activeDbId]);
 
-  const makePortDraft = useCallback((port) => ({
-    port_name: String(port?.port_name || ''),
-    patch_panel_port: String(port?.patch_panel_port || ''),
-    location_code: String(port?.location_code || ''),
-    vlan_raw: String(port?.vlan_raw || ''),
-    endpoint_name_raw: String(port?.endpoint_name_raw || ''),
-    endpoint_ip_raw: String(port?.endpoint_ip_raw || ''),
-    endpoint_mac_raw: String(port?.endpoint_mac_raw || ''),
-  }), []);
-
   const isBranchWidePortSearch = useMemo(
-    () => String(portSearch || '').trim().length > 0,
+    () => isBranchWidePortSearchFor(portSearch),
     [portSearch]
   );
 
   const displayedPorts = useMemo(
-    () => {
-      // When searching across the whole branch, use branchPortResults
-      // When a specific device is selected, use its ports
-      // When "All devices" is selected (selectedDeviceId === null), use allBranchPorts
-      const portList = isBranchWidePortSearch
-        ? branchPortResults
-        : selectedDeviceId
-          ? ports
-          : allBranchPorts;
-      // Sort ports numerically by port_name (1, 2, 10 instead of 1, 10, 2)
-      return [...portList].sort((a, b) => {
-        const nameA = String(a?.port_name || '');
-        const nameB = String(b?.port_name || '');
-        // Extract numeric part for comparison
-        const numA = parseInt(nameA.replace(/\D/g, '')) || 0;
-        const numB = parseInt(nameB.replace(/\D/g, '')) || 0;
-        if (numA !== numB) {
-          return numA - numB;
-        }
-        // If numbers are equal, sort lexicographically
-        return nameA.localeCompare(nameB, undefined, { numeric: true });
-      });
-    },
+    () => resolveDisplayedPorts({
+      branchWideSearch: isBranchWidePortSearch,
+      branchPortResults,
+      selectedDeviceId,
+      ports,
+      allBranchPorts,
+    }),
     [isBranchWidePortSearch, branchPortResults, ports, selectedDeviceId, allBranchPorts]
   );
   const editingPort = useMemo(
-    () => displayedPorts.find((item) => Number(item.id) === Number(editingPortId)) || null,
+    () => findEditingPort(displayedPorts, editingPortId),
     [displayedPorts, editingPortId]
   );
-  const matchedDeviceIds = useMemo(() => {
-    if (!isBranchWidePortSearch) return new Set();
-    const ids = new Set();
-    for (const port of displayedPorts) {
-      const deviceId = Number(port?.device_id || 0);
-      if (deviceId) ids.add(deviceId);
-    }
-    return ids;
-  }, [displayedPorts, isBranchWidePortSearch]);
+  const matchedDeviceIds = useMemo(
+    () => collectMatchedDeviceIds(displayedPorts, isBranchWidePortSearch),
+    [displayedPorts, isBranchWidePortSearch]
+  );
 
-  const matchedDevicePortCount = useMemo(() => {
-    const counter = new Map();
-    if (!isBranchWidePortSearch) return counter;
-    for (const port of displayedPorts) {
-      const deviceId = Number(port?.device_id || 0);
-      if (!deviceId) continue;
-      counter.set(deviceId, (counter.get(deviceId) || 0) + 1);
-    }
-    return counter;
-  }, [displayedPorts, isBranchWidePortSearch]);
+  const matchedDevicePortCount = useMemo(
+    () => countMatchedDevicePorts(displayedPorts, isBranchWidePortSearch),
+    [displayedPorts, isBranchWidePortSearch]
+  );
 
-  const pointsForMap = useMemo(() => {
-    if (!selectedMapId) return [];
-    return mapPoints
-      .filter((item) => Number(item.map_id) === Number(selectedMapId))
-      .sort(pointSortComparator);
-  }, [mapPoints, selectedMapId]);
+  const pointsForMap = useMemo(
+    () => selectPointsForMap(mapPoints, selectedMapId),
+    [mapPoints, selectedMapId]
+  );
 
-  const availableSites = useMemo(() => {
-    const siteMap = new Map();
-    // 1. Дефолтный сайт филиала (ищем в загруженных branches)
-    if (branchIdNum && branches && branches.length > 0) {
-      const currentBranch = branches.find(b => Number(b.id) === Number(branchIdNum));
-      if (currentBranch && currentBranch.default_site_code) {
-        siteMap.set(currentBranch.default_site_code, currentBranch.name || currentBranch.default_site_code);
-      }
-    }
-    // 2. Сайты устройств
-    (devices || []).forEach((d) => {
-      const code = String(d?.site_code || '').trim();
-      if (code && !siteMap.has(code)) {
-        siteMap.set(code, code);
-      }
-    });
+  const availableSites = useMemo(
+    () => collectAvailableSites(branches, branchIdNum, devices),
+    [branches, branchIdNum, devices]
+  );
 
-    if (siteMap.size === 0) {
-      siteMap.set('p19', 'Первомайская 19'); // fallback
-    }
-    return Array.from(siteMap.entries()).map(([code, name]) => ({ site_code: code, name }));
-  }, [branches, branchIdNum, devices]);
-
-  const filteredPointsForMap = useMemo(() => {
-    const query = String(mapPointSearch || '').trim().toLowerCase();
-    if (!query) return pointsForMap;
-    return pointsForMap.filter((point) =>
-      [
-        point.label,
-        point.note,
-        point.device_code,
-        point.device_model,
-        point.port_name,
-        point.patch_panel_port,
-        point.endpoint_name_raw,
-        point.endpoint_ip_raw,
-        point.endpoint_mac_raw,
-        point.port_location_code,
-      ]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query))
-    );
-  }, [mapPointSearch, pointsForMap]);
+  const filteredPointsForMap = useMemo(
+    () => filterPointsForMap(pointsForMap, mapPointSearch),
+    [mapPointSearch, pointsForMap]
+  );
 
   // All ports with patch_panel_port filled (for backward compatibility)
   const allPortsWithSocket = useMemo(
-    () => (allBranchPorts || [])
-      .filter((port) => String(port.patch_panel_port || '').trim())
-      .sort(pointSortComparator),
+    () => selectPortsWithSocket(allBranchPorts),
     [allBranchPorts]
   );
 
   // Free sockets - sockets without port_id (not assigned to any port)
-  const freeSockets = useMemo(
-    () => (sockets || [])
-      .filter((socketItem) => !socketItem.port_id && String(socketItem.socket_code || '').trim())
-      .sort((a, b) => {
-        const aSocket = String(a?.socket_code || '');
-        const bSocket = String(b?.socket_code || '');
-        return aSocket.localeCompare(bSocket, 'ru', { numeric: true, sensitivity: 'base' });
-      }),
-    [sockets]
+  const freeSockets = useMemo(() => selectFreeSockets(sockets), [sockets]);
+
+  const devicePortCounts = useMemo(() => countDevicePorts(allBranchPorts), [allBranchPorts]);
+
+  const filteredSockets = useMemo(
+    () => filterSockets(sockets, socketSearch),
+    [socketSearch, sockets]
   );
 
-  const devicePortCounts = useMemo(() => {
-    const counter = new Map();
-    for (const port of allBranchPorts || []) {
-      const deviceId = Number(port?.device_id || 0);
-      if (!deviceId) continue;
-      counter.set(deviceId, (counter.get(deviceId) || 0) + 1);
-    }
-    return counter;
-  }, [allBranchPorts]);
+  const pendingPortOptions = useMemo(
+    () => findPortOptionsBySocketInput(allPortsWithSocket, pendingSocketInput),
+    [allPortsWithSocket, pendingSocketInput]
+  );
 
-  const filteredSockets = useMemo(() => {
-    const query = String(socketSearch || '').trim().toLowerCase();
-    if (!query) return sockets;
-    return sockets.filter((socketItem) =>
-      [
-        socketItem.socket_code,
-        socketItem.device_code,
-        socketItem.port_name,
-        socketItem.location_code,
-        socketItem.vlan_raw,
-        socketItem.endpoint_ip_raw,
-        socketItem.endpoint_mac_raw,
-        socketItem.mac_address,
-        socketItem.fio,
-        socketItem.fio_source_db,
-      ]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query))
-    );
-  }, [socketSearch, sockets]);
+  const pendingSocketOptions = useMemo(
+    () => findSocketOptionsByInput(sockets, pendingSocketInput),
+    [pendingSocketInput, sockets]
+  );
 
-  const pendingPortOptions = useMemo(() => {
-    const normalized = socketKey(pendingSocketInput);
-    if (!normalized) return [];
-    return allPortsWithSocket.filter((port) => socketKey(port.patch_panel_port).includes(normalized));
-  }, [allPortsWithSocket, pendingSocketInput]);
+  const pendingPortValue = useMemo(
+    () => resolveOptionValue(pendingPortId, pendingPortOptions),
+    [pendingPortId, pendingPortOptions]
+  );
 
-  const pendingSocketOptions = useMemo(() => {
-    const normalized = socketKey(pendingSocketInput);
-    const source = Array.isArray(sockets) ? sockets : [];
-    if (!normalized) return source.slice(0, 500);
-    return source
-      .filter((socketItem) => socketKey(socketItem.socket_code).includes(normalized))
-      .slice(0, 500);
-  }, [pendingSocketInput, sockets]);
+  const pendingSocketValue = useMemo(
+    () => resolveOptionValue(pendingSocketId, pendingSocketOptions),
+    [pendingSocketId, pendingSocketOptions]
+  );
 
-  const pendingPortValue = useMemo(() => {
-    const value = String(pendingPortId || '');
-    if (!value) return '';
-    return pendingPortOptions.some((port) => String(port.id) === value) ? value : '';
-  }, [pendingPortId, pendingPortOptions]);
-
-  const pendingSocketValue = useMemo(() => {
-    const value = String(pendingSocketId || '');
-    if (!value) return '';
-    return pendingSocketOptions.some((socketItem) => String(socketItem.id) === value) ? value : '';
-  }, [pendingSocketId, pendingSocketOptions]);
-
-  const pendingSocketMatches = useMemo(() => {
-    const normalized = socketKey(pendingSocketInput);
-    if (!normalized) return [];
-    return allPortsWithSocket.filter((port) => socketKey(port.patch_panel_port) === normalized);
-  }, [allPortsWithSocket, pendingSocketInput]);
+  const pendingSocketMatches = useMemo(
+    () => findExactSocketMatches(allPortsWithSocket, pendingSocketInput),
+    [allPortsWithSocket, pendingSocketInput]
+  );
 
   const autoMatchedPendingPort = useMemo(
     () => (pendingSocketMatches.length === 1 ? pendingSocketMatches[0] : null),
@@ -804,87 +628,49 @@ function Networks() {
     [pendingSocketId]
   );
 
-  const resolvedPendingPort = useMemo(() => {
-    if (!effectivePendingPortId) return null;
-    return pendingPortOptions.find((port) => Number(port.id) === Number(effectivePendingPortId))
-      || allPortsWithSocket.find((port) => Number(port.id) === Number(effectivePendingPortId))
-      || null;
-  }, [allPortsWithSocket, effectivePendingPortId, pendingPortOptions]);
+  const resolvedPendingPort = useMemo(
+    () => resolvePortById(effectivePendingPortId, pendingPortOptions, allPortsWithSocket),
+    [allPortsWithSocket, effectivePendingPortId, pendingPortOptions]
+  );
 
-  const resolvedPendingSocket = useMemo(() => {
-    if (effectivePendingSocketId) {
-      return pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
-        || sockets.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
-        || null;
-    }
-    const portSocketId = Number(resolvedPendingPort?.socket_id || 0) || null;
-    if (!portSocketId) return null;
-    return pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(portSocketId))
-      || sockets.find((socketItem) => Number(socketItem.id) === Number(portSocketId))
-      || null;
-  }, [effectivePendingSocketId, pendingSocketOptions, resolvedPendingPort, sockets]);
+  const resolvedPendingSocket = useMemo(
+    () => resolveSocketForPort({
+      effectiveSocketId: effectivePendingSocketId,
+      socketOptions: pendingSocketOptions,
+      sockets,
+      resolvedPort: resolvedPendingPort,
+    }),
+    [effectivePendingSocketId, pendingSocketOptions, resolvedPendingPort, sockets]
+  );
 
-  const pendingLookupStatus = useMemo(() => {
-    const normalized = socketKey(pendingSocketInput);
-    const resolvedBinding = resolvedPendingPort || resolvedPendingSocket || null;
+  const pendingLookupStatus = useMemo(
+    () => resolvePendingLookupStatus({
+      socketInput: pendingSocketInput,
+      resolvedPort: resolvedPendingPort,
+      resolvedSocket: resolvedPendingSocket,
+      exactMatchesCount: pendingSocketMatches.length,
+      portOptionsCount: pendingPortOptions.length,
+      socketOptionsCount: pendingSocketOptions.length,
+    }),
+    [
+      pendingPortOptions.length,
+      pendingSocketInput,
+      pendingSocketMatches.length,
+      pendingSocketOptions.length,
+      resolvedPendingPort,
+      resolvedPendingSocket,
+    ]
+  );
 
-    if (resolvedBinding) {
-      if (normalized && pendingSocketMatches.length === 1) {
-        return {
-          tone: 'success',
-          text: `Порт выбран автоматически: ${formatSocketPort(resolvedBinding)}`,
-        };
-      }
-      return {
-        tone: 'info',
-        text: `Привязка: ${formatSocketPort(resolvedBinding)}`,
-      };
-    }
-
-    if (!normalized) {
-      return {
-        tone: 'default',
-        text: 'Введите PORT P/P или откройте ручной выбор.',
-      };
-    }
-
-    if (pendingSocketMatches.length > 1) {
-      return {
-        tone: 'warning',
-        text: `Найдено ${pendingSocketMatches.length} портов, нужно уточнение.`,
-      };
-    }
-
-    if (pendingPortOptions.length > 0 || pendingSocketOptions.length > 0) {
-      return {
-        tone: 'warning',
-        text: 'Точного совпадения нет, нужно уточнение.',
-      };
-    }
-
-    return {
-      tone: 'error',
-      text: 'Совпадений нет.',
-    };
-  }, [
-    pendingPortOptions.length,
-    pendingSocketInput,
-    pendingSocketMatches.length,
-    pendingSocketOptions.length,
-    resolvedPendingPort,
-    resolvedPendingSocket,
-  ]);
-
-  const pendingManualMeta = useMemo(() => {
-    const socketsCount = pendingSocketInput ? pendingSocketOptions.length : Math.min(Array.isArray(sockets) ? sockets.length : 0, 500);
-    if (pendingPortOptions.length > 0) {
-      return `${socketsCount} розеток · ${pendingPortOptions.length} портов`;
-    }
-    if (socketsCount > 0) {
-      return `${socketsCount} розеток`;
-    }
-    return 'Нет вариантов';
-  }, [pendingPortOptions.length, pendingSocketInput, pendingSocketOptions.length, sockets]);
+  const pendingManualMeta = useMemo(
+    () => buildPendingManualMeta({
+      socketInput: pendingSocketInput,
+      portOptionsCount: pendingPortOptions.length,
+      socketOptionsCount: pendingSocketOptions.length,
+      socketsCount: Array.isArray(sockets) ? sockets.length : 0,
+    }),
+    [pendingPortOptions.length, pendingSocketInput, pendingSocketOptions.length, sockets]
+  );
 
   const pendingCommitDisabled = useMemo(
     () => !pendingPoint || (!resolvedPendingPort && !resolvedPendingSocket),
@@ -922,68 +708,36 @@ function Networks() {
     return tones[pendingLookupStatus.tone] || tones.default;
   }, [pendingLookupStatus.tone, theme.palette.mode, ui.borderSoft, ui.panelInset, ui.selectedBg, ui.selectedBorder]);
 
-  const selectedPointPortOptions = useMemo(() => {
-    if (!selectedPoint) return [];
-    const normalized = socketKey(selectedPointSocketInput);
-    const currentId = Number(selectedPoint.port_id || 0);
-    let options = normalized
-      ? allPortsWithSocket.filter((port) => socketKey(port.patch_panel_port).includes(normalized))
-      : [];
+  const selectedPointPortOptions = useMemo(
+    () => buildSelectedPointPortOptions({
+      allPortsWithSocket,
+      selectedPoint,
+      socketInput: selectedPointSocketInput,
+    }),
+    [allPortsWithSocket, selectedPoint, selectedPointSocketInput]
+  );
 
-    if (!normalized && currentId) {
-      const currentPort = allPortsWithSocket.find((port) => Number(port.id) === currentId);
-      if (currentPort) {
-        return [currentPort];
-      }
-      return [{
-        id: currentId,
-        port_name: selectedPoint.port_name || '',
-        patch_panel_port: selectedPoint.patch_panel_port || '',
-        location_code: selectedPoint.port_location_code || '',
-        endpoint_ip_raw: selectedPoint.endpoint_ip_raw || '',
-        endpoint_mac_raw: selectedPoint.endpoint_mac_raw || '',
-      }];
-    }
+  const selectedPointPortValue = useMemo(
+    () => (selectedPoint ? resolveOptionValue(selectedPoint.port_id, selectedPointPortOptions) : ''),
+    [selectedPoint, selectedPointPortOptions]
+  );
 
-    if (currentId && !options.some((port) => Number(port.id) === currentId)) {
-      options = [
-        {
-          id: currentId,
-          port_name: selectedPoint.port_name || '',
-          patch_panel_port: selectedPoint.patch_panel_port || '',
-          location_code: selectedPoint.port_location_code || '',
-          endpoint_ip_raw: selectedPoint.endpoint_ip_raw || '',
-          endpoint_mac_raw: selectedPoint.endpoint_mac_raw || '',
-        },
-        ...options,
-      ];
-    }
-    return options;
-  }, [allPortsWithSocket, selectedPoint, selectedPointSocketInput]);
+  const selectedPointSocketMatches = useMemo(
+    () => findExactSocketMatches(allPortsWithSocket, selectedPointSocketInput),
+    [allPortsWithSocket, selectedPointSocketInput]
+  );
 
-  const selectedPointPortValue = useMemo(() => {
-    if (!selectedPoint) return '';
-    const value = String(selectedPoint.port_id || '');
-    if (!value) return '';
-    return selectedPointPortOptions.some((port) => String(port.id) === value) ? value : '';
-  }, [selectedPoint, selectedPointPortOptions]);
-
-  const selectedPointSocketMatches = useMemo(() => {
-    const normalized = socketKey(selectedPointSocketInput);
-    if (!normalized) return [];
-    return allPortsWithSocket.filter((port) => socketKey(port.patch_panel_port) === normalized);
-  }, [allPortsWithSocket, selectedPointSocketInput]);
-
-  const focusPointId = useMemo(() => {
-    if (selectedPointId && pointsForMap.some((item) => Number(item.id) === Number(selectedPointId))) {
-      return selectedPointId;
-    }
-    if (filteredPointsForMap.length > 0 && String(mapPointSearch || '').trim()) {
-      return filteredPointsForMap[0].id;
-    }
-    if (!selectedDeviceId || !selectedMapId) return null;
-    return pointsForMap.find((item) => Number(item.device_id) === Number(selectedDeviceId))?.id || null;
-  }, [filteredPointsForMap, mapPointSearch, pointsForMap, selectedDeviceId, selectedMapId, selectedPointId]);
+  const focusPointId = useMemo(
+    () => resolveFocusPointId({
+      selectedPointId,
+      pointsForMap,
+      filteredPointsForMap,
+      mapPointSearch,
+      selectedDeviceId,
+      selectedMapId,
+    }),
+    [filteredPointsForMap, mapPointSearch, pointsForMap, selectedDeviceId, selectedMapId, selectedPointId]
+  );
 
   const loadBranches = useCallback(async () => {
     const { data } = await getOrFetchSWR(

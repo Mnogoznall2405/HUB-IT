@@ -24,7 +24,7 @@ const MAX_SEEN_IDS = 300;
 const MAX_ACTIVE_TOASTS = 4;
 const CHAT_TOAST_VISIBLE_MS = 5_200;
 const DEDUPE_WINDOW_MS = 15_000;
-const TOAST_TICK_MS = 100;
+const EXPIRY_GRACE_MS = 20;
 
 function safeParseArray(raw) {
   try {
@@ -111,7 +111,9 @@ function buildToastPayload(severity, message, options = {}) {
     suppressedCount: 0,
     durationMs,
     remainingMs: durationMs,
+    expiresAt: null,
     paused: false,
+    hiddenPaused: false,
     persist: Boolean(options.persist),
     actionLabel: normalizeNotificationText(options.actionLabel).trim(),
     onAction: typeof options.onAction === 'function' ? options.onAction : undefined,
@@ -153,7 +155,8 @@ function updateActiveToast(current, next) {
     suppressedCount: Number(current?.suppressedCount || 0) + 1,
     durationMs,
     remainingMs: durationMs,
-    paused: false,
+    paused: Boolean(current.paused),
+    expiresAt: current.paused ? current.expiresAt : Date.now() + durationMs,
     persist,
     actionLabel: next.actionLabel || current.actionLabel || '',
     onAction: next.onAction || current.onAction,
@@ -175,45 +178,58 @@ export function NotificationProvider({ children }) {
     persistSeenHubIds(seenHubNotificationIds);
   }, [seenHubNotificationIds]);
 
-  const hasRunningToastTimers = activeToasts.some((item) => !item.persist && !item.paused);
+  useEffect(() => {
+    const nextExpiry = activeToasts.reduce((min, item) => (
+      !item.persist && !item.paused && item.expiresAt
+        ? Math.min(min, item.expiresAt)
+        : min
+    ), Infinity);
+    if (!Number.isFinite(nextExpiry)) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      setActiveToasts((prev) => {
+        const now = Date.now();
+        const next = prev.filter((item) => (
+          item.persist || item.paused || !item.expiresAt || item.expiresAt > now
+        ));
+        return next.length === prev.length ? prev : next;
+      });
+    }, Math.max(0, nextExpiry - Date.now()) + EXPIRY_GRACE_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [activeToasts]);
 
   useEffect(() => {
-    if (!hasRunningToastTimers) return undefined;
-
-    const intervalId = window.setInterval(() => {
-      setActiveToasts((prev) => {
-        let changed = false;
-        const next = [];
-
-        prev.forEach((item) => {
-          if (item.persist || item.paused) {
-            next.push(item);
-            return;
-          }
-
-          const remainingMs = Math.max(0, Number(item.remainingMs || item.durationMs || 0) - TOAST_TICK_MS);
-          if (remainingMs <= 0) {
-            changed = true;
-            return;
-          }
-
-          if (remainingMs !== item.remainingMs) {
-            changed = true;
-            next.push({ ...item, remainingMs });
-            return;
-          }
-
-          next.push(item);
-        });
-
-        return changed ? next : prev;
-      });
-    }, TOAST_TICK_MS);
-
-    return () => {
-      window.clearInterval(intervalId);
+    const onVisibilityChange = () => {
+      const now = Date.now();
+      if (document.hidden) {
+        setActiveToasts((prev) => prev.map((item) => (
+          !item.persist && !item.paused
+            ? {
+                ...item,
+                paused: true,
+                hiddenPaused: true,
+                remainingMs: Math.max(0, Number(item.expiresAt || 0) - now),
+              }
+            : item
+        )));
+      } else {
+        setActiveToasts((prev) => prev.map((item) => (
+          item.hiddenPaused
+            ? {
+                ...item,
+                paused: false,
+                hiddenPaused: false,
+                expiresAt: now + Math.max(1, Number(item.remainingMs || item.durationMs || 0)),
+              }
+            : item
+        )));
+      }
     };
-  }, [hasRunningToastTimers]);
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   useEffect(() => {
     const hasActiveChatToast = activeToasts.some((item) => String(item?.source || '').trim() === 'chat');
@@ -222,6 +238,7 @@ export function NotificationProvider({ children }) {
     if (!Array.isArray(queue) || queue.length === 0) return;
     const nextChatToast = queue.shift();
     if (!nextChatToast) return;
+    if (!nextChatToast.persist) nextChatToast.expiresAt = Date.now() + nextChatToast.durationMs;
     setActiveToasts((prev) => [...prev, nextChatToast]);
   }, [activeToasts]);
 
@@ -230,17 +247,23 @@ export function NotificationProvider({ children }) {
   }, []);
 
   const pauseToast = useCallback((id) => {
+    const now = Date.now();
     setActiveToasts((prev) => prev.map((item) => (
-      item.id === id && !item.persist
-        ? { ...item, paused: true }
+      item.id === id && !item.persist && !item.paused
+        ? { ...item, paused: true, remainingMs: Math.max(0, Number(item.expiresAt || 0) - now) }
         : item
     )));
   }, []);
 
   const resumeToast = useCallback((id) => {
+    const now = Date.now();
     setActiveToasts((prev) => prev.map((item) => (
-      item.id === id && !item.persist
-        ? { ...item, paused: false }
+      item.id === id && !item.persist && item.paused && !item.hiddenPaused
+        ? {
+            ...item,
+            paused: false,
+            expiresAt: now + Math.max(1, Number(item.remainingMs || item.durationMs || 0)),
+          }
         : item
     )));
   }, []);
@@ -253,6 +276,7 @@ export function NotificationProvider({ children }) {
         ? Math.max(1, Number(options.durationMs || CHAT_TOAST_VISIBLE_MS) || CHAT_TOAST_VISIBLE_MS)
         : options.durationMs,
     });
+    next.expiresAt = next.persist ? null : Date.now() + next.durationMs;
 
     setToastHistory((prev) => {
       if (next.dedupeMode === 'recent') {
@@ -299,6 +323,7 @@ export function NotificationProvider({ children }) {
         const hasActiveChatToast = prev.some((item) => String(item?.source || '').trim() === 'chat');
         if (!hasActiveChatToast) {
           const queued = chatSerialQueueRef.current.shift();
+          if (queued && !queued.persist) queued.expiresAt = Date.now() + queued.durationMs;
           return queued ? [...prev, queued] : prev;
         }
         return prev;
@@ -397,23 +422,39 @@ export function NotificationProvider({ children }) {
       {children}
       <Box
         data-testid="toast-stack"
-        data-toast-position="bottom-left"
+        data-toast-position="bottom-right"
         sx={{
           position: 'fixed',
-          left: { xs: 12, sm: 24 },
-          bottom: { xs: 12, sm: 24 },
+          left: { xs: 12, sm: 'auto' },
+          right: { xs: 12, sm: 24 },
+          bottom: {
+            xs: 'calc(var(--app-shell-mobile-bottom-nav-height, 0px) + 12px)',
+            sm: 24,
+          },
           zIndex: (theme) => theme.zIndex.snackbar,
           pointerEvents: 'none',
         }}
       >
         <Stack spacing={1}>
           {activeToasts.map((item) => (
-            <Box key={item.id} sx={{ pointerEvents: 'auto' }}>
+            <Box
+              key={item.id}
+              sx={{
+                'pointerEvents': 'auto',
+                '@keyframes toast-enter': {
+                  from: { opacity: 0, transform: 'translateY(8px)' },
+                  to: { opacity: 1, transform: 'none' },
+                },
+                'animation': 'toast-enter 160ms ease-out',
+                '@media (prefers-reduced-motion: reduce)': {
+                  animation: 'none',
+                },
+              }}
+            >
               <ToastViewport
                 toast={item}
                 open
                 inline
-                progressValue={item.persist ? 100 : ((Number(item.remainingMs || 0) / Number(item.durationMs || 1)) * 100)}
                 onClose={(_, reason) => {
                   if (reason === 'clickaway') return;
                   dismissToast(item.id);

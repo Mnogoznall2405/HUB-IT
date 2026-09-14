@@ -1,11 +1,83 @@
 import apiClient, { API_V1_BASE } from './client';
 
 const RETENTION_OPTIONS = [1, 3, 7, 10, 30];
-const UPLOAD_RETRY_DELAYS_MS = [500, 1500];
-/** Согласовано с backend MAX_FILE_SIZE_BYTES и uint32-пределом IIS. */
-export const MY_FILES_MAX_UPLOAD_BYTES = (2 ** 32) - 1;
+/** Transient network blips on multi‑hundred‑MB uploads need more than two short retries. */
+const UPLOAD_RETRY_DELAYS_MS = [1000, 2500, 5000, 10000, 20000];
+/** Очередь на пользователя ограничена: сессию повторяем, пока воркер освобождает слот. */
+const UPLOAD_SESSION_CAPACITY_MAX_RETRIES = 40;
+const UPLOAD_SESSION_CAPACITY_FALLBACK_MS = 5000;
+const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15000;
+/** 16 MB chunk over a slow link; keep above typical IIS/ARR defaults when raised to 10 min. */
+const UPLOAD_CHUNK_TIMEOUT_MS = 300_000;
+const UPLOAD_COMPLETE_TIMEOUT_MS = 120_000;
+/** Согласовано с backend MY_FILES_MAX_FILE_BYTES; чанки идут отдельными запросами. */
+export const MY_FILES_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
 
-export const formatMyFilesUploadLimitLabel = () => 'до 4 ГБ на файл, 5 ГБ всего';
+export const formatMyFilesUploadLimitLabel = () => 'до 10 ГБ на файл, 50 ГБ всего';
+
+const UPLOAD_RESUME_KEY = 'hubit-my-files-uploads';
+/** Совпадает с backend upload_reservation_ttl_sec; старше — сессия уже сгнила. */
+const UPLOAD_RESUME_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+const readUploadResumeMap = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(UPLOAD_RESUME_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeUploadResumeMap = (map) => {
+  const cutoff = Date.now() - UPLOAD_RESUME_MAX_AGE_MS;
+  const pruned = Object.fromEntries(
+    Object.entries(map).filter(([, entry]) => Number(entry?.savedAt || 0) > cutoff),
+  );
+  try {
+    window.localStorage.setItem(UPLOAD_RESUME_KEY, JSON.stringify(pruned));
+  } catch {
+    // Quota/приватный режим — просто не сохраняем resume.
+  }
+};
+
+const uploadResumeKey = (file, folderId) => [
+  String(file?.name || ''),
+  Number(file?.size || 0),
+  String(folderId || ''),
+  Number(file?.lastModified || 0),
+].join('|');
+
+const findResumableSession = async ({ file, folderId, signal }) => {
+  const key = uploadResumeKey(file, folderId);
+  const entry = readUploadResumeMap()[key];
+  if (!entry || typeof entry !== 'object') return null;
+  if (Date.now() - Number(entry.savedAt || 0) > UPLOAD_RESUME_MAX_AGE_MS) return null;
+  const fileId = String(entry.fileId || '');
+  if (!fileId) return null;
+  try {
+    const status = await myFilesAPI.getUploadSession(fileId, { signal });
+    if (Number(status?.file_size_bytes || 0) !== Number(file?.size || 0)) return null;
+    if (status?.complete) return null;
+    return { file_id: fileId, chunk_size_bytes: status?.chunk_size_bytes, uploaded_bytes: status?.uploaded_bytes };
+  } catch {
+    return null;
+  }
+};
+
+const saveUploadResume = (file, folderId, fileId) => {
+  const map = readUploadResumeMap();
+  map[uploadResumeKey(file, folderId)] = { fileId, savedAt: Date.now() };
+  writeUploadResumeMap(map);
+};
+
+const clearUploadResume = (file, folderId) => {
+  const map = readUploadResumeMap();
+  const key = uploadResumeKey(file, folderId);
+  if (key in map) {
+    delete map[key];
+    writeUploadResumeMap(map);
+  }
+};
 
 const normalizeRetentionDays = (value) => {
   const days = Number(value);
@@ -43,23 +115,175 @@ const waitForUploadRetry = (delayMs, signal) => new Promise((resolve, reject) =>
   signal?.addEventListener?.('abort', onAbort, { once: true });
 });
 
+const describeUploadFailure = (error, { aborted = false } = {}) => {
+  if (aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') {
+    return 'Upload cancelled';
+  }
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail.trim().slice(0, 2000);
+  }
+  if (Array.isArray(detail)) {
+    const first = detail.find((item) => typeof item?.msg === 'string' && item.msg.trim());
+    if (first?.msg) return String(first.msg).trim().slice(0, 2000);
+  }
+  const message = String(error?.message || '').trim();
+  if (message) return message.slice(0, 2000);
+  const status = Number(error?.response?.status || 0);
+  if (status > 0) return `Upload failed (HTTP ${status})`;
+  return 'Upload failed';
+};
+
+const isRetriableUploadError = (error) => {
+  if (!error) return false;
+  if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return false;
+  const status = Number(error?.response?.status || 0);
+  if (!status) return true; // network / timeout without HTTP status
+  if (status === 408 || status === 425 || status === 429) return true;
+  if (status >= 500) return true;
+  return false;
+};
+
+const capacityRetryDelayMs = (error) => {
+  const retryAfterSeconds = Number(error?.response?.headers?.['retry-after'] || 0);
+  const suggested = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? retryAfterSeconds * 1000
+    : UPLOAD_SESSION_CAPACITY_FALLBACK_MS;
+  return Math.min(Math.max(suggested, 2000), UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS);
+};
+
+const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, signal }) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await myFilesAPI.createUploadSession({ file, retentionDays, folderId, signal });
+    } catch (error) {
+      const status = Number(error?.response?.status || 0);
+      if (status !== 429 || signal?.aborted || attempt >= UPLOAD_SESSION_CAPACITY_MAX_RETRIES) {
+        throw error;
+      }
+      await waitForUploadRetry(capacityRetryDelayMs(error), signal);
+    }
+  }
+};
+
 export const myFilesRetentionOptions = RETENTION_OPTIONS;
 
 export const myFilesAPI = {
-  listFiles: async () => {
-    const response = await apiClient.get('/my-files');
+  listFiles: async ({ folderId = null, view = '', signal } = {}) => {
+    const params = {};
+    if (folderId) params.folder_id = folderId;
+    if (view) params.view = view;
+    const response = await apiClient.get('/my-files', { params, signal });
     return response.data;
+  },
+  listFolders: async ({ signal } = {}) => {
+    const response = await apiClient.get('/my-files/folders', { signal });
+    return response.data;
+  },
+  createFolder: async ({ name, parentId = null } = {}) => {
+    const response = await apiClient.post('/my-files/folders', {
+      name: String(name || '').trim(),
+      parent_id: parentId || null,
+    });
+    return response.data;
+  },
+  updateFolder: async (folderId, { name, parentId, isFavorite } = {}) => {
+    const payload = {};
+    if (name !== undefined) payload.name = String(name || '').trim();
+    if (parentId !== undefined) payload.parent_id = parentId || null;
+    if (isFavorite !== undefined) payload.is_favorite = Boolean(isFavorite);
+    const response = await apiClient.patch(
+      `/my-files/folders/${encodeURIComponent(folderId)}`,
+      payload,
+    );
+    return response.data;
+  },
+  deleteFolder: async (folderId) => {
+    await apiClient.delete(`/my-files/folders/${encodeURIComponent(folderId)}`);
+  },
+  updateFile: async (fileId, { name, folderId, isFavorite } = {}) => {
+    const payload = {};
+    if (name !== undefined) payload.name = String(name || '').trim();
+    if (folderId !== undefined) payload.folder_id = folderId || null;
+    if (isFavorite !== undefined) payload.is_favorite = Boolean(isFavorite);
+    const response = await apiClient.patch(
+      `/my-files/${encodeURIComponent(fileId)}`,
+      payload,
+    );
+    return response.data;
+  },
+  listTrash: async ({ signal } = {}) => {
+    const response = await apiClient.get('/my-files/trash', { signal });
+    return response.data;
+  },
+  restoreFile: async (fileId) => {
+    await apiClient.post(`/my-files/trash/files/${encodeURIComponent(fileId)}/restore`);
+  },
+  restoreFolder: async (folderId) => {
+    await apiClient.post(`/my-files/trash/folders/${encodeURIComponent(folderId)}/restore`);
+  },
+  purgeFile: async (fileId) => {
+    await apiClient.delete(`/my-files/trash/files/${encodeURIComponent(fileId)}`);
+  },
+  purgeFolder: async (folderId) => {
+    await apiClient.delete(`/my-files/trash/folders/${encodeURIComponent(folderId)}`);
+  },
+  emptyTrash: async () => {
+    await apiClient.post('/my-files/trash/empty');
+  },
+  createFolderShare: async (folderId, { rotate = false } = {}) => {
+    const response = await apiClient.post(
+      `/my-files/folders/${encodeURIComponent(folderId)}/share`,
+      undefined,
+      { params: rotate ? { rotate: true } : {} },
+    );
+    return response.data;
+  },
+  revokeFolderShare: async (folderId) => {
+    await apiClient.delete(`/my-files/folders/${encodeURIComponent(folderId)}/share`);
+  },
+  getPublicFolder: async (token) => {
+    const response = await apiClient.get(`/my-files/public-folders/${encodeURIComponent(token)}`, {
+      suppressAuthRequired: true,
+    });
+    return response.data;
+  },
+  createPublicFolderDownloadGrant: async (token, fileId) => {
+    const response = await apiClient.post(
+      `/my-files/public-folders/${encodeURIComponent(token)}/files/${encodeURIComponent(fileId)}/download-grant`,
+      undefined,
+      { suppressAuthRequired: true },
+    );
+    return response.data;
+  },
+  createFolderArchiveGrant: async (folderId) => {
+    const response = await apiClient.post(
+      `/my-files/folders/${encodeURIComponent(folderId)}/archive-grant`,
+    );
+    return response.data;
+  },
+  buildPublicFolderPreviewUrl: (token, fileId) => (
+    `${API_V1_BASE}/my-files/public-folders/${encodeURIComponent(token)}/files/${encodeURIComponent(fileId)}/preview/content`
+  ),
+  buildPublicFolderUrl: (token) => {
+    const rawBase = String(import.meta.env.BASE_URL || '/');
+    const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
+    const base = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`;
+    const publicPath = `${base}shared-folders/${encodeURIComponent(token)}`;
+    if (typeof window === 'undefined') return publicPath;
+    return new URL(publicPath, window.location.origin).href;
   },
   getQuota: async () => {
     const response = await apiClient.get('/my-files/quota');
     return response.data;
   },
-  createUploadSession: async ({ file, retentionDays = 1, signal } = {}) => {
+  createUploadSession: async ({ file, retentionDays = 1, folderId = null, signal } = {}) => {
     const response = await apiClient.post('/my-files/upload-sessions', {
       file_name: String(file?.name || 'file.bin'),
       file_size: Number(file?.size || 0),
       retention_days: normalizeRetentionDays(retentionDays),
       mime_type: file?.type || 'application/octet-stream',
+      folder_id: folderId || null,
     }, { signal });
     return response.data;
   },
@@ -79,7 +303,7 @@ export const myFilesAPI = {
         headers: { 'Content-Type': 'application/octet-stream' },
         onUploadProgress,
         signal,
-        timeout: 115_000,
+        timeout: UPLOAD_CHUNK_TIMEOUT_MS,
       },
     );
     return response.data;
@@ -88,21 +312,29 @@ export const myFilesAPI = {
     const response = await apiClient.post(
       `/my-files/upload-sessions/${encodeURIComponent(fileId)}/complete`,
       null,
-      { signal },
+      { signal, timeout: UPLOAD_COMPLETE_TIMEOUT_MS },
     );
     return response.data;
   },
-  cancelUploadSession: async (fileId) => {
-    const response = await apiClient.delete(`/my-files/upload-sessions/${encodeURIComponent(fileId)}`);
+  cancelUploadSession: async (fileId, { reason, signal } = {}) => {
+    const response = await apiClient.delete(
+      `/my-files/upload-sessions/${encodeURIComponent(fileId)}`,
+      {
+        params: reason ? { reason: String(reason).slice(0, 2000) } : undefined,
+        signal,
+      },
+    );
     return response.data;
   },
-  uploadFile: async ({ file, retentionDays = 1, onUploadProgress, signal } = {}) => {
+  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal } = {}) => {
     const totalBytes = Math.max(0, Number(file?.size || 0));
     let fileId = '';
     emitUploadProgress(onUploadProgress, 0, totalBytes);
     try {
-      const session = await myFilesAPI.createUploadSession({ file, retentionDays, signal });
+      const session = (await findResumableSession({ file, folderId, signal }))
+        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, signal });
       fileId = String(session?.file_id || '').trim();
+      saveUploadResume(file, folderId, fileId);
       const chunkSizeBytes = Number(session?.chunk_size_bytes || 0);
       let uploadedBytes = Math.max(0, Number(session?.uploaded_bytes || 0));
       if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0 || uploadedBytes > totalBytes) {
@@ -147,6 +379,7 @@ export const myFilesAPI = {
             } catch (statusError) {
               if (signal?.aborted) throw statusError;
             }
+            if (!isRetriableUploadError(error)) throw error;
             if (attempt < UPLOAD_RETRY_DELAYS_MS.length) {
               await waitForUploadRetry(UPLOAD_RETRY_DELAYS_MS[attempt], signal);
             }
@@ -159,11 +392,17 @@ export const myFilesAPI = {
 
       const completed = await myFilesAPI.completeUploadSession(fileId, { signal });
       emitUploadProgress(onUploadProgress, totalBytes, totalBytes);
+      clearUploadResume(file, folderId);
       return completed;
     } catch (error) {
-      if (fileId) {
+      const aborted = Boolean(signal?.aborted) || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
+      if (fileId && (aborted || !isRetriableUploadError(error))) {
+        // Отменяем только точные провалы; сетевые сбои оставляем на resume в течение TTL сессии.
+        clearUploadResume(file, folderId);
         try {
-          await myFilesAPI.cancelUploadSession(fileId);
+          await myFilesAPI.cancelUploadSession(fileId, {
+            reason: describeUploadFailure(error, { aborted }),
+          });
         } catch {
           // The server expires incomplete reservations if cleanup is unavailable.
         }
@@ -179,8 +418,9 @@ export const myFilesAPI = {
     const response = await apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview`);
     return response.data;
   },
-  downloadPreviewContent: async (fileId) => (
+  downloadPreviewContent: async (fileId, { variant = '' } = {}) => (
     apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview/content`, {
+      params: variant ? { variant } : {},
       responseType: 'blob',
     })
   ),

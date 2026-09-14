@@ -34,6 +34,8 @@ describe('warehouse 1C list response normalization', () => {
       returned: 1,
       total: 5,
       has_more: true,
+      incomplete_reason: 'ambiguous_warehouse_match',
+      ambiguous_warehouses: 3,
       meta: {
         truncated: true,
         as_of: '2026-07-13T10:00:00Z',
@@ -52,6 +54,8 @@ describe('warehouse 1C list response normalization', () => {
         truncated: true,
         asOf: '2026-07-13T10:00:00Z',
         source: 'buh20',
+        incompleteReason: 'ambiguous_warehouse_match',
+        ambiguousWarehouses: 3,
       },
     });
     expect(isWarehouse1cListIncomplete(response.meta)).toBe(true);
@@ -121,6 +125,15 @@ describe('warehouse 1C API contracts', () => {
       },
       timeout: 50_000,
       signal: controller.signal,
+    });
+  });
+
+  it('loads dismissed employee warehouses with a bounded detail limit', async () => {
+    await warehouse1cAPI.getDismissedWarehouses();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/dismissed-warehouses', {
+      params: { limit: 1000 },
+      timeout: 50_000,
     });
   });
 

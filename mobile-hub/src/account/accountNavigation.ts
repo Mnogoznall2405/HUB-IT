@@ -59,6 +59,9 @@ export const PERSONAL_SETTINGS_SECTIONS: AccountSection[] = [
 ];
 
 export const ADMIN_SECTION_DEFINITIONS: AccountSection[] = [
+  { key: 'ad-users', label: 'Пользователи AD', description: 'Импорт и синхронизация Active Directory', icon: 'account-network-outline', nativeHref: '/(shell)/menu/admin/ad-users', adminOnly: true },
+  { key: 'ai-bots', label: 'AI-боты', description: 'Настройки моделей и история запусков', icon: 'robot-outline', nativeHref: '/(shell)/menu/admin/ai-bots', permission: 'settings.ai.manage' },
+  { key: 'system', label: 'Система', description: 'Служебные параметры и контроль актов', icon: 'cog-outline', nativeHref: '/(shell)/menu/admin/system', adminOnly: true },
   {
     key: 'users',
     label: 'Пользователи',

@@ -1,4 +1,6 @@
 import { router } from 'expo-router';
+import { useAuth } from '../../auth/AuthContext';
+import { canAccessAdminArea } from '../../account/accountNavigation';
 import { PERSONAL_SETTINGS_SECTIONS } from '../../account/accountNavigation';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -6,6 +8,7 @@ import { AccountActionRow, AccountScreenScaffold, AccountSectionCard } from './A
 import { goBackOrReplace } from './accountBack';
 
 export function NativeSettingsHubScreen() {
+  const access = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
 
@@ -28,6 +31,11 @@ export function NativeSettingsHubScreen() {
           />
         ))}
       </AccountSectionCard>
+      {canAccessAdminArea(access) ? <AccountSectionCard tokens={tokens} title="Управление">
+        <AccountActionRow tokens={tokens} icon="shield-account-outline" label="Администрирование"
+          subtitle="Пользователи, права, отделы и системные настройки"
+          onPress={() => router.push('/(shell)/menu/admin' as never)} />
+      </AccountSectionCard> : null}
     </AccountScreenScaffold>
   );
 }

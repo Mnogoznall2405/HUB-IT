@@ -726,9 +726,22 @@ it('swipes a message to recoverable Trash and restores the exact returned id on 
   fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'delete' } });
   await waitFor(() => expect(mailApi.deleteMailMessage).toHaveBeenCalledWith('message-1', 'box-1', false));
   const undoButton = await view.findByTestId('native-mail-undo');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 5_100)); });
+  expect(view.getByTestId('native-mail-undo')).toBeTruthy();
   fireEvent.press(undoButton);
 
   await waitFor(() => expect(mailApi.restoreMailMessage).toHaveBeenCalledWith('trash-message-1', 'box-1', 'inbox'));
+}, 15_000);
+
+it('lets the user dismiss undo without restoring the deleted message', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  const row = await view.findByTestId('native-mail-message-message-1');
+  await fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'delete' } });
+  await view.findByTestId('native-mail-undo');
+  await fireEvent.press(view.getByLabelText('Скрыть отмену действия'));
+  expect(view.queryByTestId('native-mail-undo')).toBeNull();
+  expect(mailApi.restoreMailMessage).not.toHaveBeenCalled();
 });
 
 it('moves selected messages to a custom folder through the bulk endpoint', async () => {
@@ -1079,17 +1092,18 @@ it('mounts one rich body for 100 messages and replies to the explicitly expanded
   mockedParams.mockReturnValue({ conversationId: 'thread-1', mailboxId: 'box-1' });
   const view = await render(<NativeMailConversationScreen />);
   await view.findByTestId('native-mail-expand-synthetic-99');
+  expect(view.getAllByTestId(/^native-mail-expand-/).length).toBeLessThanOrEqual(12);
   expect(view.getAllByTestId('native-mail-html-body')).toHaveLength(1);
   expect(view.getAllByTestId('native-mail-attachments')).toHaveLength(1);
   expect(view.getByTestId('native-mail-expand-synthetic-99').props.accessibilityState.expanded).toBe(true);
-  await fireEvent.press(view.getByTestId('native-mail-expand-synthetic-0'));
+  await fireEvent.press(view.getByTestId('native-mail-expand-synthetic-95'));
   expect(view.getAllByTestId('native-mail-html-body')).toHaveLength(1);
   expect(view.getByTestId('native-mail-expand-synthetic-99').props.accessibilityState.expanded).toBe(false);
   await fireEvent.press(view.getByLabelText('Ответить на это письмо'));
-  expect(router.push).toHaveBeenLastCalledWith({ pathname: '/(shell)/mail/compose', params: { mode: 'reply', mailboxId: 'box-1', sourceMessageId: 'synthetic-0' } });
+  expect(router.push).toHaveBeenLastCalledWith({ pathname: '/(shell)/mail/compose', params: { mode: 'reply', mailboxId: 'box-1', sourceMessageId: 'synthetic-95' } });
   await fireEvent.press(view.getByLabelText('Переслать это письмо'));
-  expect(router.push).toHaveBeenLastCalledWith({ pathname: '/(shell)/mail/compose', params: { mode: 'forward', mailboxId: 'box-1', sourceMessageId: 'synthetic-0' } });
-  await fireEvent.press(view.getByTestId('native-mail-expand-synthetic-0'));
+  expect(router.push).toHaveBeenLastCalledWith({ pathname: '/(shell)/mail/compose', params: { mode: 'forward', mailboxId: 'box-1', sourceMessageId: 'synthetic-95' } });
+  await fireEvent.press(view.getByTestId('native-mail-expand-synthetic-95'));
   expect(view.queryAllByTestId('native-mail-html-body')).toHaveLength(0);
 });
 

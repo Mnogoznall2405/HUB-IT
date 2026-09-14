@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as api from '../../api/chatApi';
 import { clearNativeChatOutbox, createNativeChatOutbox } from '../../chat/nativeChatOutbox';
-import { NativeChatOutboxScreen } from './NativeChatOutboxScreen';
+import { NativeChatOutboxWithDelivery as NativeChatOutboxScreen } from '../../test/NativeChatWithDelivery';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
 
 let mockAllowed = true;
@@ -96,7 +96,8 @@ it('keeps a failed send visible with an error and allows retry', async () => {
   jest.mocked(api.sendTextMessage).mockRejectedValueOnce(new Error('Network'));
   const view = await render(<NativeChatOutboxScreen />);
   await fireEvent.press(await view.findByLabelText('Повторить отправку'));
-  await waitFor(() => expect(view.getByText('Не удалось отправить. Сообщение осталось в очереди.')).toBeTruthy());
+  await waitFor(() => expect(api.sendTextMessage).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(view.getByText('Ожидает ручного повтора')).toBeTruthy());
   expect(view.getByText('Ожидающий текст')).toBeTruthy();
   await fireEvent.press(view.getByLabelText('Повторить отправку'));
   await waitFor(() => expect(view.getByText('Нет сообщений, ожидающих отправки')).toBeTruthy());
@@ -111,8 +112,8 @@ it('marks only the active conversation when client ids coincide across rows', as
   await view.findByText('Другой диалог');
   await fireEvent.press(view.getAllByLabelText('Повторить отправку')[0]);
   await waitFor(() => expect(api.sendTextMessage).toHaveBeenCalledTimes(1));
-  expect(view.getAllByText('Выполняется…')).toHaveLength(1);
-  expect(view.getAllByText('Ожидает повтора')).toHaveLength(1);
+  await waitFor(() => expect(view.getAllByText('Отправляется…')).toHaveLength(1));
+  expect(view.getAllByText('Ожидает ручного повтора')).toHaveLength(1);
   await act(async () => { finish({ ...message, id: 'server-one' }); });
 });
 
@@ -123,7 +124,9 @@ it('retries file uploads with their stored client id', async () => {
   const view = await render(<NativeChatOutboxScreen />);
   await fireEvent.press(await view.findByLabelText('Повторить отправку'));
   await waitFor(() => expect(view.getByText('Нет сообщений, ожидающих отправки')).toBeTruthy());
-  expect(api.sendFileMessage).toHaveBeenCalledWith('a', expect.any(FormData));
+  expect(api.sendFileMessage).toHaveBeenCalledWith('a', expect.any(FormData), expect.objectContaining({
+    signal: expect.anything(), onProgress: expect.any(Function),
+  }));
   const form = jest.mocked(api.sendFileMessage).mock.calls[0][1];
   expect(form.get('client_message_id')).toBe('one');
 });

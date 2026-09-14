@@ -24,7 +24,8 @@ public sealed class DesktopRedactionTests
         Assert.DoesNotContain("query-secret", redacted);
         Assert.DoesNotContain("json-secret", redacted);
         Assert.DoesNotContain("form-secret", redacted);
-        Assert.Contains("https://hubit.zsgp.ru/chat", redacted);
+        Assert.Contains("https://hubit.zsgp.ru/[REDACTED]", redacted);
         Assert.DoesNotContain("?", redacted);
+        Assert.DoesNotContain("/chat", redacted);
     }
 }

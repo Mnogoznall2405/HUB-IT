@@ -80,6 +80,18 @@ const formatQuantity = (value) => new Intl.NumberFormat('ru-RU', {
   maximumFractionDigits: 3,
 }).format(Number(value) || 0);
 
+const formatOptionalQuantity = (value) => {
+  if (value == null || value === '') return '—';
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '—';
+  return formatQuantity(numeric);
+};
+
+const displayText = (value) => {
+  const text = String(value || '').trim();
+  return text || '—';
+};
+
 const positionsLabel = (value) => {
   const count = Number(value) || 0;
   const mod100 = count % 100;
@@ -282,6 +294,9 @@ function RequestBadges({ request }) {
 
 export function ConstructionRequestCard({ item, selected = false, onOpen }) {
   const nomenclature = Array.isArray(item?.nomenclature_items) ? item.nomenclature_items : [];
+  const sectionCodes = Array.isArray(item?.section_codes)
+    ? item.section_codes.filter(Boolean)
+    : [...new Set(nomenclature.map((row) => row.section_code).filter(Boolean))];
   return (
     <Paper
       component="article"
@@ -319,6 +334,7 @@ export function ConstructionRequestCard({ item, selected = false, onOpen }) {
               </Typography>
               <Typography variant="caption" color="text.secondary">
                 {formatConstructionDate(item.date)} · требуется {formatConstructionDate(item.required_date)}
+                {sectionCodes.length ? ` · раздел ${sectionCodes.slice(0, 2).join(', ')}${sectionCodes.length > 2 ? '…' : ''}` : ''}
               </Typography>
             </Box>
             <RequestBadges request={item} />
@@ -525,6 +541,9 @@ export function ConstructionRequestDetail({ request, loading, error, showBack = 
             <MetaValue label="Подразделение">{request.department_name}</MetaValue>
             <MetaValue label="Инициатор">{request.initiator_name}</MetaValue>
             <MetaValue label="Ответственный">{request.responsible_name}</MetaValue>
+            <MetaValue label="Ответственный за поставку">
+              {request.delivery_responsible_names?.join(', ')}
+            </MetaValue>
             <MetaValue label="Закупщик">{request.manager_names?.join(', ')}</MetaValue>
             <MetaValue label="Поставщик">{request.supplier_names?.join(', ') || request.supplier_name}</MetaValue>
             <MetaValue label="Фактическая поставка">{formatConstructionDate(request.factual_delivery_date)}</MetaValue>
@@ -543,7 +562,7 @@ export function ConstructionRequestDetail({ request, loading, error, showBack = 
         {items.length ? items.map((item, index) => (
           <Box
             component="article"
-            key={`${item.nomenclature_ref || item.name}-${item.characteristic_name}-${item.cancelled}-${index}`}
+            key={`${item.nomenclature_ref || item.name}-${item.characteristic_name}-${item.section_code}-${item.cancelled}-${index}`}
             sx={{
               display: 'grid',
               gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'minmax(0, 1fr) auto' },
@@ -559,8 +578,33 @@ export function ConstructionRequestDetail({ request, loading, error, showBack = 
                   {item.name || item.nomenclature_name || 'Номенклатура без наименования'}
                 </Typography>
                 {item.cancelled ? <Chip size="small" variant="outlined" label="Отменено" /> : null}
+                {item.section_code ? <Chip size="small" variant="outlined" label={`Раздел ${item.section_code}`} /> : null}
               </Stack>
               {item.characteristic_name ? <Typography variant="body2" color="text.secondary">{item.characteristic_name}</Typography> : null}
+              {item.replacement_name ? (
+                <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                  Замена: {item.replacement_name}
+                  {item.replacement_unit ? ` (${item.replacement_unit})` : ''}
+                </Typography>
+              ) : null}
+              <Box
+                sx={{
+                  mt: 0.75,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))',
+                  gap: 0.75,
+                }}
+              >
+                <MetaValue label="В заявке">
+                  {formatOptionalQuantity(item.qty_requested ?? item.quantity)} {item.unit || item.unit_name || ''}
+                </MetaValue>
+                <MetaValue label="В заказе поставщика">{formatOptionalQuantity(item.qty_ordered)}</MetaValue>
+                <MetaValue label="В приходном ордере">{formatOptionalQuantity(item.qty_received)}</MetaValue>
+                <MetaValue label="Приходный ордер">{displayText(item.receipt_number)}</MetaValue>
+                <MetaValue label="Склад ордера">{displayText(item.receipt_warehouse_name)}</MetaValue>
+                <MetaValue label="Счёт">{displayText(item.invoice_number)}</MetaValue>
+                <MetaValue label="МОЛ ордера">{displayText(item.receipt_mol_name)}</MetaValue>
+              </Box>
               {Number(item.source_line_count) > 1 ? (
                 <Typography variant="caption" color="text.secondary">Объединено строк в 1С: {item.source_line_count}</Typography>
               ) : null}
@@ -571,7 +615,7 @@ export function ConstructionRequestDetail({ request, loading, error, showBack = 
               ) : null}
             </Box>
             <Typography variant="body1" fontWeight={900} sx={{ whiteSpace: 'nowrap' }}>
-              {formatQuantity(item.quantity)} {item.unit || item.unit_name}
+              {formatQuantity(item.qty_requested ?? item.quantity)} {item.unit || item.unit_name}
             </Typography>
           </Box>
         )) : <Typography color="text.secondary" sx={{ p: 2 }}>Номенклатура не найдена.</Typography>}

@@ -23,6 +23,17 @@ from backend.services.authorization_service import PERM_CHAT_AI_USE, PERM_CHAT_R
 router = APIRouter()
 
 
+@router.get('/ai/conversations/{conversation_id}/access')
+async def get_ai_conversation_access(conversation_id: str,
+                                     current_user: User = Depends(require_permission(PERM_CHAT_READ))):
+    from backend.ai_chat.access import conversation_access
+    try:
+        return await chat_api()._run_chat_call(conversation_access,
+            conversation_id=conversation_id, user_id=int(current_user.id))
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
 @router.post("/ai/conversations", response_model=ChatConversationSummary)
 async def create_general_ai_conversation(
     current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
@@ -136,11 +147,14 @@ async def open_ai_bot_conversation(
 ):
     from backend.ai_chat.service import ai_chat_service
 
-    return await chat_api()._run_chat_call(
-        ai_chat_service.open_bot_conversation,
-        bot_id=bot_id,
-        current_user_id=int(current_user.id),
-    )
+    try:
+        return await chat_api()._run_chat_call(
+            ai_chat_service.open_bot_conversation,
+            bot_id=bot_id,
+            current_user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
 
 
 @router.post("/ai/bots/{bot_id}/conversations", response_model=ChatConversationSummary)

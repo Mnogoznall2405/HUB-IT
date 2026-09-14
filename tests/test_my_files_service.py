@@ -268,6 +268,12 @@ def test_upload_processing_deduplicates_by_sha256_and_public_downloads_one_file(
     service.delete_file(file_id=file_ids[0], user_id=7)
     with app_session(database_url) as session:
         blob = session.query(AppMyFileBlob).one()
+        # корзина удерживает блоб до окончательной очистки
+        assert blob.ref_count == 2
+
+    service.purge_file(file_id=file_ids[0], user_id=7)
+    with app_session(database_url) as session:
+        blob = session.query(AppMyFileBlob).one()
         assert blob.ref_count == 1
 
     with pytest.raises(MyFilesNotFoundError):
@@ -375,7 +381,7 @@ def test_cleanup_expired_disables_share_and_removes_unreferenced_blob(tmp_path):
     with app_session(database_url) as session:
         row = session.get(AppMyFile, created["id"])
         assert row is not None
-        blob_path = Path(session.get(AppMyFileBlob, row.blob_id).storage_path)
+        blob_path = service._resolve_stored_path(session.get(AppMyFileBlob, row.blob_id).storage_path)
         row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     assert blob_path.exists()
@@ -502,7 +508,7 @@ def test_my_files_audit_records_share_download_and_delete_without_token(tmp_path
         assert "upload_completed" in actions
         assert "share_created" in actions
         assert "public_download_started" in actions
-        assert "deleted" in actions
+        assert "trashed" in actions
         serialized = "\n".join(
             f"{row.action} {row.actor_username} {row.ip_address} {row.user_agent}"
             for row in session.query(AppMyFileAudit).all()

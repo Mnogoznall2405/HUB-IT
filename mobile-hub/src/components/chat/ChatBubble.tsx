@@ -1,9 +1,10 @@
-import React, { memo, useMemo, useRef } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { ChatAttachment, ChatMessage, ChatUserSummary } from '../../api/types';
 import { ChatDeliveryStatus } from './ChatDeliveryStatus';
 import { ChatReactionButton } from './ChatReactionButton';
 import { ChatBubblePhoto } from './ChatBubblePhoto';
+import { ChatAuthenticatedImage } from './ChatAuthenticatedImage';
 import {
   ChatDocumentAttachment,
   type ChatAttachmentTransfer,
@@ -25,13 +26,14 @@ import {
   type ChatBubbleGroupPosition,
 } from '../../chat/chatBubbleLayout';
 import { shouldRenderChatMarkdown, stripChatMarkdownPreview } from '../../chat/chatMarkdown';
-import { pickChatAttachmentPreviewUrl } from '../../chat/chatMedia';
+import { isVideoChatAttachment, pickChatAttachmentPreviewUrl } from '../../chat/chatMedia';
 import { extractFirstChatUrl } from '../../chat/chatLinkPreview';
 import { isStickerChatAttachment, stickerFromChatAttachment } from '../../chat/chatStickers';
 import {
   CHAT_BUBBLE_LONG_PRESS_MS,
   DEFAULT_CHAT_QUICK_REACTION,
   isAudioChatAttachment,
+  formatVoiceDuration,
   resolveChatBubbleTapAction,
 } from '../../chat/chatVoice';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
@@ -106,6 +108,7 @@ export const ChatBubble = memo(function ChatBubble({
   groupPosition = 'single',
   showSenderAvatars = false,
   awaitingConnection = false,
+  offline = false,
 }: {
   message: ChatMessage;
   isOwn: boolean;
@@ -113,6 +116,7 @@ export const ChatBubble = memo(function ChatBubble({
   highlighted?: boolean;
   showSenderAvatars?: boolean;
   awaitingConnection?: boolean;
+  offline?: boolean;
   onPress?: () => void;
   onLongPress?: () => void;
   onActionsPress?: () => void;
@@ -136,11 +140,26 @@ export const ChatBubble = memo(function ChatBubble({
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, fontScale } = useWindowDimensions();
   const reactions = message.reactions || [];
   const isDeleted = Boolean(message.is_deleted);
   const attachments = isDeleted ? [] : message.attachments || [];
-  const accessibilityLabel = buildChatMessageAccessibilityLabel(message, isOwn, { awaitingConnection });
+  const pending = message.local_status === 'sending'
+    || (message.local_status === 'failed' && awaitingConnection);
+  const [delayedMessageId, setDelayedMessageId] = useState<string | null>(null);
+  useEffect(() => {
+    setDelayedMessageId(null);
+    if (!pending || offline) return;
+    const timer = setTimeout(() => setDelayedMessageId(message.id), 1500);
+    return () => clearTimeout(timer);
+  }, [message.id, pending, offline]);
+  const showPendingText = pending && (offline || delayedMessageId === message.id);
+  const failed = !pending && (message.local_status === 'failed' || message.local_status === 'cancelled');
+  const accessibilityLabel = buildChatMessageAccessibilityLabel(
+    pending ? { ...message, local_status: offline ? 'failed' : 'sending' } : message,
+    isOwn,
+    { awaitingConnection: pending && offline },
+  );
   const actionCard = message.action_card as {
     id?: string;
     status?: string;
@@ -164,7 +183,7 @@ export const ChatBubble = memo(function ChatBubble({
   const markdownBody = Boolean(message.body_text && !stickerOnly && shouldRenderChatMarkdown(message));
   const hasTrailingBlock = Boolean(
     actionCard?.id
-    || message.local_status === 'failed'
+    || failed || showPendingText
     || markdownBody
     || hasDocumentAttachments
     || (!isDeleted && extractFirstChatUrl(message.body_text)),
@@ -200,8 +219,8 @@ export const ChatBubble = memo(function ChatBubble({
   const meta = (
     <BubbleMeta
       timeLabel={timeLabel}
-      sending={message.local_status === 'sending'}
-      failed={message.local_status === 'failed' || message.local_status === 'cancelled'}
+      sending={pending}
+      failed={failed}
       own={isOwn}
       edited={Boolean(message.edited_at && !isDeleted)}
       read={message.delivery_status === 'read'}
@@ -360,7 +379,7 @@ export const ChatBubble = memo(function ChatBubble({
             <Text style={[styles.text, isOwn ? styles.textOwn : styles.textOther, isDeleted && styles.deletedText]}>
               {message.body_text}
               {metaMode === 'inline' ? (
-                <View style={[styles.metaSpacer, { width: estimateChatMetaWidth(metaPlainText) }]} />
+                <View style={[styles.metaSpacer, { width: estimateChatMetaWidth(metaPlainText, fontScale) }]} />
               ) : null}
             </Text>
           )
@@ -406,6 +425,32 @@ export const ChatBubble = memo(function ChatBubble({
             : '';
           const previewUrl = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(attachment));
           const effectivePreviewUrl = localPreviewUrl || previewUrl;
+          if (isVideoChatAttachment(attachment)) {
+            return (
+              <Pressable
+                key={attachmentIndex}
+                testID="chat-video-preview"
+                onPress={(event) => { event.stopPropagation(); onAttachmentPress?.(attachment); }}
+                disabled={!onAttachmentPress || Boolean(message.local_status)}
+                accessibilityRole="button"
+                accessibilityLabel={`Воспроизвести видео ${attachment.file_name || ''}`.trim()}
+                accessibilityHint="Открывает полноэкранный просмотр"
+                style={[styles.videoPreview, { width: photoWidth, height: Math.min(photoMaxHeight, photoWidth * 9 / 16) }]}
+              >
+                {previewUrl ? <ChatAuthenticatedImage uri={previewUrl} style={StyleSheet.absoluteFill}
+                  resizeMode="cover" accessible={false} /> : null}
+                <View pointerEvents="none" style={styles.videoPlay}><Text style={styles.videoPlayIcon}>▶</Text></View>
+                <Text numberOfLines={1} style={styles.videoCaption}>
+                  {attachment.duration_seconds ? formatVoiceDuration(attachment.duration_seconds) : 'Видео'}
+                </Text>
+                {resolvedTransfer ? <AttachmentTransferOverlay
+                  transfer={resolvedTransfer} fileName={attachment.file_name || 'видео'}
+                  onCancel={onAttachmentTransferCancel ? () => onAttachmentTransferCancel(attachment) : undefined}
+                  onRetry={onAttachmentTransferRetry ? () => onAttachmentTransferRetry(attachment) : undefined}
+                /> : null}
+              </Pressable>
+            );
+          }
           const isPhoto = Boolean(effectivePreviewUrl && isPhotoChatAttachment(attachment));
           if (!isPhoto) {
             return (
@@ -471,7 +516,10 @@ export const ChatBubble = memo(function ChatBubble({
             {meta}
           </View>
         ) : null}
-        {(message.local_status === 'failed' || message.local_status === 'cancelled') && !attachments.length ? (
+        {showPendingText ? (
+          <Text style={styles.retryText}>{offline ? 'Ожидает подключения' : 'Ожидает отправки'}</Text>
+        ) : null}
+        {failed && !attachments.length ? (
           <Pressable
             onPress={onRetry}
             disabled={!onRetry}
@@ -488,7 +536,7 @@ export const ChatBubble = memo(function ChatBubble({
             </Text>
           </Pressable>
         ) : null}
-        {(message.local_status === 'failed' || message.local_status === 'cancelled') && onDiscard ? (
+        {(failed || showPendingText) && onDiscard ? (
           <Pressable onPress={onDiscard} style={styles.retry} accessibilityRole="button" accessibilityLabel="Убрать сообщение из очереди">
             <Text style={styles.retryText}>Убрать из очереди</Text>
           </Pressable>
@@ -720,6 +768,10 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   textOther: { color: chatTokens.bubbleOtherText },
   deletedText: { fontStyle: 'italic', opacity: 0.72 },
   photoButton: { alignSelf: 'flex-start' },
+  videoPreview: { alignSelf: 'flex-start', borderRadius: 10, overflow: 'hidden', backgroundColor: '#182229', alignItems: 'center', justifyContent: 'center' },
+  videoPlay: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  videoPlayIcon: { color: '#fff', fontSize: 25, marginLeft: 3 },
+  videoCaption: { position: 'absolute', left: 8, bottom: 8, color: '#fff', backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2, fontSize: 12 },
   transferOverlay: {
     position: 'absolute',
     top: 0,
@@ -744,7 +796,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   transferControlPressed: { transform: [{ scale: 0.96 }], opacity: 0.86 },
   transferMark: { color: '#fff', fontSize: 15, lineHeight: 20, fontWeight: '800' },
   transferLabel: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '700' },
-  metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 },
   metaFloat: { position: 'absolute', right: 10, bottom: 7, flexDirection: 'row', alignItems: 'center' },
   metaFloatBleed: { right: 8, bottom: 6 },
   metaPill: {

@@ -1,5 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
-import { API_V1_BASE, CLIENT_DEVICE_HEADER, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
+import { API_V1_BASE, CLIENT_DEVICE_HEADER, HUB_WEB_ORIGIN, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
 import * as tokenStore from '../auth/tokenStore';
 import { publishSessionExpired } from '../auth/sessionEvents';
 import {
@@ -23,6 +23,20 @@ const apiClient = axios.create({
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
+
+/**
+ * Fire-and-forget: opens the TCP+TLS connection to the API origin while the
+ * auth bootstrap still reads SecureStore. The first authenticated request then
+ * reuses the warm connection from the shared OkHttp pool instead of paying the
+ * handshake on the critical path. Any status (even 404) warms the pool.
+ */
+export function warmApiConnection(): void {
+  if (typeof fetch !== 'function') return;
+  void fetch(`${HUB_WEB_ORIGIN}/health`, { method: 'GET' }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
 
 function remainingTotalTimeoutMs(config: RetryConfig): number | null {
   const total = Number(config.hubitTotalTimeoutMs || 0);
@@ -87,7 +101,18 @@ apiClient.interceptors.request.use(async (config) => {
   ) {
     config.timeout = MAIL_EXCHANGE_TIMEOUT_MS;
   }
-  const accessToken = await tokenStore.getAccessToken();
+  let accessToken = await tokenStore.getAccessToken();
+  if (accessToken && accessTokenExpiresSoon(accessToken)) {
+    try {
+      // Access tokens live ~15 minutes; refresh ahead of expiry instead of
+      // paying a 401 + refresh + retry round trip on the next request.
+      accessToken = await getAuthenticatedAccessToken();
+    } catch {
+      // Keep the stale token: transient refresh failures fall back to the
+      // reactive 401 path; a real expiry bumps the session generation and
+      // assertRequestSession below aborts this request anyway.
+    }
+  }
   assertRequestSession(request);
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;

@@ -1,3 +1,5 @@
+import { File, Paths } from 'expo-file-system';
+import { clearNativeFormDrafts } from '../../drafts/nativeFormDrafts';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Alert, Share } from 'react-native';
@@ -98,7 +100,8 @@ const samplePost = {
 };
 
 describe('NativeFeedInboxScreen', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearNativeFormDrafts();
     jest.clearAllMocks();
     (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
     (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
@@ -216,14 +219,44 @@ describe('NativeFeedInboxScreen', () => {
     await act(async () => { fireEvent.press(view.getByTestId('feed-card-reaction-post-1-love')); });
     await waitFor(() => expect(feedApi.setFeedReaction).toHaveBeenCalledWith('post-1', 'love'));
 
+    await act(async () => { fireEvent.press(view.getByTestId('feed-taxonomy-toggle')); });
     await act(async () => { fireEvent.press(view.getByTestId('feed-filter-draft')); });
-    await waitFor(() => expect(feedApi.listManagedFeedPosts).toHaveBeenCalledWith('draft', 100));
+    await waitFor(() => expect(feedApi.listManagedFeedPosts).toHaveBeenCalledWith('draft', 100, { offset: 0, q: '', category_id: '', tag: '' }));
     expect(view.getByTestId('feed-post-card-draft-1')).toBeTruthy();
+  });
+
+  it('loads the next managed page using the server offset and removes overlapping rows', async () => {
+    (feedApi.listManagedFeedPosts as jest.Mock)
+      .mockResolvedValueOnce({ items: [{ ...samplePost, id: 'first', status: 'draft' }], total: 3 })
+      .mockResolvedValueOnce({ items: [{ ...samplePost, id: 'first', status: 'draft' }, { ...samplePost, id: 'second', status: 'draft' }], total: 3 });
+    const view = await render(<NativeFeedInboxScreen />);
+    await view.findByTestId('feed-post-list');
+    await fireEvent.press(view.getByTestId('feed-taxonomy-toggle'));
+    await fireEvent.press(view.getByTestId('feed-filter-draft'));
+    await view.findByTestId('feed-post-card-first');
+    await act(async () => { view.getByTestId('feed-post-list').props.onEndReached(); });
+    await view.findByTestId('feed-post-card-second');
+    expect(feedApi.listManagedFeedPosts).toHaveBeenLastCalledWith('draft', 100, { offset: 1, q: '', category_id: '', tag: '' });
+    expect(view.getAllByTestId('feed-post-card-first')).toHaveLength(1);
+  });
+
+  it('does not reread a saved partial feed when reaching the end offline', async () => {
+    mockAuth.offlineMode = true;
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockImplementation(async (_scope, _user, signature) => ({
+      savedAt: 1, data: { signature, items: [samplePost], total: 200, unreadTotal: 0 },
+    }));
+    const view = await render(<NativeFeedInboxScreen />);
+    await view.findByTestId('feed-post-card-post-1');
+    const reads = jest.mocked(snapshotCache.readNativeCollectionSnapshot).mock.calls.length;
+    await act(async () => { view.getByTestId('feed-post-list').props.onEndReached(); });
+    expect(snapshotCache.readNativeCollectionSnapshot).toHaveBeenCalledTimes(reads);
+    expect(feedApi.listFeedPosts).not.toHaveBeenCalled();
   });
 });
 
 describe('NativeFeedEditorScreen', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearNativeFormDrafts();
     jest.clearAllMocks();
     (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
     (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
@@ -269,7 +302,7 @@ describe('NativeFeedEditorScreen', () => {
     await fireEvent.changeText(view.getByTestId('feed-editor-body'), 'Изменённый текст');
     await fireEvent.press(view.getByLabelText('Назад'));
     expect(router.back).not.toHaveBeenCalled();
-    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    expect(alert).toHaveBeenCalledWith('Сохранить черновик и выйти?', expect.any(String), expect.any(Array), expect.any(Object));
     alert.mockRestore();
   });
 
@@ -279,7 +312,7 @@ describe('NativeFeedEditorScreen', () => {
     await fireEvent.changeText(view.getByTestId('feed-editor-title'), 'Не потерять');
     await fireEvent.press(view.getByLabelText('Назад'));
     expect(router.back).not.toHaveBeenCalled();
-    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    expect(alert).toHaveBeenCalledWith('Сохранить черновик и выйти?', expect.any(String), expect.any(Array), expect.any(Object));
     await act(async () => alert.mock.calls[0][2]?.[0].onPress?.());
     expect(view.getByTestId('feed-editor-title').props.value).toBe('Не потерять');
     await fireEvent.changeText(view.getByTestId('feed-editor-title'), '');
@@ -401,8 +434,9 @@ describe('NativeFeedEditorScreen', () => {
   });
 
   it('sends selected attachments atomically when publishing a new post', async () => {
-    const cover = { uri: 'file://cover.jpg', name: 'cover.jpg', mimeType: 'image/jpeg', size: 12 };
-    const document = { uri: 'file://plan.pdf', name: 'plan.pdf', mimeType: 'application/pdf', size: 14 };
+    const cover = { uri: new File(Paths.cache, 'cover.jpg').uri, name: 'cover.jpg', mimeType: 'image/jpeg', size: 12 };
+    const document = { uri: new File(Paths.cache, 'plan.pdf').uri, name: 'plan.pdf', mimeType: 'application/pdf', size: 14 };
+    for (const file of [cover, document]) new File(file.uri).write('x'.repeat(file.size));
     (feedFiles.pickNativeFeedFiles as jest.Mock).mockResolvedValue([cover, document]);
     const view = await render(<NativeFeedEditorScreen />);
     await act(async () => {
@@ -415,14 +449,14 @@ describe('NativeFeedEditorScreen', () => {
 
     await waitFor(() => expect(feedApi.createFeedPost).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'published' }),
-      [cover, document],
+      [expect.objectContaining({ name: cover.name, size: cover.size, uri: expect.stringContaining('hubit-form-draft-files') }), expect.objectContaining({ name: document.name, size: document.size, uri: expect.stringContaining('hubit-form-draft-files') })],
     ));
   });
 
   it('uploads and orders new files when saving an existing post', async () => {
     mockedUseLocalSearchParams.mockReturnValue({ postId: 'post-1' });
     const existing = { id: 'attachment-1', file_name: 'cover.jpg', file_mime: 'image/jpeg', is_cover: true };
-    const file = { uri: 'file://plan.pdf', name: 'plan.pdf', mimeType: 'application/pdf', size: 14 };
+    const file = { uri: new File(Paths.cache, 'plan.pdf').uri, name: 'plan.pdf', mimeType: 'application/pdf', size: 14 };
     (feedApi.getFeedPost as jest.Mock).mockResolvedValueOnce({
       ...samplePost,
       can_manage: true,
@@ -430,6 +464,7 @@ describe('NativeFeedEditorScreen', () => {
       attachments: [existing],
       cover_attachment: existing,
     });
+    new File(file.uri).write('x'.repeat(file.size));
     (feedFiles.pickNativeFeedFiles as jest.Mock).mockResolvedValue([file]);
     (feedApi.reorderFeedAttachments as jest.Mock).mockResolvedValue([existing, { id: 'attachment-2', file_name: 'plan.pdf' }]);
     const view = await render(<NativeFeedEditorScreen />);
@@ -440,7 +475,7 @@ describe('NativeFeedEditorScreen', () => {
     await act(async () => { fireEvent.press(view.getByTestId('feed-editor-save')); });
 
     await waitFor(() => {
-      expect(feedApi.uploadFeedAttachment).toHaveBeenCalledWith('post-1', file);
+      expect(feedApi.uploadFeedAttachment).toHaveBeenCalledWith('post-1', expect.objectContaining({ name: file.name, size: file.size, uri: expect.stringContaining('hubit-form-draft-files') }));
       expect(feedApi.reorderFeedAttachments).toHaveBeenCalledWith(
         'post-1',
         ['attachment-2', 'attachment-1'],
@@ -451,9 +486,10 @@ describe('NativeFeedEditorScreen', () => {
 
   it('keeps successful attachment uploads after a later file fails', async () => {
     mockedUseLocalSearchParams.mockReturnValue({ postId: 'post-1' });
-    const first = { uri: 'file://first.pdf', name: 'first.pdf', mimeType: 'application/pdf', size: 11, uploadId: 'upload-1' };
-    const second = { uri: 'file://second.pdf', name: 'second.pdf', mimeType: 'application/pdf', size: 12, uploadId: 'upload-2' };
+    const first = { uri: new File(Paths.cache, 'first.pdf').uri, name: 'first.pdf', mimeType: 'application/pdf', size: 11, uploadId: 'upload-1' };
+    const second = { uri: new File(Paths.cache, 'second.pdf').uri, name: 'second.pdf', mimeType: 'application/pdf', size: 12, uploadId: 'upload-2' };
     (feedApi.getFeedPost as jest.Mock).mockResolvedValueOnce({ ...samplePost, can_manage: true, attachments: [] });
+    for (const file of [first, second]) new File(file.uri).write('x'.repeat(file.size));
     (feedFiles.pickNativeFeedFiles as jest.Mock).mockResolvedValue([first, second]);
     (feedApi.uploadFeedAttachment as jest.Mock)
       .mockResolvedValueOnce({ id: 'attachment-1', file_name: 'first.pdf' })
@@ -477,12 +513,13 @@ describe('NativeFeedEditorScreen', () => {
       '',
     ));
     expect(feedApi.uploadFeedAttachment).toHaveBeenCalledTimes(3);
-    expect((feedApi.uploadFeedAttachment as jest.Mock).mock.calls.map((call) => call[1])).toEqual([first, second, second]);
+    expect((feedApi.uploadFeedAttachment as jest.Mock).mock.calls.map((call) => call[1].uploadId)).toEqual([first.uploadId, second.uploadId, second.uploadId]);
   });
 });
 
 describe('NativeFeedPostScreen', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearNativeFormDrafts();
     jest.clearAllMocks();
     (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
     (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
@@ -515,6 +552,19 @@ describe('NativeFeedPostScreen', () => {
     (feedApi.getFeedAnalytics as jest.Mock).mockResolvedValue({ items: [], summary: {}, items_total: 0, next_offset: null });
   });
 
+
+it('late post A must not replace post B', async () => {
+    let finishA: (value: any) => void = () => {};
+    (feedApi.markFeedPostRead as jest.Mock).mockImplementation(async (id: string) => ({...samplePost,id,title:'TITLE-'+id,body:'BODY-'+id,is_unread:false}));
+    (feedApi.getFeedPost as jest.Mock).mockImplementation((id: string) => id === 'post-1' ? new Promise(resolve => {finishA=resolve;}) : Promise.resolve({...samplePost,id,title:'TITLE-B',body:'BODY-B'}));
+    const view = await render(<NativeFeedPostScreen />);
+    await waitFor(() => expect(feedApi.getFeedPost).toHaveBeenCalledWith('post-1'));
+    mockedUseLocalSearchParams.mockReturnValue({postId:'B'});
+    await view.rerender(<NativeFeedPostScreen />);
+    await waitFor(() => expect(view.getByText('BODY-B')).toBeTruthy());
+    await act(async () => {finishA({...samplePost,title:'TITLE-A',body:'BODY-A'});});
+    expect(view.queryByText('BODY-B')).toBeTruthy();
+  });
   it('loads a post with comments and sends a new comment', async () => {
     const view = await render(<NativeFeedPostScreen />);
     await waitFor(() => {

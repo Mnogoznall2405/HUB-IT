@@ -1,43 +1,56 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import useRequestGuard from '../lib/useRequestGuard';
 import {
   Alert,
   Box,
+  Breadcrumbs,
   Button,
-  Chip,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
+  InputAdornment,
   LinearProgress,
+  Link,
+  ListItemIcon,
+  ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Select,
+  Skeleton,
   Stack,
+  TableSortLabel,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
-import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
-import AudioFileOutlinedIcon from '@mui/icons-material/AudioFileOutlined';
 import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
-import CodeOutlinedIcon from '@mui/icons-material/CodeOutlined';
+import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
-import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
+import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import DriveFolderUploadOutlinedIcon from '@mui/icons-material/DriveFolderUploadOutlined';
-import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
-import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
-import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
-import PictureAsPdfOutlinedIcon from '@mui/icons-material/PictureAsPdfOutlined';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
+import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
+import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import GridViewOutlinedIcon from '@mui/icons-material/GridViewOutlined';
+import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
-import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
-import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
@@ -49,170 +62,51 @@ import PageShell from '../components/layout/PageShell';
 import {
   formatMyFilesUploadLimitLabel,
   myFilesAPI,
-  MY_FILES_MAX_UPLOAD_BYTES,
   myFilesRetentionOptions,
 } from '../api/myFiles';
-import {
-  buildAttachmentBlobPayload,
-  downloadBlobFile,
-  getOfficeAttachmentSourceKind,
-  normalizeAttachmentPreviewMetadata,
-} from '../components/mail/mailMessageFileActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
-import { parseExcelWorkbookFromBlob } from '../lib/excelPreview';
 import {
-  collectDataTransferFiles,
-  isFolderFileSelection,
-  packFolderFilesToZip,
-  summarizeFolderSelection,
-} from '../lib/myFilesFolderZip';
+  formatFileSize,
+  getMyFileName,
+  isMyFilePreviewSupported,
+} from '../lib/myFilesPreview';
+import { useMyFilesDownload } from './myFiles/useMyFilesDownload';
+import { useMyFilesPreviewController } from './myFiles/useMyFilesPreviewController';
+import { useMyFilesShares } from './myFiles/useMyFilesShares';
+import { useMyFilesUpload } from './myFiles/useMyFilesUpload';
+import { collectDataTransferFiles } from '../lib/myFilesFolderZip';
+import {
+  FileCard,
+  FileRow,
+  FolderCard,
+  FolderRow,
+} from '../components/myFiles/MyFilesListItems';
+import {
+  ACTIVE_PROCESSING_STATUSES,
+  getFileVisualColors,
+  getFileVisualMeta,
+  READY_STATUSES,
+} from '../components/myFiles/myFilesVisual';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
-const READY_STATUSES = new Set(['ready']);
-const ACTIVE_PROCESSING_STATUSES = new Set(['uploading', 'queued', 'scanning', 'processing']);
-
-const formatFileSize = (bytes) => {
-  const value = Number(bytes || 0);
-  if (!Number.isFinite(value) || value <= 0) return '0 Б';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ'];
-  let current = value;
-  let index = 0;
-  while (current >= 1024 && index < units.length - 1) {
-    current /= 1024;
-    index += 1;
-  }
-  return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
-};
-
-const formatDateTime = (value) => {
-  const text = String(value || '').trim();
-  if (!text) return '-';
-  const parsed = new Date(text);
-  if (Number.isNaN(parsed.getTime())) return text;
-  return parsed.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+const reconcileById = (previous, next) => {
+  const previousById = new Map(previous.map((entry) => [String(entry?.id), entry]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((entry) => {
+    const old = previousById.get(String(entry?.id));
+    if (!old) {
+      changed = true;
+      return entry;
+    }
+    const keys = new Set([...Object.keys(old), ...Object.keys(entry)]);
+    const same = [...keys].every((key) => old[key] === entry[key]);
+    if (!same) changed = true;
+    return same ? old : entry;
   });
+  return changed ? merged : previous;
 };
 
-const normalizeFiles = (value) => Array.from(value || []).filter(Boolean);
-
-const FILE_TYPE_META = {
-  image: { label: 'Изображение', icon: ImageOutlinedIcon, palette: 'success' },
-  video: { label: 'Видео', icon: MovieOutlinedIcon, palette: 'secondary' },
-  audio: { label: 'Аудио', icon: AudioFileOutlinedIcon, palette: 'secondary' },
-  pdf: { label: 'PDF', icon: PictureAsPdfOutlinedIcon, palette: 'error' },
-  document: { label: 'Документ', icon: DescriptionOutlinedIcon, palette: 'primary' },
-  sheet: { label: 'Таблица', icon: TableChartOutlinedIcon, palette: 'success' },
-  archive: { label: 'Архив', icon: ArchiveOutlinedIcon, palette: 'warning' },
-  code: { label: 'Код', icon: CodeOutlinedIcon, palette: 'info' },
-  text: { label: 'Текст', icon: ArticleOutlinedIcon, palette: 'info' },
-  file: { label: 'Файл', icon: InsertDriveFileOutlinedIcon, palette: 'neutral' },
-};
-
-const getFileExtension = (fileName = '') => {
-  const normalized = String(fileName || '').toLowerCase();
-  const dotIndex = normalized.lastIndexOf('.');
-  return dotIndex >= 0 ? normalized.slice(dotIndex + 1) : '';
-};
-
-const getMyFileName = (item) => String(item?.download_file_name || item?.original_file_name || 'file.bin');
-
-const getMyFileContentType = (item) => String(item?.download_mime_type || item?.mime_type || 'application/octet-stream');
-
-const getMyFilePreviewKind = (item) => {
-  const explicitKind = String(item?.preview_kind || '').trim();
-  if (explicitKind && explicitKind !== 'unsupported') return explicitKind;
-  const fileName = getMyFileName(item);
-  const contentType = getMyFileContentType(item).toLowerCase();
-  const extension = getFileExtension(fileName);
-  if (contentType.includes('pdf') || extension === 'pdf') return 'pdf';
-  const sourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
-  if (sourceKind === 'excel') return 'office_excel';
-  if (sourceKind) return 'office_pdf';
-  return 'unsupported';
-};
-
-const isMyFilePreviewSupported = (item) => getMyFilePreviewKind(item) !== 'unsupported';
-
-const createEmptyDocumentPreviewState = () => ({
-  open: false,
-  item: null,
-  loading: false,
-  error: '',
-  kind: 'unsupported',
-  sourceKind: '',
-  objectUrl: '',
-  previewBlob: null,
-  excelWorkbook: null,
-  pageCount: 0,
-  sheets: [],
-  pdfFilename: '',
-});
-
-const resolveMyFilePreviewError = (error, item) => {
-  const detail = String(error?.response?.data?.detail || error?.message || '').trim();
-  const previewStatus = String(item?.preview_status || '').toLowerCase();
-  if (previewStatus === 'queued' || previewStatus === 'processing') {
-    return 'Предпросмотр готовится. Обновите через несколько секунд или скачайте оригинал.';
-  }
-  if (/too large/i.test(detail)) {
-    const limit = Number(item?.preview_max_bytes || 0);
-    return limit > 0
-      ? `Файл слишком большой для предпросмотра. Лимит: ${formatFileSize(limit)}.`
-      : 'Файл слишком большой для предпросмотра.';
-  }
-  if (
-    !detail
-    || /preview is temporarily unavailable/i.test(detail)
-    || /not available/i.test(detail)
-    || /failed/i.test(detail)
-  ) {
-    return 'Предпросмотр готовится или временно недоступен. Оригинал можно скачать.';
-  }
-  return detail;
-};
-
-const getFileVisualMeta = (item) => {
-  const fileName = String(item?.download_file_name || item?.original_file_name || '');
-  const mimeType = String(item?.download_mime_type || item?.mime_type || '').toLowerCase();
-  const extension = getFileExtension(fileName);
-  if (mimeType.startsWith('image/')) return FILE_TYPE_META.image;
-  if (mimeType.startsWith('video/')) return FILE_TYPE_META.video;
-  if (mimeType.startsWith('audio/')) return FILE_TYPE_META.audio;
-  if (mimeType.includes('pdf') || extension === 'pdf') return FILE_TYPE_META.pdf;
-  if (['doc', 'docx', 'rtf', 'odt'].includes(extension)) return FILE_TYPE_META.document;
-  if (['xls', 'xlsx', 'csv', 'ods'].includes(extension)) return FILE_TYPE_META.sheet;
-  if (['zip', 'rar', '7z', 'tar', 'gz', 'zst'].includes(extension)) return FILE_TYPE_META.archive;
-  if (['js', 'jsx', 'ts', 'tsx', 'py', 'ps1', 'sql', 'json', 'xml', 'html', 'css', 'md'].includes(extension)) return FILE_TYPE_META.code;
-  if (mimeType.startsWith('text/') || ['txt', 'log'].includes(extension)) return FILE_TYPE_META.text;
-  return FILE_TYPE_META.file;
-};
-
-const getFileVisualColors = (theme, meta) => {
-  const palette = theme.palette[meta.palette] || theme.palette.primary;
-  const main = palette.main || theme.palette.text.secondary;
-  return {
-    color: main,
-    background: alpha(main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-    border: alpha(main, theme.palette.mode === 'dark' ? 0.35 : 0.18),
-  };
-};
-
-const statusChip = (status, errorText = '') => {
-  const normalized = String(status || '').trim().toLowerCase();
-  if (normalized === 'ready') return { label: 'Готов', color: 'success' };
-  if (normalized === 'uploading') return { label: 'Загрузка', color: 'info' };
-  if (normalized === 'scanning') return { label: 'Проверка безопасности', color: 'warning' };
-  if (normalized === 'processing') return { label: 'Сжатие', color: 'info' };
-  if (normalized === 'queued') return { label: 'В очереди', color: 'warning' };
-  if (normalized === 'failed') return { label: errorText || 'Ошибка', color: 'error' };
-  return { label: normalized || 'Неизвестно', color: 'default' };
-};
 
 export default function MyFiles() {
   const theme = useTheme();
@@ -220,34 +114,51 @@ export default function MyFiles() {
   const { hasPermission } = useAuth();
   const canWrite = hasPermission('my_files.write');
   const canShare = hasPermission('my_files.share');
-  const fileInputRef = useRef(null);
-  const folderInputRef = useRef(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const viewParam = String(searchParams.get('view') || '');
+  const isTrashView = viewParam === 'trash';
+  const isRecentView = viewParam === 'recent';
+  const isFavoritesView = viewParam === 'favorites';
+  const isSpecialView = isTrashView || isRecentView || isFavoritesView;
+  const listView = isRecentView ? 'recent' : isFavoritesView ? 'favorites' : '';
+  const currentFolderId = isSpecialView ? null : (searchParams.get('folder') || null);
   const [items, setItems] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [breadcrumbs, setBreadcrumbs] = useState([]);
+  const [allFolders, setAllFolders] = useState([]);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createMenuAnchor, setCreateMenuAnchor] = useState(null);
+  const [folderNameInput, setFolderNameInput] = useState('');
+  const [renameDialog, setRenameDialog] = useState({ open: false, kind: '', id: '', name: '' });
+  const [moveDialog, setMoveDialog] = useState({ open: false, kind: '', id: '', targetFolderId: '' });
+  const [folderActionsMenu, setFolderActionsMenu] = useState({ folder: null, anchorPosition: null });
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [sortField, setSortField] = useState('name');
+  const [sortDir, setSortDir] = useState('asc');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [viewMode, setViewMode] = useState(() => (
+    window.localStorage.getItem('my-files-view') === 'grid' ? 'grid' : 'list'
+  ));
+  const [showRetentionNotice, setShowRetentionNotice] = useState(() => (
+    window.localStorage.getItem('my-files-retention-notice-dismissed') !== '1'
+  ));
+  const [dropTargetFolderId, setDropTargetFolderId] = useState('');
+  const [thumbs, setThumbs] = useState({});
+  const thumbsRef = useRef({});
   const [quota, setQuota] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  const [retentionDays, setRetentionDays] = useState(1);
-  const [pendingUploadFiles, setPendingUploadFiles] = useState([]);
-  const [pendingFolderFiles, setPendingFolderFiles] = useState([]);
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [packingFolder, setPackingFolder] = useState(false);
-  const [readingDrop, setReadingDrop] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState({});
-  const [downloadingFileId, setDownloadingFileId] = useState('');
   const [fileActionsMenu, setFileActionsMenu] = useState({ item: null, anchorPosition: null });
-  const [shareDialog, setShareDialog] = useState({
-    open: false,
-    fileId: '',
-    url: '',
-    expiresAt: null,
-    fileName: '',
-    linkCopied: false,
-  });
-  const previewObjectUrlRef = useRef('');
-  const [documentPreview, setDocumentPreview] = useState(createEmptyDocumentPreviewState);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
+  const { downloadingFileId, downloadFile: handleDownload } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
+  const {
+    documentPreview,
+    openDocumentPreview,
+    closeDocumentPreview,
+    refreshDocumentPreview,
+    downloadDocumentPreviewPdf,
+  } = useMyFilesPreviewController({ downloadFile: handleDownload });
 
   const hasProcessingFiles = useMemo(
     () => items.some((item) => ACTIVE_PROCESSING_STATUSES.has(String(item?.status || '').toLowerCase())),
@@ -255,7 +166,6 @@ export default function MyFiles() {
   );
 
   const beginLoad = useRequestGuard();
-  const beginPreview = useRequestGuard();
   const activeLoadsRef = useRef(0);
   const loadData = useCallback(async ({ silent = false } = {}) => {
     const isCurrent = beginLoad();
@@ -263,13 +173,26 @@ export default function MyFiles() {
     if (!silent) setLoading(true);
     setRefreshing(true);
     try {
-      const [filesPayload, quotaPayload] = await Promise.all([
-        myFilesAPI.listFiles(),
+      const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
+        isTrashView && myFilesAPI.listTrash
+          ? myFilesAPI.listTrash()
+          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView }),
         myFilesAPI.getQuota(),
+        myFilesAPI.listFolders ? myFilesAPI.listFolders() : Promise.resolve({ items: [] }),
       ]);
       if (!isCurrent()) return;
-      setItems(Array.isArray(filesPayload?.items) ? filesPayload.items : []);
-      setQuota(quotaPayload || null);
+      const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
+      const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
+      const nextAllFolders = Array.isArray(foldersPayload?.items) ? foldersPayload.items : [];
+      setItems((prev) => reconcileById(prev, nextItems));
+      setFolders((prev) => reconcileById(prev, nextFolders));
+      setBreadcrumbs((prev) => reconcileById(prev, Array.isArray(filesPayload?.breadcrumbs) ? filesPayload.breadcrumbs : []));
+      setAllFolders((prev) => reconcileById(prev, nextAllFolders));
+      setQuota((prev) => {
+        if (!quotaPayload) return null;
+        if (prev && Object.keys(quotaPayload).every((key) => prev[key] === quotaPayload[key])) return prev;
+        return quotaPayload;
+      });
     } catch (error) {
       if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить список файлов.', { dedupeMode: 'recent' });
@@ -280,7 +203,62 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-  }, [beginLoad, notifyApiError]);
+  }, [beginLoad, currentFolderId, isTrashView, listView, notifyApiError]);
+
+  const {
+    uploading,
+    readingDrop,
+    uploadProgress,
+    uploadDialogOpen,
+    pendingUploadFiles,
+    pendingFolderFiles,
+    pendingFolderSummary,
+    retentionDays,
+    setRetentionDays,
+    dragActive,
+    setDragActive,
+    fileInputRef,
+    folderInputRef,
+    openUploadDialog,
+    closeUploadDialog,
+    confirmUpload,
+    handleInputChange,
+    handleFolderInputChange,
+    handleDrop,
+  } = useMyFilesUpload({
+    canWrite,
+    currentFolderId,
+    isSpecialView,
+    allFolders,
+    loadData,
+    notifySuccess,
+    notifyWarning,
+    notifyApiError,
+  });
+
+  const {
+    shareDialog,
+    setShareDialog,
+    folderShareDialog,
+    setFolderShareDialog,
+    shareFile: handleShare,
+    revokeShare: handleRevokeShare,
+    shareFolder: handleFolderShare,
+    revokeFolderShare: handleRevokeFolderShare,
+  } = useMyFilesShares({ loadData, notifySuccess, notifyWarning, notifyApiError });
+
+  const navigateToFolder = useCallback((folderId) => {
+    const next = folderId ? { folder: folderId } : {};
+    setSearchParams(next, { replace: false });
+  }, [setSearchParams]);
+
+  const navigateToView = useCallback((view) => {
+    setSearchParams(view ? { view } : {}, { replace: false });
+  }, [setSearchParams]);
+
+  const navigateToTrash = useCallback(() => {
+    navigateToView('trash');
+  }, [navigateToView]);
 
   useEffect(() => {
     void loadData();
@@ -301,234 +279,6 @@ export default function MyFiles() {
     return () => window.clearInterval(timer);
   }, [hasProcessingFiles, loadData]);
 
-  const revokePreviewObjectUrl = useCallback(() => {
-    const currentUrl = previewObjectUrlRef.current;
-    if (currentUrl && typeof window !== 'undefined' && typeof window.URL?.revokeObjectURL === 'function') {
-      window.URL.revokeObjectURL(currentUrl);
-    }
-    previewObjectUrlRef.current = '';
-  }, []);
-
-  useEffect(() => () => {
-    revokePreviewObjectUrl();
-  }, [revokePreviewObjectUrl]);
-
-  const resetFileInputs = useCallback(() => {
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    if (folderInputRef.current) folderInputRef.current.value = '';
-  }, []);
-
-  const queueUploads = useCallback(async (files, selectedRetentionDays = retentionDays) => {
-    const selected = normalizeFiles(files);
-    if (selected.length === 0) return;
-    setUploading(true);
-    setUploadProgress({});
-    try {
-      for (const file of selected) {
-        if (Number(file?.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
-          notifyWarning(`Файл «${file.name}» больше 4 ГБ и не может быть загружен.`, {
-            source: 'my-files-upload',
-            dedupeMode: 'none',
-          });
-          continue;
-        }
-        await myFilesAPI.uploadFile({
-          file,
-          retentionDays: selectedRetentionDays,
-          onUploadProgress: (event) => {
-            const total = Number(event?.total || file.size || 0);
-            const loaded = Number(event?.loaded || 0);
-            setUploadProgress((current) => ({
-              ...current,
-              [file.name]: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
-            }));
-          },
-        });
-      }
-      notifySuccess('Файлы добавлены в очередь обработки.', { source: 'my-files-upload', dedupeMode: 'none' });
-      await loadData({ silent: true });
-    } catch (error) {
-      const status = Number(error?.response?.status || 0);
-      if (status === 413) {
-        notifyWarning(
-          'Сервер отклонил файл из-за ограничения размера. Проверьте доступную квоту или обратитесь к администратору.',
-          { source: 'my-files-upload-413', dedupeMode: 'none', durationMs: 8000 },
-        );
-      } else {
-        notifyApiError(error, 'Не удалось загрузить файл.', { dedupeMode: 'none' });
-      }
-    } finally {
-      setUploading(false);
-      setPackingFolder(false);
-      setUploadProgress({});
-      resetFileInputs();
-    }
-  }, [loadData, notifyApiError, notifySuccess, notifyWarning, resetFileInputs, retentionDays]);
-
-  const openUploadDialog = useCallback((files, { asFolder = false } = {}) => {
-    if (!canWrite) return;
-    const selected = normalizeFiles(files);
-    if (selected.length === 0) return;
-
-    const folderMode = asFolder || isFolderFileSelection(selected);
-    if (folderMode) {
-      const summary = summarizeFolderSelection(selected);
-      if (summary.fileCount === 0) {
-        notifyWarning('Папка пуста — нечего загружать.', { source: 'my-files-upload', dedupeMode: 'none' });
-        resetFileInputs();
-        return;
-      }
-      if (summary.totalBytes > MY_FILES_MAX_UPLOAD_BYTES) {
-        notifyWarning(
-          `Папка «${summary.folderName}» больше 4 ГБ (${formatFileSize(summary.totalBytes)}) и не может быть загружена как архив.`,
-          { source: 'my-files-upload', dedupeMode: 'none' },
-        );
-        resetFileInputs();
-        return;
-      }
-      setRetentionDays(1);
-      setPendingFolderFiles(selected);
-      setPendingUploadFiles([]);
-      setUploadDialogOpen(true);
-      return;
-    }
-
-    setRetentionDays(1);
-    setPendingFolderFiles([]);
-    setPendingUploadFiles(selected);
-    setUploadDialogOpen(true);
-  }, [canWrite, notifyWarning, resetFileInputs]);
-
-  const closeUploadDialog = useCallback(() => {
-    if (uploading || packingFolder) return;
-    setUploadDialogOpen(false);
-    setPendingUploadFiles([]);
-    setPendingFolderFiles([]);
-    resetFileInputs();
-  }, [packingFolder, resetFileInputs, uploading]);
-
-  const confirmUpload = useCallback(() => {
-    const selectedRetentionDays = retentionDays;
-    const folderFiles = pendingFolderFiles;
-    const selected = pendingUploadFiles;
-
-    if (folderFiles.length > 0) {
-      const summary = summarizeFolderSelection(folderFiles);
-      setUploadDialogOpen(false);
-      setPendingFolderFiles([]);
-      setPendingUploadFiles([]);
-      setPackingFolder(true);
-      setUploading(true);
-      setUploadProgress({ [summary.archiveName]: 0 });
-      void (async () => {
-        try {
-          const archive = await packFolderFilesToZip(folderFiles, {
-            archiveName: summary.archiveName,
-            onProgress: (ratio) => {
-              setUploadProgress({
-                [summary.archiveName]: Math.min(99, Math.round(Number(ratio || 0) * 100)),
-              });
-            },
-          });
-          if (Number(archive.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
-            notifyWarning(
-              `Архив «${archive.name}» получился больше 4 ГБ и не может быть загружен.`,
-              { source: 'my-files-upload', dedupeMode: 'none' },
-            );
-            setPackingFolder(false);
-            setUploading(false);
-            setUploadProgress({});
-            resetFileInputs();
-            return;
-          }
-          setPackingFolder(false);
-          await queueUploads([archive], selectedRetentionDays);
-        } catch (error) {
-          setPackingFolder(false);
-          setUploading(false);
-          setUploadProgress({});
-          resetFileInputs();
-          notifyApiError(error, 'Не удалось собрать ZIP из папки.', { dedupeMode: 'none' });
-        }
-      })();
-      return;
-    }
-
-    if (selected.length === 0) return;
-    setUploadDialogOpen(false);
-    setPendingUploadFiles([]);
-    setPendingFolderFiles([]);
-    void queueUploads(selected, selectedRetentionDays);
-  }, [
-    notifyApiError,
-    notifyWarning,
-    pendingFolderFiles,
-    pendingUploadFiles,
-    queueUploads,
-    resetFileInputs,
-    retentionDays,
-  ]);
-
-  const handleInputChange = useCallback((event) => {
-    openUploadDialog(event.target.files, { asFolder: false });
-    event.target.value = '';
-  }, [openUploadDialog]);
-
-  const handleFolderInputChange = useCallback((event) => {
-    openUploadDialog(event.target.files, { asFolder: true });
-    event.target.value = '';
-  }, [openUploadDialog]);
-
-  const handleDrop = useCallback(async (event) => {
-    event.preventDefault();
-    setDragActive(false);
-    if (!canWrite || uploading || packingFolder || readingDrop) return;
-    setReadingDrop(true);
-    try {
-      const { files, asFolder } = await collectDataTransferFiles(event.dataTransfer);
-      if (!files.length) {
-        notifyWarning('Не удалось прочитать перетащенные файлы или папку.', {
-          source: 'my-files-upload',
-          dedupeMode: 'none',
-        });
-        return;
-      }
-      openUploadDialog(files, { asFolder });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось прочитать перетащенную папку.', { dedupeMode: 'none' });
-    } finally {
-      setReadingDrop(false);
-    }
-  }, [canWrite, notifyApiError, notifyWarning, openUploadDialog, packingFolder, readingDrop, uploading]);
-
-  const pendingFolderSummary = useMemo(
-    () => (pendingFolderFiles.length > 0 ? summarizeFolderSelection(pendingFolderFiles) : null),
-    [pendingFolderFiles],
-  );
-
-  const handleDownload = useCallback(async (item) => {
-    const fileId = String(item?.id || '').trim();
-    if (!fileId) return;
-    setDownloadingFileId(fileId);
-    try {
-      const grant = await myFilesAPI.createDownloadGrant(fileId);
-      const downloadUrl = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
-      if (!downloadUrl) {
-        notifyWarning('Не удалось получить ссылку для скачивания.', { source: 'my-files-download', dedupeMode: 'none' });
-        return;
-      }
-      if (!myFilesAPI.triggerNativeDownload(downloadUrl)) {
-        notifyWarning('Браузер не смог начать скачивание.', { source: 'my-files-download', dedupeMode: 'none' });
-        return;
-      }
-      notifySuccess('Скачивание запущено — смотрите панель загрузок браузера.', { source: 'my-files-download', dedupeMode: 'none', durationMs: 4000 });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось скачать файл.', { dedupeMode: 'none' });
-    } finally {
-      setDownloadingFileId('');
-    }
-  }, [notifyApiError, notifySuccess, notifyWarning]);
-
   const openFileActionsMenu = useCallback((event, item) => {
     event.preventDefault();
     event.stopPropagation();
@@ -539,146 +289,45 @@ export default function MyFiles() {
     setFileActionsMenu({ item: null, anchorPosition: null });
   }, []);
 
-  const openDocumentPreview = useCallback(async (item) => {
-    const isCurrent = beginPreview();
-    const fileId = String(item?.id || '').trim();
-    if (!fileId) return;
 
-    const fileName = getMyFileName(item);
-    const contentType = getMyFileContentType(item);
-    const fallbackSourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
-    const fallbackKind = getMyFilePreviewKind(item);
-
-    revokePreviewObjectUrl();
-    setDocumentPreview({
-      ...createEmptyDocumentPreviewState(),
-      open: true,
-      item,
-      loading: true,
-      kind: fallbackKind,
-      sourceKind: fallbackSourceKind,
-    });
-
-    try {
-      const metadata = normalizeAttachmentPreviewMetadata(await myFilesAPI.getPreviewMeta(fileId));
-      if (!isCurrent()) return;
-      const resolvedSourceKind = metadata.sourceKind || fallbackSourceKind;
-      const previewResponse = await myFilesAPI.downloadPreviewContent(fileId);
-      if (!isCurrent()) return;
-      const {
-        blob: previewBlob,
-        filename: previewFilename,
-      } = buildAttachmentBlobPayload({
-        response: previewResponse,
-        attachment: {
-          name: metadata.pdfFilename || fileName,
-          content_type: 'application/pdf',
-        },
-      });
-      let excelWorkbook = null;
-      if (resolvedSourceKind === 'excel') {
-        try {
-          const sourceResponse = await myFilesAPI.downloadPreviewSource(fileId);
-          const { blob: sourceBlob } = buildAttachmentBlobPayload({
-            response: sourceResponse,
-            attachment: { name: fileName, content_type: contentType },
-          });
-          excelWorkbook = await parseExcelWorkbookFromBlob(sourceBlob);
-        } catch {
-          excelWorkbook = null;
-        }
-      }
-
-      if (!isCurrent()) return;
-      const objectUrl = typeof window !== 'undefined' && typeof window.URL?.createObjectURL === 'function'
-        ? window.URL.createObjectURL(previewBlob)
-        : '';
-      previewObjectUrlRef.current = objectUrl;
-      setDocumentPreview({
-        open: true,
-        item,
-        loading: false,
-        error: '',
-        kind: resolvedSourceKind === 'excel' && excelWorkbook ? 'office_excel' : (metadata.previewKind || fallbackKind),
-        sourceKind: resolvedSourceKind,
-        objectUrl,
-        previewBlob,
-        excelWorkbook,
-        pageCount: metadata.pageCount,
-        sheets: metadata.sheets,
-        pdfFilename: previewFilename || metadata.pdfFilename,
-      });
-    } catch (error) {
-      if (!isCurrent()) return;
-      setDocumentPreview((current) => ({
-        ...current,
-        loading: false,
-        error: resolveMyFilePreviewError(error, item),
-        objectUrl: '',
-        previewBlob: null,
-        excelWorkbook: null,
-      }));
+  const handleToggleFavorite = useCallback(async (entry, kind) => {
+    const id = String(entry?.id || '');
+    const next = !entry?.is_favorite;
+    const isFolder = kind === 'folder';
+    const setList = isFolder ? setFolders : setItems;
+    if (isFavoritesView && !next) {
+      setList((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
+    } else {
+      setList((prev) => prev.map((entryItem) => (
+        String(entryItem.id) === id ? { ...entryItem, is_favorite: next } : entryItem
+      )));
     }
-  }, [beginPreview, revokePreviewObjectUrl]);
-
-  const closeDocumentPreview = useCallback(() => {
-    beginPreview();
-    revokePreviewObjectUrl();
-    setDocumentPreview(createEmptyDocumentPreviewState());
-  }, [beginPreview, revokePreviewObjectUrl]);
-
-  const refreshDocumentPreview = useCallback(() => {
-    if (!documentPreview.item) return;
-    void openDocumentPreview(documentPreview.item);
-  }, [documentPreview.item, openDocumentPreview]);
-
-  const downloadDocumentPreviewPdf = useCallback(() => {
-    if (!documentPreview.previewBlob) return;
-    const fileName = getMyFileName(documentPreview.item);
-    downloadBlobFile(
-      documentPreview.previewBlob,
-      documentPreview.pdfFilename || `${fileName.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
-      { preferOpenFallback: true },
-    );
-  }, [documentPreview.item, documentPreview.pdfFilename, documentPreview.previewBlob]);
-
-  const handleShare = useCallback(async (item, { rotate = false } = {}) => {
     try {
-      const payload = await myFilesAPI.createShare(item.id, { rotate });
-      const publicUrl = myFilesAPI.buildPublicUrl(payload.token);
-      let linkCopied = false;
-      try {
-        await navigator.clipboard?.writeText(publicUrl);
-        linkCopied = true;
-      } catch {
-        notifyWarning('Ссылка создана. Скопируйте её из окна.', { source: 'my-files-share', dedupeMode: 'none' });
+      if (isFolder) {
+        await myFilesAPI.updateFolder(id, { isFavorite: next });
+      } else {
+        await myFilesAPI.updateFile(id, { isFavorite: next });
       }
-      setShareDialog({
-        open: true,
-        fileId: item.id,
-        url: publicUrl,
-        expiresAt: payload.expires_at || item.expires_at,
-        fileName: item.download_file_name || item.original_file_name || 'файл',
-        linkCopied,
-      });
-      if (rotate) {
-        notifySuccess('Создана новая публичная ссылка.', { source: 'my-files-share-rotate', dedupeMode: 'none' });
-      }
+    } catch (error) {
       await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось создать публичную ссылку.', { dedupeMode: 'none' });
+      notifyApiError(error, 'Не удалось обновить избранное.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess, notifyWarning]);
+  }, [isFavoritesView, loadData, notifyApiError]);
 
-  const handleRevokeShare = useCallback(async (item) => {
+  const handleFolderArchive = useCallback(async (folder) => {
     try {
-      await myFilesAPI.revokeShare(item.id);
-      notifySuccess('Публичная ссылка отключена.', { source: 'my-files-share', dedupeMode: 'none' });
-      await loadData({ silent: true });
+      const grant = await myFilesAPI.createFolderArchiveGrant(folder.id);
+      const downloadUrl = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
+      if (!downloadUrl || !myFilesAPI.triggerNativeDownload(downloadUrl)) {
+        throw new Error('Не удалось начать скачивание');
+      }
+      notifySuccess(`Архив папки «${folder.name || 'папка'}» готовится и начнёт скачиваться.`, {
+        source: 'my-files-folder-archive', dedupeMode: 'none',
+      });
     } catch (error) {
-      notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
+      notifyApiError(error, 'Не удалось скачать папку архивом.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess]);
+  }, [notifyApiError, notifySuccess]);
 
   const handleDelete = useCallback(async (item) => {
     if (!window.confirm(`Удалить файл "${item.original_file_name}"?`)) return;
@@ -691,69 +340,667 @@ export default function MyFiles() {
     }
   }, [loadData, notifyApiError, notifySuccess]);
 
+  const folderPathLabels = useMemo(() => {
+    const byId = new Map(allFolders.map((folder) => [String(folder.id), folder]));
+    const labels = new Map();
+    const buildPath = (folder, guard = new Set()) => {
+      const id = String(folder?.id || '');
+      if (!id || guard.has(id)) return String(folder?.name || '');
+      guard.add(id);
+      const parent = byId.get(String(folder?.parent_id || ''));
+      const prefix = parent ? `${buildPath(parent, guard)} / ` : '';
+      const label = `${prefix}${folder.name}`;
+      labels.set(id, label);
+      return label;
+    };
+    allFolders.forEach((folder) => { buildPath(folder); });
+    return labels;
+  }, [allFolders]);
+
+  const openFolderActionsMenu = useCallback((event, folder) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setFolderActionsMenu({ folder, anchorPosition: getFileActionsAnchorPosition(event) });
+  }, []);
+
+  const closeFolderActionsMenu = useCallback(() => {
+    setFolderActionsMenu({ folder: null, anchorPosition: null });
+  }, []);
+
+  const handleCreateFolder = useCallback(async () => {
+    const name = String(folderNameInput || '').trim();
+    if (!name) return;
+    try {
+      await myFilesAPI.createFolder({ name, parentId: currentFolderId });
+      setCreateFolderOpen(false);
+      setFolderNameInput('');
+      notifySuccess('Папка создана.', { source: 'my-files-folder', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать папку.', { dedupeMode: 'none' });
+    }
+  }, [currentFolderId, folderNameInput, loadData, notifyApiError, notifySuccess]);
+
+  const openRenameDialog = useCallback((kind, id, currentName) => {
+    setRenameDialog({ open: true, kind, id, name: String(currentName || '') });
+  }, []);
+
+  const confirmRename = useCallback(async () => {
+    const name = String(renameDialog.name || '').trim();
+    if (!name || !renameDialog.id) return;
+    try {
+      if (renameDialog.kind === 'folder') {
+        await myFilesAPI.updateFolder(renameDialog.id, { name });
+      } else {
+        await myFilesAPI.updateFile(renameDialog.id, { name });
+      }
+      setRenameDialog({ open: false, kind: '', id: '', name: '' });
+      notifySuccess('Переименовано.', { source: 'my-files-rename', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переименовать.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess, renameDialog]);
+
+  const openMoveDialog = useCallback((kind, id) => {
+    setMoveDialog({ open: true, kind, id, targetFolderId: '' });
+  }, []);
+
+  const confirmMove = useCallback(async () => {
+    const target = moveDialog.targetFolderId || null;
+    if (!moveDialog.id) return;
+    try {
+      if (moveDialog.kind === 'folder') {
+        await myFilesAPI.updateFolder(moveDialog.id, { parentId: target });
+      } else {
+        await myFilesAPI.updateFile(moveDialog.id, { folderId: target });
+      }
+      setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+      notifySuccess('Объект перемещён.', { source: 'my-files-move', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переместить.', { dedupeMode: 'none' });
+    }
+  }, [loadData, moveDialog, notifyApiError, notifySuccess]);
+
+  const handleDeleteFolder = useCallback(async (folder) => {
+    const name = String(folder?.name || '');
+    if (!window.confirm(`Удалить папку "${name}" вместе со всем содержимым?`)) return;
+    try {
+      await myFilesAPI.deleteFolder(folder.id);
+      notifySuccess('Папка удалена.', { source: 'my-files-folder-delete', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить папку.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess]);
+
+  const handleRestoreEntry = useCallback(async (kind, id) => {
+    try {
+      if (kind === 'folder') {
+        await myFilesAPI.restoreFolder(id);
+      } else {
+        await myFilesAPI.restoreFile(id);
+      }
+      notifySuccess('Восстановлено из корзины.', { source: 'my-files-restore', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось восстановить.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess]);
+
+  const handlePurgeEntry = useCallback(async (kind, id, name) => {
+    const label = kind === 'folder' ? `папку «${name}»` : `файл «${name}»`;
+    if (!window.confirm(`Удалить ${label} навсегда? Восстановить будет нельзя.`)) return;
+    try {
+      if (kind === 'folder') {
+        await myFilesAPI.purgeFolder(id);
+      } else {
+        await myFilesAPI.purgeFile(id);
+      }
+      notifySuccess('Удалено навсегда.', { source: 'my-files-purge', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить навсегда.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess]);
+
+  const handleEmptyTrash = useCallback(async () => {
+    if (!window.confirm('Очистить корзину? Все объекты в ней будут удалены навсегда.')) return;
+    try {
+      await myFilesAPI.emptyTrash();
+      notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось очистить корзину.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess]);
+
+  const handleMoveFileToFolder = useCallback(async (fileId, folderId) => {
+    try {
+      await myFilesAPI.updateFile(fileId, { folderId });
+      notifySuccess('Файл перемещён.', { source: 'my-files-move', dedupeMode: 'none' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переместить файл.', { dedupeMode: 'none' });
+    }
+  }, [loadData, notifyApiError, notifySuccess]);
+
+  const folderDropProps = useCallback((folder) => ({
+    onDragOver: (event) => {
+      if (isTrashView || !canWrite) return;
+      const types = event.dataTransfer?.types;
+      if (!types) return;
+      if (types.includes('application/x-hubit-file') || types.includes('Files')) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = types.includes('application/x-hubit-file') ? 'move' : 'copy';
+        setDropTargetFolderId(String(folder.id));
+      }
+    },
+    onDragLeave: (event) => {
+      event.stopPropagation();
+      setDropTargetFolderId('');
+    },
+    onDrop: (event) => {
+      if (isTrashView || !canWrite) return;
+      const internalId = event.dataTransfer.getData('application/x-hubit-file');
+      const osFiles = event.dataTransfer.files;
+      const hasOsItems = (event.dataTransfer.items?.length || 0) > 0 || (osFiles?.length || 0) > 0;
+      if (!internalId && !hasOsItems) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropTargetFolderId('');
+      setDragActive(false);
+      if (internalId) {
+        void handleMoveFileToFolder(internalId, folder.id);
+      } else {
+        void collectDataTransferFiles(event.dataTransfer)
+          .then(({ files, asFolder }) => {
+            openUploadDialog(files, { asFolder, targetFolderId: folder.id });
+          })
+          .catch((error) => {
+            notifyApiError(error, 'Не удалось прочитать перетащенную папку.', { dedupeMode: 'none' });
+          });
+      }
+    },
+  }), [canWrite, handleMoveFileToFolder, isTrashView, notifyApiError, openUploadDialog]);
+
+  const fileDragProps = useCallback((item) => ({
+    draggable: true,
+    onDragStart: (event) => {
+      event.dataTransfer.setData('application/x-hubit-file', String(item.id));
+      event.dataTransfer.effectAllowed = 'move';
+    },
+  }), []);
+
+  useEffect(() => () => {
+    Object.values(thumbsRef.current).forEach((value) => {
+      if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+    });
+  }, []);
+
+  const moveDialogOptions = useMemo(() => {
+    const excluded = new Set();
+    const seedIds = moveDialog.kind === 'folder' && moveDialog.id
+      ? [String(moveDialog.id)]
+      : moveDialog.kind === 'bulk'
+        ? [...selectedKeys]
+          .filter((key) => key.startsWith('folder:'))
+          .map((key) => key.slice(7))
+        : [];
+    seedIds.forEach((id) => excluded.add(String(id)));
+    if (excluded.size > 0) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const folder of allFolders) {
+          const id = String(folder.id);
+          const pid = String(folder.parent_id || '');
+          if (!excluded.has(id) && excluded.has(pid)) {
+            excluded.add(id);
+            changed = true;
+          }
+        }
+      }
+    }
+    return allFolders.filter((folder) => !excluded.has(String(folder.id)));
+  }, [allFolders, moveDialog.id, moveDialog.kind, selectedKeys]);
+
+  const clearSelection = useCallback(() => setSelectedKeys(new Set()), []);
+
+  useEffect(() => {
+    clearSelection();
+  }, [currentFolderId, viewParam, clearSelection]);
+
+  const toggleSelected = useCallback((key) => {
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const matchesSearch = useCallback((name) => {
+    const query = String(searchQuery || '').trim().toLowerCase();
+    if (!query) return true;
+    return String(name || '').toLowerCase().includes(query);
+  }, [searchQuery]);
+
+  const compareRows = useCallback((a, b) => {
+    let result = 0;
+    if (sortField === 'size') {
+      result = Number(a.original_size_bytes || 0) - Number(b.original_size_bytes || 0);
+    } else if (sortField === 'updated') {
+      result = String(a.updated_at || a.created_at || '').localeCompare(String(b.updated_at || b.created_at || ''));
+    } else {
+      result = String(a.name || a.original_file_name || '').localeCompare(
+        String(b.name || b.original_file_name || ''), 'ru', { sensitivity: 'base' },
+      );
+    }
+    return sortDir === 'desc' ? -result : result;
+  }, [sortDir, sortField]);
+
+  const visibleFolders = useMemo(
+    () => folders.filter((folder) => matchesSearch(folder.name)).sort(compareRows),
+    [compareRows, folders, matchesSearch],
+  );
+  const visibleItems = useMemo(
+    () => items.filter((item) => matchesSearch(item.original_file_name)).sort(compareRows),
+    [compareRows, items, matchesSearch],
+  );
+
+  const toggleSort = useCallback((field) => {
+    if (sortField === field) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDir('asc');
+    }
+  }, [sortField]);
+
+  const allRowKeys = useMemo(
+    () => [
+      ...visibleFolders.map((folder) => `folder:${folder.id}`),
+      ...visibleItems.map((item) => `file:${item.id}`),
+    ],
+    [visibleFolders, visibleItems],
+  );
+  const allSelected = allRowKeys.length > 0 && allRowKeys.every((key) => selectedKeys.has(key));
+  const someSelected = allRowKeys.some((key) => selectedKeys.has(key));
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (allRowKeys.every((key) => next.has(key))) {
+        allRowKeys.forEach((key) => next.delete(key));
+      } else {
+        allRowKeys.forEach((key) => next.add(key));
+      }
+      return next;
+    });
+  }, [allRowKeys]);
+
+  const selectedFolders = useMemo(
+    () => visibleFolders.filter((folder) => selectedKeys.has(`folder:${folder.id}`)),
+    [selectedKeys, visibleFolders],
+  );
+  const selectedFiles = useMemo(
+    () => items.filter((item) => selectedKeys.has(`file:${item.id}`)),
+    [items, selectedKeys],
+  );
+
+  const thumbObserverRef = useRef(null);
+  const thumbNodesRef = useRef(new Map());
+
+  const requestThumb = useCallback((item) => {
+    const id = String(item?.id || '');
+    if (!id || thumbsRef.current[id]) return;
+    if (String(item.preview_kind || '') !== 'image' || !item.preview_available) return;
+    thumbsRef.current[id] = 'loading';
+    myFilesAPI.downloadPreviewContent(id, { variant: 'thumb' })
+      .then((response) => {
+        const url = URL.createObjectURL(response.data);
+        thumbsRef.current[id] = url;
+        setThumbs((current) => ({ ...current, [id]: url }));
+      })
+      .catch(() => {
+        delete thumbsRef.current[id];
+      });
+  }, []);
+
+  const observeThumbTarget = useCallback((node, item) => {
+    if (!node || isTrashView || viewMode !== 'grid') return;
+    if (String(item.preview_kind || '') !== 'image' || !item.preview_available) return;
+    const id = String(item.id || '');
+    if (!id || thumbsRef.current[id]) return;
+    if (!thumbObserverRef.current) {
+      thumbObserverRef.current = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const target = thumbNodesRef.current.get(entry.target);
+          if (target) requestThumb(target);
+          thumbObserverRef.current?.unobserve(entry.target);
+          thumbNodesRef.current.delete(entry.target);
+        }
+      }, { rootMargin: '300px' });
+    }
+    thumbNodesRef.current.set(node, item);
+    thumbObserverRef.current.observe(node);
+  }, [isTrashView, requestThumb, viewMode]);
+
+  useEffect(() => () => {
+    thumbObserverRef.current?.disconnect();
+    thumbNodesRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const visibleIds = new Set(visibleItems.map((item) => String(item.id || '')));
+    Object.entries(thumbsRef.current).forEach(([id, value]) => {
+      if (visibleIds.has(id)) return;
+      if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+      delete thumbsRef.current[id];
+    });
+    thumbNodesRef.current.forEach((item, node) => {
+      if (!node.isConnected || !visibleIds.has(String(item?.id || ''))) {
+        thumbObserverRef.current?.unobserve(node);
+        thumbNodesRef.current.delete(node);
+      }
+    });
+    setThumbs((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([id]) => visibleIds.has(id)));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [isTrashView, viewMode, visibleItems]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedKeys.size === 0 || bulkBusy) return;
+    const count = selectedFolders.length + selectedFiles.length;
+    if (!window.confirm(`Удалить выбранные объекты (${count} шт.)? Содержимое папок будет удалено вместе с ними.`)) return;
+    setBulkBusy(true);
+    try {
+      for (const folder of selectedFolders) {
+        await myFilesAPI.deleteFolder(folder.id);
+      }
+      for (const file of selectedFiles) {
+        await myFilesAPI.deleteFile(file.id);
+      }
+      notifySuccess(`Удалено объектов: ${count}.`, { source: 'my-files-bulk-delete', dedupeMode: 'none' });
+      clearSelection();
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить выбранные объекты.', { dedupeMode: 'none' });
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkBusy, clearSelection, loadData, notifyApiError, notifySuccess, selectedFiles, selectedFolders, selectedKeys.size]);
+
+  const handleBulkDownload = useCallback(async () => {
+    if (selectedFiles.length === 0) return;
+    for (const file of selectedFiles) {
+      void handleDownload(file);
+    }
+  }, [handleDownload, selectedFiles]);
+
+  const openBulkMoveDialog = useCallback(() => {
+    setMoveDialog({ open: true, kind: 'bulk', id: '', targetFolderId: '' });
+  }, []);
+
+  const handleBulkMove = useCallback(async (targetFolderId) => {
+    if (selectedKeys.size === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      for (const folder of selectedFolders) {
+        await myFilesAPI.updateFolder(folder.id, { parentId: targetFolderId });
+      }
+      for (const file of selectedFiles) {
+        await myFilesAPI.updateFile(file.id, { folderId: targetFolderId });
+      }
+      notifySuccess('Выбранные объекты перемещены.', { source: 'my-files-bulk-move', dedupeMode: 'none' });
+      clearSelection();
+      setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переместить выбранные объекты.', { dedupeMode: 'none' });
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkBusy, clearSelection, loadData, notifyApiError, notifySuccess, selectedFiles, selectedFolders, selectedKeys.size]);
+
   const quotaUsed = Number(quota?.used_bytes || 0);
   const quotaLimit = Number(quota?.limit_bytes || 0);
   const quotaPercent = quotaLimit > 0 ? Math.min(100, Math.round((quotaUsed / quotaLimit) * 100)) : 0;
-  const folderArchiveColors = getFileVisualColors(theme, FILE_TYPE_META.archive);
 
   return (
     <MainLayout showDatabaseSelector={false}>
       <PageShell>
-        <Stack spacing={2.5}>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
-            <Box>
-              <Typography variant="h4" sx={{ fontWeight: 700 }}>Мой диск</Typography>
-              <Typography variant="body2" color="text.secondary">Личное хранилище с публичной ссылкой на выбранный файл.</Typography>
-            </Box>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Button
-                variant="contained"
-                startIcon={<CloudUploadOutlinedIcon />}
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading || packingFolder || readingDrop || !canWrite}
-              >
-                Загрузить
-              </Button>
-              <Button
-                variant="outlined"
-                startIcon={<DriveFolderUploadOutlinedIcon />}
-                onClick={() => folderInputRef.current?.click()}
-                disabled={uploading || packingFolder || readingDrop || !canWrite}
-                data-testid="my-files-upload-folder-button"
-              >
-                Загрузить папку
-              </Button>
-              <Tooltip title="Обновить">
-                <IconButton onClick={() => loadData({ silent: true })} disabled={refreshing}>
-                  {refreshing ? <CircularProgress size={20} /> : <RefreshOutlinedIcon />}
-                </IconButton>
-              </Tooltip>
-            </Stack>
-          </Stack>
-
-          <Alert severity="info">
-            Файлы хранятся в системе до 30 дней. После окончания срока файл и публичная ссылка удаляются.
-          </Alert>
-
+        <Box
+          sx={{
+            display: 'flex',
+            gap: 2.5,
+            alignItems: 'stretch',
+            flexDirection: { xs: 'column', lg: 'row' },
+          }}
+        >
           <Paper
             variant="outlined"
+            sx={{
+              ...getOfficePanelSx(ui),
+              width: { lg: 252 },
+              flexShrink: 0,
+              p: 2,
+              alignSelf: { lg: 'flex-start' },
+              position: { lg: 'sticky' },
+              top: { lg: 16 },
+              display: 'flex',
+              flexDirection: { xs: 'row', lg: 'column' },
+              flexWrap: { xs: 'wrap', lg: 'nowrap' },
+              gap: 2,
+            }}
+          >
+            <Box sx={{ minWidth: { lg: '100%' } }}>
+              <Button
+                variant="contained"
+                startIcon={<AddRoundedIcon />}
+                onClick={(event) => setCreateMenuAnchor(event.currentTarget)}
+                disabled={!canWrite || uploading || readingDrop || isSpecialView}
+                data-testid="my-files-create-button"
+                sx={{
+                  borderRadius: '999px',
+                  px: 2.5,
+                  py: 1.1,
+                  fontWeight: 700,
+                  boxShadow: 'none',
+                }}
+              >
+                Создать
+              </Button>
+              <Menu
+                anchorEl={createMenuAnchor}
+                open={Boolean(createMenuAnchor)}
+                onClose={() => setCreateMenuAnchor(null)}
+              >
+                <MenuItem
+                  data-testid="my-files-create-folder-button"
+                  onClick={() => {
+                    setCreateMenuAnchor(null);
+                    setFolderNameInput('');
+                    setCreateFolderOpen(true);
+                  }}
+                >
+                  <ListItemIcon><CreateNewFolderOutlinedIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Новая папка</ListItemText>
+                </MenuItem>
+                <MenuItem
+                  data-testid="my-files-upload-files-menu"
+                  onClick={() => {
+                    setCreateMenuAnchor(null);
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <ListItemIcon><CloudUploadOutlinedIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Загрузить файлы</ListItemText>
+                </MenuItem>
+                <MenuItem
+                  data-testid="my-files-upload-folder-button"
+                  onClick={() => {
+                    setCreateMenuAnchor(null);
+                    folderInputRef.current?.click();
+                  }}
+                >
+                  <ListItemIcon><DriveFolderUploadOutlinedIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Загрузить папку</ListItemText>
+                </MenuItem>
+              </Menu>
+            </Box>
+
+            <Stack
+              spacing={0.5}
+              component="nav"
+              aria-label="Разделы файлов"
+              sx={{ minWidth: { lg: '100%' }, flex: { xs: 1, lg: 'unset' } }}
+            >
+              {[
+                {
+                  key: 'drive',
+                  icon: <FolderOutlinedIcon fontSize="small" />,
+                  label: 'Мой диск',
+                  active: !currentFolderId && !isSpecialView,
+                  onClick: () => navigateToFolder(null),
+                  testId: 'my-files-nav-drive',
+                },
+                {
+                  key: 'recent',
+                  icon: <HistoryOutlinedIcon fontSize="small" />,
+                  label: 'Недавние',
+                  active: isRecentView,
+                  onClick: () => navigateToView('recent'),
+                  testId: 'my-files-nav-recent',
+                },
+                {
+                  key: 'favorites',
+                  icon: <StarOutlineRoundedIcon fontSize="small" />,
+                  label: 'Избранное',
+                  active: isFavoritesView,
+                  onClick: () => navigateToView('favorites'),
+                  testId: 'my-files-nav-favorites',
+                },
+                {
+                  key: 'trash',
+                  icon: <DeleteOutlineIcon fontSize="small" />,
+                  label: 'Корзина',
+                  active: isTrashView,
+                  onClick: navigateToTrash,
+                  testId: 'my-files-nav-trash',
+                },
+              ].map((item) => (
+                <Box
+                  key={item.key}
+                  component="button"
+                  type="button"
+                  onClick={item.onClick}
+                  aria-current={item.active ? 'page' : undefined}
+                  data-testid={item.testId}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.25,
+                    px: 1.5,
+                    py: 1,
+                    border: 'none',
+                    font: 'inherit',
+                    textAlign: 'left',
+                    width: '100%',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    fontWeight: 700,
+                    color: item.active ? 'primary.main' : 'text.primary',
+                    bgcolor: item.active ? alpha(theme.palette.primary.main, 0.12) : 'transparent',
+                    '&:hover': { bgcolor: 'action.hover' },
+                    '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: 2 },
+                  }}
+                >
+                  {item.icon}
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.label}</Typography>
+                </Box>
+              ))}
+            </Stack>
+
+            <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }}>
+              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">Хранилище</Typography>
+                <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                  {formatFileSize(quotaUsed)} / {formatFileSize(quotaLimit)}
+                </Typography>
+              </Stack>
+              <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
+            </Box>
+          </Paper>
+
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              borderRadius: 2,
+              position: 'relative',
+              outline: dragActive ? `2px dashed ${theme.palette.primary.main}` : '2px dashed transparent',
+              outlineOffset: -6,
+              bgcolor: dragActive ? alpha(theme.palette.primary.main, 0.06) : 'transparent',
+              transition: 'background-color 0.15s ease',
+            }}
             data-testid="my-files-drop-zone"
             onDragOver={(event) => {
+              if (event.dataTransfer?.types?.includes('application/x-hubit-file')) return;
               event.preventDefault();
-              if (!canWrite || uploading || packingFolder || readingDrop) return;
+              if (!canWrite || uploading || readingDrop || isSpecialView) return;
               if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
               setDragActive(true);
             }}
-            onDragLeave={() => setDragActive(false)}
-            onDrop={(event) => { void handleDrop(event); }}
-            sx={{
-              ...getOfficePanelSx(ui),
-              p: 2,
-              borderStyle: 'dashed',
-              borderColor: dragActive ? 'primary.main' : ui.border,
-              bgcolor: dragActive ? alpha(theme.palette.primary.main, 0.08) : undefined,
-            }}
+            onDrop={(event) => { if (!isSpecialView) void handleDrop(event); }}
           >
+            {dragActive ? (
+              <Box
+                data-testid="my-files-drop-overlay"
+                sx={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: (muiTheme) => muiTheme.zIndex.modal + 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  pointerEvents: 'none',
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  backdropFilter: 'blur(2px)',
+                }}
+              >
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 6,
+                    py: 4,
+                    borderRadius: 3,
+                    border: `2px dashed ${theme.palette.primary.main}`,
+                    bgcolor: 'background.paper',
+                    boxShadow: theme.shadows[8],
+                    color: 'primary.main',
+                  }}
+                >
+                  <CloudUploadOutlinedIcon sx={{ fontSize: 56 }} />
+                  <Typography variant="h6" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                    Перетащите файлы сюда
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {breadcrumbs.length > 0
+                      ? `Загрузятся в папку «${breadcrumbs[breadcrumbs.length - 1]?.name || 'Мой диск'}»`
+                      : 'Загрузятся в «Мой диск»'}
+                  </Typography>
+                </Box>
+              </Box>
+            ) : null}
             <input ref={fileInputRef} data-testid="my-files-input" type="file" multiple hidden disabled={!canWrite} onChange={handleInputChange} />
             <input
               ref={folderInputRef}
@@ -764,232 +1011,451 @@ export default function MyFiles() {
               disabled={!canWrite}
               onChange={handleFolderInputChange}
             />
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
-              <Stack direction="row" spacing={1.5} alignItems="center">
-                <InsertDriveFileOutlinedIcon color="primary" />
-                <Box>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Перетащите файлы или папку сюда</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {readingDrop
-                      ? 'Читаем содержимое папки…'
-                      : 'Папку можно просто бросить сюда — она упакуется в ZIP. Срок хранения выбирается перед загрузкой.'}
-                  </Typography>
-                </Box>
-              </Stack>
-              <Box sx={{ minWidth: { xs: '100%', md: 260 } }}>
-                <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                  <Typography variant="body2" color="text.secondary">Квота</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{formatFileSize(quotaUsed)} / {formatFileSize(quotaLimit)}</Typography>
-                </Stack>
-                <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 8, borderRadius: 1 }} />
-              </Box>
-            </Stack>
-            {uploading || packingFolder || readingDrop ? (
-              <Stack spacing={0.75} sx={{ mt: 2 }}>
-                {readingDrop ? (
-                  <Typography variant="body2" color="text.secondary">Читаем перетащенную папку…</Typography>
-                ) : null}
-                {packingFolder ? (
-                  <Typography variant="body2" color="text.secondary">Собираем ZIP из папки…</Typography>
-                ) : null}
-                {Object.entries(uploadProgress).map(([name, progress]) => (
-                  <Box key={name}>
-                    <Stack direction="row" justifyContent="space-between">
-                      <Typography variant="body2">{name}</Typography>
-                      <Typography variant="body2" color="text.secondary">{progress}%</Typography>
-                    </Stack>
-                    <LinearProgress variant="determinate" value={progress} />
-                  </Box>
-                ))}
-              </Stack>
-            ) : null}
-          </Paper>
 
-          <Box
-            sx={{
-              display: 'grid',
-              gridTemplateColumns: {
-                xs: '1fr',
-                sm: 'repeat(2, minmax(0, 1fr))',
-                lg: 'repeat(3, minmax(0, 1fr))',
-                xl: 'repeat(4, minmax(0, 1fr))',
-              },
-              gap: 1.5,
-            }}
-          >
-            {loading ? (
-              <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui), gridColumn: '1 / -1', py: 4 }}>
-                <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
-                  <CircularProgress size={22} />
-                  <Typography color="text.secondary">Загрузка...</Typography>
-                </Stack>
-              </Paper>
-            ) : null}
-            {!loading && items.length === 0 ? (
-              <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui), gridColumn: '1 / -1', py: 4 }}>
-                <Typography color="text.secondary" align="center">Файлов нет</Typography>
-              </Paper>
-            ) : null}
-            {!loading && items.map((item) => {
-              const chip = statusChip(item.status, item.error_text);
-              const ready = READY_STATUSES.has(String(item.status || '').toLowerCase());
-              const previewSupported = ready && isMyFilePreviewSupported(item);
-              const meta = getFileVisualMeta(item);
-              const Icon = meta.icon;
-              const colors = getFileVisualColors(theme, meta);
-              const savedSize = Number(item.saved_size_bytes || 0);
-              const fileName = item.original_file_name || item.download_file_name || 'file.bin';
-              return (
-                <Paper
-                  key={item.id}
-                  variant="outlined"
-                  data-testid={`my-files-card-${item.id}`}
-                  onContextMenu={(event) => openFileActionsMenu(event, item)}
-                  onKeyDown={(event) => {
-                    if (isFileActionsKeyboardShortcut(event)) openFileActionsMenu(event, item);
-                  }}
-                  sx={{
-                    ...getOfficePanelSx(ui),
-                    p: 1.5,
-                    minHeight: 238,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 1.25,
-                    overflow: 'hidden',
-                    transition: theme.transitions.create(['border-color', 'box-shadow', 'transform'], {
-                      duration: theme.transitions.duration.shorter,
-                    }),
-                    '&:hover': {
-                      borderColor: colors.border,
-                      boxShadow: theme.palette.mode === 'dark'
-                        ? `0 14px 34px ${alpha('#000', 0.26)}`
-                        : `0 14px 34px ${alpha(theme.palette.common.black, 0.08)}`,
-                      transform: 'translateY(-1px)',
-                    },
-                  }}
-                >
-                  <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                    <Box
-                      sx={{
-                        width: 54,
-                        height: 54,
-                        flex: '0 0 auto',
-                        borderRadius: 2,
-                        display: 'grid',
-                        placeItems: 'center',
-                        color: colors.color,
-                        bgcolor: colors.background,
-                        border: `1px solid ${colors.border}`,
-                      }}
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1.5, minHeight: 40 }}>
+              {isTrashView ? (
+                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700 }}>Корзина</Typography>
+                  {(items.length > 0 || folders.length > 0) ? (
+                    <Button
+                      size="small"
+                      color="error"
+                      variant="outlined"
+                      disabled={!canWrite}
+                      onClick={() => void handleEmptyTrash()}
+                      data-testid="my-files-empty-trash"
                     >
-                      <Icon sx={{ fontSize: 30 }} />
-                    </Box>
-                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        variant="subtitle2"
-                        title={fileName}
-                        sx={{
-                          fontWeight: 800,
-                          lineHeight: 1.25,
-                          minHeight: 40,
-                          wordBreak: 'break-word',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {fileName}
-                      </Typography>
-                      <Stack direction="row" spacing={0.75} flexWrap="wrap" sx={{ mt: 0.75, rowGap: 0.75 }}>
-                        <Chip size="small" label={meta.label} variant="outlined" sx={{ color: colors.color, borderColor: colors.border }} />
-                        <Chip size="small" label={chip.label} color={chip.color} />
-                        {item.is_shared ? <Chip size="small" icon={<LinkOutlinedIcon />} label="ссылка" variant="outlined" /> : null}
-                      </Stack>
-                    </Box>
-                  </Stack>
-
-                  {item.download_file_name && item.download_file_name !== item.original_file_name ? (
-                    <Box sx={{ px: 1, py: 0.75, borderRadius: 1.5, bgcolor: 'action.hover' }}>
-                      <Typography variant="caption" color="text.secondary">Скачивание</Typography>
-                      <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.download_file_name}</Typography>
-                    </Box>
+                      Очистить корзину
+                    </Button>
                   ) : null}
-
-                  <Stack direction="row" spacing={1} sx={{ mt: 'auto' }}>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="caption" color="text.secondary">Исходный</Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatFileSize(item.original_size_bytes)}</Typography>
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="caption" color="text.secondary">На диске</Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatFileSize(item.stored_size_bytes || item.original_size_bytes)}</Typography>
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="caption" color="text.secondary">Экономия</Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 700, color: savedSize > 0 ? 'success.main' : 'text.primary' }}>
-                        {savedSize > 0 ? `-${formatFileSize(savedSize)}` : '0 Б'}
+                </Stack>
+              ) : isRecentView || isFavoritesView ? (
+                <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                  {isRecentView ? 'Недавние' : 'Избранное'}
+                </Typography>
+              ) : breadcrumbs.length > 0 ? (
+                <Breadcrumbs aria-label="Путь по папкам" data-testid="my-files-breadcrumbs" sx={{ minWidth: 0, flexShrink: 1 }}>
+                  <Link
+                    component="button"
+                    underline="hover"
+                    color="text.secondary"
+                    onClick={() => navigateToFolder(null)}
+                    sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                  >
+                    Мой диск
+                  </Link>
+                  {breadcrumbs.map((crumb, index) => {
+                    const isLast = index === breadcrumbs.length - 1;
+                    return isLast ? (
+                      <Typography key={crumb.id} color="text.primary" sx={{ fontWeight: 700, fontSize: '1.05rem' }}>
+                        {crumb.name}
                       </Typography>
-                    </Box>
-                  </Stack>
+                    ) : (
+                      <Link
+                        key={crumb.id}
+                        component="button"
+                        underline="hover"
+                        color="text.secondary"
+                        onClick={() => navigateToFolder(crumb.id)}
+                        sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                      >
+                        {crumb.name}
+                      </Link>
+                    );
+                  })}
+                </Breadcrumbs>
+              ) : (
+                <Typography variant="h5" sx={{ fontWeight: 700 }}>Мой диск</Typography>
+              )}
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                <TextField
+                  size="small"
+                  placeholder="Поиск по имени"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск по имени файла или папки' }}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchOutlinedIcon fontSize="small" />
+                      </InputAdornment>
+                    ),
+                  }}
+                  sx={{ width: { xs: 140, sm: 220 } }}
+                />
+                <ToggleButtonGroup
+                  size="small"
+                  exclusive
+                  value={viewMode}
+                  onChange={(_event, next) => {
+                    if (!next) return;
+                    setViewMode(next);
+                    window.localStorage.setItem('my-files-view', next);
+                  }}
+                  sx={{ height: 32 }}
+                >
+                  <ToggleButton value="list" aria-label="Список" data-testid="my-files-view-list">
+                    <Tooltip title="Список"><ViewListOutlinedIcon fontSize="small" /></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="grid" aria-label="Сетка" data-testid="my-files-view-toggle">
+                    <Tooltip title="Сетка"><GridViewOutlinedIcon fontSize="small" /></Tooltip>
+                  </ToggleButton>
+                </ToggleButtonGroup>
+                <Tooltip title="Обновить">
+                  <IconButton aria-label="Обновить список" onClick={() => loadData({ silent: true })} disabled={refreshing}>
+                    {refreshing ? <CircularProgress size={20} /> : <RefreshOutlinedIcon />}
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Stack>
 
-                  <Stack direction="row" spacing={1} alignItems="flex-end" justifyContent="space-between">
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography variant="caption" color="text.secondary">Хранится до</Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatDateTime(item.expires_at)}</Typography>
+            {selectedKeys.size > 0 ? (
+              <Paper
+                variant="outlined"
+                data-testid="my-files-selection-bar"
+                sx={{
+                  ...getOfficePanelSx(ui),
+                  borderLeft: `3px solid ${theme.palette.primary.main}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  px: 1.5,
+                  py: 0.75,
+                  mb: 1.5,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  Выбрано: {selectedKeys.size}
+                </Typography>
+                <Box sx={{ flex: 1 }} />
+                <Button
+                  size="small"
+                  startIcon={<DownloadOutlinedIcon />}
+                  disabled={selectedFiles.length === 0 || bulkBusy}
+                  onClick={handleBulkDownload}
+                  data-testid="my-files-bulk-download"
+                >
+                  Скачать
+                </Button>
+                <Button
+                  size="small"
+                  startIcon={<DriveFileMoveOutlinedIcon />}
+                  disabled={!canWrite || bulkBusy}
+                  onClick={openBulkMoveDialog}
+                  data-testid="my-files-bulk-move"
+                >
+                  Переместить
+                </Button>
+                <Button
+                  size="small"
+                  color="error"
+                  startIcon={<DeleteOutlineIcon />}
+                  disabled={!canWrite || bulkBusy}
+                  onClick={() => void handleBulkDelete()}
+                  data-testid="my-files-bulk-delete"
+                >
+                  Удалить
+                </Button>
+                <Button size="small" onClick={clearSelection} data-testid="my-files-bulk-clear">
+                  Снять выбор
+                </Button>
+              </Paper>
+            ) : null}
+
+            {showRetentionNotice ? (
+              <Alert
+                severity="info"
+                sx={{ mb: 1.5 }}
+                onClose={() => {
+                  setShowRetentionNotice(false);
+                  try { window.localStorage.setItem('my-files-retention-notice-dismissed', '1'); } catch { /* noop */ }
+                }}
+              >
+                Файлы хранятся до 30 дней. Папки открываются как на диске — файлы внутри можно скачивать, делиться и перемещать.
+              </Alert>
+            ) : null}
+
+            {uploading || readingDrop ? (
+              <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui), p: 1.5, mb: 1.5 }}>
+                <Stack spacing={0.75}>
+                  {readingDrop ? (
+                    <Typography variant="body2" color="text.secondary">Читаем перетащенную папку…</Typography>
+                  ) : null}
+                  {Object.entries(uploadProgress).map(([key, progress]) => (
+                    <Box key={key}>
+                      <Stack direction="row" justifyContent="space-between">
+                        <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{progress.name}</Typography>
+                        <Typography variant="body2" color="text.secondary">{progress.percent}%</Typography>
+                      </Stack>
+                      <LinearProgress variant="determinate" value={progress.percent} />
                     </Box>
-                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
-                        <span>
-                          <IconButton
-                            size="small"
-                            data-testid={`my-files-preview-${item.id}`}
-                            disabled={!previewSupported}
-                            onClick={() => openDocumentPreview(item)}
-                          >
-                            <VisibilityOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Скачать">
-                        <span>
-                          <IconButton
-                            size="small"
-                            data-testid={`my-files-download-${item.id}`}
-                            disabled={!ready || downloadingFileId === item.id}
-                            onClick={() => handleDownload(item)}
-                          >
-                            {downloadingFileId === item.id
-                              ? <CircularProgress size={18} />
-                              : <DownloadOutlinedIcon fontSize="small" />}
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title={item.is_shared ? 'Поделиться ссылкой' : 'Создать публичную ссылку'}>
-                        <span>
-                          <IconButton size="small" data-testid={`my-files-share-${item.id}`} disabled={!ready || !canShare} onClick={() => handleShare(item)}>
-                            <ShareOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Отключить публичную ссылку">
-                        <span>
-                          <IconButton size="small" data-testid={`my-files-revoke-share-${item.id}`} disabled={!item.is_shared || !canShare} onClick={() => handleRevokeShare(item)}>
-                            <LinkOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Удалить">
-                        <IconButton size="small" data-testid={`my-files-delete-${item.id}`} color="error" disabled={!canWrite} onClick={() => handleDelete(item)}>
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
+                  ))}
+                </Stack>
+              </Paper>
+            ) : null}
+
+            {viewMode === 'list' ? (
+            <Paper
+              variant="outlined"
+              sx={{ ...getOfficePanelSx(ui), overflow: 'hidden' }}
+            >
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: isTrashView
+                    ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
+                    : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 170px 110px 176px' },
+                  gap: 1,
+                  alignItems: 'center',
+                  px: 1,
+                  py: 0.5,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  position: 'sticky',
+                  top: 0,
+                  zIndex: 2,
+                  bgcolor: 'background.paper',
+                }}
+              >
+                {isTrashView ? null : (
+                  <Checkbox
+                    size="small"
+                    checked={allSelected}
+                    indeterminate={!allSelected && someSelected}
+                    onChange={toggleSelectAll}
+                    inputProps={{ 'aria-label': 'Выбрать все', 'data-testid': 'my-files-select-all' }}
+                  />
+                )}
+                <TableSortLabel
+                  active={sortField === 'name'}
+                  direction={sortField === 'name' ? sortDir : 'asc'}
+                  onClick={() => toggleSort('name')}
+                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary' }}
+                  data-testid="my-files-sort-name"
+                >
+                  Название
+                </TableSortLabel>
+                <TableSortLabel
+                  active={sortField === 'updated'}
+                  direction={sortField === 'updated' ? sortDir : 'asc'}
+                  onClick={() => toggleSort('updated')}
+                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                  data-testid="my-files-sort-updated"
+                >
+                  {isTrashView ? 'Удалён' : 'Изменён'}
+                </TableSortLabel>
+                <TableSortLabel
+                  active={sortField === 'size'}
+                  direction={sortField === 'size' ? sortDir : 'asc'}
+                  onClick={() => toggleSort('size')}
+                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                  data-testid="my-files-sort-size"
+                >
+                  Размер
+                </TableSortLabel>
+                <Box sx={{ display: { xs: 'none', md: 'block' } }} />
+              </Box>
+
+              {loading ? (
+                <Box sx={{ px: 1, py: 0.5 }}>
+                  {[0, 1, 2, 3].map((row) => (
+                    <Stack key={row} direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
+                      {isTrashView ? null : <Skeleton variant="rounded" width={24} height={24} />}
+                      <Skeleton variant="rounded" width={34} height={34} />
+                      <Skeleton variant="text" sx={{ flex: 1, fontSize: '0.875rem' }} />
+                      <Skeleton variant="text" width={110} sx={{ display: { xs: 'none', md: 'block' } }} />
+                      <Skeleton variant="text" width={70} sx={{ display: { xs: 'none', md: 'block' } }} />
                     </Stack>
-                  </Stack>
-                </Paper>
-              );
-            })}
+                  ))}
+                </Box>
+              ) : null}
+
+              {!loading && visibleItems.length === 0 && visibleFolders.length === 0 ? (
+                <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
+                  {isTrashView ? (
+                    <DeleteOutlineIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
+                  ) : (
+                    <FolderOutlinedIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
+                  )}
+                  <Typography color="text.secondary" align="center">
+                    {isTrashView
+                      ? 'Корзина пуста.'
+                      : isRecentView
+                        ? 'Нет недавних файлов.'
+                        : isFavoritesView
+                          ? 'В избранном пока пусто — отметьте файлы звёздочкой.'
+                          : 'Здесь пусто — перетащите файлы или папку, либо создайте папку через «Создать».'}
+                  </Typography>
+                  {!isSpecialView && canWrite ? (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<CloudUploadOutlinedIcon />}
+                      onClick={() => fileInputRef.current?.click()}
+                      sx={{ mt: 0.5 }}
+                    >
+                      Загрузить файлы
+                    </Button>
+                  ) : null}
+                </Stack>
+              ) : null}
+
+              {!loading && visibleFolders.map((folder) => (
+                <FolderRow
+                  key={`folder-${folder.id}`}
+                  folder={folder}
+                  isTrashView={isTrashView}
+                  canWrite={canWrite}
+                  canShare={canShare}
+                  isSelected={selectedKeys.has(`folder:${folder.id}`)}
+                  isDropTarget={dropTargetFolderId === String(folder.id)}
+                  folderDropProps={folderDropProps}
+                  navigateToFolder={navigateToFolder}
+                  openFolderActionsMenu={openFolderActionsMenu}
+                  openRenameDialog={openRenameDialog}
+                  handleFolderShare={handleFolderShare}
+                  handleDeleteFolder={handleDeleteFolder}
+                  handleRestoreEntry={handleRestoreEntry}
+                  handlePurgeEntry={handlePurgeEntry}
+                  onToggleFavorite={handleToggleFavorite}
+                  toggleSelected={toggleSelected}
+                />
+              ))}
+
+              {!loading && visibleItems.map((item) => (
+                <FileRow
+                  key={item.id}
+                  item={item}
+                  isTrashView={isTrashView}
+                  canWrite={canWrite}
+                  canShare={canShare}
+                  isSelected={selectedKeys.has(`file:${item.id}`)}
+                  downloading={downloadingFileId === item.id}
+                  fileDragProps={fileDragProps}
+                  openDocumentPreview={openDocumentPreview}
+                  openFileActionsMenu={openFileActionsMenu}
+                  handleRestoreEntry={handleRestoreEntry}
+                  handlePurgeEntry={handlePurgeEntry}
+                  handleDownload={handleDownload}
+                  handleShare={handleShare}
+                  handleDelete={handleDelete}
+                  onToggleFavorite={handleToggleFavorite}
+                  toggleSelected={toggleSelected}
+                />
+              ))}
+            </Paper>
+            ) : (
+            <Box data-testid="my-files-grid">
+              {!loading && visibleItems.length === 0 && visibleFolders.length === 0 ? (
+                <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
+                  <FolderOutlinedIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
+                  <Typography color="text.secondary" align="center">
+                    {isTrashView ? 'Корзина пуста.' : isRecentView ? 'Нет недавних файлов.' : isFavoritesView ? 'В избранном пока пусто — отметьте файлы звёздочкой.' : 'Здесь пусто — перетащите файлы или папку.'}
+                  </Typography>
+                  {!isSpecialView && canWrite ? (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<CloudUploadOutlinedIcon />}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Загрузить файлы
+                    </Button>
+                  ) : null}
+                </Stack>
+              ) : null}
+              {visibleFolders.length > 0 ? (
+                <>
+                  <Typography
+                    variant="subtitle2"
+                    color="text.secondary"
+                    sx={{ fontWeight: 700, mb: 0.75, px: 0.25 }}
+                    data-testid="my-files-grid-folders-title"
+                  >
+                    Папки
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                      gap: 1,
+                      mb: visibleItems.length > 0 ? 2 : 0,
+                    }}
+                  >
+                    {visibleFolders.map((folder) => (
+                      <FolderCard
+                        key={`folder-${folder.id}`}
+                        folder={folder}
+                        isTrashView={isTrashView}
+                        canWrite={canWrite}
+                        isSelected={selectedKeys.has(`folder:${folder.id}`)}
+                        isDropTarget={dropTargetFolderId === String(folder.id)}
+                        folderDropProps={folderDropProps}
+                        navigateToFolder={navigateToFolder}
+                        openFolderActionsMenu={openFolderActionsMenu}
+                        handleRestoreEntry={handleRestoreEntry}
+                        handlePurgeEntry={handlePurgeEntry}
+                        onToggleFavorite={handleToggleFavorite}
+                        toggleSelected={toggleSelected}
+                      />
+                    ))}
+                  </Box>
+                </>
+              ) : null}
+              {visibleItems.length > 0 ? (
+                <>
+                  {visibleFolders.length > 0 ? (
+                    <Typography
+                      variant="subtitle2"
+                      color="text.secondary"
+                      sx={{ fontWeight: 700, mb: 0.75, px: 0.25 }}
+                      data-testid="my-files-grid-files-title"
+                    >
+                      Файлы
+                    </Typography>
+                  ) : null}
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
+                      gap: 1.5,
+                    }}
+                  >
+                    {visibleItems.map((item) => (
+                      <FileCard
+                        key={item.id}
+                        item={item}
+                        isTrashView={isTrashView}
+                        canWrite={canWrite}
+                        isSelected={selectedKeys.has(`file:${item.id}`)}
+                        thumbUrl={thumbs[String(item.id)] || ''}
+                        fileDragProps={fileDragProps}
+                        observeThumbTarget={observeThumbTarget}
+                        openDocumentPreview={openDocumentPreview}
+                        openFileActionsMenu={openFileActionsMenu}
+                        handleRestoreEntry={handleRestoreEntry}
+                        handlePurgeEntry={handlePurgeEntry}
+                        onToggleFavorite={handleToggleFavorite}
+                        toggleSelected={toggleSelected}
+                      />
+                    ))}
+                  </Box>
+                </>
+              ) : null}
+            </Box>
+            )}
+
+            {isTrashView ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, px: 0.5 }}>
+                Объекты в корзине удаляются окончательно по истечении их срока хранения.
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, px: 0.5 }}>
+                Перетащите файлы или папку в область списка — структура папок сохранится.
+              </Typography>
+            )}
           </Box>
+        </Box>
 
           <FileActionsContextMenu
             open={Boolean(fileActionsMenu.anchorPosition)}
@@ -1004,11 +1470,142 @@ export default function MyFiles() {
               && downloadingFileId === String(fileActionsMenu.item.id || ''),
             )}
             onClose={closeFileActionsMenu}
+            onPreview={fileActionsMenu.item && isMyFilePreviewSupported(fileActionsMenu.item)
+              ? () => { void openDocumentPreview(fileActionsMenu.item, { forcePreview: true }); }
+              : undefined}
             onDownload={fileActionsMenu.item
               ? () => { void handleDownload(fileActionsMenu.item); }
               : undefined}
+            onRename={fileActionsMenu.item && canWrite
+              ? () => openRenameDialog('file', fileActionsMenu.item.id, fileActionsMenu.item.original_file_name)
+              : undefined}
+            onMove={fileActionsMenu.item && canWrite
+              ? () => openMoveDialog('file', fileActionsMenu.item.id)
+              : undefined}
+            onShare={fileActionsMenu.item && canShare && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
+              ? () => { void handleShare(fileActionsMenu.item); }
+              : undefined}
+            onRevokeShare={fileActionsMenu.item && canShare && fileActionsMenu.item.is_shared
+              ? () => { void handleRevokeShare(fileActionsMenu.item); }
+              : undefined}
+            isShared={Boolean(fileActionsMenu.item?.is_shared)}
+            onToggleFavorite={fileActionsMenu.item && canWrite
+              ? () => { void handleToggleFavorite(fileActionsMenu.item, 'file'); }
+              : undefined}
+            isFavorite={Boolean(fileActionsMenu.item?.is_favorite)}
+            onDelete={fileActionsMenu.item && canWrite
+              ? () => { void handleDelete(fileActionsMenu.item); }
+              : undefined}
           />
-        </Stack>
+
+          <Menu
+            open={Boolean(folderActionsMenu.anchorPosition)}
+            onClose={closeFolderActionsMenu}
+            anchorReference="anchorPosition"
+            anchorPosition={folderActionsMenu.anchorPosition || undefined}
+          >
+            <MenuItem
+              data-testid="folder-action-open"
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) navigateToFolder(folder.id);
+              }}
+            >
+              <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Открыть</ListItemText>
+            </MenuItem>
+            <MenuItem
+              data-testid="folder-action-rename"
+              disabled={!canWrite}
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) openRenameDialog('folder', folder.id, folder.name);
+              }}
+            >
+              <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Переименовать</ListItemText>
+            </MenuItem>
+            <MenuItem
+              data-testid="folder-action-favorite"
+              disabled={!canWrite}
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) void handleToggleFavorite(folder, 'folder');
+              }}
+            >
+              <ListItemIcon>
+                {folderActionsMenu.folder?.is_favorite
+                  ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                  : <StarOutlineRoundedIcon fontSize="small" />}
+              </ListItemIcon>
+              <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
+            </MenuItem>
+            <MenuItem
+              data-testid="folder-action-archive"
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) void handleFolderArchive(folder);
+              }}
+            >
+              <ListItemIcon><ArchiveOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Скачать папку (ZIP)</ListItemText>
+            </MenuItem>
+            <MenuItem
+              data-testid="folder-action-move"
+              disabled={!canWrite}
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) openMoveDialog('folder', folder.id);
+              }}
+            >
+              <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Переместить</ListItemText>
+            </MenuItem>
+            <MenuItem
+              data-testid="folder-action-share"
+              disabled={!canShare}
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) void handleFolderShare(folder);
+              }}
+            >
+              <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Поделиться папкой</ListItemText>
+            </MenuItem>
+            {folderActionsMenu.folder?.is_shared ? (
+              <MenuItem
+                data-testid="folder-action-revoke-share"
+                disabled={!canShare}
+                onClick={() => {
+                  const folder = folderActionsMenu.folder;
+                  closeFolderActionsMenu();
+                  if (folder) void handleRevokeFolderShare(folder.id);
+                }}
+              >
+                <ListItemIcon><LinkOutlinedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Отключить ссылку</ListItemText>
+              </MenuItem>
+            ) : null}
+            <MenuItem
+              data-testid="folder-action-delete"
+              disabled={!canWrite}
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) void handleDeleteFolder(folder);
+              }}
+              sx={{ color: 'error.main' }}
+            >
+              <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Удалить</ListItemText>
+            </MenuItem>
+          </Menu>
 
         <Dialog open={uploadDialogOpen} onClose={closeUploadDialog} maxWidth="sm" fullWidth>
           <DialogTitle>{pendingFolderSummary ? 'Загрузка папки' : 'Загрузка файлов'}</DialogTitle>
@@ -1019,9 +1616,15 @@ export default function MyFiles() {
                 Лимит: {formatMyFilesUploadLimitLabel()}.
               </Alert>
               {pendingFolderSummary ? (
-                <Alert severity="info" data-testid="my-files-folder-archive-notice">
+                <Alert severity="info" data-testid="my-files-folder-structure-notice">
                   Папка «{pendingFolderSummary.folderName}» ({pendingFolderSummary.fileCount} файл., {formatFileSize(pendingFolderSummary.totalBytes)})
-                  будет упакована в архив <strong>{pendingFolderSummary.archiveName}</strong> и загружена одним файлом.
+                  будет создана на диске, файлы загрузятся с сохранением структуры — их можно будет открывать и делиться по отдельности.
+                </Alert>
+              ) : null}
+              {pendingFolderSummary && pendingFolderSummary.totalBytes >= 200 * 1024 * 1024 ? (
+                <Alert severity="warning" data-testid="my-files-folder-size-warn">
+                  Большая папка ({formatFileSize(pendingFolderSummary.totalBytes)}): загрузка может
+                  занять несколько минут. Не закрывайте вкладку до завершения.
                 </Alert>
               ) : null}
               <Box>
@@ -1050,19 +1653,18 @@ export default function MyFiles() {
                           borderRadius: 1.25,
                           display: 'grid',
                           placeItems: 'center',
-                          color: folderArchiveColors.color,
-                          bgcolor: folderArchiveColors.background,
-                          border: `1px solid ${folderArchiveColors.border}`,
+                          color: 'warning.main',
+                          bgcolor: 'action.hover',
                         }}
                       >
-                        <ArchiveOutlinedIcon sx={{ fontSize: 20 }} />
+                        <FolderOutlinedIcon sx={{ fontSize: 20 }} />
                       </Box>
                       <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {pendingFolderSummary.archiveName}
+                          {pendingFolderSummary.folderName}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          Архив · {pendingFolderSummary.fileCount} файл. · ~{formatFileSize(pendingFolderSummary.totalBytes)}
+                          Папка · {pendingFolderSummary.fileCount} файл. · ~{formatFileSize(pendingFolderSummary.totalBytes)}
                         </Typography>
                       </Box>
                     </Stack>
@@ -1101,13 +1703,13 @@ export default function MyFiles() {
             </Stack>
           </DialogContent>
           <DialogActions>
-            <Button onClick={closeUploadDialog} disabled={uploading || packingFolder}>Отмена</Button>
+            <Button onClick={closeUploadDialog} disabled={uploading}>Отмена</Button>
             <Button
               variant="contained"
               onClick={confirmUpload}
-              disabled={uploading || packingFolder || (pendingUploadFiles.length === 0 && pendingFolderFiles.length === 0)}
+              disabled={uploading || (pendingUploadFiles.length === 0 && pendingFolderFiles.length === 0)}
             >
-              {pendingFolderSummary ? 'Упаковать и загрузить' : 'Загрузить'}
+              {pendingFolderSummary ? 'Загрузить папку' : 'Загрузить'}
             </Button>
           </DialogActions>
         </Dialog>
@@ -1115,7 +1717,7 @@ export default function MyFiles() {
         <DocumentPreviewDialog
           open={documentPreview.open}
           title={getMyFileName(documentPreview.item)}
-          subtitle={documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
+          subtitle={documentPreview.kind === 'image' ? 'Изображение' : documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
           kind={documentPreview.kind}
           sourceKind={documentPreview.sourceKind}
           objectUrl={documentPreview.objectUrl}
@@ -1129,7 +1731,7 @@ export default function MyFiles() {
           onDownloadOriginal={documentPreview.item ? () => { void handleDownload(documentPreview.item); } : undefined}
           onDownloadPdf={downloadDocumentPreviewPdf}
           canDownloadOriginal={Boolean(documentPreview.item)}
-          canDownloadPdf={Boolean(documentPreview.previewBlob && documentPreview.kind !== 'pdf')}
+          canDownloadPdf={Boolean(documentPreview.previewBlob && (documentPreview.kind === 'office_pdf' || documentPreview.kind === 'office_excel'))}
         />
 
         <MyFilesShareDialog
@@ -1153,6 +1755,130 @@ export default function MyFiles() {
             }
             : undefined}
         />
+
+        <MyFilesShareDialog
+          open={folderShareDialog.open}
+          url={folderShareDialog.url}
+          expiresAt={null}
+          fileName={folderShareDialog.folderName}
+          linkCopied={folderShareDialog.linkCopied}
+          onClose={() => setFolderShareDialog({
+            open: false,
+            folderId: '',
+            url: '',
+            folderName: '',
+            linkCopied: false,
+          })}
+          onRotateShare={folderShareDialog.folderId
+            ? () => {
+              const folder = allFolders.find((entry) => entry.id === folderShareDialog.folderId);
+              if (folder) void handleFolderShare(folder, { rotate: true });
+            }
+            : undefined}
+        />
+
+        <Dialog open={createFolderOpen} onClose={() => setCreateFolderOpen(false)} maxWidth="xs" fullWidth>
+          <DialogTitle>Новая папка</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              label="Название папки"
+              value={folderNameInput}
+              onChange={(event) => setFolderNameInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void handleCreateFolder();
+              }}
+              inputProps={{ 'data-testid': 'my-files-folder-name-input' }}
+              sx={{ mt: 1 }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setCreateFolderOpen(false)}>Отмена</Button>
+            <Button
+              variant="contained"
+              data-testid="my-files-create-folder-confirm"
+              disabled={!String(folderNameInput || '').trim()}
+              onClick={() => void handleCreateFolder()}
+            >
+              Создать
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={renameDialog.open} onClose={() => setRenameDialog({ open: false, kind: '', id: '', name: '' })} maxWidth="xs" fullWidth>
+          <DialogTitle>{renameDialog.kind === 'folder' ? 'Переименовать папку' : 'Переименовать файл'}</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              label="Новое название"
+              value={renameDialog.name}
+              onChange={(event) => setRenameDialog((current) => ({ ...current, name: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void confirmRename();
+              }}
+              inputProps={{ 'data-testid': 'my-files-rename-input' }}
+              sx={{ mt: 1 }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRenameDialog({ open: false, kind: '', id: '', name: '' })}>Отмена</Button>
+            <Button
+              variant="contained"
+              data-testid="my-files-rename-confirm"
+              disabled={!String(renameDialog.name || '').trim()}
+              onClick={() => void confirmRename()}
+            >
+              Сохранить
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={moveDialog.open} onClose={() => setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' })} maxWidth="xs" fullWidth>
+          <DialogTitle>
+            {moveDialog.kind === 'bulk' ? `Переместить выбранные (${selectedKeys.size})` : 'Переместить в папку'}
+          </DialogTitle>
+          <DialogContent>
+            <Select
+              fullWidth
+              size="small"
+              displayEmpty
+              value={moveDialog.targetFolderId}
+              onChange={(event) => setMoveDialog((current) => ({ ...current, targetFolderId: event.target.value }))}
+              inputProps={{ 'data-testid': 'my-files-move-select' }}
+              sx={{ mt: 1 }}
+            >
+              <MenuItem value="">
+                <em>Мои файлы (корень)</em>
+              </MenuItem>
+              {moveDialogOptions.map((folder) => (
+                <MenuItem key={folder.id} value={folder.id}>
+                  {folderPathLabels.get(String(folder.id)) || folder.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' })}>Отмена</Button>
+            <Button
+              variant="contained"
+              data-testid="my-files-move-confirm"
+              disabled={bulkBusy}
+              onClick={() => {
+                if (moveDialog.kind === 'bulk') {
+                  void handleBulkMove(moveDialog.targetFolderId || null);
+                  return;
+                }
+                void confirmMove();
+              }}
+            >
+              Переместить
+            </Button>
+          </DialogActions>
+        </Dialog>
       </PageShell>
     </MainLayout>
   );

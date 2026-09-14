@@ -6,21 +6,29 @@ import {
   Autocomplete,
   Box,
   Button,
+  ButtonBase,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   IconButton,
+  InputLabel,
   LinearProgress,
   List,
   ListItem,
   ListItemText,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
+  ToggleButton,
+  ToggleButtonGroup,
   TableBody,
   TableCell,
   TableContainer,
@@ -34,6 +42,8 @@ import {
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import TrendingFlatIcon from '@mui/icons-material/TrendingFlat';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -263,6 +273,13 @@ function WarehouseListMetadataNotice({ meta, entityLabel }) {
   let message = `Данные ${entityLabel} из 1С неполные; не используйте эту выборку как итоговую сверку.`;
   if (status === 'error' || status === 'unknown') {
     message = `Не удалось подтвердить полноту данных ${entityLabel} из 1С. Это не означает нулевой результат.`;
+  } else if (meta?.incompleteReason === 'ambiguous_warehouse_match') {
+    const count = Number(meta?.ambiguousWarehouses || 0);
+    message = count === 1
+      ? '1 склад показан с неоднозначным совпадением. Его название совпало с несколькими уволенными сотрудниками ЗУП; владельца нужно уточнить.'
+      : count > 1
+        ? `Показано складов с неоднозначным совпадением: ${count}. Их названия совпали с несколькими уволенными сотрудниками ЗУП; владельцев нужно уточнить.`
+        : 'Часть складов имеет неоднозначное совпадение с несколькими уволенными сотрудниками ЗУП; владельца нужно уточнить.';
   } else if (meta?.truncated || meta?.hasMore) {
     message = `Показана неполная выборка ${entityLabel} из 1С. Уточните фильтр или загрузите следующую страницу.`;
   }
@@ -329,6 +346,56 @@ const formatDocRequisite = (number, dateValue) => {
   if (!num) return '-';
   return `№ ${num} от ${formatDate(dateValue)}`;
 };
+
+const formatCandidateName = (candidate) => {
+  const name = String(candidate?.employee_name || '').trim() || '-';
+  const city = String(candidate?.city || '').trim();
+  const department = String(candidate?.department || '').trim();
+  const parts = [name];
+  if (city) parts.push(`(${city})`);
+  else if (department) parts.push(`(${department})`);
+  return parts.join(' ');
+};
+
+function DismissedEmployeeCandidates({ candidates }) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  return (
+    <Alert severity="warning" sx={{ mb: 1 }}>
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        Возможные сотрудники:
+      </Typography>
+      <Stack component="ul" spacing={0.5} sx={{ pl: 2, m: 0 }}>
+        {candidates.map((candidate, index) => (
+          <Typography component="li" variant="caption" key={index}>
+            {formatCandidateName(candidate)}
+          </Typography>
+        ))}
+      </Stack>
+    </Alert>
+  );
+}
+
+function DismissedEmployeeCell({ row }) {
+  if (row?.ambiguous) {
+    const count = Array.isArray(row.employee_candidates) ? row.employee_candidates.length : 0;
+    return (
+      <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+        <Typography variant="body2" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+          Владелец не определён{count > 0 ? ` (${count})` : ''}
+        </Typography>
+        <Chip size="small" color="warning" variant="outlined" label="Нужно уточнить" />
+      </Stack>
+    );
+  }
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+        {row.employee_name || '-'}
+      </Typography>
+      <Chip size="small" color="warning" variant="outlined" label="Уволен" />
+    </Stack>
+  );
+}
 
 function NomenclatureCell({ code, name }) {
   const codeText = String(code || '').trim();
@@ -530,6 +597,378 @@ function MovementMobileRow({ row, onOpenDetail }) {
         </Stack>
       ) : null}
     </Box>
+  );
+}
+
+function DismissedWarehouseBalances({ rows, mobile = false, label }) {
+  const balances = Array.isArray(rows) ? rows : [];
+  if (!balances.length) {
+    return <Typography variant="body2" color="text.secondary">Остатка техники нет</Typography>;
+  }
+  if (mobile) {
+    return (
+      <Stack component="ul" spacing={1} aria-label={label} sx={{ m: 0, p: 0, listStyle: 'none' }}>
+        {balances.map((balance, index) => (
+          <Box component="li" key={`${balance.nomenclature_ref || balance.nomenclature_code || index}`}>
+            <NomenclatureCell code={balance.nomenclature_code} name={balance.nomenclature_name} />
+            <Typography variant="caption" color="text.secondary">
+              Количество: {formatNumber(balance.qty_balance, 3)} · Стоимость: {formatNumber(balance.cost_balance)}
+            </Typography>
+          </Box>
+        ))}
+      </Stack>
+    );
+  }
+  return (
+    <Table size="small" aria-label={label}>
+      <TableHead>
+        <TableRow>
+          <TableCell>Техника</TableCell>
+          <TableCell align="right">Количество</TableCell>
+          <TableCell align="right">Стоимость</TableCell>
+          <TableCell align="right">Бух. стоимость</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {balances.map((balance, index) => (
+          <TableRow key={`${balance.nomenclature_ref || balance.nomenclature_code || index}`}>
+            <TableCell>
+              <NomenclatureCell code={balance.nomenclature_code} name={balance.nomenclature_name} />
+            </TableCell>
+            <TableCell align="right">{formatNumber(balance.qty_balance, 3)}</TableCell>
+            <TableCell align="right">{formatNumber(balance.cost_balance)}</TableCell>
+            <TableCell align="right">{formatNumber(balance.cost_accounting_balance)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function DismissedWarehouseMobileRow({ row }) {
+  const [expanded, setExpanded] = useState(false);
+  const warehouseName = row.warehouse?.name || '-';
+  const detailsId = `dismissed-mobile-${row.warehouse?.ref || 'warehouse'}`;
+  const incomplete = isWarehouse1cListIncomplete(row.balances_meta);
+  const minimumPrefix = incomplete ? 'Не менее ' : '';
+
+  return (
+    <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
+      <ButtonBase
+        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        sx={{ width: '100%', minHeight: 56, p: 1.5, textAlign: 'start' }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <DismissedEmployeeCell row={row} />
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            Город: {row.city || '-'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            Склад: {warehouseName}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {minimumPrefix}{row.totals?.positions || 0} позиций · {formatNumber(row.totals?.qty, 3)} ед.
+          </Typography>
+        </Box>
+        {expanded ? <ExpandLessIcon color="action" /> : <ExpandMoreIcon color="action" />}
+      </ButtonBase>
+      <Collapse in={expanded} timeout="auto" unmountOnExit>
+        <Box id={detailsId} sx={{ px: 1.5, pb: 1.5 }}>
+          {incomplete ? <Alert severity="warning" sx={{ mb: 1 }}>Состав техники показан не полностью.</Alert> : null}
+          <DismissedEmployeeCandidates candidates={row.employee_candidates} />
+          <DismissedWarehouseBalances rows={row.balances} mobile label={`Техника на складе ${warehouseName}`} />
+        </Box>
+      </Collapse>
+    </Paper>
+  );
+}
+
+function DismissedWarehouseDesktopRow({ row }) {
+  const [expanded, setExpanded] = useState(false);
+  const warehouseName = row.warehouse?.name || '-';
+  const detailsId = `dismissed-desktop-${row.warehouse?.ref || 'warehouse'}`;
+  const incomplete = isWarehouse1cListIncomplete(row.balances_meta);
+  const minimumPrefix = incomplete ? '≥ ' : '';
+
+  return (
+    <>
+      <TableRow hover>
+        <TableCell padding="checkbox">
+          <IconButton
+            onClick={() => setExpanded((current) => !current)}
+            aria-label={`${expanded ? 'Скрыть' : 'Показать'} технику на складе ${warehouseName}`}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            sx={{ minWidth: 40, minHeight: 40 }}
+          >
+            {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+          </IconButton>
+        </TableCell>
+        <TableCell>
+          <DismissedEmployeeCell row={row} />
+        </TableCell>
+        <TableCell>{row.city || '-'}</TableCell>
+        <TableCell>{warehouseName}</TableCell>
+        <TableCell align="right">{minimumPrefix}{row.totals?.positions || 0}</TableCell>
+        <TableCell align="right">{minimumPrefix}{formatNumber(row.totals?.qty, 3)}</TableCell>
+        <TableCell align="right">{minimumPrefix}{formatNumber(row.totals?.cost)}</TableCell>
+        <TableCell align="right">{minimumPrefix}{formatNumber(row.totals?.cost_accounting)}</TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={8} sx={{ p: 0, borderBottom: expanded ? undefined : 0 }}>
+          <Collapse in={expanded} timeout="auto" unmountOnExit>
+            <Box id={detailsId} sx={{ p: 2, bgcolor: 'action.hover' }}>
+              {incomplete ? <Alert severity="warning" sx={{ mb: 1 }}>Состав техники показан не полностью.</Alert> : null}
+              <DismissedEmployeeCandidates candidates={row.employee_candidates} />
+              <DismissedWarehouseBalances rows={row.balances} label={`Техника на складе ${warehouseName}`} />
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
+}
+
+const DISMISSED_SORT_FIELDS = [
+  { value: 'employee', label: 'Уволенный сотрудник' },
+  { value: 'city', label: 'Город' },
+  { value: 'warehouse', label: 'Склад 1С' },
+  { value: 'positions', label: 'Позиций' },
+  { value: 'qty', label: 'Количество' },
+  { value: 'cost', label: 'Стоимость' },
+  { value: 'cost_accounting', label: 'Бух. стоимость' },
+];
+
+const normalizeCityName = (city) => {
+  let text = String(city || '').trim();
+  text = text.replace(/[\u0301]/g, '');
+  text = text.replace(/[\u0451\u0401]/g, (m) => (m === 'ё' ? 'е' : 'Е'));
+  text = text.replace(
+    /^(г\.|г\s+|с\.|с\s+|д\.|д\s+|п\.|п\s+|пос\.|пос\s+|ст\.|ст\s+|р\.?\s*п\.?\s*|рп\.?\s*|х\.|х\s+|ул\.|ул\s+|пр\.|пр\s+|наб\.|наб\s+|ш\.|ш\s+|тракт\.|тракт\s+|км\.|км\s+|б-р\.?\s*)/i,
+    '',
+  );
+  return text.trim();
+};
+
+const getDismissedSortValue = (row, sortBy) => {
+  switch (sortBy) {
+    case 'employee':
+      return row.employee_name || row.employee_candidates?.[0]?.employee_name || '';
+    case 'city':
+      return normalizeCityName(row.city || row.employee_candidates?.[0]?.city || '');
+    case 'warehouse':
+      return row.warehouse?.name || '';
+    case 'positions':
+      return row.totals?.positions || 0;
+    case 'qty':
+      return row.totals?.qty || 0;
+    case 'cost':
+      return row.totals?.cost || 0;
+    case 'cost_accounting':
+      return row.totals?.cost_accounting || 0;
+    default:
+      return '';
+  }
+};
+
+const compareDismissedValues = (a, b, sortBy, sortDirection) => {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return sortDirection === 'asc' ? a - b : b - a;
+  }
+  const aText = String(a).trim().toLowerCase();
+  const bText = String(b).trim().toLowerCase();
+  const cmp = aText.localeCompare(bText, 'ru-RU');
+  return sortDirection === 'asc' ? cmp : -cmp;
+};
+
+export function DismissedWarehousesPanel({
+  rows,
+  meta,
+  loading,
+  error,
+  searched,
+  onReload,
+  isMobile,
+}) {
+  const warehouses = Array.isArray(rows) ? rows : [];
+  const [cityFilter, setCityFilter] = useState('');
+  const [sortBy, setSortBy] = useState('employee');
+  const [sortDirection, setSortDirection] = useState('asc');
+
+  const cityOptions = useMemo(() => {
+    const cities = new Map();
+    for (const row of warehouses) {
+      const sources = [row.city];
+      for (const candidate of row.employee_candidates || []) {
+        sources.push(candidate.city);
+      }
+      for (const raw of sources) {
+        const label = normalizeCityName(raw);
+        if (!label) continue;
+        const key = label.toLowerCase();
+        if (!cities.has(key)) cities.set(key, label);
+      }
+    }
+    return Array.from(cities.entries())
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru-RU'));
+  }, [warehouses]);
+
+  const filteredWarehouses = useMemo(() => {
+    let result = warehouses;
+    if (cityFilter) {
+      const filter = cityFilter.toLowerCase();
+      result = warehouses.filter((row) => {
+        const sources = [row.city, ...(row.employee_candidates || []).map((c) => c.city)];
+        return sources.some((raw) => normalizeCityName(raw).toLowerCase() === filter);
+      });
+    }
+    return [...result].sort((a, b) => {
+      const aValue = getDismissedSortValue(a, sortBy);
+      const bValue = getDismissedSortValue(b, sortBy);
+      return compareDismissedValues(aValue, bValue, sortBy, sortDirection);
+    });
+  }, [warehouses, cityFilter, sortBy, sortDirection]);
+
+  const hasActiveFilter = Boolean(cityFilter) || sortBy !== 'employee' || sortDirection !== 'asc';
+
+  return (
+    <Stack spacing={2} aria-busy={loading || undefined}>
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} justifyContent="space-between">
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              Склады, на которых осталась техника
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Уволенные сотрудники и город определяются по актуальным данным ЗУП.
+            </Typography>
+          </Box>
+          <Button variant="outlined" onClick={onReload} disabled={loading} sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}>
+            Обновить
+          </Button>
+        </Stack>
+      </Paper>
+      {loading ? <LinearProgress /> : null}
+      {error ? (
+        <Alert
+          severity="error"
+          action={<Button color="inherit" size="small" onClick={onReload}>Повторить</Button>}
+        >
+          {error}
+        </Alert>
+      ) : null}
+      {searched && !loading && !error ? (
+        <>
+          <WarehouseListMetadataNotice meta={meta} entityLabel="остатков по складам уволенных сотрудников" />
+          <Paper variant="outlined" sx={{ p: 1.5 }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+              <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 180 } }}>
+                <InputLabel id="dismissed-city-filter-label">Город</InputLabel>
+                <Select
+                  labelId="dismissed-city-filter-label"
+                  value={cityFilter}
+                  label="Город"
+                  onChange={(event) => setCityFilter(event.target.value)}
+                >
+                  <MenuItem value=""><em>Все города</em></MenuItem>
+                  {cityOptions.map(({ key, label }) => (
+                    <MenuItem key={key} value={key}>{label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 180 } }}>
+                <InputLabel id="dismissed-sort-by-label">Сортировка</InputLabel>
+                <Select
+                  labelId="dismissed-sort-by-label"
+                  value={sortBy}
+                  label="Сортировка"
+                  onChange={(event) => setSortBy(event.target.value)}
+                >
+                  {DISMISSED_SORT_FIELDS.map((field) => (
+                    <MenuItem key={field.value} value={field.value}>{field.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <ToggleButtonGroup
+                value={sortDirection}
+                exclusive
+                onChange={(_, value) => value && setSortDirection(value)}
+                size="small"
+                sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
+              >
+                <ToggleButton value="asc" aria-label="По возрастанию" sx={{ flex: { xs: 1, sm: 'auto' } }}>
+                  <ArrowUpwardIcon fontSize="small" />
+                </ToggleButton>
+                <ToggleButton value="desc" aria-label="По убыванию" sx={{ flex: { xs: 1, sm: 'auto' } }}>
+                  <ArrowDownwardIcon fontSize="small" />
+                </ToggleButton>
+              </ToggleButtonGroup>
+              {hasActiveFilter ? (
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setCityFilter('');
+                    setSortBy('employee');
+                    setSortDirection('asc');
+                  }}
+                  sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
+                >
+                  Сбросить
+                </Button>
+              ) : null}
+            </Stack>
+          </Paper>
+          <Typography variant="body2" color="text.secondary" role="status">
+            Показано складов с техникой: {filteredWarehouses.length}
+            {warehouses.length !== filteredWarehouses.length ? ` из ${warehouses.length}` : ''}
+          </Typography>
+          {warehouses.length === 0 && !isWarehouse1cListIncomplete(meta) ? (
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Typography variant="body2" color="text.secondary" align="center">
+                На складах уволенных сотрудников техника не числится
+              </Typography>
+            </Paper>
+          ) : filteredWarehouses.length === 0 ? (
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Typography variant="body2" color="text.secondary" align="center">
+                По выбранному городу склады не найдены
+              </Typography>
+            </Paper>
+          ) : isMobile ? (
+            <Stack spacing={1}>
+              {filteredWarehouses.map((row, index) => (
+                <DismissedWarehouseMobileRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
+              ))}
+            </Stack>
+          ) : (
+            <TableContainer component={Paper}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell padding="checkbox" aria-label="Состав техники" />
+                    <TableCell>Уволенный сотрудник</TableCell>
+                    <TableCell>Город</TableCell>
+                    <TableCell>Склад 1С</TableCell>
+                    <TableCell align="right">Позиций</TableCell>
+                    <TableCell align="right">Количество</TableCell>
+                    <TableCell align="right">Стоимость</TableCell>
+                    <TableCell align="right">Бух. стоимость</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {filteredWarehouses.map((row, index) => (
+                    <DismissedWarehouseDesktopRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -888,6 +1327,12 @@ function Warehouse1C() {
   const [catalogSyncing, setCatalogSyncing] = useState(false);
   const canSyncCatalog = String(user?.role || '').trim().toLowerCase() === 'admin';
 
+  const [dismissedWarehouses, setDismissedWarehouses] = useState([]);
+  const [dismissedWarehousesMeta, setDismissedWarehousesMeta] = useState({});
+  const [dismissedWarehousesLoading, setDismissedWarehousesLoading] = useState(false);
+  const [dismissedWarehousesError, setDismissedWarehousesError] = useState('');
+  const [dismissedWarehousesSearched, setDismissedWarehousesSearched] = useState(false);
+
   const refreshCatalogStatus = useCallback(async () => {
     setCatalogStatusLoading(true);
     try {
@@ -1083,6 +1528,29 @@ function Warehouse1C() {
     void runMovementsSearch();
   }, [runMovementsSearch]);
 
+  const beginDismissed = useRequestGuard();
+  const handleLoadDismissedWarehouses = useCallback(async () => {
+    const isCurrent = beginDismissed();
+    setDismissedWarehousesLoading(true);
+    setDismissedWarehousesError('');
+    setDismissedWarehousesSearched(true);
+    try {
+      const data = await warehouse1cAPI.getDismissedWarehouses({ limit: 1000 });
+      if (!isCurrent()) return;
+      const response = normalizeWarehouse1cListResponse(data);
+      setDismissedWarehouses(response.items);
+      setDismissedWarehousesMeta(response.meta);
+    } catch (err) {
+      if (!isCurrent()) return;
+      console.error('Failed to load dismissed warehouses:', err);
+      setDismissedWarehousesError(resolveErrorMessage(err, 'Не удалось получить склады уволенных из 1С.'));
+      setDismissedWarehouses([]);
+      setDismissedWarehousesMeta({});
+    } finally {
+      if (isCurrent()) setDismissedWarehousesLoading(false);
+    }
+  }, [beginDismissed]);
+
   useEffect(() => {
     if (deepLinkHandledRef.current) return;
 
@@ -1101,7 +1569,7 @@ function Warehouse1C() {
 
     const targetTab = tabParam === 'movements'
       ? 'movements'
-      : (tabParam === 'reconcile' ? 'reconcile' : 'balances');
+      : (tabParam === 'reconcile' ? 'reconcile' : (tabParam === 'dismissed' ? 'dismissed' : 'balances'));
     setTab(targetTab);
 
     const nomenclature = nomenclatureRef
@@ -1126,7 +1594,7 @@ function Warehouse1C() {
       if (nomenclature || warehouse) {
         setDeepLinkRequest({ type: 'balances', nomenclature, warehouse });
       }
-    } else if (nomenclature) {
+    } else if (targetTab === 'movements' && nomenclature) {
       setMovNomenclatureValue(nomenclature);
       movNomenclatureField.setInputValue(nomenclatureName || nomenclatureCode || nomenclatureRef);
       if (warehouse) {
@@ -1230,7 +1698,7 @@ function Warehouse1C() {
         next.set('warehouseRef', balWarehouseValue.ref);
         if (balWarehouseValue.name) next.set('warehouseName', balWarehouseValue.name);
       }
-    } else {
+    } else if (tab === 'movements') {
       if (movNomenclatureValue?.ref) {
         next.set('nomenclatureRef', movNomenclatureValue.ref);
         if (movNomenclatureValue.name) next.set('nomenclatureName', movNomenclatureValue.name);
@@ -1263,6 +1731,12 @@ function Warehouse1C() {
     setSearchParams,
     location.state,
   ]);
+
+  useEffect(() => {
+    if (tab === 'dismissed' && !dismissedWarehousesSearched && !dismissedWarehousesLoading) {
+      void handleLoadDismissedWarehouses();
+    }
+  }, [tab, dismissedWarehousesSearched, dismissedWarehousesLoading, handleLoadDismissedWarehouses]);
 
   const handleShowMovement = useCallback((row) => {
     const nomenclature = isMeaningful1cRef(row.nomenclature_ref)
@@ -1604,6 +2078,17 @@ function Warehouse1C() {
             }}
           >
             Сверка Hub ↔ 1С
+          </Button>
+          <Button
+            variant={tab === 'dismissed' ? 'contained' : 'outlined'}
+            size="small"
+            onClick={() => {
+              setCameFromBalances(false);
+              setTab('dismissed');
+              setSearchParams({ tab: 'dismissed' }, { replace: true, state: location.state });
+            }}
+          >
+            Склады уволенных
           </Button>
         </Stack>
 
@@ -1973,6 +2458,18 @@ function Warehouse1C() {
               )
             ) : null}
           </>
+        ) : null}
+
+        {tab === 'dismissed' ? (
+          <DismissedWarehousesPanel
+            rows={dismissedWarehouses}
+            meta={dismissedWarehousesMeta}
+            loading={dismissedWarehousesLoading}
+            error={dismissedWarehousesError}
+            searched={dismissedWarehousesSearched}
+            onReload={handleLoadDismissedWarehouses}
+            isMobile={isMobile}
+          />
         ) : null}
 
         <MovementDetailDialog

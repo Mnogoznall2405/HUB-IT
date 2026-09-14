@@ -124,6 +124,69 @@ def test_official_permission_asked_shape_reaches_bash_confirmation_policy() -> N
     assert opencode.answers[0]["payload"] == {"response": "once", "remember": False}
 
 
+@pytest.mark.parametrize('path, denied', [('/workspace/result.txt', False), ('/workspace/../etc/passwd', True), ('/etc/passwd', True)])
+def test_container_edit_path_maps_to_workspace_policy(path, denied):
+    from backend.ai_sandbox.policy import OpenCodePermissionPolicy
+    worker = _WorkerControl()
+    _executor()._handle_permission(job=_job(), session=_session(), opencode_session_id='s',
+        properties={'id': 'p', 'permission': 'edit', 'patterns': ['workspace/result.txt'], 'metadata': {'filepath': path}},
+        control=_OpenCodeControl(), worker_control=worker, deadline=10**12)
+    arguments = worker.created[0]['arguments']
+    assert bool(OpenCodePermissionPolicy().denied_path_reason(arguments)) is denied
+    if not denied:
+        assert arguments == {'filepath': 'result.txt', 'path': 'result.txt'}
+
+
+def test_separate_text_delta_events_are_returned_in_final_answer():
+    class Control(_OpenCodeControl):
+        def events(self):
+            yield {'type': 'message.updated', 'properties': {'info': {'id': 'a', 'role': 'assistant', 'sessionID': 's'}}}
+            yield {'type': 'message.part.updated', 'properties': {'part': {'id': 'p', 'messageID': 'a', 'type': 'text', 'text': ''}}}
+            for text in ('FILE_', 'OK'):
+                yield {'type': 'message.part.delta', 'properties': {'partID': 'p', 'field': 'text', 'delta': text}}
+            yield {'type': 'session.idle', 'properties': {'sessionID': 's'}}
+        def interrupt_events(self):
+            pass
+    answer = _executor()._wait_for_completion(job=_job(), session=_session(), opencode_session_id='s',
+        control=Control(), worker_control=object(), command_timeout_seconds=120, response_timeout_seconds=2)
+    assert answer == 'FILE_OK'
+
+
+@pytest.mark.parametrize('metadata_first', [True, False])
+def test_answer_excludes_reasoning_user_unknown_and_foreign_parts(metadata_first):
+    class Control(_OpenCodeControl):
+        def events(self):
+            for message_id, role in [('u', 'user'), ('a', 'assistant')]:
+                yield {'type': 'message.updated', 'properties': {'info': {
+                    'id': message_id, 'role': role, 'sessionID': 's'}}}
+            for part_id, kind, message_id, content, extra in [
+                ('user', 'text', 'u', 'Hello', {}),
+                ('reason', 'reasoning', 'a', 'Private reasoning', {}),
+                ('synthetic', 'text', 'a', 'Internal hint', {'synthetic': True}),
+                ('ignored', 'text', 'a', 'Ignored', {'ignored': True}),
+                ('foreign', 'text', 'a', 'Other session', {'sessionID': 'other'}),
+            ]:
+                update = {'type': 'message.part.updated', 'properties': {'part': {
+                    'id': part_id, 'messageID': message_id, 'sessionID': 's',
+                    'type': kind, 'text': content, **extra}}}
+                delta = {'type': 'message.part.delta', 'properties': {
+                    'partID': part_id, 'field': 'text', 'delta': content}}
+                yield from ([update, delta] if metadata_first else [delta, update])
+            yield {'type': 'message.part.delta', 'properties': {
+                'partID': 'unknown', 'field': 'text', 'delta': 'Unclassified'}}
+            yield {'type': 'message.part.updated', 'properties': {'part': {
+                'id': 'answer', 'messageID': 'a', 'sessionID': 's', 'type': 'text', 'text': 'Final answer'}}}
+            yield {'type': 'session.idle', 'properties': {'sessionID': 's'}}
+
+        def interrupt_events(self):
+            pass
+
+    answer = _executor()._wait_for_completion(
+        job=_job(), session=_session(), opencode_session_id='s', control=Control(),
+        worker_control=object(), command_timeout_seconds=120, response_timeout_seconds=2)
+    assert answer == 'Final answer'
+
+
 def test_command_timeout_aborts_opencode_session(monkeypatch) -> None:
     opencode = _OpenCodeControl()
     monkeypatch.setattr("backend.ai_sandbox.executor.time.monotonic", lambda: 121.0)

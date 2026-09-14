@@ -2,9 +2,14 @@ import { useEffect, useState } from 'react';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
+import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
+import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
+import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
 
@@ -57,8 +62,15 @@ export default function FileActionsContextMenu({
   onPreview,
   onDownload,
   onSaveAll,
+  onRename,
+  onMove,
   onDelete,
   onSelectAll,
+  onToggleFavorite,
+  isFavorite = false,
+  onShare,
+  onRevokeShare,
+  isShared = false,
 }) {
   const [requestingAction, setRequestingAction] = useState('');
   const [openIntentMessage, setOpenIntentMessage] = useState('');
@@ -185,6 +197,63 @@ export default function FileActionsContextMenu({
         >
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Сохранить все вложения…</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onShare === 'function' ? (
+        <MenuItem
+          data-testid="file-action-share"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onShare)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{isShared ? 'Скопировать ссылку' : 'Поделиться'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onRevokeShare === 'function' ? (
+        <MenuItem
+          data-testid="file-action-revoke-share"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onRevokeShare)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Отключить ссылку</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onToggleFavorite === 'function' ? (
+        <MenuItem
+          data-testid="file-action-favorite"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onToggleFavorite)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon>
+            {isFavorite ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} /> : <StarOutlineRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          <ListItemText>{isFavorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onRename === 'function' ? (
+        <MenuItem
+          data-testid="file-action-rename"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onRename)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Переименовать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onMove === 'function' ? (
+        <MenuItem
+          data-testid="file-action-move"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onMove)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Переместить</ListItemText>
         </MenuItem>
       ) : null}
       {canCopyFile || typeof onDelete === 'function' || typeof onSelectAll === 'function' ? <Divider /> : null}

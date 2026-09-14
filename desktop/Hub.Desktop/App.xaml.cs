@@ -1,9 +1,11 @@
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows;
 using Hub.Desktop.Autostart;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
 using Hub.Desktop.DeepLinks;
+using Hub.Desktop.Interop;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Notifications;
@@ -15,6 +17,8 @@ using Hub.Desktop.ViewModels;
 using Hub.Desktop.Views;
 using Hub.Desktop.WebView;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Windows.AppLifecycle;
+using Microsoft.Windows.AppNotifications;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
 
@@ -32,7 +36,7 @@ public partial class App : Application
     private DesktopWindowManager? _windowManager;
     private DesktopSystemLifecycleService? _systemLifecycle;
 
-    protected override async void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(StartupEventArgs e)
     {
         DesktopPerfBench.MarkOnce("app_onstartup");
         base.OnStartup(e);
@@ -47,11 +51,29 @@ public partial class App : Application
                 DesktopLog.Warning("Ignored invalid desktop launch arguments");
             }
 
+            var activatedArgs = AppInstance.GetCurrent().GetActivatedEventArgs();
+            if (activatedArgs.Kind == ExtendedActivationKind.AppNotification
+                && activatedArgs.Data is AppNotificationActivatedEventArgs notificationArgs)
+            {
+                if (notificationArgs.Arguments.TryGetValue("route", out var notificationRoute)
+                    && DesktopBridgeProtocol.IsValidInternalRoute(notificationRoute))
+                {
+                    launchRequest = launchRequest with { Route = notificationRoute };
+                    DesktopLog.Info($"Launched from app notification; route={notificationRoute}");
+                }
+                else
+                {
+                    DesktopLog.Info("Launched from app notification without a route");
+                }
+            }
+
             _singleInstance = new SingleInstanceCoordinator(DesktopPerfBench.ApplicationId);
 
             if (!_singleInstance.IsPrimary)
             {
-                var activated = await _singleInstance.SignalPrimaryAsync(launchRequest);
+                var activated = Task.Run(() => _singleInstance.SignalPrimaryAsync(launchRequest))
+                    .GetAwaiter()
+                    .GetResult();
 
                 if (!activated)
                 {
@@ -215,9 +237,20 @@ public partial class App : Application
                 Dispatcher.BeginInvoke(() => HandleLaunchRequest(window, eventArgs.Request));
             _singleInstance.StartListening();
 
-            window.Show();
-            DesktopPerfBench.MarkOnce("window_show_returned");
-            if (launchRequest.Route is not null || launchRequest.OpenDownloads)
+            new DesktopShellIntegrationService().EnsureIntegration(executablePath);
+
+            // Only show window if not starting in background (autostart with hidden tray)
+            if (!startInBackground)
+            {
+                window.Show();
+                DesktopPerfBench.MarkOnce("window_show_returned");
+            }
+            else
+            {
+                DesktopPerfBench.MarkOnce("window_start_hidden_background");
+            }
+
+            if (launchRequest.Route is not null || launchRequest.OpenDownloads || launchRequest.HasSharedFiles)
             {
                 HandleLaunchRequest(window, launchRequest);
             }
@@ -286,6 +319,12 @@ public partial class App : Application
 
     private void Notifications_Activated(object? sender, DesktopNotificationActivationEventArgs e)
     {
+        if (e.Action == "dismiss")
+        {
+            DesktopLog.Info("Notification dismissed from action");
+            return;
+        }
+
         Dispatcher.BeginInvoke(() =>
         {
             _windowManager?.ActivateLastOrPrimary(e.Route);
@@ -296,6 +335,12 @@ public partial class App : Application
     {
         ArgumentNullException.ThrowIfNull(mainWindow);
         ArgumentNullException.ThrowIfNull(request);
+        if (request.HasSharedFiles)
+        {
+            mainWindow.HandleLaunchRequest(request);
+            return;
+        }
+
         if (request.OpenDownloads)
         {
             mainWindow.ShowDownloads();

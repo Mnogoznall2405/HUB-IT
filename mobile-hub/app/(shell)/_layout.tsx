@@ -1,3 +1,4 @@
+import { NativeChatDeliveryHost } from '../../src/chat/NativeChatDeliveryHost';
 import { Redirect, Tabs, usePathname } from 'expo-router';
 import { View } from 'react-native';
 import { useAuth } from '../../src/auth/AuthContext';
@@ -5,6 +6,7 @@ import { resolveNativeAuthRedirect } from '../../src/auth/nativeAuthGuard';
 import { BrandedLoader } from '../../src/components/ui/BrandedLoader';
 import { HubBottomNav } from '../../src/components/layout/HubBottomNav';
 import { HubConnectionProvider } from '../../src/components/layout/HubConnectionHeader';
+import { isBottomNavHiddenPath } from '../../src/navigation/bottomNavVisibility';
 import { resolveShellTabPath } from '../../src/navigation/nativeAccountRoutes';
 import { usePreferences } from '../../src/preferences/PreferencesContext';
 import { useFluentTokens } from '../../src/theme/fluentTokens';
@@ -13,14 +15,7 @@ function ShellTabs() {
   const pathname = usePathname();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
-  const hideBottomNav = /^\/chat\/.+/.test(pathname)
-    || /^\/feed\/.+/.test(pathname)
-    || /^\/tasks\/.+/.test(pathname)
-    || /^\/mail\/.+/.test(pathname)
-    || /^\/database\/.+/.test(pathname)
-    || /^\/docflow\/.+/.test(pathname)
-    || /^\/computers\/.+/.test(pathname)
-    || pathname === '/notifications';
+  const hideBottomNav = isBottomNavHiddenPath(pathname);
   const activePath = resolveShellTabPath(pathname);
 
   return (
@@ -53,7 +48,9 @@ function ShellTabs() {
             <Tabs.Screen name="passwords" options={{ title: 'Пароли', href: null }} />
             <Tabs.Screen name="groups-access" options={{ title: 'Доступ к папкам', href: null }} />
             <Tabs.Screen name="warehouse-1c" options={{ title: 'Склад 1С', href: null }} />
+            <Tabs.Screen name="construction" options={{ title: 'Объекты строительства', href: null }} />
             <Tabs.Screen name="mfu" options={{ title: 'МФУ', href: null }} />
+            <Tabs.Screen name="statistics" options={{ title: 'Статистика', href: null }} />
         </Tabs>
       </View>
     </View>
@@ -74,6 +71,7 @@ export default function ShellLayout() {
 
   return (
     <HubConnectionProvider>
+      <NativeChatDeliveryHost />
       <ShellTabs />
     </HubConnectionProvider>
   );

@@ -513,6 +513,29 @@ async def get_announcements(
     )
 
 
+@router.get("/announcements/manage")
+async def list_managed_announcements(
+    status: str = Query("draft", pattern="^(draft|scheduled|published|archived)$"),
+    limit: int = Query(100, ge=1, le=300),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=500),
+    category_id: str = Query("", max_length=256),
+    tag: str = Query("", max_length=256),
+    current_user: User = Depends(get_current_active_user),
+):
+    _require_announcement_manager(current_user)
+    return await run_in_threadpool(
+        hub_service.list_managed_announcements,
+        user=_actor_dict(current_user),
+        status=status,
+        limit=limit,
+        offset=offset,
+        q=q,
+        category_id=category_id,
+        tag=tag,
+    )
+
+
 @router.get("/announcements/{announcement_id}")
 async def get_announcement(
     announcement_id: str,
@@ -979,21 +1002,6 @@ async def download_announcement_attachment(
         path=str(file_path),
         filename=_normalize_text(item.get("file_name"), file_path.name),
         media_type=_normalize_text(item.get("file_mime")) or "application/octet-stream",
-    )
-
-
-@router.get("/announcements/manage")
-async def list_managed_announcements(
-    status: str = Query("draft", pattern="^(draft|scheduled|published|archived)$"),
-    limit: int = Query(100, ge=1, le=300),
-    current_user: User = Depends(get_current_active_user),
-):
-    _require_announcement_manager(current_user)
-    return await run_in_threadpool(
-        hub_service.list_managed_announcements,
-        user=_actor_dict(current_user),
-        status=status,
-        limit=limit,
     )
 
 

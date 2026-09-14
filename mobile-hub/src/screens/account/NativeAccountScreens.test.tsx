@@ -60,9 +60,9 @@ describe('native account hubs', () => {
     expect(view.getByTestId('native-admin-section-users')).toBeTruthy();
     expect(view.getByTestId('native-admin-section-departments')).toBeTruthy();
     expect(view.getByTestId('native-admin-section-sessions')).toBeTruthy();
-    expect(view.queryByTestId('native-admin-section-ad-users')).toBeNull();
-    expect(view.queryByTestId('native-admin-section-ai-bots')).toBeNull();
-    expect(view.queryByTestId('native-admin-section-system')).toBeNull();
+    expect(view.getByTestId('native-admin-section-ad-users')).toBeTruthy();
+    expect(view.getByTestId('native-admin-section-ai-bots')).toBeTruthy();
+    expect(view.getByTestId('native-admin-section-system')).toBeTruthy();
   });
 
   it('hides Users for an operator without settings.users.manage', async () => {

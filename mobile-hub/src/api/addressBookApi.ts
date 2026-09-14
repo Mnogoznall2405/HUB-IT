@@ -52,11 +52,13 @@ export async function searchAddressBook(
   return normalizeAddressBookResponse(data);
 }
 
-export async function getCompleteAddressBook(pageSize = 200): Promise<AddressBookSearchResponse> {
+export async function getCompleteAddressBook(pageSize = 200, assertCurrent: () => void = () => {}): Promise<AddressBookSearchResponse> {
+  assertCurrent();
   try {
     const { data } = await apiClient.get<AddressBookSearchResponse>('/address-book/snapshot', {
       timeout: ADDRESS_BOOK_SNAPSHOT_TIMEOUT_MS,
     });
+    assertCurrent();
     const snapshot = normalizeAddressBookResponse(data);
     if (snapshot.has_more === true || snapshot.items.length !== snapshot.total) {
       throw new Error('Получен неполный снимок адресной книги.');
@@ -78,7 +80,9 @@ export async function getCompleteAddressBook(pageSize = 200): Promise<AddressBoo
   let lastError = '';
 
   for (;;) {
+    assertCurrent();
     const page = await searchAddressBook({ q: '', limit, offset });
+    assertCurrent();
     if (offset > 0 && page.offset == null) {
       throw new Error('Сервер адресной книги не поддерживает полную выгрузку. Обновите сервер и повторите подготовку.');
     }

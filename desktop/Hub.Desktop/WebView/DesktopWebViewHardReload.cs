@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Hub.Desktop.Diagnostics;
 using Microsoft.Web.WebView2.Core;
 
@@ -25,19 +24,7 @@ public static class DesktopWebViewHardReload
             cancellationToken.ThrowIfCancellationRequested();
             await core.Profile.ClearBrowsingDataAsync(CacheKinds);
             cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                await core.CallDevToolsProtocolMethodAsync(
-                    "Page.reload",
-                    """{"ignoreCache":true}""");
-            }
-            catch (Exception exception) when (
-                exception is InvalidOperationException
-                or COMException
-                or ArgumentException)
-            {
-                core.Reload();
-            }
+            core.Reload();
 
             DesktopLog.Info("Reloaded the current HUB page after clearing cache");
             return true;
@@ -46,9 +33,7 @@ public static class DesktopWebViewHardReload
         {
             throw;
         }
-        catch (Exception exception) when (
-            exception is InvalidOperationException
-            or COMException)
+        catch (Exception exception)
         {
             DesktopLog.Error("Hard reload without cache failed", exception);
             return false;

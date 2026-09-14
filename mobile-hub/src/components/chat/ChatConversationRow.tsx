@@ -33,6 +33,11 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
       delayLongPress={400}
       style={[styles.row, active && { backgroundColor: chatTokens.sidebarRowActive }]}
       accessibilityRole="button"
+      accessibilityHint={onLongPress ? 'Удерживайте, чтобы открыть действия диалога' : undefined}
+      accessibilityActions={onLongPress ? [{ name: 'longpress', label: 'Действия диалога' }] : undefined}
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === 'longpress') onLongPress?.();
+      }}
       accessibilityLabel={`${title}${kindLabel ? `. ${kindLabel}` : ''}. ${preview}${unread ? `. Непрочитанных: ${unread}` : ''}`}
       accessibilityState={{ selected: Boolean(active) }}
     >
@@ -62,6 +67,16 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
           ) : null}
         </View>
       </View>
+      {onLongPress ? (
+        <Pressable
+          onPress={(event) => { event.stopPropagation(); onLongPress(); }}
+          accessibilityRole="button"
+          accessibilityLabel={`Действия диалога ${title}`}
+          style={styles.actions}
+        >
+          <Text style={[styles.actionsIcon, active && styles.titleActive]}>⋮</Text>
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 });
@@ -77,6 +92,8 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     borderBottomColor: chatTokens.sidebarDivider,
   },
   body: { flex: 1, minWidth: 0 },
+  actions: { width: 44, height: 44, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginLeft: -10, marginRight: -8 },
+  actionsIcon: { fontSize: 25, color: chatTokens.textSecondary },
   top: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { flexShrink: 1, flexGrow: 1, fontSize: 16, fontWeight: '600', color: chatTokens.textPrimary },
   titleActive: { color: '#fff' },
@@ -96,8 +113,9 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   previewActive: { color: 'rgba(255,255,255,0.82)' },
   badge: {
     minWidth: 22,
-    height: 22,
-    borderRadius: 11,
+    minHeight: 22,
+    paddingVertical: 2,
+    borderRadius: 20,
     backgroundColor: chatTokens.composerActionBg,
     alignItems: 'center',
     justifyContent: 'center',

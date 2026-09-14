@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.Web.WebView2.Core;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Diagnostics;
@@ -7,6 +8,7 @@ using Hub.Desktop.Security;
 using Hub.Desktop.Shell;
 using Hub.Desktop.Remote;
 using Hub.Desktop.Printing;
+using Hub.Desktop.Transfers;
 
 namespace Hub.Desktop.Interop;
 
@@ -17,6 +19,7 @@ public sealed class DesktopBridgeHost : IDisposable
     private readonly NavigationPolicy _navigationPolicy;
     private readonly string _windowsUsername;
     private readonly DesktopVncHandlerProbe _vncHandlerProbe;
+    private readonly DesktopSharedFileRegistry _sharedFiles;
     private bool _bridgeReady;
     private bool _disposed;
 
@@ -35,20 +38,27 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler<DesktopMailComposeWindowRequestedEventArgs>? MailComposeWindowRequested;
     public event EventHandler<DesktopMailComposeWindowCloseResultEventArgs>? MailComposeWindowCloseResult;
     public event EventHandler? MailComposeWindowSent;
+    public event EventHandler<DesktopOpenFileDialogRequestedEventArgs>? OpenFileDialogRequested;
 
     public DesktopBridgeHost(
         CoreWebView2 core,
         NavigationPolicy navigationPolicy,
         IDesktopNotificationService notifications,
         string windowsUsername,
-        DesktopVncHandlerProbe vncHandlerProbe)
+        DesktopVncHandlerProbe vncHandlerProbe,
+        Uri trustedBaseUri)
     {
         _core = core;
         _navigationPolicy = navigationPolicy;
         _notifications = notifications;
         _windowsUsername = windowsUsername;
         _vncHandlerProbe = vncHandlerProbe ?? throw new ArgumentNullException(nameof(vncHandlerProbe));
+        _sharedFiles = new DesktopSharedFileRegistry(trustedBaseUri);
         _core.WebMessageReceived += Core_WebMessageReceived;
+        _core.AddWebResourceRequestedFilter(
+            _sharedFiles.ShareUrlFilter,
+            CoreWebView2WebResourceContext.All);
+        _core.WebResourceRequested += Core_WebResourceRequested;
     }
 
     public void Dispose()
@@ -61,6 +71,7 @@ public sealed class DesktopBridgeHost : IDisposable
         _disposed = true;
         _bridgeReady = false;
         _core.WebMessageReceived -= Core_WebMessageReceived;
+        _core.WebResourceRequested -= Core_WebResourceRequested;
     }
 
     public void ResetDocumentReady()
@@ -185,7 +196,150 @@ public sealed class DesktopBridgeHost : IDisposable
         }
     }
 
+    public bool TryPostAccessibility(bool highContrast, bool reducedMotion, string? scheme)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateAccessibilityMessage(highContrast, reducedMotion, scheme));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop accessibility notification failed", exception);
+            return false;
+        }
+    }
+
+    public bool TryPostOpenFileDialogResult(string requestId, IReadOnlyList<string> paths)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateOpenFileDialogResultMessage(requestId, paths));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop open file dialog result failed", exception);
+            return false;
+        }
+    }
+
+    public bool TryPostFileDropped(IReadOnlyList<string> paths)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            var files = _sharedFiles.Register(paths);
+            if (files.Count == 0)
+            {
+                return false;
+            }
+
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateFileDroppedMessage(files));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop file drop notification failed", exception);
+            return false;
+        }
+    }
+
+    public bool TryPostFileShared(IReadOnlyList<string> paths)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            var files = _sharedFiles.Register(paths);
+            if (files.Count == 0)
+            {
+                return true;
+            }
+
+            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateFileSharedMessage(files));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop file share notification failed", exception);
+            return false;
+        }
+    }
+
+    private void Core_WebResourceRequested(
+        object? sender,
+        CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        if (!Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var uri)
+            || !_sharedFiles.TryGetFilePath(uri, out var path))
+        {
+            return;
+        }
+
+        if (!IsTrustedDocument(_core.Source))
+        {
+            e.Response = _core.Environment.CreateWebResourceResponse(
+                null, 403, "Forbidden", string.Empty);
+            return;
+        }
+
+        try
+        {
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var headers = string.Join(
+                "\r\n",
+                "Content-Type: application/octet-stream",
+                $"Content-Length: {stream.Length}",
+                $"Content-Disposition: attachment; filename*=UTF-8''{Uri.EscapeDataString(Path.GetFileName(path))}",
+                "Cache-Control: no-store",
+                "X-Content-Type-Options: nosniff");
+            e.Response = _core.Environment.CreateWebResourceResponse(stream, 200, "OK", headers);
+            DesktopLog.Info($"Serving shared file {Path.GetFileName(path)} ({stream.Length} bytes)");
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException)
+        {
+            DesktopLog.Warning($"Shared file could not be served; error={exception.Message}");
+            e.Response = _core.Environment.CreateWebResourceResponse(
+                null, 404, "Not Found", string.Empty);
+        }
+    }
+
     private async void Core_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            await HandleWebMessageAsync(e);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop bridge message handler failed", exception);
+        }
+    }
+
+    private async Task HandleWebMessageAsync(CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (!IsTrustedDocument(e.Source) || !IsTrustedDocument(_core.Source))
         {
@@ -241,6 +395,23 @@ public sealed class DesktopBridgeHost : IDisposable
         if (message.Type == DesktopInboundMessageType.MailComposeWindowSent)
         {
             MailComposeWindowSent?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.OpenFileDialog
+            && message.OpenFileDialog is { } openFileDialog)
+        {
+            var eventArgs = new DesktopOpenFileDialogRequestedEventArgs(
+                openFileDialog.RequestId,
+                openFileDialog.Multiple,
+                openFileDialog.Accept,
+                openFileDialog.Title);
+            if (_bridgeReady)
+            {
+                OpenFileDialogRequested?.Invoke(this, eventArgs);
+            }
+
+            TryPostOpenFileDialogResult(openFileDialog.RequestId, eventArgs.Paths);
             return;
         }
 
@@ -493,4 +664,21 @@ public sealed class DesktopMailComposeWindowCloseResultEventArgs(string requestI
     public string RequestId { get; } = requestId;
 
     public bool Saved { get; } = saved;
+}
+
+public sealed class DesktopOpenFileDialogRequestedEventArgs(
+    string requestId,
+    bool multiple,
+    IReadOnlyList<string> accept,
+    string? title) : EventArgs
+{
+    public string RequestId { get; } = requestId;
+
+    public bool Multiple { get; } = multiple;
+
+    public IReadOnlyList<string> Accept { get; } = accept;
+
+    public string? Title { get; } = title;
+
+    public IReadOnlyList<string> Paths { get; set; } = Array.Empty<string>();
 }

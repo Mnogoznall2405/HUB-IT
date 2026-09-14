@@ -89,12 +89,21 @@ export function buildChatThreadRowDecorations(
   unreadBoundaryId?: string | null,
 ): ChatThreadRowDecoration[] {
   const boundaryId = String(unreadBoundaryId || '').trim();
-  return messages.map((item, index) => ({
-    showDate: shouldShowMessageDateSeparator(messages, index),
-    dateLabel: formatChatThreadDate(item.created_at),
-    groupPosition: getMessageGroupPosition(messages, index),
-    unreadBoundary: Boolean(boundaryId && item.id === boundaryId),
-  }));
+  const labelsByDay = new Map<string, string>();
+  return messages.map((item, index) => {
+    const day = new Date(item.created_at || 0).toDateString();
+    let dateLabel = labelsByDay.get(day);
+    if (dateLabel === undefined) {
+      dateLabel = formatChatThreadDate(item.created_at);
+      labelsByDay.set(day, dateLabel);
+    }
+    return {
+      showDate: shouldShowMessageDateSeparator(messages, index),
+      dateLabel,
+      groupPosition: getMessageGroupPosition(messages, index),
+      unreadBoundary: Boolean(boundaryId && item.id === boundaryId),
+    };
+  });
 }
 
 export function getUnreadBoundaryMessageId(
@@ -114,15 +123,20 @@ export function mergeMessages(
   currentUserId?: number,
 ): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
-  [...current, ...(Array.isArray(incoming) ? incoming : [incoming])].forEach((message) => {
+  const addMessage = (message: ChatMessage) => {
     const id = String(message?.id || '').trim();
     if (!id) return;
-    byId.set(id, {
-      ...byId.get(id),
-      ...message,
-      is_own: resolveChatMessageIsOwn(message, currentUserId),
-    });
-  });
+    const previous = byId.get(id);
+    const merged = previous && previous !== message ? { ...previous, ...message } : message;
+    const isOwn = resolveChatMessageIsOwn(merged, currentUserId);
+    const next = merged.is_own === isOwn ? merged : { ...merged, is_own: isOwn };
+    // Preserve object identity so unchanged bubbles and downstream caches can skip work.
+    byId.set(id, previous && Object.keys(next).every((key) => (
+      Object.is(previous[key as keyof ChatMessage], next[key as keyof ChatMessage])
+    )) ? previous : next);
+  };
+  current.forEach(addMessage);
+  (Array.isArray(incoming) ? incoming : [incoming]).forEach(addMessage);
   const authoritativeClientIds = new Set(
     [...byId.values()]
       .filter((message) => !String(message.id).startsWith('pending:'))
@@ -135,7 +149,7 @@ export function mergeMessages(
       byId.delete(id);
     }
   });
-  return [...byId.values()].sort((a, b) => {
+  const result = [...byId.values()].sort((a, b) => {
     const leftLocal = Boolean(a.local_status);
     const rightLocal = Boolean(b.local_status);
     if (leftLocal !== rightLocal) return leftLocal ? -1 : 1;
@@ -145,6 +159,9 @@ export function mergeMessages(
     const byTime = timestamp(b.created_at) - timestamp(a.created_at);
     return byTime || String(b.id).localeCompare(String(a.id));
   });
+  return result.length === current.length && result.every((message, index) => message === current[index])
+    ? current
+    : result;
 }
 
 export function messageFromEnvelope(envelope: unknown): ChatMessage | null {

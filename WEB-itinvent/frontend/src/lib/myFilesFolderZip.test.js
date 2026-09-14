@@ -74,6 +74,19 @@ describe('myFilesFolderZip', () => {
     await expect(packFolderFilesToZip([])).rejects.toThrow(/пуста/i);
   });
 
+  it('maps browser memory failures to a clear Russian error', async () => {
+    const file = makeFolderFile('Big/a.bin', 'x');
+    Object.defineProperty(file, 'arrayBuffer', {
+      configurable: true,
+      value: async () => {
+        const error = new Error('Array buffer allocation failed');
+        error.name = 'RangeError';
+        throw error;
+      },
+    });
+    await expect(packFolderFilesToZip([file])).rejects.toThrow(/памяти браузера/i);
+  });
+
   it('collects dropped folder entries via webkitGetAsEntry', async () => {
     const nestedFile = new File(['csv'], 'list.csv', { type: 'text/csv' });
     const nestedEntry = {

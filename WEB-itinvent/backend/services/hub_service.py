@@ -902,12 +902,17 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             return _AfterCommitConnection(
                 SqlAlchemyCompatConnection(
                     get_app_engine(self._database_url),
-                    table_names=self._hub_table_names(),
+                    table_names=self._hub_table_names() | {
+                        "equipment_transfer_act_reminders",
+                        "equipment_transfer_act_reminder_groups",
+                    },
                     schema=self._app_schema,
                 )
             )
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # Match PostgreSQL Unicode LOWER semantics in the local SQLite fallback.
+        conn.create_function("lower", 1, lambda value: str(value).lower() if value is not None else None, deterministic=True)
         return _AfterCommitConnection(_CountingSqliteConnection(conn))
 
     def _hub_table_names(self) -> set[str]:
@@ -5942,20 +5947,37 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_managed_announcements(self, *, user: dict[str, Any], status: str = "draft", limit: int = 100) -> dict[str, Any]:
+    def list_managed_announcements(
+        self, *, user: dict[str, Any], status: str = "draft", limit: int = 100,
+        offset: int = 0, q: str = "", category_id: str = "", tag: str = "",
+    ) -> dict[str, Any]:
         normalized_status = _normalize_text(status, "draft").lower()
         if normalized_status not in self._ANNOUNCEMENT_STATUSES:
             raise ValueError("Unsupported publication status")
         user_id = self._as_int(user.get("id"))
         moderator = self._user_can_moderate_announcements(user)
+        safe_limit = self._coerce_limit(limit, default=100, minimum=1, maximum=300)
+        safe_offset = max(0, self._as_int(offset, 0))
         with self._lock, self._connect() as conn:
             params: list[Any] = [normalized_status]
             where = "status = ?"
             if not moderator:
                 where += " AND author_user_id = ?"
                 params.append(user_id)
-            params.append(self._coerce_limit(limit, default=100, minimum=1, maximum=300))
-            rows = conn.execute(f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE {where} ORDER BY updated_at DESC LIMIT ?", tuple(params)).fetchall()
+            if _normalize_text(category_id):
+                where += " AND category_id = ?"
+                params.append(_normalize_text(category_id))
+            if _normalize_text(tag):
+                where += f" AND id IN (SELECT l.announcement_id FROM {self._ANN_TAG_LINKS_TABLE} l JOIN {self._ANN_TAGS_TABLE} t ON t.id = l.tag_id WHERE t.slug = ?)"
+                params.append(_normalize_text(tag).lower())
+            for term in ([_normalize_text(q).lower()] if _normalize_text(q) else []):
+                where += " AND LOWER(COALESCE(title, '') || ' ' || COALESCE(preview, '') || ' ' || COALESCE(body, '')) LIKE ?"
+                params.append(f"%{term}%")
+            total = int(conn.execute(f"SELECT COUNT(*) AS total FROM {self._ANN_TABLE} WHERE {where}", tuple(params)).fetchone()["total"])
+            rows = conn.execute(
+                f"SELECT {self._ANN_SELECT_COLUMNS} FROM {self._ANN_TABLE} WHERE {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                tuple([*params, safe_limit, safe_offset]),
+            ).fetchall()
             reads = self._load_announcement_reads_for_user(conn, user_id=user_id)
             attachment_counts = self._load_announcement_attachment_counts(conn)
             attachments = self._load_announcement_attachments_by_announcement(conn)
@@ -5987,7 +6009,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     cover_attachment=covers.get(announcement_id),
                     poll=polls.get(announcement_id, {}),
                 ))
-        return {"items": [item for item in items if item], "status": normalized_status}
+        return {
+            "items": [item for item in items if item], "status": normalized_status,
+            "total": total, "limit": safe_limit, "offset": safe_offset,
+            "has_more": safe_offset + len(rows) < total,
+            "next_offset": safe_offset + len(rows) if safe_offset + len(rows) < total else None,
+        }
 
     def publish_announcement(self, *, announcement_id: str, user: dict[str, Any]) -> dict[str, Any]:
         ann_id = _normalize_text(announcement_id)
@@ -7114,6 +7141,29 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if not is_admin and self._as_int(row["created_by_user_id"]) != actor_id:
                 raise PermissionError("Only task creator or admin can delete it")
             task = dict(row)
+
+            # Keep reminder deletion in the task transaction. Standalone SQLite
+            # Hub stores may not have the optional transfer-reminder tables yet.
+            if self._use_app_db:
+                engine = get_app_engine(self._database_url)
+                has_reminders = engine.dialect.name == "postgresql" or inspect(engine).has_table(
+                    "equipment_transfer_act_reminders", schema=self._app_schema,
+                )
+            else:
+                has_reminders = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    ("equipment_transfer_act_reminders",),
+                ).fetchone() is not None
+            if has_reminders:
+                conn.execute(
+                    "DELETE FROM equipment_transfer_act_reminder_groups WHERE reminder_id IN "
+                    "(SELECT reminder_id FROM equipment_transfer_act_reminders WHERE task_id = ?)",
+                    (normalized_id,),
+                )
+                conn.execute(
+                    "DELETE FROM equipment_transfer_act_reminders WHERE task_id = ?",
+                    (normalized_id,),
+                )
 
             task_attach_rows = conn.execute(
                 f"SELECT file_path FROM {self._TASK_ATTACH_TABLE} WHERE task_id = ?",

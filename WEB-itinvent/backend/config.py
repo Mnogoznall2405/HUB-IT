@@ -288,10 +288,11 @@ class MyFilesSecurityConfig:
     max_uploading_global: int = 8
     max_active_jobs_per_user: int = 5
     max_active_jobs_global: int = 100
-    max_processing_global: int = 1
+    max_processing_global: int = 4
     upload_reservation_ttl_sec: int = 7200
     processing_timeout_sec: int = 21600
     zstd_threads: int = 2
+    zstd_level: int = 19
     antivirus_enabled: bool = False
     antivirus_fail_closed: bool = True
     antivirus_timeout_sec: int = 300
@@ -526,10 +527,11 @@ class Config:
                 max_uploading_global=_positive_int_env("MY_FILES_MAX_UPLOADING_GLOBAL", 8),
                 max_active_jobs_per_user=_positive_int_env("MY_FILES_MAX_ACTIVE_JOBS_PER_USER", 5),
                 max_active_jobs_global=_positive_int_env("MY_FILES_MAX_ACTIVE_JOBS_GLOBAL", 100),
-                max_processing_global=_positive_int_env("MY_FILES_MAX_PROCESSING_GLOBAL", 1),
+                max_processing_global=_positive_int_env("MY_FILES_MAX_PROCESSING_GLOBAL", 4),
                 upload_reservation_ttl_sec=_positive_int_env("MY_FILES_UPLOAD_RESERVATION_TTL_SEC", 7200),
                 processing_timeout_sec=_positive_int_env("MY_FILES_PROCESSING_TIMEOUT_SEC", 21600),
                 zstd_threads=_positive_int_env("MY_FILES_ZSTD_THREADS", 2),
+                zstd_level=_positive_int_env("MY_FILES_ZSTD_LEVEL", 19),
                 antivirus_enabled=_bool_env("MY_FILES_ANTIVIRUS_ENABLED", environment == "production"),
                 antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
                 antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),

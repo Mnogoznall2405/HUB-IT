@@ -149,3 +149,10 @@ it('does not load protected folders without mail.access', async () => {
   await waitFor(() => expect(view.getByText('Нет доступа')).toBeTruthy());
   expect(mailApi.getMailFolderTree).not.toHaveBeenCalled();
 });
+
+it('opening mail folders offline must not start remote loads',async()=>{
+  mockOfflineMode=true;
+  await render(<NativeMailFoldersScreen />);
+  await act(async()=>{});
+  expect(mailApi.getMailFolderTree).not.toHaveBeenCalled();
+});

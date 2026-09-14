@@ -1,3 +1,5 @@
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import { useChatSidebarSizing } from './ChatSidebarSizingContext';
 import { memo, useRef } from 'react';
 import { Checkbox, CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -21,6 +23,7 @@ import {
   formatSidebarConversationTime,
   getConversationDisplayTitle,
   getConversationStatusLine,
+  normalizeChatText,
   getPersonContextLine,
   getStatusMeta,
   getTaskConversationMetaLine,
@@ -58,6 +61,7 @@ const getSidebarAvatarSize = (density, compactMobile = false) => (
 const getSidebarRowStyle = (density, compactMobile = false) => {
   if (compactMobile) return {};
   return {
+    width: `calc(100% - ${2 * density.sidebarRowMx}px)`,
     minHeight: density.sidebarRowMinHeight,
     padding: `${density.sidebarRowPy}px ${density.sidebarRowPx}px`,
     margin: `${density.sidebarRowMy}px ${density.sidebarRowMx}px`,
@@ -308,6 +312,7 @@ const ConversationRow = memo(function ConversationRow({
   skipEnterAnimation = false,
 }) {
   const density = getDensity(ui);
+  const { collapsed } = useChatSidebarSizing();
   const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
   const unread = unreadCount > 0;
@@ -318,7 +323,7 @@ const ConversationRow = memo(function ConversationRow({
   const [taskStatusLabel, taskStatusColor, taskStatusBg] = getStatusMeta(item?.task_status);
   const previewText = draftPreview || (item?.kind === 'ai'
     ? `AI • ${String(item?.last_message_preview || '').trim() || 'Готов к диалогу'}`
-    : getConversationStatusLine(item));
+    : (compactMobile ? getConversationStatusLine(item) : normalizeChatText(item?.last_message_preview || '').trim() || 'Сообщений пока нет'));
   const taskPreviewText = draftPreview
     ? `Черновик: ${draftPreview}`
     : (String(item?.last_message_preview || '').trim() || 'Сообщений пока нет');
@@ -389,10 +394,12 @@ const ConversationRow = memo(function ConversationRow({
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
         aria-current={active ? 'page' : undefined}
+        aria-label={collapsed ? `${taskTitle || item.title}${unreadCount ? `, непрочитанных: ${unreadCount}` : ''}${draftPreview ? ', есть черновик' : ''}` : undefined}
+        title={taskTitle || item.title}
         data-chat-active={active ? 'true' : 'false'}
         data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
-          'relative w-full overflow-hidden text-left transition duration-100 active:scale-[0.995] active:opacity-90',
+          'relative w-full overflow-hidden text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--chat-focus-ring)] transition duration-100 active:scale-[0.995] active:opacity-90',
           compactMobile
             ? 'border-b px-3 py-2.5'
             : 'mx-1.5 my-0.5 rounded-[12px] border px-3 py-2.5',
@@ -402,6 +409,7 @@ const ConversationRow = memo(function ConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
+          ...(collapsed ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: 60 } : {}),
           backgroundColor: active
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
@@ -423,14 +431,14 @@ const ConversationRow = memo(function ConversationRow({
           outline: 'none',
         }}
       >
-        <div className="flex items-center gap-2.5">
+        <div className={collapsed ? "flex items-center justify-center" : "flex items-center gap-2.5"}>
           <ConversationAvatar
             conversation={item}
             online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
-            size={getSidebarAvatarSize(density, compactMobile)}
+            size={collapsed ? 44 : getSidebarAvatarSize(density, compactMobile)}
           />
 
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1" hidden={collapsed}>
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <p className={joinClasses(
@@ -526,6 +534,8 @@ const ConversationRow = memo(function ConversationRow({
             )}
           </div>
         </div>
+        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
+        {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
     </motion.div>
   );
@@ -659,6 +669,7 @@ const AiConversationRow = memo(function AiConversationRow({
   reducedMotion = false,
 }) {
   const density = getDensity(ui);
+  const { collapsed } = useChatSidebarSizing();
   const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
   const conversationId = String(bot?.conversation_id || '').trim();
   const unreadCount = Number(bot?.unread_count || 0);
@@ -712,10 +723,12 @@ const AiConversationRow = memo(function AiConversationRow({
         }}
         disabled={opening}
         aria-current={active ? 'page' : undefined}
+        aria-label={collapsed ? `${bot?.title || 'ИИ'}${unreadCount ? `, непрочитанных: ${unreadCount}` : ''}${draftPreview ? ', есть черновик' : ''}` : undefined}
+        title={bot?.title || 'ИИ'}
         data-chat-active={active ? 'true' : 'false'}
         data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
-          'relative w-full overflow-hidden text-left transition duration-100 active:scale-[0.995] active:opacity-90 disabled:opacity-60',
+          'relative w-full overflow-hidden text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--chat-focus-ring)] transition duration-100 active:scale-[0.995] active:opacity-90 disabled:opacity-60',
           compactMobile
             ? 'border-b px-3 py-2.5'
             : 'mx-1.5 my-0.5 rounded-[12px] border px-3 py-2.5',
@@ -725,6 +738,7 @@ const AiConversationRow = memo(function AiConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
+          ...(collapsed ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: 60 } : {}),
           backgroundColor: active
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
@@ -745,9 +759,9 @@ const AiConversationRow = memo(function AiConversationRow({
               : 'none'),
         }}
       >
-        <div className="flex items-center gap-2.5">
-          <AiConversationAvatar size={getSidebarAvatarSize(density, compactMobile)} />
-          <div className="min-w-0 flex-1">
+        <div className={collapsed ? "flex items-center justify-center" : "flex items-center gap-2.5"}>
+          <AiConversationAvatar size={collapsed ? 44 : getSidebarAvatarSize(density, compactMobile)} />
+          <div className="min-w-0 flex-1" hidden={collapsed}>
             <div className="flex items-start justify-between gap-3">
               <p className={joinClasses(
                 'truncate leading-[1.15] tracking-[-0.01em]',
@@ -829,6 +843,8 @@ const AiConversationRow = memo(function AiConversationRow({
             </div>
           </div>
         </div>
+        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
+        {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
     </motion.div>
   );

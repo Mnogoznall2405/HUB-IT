@@ -596,3 +596,81 @@ def test_it_request_api_allows_individual_permission_and_admin(monkeypatch, role
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+def test_line_state_exposes_supply_fields_without_fake_zeros():
+    state = it_requests.build_line_state(
+        request(),
+        line(
+            section_code="АР2",
+            replacement_name="",
+            replacement_unit="",
+        ),
+        [
+            event(
+                "ordered",
+                quantity=8,
+                delivery_responsible_name="Захарова Л.Ю.",
+                replacement_name="Кабель аналог",
+                replacement_unit="м",
+            ),
+            event(
+                "received",
+                quantity=5,
+                document_number="000176833",
+                destination_name="Склад ЕАСИ",
+                invoice_number="ТКС0000897",
+                receipt_mol_name="",
+            ),
+        ],
+        today=TODAY,
+    )
+    assert state["section_code"] == "АР2"
+    assert state["replacement_name"] == "Кабель аналог"
+    assert state["replacement_unit"] == "м"
+    assert state["qty_requested"] == 10
+    assert state["qty_ordered"] == 8
+    assert state["qty_received"] == 5
+    assert state["receipt_number"] == "000176833"
+    assert state["receipt_warehouse_name"] == "Склад ЕАСИ"
+    assert state["invoice_number"] == "ТКС0000897"
+    assert state["delivery_responsible_name"] == "Захарова Л.Ю."
+    assert state["receipt_mol_name"] == ""
+
+
+def test_request_view_groups_section_and_delivery_responsible():
+    view = it_requests.build_request_view(
+        request(responsible_name="Петров П.П."),
+        [
+            line(key="line-1", section_code="АР2", quantity=10),
+            line(
+                key="line-2",
+                section_code="КЖ",
+                quantity=4,
+                nomenclature_ref="nom-other",
+                nomenclature_name="Другая",
+            ),
+        ],
+        [
+            event("ordered", quantity=10, delivery_responsible_name="Захарова Л.Ю."),
+            event(
+                "ordered",
+                key="line-2",
+                quantity=4,
+                delivery_responsible_name="Захарова Л.Ю.",
+            ),
+        ],
+        today=TODAY,
+    )
+    assert view["section_codes"] == ["АР2", "КЖ"]
+    assert view["delivery_responsible_names"] == ["Захарова Л.Ю."]
+    assert {item["section_code"] for item in view["item_groups"]} == {"АР2", "КЖ"}
+    assert all(item["qty_ordered"] is not None for item in view["item_groups"])
+    assert all("project_code" not in item for item in view["item_groups"])
+
+
+def test_optional_quantity_stays_null_without_events():
+    state = it_requests.build_line_state(request(), line(), [], today=TODAY)
+    assert state["qty_ordered"] is None
+    assert state["qty_received"] is None
+    assert state["receipt_number"] == ""

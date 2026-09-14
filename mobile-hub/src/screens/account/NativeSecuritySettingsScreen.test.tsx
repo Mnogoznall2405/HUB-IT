@@ -1,5 +1,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import { Alert, AppState, type AppStateStatus } from 'react-native';
+import * as securityApi from '../../api/authSecurityApi';
 import { NativeSecuritySettingsScreen } from './NativeSecuritySettingsScreen';
 
 const mockExecute = jest.fn(async (command: string) => {
@@ -45,6 +47,7 @@ jest.mock('../../preferences/PreferencesContext', () => ({
 
 describe('NativeSecuritySettingsScreen biometric enrollment', () => {
   beforeEach(() => {
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
     mockExecute.mockClear();
     jest.mocked(router.push).mockClear();
     mockAuth = {
@@ -58,6 +61,31 @@ describe('NativeSecuritySettingsScreen biometric enrollment', () => {
         is_2fa_enabled: true,
       },
     };
+  });
+
+  it('clears visible backup codes on background and ignores late generation responses', async () => {
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+    let onState!: (state: AppStateStatus) => void;
+    const listener = jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, callback) => {
+      onState = callback; return { remove: jest.fn() };
+    });
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    jest.mocked(securityApi.regenerateBackupCodes).mockResolvedValueOnce(['secret-backup']);
+    const view = await render(<NativeSecuritySettingsScreen />);
+    await fireEvent.press(view.getByText('Новые резервные коды'));
+    await act(async () => { alert.mock.calls.at(-1)?.[2]?.find(button => button.text === 'Сгенерировать')?.onPress?.(); });
+    await view.findByText('secret-backup');
+    await act(async () => onState('background'));
+    expect(view.queryByText('secret-backup')).toBeNull();
+    let finish!: (codes: string[]) => void;
+    jest.mocked(securityApi.regenerateBackupCodes).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await fireEvent.press(view.getByText('Новые резервные коды'));
+    await act(async () => { alert.mock.calls.at(-1)?.[2]?.find(button => button.text === 'Сгенерировать')?.onPress?.(); });
+    await act(async () => onState('background'));
+    await act(async () => finish(['late-backup']));
+    expect(view.queryByText('late-backup')).toBeNull();
+    await view.unmount();
+    listener.mockRestore(); alert.mockRestore();
   });
 
   it('offers re-authentication instead of pretending biometrics can be enabled immediately', async () => {

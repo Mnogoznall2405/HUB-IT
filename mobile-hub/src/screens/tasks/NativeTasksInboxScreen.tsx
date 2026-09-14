@@ -1,4 +1,5 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
+import { NativeAppliedChip, NativeFilterChip, NativeSegmentedControl, NativeSheetHeader } from '../../components/ui/NativeFilterControls';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -207,6 +208,7 @@ export function NativeTasksInboxScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const requestRef = useRef(0);
+  const loadedScopeRef = useRef('');
   const debouncedQuery = useDebouncedValue(query);
 
   const availableViews = VIEW_OPTIONS.filter((option) => (
@@ -215,11 +217,13 @@ export function NativeTasksInboxScreen() {
   ));
   const additionalViews = availableViews.filter((option) => !['assignee', 'creator'].includes(option.value));
 
-  const loadPage = useCallback(async ({ reset, refresh = false }: { reset: boolean; refresh?: boolean }) => {
+  const loadPage = useCallback(async ({ reset, refresh = false, silent = false }: { reset: boolean; refresh?: boolean; silent?: boolean }) => {
     const requestId = ++requestRef.current;
-    if (refresh) setRefreshing(true);
-    else if (reset) setLoading(true);
-    else setLoadingMore(true);
+    if (!silent) {
+      if (refresh) setRefreshing(true);
+      else if (reset) setLoading(true);
+      else setLoadingMore(true);
+    }
     setError('');
     const request = {
       q: debouncedQuery.trim(),
@@ -240,8 +244,14 @@ export function NativeTasksInboxScreen() {
     } as const;
     const signature = JSON.stringify({ ...request, offset: 0 });
     const userId = Number(user?.id || 0);
-    let cached = false;
-    if (reset && !refresh && userId) {
+    const dataScope = `${userId}:${signature}`;
+    let cached = loadedScopeRef.current === dataScope;
+    if (reset && !cached) {
+      loadedScopeRef.current = '';
+      setItems([]);
+      setTotal(0);
+    }
+    if (reset && !cached && userId) {
       const snapshot = await readNativeCollectionSnapshot<{ signature: string; page: TaskListPage }>(
         'tasks-inbox',
         userId,
@@ -250,6 +260,7 @@ export function NativeTasksInboxScreen() {
       if (requestId !== requestRef.current) return;
       if (snapshot?.data.signature === signature) {
         cached = true;
+        loadedScopeRef.current = dataScope;
         setItems(snapshot.data.page.items);
         setTotal(snapshot.data.page.total);
         setLoading(false);
@@ -268,6 +279,7 @@ export function NativeTasksInboxScreen() {
       const page = await getTasksPage(request);
       if (requestId !== requestRef.current) return;
       const cachedItems = uniqueTasks(reset ? page.items : [...items, ...page.items]);
+      loadedScopeRef.current = dataScope;
       setItems(cachedItems);
       setTotal(page.total);
       if (userId) {
@@ -298,7 +310,8 @@ export function NativeTasksInboxScreen() {
 
   useEffect(() => {
     if (allowed) void loadPage({ reset: true });
-  }, [allowed, debouncedQuery, filters, sortByDue]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { requestRef.current += 1; };
+  }, [allowed, debouncedQuery, filters, sortByDue, offlineMode, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!allowed || offlineMode) return undefined;
@@ -307,7 +320,7 @@ export function NativeTasksInboxScreen() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void loadPage({ reset: true, refresh: true });
+        void loadPage({ reset: true, silent: true });
       }, 100);
     };
     const releases = [
@@ -321,7 +334,7 @@ export function NativeTasksInboxScreen() {
   }, [allowed, loadPage, offlineMode]);
 
   useEffect(() => {
-    if (!filtersVisible || directoriesLoading || directoriesLoaded) return;
+    if (offlineMode || !filtersVisible || directoriesLoading || directoriesLoaded) return;
     setDirectoriesLoading(true);
     void Promise.all([
       listDepartments(),
@@ -526,10 +539,16 @@ export function NativeTasksInboxScreen() {
       </View>
 
       <View style={styles.scopeRow}>
-        <View style={[styles.scopeSegment, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
-          <ScopeButton testID="native-task-primary-view-assignee" label="Исполняю" selected={filters.viewMode === 'assignee'} tokens={tokens} onPress={() => selectPrimaryView('assignee')} />
-          <ScopeButton testID="native-task-primary-view-creator" label="Созданные" selected={filters.viewMode === 'creator'} tokens={tokens} onPress={() => selectPrimaryView('creator')} />
-        </View>
+        <NativeSegmentedControl
+          options={[
+            { value: 'assignee', label: 'Исполняю' },
+            { value: 'creator', label: 'Созданные' },
+          ]}
+          selected={['assignee', 'creator'].includes(filters.viewMode) ? filters.viewMode : ''}
+          onSelect={(value) => selectPrimaryView(value as 'assignee' | 'creator')}
+          tokens={tokens}
+          testIDPrefix="native-task-primary-view"
+        />
       </View>
 
       <View style={styles.toolbarRow}>
@@ -544,7 +563,7 @@ export function NativeTasksInboxScreen() {
           style={({ pressed }) => [styles.toolbarButton, { backgroundColor: tokens.panelSolid, borderColor: activeFilterCount ? tokens.selectedBorder : tokens.borderSoft }, pressed && styles.pressed]}
         >
           <MaterialCommunityIcons name={activeFilterCount ? 'filter-check' : 'filter-variant'} size={19} color={activeFilterCount ? tokens.primary : tokens.iconMuted} />
-          <Text numberOfLines={1} style={[styles.toolbarText, { color: activeFilterCount ? tokens.primary : tokens.textPrimary }]}>
+          <Text style={[styles.toolbarText, { color: activeFilterCount ? tokens.primary : tokens.textPrimary }]}>
             {!['assignee', 'creator'].includes(filters.viewMode) ? scopeLabel : 'Фильтры'}{activeFilterCount ? ` · ${activeFilterCount}` : ''}
           </Text>
         </Pressable>
@@ -556,19 +575,19 @@ export function NativeTasksInboxScreen() {
           style={({ pressed }) => [styles.toolbarButton, styles.sortButton, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }, pressed && styles.pressed]}
         >
           <MaterialCommunityIcons name={sortByDue ? 'calendar-arrow-right' : 'sort-clock-descending-outline'} size={19} color={tokens.iconMuted} />
-          <Text numberOfLines={1} style={[styles.toolbarText, { color: tokens.textPrimary }]}>{sortByDue ? 'Ближайший срок' : 'Обновлённые'}</Text>
+          <Text style={[styles.toolbarText, { color: tokens.textPrimary }]}>{sortByDue ? 'Ближайший срок' : 'Обновлённые'}</Text>
         </Pressable>
       </View>
 
       {activeFilterCount ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.appliedFiltersRow}>
-          {filters.status ? <AppliedFilterChip label={TASK_STATUS_OPTIONS.find((item) => item.value === filters.status)?.label || filters.status} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, status: '' }))} /> : null}
-          {filters.dueState ? <AppliedFilterChip label={DUE_OPTIONS.find((item) => item.value === filters.dueState)?.label || filters.dueState} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, dueState: '' }))} /> : null}
-          {filters.hasAttachments ? <AppliedFilterChip label="С файлами" tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, hasAttachments: false }))} /> : null}
-          {filters.unreadCommentsOnly ? <AppliedFilterChip label="Новые комментарии" tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, unreadCommentsOnly: false }))} /> : null}
-          {filters.departmentId ? <AppliedFilterChip label={`Отдел: ${departmentLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, departmentId: '' }))} /> : null}
-          {filters.controllerUserId ? <AppliedFilterChip label={`Контролёр: ${controllerLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, controllerUserId: undefined }))} /> : null}
-          {filters.assigneeUserId ? <AppliedFilterChip label={`Исполнитель: ${assigneeLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, assigneeUserId: undefined }))} /> : null}
+          {filters.status ? <NativeAppliedChip label={TASK_STATUS_OPTIONS.find((item) => item.value === filters.status)?.label || filters.status} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, status: '' }))} /> : null}
+          {filters.dueState ? <NativeAppliedChip label={DUE_OPTIONS.find((item) => item.value === filters.dueState)?.label || filters.dueState} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, dueState: '' }))} /> : null}
+          {filters.hasAttachments ? <NativeAppliedChip label="С файлами" tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, hasAttachments: false }))} /> : null}
+          {filters.unreadCommentsOnly ? <NativeAppliedChip label="Новые комментарии" tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, unreadCommentsOnly: false }))} /> : null}
+          {filters.departmentId ? <NativeAppliedChip label={`Отдел: ${departmentLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, departmentId: '' }))} /> : null}
+          {filters.controllerUserId ? <NativeAppliedChip label={`Контролёр: ${controllerLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, controllerUserId: undefined }))} /> : null}
+          {filters.assigneeUserId ? <NativeAppliedChip label={`Исполнитель: ${assigneeLabel}`} tokens={tokens} onRemove={() => setFilters((current) => ({ ...current, assigneeUserId: undefined }))} /> : null}
         </ScrollView>
       ) : null}
 
@@ -592,6 +611,9 @@ export function NativeTasksInboxScreen() {
         <AccountLoading tokens={tokens} />
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-tasks-list"
           data={taskFeedRows}
           keyExtractor={(item) => item.key}
@@ -632,12 +654,12 @@ export function NativeTasksInboxScreen() {
         <KeyboardAvoidingView style={styles.modalBackdrop} {...chatKeyboardAvoidingProps()}>
           <Pressable style={styles.backdropDismissLayer} accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => setFiltersVisible(false)} />
           <View testID="native-task-filter-sheet" accessibilityViewIsModal style={[styles.filterSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-            <SheetHeader title="Фильтры задач" subtitle="Выберите условия и примените их к списку" tokens={tokens} onClose={() => setFiltersVisible(false)} />
+            <NativeSheetHeader title="Фильтры задач" subtitle="Выберите условия и примените их к списку" tokens={tokens} onClose={() => setFiltersVisible(false)} />
             <ScrollView style={styles.filterList} contentContainerStyle={styles.filterContent} keyboardShouldPersistTaps="handled">
               <FilterSection title="Дополнительные области" tokens={tokens}>
                 <View style={styles.wrapRow}>
                   {additionalViews.map((option) => (
-                    <FilterChip
+                    <NativeFilterChip
                       key={option.value}
                       testID={`native-task-view-${option.value}`}
                       label={option.label}
@@ -656,7 +678,7 @@ export function NativeTasksInboxScreen() {
               <FilterSection title="Статус" tokens={tokens}>
                 <View style={styles.wrapRow}>
                   {TASK_STATUS_OPTIONS.map((option) => (
-                    <FilterChip key={option.value || 'all'} testID={`native-task-status-${option.value || 'all'}`} label={option.label} selected={filterDraft.status === option.value} tokens={tokens} onPress={() => setFilterDraft((current) => ({ ...current, status: option.value }))} />
+                    <NativeFilterChip key={option.value || 'all'} testID={`native-task-status-${option.value || 'all'}`} label={option.label} selected={filterDraft.status === option.value} tokens={tokens} onPress={() => setFilterDraft((current) => ({ ...current, status: option.value }))} />
                   ))}
                 </View>
               </FilterSection>
@@ -664,7 +686,7 @@ export function NativeTasksInboxScreen() {
               <FilterSection title="Срок" tokens={tokens}>
                 <View style={styles.wrapRow}>
                   {DUE_OPTIONS.map((option) => (
-                    <FilterChip key={option.value || 'any'} testID={`native-task-due-${option.value || 'any'}`} label={option.label} selected={filterDraft.dueState === option.value} tokens={tokens} onPress={() => setFilterDraft((current) => ({ ...current, dueState: option.value }))} />
+                    <NativeFilterChip key={option.value || 'any'} testID={`native-task-due-${option.value || 'any'}`} label={option.label} selected={filterDraft.dueState === option.value} tokens={tokens} onPress={() => setFilterDraft((current) => ({ ...current, dueState: option.value }))} />
                   ))}
                 </View>
               </FilterSection>
@@ -744,7 +766,7 @@ export function NativeTasksInboxScreen() {
         <View style={styles.modalBackdrop}>
           <Pressable style={styles.backdropDismissLayer} accessibilityRole="button" accessibilityLabel="Закрыть меню действий" onPress={() => setMoreVisible(false)} />
           <View accessibilityViewIsModal style={[styles.moreSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-            <SheetHeader title="Задачи" subtitle="Дополнительные разделы и действия" tokens={tokens} onClose={() => setMoreVisible(false)} />
+            <NativeSheetHeader title="Задачи" subtitle="Дополнительные разделы и действия" tokens={tokens} onClose={() => setMoreVisible(false)} />
             <MoreAction testID="native-task-analytics" icon="chart-box-outline" label="Открыть аналитику" tokens={tokens} onPress={() => { setMoreVisible(false); router.push('/(shell)/tasks/analytics' as never); }} />
             {hasPermission('tasks.write') ? <MoreAction testID="native-task-open-taxonomy" icon="folder-cog-outline" label="Управлять проектами и объектами" tokens={tokens} onPress={() => { setMoreVisible(false); router.push('/(shell)/tasks/taxonomy' as never); }} /> : null}
           </View>
@@ -754,30 +776,8 @@ export function NativeTasksInboxScreen() {
   );
 }
 
-function ScopeButton({ label, selected, tokens, onPress, testID }: {
-  label: string;
-  selected: boolean;
-  tokens: FluentTokens;
-  onPress: () => void;
-  testID: string;
-}) {
-  return (
-    <Pressable testID={testID} accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress} style={({ pressed }) => [styles.scopeButton, { backgroundColor: selected ? tokens.panelSolid : 'transparent' }, pressed && styles.pressed]}>
-      <Text numberOfLines={1} style={[styles.scopeButtonText, { color: selected ? tokens.primary : tokens.textSecondary }]}>{label}</Text>
-    </Pressable>
-  );
-}
-
 function FilterSection({ title, tokens, children }: { title: string; tokens: FluentTokens; children: React.ReactNode }) {
   return <View style={styles.filterSection}><Text accessibilityRole="header" style={[styles.filterSectionTitle, { color: tokens.textPrimary }]}>{title}</Text>{children}</View>;
-}
-
-function FilterChip({ label, selected, tokens, onPress, testID }: { label: string; selected: boolean; tokens: FluentTokens; onPress: () => void; testID?: string }) {
-  return (
-    <Pressable testID={testID} onPress={onPress} accessibilityRole="button" accessibilityState={{ selected }} style={({ pressed }) => [styles.filterChip, { backgroundColor: selected ? tokens.selected : tokens.panelSolid, borderColor: selected ? tokens.selectedBorder : tokens.borderSoft }, pressed && styles.pressed]}>
-      <Text style={[styles.filterChipText, { color: selected ? tokens.primary : tokens.textSecondary }]}>{label}</Text>
-    </Pressable>
-  );
 }
 
 function ToggleRow({ label, selected, tokens, onPress, testID }: { label: string; selected: boolean; tokens: FluentTokens; onPress: () => void; testID: string }) {
@@ -785,15 +785,6 @@ function ToggleRow({ label, selected, tokens, onPress, testID }: { label: string
     <Pressable testID={testID} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} onPress={onPress} style={({ pressed }) => [styles.toggleRow, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}>
       <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={23} color={selected ? tokens.primary : tokens.iconMuted} />
       <Text style={[styles.toggleLabel, { color: tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
-}
-
-function AppliedFilterChip({ label, tokens, onRemove }: { label: string; tokens: FluentTokens; onRemove: () => void }) {
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`Убрать фильтр: ${label}`} onPress={onRemove} style={({ pressed }) => [styles.appliedFilterChip, { backgroundColor: tokens.selected, borderColor: tokens.selectedBorder }, pressed && styles.pressed]}>
-      <Text numberOfLines={1} style={[styles.appliedFilterText, { color: tokens.primary }]}>{label}</Text>
-      <MaterialCommunityIcons name="close" size={16} color={tokens.primary} />
     </Pressable>
   );
 }
@@ -841,12 +832,6 @@ function DirectoryOptionRow({ testID, label, selected, tokens, onPress }: { test
   );
 }
 
-function SheetHeader({ title, subtitle, tokens, onClose }: { title: string; subtitle: string; tokens: FluentTokens; onClose: () => void }) {
-  return (
-    <View style={styles.sheetHeader}><View style={styles.sheetHeaderText}><Text accessibilityRole="header" style={[styles.sheetTitle, { color: tokens.textPrimary }]}>{title}</Text><Text style={[styles.sheetSubtitle, { color: tokens.textSecondary }]}>{subtitle}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Закрыть" onPress={onClose} style={({ pressed }) => [styles.sheetClose, pressed && styles.pressed]}><MaterialCommunityIcons name="close" size={22} color={tokens.iconMuted} /></Pressable></View>
-  );
-}
-
 function MoreAction({ testID, icon, label, tokens, onPress }: { testID: string; icon: React.ComponentProps<typeof MaterialCommunityIcons>['name']; label: string; tokens: FluentTokens; onPress: () => void }) {
   return (
     <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.moreAction, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}><MaterialCommunityIcons name={icon} size={22} color={tokens.primary} /><Text style={[styles.moreActionText, { color: tokens.textPrimary }]}>{label}</Text><MaterialCommunityIcons name="chevron-right" size={20} color={tokens.iconMuted} /></Pressable>
@@ -862,17 +847,12 @@ const styles = StyleSheet.create({
   searchBox: { minHeight: 48, borderWidth: 1, borderRadius: 14, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   clearButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  scopeRow: { flexDirection: 'row', alignItems: 'stretch', gap: 10, marginTop: 12 },
-  scopeSegment: { flex: 1, minWidth: 0, minHeight: 46, borderWidth: 1, borderRadius: 14, padding: 3, flexDirection: 'row', alignItems: 'stretch' },
-  scopeButton: { flex: 1, minWidth: 0, minHeight: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  scopeButtonText: { fontSize: 13, fontWeight: '800' },
-  toolbarRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 },
-  toolbarButton: { minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  sortButton: { flex: 1, minWidth: 0 },
-  toolbarText: { flexShrink: 1, fontSize: 13, fontWeight: '800' },
+  scopeRow: { marginTop: 12 },
+  toolbarRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', gap: 10, marginTop: 10 },
+  toolbarButton: { flexGrow: 1, flexBasis: 140, minWidth: 0, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  sortButton: { flexGrow: 1 },
+  toolbarText: { flexShrink: 1, textAlign: 'center', fontSize: 13, fontWeight: '800' },
   appliedFiltersRow: { gap: 8, paddingTop: 10, paddingRight: 28 },
-  appliedFilterChip: { maxWidth: 240, minHeight: 36, borderWidth: 1, borderRadius: 18, paddingLeft: 11, paddingRight: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  appliedFilterText: { flexShrink: 1, fontSize: 12, fontWeight: '800' },
   resultRow: { minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4 },
   count: { fontSize: 13, fontWeight: '700' },
   errorCard: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 9, flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -897,18 +877,11 @@ const styles = StyleSheet.create({
   backdropDismissLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   filterSheet: { maxHeight: '90%', minHeight: '68%', borderWidth: 1, borderBottomWidth: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
   moreSheet: { borderWidth: 1, borderBottomWidth: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 18, overflow: 'hidden' },
-  sheetHeader: { minHeight: 76, paddingLeft: 16, paddingRight: 8, paddingVertical: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  sheetHeaderText: { flex: 1, minWidth: 0 },
-  sheetTitle: { fontSize: 19, lineHeight: 24, fontWeight: '900' },
-  sheetSubtitle: { fontSize: 13, lineHeight: 18, marginTop: 3 },
-  sheetClose: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   filterList: { flex: 1 },
   filterContent: { paddingHorizontal: 16, paddingBottom: 24, gap: 24 },
   filterSection: { gap: 10 },
   filterSectionTitle: { fontSize: 15, fontWeight: '900' },
   wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  filterChip: { minHeight: 42, borderWidth: 1, borderRadius: 21, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
-  filterChipText: { fontSize: 13, fontWeight: '800' },
   toggleRow: { minHeight: 48, borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   toggleLabel: { flex: 1, fontSize: 14, fontWeight: '700' },
   directoryLoader: { marginVertical: 8 },

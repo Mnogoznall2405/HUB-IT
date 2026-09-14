@@ -90,15 +90,15 @@ describe('NotificationProvider', () => {
     vi.useRealTimers();
   });
 
-  it('renders stacked toasts in the bottom-left viewport with a progress bar', async () => {
+  it('renders stacked toasts in the bottom-right viewport with a progress bar', async () => {
     renderNotifications();
 
     fireEvent.click(screen.getByRole('button', { name: 'success' }));
 
-    expect(screen.getByTestId('toast-stack')).toHaveAttribute('data-toast-position', 'bottom-left');
+    expect(screen.getByTestId('toast-stack')).toHaveAttribute('data-toast-position', 'bottom-right');
     expect(await screen.findByText('Готово')).toBeInTheDocument();
     expect(screen.getByText('Операция завершена')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    expect(screen.getByTestId('toast-progress')).toBeInTheDocument();
   });
 
   it('pauses auto-close while the toast is hovered', () => {
@@ -145,8 +145,8 @@ describe('NotificationProvider', () => {
     const { onAction } = renderNotifications();
 
     fireEvent.click(screen.getByRole('button', { name: 'persist' }));
-    expect(await screen.findAllByText('Постоянное уведомление')).toHaveLength(2);
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(await screen.findAllByText('Постоянное уведомление')).toHaveLength(1);
+    expect(screen.queryByTestId('toast-progress')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'action' }));
     const actionToast = await screen.findByText('Доступно действие');

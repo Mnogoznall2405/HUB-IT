@@ -1,3 +1,4 @@
+import { getSessionGeneration } from '../auth/tokenStore';
 import { getHubDashboard } from '../api/hubApi';
 import {
   getMailFolderSummary,
@@ -25,7 +26,6 @@ import { getCompanyStructureTree } from '../api/companyStructureApi';
 import {
   readNativeSnapshot,
   writeNativeCollectionSnapshot,
-  writeNativeEntitySnapshot,
   writeNativeSnapshot,
 } from '../cache/nativeSnapshotCache';
 import {
@@ -35,6 +35,10 @@ import {
 import type { NativeMyFilesInboxSnapshot } from '../myFiles/nativeMyFilesSnapshot';
 import type { NativeCompanyStructureTreeSnapshot } from '../companyStructure/nativeCompanyStructureSnapshot';
 import { writeNativeChatInboxSnapshot } from '../chat/nativeChatInboxSnapshot';
+import {
+  getNativeChatThreadHistoryGeneration,
+  scheduleNativeChatThreadSnapshotWrite,
+} from '../chat/nativeChatThreadHistory';
 import { refreshNativeReadCaches } from './nativeReadCacheRefresh';
 import { recordSnapshotFailure } from '../diagnostics/diagnostics';
 import {
@@ -150,12 +154,45 @@ function uniqueByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
   });
 }
 
-async function prepareDashboard(userId: number): Promise<PreparationMetric> {
+
+type CollectionWrite = Parameters<typeof writeNativeCollectionSnapshot>;
+class PreparationCheckpoint {
+  private calls = 0;
+  private next = 1;
+  private pending: CollectionWrite | null = null;
+  persisted = 0;
+  failed = false;
+  constructor(private readonly assertCurrent: () => void) {}
+  write = async (...args: CollectionWrite): Promise<boolean> => {
+    this.assertCurrent();
+    this.pending = args;
+    this.calls += 1;
+    if (this.calls < this.next) return true;
+    this.next *= 2;
+    return this.flush();
+  };
+  async flush(): Promise<boolean> {
+    this.assertCurrent();
+    if (!this.pending || this.failed) return !this.failed;
+    const args = this.pending;
+    this.pending = null;
+    const stored = await writeNativeCollectionSnapshot(...args);
+    this.assertCurrent();
+    if (!stored) { this.failed = true; return false; }
+    const snapshot = args[3] as { items?: unknown[]; page?: { items?: unknown[] }; result?: { items?: unknown[] } };
+    this.persisted = (snapshot.items || snapshot.page?.items || snapshot.result?.items || []).length;
+    return true;
+  }
+}
+const preparationFlights = new Map<string, Promise<PreparationMetric>>();
+
+async function prepareDashboard(userId: number, assertCurrent: () => void): Promise<PreparationMetric> {
   const previous = await readNativeSnapshot<DashboardSnapshot>('dashboard', userId);
   const [payload, mailUnread] = await Promise.all([
     getHubDashboard(),
     getMailUnreadSnapshot().catch(() => null),
   ]);
+  assertCurrent();
   const stored = await writeNativeSnapshot<DashboardSnapshot>('dashboard', userId, {
     payload,
     communicationCounts: {
@@ -170,7 +207,7 @@ async function prepareDashboard(userId: number): Promise<PreparationMetric> {
   return { loaded: 1, total: 1, unit: 'экран' };
 }
 
-async function prepareFeed(userId: number): Promise<PreparationMetric> {
+async function prepareFeed(userId: number, checkpoint: PreparationCheckpoint): Promise<PreparationMetric> {
   const request = {
     q: '',
     unread_only: false,
@@ -185,7 +222,7 @@ async function prepareFeed(userId: number): Promise<PreparationMetric> {
   const signature = JSON.stringify({ filter: 'all', q: '', categoryId: '', tag: '' });
   let items = uniqueByKey(page.items, (item) => String(item.id || ''));
   const unreadTotal = Number(page.unread_total || 0);
-  let stored = await writeNativeCollectionSnapshot('feed-inbox', userId, signature, {
+  let stored = await checkpoint.write('feed-inbox', userId, signature, {
     signature,
     items,
     total: page.total,
@@ -199,7 +236,7 @@ async function prepareFeed(userId: number): Promise<PreparationMetric> {
     const nextPage = await listFeedPosts({ ...request, offset: requestedOffset });
     const nextItems = uniqueByKey([...items, ...nextPage.items], (item) => String(item.id || ''));
     if (nextItems.length <= items.length) break;
-    stored = await writeNativeCollectionSnapshot('feed-inbox', userId, signature, {
+    stored = await checkpoint.write('feed-inbox', userId, signature, {
       signature,
       items: nextItems,
       total: nextPage.total,
@@ -215,7 +252,7 @@ async function prepareFeed(userId: number): Promise<PreparationMetric> {
   return { loaded: items.length, total: page.total, unit: 'публикаций', complete: items.length >= page.total };
 }
 
-async function prepareTasks(userId: number, isAdmin: boolean): Promise<PreparationMetric> {
+async function prepareTasks(userId: number, isAdmin: boolean, checkpoint: PreparationCheckpoint): Promise<PreparationMetric> {
   const viewMode = isAdmin ? 'all' : 'assignee';
   const request = {
     q: '',
@@ -237,7 +274,7 @@ async function prepareTasks(userId: number, isAdmin: boolean): Promise<Preparati
   let page = await getTasksPage(request);
   const signature = JSON.stringify({ ...request, offset: 0 });
   let items = uniqueByKey(page.items, (item) => String(item.id || ''));
-  let stored = await writeNativeCollectionSnapshot('tasks-inbox', userId, signature, {
+  let stored = await checkpoint.write('tasks-inbox', userId, signature, {
     signature,
     page: { ...page, items, offset: 0, limit: items.length },
   });
@@ -249,7 +286,7 @@ async function prepareTasks(userId: number, isAdmin: boolean): Promise<Preparati
     const nextPage = await getTasksPage({ ...request, offset: requestedOffset });
     const nextItems = uniqueByKey([...items, ...nextPage.items], (item) => String(item.id || ''));
     if (nextItems.length <= items.length) break;
-    stored = await writeNativeCollectionSnapshot('tasks-inbox', userId, signature, {
+    stored = await checkpoint.write('tasks-inbox', userId, signature, {
       signature,
       page: { ...nextPage, items: nextItems, offset: 0, limit: nextItems.length },
     });
@@ -264,6 +301,9 @@ async function prepareTasks(userId: number, isAdmin: boolean): Promise<Preparati
 }
 
 async function prepareChat(userId: number): Promise<PreparationMetric> {
+  // Capture ownership before network I/O; a late response must not recreate
+  // thread history after logout has invalidated the session generation.
+  const historyGeneration = getNativeChatThreadHistoryGeneration();
   const [firstPage, folders] = await Promise.all([
     getConversationPage({ limit: CHAT_PAGE_SIZE }),
     listChatFolders(),
@@ -295,11 +335,14 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
   }
   // Limited recent-thread history: catalog readiness is not thread readiness (OFF-08).
   for (const conversation of page.items.slice(0, CHAT_THREAD_PREPARE_LIMIT)) {
+    if (historyGeneration !== getNativeChatThreadHistoryGeneration()) break;
     const conversationId = String(conversation.id || '').trim();
     if (!conversationId) continue;
     try {
       const messagesPage = await getMessagesPage(conversationId, { limit: CHAT_THREAD_MESSAGE_LIMIT });
-      await writeNativeEntitySnapshot('chat-thread-details', userId, conversationId, {
+      // Preparation is another history producer, not an authoritative replacement
+      // of all previously visited pages. Share the same serialized merge writer.
+      await scheduleNativeChatThreadSnapshotWrite(userId, conversationId, {
         conversation,
         title: conversation.title || 'Chat',
         messages: messagesPage.items || [],
@@ -311,7 +354,7 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
         focusAnchorId: null,
         pinnedMessageId: conversation.pinned_message_id || null,
         historyMayHaveGaps: Boolean(messagesPage.has_older || messagesPage.has_newer),
-      });
+      }, { generation: historyGeneration, currentUserId: userId });
     } catch {
       // Keep the previous thread snapshot if a fresh download fails.
     }
@@ -325,11 +368,12 @@ async function prepareChat(userId: number): Promise<PreparationMetric> {
   };
 }
 
-async function prepareNotifications(userId: number, includeMail: boolean): Promise<PreparationMetric> {
+async function prepareNotifications(userId: number, includeMail: boolean, assertCurrent: () => void): Promise<PreparationMetric> {
   const [hub, mail] = await Promise.all([
     pollHubNotifications({ limit: 200, unreadOnly: false }),
     includeMail ? getMailNotificationFeed(50) : Promise.resolve(null),
   ]);
+  assertCurrent();
   const stored = await writeNativeSnapshot('notifications', userId, {
     hubItems: hub.items,
     mailItems: mail?.items || [],
@@ -341,7 +385,7 @@ async function prepareNotifications(userId: number, includeMail: boolean): Promi
   return { loaded, total: loaded, unit: 'уведомлений' };
 }
 
-async function prepareMail(userId: number): Promise<PreparationMetric> {
+async function prepareMail(userId: number, checkpoint: PreparationCheckpoint): Promise<PreparationMetric> {
   const filters = {
     mailboxId: '',
     folder: 'inbox',
@@ -383,7 +427,7 @@ async function prepareMail(userId: number): Promise<PreparationMetric> {
     mailboxes: mailboxItems.filter((item) => item.is_active !== false),
     preferences,
   });
-  let stored = await writeNativeCollectionSnapshot('mail-inbox', userId, signature, snapshot());
+  let stored = await checkpoint.write('mail-inbox', userId, signature, snapshot());
   if (!stored) throw new Error('Список писем слишком большой');
 
   let nextOffset = Number(page.next_offset ?? (Number(page.offset || 0) + page.items.length));
@@ -404,7 +448,7 @@ async function prepareMail(userId: number): Promise<PreparationMetric> {
     const previousPage = page;
     items = nextItems;
     page = nextPage;
-    stored = await writeNativeCollectionSnapshot('mail-inbox', userId, signature, snapshot());
+    stored = await checkpoint.write('mail-inbox', userId, signature, snapshot());
     if (!stored) {
       items = previousItems;
       page = previousPage;
@@ -422,7 +466,7 @@ async function prepareMail(userId: number): Promise<PreparationMetric> {
   };
 }
 
-async function prepareDocflow(userId: number): Promise<PreparationMetric> {
+async function prepareDocflow(userId: number, checkpoint: PreparationCheckpoint): Promise<PreparationMetric> {
   const profile = await getDocflowProfile();
   if (!profile.configured) throw new Error('Учётная запись 1С ДО не настроена');
   const signature = JSON.stringify({ scope: 'inbox', query: '' });
@@ -438,7 +482,7 @@ async function prepareDocflow(userId: number): Promise<PreparationMetric> {
       offset: 0,
     },
   });
-  let stored = await writeNativeCollectionSnapshot('docflow-inbox', userId, signature, snapshot());
+  let stored = await checkpoint.write('docflow-inbox', userId, signature, snapshot());
   if (!stored) throw new Error('Список заданий 1С ДО слишком большой');
   const seenOffsets = new Set<number>();
   while (page.has_more && page.next_offset != null) {
@@ -452,7 +496,7 @@ async function prepareDocflow(userId: number): Promise<PreparationMetric> {
     const previousPage = page;
     items = nextItems;
     page = nextPage;
-    stored = await writeNativeCollectionSnapshot('docflow-inbox', userId, signature, snapshot());
+    stored = await checkpoint.write('docflow-inbox', userId, signature, snapshot());
     if (!stored) {
       items = previousItems;
       page = previousPage;
@@ -469,10 +513,10 @@ async function prepareDocflow(userId: number): Promise<PreparationMetric> {
   };
 }
 
-async function prepareAddressBook(userId: number): Promise<PreparationMetric> {
+async function prepareAddressBook(userId: number, assertCurrent: () => void): Promise<PreparationMetric> {
   let directory: Awaited<ReturnType<typeof getCompleteAddressBook>>;
   try {
-    directory = await getCompleteAddressBook();
+    directory = await getCompleteAddressBook(undefined, assertCurrent);
   } catch (error) {
     await recordSnapshotFailure('address-book', 'download', error);
     throw new OfflinePreparationStageError(
@@ -490,6 +534,7 @@ async function prepareAddressBook(userId: number): Promise<PreparationMetric> {
       'Сервер вернул неполную адресную книгу',
     );
   }
+  assertCurrent();
   let stored = false;
   try {
     stored = await writeNativeAddressBookSnapshot(userId, directory);
@@ -534,18 +579,21 @@ async function prepareDatabase(userId: number): Promise<PreparationMetric> {
     : { loaded: 1, total: 1, unit: 'каталог' };
 }
 
-async function prepareMyFiles(userId: number): Promise<PreparationMetric> {
-  const [items, quota] = await Promise.all([listMyFiles(), getMyFilesQuota()]);
+async function prepareMyFiles(userId: number, assertCurrent: () => void): Promise<PreparationMetric> {
+  const [payload, quota] = await Promise.all([listMyFiles(), getMyFilesQuota()]);
+  assertCurrent();
   const stored = await writeNativeSnapshot<NativeMyFilesInboxSnapshot>('my-files-inbox', userId, {
-    items,
+    items: payload.items,
+    folders: payload.folders,
     quota,
   });
   if (!stored) throw new Error('Список файлов слишком большой для автономного хранения');
-  return { loaded: items.length, total: items.length, unit: 'файлов' };
+  return { loaded: payload.items.length, total: payload.items.length, unit: 'файлов' };
 }
 
-async function prepareCompanyStructure(userId: number): Promise<PreparationMetric> {
+async function prepareCompanyStructure(userId: number, assertCurrent: () => void): Promise<PreparationMetric> {
   const tree = await getCompanyStructureTree();
+  assertCurrent();
   const stored = await writeNativeSnapshot<NativeCompanyStructureTreeSnapshot>(
     'company-structure-tree',
     userId,
@@ -561,24 +609,30 @@ export async function prepareNativeOfflineData(
 ): Promise<PreparationResult> {
   const userId = Number(options.userId || 0);
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Authenticated user is required');
+  const generation = getSessionGeneration();
+  const assertCurrent = () => {
+    if (generation !== getSessionGeneration()) throw new Error('Offline preparation session expired');
+  };
+  let checkpoint = new PreparationCheckpoint(assertCurrent);
   const requested = [
-    options.dashboard ? ['dashboard', () => prepareDashboard(userId)] as const : null,
-    options.feed ? ['feed', () => prepareFeed(userId)] as const : null,
-    options.tasks ? ['tasks', () => prepareTasks(userId, options.isAdmin)] as const : null,
+    options.dashboard ? ['dashboard', () => prepareDashboard(userId, assertCurrent)] as const : null,
+    options.feed ? ['feed', () => prepareFeed(userId, checkpoint)] as const : null,
+    options.tasks ? ['tasks', () => prepareTasks(userId, options.isAdmin, checkpoint)] as const : null,
     options.chat ? ['chat', () => prepareChat(userId)] as const : null,
-    options.notifications ? ['notifications', () => prepareNotifications(userId, options.mail)] as const : null,
-    options.mail ? ['mail', () => prepareMail(userId)] as const : null,
-    options.docflow ? ['docflow', () => prepareDocflow(userId)] as const : null,
-    options.addressBook ? ['addressBook', () => prepareAddressBook(userId)] as const : null,
+    options.notifications ? ['notifications', () => prepareNotifications(userId, options.mail, assertCurrent)] as const : null,
+    options.mail ? ['mail', () => prepareMail(userId, checkpoint)] as const : null,
+    options.docflow ? ['docflow', () => prepareDocflow(userId, checkpoint)] as const : null,
+    options.addressBook ? ['addressBook', () => prepareAddressBook(userId, assertCurrent)] as const : null,
     options.database ? ['database', () => prepareDatabase(userId)] as const : null,
-    options.myFiles ? ['myFiles', () => prepareMyFiles(userId)] as const : null,
-    options.companyStructure ? ['companyStructure', () => prepareCompanyStructure(userId)] as const : null,
+    options.myFiles ? ['myFiles', () => prepareMyFiles(userId, assertCurrent)] as const : null,
+    options.companyStructure ? ['companyStructure', () => prepareCompanyStructure(userId, assertCurrent)] as const : null,
   ].filter((item): item is readonly [keyof typeof MODULE_LABELS, () => Promise<PreparationMetric>] => Boolean(item));
   if (requested.length === 0) throw new Error('Нет доступных разделов для автономной подготовки.');
 
   let completedModules = 0;
   const result: PreparationResult = { preparedModules: [], failedModules: [] };
   for (const [key, prepare] of requested) {
+    checkpoint = new PreparationCheckpoint(assertCurrent);
     reportProgress(onProgress, {
       key,
       label: MODULE_LABELS[key],
@@ -587,7 +641,31 @@ export async function prepareNativeOfflineData(
       totalModules: requested.length,
     });
     try {
-      const metric = await prepare();
+      assertCurrent();
+      const flightKey = JSON.stringify([generation, userId, key, options.isAdmin, key === 'notifications' && options.mail]);
+      let flight = key === 'chat' ? undefined : preparationFlights.get(flightKey);
+      if (!flight) {
+        flight = (async () => {
+          try {
+            const metric = await prepare();
+            if (['feed', 'tasks', 'mail', 'docflow'].includes(key)) {
+              await checkpoint.flush();
+              if (checkpoint.failed) return { ...metric, loaded: checkpoint.persisted, complete: false };
+            }
+            return metric;
+          } catch (error) {
+            if (['feed', 'tasks', 'mail', 'docflow'].includes(key)) await checkpoint.flush();
+            throw error;
+          }
+        })();
+        if (key !== 'chat') {
+          preparationFlights.set(flightKey, flight);
+          const release = () => { if (preparationFlights.get(flightKey) === flight) preparationFlights.delete(flightKey); };
+          void flight.then(release, release);
+        }
+      }
+      const metric = await flight;
+      assertCurrent();
       const coverageStored = await recordNativeOfflineCoverageSuccess(userId, key, {
         status: metric.complete === false ? 'partial' : 'complete',
         loaded: metric.loaded,
@@ -609,6 +687,10 @@ export async function prepareNativeOfflineData(
       });
       result.preparedModules.push(MODULE_LABELS[key]);
     } catch (error) {
+      if (generation !== getSessionGeneration()) {
+        result.failedModules.push(MODULE_LABELS[key]);
+        break;
+      }
       await recordSnapshotFailure(key, 'prepare', error);
       completedModules += 1;
       const failure = error instanceof OfflinePreparationStageError

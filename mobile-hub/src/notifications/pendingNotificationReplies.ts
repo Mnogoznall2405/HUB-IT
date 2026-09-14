@@ -31,7 +31,16 @@ export type PendingReplyDrainResult = {
 
 type Listener = (count: number) => void;
 const listeners = new Set<Listener>();
-let drainPromise: Promise<PendingReplyDrainResult> | null = null;
+let storageOperations: Promise<unknown> = Promise.resolve();
+let generation = 0;
+const drains = new Map<number, Promise<PendingReplyDrainResult>>();
+const deliveries = new Map<string, Promise<PendingReplyResult>>();
+
+function withStorage<T>(operation: () => Promise<T>): Promise<T> {
+  const result = storageOperations.then(operation);
+  storageOperations = result.catch(() => undefined);
+  return result;
+}
 
 function normalizeQueue(value: unknown, now = Date.now()): PendingChatReply[] {
   if (!Array.isArray(value)) return [];
@@ -72,16 +81,14 @@ function normalizeQueue(value: unknown, now = Date.now()): PendingChatReply[] {
 }
 
 async function loadQueue(): Promise<PendingChatReply[]> {
-  try {
-    const raw = await SecureStore.getItemAsync(STORAGE_KEY);
-    return normalizeQueue(raw ? JSON.parse(raw) : []);
-  } catch {
-    return [];
-  }
+  const raw = await SecureStore.getItemAsync(STORAGE_KEY);
+  return normalizeQueue(raw ? JSON.parse(raw) : []);
 }
 
 function notify(count: number): void {
-  for (const listener of listeners) listener(count);
+  for (const listener of listeners) {
+    try { listener(count); } catch { /* An observer must not interrupt persistence. */ }
+  }
 }
 
 async function saveQueue(queue: PendingChatReply[]): Promise<void> {
@@ -91,12 +98,14 @@ async function saveQueue(queue: PendingChatReply[]): Promise<void> {
   notify(normalized.length);
 }
 
-async function sendReply(item: PendingChatReply): Promise<void> {
+async function sendReply(item: PendingChatReply, isCurrent: () => boolean): Promise<void> {
   await chatApi.sendTextMessage(item.conversationId, item.body, {
     clientMessageId: item.id,
     replyToMessageId: item.messageId || undefined,
   });
-  await chatApi.markConversationRead(item.conversationId, item.messageId || undefined).catch(() => undefined);
+  if (isCurrent()) {
+    await chatApi.markConversationRead(item.conversationId, item.messageId || undefined).catch(() => undefined);
+  }
 }
 
 export function subscribePendingChatReplies(listener: Listener): () => void {
@@ -105,7 +114,7 @@ export function subscribePendingChatReplies(listener: Listener): () => void {
 }
 
 export async function getPendingChatReplyCount(userId?: number): Promise<number> {
-  const queue = await loadQueue();
+  const queue = await withStorage(loadQueue);
   return userId ? queue.filter((item) => item.userId === userId).length : queue.length;
 }
 
@@ -114,71 +123,78 @@ export async function queuePendingChatReply(
 ): Promise<PendingChatReply> {
   const normalized = normalizeQueue([{ ...item, createdAt: Date.now(), attempts: 0 }])[0];
   if (!normalized) throw new Error('Некорректный быстрый ответ');
-  const queue = await loadQueue();
-  const existing = queue.find((entry) => entry.id === normalized.id);
-  if (!existing) queue.push(normalized);
-  await saveQueue(queue);
-  return existing || normalized;
+  const lease = generation;
+  return withStorage(async () => {
+    if (lease !== generation) throw new Error('Очередь ответов очищена');
+    const queue = await loadQueue();
+    const existing = queue.find((entry) => entry.id === normalized.id);
+    if (!existing) queue.push(normalized);
+    await saveQueue(queue);
+    return existing || normalized;
+  });
 }
 
-export async function retryPendingChatReply(id: string, userId: number): Promise<PendingReplyResult> {
-  const queue = await loadQueue();
-  const item = queue.find((entry) => entry.id === id && entry.userId === userId) || null;
-  if (!item) return { status: 'discarded', item: null };
-  try {
-    await sendReply(item);
-    await saveQueue(queue.filter((entry) => entry.id !== item.id));
-    return { status: 'sent', item };
-  } catch (error) {
-    if (isRetryableOfflineError(error)) {
-      await saveQueue(queue.map((entry) => (
-        entry.id === item.id ? { ...entry, attempts: entry.attempts + 1 } : entry
-      )));
-      return { status: 'pending', item };
+export function retryPendingChatReply(id: string, userId: number): Promise<PendingReplyResult> {
+  const lease = generation;
+  const key = `${lease}:${userId}:${id}`;
+  const existing = deliveries.get(key);
+  if (existing) return existing;
+  const operation = (async (): Promise<PendingReplyResult> => {
+    const queue = await withStorage(loadQueue);
+    const item = queue.find((entry) => entry.id === id && entry.userId === userId) || null;
+    if (!item || lease !== generation) return { status: 'discarded', item: null };
+    let status: PendingReplyResult['status'] = 'sent';
+    try {
+      await sendReply(item, () => lease === generation);
+    } catch (error) {
+      status = isRetryableOfflineError(error) ? 'pending' : 'discarded';
     }
-    await saveQueue(queue.filter((entry) => entry.id !== item.id));
-    return { status: 'discarded', item };
-  }
+    await withStorage(async () => {
+      if (lease !== generation) return;
+      const latest = await loadQueue();
+      await saveQueue(latest.flatMap((entry) => {
+        if (entry.id !== id || entry.userId !== userId) return [entry];
+        return status === 'pending' ? [{ ...entry, attempts: entry.attempts + 1 }] : [];
+      }));
+    });
+    return lease === generation ? { status, item } : { status: 'discarded', item: null };
+  })().finally(() => { deliveries.delete(key); });
+  deliveries.set(key, operation);
+  return operation;
 }
 
 export async function drainPendingChatReplies(userId: number): Promise<PendingReplyDrainResult> {
-  if (drainPromise) return drainPromise;
-  drainPromise = (async () => {
-    const queue = await loadQueue();
-    const remaining: PendingChatReply[] = [];
+  const existing = drains.get(userId);
+  if (existing) return existing;
+  const lease = generation;
+  const operation = (async () => {
+    const queue = await withStorage(loadQueue);
     const sent: PendingChatReply[] = [];
     const discarded: PendingChatReply[] = [];
-    let networkUnavailable = false;
     for (const item of queue) {
-      if (item.userId !== userId || networkUnavailable) {
-        remaining.push(item);
-        continue;
-      }
-      try {
-        await sendReply(item);
-        sent.push(item);
-      } catch (error) {
-        if (isRetryableOfflineError(error)) {
-          networkUnavailable = true;
-          remaining.push({ ...item, attempts: item.attempts + 1 });
-        } else {
-          discarded.push(item);
-        }
-      }
+      if (lease !== generation) break;
+      if (item.userId !== userId) continue;
+      const result = await retryPendingChatReply(item.id, userId);
+      if (result.status === 'pending') break;
+      if (result.item) (result.status === 'sent' ? sent : discarded).push(result.item);
     }
-    await saveQueue(remaining);
     return {
-      remaining: remaining.filter((item) => item.userId === userId).length,
+      remaining: await getPendingChatReplyCount(userId),
       sent,
       discarded,
     };
   })().finally(() => {
-    drainPromise = null;
+    if (drains.get(userId) === operation) drains.delete(userId);
   });
-  return drainPromise;
+  drains.set(userId, operation);
+  return operation;
 }
 
 export async function clearPendingChatReplies(): Promise<void> {
-  await SecureStore.deleteItemAsync(STORAGE_KEY);
-  notify(0);
+  generation += 1;
+  drains.clear();
+  await withStorage(async () => {
+    await SecureStore.deleteItemAsync(STORAGE_KEY);
+    notify(0);
+  });
 }

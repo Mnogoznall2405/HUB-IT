@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { formatApiError } from '../../api/formatError';
 import {
@@ -207,6 +207,7 @@ export function NativeTaskAnalyticsScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('tasks.read');
+  const requestRef = useRef(0);
   const [filters, setFilters] = useState<AnalyticsFilters>(initialFilters);
   const [applied, setApplied] = useState<AnalyticsFilters>(initialFilters);
   const [payload, setPayload] = useState<TaskAnalyticsPayload | null>(null);
@@ -221,33 +222,39 @@ export function NativeTaskAnalyticsScreen() {
   const [message, setMessage] = useState('');
 
   const load = useCallback(async (nextFilters: AnalyticsFilters, refresh = false) => {
+    const lease = ++requestRef.current;
+    if (!allowed || offlineMode) { setLoading(false); setRefreshing(false); return; }
     refresh ? setRefreshing(true) : setLoading(true);
     setError('');
     setMessage('');
     try {
       const next = await getTaskAnalytics(toApiParams(nextFilters));
+      if (lease !== requestRef.current) return;
       setPayload(next);
       setApplied(nextFilters);
     } catch (cause) {
+      if (lease !== requestRef.current) return;
       setError(formatApiError(cause, 'Не удалось загрузить аналитику задач.'));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (lease === requestRef.current) { setLoading(false); setRefreshing(false); }
     }
-  }, []);
+  }, [allowed, offlineMode]);
 
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || offlineMode) { setLoading(false); return; }
+    let active = true;
     const current = initialFilters();
     void load(current);
     void Promise.all([getTaskProjects(), getTaskObjects(), searchTaskAssignees('', 100)])
       .then(([nextProjects, nextObjects, nextParticipants]) => {
+        if (!active) return;
         setProjects(nextProjects);
         setObjects(nextObjects);
         setParticipants(nextParticipants);
       })
       .catch(() => undefined);
-  }, [allowed, load]);
+    return () => { active = false; requestRef.current += 1; };
+  }, [allowed, load, offlineMode]);
 
   const visibleObjects = useMemo(() => (
     filters.projectIds.length

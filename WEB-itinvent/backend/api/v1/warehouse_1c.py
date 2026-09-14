@@ -252,6 +252,16 @@ async def get_employee_warehouse(
     )
 
 
+@router.get("/dismissed-warehouses")
+async def get_dismissed_employee_warehouses(
+    limit: int = Query(1000, ge=1, le=5000),
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    return await _run_or_raise(
+        warehouse_1c_service.get_dismissed_employee_warehouses(limit=limit)
+    )
+
+
 @router.get("/balances")
 async def get_balances(
     nomenclature_ref: str = Query("", max_length=64),

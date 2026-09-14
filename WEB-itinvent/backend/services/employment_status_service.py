@@ -16,7 +16,7 @@ from backend.services.address_book_service import (
     address_book_service,
     normalize_search_text,
 )
-from backend.services.warehouse_1c_service import fio_person_match_score
+from backend.services.warehouse_1c_service import fio_person_match_score, person_name_tokens
 
 
 STATUS_ACTIVE = "active"
@@ -34,7 +34,7 @@ def _cache_max_age_seconds() -> int:
         return DEFAULT_ADDRESS_BOOK_MAX_AGE_SECONDS
 
 
-def _cache_is_fresh(payload: dict[str, Any]) -> bool:
+def is_employment_cache_fresh(payload: dict[str, Any]) -> bool:
     """Only a successful, recent HR snapshot can prove a dismissal.
 
     An incomplete or failed address-book sync must never turn a working
@@ -65,30 +65,21 @@ def _build_name_index(items: list[dict[str, Any]]) -> dict[str, str]:
     return index
 
 
-def resolve_employment_status(
-    full_name: str,
+def _build_surname_index(names: Iterable[str]) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
+    for name in names:
+        tokens = person_name_tokens(name)
+        if tokens:
+            index.setdefault(tokens[0], []).append(name)
+    return index
+
+
+def _resolve_from_indexes(
+    name: str,
     *,
-    cache: dict[str, Any] | None = None,
+    name_index: dict[str, str],
+    surname_index: dict[str, list[str]],
 ) -> dict[str, Any]:
-    """Resolve employment status for one display name."""
-    name = str(full_name or "").strip()
-    if not name:
-        return {
-            "status": STATUS_UNKNOWN,
-            "matched_name": None,
-            "label": "",
-        }
-
-    payload = cache if isinstance(cache, dict) else address_book_service.load_cache()
-    items = list(payload.get("items") or [])
-    if not items or not _cache_is_fresh(payload):
-        return {
-            "status": STATUS_UNKNOWN,
-            "matched_name": None,
-            "label": "",
-        }
-
-    name_index = _build_name_index(items)
     exact_key = normalize_search_text(name)
     if exact_key in name_index:
         matched = name_index[exact_key]
@@ -99,9 +90,11 @@ def resolve_employment_status(
         }
 
     # Fuzzy: warehouse-style FIO ("Иванов И.И.") vs address-book full name.
+    tokens = person_name_tokens(name)
+    candidates = surname_index.get(tokens[0], []) if tokens else []
     best_score = 0
     best_name: str | None = None
-    for book_name in name_index.values():
+    for book_name in candidates:
         score = fio_person_match_score(book_name, name)
         if score > best_score:
             best_score = score
@@ -120,6 +113,37 @@ def resolve_employment_status(
     }
 
 
+def resolve_employment_status(
+    full_name: str,
+    *,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve employment status for one display name."""
+    name = str(full_name or "").strip()
+    if not name:
+        return {
+            "status": STATUS_UNKNOWN,
+            "matched_name": None,
+            "label": "",
+        }
+
+    payload = cache if isinstance(cache, dict) else address_book_service.load_cache()
+    items = list(payload.get("items") or [])
+    if not items or not is_employment_cache_fresh(payload):
+        return {
+            "status": STATUS_UNKNOWN,
+            "matched_name": None,
+            "label": "",
+        }
+
+    name_index = _build_name_index(items)
+    return _resolve_from_indexes(
+        name,
+        name_index=name_index,
+        surname_index=_build_surname_index(name_index.values()),
+    )
+
+
 def resolve_employment_status_batch(
     names: Iterable[str],
     *,
@@ -127,13 +151,32 @@ def resolve_employment_status_batch(
 ) -> dict[str, dict[str, Any]]:
     """Resolve employment status for many names; keys are original name strings."""
     payload = cache if isinstance(cache, dict) else address_book_service.load_cache()
-    result: dict[str, dict[str, Any]] = {}
-    for raw in names or []:
-        name = str(raw or "").strip()
-        if not name or name in result:
-            continue
-        result[name] = resolve_employment_status(name, cache=payload)
-    return result
+    unique_names = list(dict.fromkeys(
+        str(raw or "").strip()
+        for raw in names or []
+        if str(raw or "").strip()
+    ))
+    items = list(payload.get("items") or [])
+    if not items or not is_employment_cache_fresh(payload):
+        return {
+            name: {
+                "status": STATUS_UNKNOWN,
+                "matched_name": None,
+                "label": "",
+            }
+            for name in unique_names
+        }
+
+    name_index = _build_name_index(items)
+    surname_index = _build_surname_index(name_index.values())
+    return {
+        name: _resolve_from_indexes(
+            name,
+            name_index=name_index,
+            surname_index=surname_index,
+        )
+        for name in unique_names
+    }
 
 
 employment_status_service = type(

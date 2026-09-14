@@ -50,6 +50,81 @@ export function mailPreviewSender(item: MailMessagePreview): string {
   return mailPersonLabel(item.sender_person, item.sender_display || item.sender_name || item.sender_email || item.sender);
 }
 
+export function mailPersonEmail(person?: MailPerson | string | null): string {
+  if (!person) return '';
+  const raw = typeof person === 'string' ? person : person.email;
+  const text = String(raw || '').trim();
+  const angleMatch = text.match(/<([^>]+)>/);
+  return String(angleMatch?.[1] || text).trim().toLowerCase();
+}
+
+export function mailPersonDisplay(person?: MailPerson | string | null): string {
+  if (!person) return '';
+  if (typeof person === 'string') {
+    const text = person.trim();
+    const angleStart = text.indexOf('<');
+    return (angleStart > 0 ? text.slice(0, angleStart).trim() : '') || text;
+  }
+  return String(person.display || person.name || person.email || '').trim();
+}
+
+function mailRecipientPeople(item?: MailMessagePreview | MailMessageDetail | null): Array<MailPerson | string> {
+  if (!item) return [];
+  const detail = item as MailMessageDetail;
+  if (Array.isArray(detail.to_people) && detail.to_people.length) return detail.to_people;
+  if (Array.isArray(item.recipient_people) && item.recipient_people.length) return item.recipient_people;
+  if (Array.isArray(detail.to) && detail.to.length) return detail.to;
+  if (Array.isArray(item.recipients) && item.recipients.length) return item.recipients;
+  return [];
+}
+
+/**
+ * Web parity: getPrimaryCorrespondent — a message counts as outgoing when the
+ * current folder is sent/drafts or the sender is one of the user's mailboxes.
+ */
+export function isMailOutgoingMessage(
+  item?: MailMessagePreview | MailMessageDetail | null,
+  { folder, mailboxEmails }: { folder?: string | null; mailboxEmails?: string[] } = {},
+): boolean {
+  const contextFolder = String(folder || item?.folder || '').trim().toLowerCase();
+  if (contextFolder === 'sent' || contextFolder === 'drafts') return true;
+  const senderEmail = mailPersonEmail(item?.sender_person || item?.sender_email || item?.sender);
+  const emails = new Set((mailboxEmails || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
+  return Boolean(senderEmail && emails.has(senderEmail));
+}
+
+export type MailCorrespondent = {
+  direction: 'incoming' | 'outgoing';
+  label: string;
+  person: MailPerson | string | null;
+};
+
+export function mailCorrespondent(
+  item: MailMessagePreview | MailMessageDetail,
+  { folder, isSearch = false, mailboxEmails }: { folder?: string | null; isSearch?: boolean; mailboxEmails?: string[] } = {},
+): MailCorrespondent {
+  const contextFolder = String(folder || item?.folder || '').trim().toLowerCase();
+  const outgoing = isMailOutgoingMessage(item, { folder: contextFolder, mailboxEmails });
+  const showRecipients = isSearch
+    ? outgoing
+    : contextFolder === 'sent' || contextFolder === 'drafts' || (contextFolder === 'trash' && outgoing);
+  if (!showRecipients) {
+    return {
+      direction: 'incoming',
+      label: mailPreviewSender(item),
+      person: item.sender_person || null,
+    };
+  }
+  const people = mailRecipientPeople(item);
+  const first = people[0] ?? null;
+  const name = mailPersonDisplay(first);
+  return {
+    direction: 'outgoing',
+    label: `${isSearch ? 'Кому: ' : ''}${name || 'Нет получателя'}${people.length > 1 ? ` +${people.length - 1}` : ''}`,
+    person: first,
+  };
+}
+
 export function mailSubject(item?: Pick<MailMessagePreview, 'subject'> | null): string {
   return String(item?.subject || '').trim() || '(без темы)';
 }

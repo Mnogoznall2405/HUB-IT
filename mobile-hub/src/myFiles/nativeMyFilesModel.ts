@@ -1,7 +1,11 @@
 import type { MyFileRecord } from '../api/myFilesApi';
+import { API_V1_BASE } from '../api/config';
 
 export const MY_FILES_RETENTION_OPTIONS = [1, 3, 7, 10, 30] as const;
-export const MY_FILES_MAX_FILE_BYTES = (2 ** 32) - 1;
+// Uploads go through chunked /my-files/upload-sessions: the ceiling is the
+// backend reservation limit (my_files_service.MY_FILES_MAX_FILE_BYTES), not the
+// IIS single-request content-length cap.
+export const MY_FILES_MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024;
 export const MY_FILES_TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 export const MY_FILES_ACTIVE_STATUSES = new Set(['uploading', 'queued', 'scanning', 'processing']);
 
@@ -147,4 +151,23 @@ export function buildMyFilePublicUrl(token: string, trustedOrigin: string): stri
   if (trusted.protocol !== 'https:') throw new Error('Публичная ссылка должна использовать HTTPS');
   const origin = trusted.origin;
   return new URL(`/shared-files/${encodeURIComponent(normalizedToken)}`, `${origin}/`).toString();
+}
+
+export function buildMyFilePublicFolderUrl(token: string, trustedOrigin: string): string {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken || normalizedToken.length > 512 || /[/?#\\]/.test(normalizedToken)) {
+    throw new Error('Некорректная публичная ссылка');
+  }
+  const trusted = new URL(trustedOrigin);
+  if (trusted.protocol !== 'https:') throw new Error('Публичная ссылка должна использовать HTTPS');
+  const origin = trusted.origin;
+  return new URL(`/shared-folders/${encodeURIComponent(normalizedToken)}`, `${origin}/`).toString();
+}
+
+export function buildMyFileDownloadGrantUrl(downloadPath: string): string {
+  const path = String(downloadPath || '').trim();
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  const base = API_V1_BASE.replace(/\/$/, '');
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }

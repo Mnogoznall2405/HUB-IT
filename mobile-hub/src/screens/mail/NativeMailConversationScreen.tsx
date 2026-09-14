@@ -5,7 +5,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, RefreshControl, FlatList, StyleSheet, Text, View } from 'react-native';
 import {
   getMailConversation,
   sendMailMessage,
@@ -84,9 +84,12 @@ function NativeMailConversationContent() {
   const [imageViewerLoading, setImageViewerLoading] = useState(false);
   const [allCollapsed, setAllCollapsed] = useState(false);
   const [expandedId, setExpandedId] = useState(first(params.messageId));
-  const scrollRef = useRef<ScrollView>(null);
-  const messagesTopRef = useRef(0);
+  const scrollRef = useRef<FlatList<MailMessageDetail>>(null);
+
   const scrollPendingRef = useRef(true);
+  const scrollRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollAttemptsRef = useRef(0);
+  useEffect(() => () => { if (scrollRetryRef.current) clearTimeout(scrollRetryRef.current); }, []);
   useLayoutEffect(() => {
     setExpandedId(first(params.messageId));
     setAllCollapsed(false);
@@ -204,6 +207,21 @@ function NativeMailConversationContent() {
   const visibleMessageId = allCollapsed ? '' : conversation?.items.some((item) => item.id === expandedId) ? expandedId : (latest?.id || '');
   const visibleMessageIdRef = useRef(visibleMessageId);
   visibleMessageIdRef.current = visibleMessageId;
+  const scrollToVisibleMessage = useCallback(() => {
+    if (!scrollPendingRef.current || !visibleMessageId) return;
+    const index = conversation?.items.findIndex(item => item.id === visibleMessageId) ?? -1;
+    if (index < 0) return;
+    scrollPendingRef.current = false;
+    scrollRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
+  }, [conversation?.items, visibleMessageId]);
+  useEffect(() => {
+    scrollPendingRef.current = true;
+    scrollAttemptsRef.current = 0;
+    if (scrollRetryRef.current) clearTimeout(scrollRetryRef.current);
+    const timer = setTimeout(scrollToVisibleMessage, 0);
+    return () => clearTimeout(timer);
+  }, [scrollToVisibleMessage]);
+
   const compose = useCallback((mode: 'reply' | 'reply_all' | 'forward', message = latest) => {
     if (!message) return;
     router.push(nativeMailComposeDestination({
@@ -365,14 +383,27 @@ function NativeMailConversationContent() {
         style={styles.screen}
         {...chatKeyboardAvoidingProps()}
       >
-      <ScrollView
+      <FlatList
+        key={`${conversationId}:${Boolean(conversation)}`}
         ref={scrollRef}
         testID="native-mail-conversation-scroll"
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void load(); }} tintColor={tokens.primary} />}
-      >
+        data={conversation?.items || []} keyExtractor={message => message.id}
+        initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
+        initialScrollIndex={Math.max(0, (conversation?.items.findIndex(item => item.id === visibleMessageId) ?? 0) - 6)}
+        extraData={visibleMessageId}
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
+          scrollRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
+          scrollPendingRef.current = true;
+          if (scrollRetryRef.current) clearTimeout(scrollRetryRef.current);
+          if (scrollAttemptsRef.current++ < 5) scrollRetryRef.current = setTimeout(scrollToVisibleMessage, 100);
+        }}
+        onContentSizeChange={() => scrollToVisibleMessage()}
+        ListHeaderComponent={<>
+
       {loading && !conversation ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /></View> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {offlineMode ? (
@@ -394,20 +425,14 @@ function NativeMailConversationContent() {
             }}
             style={styles.readStateAction}
           ><Text style={{ color: tokens.primary }}>К первому непрочитанному</Text></Pressable> : null}
-          <View style={styles.messages} onLayout={(event) => { messagesTopRef.current = event.nativeEvent.layout.y; }}>
-            {conversation.items.map((message, index) => {
+        </>
+      ) : null}
+        </>}
+        renderItem={({ item: message }) => {
               const attachmentPrefix = `${message.id}:`;
               const cardBusy = busyAttachment.startsWith(attachmentPrefix) ? busyAttachment.slice(attachmentPrefix.length) : '';
               return (
-                <View key={message.id || index} onLayout={(event) => {
-                  if (message.id !== visibleMessageId || !scrollPendingRef.current) return;
-                  const y = event.nativeEvent.layout.y;
-                  requestAnimationFrame(() => {
-                    if (visibleMessageIdRef.current !== message.id || !scrollPendingRef.current) return;
-                    scrollPendingRef.current = false;
-                    scrollRef.current?.scrollTo({ y: messagesTopRef.current + y, animated: false });
-                  });
-                }}>
+                <View>
                   <Pressable
                     testID={`native-mail-expand-${message.id}`}
                     accessibilityRole="button"
@@ -447,8 +472,9 @@ function NativeMailConversationContent() {
                   </> : null}
                 </View>
               );
-            })}
-          </View>
+        }}
+        ListFooterComponent={<>{conversation ? <>
+
           <Pressable
             testID="native-mail-conversation-toggle-read"
             accessibilityRole="button"
@@ -471,9 +497,8 @@ function NativeMailConversationContent() {
               </View>
             </>
           ) : null}
-        </>
-      ) : !loading ? <AccountSectionCard tokens={tokens} title="Переписка недоступна" description="Обновите почту и повторите попытку.">{null}</AccountSectionCard> : null}
-      </ScrollView>
+      </> : null}
+        </>} />
       {latest ? (
         <NativeMailQuickReplyBar
           testID="native-mail-quick-reply-bar"

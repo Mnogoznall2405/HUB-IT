@@ -25,14 +25,14 @@ def _completed(args, stdout: str, *, returncode: int = 0) -> subprocess.Complete
     return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr="")
 
 
-def _kaspersky_output(*, detected: int = 0, errors: int = 0, skipped: int = 0) -> str:
+def _kaspersky_output(*, detected: int = 0, errors: int = 0, skipped: int = 0, password_protected: int = 0) -> str:
     return (
         "Scan_Objects completed\n"
         "; --- Statistics ---\n"
         "; Processed objects:\t1\n"
         f"; Total detected:\t{detected}\n"
         f"; Skipped:\t{skipped}\n"
-        "; Password protected:\t0\n"
+        f"; Password protected:\t{password_protected}\n"
         "; Corrupted:\t0\n"
         f"; Errors:\t{errors}\n"
     )
@@ -90,7 +90,40 @@ def test_large_payload_scales_kaspersky_timeout(monkeypatch, enabled_antivirus):
     result = antivirus.scan_my_file(LargePayload())
 
     assert result.status == "clean"
-    assert captured["timeout"] == 900
+    assert captured["timeout"] == 3600
+
+
+def test_half_gigabyte_payload_gets_more_than_base_timeout(monkeypatch, enabled_antivirus):
+    class MidPayload:
+        def exists(self):
+            return True
+
+        def is_file(self):
+            return True
+
+        def stat(self):
+            return SimpleNamespace(st_size=502_903_913)
+
+        def __str__(self):
+            return r"C:\spool\telegram.zip"
+
+    kaspersky_path = Path(r"C:\Kaspersky\avp.com")
+    captured: dict[str, int] = {}
+    enabled_antivirus.antivirus_timeout_sec = 300
+    monkeypatch.setattr(antivirus, "_resolve_kaspersky_path", lambda _path="": kaspersky_path, raising=False)
+
+    def fake_run(args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return _completed(args, _kaspersky_output())
+
+    monkeypatch.setattr(antivirus.subprocess, "run", fake_run)
+
+    result = antivirus.scan_my_file(MidPayload())
+
+    assert result.status == "clean"
+    # ~480 MiB * 2s ≈ 960s, above the former 300s GiB floor.
+    assert captured["timeout"] >= 900
+    assert captured["timeout"] <= 3600
 
 
 def test_kaspersky_detection_is_blocked(tmp_path, monkeypatch, enabled_antivirus):
@@ -143,6 +176,25 @@ def test_kaspersky_uncertain_result_fails_closed(
 
     with pytest.raises(antivirus.MyFilesAntivirusError, match="Kaspersky scan failed"):
         antivirus.scan_my_file(payload)
+
+
+def test_kaspersky_password_protected_archive_passes(tmp_path, monkeypatch, enabled_antivirus):
+    payload = tmp_path / "payload.zip"
+    payload.write_bytes(b"payload")
+    kaspersky_path = Path(r"C:\Kaspersky\avp.com")
+    enabled_antivirus.antivirus_provider = "kaspersky"
+    monkeypatch.setattr(antivirus, "_resolve_kaspersky_path", lambda _path="": kaspersky_path, raising=False)
+    monkeypatch.setattr(
+        antivirus.subprocess,
+        "run",
+        lambda args, **_kwargs: _completed(args, _kaspersky_output(password_protected=1)),
+    )
+
+    result = antivirus.scan_my_file(payload)
+
+    assert result.status == "clean"
+    assert result.engine == "kaspersky-endpoint-security"
+    assert "Password-protected" in result.detail
 
 
 def test_auto_provider_falls_back_to_defender(tmp_path, monkeypatch, enabled_antivirus):

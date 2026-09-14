@@ -52,6 +52,28 @@ public sealed class SingleInstanceCoordinatorTests
         Assert.False(received.OpenDownloads);
     }
 
+    [Fact]
+    public async Task SecondaryInstanceForwardsSharedFiles()
+    {
+        var applicationId = $"HUBIT.Desktop.Tests.{Guid.NewGuid():N}";
+        using var primary = new SingleInstanceCoordinator(applicationId);
+        using var secondary = new SingleInstanceCoordinator(applicationId);
+        var activationReceived = new TaskCompletionSource<DesktopLaunchRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        primary.ActivationRequested += (_, e) => activationReceived.TrySetResult(e.Request);
+        primary.StartListening();
+        var request = DesktopLaunchRequest.Default with
+        {
+            SharedFiles = new[] { "C:\\a.pdf", "C:\\b.pdf" },
+        };
+
+        Assert.True(await secondary.SignalPrimaryAsync(request));
+        var received = await activationReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(request.SharedFiles, received.SharedFiles);
+        Assert.True(received.HasSharedFiles);
+    }
+
     [Theory]
     [InlineData("ROUTE:https://evil.example")]
     [InlineData("ROUTE:/login")]

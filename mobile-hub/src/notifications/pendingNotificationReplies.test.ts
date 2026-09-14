@@ -29,6 +29,70 @@ function networkError() {
 }
 
 describe('pending notification replies', () => {
+  it('preserves concurrent enqueues', async () => {
+    await Promise.all([
+      queuePendingChatReply({ ...item(), id: 'one' }),
+      queuePendingChatReply({ ...item(), id: 'two' }),
+    ]);
+    expect(await getPendingChatReplyCount(7)).toBe(2);
+  });
+
+  it.each(['drain', 'retry'] as const)('preserves replies queued during %s', async (mode) => {
+    await queuePendingChatReply(item());
+    let finish!: () => void;
+    let started!: () => void;
+    const sending = new Promise<void>((resolve) => { started = resolve; });
+    (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(() => {
+      started();
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const work = mode === 'drain' ? drainPendingChatReplies(7) : retryPendingChatReply(item().id, 7);
+    await sending;
+    await queuePendingChatReply({ ...item(), id: 'later' });
+    finish();
+    await work;
+    expect(await getPendingChatReplyCount(7)).toBe(1);
+  });
+
+  it('shares an in-flight send between retry and drain', async () => {
+    await queuePendingChatReply(item());
+    let finish!: () => void;
+    let started!: () => void;
+    const sending = new Promise<void>((resolve) => { started = resolve; });
+    (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(() => {
+      started();
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const drain = drainPendingChatReplies(7);
+    await sending;
+    const retry = retryPendingChatReply(item().id, 7);
+    finish();
+    await Promise.all([drain, retry]);
+    expect(chatApi.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'network failure'])('ignores late %s after clearing and requeuing', async (outcome) => {
+    await queuePendingChatReply(item());
+    let finish!: () => void;
+    let started!: () => void;
+    const sending = new Promise<void>((resolve) => { started = resolve; });
+    (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(() => {
+      started();
+      return new Promise<void>((resolve, reject) => {
+        finish = () => outcome === 'success' ? resolve() : reject(networkError());
+      });
+    });
+    const drain = drainPendingChatReplies(7);
+    await sending;
+    await clearPendingChatReplies();
+    await queuePendingChatReply(item());
+    finish();
+    await drain;
+    expect(await getPendingChatReplyCount(7)).toBe(1);
+    expect((await queuePendingChatReply(item())).attempts).toBe(0);
+    expect(chatApi.markConversationRead).not.toHaveBeenCalled();
+  });
+
   beforeEach(async () => {
     await clearPendingChatReplies();
     (chatApi.sendTextMessage as jest.Mock).mockReset().mockResolvedValue({ id: 'message-sent' });

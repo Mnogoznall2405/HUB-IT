@@ -28,6 +28,7 @@ import {
   deleteAiConversation,
   getAiBots,
   getAiSandboxConversation,
+  getAiConversationAccess,
   renameAiConversation,
   resetAiConversationContext,
   respondAiSandboxPermission,
@@ -195,7 +196,7 @@ describe('native Chat API contract', () => {
       body_format: 'plain',
       client_message_id: 'mobile-1',
       reply_to_message_id: undefined,
-    });
+    }, { signal: undefined });
     expect(mockedClient.post).toHaveBeenNthCalledWith(2, '/chat/conversations/conversation-1/read', {
       message_id: 'message-2',
     });
@@ -216,7 +217,19 @@ describe('native Chat API contract', () => {
       body_format: 'markdown',
       client_message_id: undefined,
       reply_to_message_id: undefined,
+    }, { signal: undefined });
+  });
+
+  it('passes text delivery cancellation to the HTTP request with the same message id', async () => {
+    mockedClient.post.mockResolvedValueOnce({ data: {
+      id: 'message-cancel', conversation_id: 'conversation-1', body: 'Текст', sender: { id: 5 },
+    } });
+    const controller = new AbortController();
+    await sendTextMessage('conversation-1', 'Текст', {
+      clientMessageId: 'stable-id', signal: controller.signal,
     });
+    expect(mockedClient.post).toHaveBeenCalledWith('/chat/conversations/conversation-1/messages',
+      expect.objectContaining({ client_message_id: 'stable-id' }), { signal: controller.signal });
   });
 
   it('loads a focused thread bootstrap for native deep links', async () => {
@@ -490,6 +503,14 @@ describe('native Chat API contract', () => {
     expect(mockedClient.patch).toHaveBeenCalledWith('/chat/ai/conversations/ai%2F1', { title: 'Склад' });
     expect(mockedClient.post).toHaveBeenCalledWith('/chat/ai/conversations/ai%2F1/reset-context');
     expect(mockedClient.delete).toHaveBeenCalledWith('/chat/ai/conversations/ai%2F1');
+  });
+
+  it('reads the owner-scoped agent access contract and fails closed for missing grants', async () => {
+    jest.mocked(apiClient.get).mockResolvedValueOnce({ data: { can_use: true } });
+    await expect(getAiConversationAccess('ai/1')).resolves.toEqual({ can_use: true });
+    expect(apiClient.get).toHaveBeenCalledWith('/chat/ai/conversations/ai%2F1/access');
+    jest.mocked(apiClient.get).mockResolvedValueOnce({ data: {} });
+    await expect(getAiConversationAccess('ai/1')).resolves.toEqual({ can_use: false });
   });
 
   it('loads an OpenCode workspace and answers a permission request', async () => {

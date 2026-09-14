@@ -1,5 +1,19 @@
 const mockSecureStore = new Map<string, string>();
 
+jest.mock('expo-image', () => {
+  const React = require('react');
+  const { Image: NativeImage } = require('react-native');
+  const Image = Object.assign((props: Record<string, any>) => React.createElement(NativeImage, {
+    ...props,
+    onLoad: props.onLoad ? (event: any) => props.onLoad(event.nativeEvent || event) : undefined,
+  }), {
+    getCachePathAsync: jest.fn(async () => null),
+    clearMemoryCache: jest.fn(async () => true),
+    clearDiskCache: jest.fn(async () => true),
+  });
+  return { Image };
+});
+
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async (key: string) => mockSecureStore.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => {

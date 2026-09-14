@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -63,6 +63,7 @@ export function NativeMailFoldersScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('mail.access');
+  const requestRef = useRef(0);
   const [mailboxId, setMailboxId] = useState(first(params.mailboxId));
   const [mailboxes, setMailboxes] = useState<MailMailbox[]>([]);
   const [folderTree, setFolderTree] = useState<MailFolderNode[]>([]);
@@ -82,6 +83,8 @@ export function NativeMailFoldersScreen() {
   }), [folderTree, options]);
 
   const load = useCallback(async () => {
+    const lease = ++requestRef.current;
+    if (offlineMode) { setLoading(false); return; }
     if (!allowed) {
       setLoading(false);
       return;
@@ -93,6 +96,7 @@ export function NativeMailFoldersScreen() {
         listMailboxes(false),
         getMailFolderTree(mailboxId),
       ]);
+      if (lease !== requestRef.current) return;
       const active = mailboxItems.filter((item) => item.is_active !== false);
       setMailboxes(active);
       setFolderTree(tree.items);
@@ -101,13 +105,17 @@ export function NativeMailFoldersScreen() {
         if (selected?.id) setMailboxId(String(selected.id));
       }
     } catch (cause) {
+      if (lease !== requestRef.current) return;
       setError(formatApiError(cause, 'Не удалось загрузить папки почты.'));
     } finally {
-      setLoading(false);
+      if (lease === requestRef.current) setLoading(false);
     }
-  }, [allowed, mailboxId]);
+  }, [allowed, mailboxId, offlineMode]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
 
   const openCreate = useCallback((scope: 'mailbox' | 'archive', parent?: { id: string; label: string }) => {
     setDialog({

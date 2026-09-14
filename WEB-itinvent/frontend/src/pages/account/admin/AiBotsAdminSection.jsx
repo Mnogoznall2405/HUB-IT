@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import BotSettingsWorkspace from './BotSettingsWorkspace';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   Box,
-  Button,
   Checkbox,
-  Chip,
-  CircularProgress,
   Collapse,
   FormControl,
   FormControlLabel,
@@ -24,21 +19,23 @@ import {
   Typography,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
-import ExpandMoreOutlinedIcon from '@mui/icons-material/ExpandMoreOutlined';
-import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
-import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
-import { buildOfficeUiTokens, getOfficePanelSx, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
+import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
 import {
   AI_AD_TOOL_OPTIONS,
+  AI_AD_TOOL_IDS,
   AI_FILE_TOOL_OPTIONS,
+  AI_FILE_TOOL_IDS,
   AI_ITINVENT_DEFAULT_TOOLS,
   AI_ITINVENT_MULTI_DB_TOOL_ID,
   AI_ITINVENT_TOOL_OPTIONS,
+  AI_ITINVENT_TOOL_IDS,
   AI_MFU_TOOL_OPTIONS,
+  AI_MFU_TOOL_IDS,
   AI_NETWORK_TOOL_OPTIONS,
+  AI_NETWORK_TOOL_IDS,
   AI_OFFICE_ACTION_TOOL_OPTIONS,
   AI_OFFICE_TOOL_OPTIONS,
+  AI_OFFICE_TOOL_IDS,
 } from '../accountConstants';
 import {
   createAiBotDraft,
@@ -50,7 +47,6 @@ import {
   getAiBotNetworkTools,
   getAiBotOfficeTools,
   isAiBotLiveDataEnabled,
-  shouldWarnAiBotLiveDataDisabled,
 } from './aiBotModel';
 
 export function AiBotsAdminSection({
@@ -74,8 +70,15 @@ export function AiBotsAdminSection({
     system_prompt: '',
   }));
 
+  const previousBots = useRef({});
   useEffect(() => {
-    setDraftsById(Object.fromEntries((Array.isArray(bots) ? bots : []).map((item) => [item.id, createAiBotDraft(item)])));
+    const next = Object.fromEntries((Array.isArray(bots) ? bots : []).map((item) => [item.id, createAiBotDraft(item)]));
+    const previous = previousBots.current;
+    setDraftsById((current) => Object.fromEntries(Object.entries(next).map(([id, incoming]) => [id,
+      current[id] && previous[id] && JSON.stringify(current[id]) !== JSON.stringify(previous[id])
+        && JSON.stringify(current[id]) !== JSON.stringify(incoming) ? current[id] : incoming,
+    ])));
+    previousBots.current = next;
   }, [bots]);
 
   const updateDraft = useCallback((botId, key, value) => {
@@ -88,50 +91,12 @@ export function AiBotsAdminSection({
     }));
   }, []);
 
-  const renderBotFieldsLegacy = (draft, onChange) => (
-    <Grid container spacing={1.2}>
-      <Grid item xs={12} md={6}>
-        <TextField label="Название" fullWidth size="small" value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
-      </Grid>
-      <Grid item xs={12} md={6}>
-        <TextField label="Slug" fullWidth size="small" value={draft.slug} onChange={(event) => onChange('slug', event.target.value.toLowerCase())} />
-      </Grid>
-      <Grid item xs={12}>
-        <TextField label="Описание" fullWidth size="small" value={draft.description} onChange={(event) => onChange('description', event.target.value)} />
-      </Grid>
-      <Grid item xs={12}>
-        <TextField label="System prompt" fullWidth multiline minRows={4} value={draft.system_prompt} onChange={(event) => onChange('system_prompt', event.target.value)} />
-      </Grid>
-      <Grid item xs={12} md={4}>
-        <TextField label="Модель" fullWidth size="small" value={draft.model} onChange={(event) => onChange('model', event.target.value)} placeholder="openai/gpt-4o-mini" />
-      </Grid>
-      <Grid item xs={6} md={2}>
-        <TextField label="Temp" type="number" fullWidth size="small" value={draft.temperature} onChange={(event) => onChange('temperature', Number(event.target.value || 0))} />
-      </Grid>
-      <Grid item xs={6} md={2}>
-        <TextField label="Max tokens" type="number" fullWidth size="small" value={draft.max_tokens} onChange={(event) => onChange('max_tokens', Number(event.target.value || 0))} />
-      </Grid>
-      <Grid item xs={12} md={4}>
-        <TextField label="KB scope (через запятую)" fullWidth size="small" value={draft.allowed_kb_scope} onChange={(event) => onChange('allowed_kb_scope', event.target.value)} />
-      </Grid>
-      <Grid item xs={12}>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-          <FormControlLabel control={<Switch checked={draft.allow_file_input} onChange={(event) => onChange('allow_file_input', event.target.checked)} />} label="Принимать файлы" />
-          <FormControlLabel control={<Switch checked={draft.allow_generated_artifacts} onChange={(event) => onChange('allow_generated_artifacts', event.target.checked)} />} label="Генерировать файлы" />
-          <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять KB-шаблоны" />
-          <FormControlLabel control={<Switch checked={draft.is_enabled} onChange={(event) => onChange('is_enabled', event.target.checked)} />} label="Включён" />
-        </Stack>
-      </Grid>
-    </Grid>
-  );
-
-  const renderBotFields = (draft, onChange) => {
+  const renderBotFields = (draft, onChange, section = 'all', creating = false) => {
     const enabledTools = getAiBotEnabledTools(draft);
     const liveDataEnabled = isAiBotLiveDataEnabled(draft);
     const fileToolsEnabled = getAiBotFileTools(draft).length > 0;
     const officeToolsEnabled = getAiBotOfficeTools(draft).length > 0;
     const adToolsEnabled = getAiBotAdTools(draft).length > 0;
-    const liveDataWarning = shouldWarnAiBotLiveDataDisabled(draft);
     const allowedDatabases = Array.isArray(draft?.allowed_databases) ? draft.allowed_databases : [];
 
     const setDatabaseMode = (mode) => {
@@ -273,32 +238,35 @@ export function AiBotsAdminSection({
 
     return (
       <Grid container spacing={1.2}>
+        {(section === 'all' || section === 'settings') && <>
         <Grid item xs={12} md={6}>
           <TextField label="Название" fullWidth size="small" value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
         </Grid>
         <Grid item xs={12} md={6}>
-          <TextField label="Slug" fullWidth size="small" value={draft.slug} onChange={(event) => onChange('slug', event.target.value.toLowerCase())} />
+          <TextField disabled={!creating} label="Slug" fullWidth size="small" value={draft.slug} onChange={(event) => onChange('slug', event.target.value.toLowerCase())} />
         </Grid>
         <Grid item xs={12}>
           <TextField label="Описание" fullWidth size="small" value={draft.description} onChange={(event) => onChange('description', event.target.value)} />
         </Grid>
         <Grid item xs={12}>
-          <TextField label="System prompt" fullWidth multiline minRows={4} value={draft.system_prompt} onChange={(event) => onChange('system_prompt', event.target.value)} />
+          <TextField label="Инструкция агенту" fullWidth multiline minRows={4} value={draft.system_prompt} onChange={(event) => onChange('system_prompt', event.target.value)} />
         </Grid>
         <Grid item xs={12} md={4}>
           <TextField label="Модель" fullWidth size="small" value={draft.model} onChange={(event) => onChange('model', event.target.value)} placeholder="openai/gpt-4o-mini" />
         </Grid>
         <Grid item xs={6} md={2}>
-          <TextField label="Temp" type="number" fullWidth size="small" value={draft.temperature} onChange={(event) => onChange('temperature', Number(event.target.value || 0))} />
+          <TextField label="Вариативность ответа" type="number" fullWidth size="small" value={draft.temperature} onChange={(event) => onChange('temperature', Number(event.target.value || 0))} />
         </Grid>
         <Grid item xs={6} md={2}>
-          <TextField label="Max tokens" type="number" fullWidth size="small" value={draft.max_tokens} onChange={(event) => onChange('max_tokens', Number(event.target.value || 0))} />
+          <TextField label="Лимит токенов ответа" type="number" fullWidth size="small" value={draft.max_tokens} onChange={(event) => onChange('max_tokens', Number(event.target.value || 0))} />
         </Grid>
         <Grid item xs={12} md={4}>
           <TextField label="KB scope (через запятую)" fullWidth size="small" value={draft.allowed_kb_scope} onChange={(event) => onChange('allowed_kb_scope', event.target.value)} />
         </Grid>
+        </>}
+        {(section === 'all' || section === 'tools') && <>
         <Grid item xs={12}>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
+          <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
             <FormControlLabel control={<Switch checked={draft.allow_file_input} onChange={(event) => onChange('allow_file_input', event.target.checked)} />} label="Принимать файлы" />
             <FormControlLabel control={<Switch checked={draft.allow_generated_artifacts} onChange={(event) => onChange('allow_generated_artifacts', event.target.checked)} />} label="Генерировать файлы" />
             <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять KB-шаблоны" />
@@ -321,11 +289,7 @@ export function AiBotsAdminSection({
                 />
               </Stack>
 
-              {liveDataWarning ? (
-                <Alert severity="warning">
-                  Бот включён, но у него не сохранены инструменты ITinvent. В чате он будет отвечать как обычная LLM, пока инструменты ITinvent не будут включены и сохранены.
-                </Alert>
-              ) : null}
+
 
               <Collapse in={liveDataEnabled} unmountOnExit>
                 <Stack spacing={1.1}>
@@ -606,6 +570,8 @@ export function AiBotsAdminSection({
             </Stack>
           </Paper>
         </Grid>
+        </>}
+        {(section === 'all' || section === 'settings') && <>
         <Grid item xs={12}>
           <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
             <Stack spacing={1.1}>
@@ -615,7 +581,7 @@ export function AiBotsAdminSection({
                   Максимальное количество раундов и вызовов инструментов за один ответ бота.
                 </Typography>
               </Box>
-              <Grid container spacing={2}>
+              <Grid container spacing={4} sx={{ px: 1.5 }}>
                 <Grid item xs={12} md={6}>
                   <Typography variant="body2" sx={{ mb: 0.5 }}>
                     Раундов инструментов: <strong>{draft.max_tool_rounds}</strong>
@@ -655,143 +621,15 @@ export function AiBotsAdminSection({
             </Stack>
           </Paper>
         </Grid>
+        </>}
       </Grid>
     );
   };
 
-  return (
-    <Paper elevation={0} sx={{ ...getOfficePanelSx(ui, { boxShadow: 'none' }), p: 2.2 }}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.2} sx={{ mb: 1.6 }}>
-        <Box>
-          <Typography variant="h6" sx={{ fontWeight: 800 }}>AI Bots</Typography>
-          <Typography variant="body2" color="text.secondary">
-            OpenRouter: {openrouterConfigured ? 'настроен' : 'не настроен'}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35 }}>
-            PM2: `itinvent-ai-chat-worker` • health-check: `scripts/pm2/health-check.ps1`
-          </Typography>
-        </Box>
-        <Button startIcon={<RefreshOutlinedIcon />} onClick={onRefresh} disabled={loading}>
-          Обновить
-        </Button>
-      </Stack>
-
-      <Alert severity={openrouterConfigured ? 'success' : 'warning'} sx={{ mb: 2 }}>
-        {openrouterConfigured
-          ? 'OpenRouter доступен. Боты смогут отвечать в chat AI-диалогах.'
-          : 'OpenRouter не настроен. Проверьте OPENROUTER_API_KEY / OPENROUTER_BASE_URL.'}
-      </Alert>
-
-      <Alert severity="info" sx={{ mb: 2 }}>
-        Доступ к живым данным ITinvent настраивается только здесь, в разделе «Настройки / AI-боты». Пользователи с `chat.ai.use` могут открывать AI-чаты, но включать инструменты может только админ или пользователь с `settings.ai.manage`.
-      </Alert>
-
-      {loading && (!Array.isArray(bots) || bots.length === 0) ? (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
-          <CircularProgress size={18} />
-          <Typography variant="body2" color="text.secondary">Загрузка AI-ботов…</Typography>
-        </Stack>
-      ) : null}
-
-      {!loading && Array.isArray(bots) && bots.length === 0 ? (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          AI-боты ещё не созданы. Создайте первого бота здесь, затем откройте его в боковой панели чата.
-        </Alert>
-      ) : null}
-
-      <Accordion disableGutters defaultExpanded>
-        <AccordionSummary expandIcon={<ExpandMoreOutlinedIcon />}>
-          <Typography sx={{ fontWeight: 700 }}>Создать бота</Typography>
-        </AccordionSummary>
-        <AccordionDetails>
-          {renderBotFields(newDraft, (key, value) => setNewDraft((current) => ({ ...current, [key]: value })))}
-          <Stack direction="row" justifyContent="flex-end" sx={{ mt: 1.5 }}>
-            <Button
-              variant="contained"
-              startIcon={<AddOutlinedIcon />}
-              onClick={() => onCreate({
-                ...newDraft,
-                allowed_kb_scope: String(newDraft.allowed_kb_scope || '').split(',').map((item) => item.trim()).filter(Boolean),
-              })}
-              disabled={savingBotId === 'new'}
-            >
-              Создать
-            </Button>
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
-
-      <Stack spacing={1.2} sx={{ mt: 1.5 }}>
-        {(Array.isArray(bots) ? bots : []).map((bot) => {
-          const draft = draftsById[bot.id] || createAiBotDraft(bot);
-          const runs = Array.isArray(runsByBotId?.[bot.id]) ? runsByBotId[bot.id] : [];
-          const persistedEnabledTools = getAiBotEnabledTools(bot);
-          const persistedLiveDataEnabled = isAiBotLiveDataEnabled(bot);
-          const persistedLiveDataWarning = shouldWarnAiBotLiveDataDisabled(bot);
-          return (
-            <Accordion key={bot.id} disableGutters>
-              <AccordionSummary expandIcon={<ExpandMoreOutlinedIcon />}>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%', pr: 1 }}>
-                  <Typography sx={{ flex: 1, fontWeight: 700 }}>{bot.title}</Typography>
-                  <Chip size="small" label={bot.is_enabled ? 'enabled' : 'disabled'} color={bot.is_enabled ? 'success' : 'default'} />
-                  <Chip size="small" label={persistedLiveDataEnabled ? 'live data on' : 'live data off'} color={persistedLiveDataEnabled ? 'info' : 'warning'} />
-                  {bot.latest_run_status ? <Chip size="small" label={bot.latest_run_status} color={bot.latest_run_status === 'failed' ? 'error' : 'primary'} /> : null}
-                </Stack>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderBotFields(draft, (key, value) => updateDraft(bot.id, key, value))}
-                {persistedLiveDataWarning ? (
-                  <Alert severity="warning" sx={{ mt: 1.5 }}>
-                    Бот включён, но у него не сохранены инструменты. В чате он будет отвечать как обычная LLM, пока инструменты не будут включены и сохранены.
-                  </Alert>
-                ) : null}
-                <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1} sx={{ mt: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    Пользователь бота: {bot.bot_user_id || 'ожидает создания'} • Обновлено: {bot.updated_at || 'н/д'}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Сохранено инструментов: {persistedEnabledTools.length} - режим БД: {bot?.tool_settings?.multi_db_mode || 'single'}
-                  </Typography>
-                  <Button
-                    variant="contained"
-                    startIcon={<SaveOutlinedIcon />}
-                    onClick={() => onSave(bot.id, {
-                      ...draft,
-                      allowed_kb_scope: String(draft.allowed_kb_scope || '').split(',').map((item) => item.trim()).filter(Boolean),
-                    })}
-                    disabled={savingBotId === bot.id}
-                  >
-                    Сохранить
-                  </Button>
-                </Stack>
-                {runs.length > 0 ? (
-                  <Box sx={{ mt: 1.4 }}>
-                    <Typography variant="subtitle2" sx={{ mb: 0.8, fontWeight: 700 }}>Последние run</Typography>
-                    <Stack spacing={0.8}>
-                      {runs.slice(0, 5).map((run) => (
-                        <Box key={run.id} sx={{ ...getOfficeSubtlePanelSx(ui), p: 1.2 }}>
-                          <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                            {run.status} • {run.latency_ms ? `${run.latency_ms} ms` : '—'}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            DB: {run.effective_database_id || 'not resolved'} - tool traces: {run.tool_traces_count || 0}{run.tool_trace_errors_count ? ` - tool errors: ${run.tool_trace_errors_count}` : ''}
-                          </Typography>
-                          {run.status_text ? (
-                            <Typography variant="body2" color="text.secondary">{run.status_text}</Typography>
-                          ) : null}
-                          {run.error_text ? (
-                            <Typography variant="body2" color="error.main">{run.error_text}</Typography>
-                          ) : null}
-                        </Box>
-                      ))}
-                    </Stack>
-                  </Box>
-                ) : null}
-              </AccordionDetails>
-            </Accordion>
-          );
-        })}
-      </Stack>
-    </Paper>
-  );
+  return <BotSettingsWorkspace
+    bots={bots} loading={loading} savingBotId={savingBotId} runsByBotId={runsByBotId}
+    onRefresh={onRefresh} onCreate={onCreate} onSave={onSave} openrouterConfigured={openrouterConfigured}
+    draftsById={draftsById} newDraft={newDraft} setNewDraft={setNewDraft}
+    updateDraft={updateDraft} renderFields={renderBotFields} ui={ui}
+  />;
 }

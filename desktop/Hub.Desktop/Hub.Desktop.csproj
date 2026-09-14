@@ -19,9 +19,11 @@
     <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
     <WindowsAppSdkIncludeVersionInfo>true</WindowsAppSdkIncludeVersionInfo>
     <WebView2EnableCsWinRTProjection>false</WebView2EnableCsWinRTProjection>
+    <!-- Ship only the satellite languages the product UI actually uses. -->
+    <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <AssemblyName>HUB.Desktop</AssemblyName>
     <RootNamespace>Hub.Desktop</RootNamespace>
-    <Version>0.1.22</Version>
+    <Version>0.1.41</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">
@@ -49,5 +51,16 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- WinForms design-time assemblies are not needed at runtime. -->
+  <Target Name="RemoveDesignTimeAssemblies" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <_designTimeAssemblies Include="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.Filename)' == 'System.Windows.Forms.Design'
+                                        or '%(ResolvedFileToPublish.Filename)' == 'System.Windows.Forms.Design.Primitives'
+                                        or '%(ResolvedFileToPublish.Filename)' == 'Microsoft.DiaSymReader.Native.amd64'" />
+      <ResolvedFileToPublish Remove="@(_designTimeAssemblies)" />
+    </ItemGroup>
+  </Target>
 
 </Project>

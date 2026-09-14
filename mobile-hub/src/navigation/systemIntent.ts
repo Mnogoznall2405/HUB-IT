@@ -150,6 +150,9 @@ function portalPathFromNativeRoute(destination: string): string | null {
     if (parsed.pathname === '/mfu' || parsed.pathname === '/(shell)/mfu') {
       return '/mfu';
     }
+    if (parsed.pathname === '/statistics' || parsed.pathname === '/(shell)/statistics') {
+      return '/statistics';
+    }
     const databaseMatch = parsed.pathname.match(/^(?:\/\(shell\))?\/database\/([^/]+)$/);
     if (databaseMatch) {
       const query = new URLSearchParams();

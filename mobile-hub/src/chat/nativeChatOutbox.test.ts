@@ -4,7 +4,7 @@ let mockFileSequence = 0;
 jest.mock('expo-crypto', () => ({ ...jest.requireActual('expo-crypto'), randomUUID: () => `synthetic-outbox-file-${++mockFileSequence}` }));
 import * as api from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
-import { clearNativeChatOutbox, createNativeChatOutbox, subscribeNativeChatOutbox } from './nativeChatOutbox';
+import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatQueueState, subscribeNativeChatOutbox } from './nativeChatOutbox';
 
 jest.mock('../api/chatApi', () => ({ sendTextMessage: jest.fn() }));
 const send = jest.mocked(api.sendTextMessage);
@@ -200,6 +200,31 @@ it('restores an upload and its preview from a durable copy after cache removal',
   expect((await restored.read())[0].attachments?.[0].local_uri).toBe(upload.files[0].uri);
   await restored.completeUpload(id);
   expect(await restored.readUploads()).toEqual([]);
+});
+
+it('never projects a visible failure while queue() is still preparing the entry', async () => {
+  // The UI renders "Не отправлено · повторить" only for local_status 'failed'
+  // without a queue state. A delivery-less entry flashes that state between the
+  // initial persist and the delivery-metadata commit unless busy hides it.
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  const frames: Array<{ status?: string; queue?: string }> = [];
+  const unsubscribe = subscribeNativeChatOutbox(() => {
+    void queue.read().then((rows) => {
+      rows.forEach((row) => frames.push({
+        status: row.local_status,
+        queue: getNativeChatQueueState(row) || undefined,
+      }));
+    }).catch(() => undefined);
+  });
+  try {
+    await queue.queue(message);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  } finally {
+    unsubscribe();
+  }
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames.filter((frame) => frame.status === 'failed' && !frame.queue)).toEqual([]);
+  expect(frames.at(-1)).toEqual({ status: 'failed', queue: 'queued' });
 });
 
 it('queues for later delivery without calling the network send', async () => {

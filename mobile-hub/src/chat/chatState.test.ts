@@ -1,3 +1,4 @@
+import type { ChatMessage } from '../api/types';
 import {
   applyConversationEnvelope,
   applyReactionEnvelope,
@@ -14,6 +15,55 @@ import {
 } from './chatState';
 
 describe('chat state', () => {
+  it('preserves unchanged messages and treats a repeated delivery as a no-op', () => {
+    const current = mergeMessages([], [
+      { id: 'm2', conversation_id: 'c1', sender_user_id: 2, conversation_seq: 2 },
+      { id: 'm1', conversation_id: 'c1', sender_user_id: 1, conversation_seq: 1 },
+    ], 1);
+    const updated = mergeMessages(current, { ...current[0], body_text: 'edited' }, 1);
+    expect(updated[0]).not.toBe(current[0]);
+    expect(updated[1]).toBe(current[1]);
+    expect(mergeMessages(updated, { ...updated[0] }, 1)).toBe(updated);
+  });
+
+  it('preserves ownership when a partial update omits sender identity', () => {
+    const current = mergeMessages([], {
+      id: 'm1', conversation_id: 'c1', sender_user_id: 1, body_text: 'old',
+    }, 1);
+    expect(mergeMessages(current, {
+      id: 'm1', conversation_id: 'c1', body_text: 'edited',
+    } as ChatMessage, 1)[0]).toMatchObject({ sender_user_id: 1, is_own: true, body_text: 'edited' });
+  });
+
+  it('recomputes ownership when the viewer changes without mutating source messages', () => {
+    const current = mergeMessages([], {
+      id: 'm1', conversation_id: 'c1', sender_user_id: 1,
+    }, 1);
+    const updated = mergeMessages(current, [], 2);
+    expect(updated[0].is_own).toBe(false);
+    expect(current[0].is_own).toBe(true);
+  });
+
+  it('formats historical date labels once per day and refreshes relative labels on the next day', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-14T12:00:00'));
+    const format = jest.spyOn(Date.prototype, 'toLocaleDateString');
+    try {
+      const messages = Array.from({ length: 100 }, (_, index) => ({
+        id: `m${index}`, conversation_id: 'c1', sender_user_id: 2, created_at: '2026-01-01T12:00:00',
+      }));
+      const rows = buildChatThreadRowDecorations(messages);
+      expect(format).toHaveBeenCalledTimes(1);
+      expect(new Set(rows.map((row) => row.dateLabel)).size).toBe(1);
+      const recent = [{ id: 'today', conversation_id: 'c1', sender_user_id: 2, created_at: '2026-09-14T12:00:00' }];
+      const todayLabel = buildChatThreadRowDecorations(recent)[0].dateLabel;
+      jest.setSystemTime(new Date('2026-09-15T12:00:00'));
+      expect(buildChatThreadRowDecorations(recent)[0].dateLabel).not.toBe(todayLabel);
+    } finally {
+      format.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('deduplicates messages and orders newest first for the inverted list', () => {
     const result = mergeMessages(
       [{ id: 'm1', conversation_id: 'c1', sender_user_id: 2, created_at: '2026-01-01T10:00:00Z' }],

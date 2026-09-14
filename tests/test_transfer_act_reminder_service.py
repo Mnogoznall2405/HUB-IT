@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib
 import sys
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +28,7 @@ def _make_store(base_dir: Path) -> SimpleNamespace:
     )
 
 
-def _build_services(temp_dir: str, monkeypatch):
+def _build_services(temp_dir: str, monkeypatch, *, database_url=None):
     hub_module = importlib.import_module("backend.services.hub_service")
     reminder_module = importlib.import_module("backend.services.transfer_act_reminder_service")
     store = _make_store(Path(temp_dir))
@@ -57,8 +60,8 @@ def _build_services(temp_dir: str, monkeypatch):
     }
     monkeypatch.setattr(hub_module.user_service, "get_by_id", lambda user_id: users.get(int(user_id)))
 
-    hub = HubService()
-    reminder = TransferActReminderService()
+    hub = HubService(database_url=database_url)
+    reminder = TransferActReminderService(database_url=database_url)
     monkeypatch.setattr(reminder_module, "hub_service", hub)
 
     actor = SimpleNamespace(
@@ -81,6 +84,48 @@ def _sample_transfer_payload():
         {"act_id": "act-2", "old_employee": "Petr Petrov", "equipment_count": 1},
     ]
     return transferred_items, acts
+
+
+@pytest.mark.parametrize("failure", [None, "permission", "transaction"])
+@pytest.mark.parametrize("storage", ["legacy", "app"])
+def test_delete_task_removes_only_its_reminder_atomically(temp_dir, monkeypatch, failure, storage):
+    from sqlalchemy.exc import IntegrityError
+
+    database_url = f"sqlite:///{Path(temp_dir).as_posix()}/app.sqlite3" if storage == "app" else None
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch, database_url=database_url)
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me"},
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+    items, acts = _sample_transfer_payload()
+    created = [reminder.create_transfer_reminder(
+        db_id="main", transferred_items=items, acts=acts,
+        new_employee_no="501", new_employee_name="New Employee", actor_user=actor,
+    ) for _ in range(2)]
+    target, other = created
+    if failure == "transaction":
+        with hub._connect() as conn:
+            conn.execute("""CREATE TRIGGER fail_task_delete BEFORE DELETE ON hub_tasks
+                            BEGIN SELECT RAISE(ABORT, 'test rollback'); END""")
+    if failure:
+        with pytest.raises(PermissionError if failure == "permission" else (sqlite3.IntegrityError, IntegrityError)):
+            hub.delete_task(task_id=target["task_id"], actor_user_id=99 if failure == "permission" else actor.id)
+    else:
+        assert hub.delete_task(task_id=target["task_id"], actor_user_id=actor.id)
+        assert not hub.delete_task(task_id=target["task_id"], actor_user_id=actor.id)
+    assert (reminder.get_reminder(reminder_id=target["reminder_id"]) is not None) == bool(failure)
+    with reminder._connect() as conn:
+        groups = conn.execute("SELECT id FROM equipment_transfer_act_reminder_groups WHERE reminder_id = ?",
+                              (target["reminder_id"],)).fetchall()
+        task = conn.execute("SELECT id FROM hub_tasks WHERE id = ?", (target["task_id"],)).fetchone()
+    assert len(groups) == (2 if failure else 0)
+    assert (task is not None) == bool(failure)
+    assert reminder.get_reminder(reminder_id=other["reminder_id"])["pending_groups_total"] == 2
 
 
 def test_hub_service_create_task_supports_internal_initial_status(temp_dir, monkeypatch):

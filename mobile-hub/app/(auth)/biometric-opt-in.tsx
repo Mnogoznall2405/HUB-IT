@@ -18,7 +18,7 @@ import { type FluentTokens, useAppFluentTokens } from '../../src/theme/fluentTok
 export default function BiometricOptInScreen() {
   const tokens = useAppFluentTokens();
   const styles = useMemo(() => createStyles(tokens), [tokens]);
-  const { enableBiometrics, hasPermission, skipBiometrics, user } = useAuth();
+  const { biometricEnrollmentAvailable, enableBiometrics, hasPermission, skipBiometrics, user } = useAuth();
   const [capability, setCapability] = useState<BiometricCapability | null>(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -72,7 +72,7 @@ export default function BiometricOptInScreen() {
   };
 
   const supported = Boolean(
-    capability?.available && capability.enrolled && capability.fingerprint,
+    capability?.available && capability.enrolled && capability.fingerprint && biometricEnrollmentAvailable,
   );
 
   return (
@@ -97,8 +97,9 @@ export default function BiometricOptInScreen() {
         </Text>
         {capability && !supported ? (
           <Text style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="assertive">
-            На телефоне не найден настроенный отпечаток. Добавьте его в настройках Android,
-            затем войдите снова.
+            {!biometricEnrollmentAvailable
+              ? 'Сервер не выдал подтверждение для включения отпечатка. Войдите заново или продолжите без него.'
+              : 'На телефоне не найден настроенный отпечаток. Добавьте его в настройках Android, затем войдите снова.'}
           </Text>
         ) : null}
         {error ? (

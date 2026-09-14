@@ -165,7 +165,10 @@ class OpenCodeHttpControlClient:
         deadline = time.monotonic() + max(1, min(int(startup_timeout_seconds), 60))
         while True:
             try:
-                response = self._request("POST", OpenCodeApiPaths.create_session(), json={})
+                # A cold OpenCode instance may accept TCP before its routes are
+                # ready. Bound each attempt by the remaining startup budget.
+                remaining = max(0.1, deadline - time.monotonic())
+                response = self._request("POST", OpenCodeApiPaths.create_session(), json={}, timeout=min(5.0, remaining))
                 payload = response.json()
                 if isinstance(payload, dict) and payload.get("id"):
                     return payload
@@ -177,6 +180,20 @@ class OpenCodeHttpControlClient:
 
     def prompt_async(self, *, session_id: str, prompt: Mapping[str, object]) -> None:
         self._request("POST", OpenCodeApiPaths.async_prompt(session_id), json=dict(prompt))
+
+    def wait_for_session(self, *, session_id: str, startup_timeout_seconds: int = 30) -> None:
+        deadline = time.monotonic() + max(1, min(int(startup_timeout_seconds), 60))
+        path = f"/session/{_opaque_path_id(session_id, label='session id')}"
+        while True:
+            try:
+                self._request('GET', path, timeout=min(5.0, max(0.1, deadline - time.monotonic())))
+                return
+            except Exception as exc:
+                if isinstance(exc, OpenCodeControlError) and exc.status_code == 404:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise OpenCodeControlError('OpenCode persisted session did not become ready') from exc
+                time.sleep(0.2)
 
     def abort(self, *, session_id: str) -> None:
         self._request("POST", OpenCodeApiPaths.abort(session_id), json={})

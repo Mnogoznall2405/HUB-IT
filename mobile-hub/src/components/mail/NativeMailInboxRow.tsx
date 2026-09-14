@@ -2,7 +2,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { memo } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { MailConversationPreview, MailMessagePreview } from '../../api/mailApi';
-import { mailDateLabel, mailPreviewSender, mailSubject, type NativeMailSwipeAction } from '../../mail/nativeMailModel';
+import { mailCorrespondent, mailDateLabel, mailPersonDisplay, mailSubject, type NativeMailSwipeAction } from '../../mail/nativeMailModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { NativeMailSwipeRow } from './NativeMailSwipeRow';
 
@@ -15,6 +15,10 @@ type MessageRowProps = {
   compact: boolean;
   canDelete: boolean;
   actionsDisabled: boolean;
+  /** Well-known folder key ('sent', 'drafts', 'trash', …) or raw folder id. */
+  folder?: string;
+  isSearch?: boolean;
+  mailboxEmails?: string[];
   busy?: boolean;
   onOpen: (item: MailMessagePreview) => void;
   onToggleSelected: (messageId: string) => void;
@@ -30,12 +34,16 @@ export const NativeMailInboxMessageRow = memo(function NativeMailInboxMessageRow
   compact,
   canDelete,
   actionsDisabled,
+  folder,
+  isSearch = false,
+  mailboxEmails,
   busy = false,
   onOpen,
   onToggleSelected,
   onAction,
 }: MessageRowProps) {
-  const sender = mailPreviewSender(item);
+  const correspondent = mailCorrespondent(item, { folder, isSearch, mailboxEmails });
+  const sender = correspondent.label;
   const subject = mailSubject(item);
   const unread = item.is_read === false;
   const activate = () => selectionMode ? onToggleSelected(item.id) : onOpen(item);
@@ -86,7 +94,7 @@ export const NativeMailInboxMessageRow = memo(function NativeMailInboxMessageRow
             <MaterialCommunityIcons name="check" size={21} color="#fff" />
           ) : (
             <Text maxFontSizeMultiplier={1.25} style={[styles.avatarText, { color: unread ? '#fff' : tokens.textSecondary }]}>
-              {sender.slice(0, 1).toUpperCase() || 'П'}
+              {(mailPersonDisplay(correspondent.person) || sender).slice(0, 1).toUpperCase() || 'П'}
             </Text>
           )}
         </View>

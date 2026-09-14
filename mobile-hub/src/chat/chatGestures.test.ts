@@ -36,6 +36,10 @@ describe('native chat gesture thresholds', () => {
     expect(shouldStartFolderSwipe(-40, 48)).toBe(false);
     expect(shouldTriggerFolderSwipe(-79)).toBe(false);
     expect(shouldTriggerFolderSwipe(-80)).toBe(true);
+    expect(shouldTriggerFolderSwipe(-36, -0.8)).toBe(true);
+    expect(shouldTriggerFolderSwipe(-36, -0.1)).toBe(false);
+    expect(shouldTriggerFolderSwipe(-12, -2)).toBe(false);
+    expect(shouldTriggerFolderSwipe(-36, 0.8)).toBe(false);
     expect(folderSwipeDirection(-90)).toBe('next');
     expect(folderSwipeDirection(90)).toBe('prev');
     expect(shouldLockInboxRefresh(-10, 4)).toBe(true);

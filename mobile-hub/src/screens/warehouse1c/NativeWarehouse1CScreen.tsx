@@ -270,6 +270,9 @@ export function NativeWarehouse1CScreen() {
       scroll={false}
     >
       <FlatList
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
         testID="native-warehouse-1c-list"
         data={items}
         keyExtractor={(item) => item.ref}

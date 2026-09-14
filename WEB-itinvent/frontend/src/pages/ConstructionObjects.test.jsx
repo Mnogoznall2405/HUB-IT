@@ -5,7 +5,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 
-const { mockGetObjects, mockHasPermission } = vi.hoisted(() => ({
+const { mockGetObjects, mockHasPermission, auth } = vi.hoisted(() => ({
+  auth: { user: { id: 101 } },
   mockGetObjects: vi.fn(),
   mockHasPermission: vi.fn(() => false),
 }));
@@ -20,10 +21,11 @@ vi.mock('../api/construction', () => ({
   constructionAPI: { getObjects: mockGetObjects },
 }));
 vi.mock('../contexts/AuthContext', () => ({
-  useAuth: () => ({ hasPermission: mockHasPermission }),
+  useAuth: () => ({ hasPermission: mockHasPermission, user: auth.user }),
 }));
 
 import ConstructionObjects from './ConstructionObjects';
+import { clearConstructionPortfolioCache } from '../lib/constructionPortfolioCache';
 
 
 const object = {
@@ -86,6 +88,8 @@ function renderPage(mode = 'light') {
 
 describe('ConstructionObjects', () => {
   beforeEach(() => {
+    clearConstructionPortfolioCache();
+    auth.user = { id: 101 };
     mockGetObjects.mockReset();
     mockHasPermission.mockReset();
     mockHasPermission.mockReturnValue(false);
@@ -97,7 +101,7 @@ describe('ConstructionObjects', () => {
 
     expect(await screen.findByRole('heading', { name: 'ЕАСИ' })).toBeInTheDocument();
     expect(screen.getByText('ЕАСИ.-ОСУ/69 · 28.08.2026')).toBeInTheDocument();
-    expect(screen.getAllByText('Не назначен')).toHaveLength(3);
+    expect(screen.getAllByText('Не назначен')).toHaveLength(4);
     expect(screen.queryByText('Склад ЕАСИ · Петров П.П.')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Последние заявки и склады' }));
@@ -106,6 +110,57 @@ describe('ConstructionObjects', () => {
     expect(recentRequests).toHaveTextContent('Склад ЕАСИ');
     expect(recentRequests).toHaveTextContent('Петров П.П.');
     expect(mockGetObjects).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores cards immediately on return without another request and isolates login sessions', async () => {
+    const first = renderPage();
+    await screen.findByRole('heading', { name: 'ЕАСИ' });
+    first.unmount();
+    mockGetObjects.mockImplementation(() => new Promise(() => {}));
+    const second = renderPage();
+    expect(screen.getByRole('heading', { name: 'ЕАСИ' })).toBeVisible();
+    expect(mockGetObjects).toHaveBeenCalledTimes(1);
+    second.unmount();
+    auth.user = { id: 202 };
+    renderPage();
+    expect(screen.queryByRole('heading', { name: 'ЕАСИ' })).not.toBeInTheDocument();
+    expect(mockGetObjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores all loaded pages and invalidates snapshots after object changes', async () => {
+    mockGetObjects.mockResolvedValueOnce({ ...response, has_more: true, next_cursor: 'page-2' })
+      .mockResolvedValueOnce({ ...response, items: [{ ...object, object_ref: 'second', name: 'Второй объект' }] });
+    const first = renderPage();
+    await screen.findByRole('heading', { name: 'ЕАСИ' });
+    fireEvent.click(screen.getByRole('button', { name: 'Показать ещё' }));
+    await screen.findByRole('heading', { name: 'Второй объект' });
+    first.unmount();
+    const second = renderPage();
+    expect(screen.getByRole('heading', { name: 'ЕАСИ' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Второй объект' })).toBeVisible();
+    expect(mockGetObjects).toHaveBeenCalledTimes(2);
+    second.unmount();
+    clearConstructionPortfolioCache();
+    mockGetObjects.mockImplementation(() => new Promise(() => {}));
+    renderPage();
+    expect(screen.queryByRole('heading', { name: 'Второй объект' })).not.toBeInTheDocument();
+    expect(mockGetObjects).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps stale cards visible during a background refresh and preserves them on network failure', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000000);
+    try {
+      const first = renderPage();
+      await screen.findByRole('heading', { name: 'ЕАСИ' });
+      first.unmount();
+      now.mockReturnValue(1360000);
+      mockGetObjects.mockRejectedValue(new Error('Нет связи'));
+      renderPage();
+      expect(screen.getByRole('heading', { name: 'ЕАСИ' })).toBeVisible();
+      await screen.findByText(/Нет связи/);
+      expect(screen.getByRole('heading', { name: 'ЕАСИ' })).toBeVisible();
+      expect(mockGetObjects).toHaveBeenCalledTimes(2);
+    } finally { now.mockRestore(); }
   });
 
   it('passes debounced search and card type to the API', async () => {

@@ -2075,12 +2075,14 @@ class AiChatService:
                         .order_by(AppAiBot.sort_order.asc(), AppAiBot.title.asc())
                     ).scalars()
                 )
+                if not user_payload:
+                    rows = []
                 if user_payload:
+                    from backend.ai_chat.access import can_use_bot
                     rows = [
                         item
                         for item in rows
-                        if not _normalize_text(getattr(item, "required_permission", None))
-                        or _user_has_permission(user_payload, _normalize_text(item.required_permission))
+                        if can_use_bot(session, item, int(current_user_id))
                     ]
                 conversation_ids_by_bot: dict[str, list[str]] = {}
                 if current_user_id and rows:
@@ -2369,10 +2371,9 @@ class AiChatService:
             or _normalize_text(getattr(bot, "surface", None)) == "general"
         ):
             raise LookupError("AI bot not found")
-        user_payload = user_service.get_by_id(int(current_user_id)) or {}
-        required_permission = _normalize_text(getattr(bot, "required_permission", None)) or PERM_CHAT_AI_USE
-        if not _user_has_permission(user_payload, required_permission):
-            raise PermissionError("AI bot is not available")
+        from backend.ai_chat.access import require_bot_access
+        with app_session() as db:
+            require_bot_access(db, bot, current_user_id)
 
     def rename_conversation(
         self,
@@ -2563,7 +2564,6 @@ class AiChatService:
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             raise LookupError("AI conversation not found")
         if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
-            self._require_bot_access(bot=runtime.bot, current_user_id=int(current_user_id), allow_hidden=False)
             from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
             return ai_sandbox_app_service.get_status(
@@ -2607,7 +2607,6 @@ class AiChatService:
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             raise LookupError("AI conversation not found")
         if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
-            self._require_bot_access(bot=runtime.bot, current_user_id=int(current_user_id), allow_hidden=False)
             from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
             return ai_sandbox_app_service.cancel_conversation(
@@ -2667,9 +2666,13 @@ class AiChatService:
 
     def _raise_if_run_cancelled(self, run_id: str) -> None:
         with app_session() as session:
-            status = session.execute(
-                select(AppAiBotRun.status).where(AppAiBotRun.id == _normalize_text(run_id))
-            ).scalar_one_or_none()
+            run = session.get(AppAiBotRun, _normalize_text(run_id))
+            status = run.status if run else None
+            if run is not None:
+                from backend.ai_chat.access import can_use_bot
+                bot = session.get(AppAiBot, run.bot_id)
+                if bot is None or not can_use_bot(session, bot, run.user_id):
+                    raise AiRunCancelled('Agent access revoked')
         if _normalize_text(status) == "cancelled":
             raise AiRunCancelled("AI run was cancelled")
 
@@ -2715,6 +2718,9 @@ class AiChatService:
             explicit_database_id=effective_database_id,
         )
         with app_session() as session:
+            from backend.ai_chat.access import require_bot_access
+            locked_bot = session.execute(select(AppAiBot).where(AppAiBot.id == runtime.bot.id).with_for_update()).scalar_one()
+            require_bot_access(session, locked_bot, current_user_id)
             existing = session.execute(
                 select(AppAiBotRun).where(
                     AppAiBotRun.conversation_id == _normalize_text(conversation_id),
@@ -3186,6 +3192,7 @@ class AiChatService:
                     stage=stage,
                 )
 
+            self._raise_if_run_cancelled(run.id)
             execute_started_at = time.perf_counter()
             answer_markdown, artifacts, kb_attachment_send, usage, extracted_context, tool_traces, generated_file_specs, routed_groups = self._execute_run(
                 bot=bot,
@@ -3347,6 +3354,12 @@ class AiChatService:
                     run_id=run.id,
                 )
         except AiRunCancelled:
+            with app_session() as session:
+                session.execute(update(AppAiBotRun).where(
+                    AppAiBotRun.id == run.id,
+                    AppAiBotRun.status.in_(("queued", "running")),
+                ).values(status="cancelled", stage=AI_RUN_STAGE_CANCELLED,
+                         completed_at=_utc_now(), updated_at=_utc_now()))
             logger.info("AI run cancelled: run_id=%s", run.id)
         except Exception as exc:
             error_text = _truncate(exc, limit=500)

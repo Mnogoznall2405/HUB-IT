@@ -30,6 +30,7 @@ public static partial class DesktopRedaction
 
         var builder = new UriBuilder(uri)
         {
+            Path = "/" + Replacement,
             Query = string.Empty,
             Fragment = string.Empty,
             UserName = string.Empty,

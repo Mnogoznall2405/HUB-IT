@@ -273,6 +273,26 @@ def test_gateway_asgi_forces_server_model_and_preserves_job_scope_headers(monkey
     assert calls["provider"]["max_tokens"] == 1234
 
 
+def test_gateway_reports_upstream_failure_before_sse_headers(monkeypatch) -> None:
+    gateway = importlib.import_module("backend.ai_sandbox.gateway")
+    gateway_main = importlib.import_module("backend.ai_sandbox_gateway_main")
+    from shared.llm.errors import OpenRouterClientError
+
+    def failing_stream(**kwargs):
+        raise OpenRouterClientError('private provider detail')
+        yield  # Exercise a lazy provider iterator.
+
+    monkeypatch.setenv('AI_SANDBOX_ENABLED', '1')
+    monkeypatch.setenv('AI_SANDBOX_LLM_MODEL', 'approved/model')
+    monkeypatch.setattr(gateway, '_gateway_headers', lambda *args: SimpleNamespace(session_id='test-session'))
+    monkeypatch.setattr(gateway.openrouter_client, 'stream_chat_completion', failing_stream)
+    response = TestClient(gateway_main.app).post('/v1/chat/completions',
+        json={'messages': [{'role': 'user', 'content': 'check'}], 'stream': True})
+    assert response.status_code == 502
+    assert 'private' not in response.text
+    assert 'text/event-stream' not in response.headers.get('content-type', '')
+
+
 def test_internal_apps_are_absent_from_public_chat_openapi() -> None:
     public_chat = importlib.import_module("backend.api.v1.chat")
     public_app = FastAPI()
@@ -320,7 +340,7 @@ def test_opencode_config_headers_match_runtime_secret_environment(tmp_path: Path
     opencode = json.loads(
         (PROJECT_ROOT / "scripts" / "ai-sandbox" / "opencode.json").read_text(encoding="utf-8")
     )
-    options = opencode["provider"]["openai"]["options"]
+    options = opencode["provider"]["hub"]["options"]
 
     assert options["baseURL"] == "{env:HUB_LLM_GATEWAY_URL}"
     assert options["apiKey"] == "{env:HUB_LLM_GATEWAY_BEARER_TOKEN}"
@@ -334,4 +354,3 @@ def test_opencode_config_headers_match_runtime_secret_environment(tmp_path: Path
     assert runtime_environment["HUB_SANDBOX_JOB_ID"] == "job-contract"
     assert runtime_environment["HUB_SANDBOX_SESSION_ID"] == "session-contract"
     assert runtime_environment["HUB_SANDBOX_USER_ID"] == "91"
-

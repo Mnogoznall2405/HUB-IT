@@ -1,3 +1,4 @@
+import { useNativeFormDraft } from '../../drafts/useNativeFormDraft';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import { router } from 'expo-router';
@@ -101,7 +102,7 @@ function PersonOption({
 }
 
 export function NativeDocflowAssignmentScreen() {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canCreate = hasPermission('docflow.create');
@@ -139,6 +140,9 @@ export function NativeDocflowAssignmentScreen() {
   const controllerRequestRef = useRef(0);
   const commandCheckRef = useRef(false);
   const attemptRef = useRef<CreateAttempt | null>(null);
+
+  const localState = { selectedDocument, selectedAssignee, selectedController, dueDate, dueTime, importance, title, description, command, created, attempt: attemptRef.current };
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: 'docflow-assignment', state: localState, ready: canCreate && !loadingCapability, paused: working, restore: (saved) => { setSelectedDocument(saved.selectedDocument); setSelectedAssignee(saved.selectedAssignee); setSelectedController(saved.selectedController); setDueDate(saved.dueDate); setDueTime(saved.dueTime); setImportance(saved.importance); setTitle(saved.title); setDescription(saved.description); setCommand(saved.command); setCreated(saved.created); attemptRef.current = saved.attempt; } });
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) router.back();
@@ -237,8 +241,9 @@ export function NativeDocflowAssignmentScreen() {
     }
   }, [assigneeQuery, controllerQuery, offlineMode]);
 
-  const handleCommand = useCallback((result: DocflowAssignmentCommand) => {
+  const handleCommand = useCallback(async (result: DocflowAssignmentCommand) => {
     if (result.status === 'applied' || result.status === 'already_applied') {
+      await draft.clear();
       setCreated(result.assignment);
       setCommand(null);
       setError('');
@@ -253,8 +258,9 @@ export function NativeDocflowAssignmentScreen() {
       attemptRef.current = null;
       return;
     }
+    await draft.write({ ...localState, command: result, attempt: attemptRef.current });
     setCommand(result);
-  }, []);
+  }, [draft, localState]);
 
   const checkCommand = useCallback(async () => {
     const commandId = command?.command_id.trim();
@@ -263,7 +269,7 @@ export function NativeDocflowAssignmentScreen() {
     setWorking(true);
     setError('');
     try {
-      handleCommand(await getDocflowAssignmentCommand(commandId));
+      await handleCommand(await getDocflowAssignmentCommand(commandId));
     } catch (cause) {
       const resolved = resolveNativeDocflowError(cause, 'Не удалось проверить состояние поручения в 1С.');
       setError(resolved.message);
@@ -282,7 +288,7 @@ export function NativeDocflowAssignmentScreen() {
   }, [checkCommand, command, offlineMode]);
 
   const submit = useCallback(async () => {
-    if (working || command || created || offlineMode || !capability?.enabled) return;
+    if (working || command || created || offlineMode || !capability?.enabled || !draft.restored) return;
     const dueAt = buildDocflowAssignmentDueAt(dueDate, dueTime);
     const trimmedTitle = title.trim();
     const trimmedDescription = description.trim();
@@ -310,7 +316,8 @@ export function NativeDocflowAssignmentScreen() {
       setError('');
       setCorrelationId('');
       try {
-        handleCommand(await createDocflowAssignment(payload, attemptRef.current.key));
+        await draft.write({ ...localState, attempt: attemptRef.current });
+        await handleCommand(await createDocflowAssignment(payload, attemptRef.current.key));
       } catch (cause) {
         const resolved = resolveNativeDocflowError(cause, 'Не удалось создать поручение в 1С.');
         setError(resolved.message);
@@ -328,7 +335,7 @@ export function NativeDocflowAssignmentScreen() {
   return (
     <AccountScreenScaffold title="Новое поручение 1С" tokens={tokens} onBack={goBack}>
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.statusText, { color: tokens.warning }]}>Автономный режим: создание поручений отключено.</Text> : null}
-      {loadingCapability ? <AccountLoading tokens={tokens} /> : !capability?.enabled ? (
+      {loadingCapability ? <AccountLoading tokens={tokens} /> : !capability?.enabled && !offlineMode ? (
         <AccountSectionCard tokens={tokens} title="Создание сейчас недоступно" description={capability?.reason || error || 'Сервер не разрешил создание поручений для этой учётной записи.'}>
           {correlationId ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {correlationId}</Text> : null}
         </AccountSectionCard>
@@ -379,14 +386,15 @@ export function NativeDocflowAssignmentScreen() {
             </View>
           </AccountSectionCard>
 
-          <AccountSectionCard tokens={tokens} title="Текст поручения" description={capability.test_only ? `Пилотный режим: название должно начинаться с ${capability.required_title_prefix || 'HUB-IT TEST'}.` : undefined}>
+          <AccountSectionCard tokens={tokens} title="Текст поручения" description={capability?.test_only ? `Пилотный режим: название должно начинаться с ${capability.required_title_prefix || 'HUB-IT TEST'}.` : undefined}>
             <HubTextField testID="native-docflow-assignment-title" label="Название *" value={title} onChangeText={(value) => setTitle(value.slice(0, 200))} maxLength={200} />
             <View style={styles.fieldGap} />
             <HubTextField testID="native-docflow-assignment-description" label="Описание *" value={description} onChangeText={(value) => setDescription(value.slice(0, 2_000))} multiline numberOfLines={4} maxLength={2_000} />
           </AccountSectionCard>
 
           {commandIsWaiting(command) ? <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" style={[styles.command, { backgroundColor: tokens.accentSoft, borderColor: tokens.primary }]}><ActivityIndicator color={tokens.primary} /><View style={styles.flex}><Text style={[styles.optionTitle, { color: tokens.textPrimary }]}>Проверяем создание в 1С</Text><Text style={[styles.hint, { color: tokens.textSecondary }]}>Повторная отправка отключена до окончательного статуса.</Text>{command?.correlation_id ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {command.correlation_id}</Text> : null}</View><AccountSecondaryButton tokens={tokens} label="Проверить" onPress={() => { void checkCommand(); }} disabled={working} /></View> : null}
-          {error ? <Text accessibilityRole="alert" style={[styles.statusText, { color: tokens.error }]}>{error}</Text> : null}
+          {draft.status ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{draft.status}</Text> : null}
+      {error ? <Text accessibilityRole="alert" style={[styles.statusText, { color: tokens.error }]}>{error}</Text> : null}
           {correlationId ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {correlationId}</Text> : null}
           {!command ? <AccountPrimaryButton tokens={tokens} testID="native-docflow-assignment-submit" label={working ? 'Создаём в 1С…' : 'Создать в 1С'} onPress={() => { void submit(); }} disabled={working || offlineMode} /> : null}
         </>

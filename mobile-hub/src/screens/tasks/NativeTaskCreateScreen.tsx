@@ -1,3 +1,4 @@
+import { useNativeFormDraft } from '../../drafts/useNativeFormDraft';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
 import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
@@ -76,7 +77,7 @@ function findDefaultProject(items: TaskProject[]): TaskProject | null {
 }
 
 export function NativeTaskCreateScreen() {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('tasks.create') || hasPermission('tasks.write');
@@ -119,10 +120,19 @@ export function NativeTaskCreateScreen() {
     || objectId || departmentId || newProjectName || newObjectName
     || priority !== 'normal' || emailReminder !== 'default' || visibility !== 'private'
     || projectId !== defaultProjectRef.current);
-  const { requestLeave, leaveSaved } = useUnsavedFormGuard(allowed && dirty, allowed && (saving || projectSaving || objectSaving));
+  const { requestLeave, leaveSaved } = useUnsavedFormGuard(allowed && dirty, allowed && (saving || projectSaving || objectSaving), {
+    title: 'Сохранить черновик и выйти?',
+    message: 'Форма и вложения останутся на этом устройстве. Отправка на сервер не выполняется.',
+    confirmLabel: 'Сохранить и выйти',
+    beforeLeave: async () => { if (allowed) await draft.write(); },
+    onLeaveError: (cause) => setError(cause instanceof Error ? cause.message : 'Не удалось сохранить черновик. Форма остаётся открытой.'),
+  });
   const incomingShareAppliedRef = useRef(false);
   const debouncedAssigneeQuery = useDebouncedValue(assigneeQuery);
-  const protocolDate = useMemo(() => todayProtocolDate(), []);
+  const [protocolDate, setProtocolDate] = useState(() => todayProtocolDate());
+  const [uploadRecovery, setUploadRecovery] = useState<{ taskIds: string[]; pending: Array<{ taskId: string; file: TaskUploadFile }>; creating?: boolean } | null>(null);
+  const localState = { title, description, dueDate, emailReminder, priority, selectedAssigneeIds, projectId, controllerId, observerIds, objectId, departmentId, visibility, checklistText, checklistItems, files, protocolDate, newProjectName, newObjectName, uploadRecovery };
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
   const visibleObjects = useMemo(
     () => objects.filter((item) => String(item.project_id) === projectId),
     [objects, projectId],
@@ -147,6 +157,7 @@ export function NativeTaskCreateScreen() {
 
   useEffect(() => {
     if (!allowed) return;
+    if (offlineMode) { setLoadingRefs(false); return; }
     let active = true;
     setLoadingRefs(true);
     Promise.all([
@@ -160,7 +171,7 @@ export function NativeTaskCreateScreen() {
         if (!active) return;
         setProjects(nextProjects);
         defaultProjectRef.current = String(findDefaultProject(nextProjects)?.id || '');
-        setProjectId(defaultProjectRef.current);
+        setProjectId((current) => current || defaultProjectRef.current);
         setAssignees(nextAssignees);
         setControllers(nextControllers);
         setObjects(nextObjects);
@@ -173,10 +184,10 @@ export function NativeTaskCreateScreen() {
         if (active) setLoadingRefs(false);
       });
     return () => { active = false; };
-  }, [allowed, canReadDepartments]);
+  }, [allowed, canReadDepartments, offlineMode]);
 
   useEffect(() => {
-    if (!allowed || loadingRefs) return;
+    if (!allowed || loadingRefs || offlineMode) return;
     const requestId = ++assigneeRequestRef.current;
     setAssigneesLoading(true);
     void searchTaskAssignees(debouncedAssigneeQuery, 50)
@@ -191,7 +202,7 @@ export function NativeTaskCreateScreen() {
       .finally(() => {
         if (requestId === assigneeRequestRef.current) setAssigneesLoading(false);
       });
-  }, [allowed, debouncedAssigneeQuery, loadingRefs]);
+  }, [allowed, debouncedAssigneeQuery, loadingRefs, offlineMode]);
 
   const toggleAssignee = useCallback((userId: number) => {
     setSelectedAssigneeIds((current) => (
@@ -289,7 +300,7 @@ export function NativeTaskCreateScreen() {
   }, [canCreateObject, newObjectName, objectSaving, offlineMode, projectId]);
 
   const submit = useCallback(async () => {
-    if (saving || offlineMode) return;
+    if (saving || offlineMode || !draft.restored) return;
     const normalizedTitle = title.trim();
     if (normalizedTitle.length < 3) {
       setError('Название должно содержать не меньше трёх символов.');
@@ -316,7 +327,13 @@ export function NativeTaskCreateScreen() {
     setSaving(true);
     setError('');
     try {
-      const created = await createTask({
+      const savedDraft = await draft.write();
+      let recovery = savedDraft.uploadRecovery;
+      if (recovery?.creating) throw new Error('Ответ о создании задачи не получен. Проверьте список задач перед новой отправкой. Локальная копия сохранена.');
+      if (!recovery) {
+        await draft.write({ ...savedDraft, uploadRecovery: { taskIds: [], pending: [], creating: true } });
+        setUploadRecovery({ taskIds: [], pending: [], creating: true });
+        const created = await createTask({
         title: normalizedTitle,
         description: description.trim(),
         assignee_user_ids: selectedAssigneeIds,
@@ -334,22 +351,24 @@ export function NativeTaskCreateScreen() {
         object_id: objectId || null,
         checklist_items: checklistItems,
       });
-      const uploadFailures: string[] = [];
-      for (const task of created) {
-        const taskId = String(task.id || '').trim();
-        if (!taskId) continue;
-        for (const file of files) {
-          try {
-            await uploadTaskAttachment(taskId, file);
-          } catch {
-            uploadFailures.push(file.name);
-          }
-        }
+        const taskIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
+        recovery = { taskIds, pending: taskIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))) };
+        setUploadRecovery(recovery);
+        await draft.write({ ...savedDraft, uploadRecovery: recovery });
       }
-      const firstId = String(created[0]?.id || '').trim();
-      if (uploadFailures.length) {
-        Alert.alert('Задача создана', `Не загрузились файлы: ${uploadFailures.slice(0, 3).join(', ')}`);
+      for (const item of [...recovery.pending]) {
+        try { await uploadTaskAttachment(item.taskId, item.file); }
+        catch { continue; }
+        recovery = { ...recovery, pending: recovery.pending.filter((entry) => entry !== item) };
+        setUploadRecovery(recovery);
+        await draft.write({ ...savedDraft, uploadRecovery: recovery });
       }
+      if (recovery.pending.length) {
+        setError(`Задачи созданы. Не загружено вложений: ${recovery.pending.length}. Нажмите «Повторить загрузку»; задачи повторно создаваться не будут.`);
+        return;
+      }
+      const firstId = recovery.taskIds[0] || '';
+      await draft.clear();
       leaveSaved(() => {
         if (firstId) {
           router.replace({
@@ -365,7 +384,7 @@ export function NativeTaskCreateScreen() {
     } finally {
       setSaving(false);
     }
-  }, [leaveSaved, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
+  }, [draft, uploadRecovery, leaveSaved, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
 
   if (!allowed) {
     return (
@@ -387,13 +406,25 @@ export function NativeTaskCreateScreen() {
       footer={(<AccountPrimaryButton
         tokens={tokens}
         testID="native-task-create-submit"
-        label={saving ? 'Создание…' : 'Создать задачу'}
-        disabled={saving || offlineMode}
+        label={saving ? 'Сохранение…' : uploadRecovery?.taskIds.length ? 'Повторить загрузку' : 'Создать задачу'}
+        disabled={saving || offlineMode || !draft.restored || Boolean(uploadRecovery?.creating)}
         onPress={() => { void submit(); }}
       />)}
       tokens={tokens}
       onBack={goBack}
     >
+      {draft.status ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{draft.status}</Text> : null}
+      {uploadRecovery?.creating ? <AccountSectionCard tokens={tokens} title="Результат создания неизвестен" description="Сервер мог создать задачу. Сначала проверьте список; повторная отправка автоматически не выполняется.">
+        <AccountSecondaryButton tokens={tokens} label="Проверить список задач" onPress={() => { leaveSaved(() => router.replace('/(shell)/tasks' as never)); }} />
+        <AccountSecondaryButton tokens={tokens} label="Проверил — задача не создана" onPress={() => {
+          Alert.alert('Разрешить новую попытку?', 'Повторная отправка может создать дубликат, если задача уже появилась на сервере.', [
+            { text: 'Отмена', style: 'cancel' },
+            { text: 'Задачи нет — повторить позже', onPress: () => {
+              void draft.write({ ...localState, uploadRecovery: null }).then(() => setUploadRecovery(null)).catch(() => setError('Не удалось сохранить решение на устройстве.'));
+            } },
+          ]);
+        }} />
+      </AccountSectionCard> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {offlineMode ? (
         <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>

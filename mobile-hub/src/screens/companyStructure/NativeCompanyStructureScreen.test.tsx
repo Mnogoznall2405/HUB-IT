@@ -48,6 +48,7 @@ jest.mock('../../cache/nativeSnapshotCache', () => ({
   readNativeSnapshot: jest.fn(),
   writeNativeSnapshot: jest.fn(async () => true),
   readNativeEntitySnapshot: jest.fn(),
+  readNativeEntitySnapshots: jest.fn(async () => []),
   writeNativeEntitySnapshot: jest.fn(async () => true),
 }));
 
@@ -230,6 +231,20 @@ it('searches cached structure nodes locally while offline', async () => {
   await waitFor(() => expect(view.getByTestId('native-company-search').props.editable).toBe(true));
   fireEvent.changeText(view.getByTestId('native-company-search'), 'Под');
   await waitFor(() => expect(view.getByText('Поддержка')).toBeTruthy());
+  expect(companyApi.searchCompanyStructure).not.toHaveBeenCalled();
+});
+
+it('finds saved employees after a cold offline start before opening their department', async () => {
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({ savedAt: 1, data: { items: [root], count: 1 } });
+  (snapshotCache.readNativeEntitySnapshots as jest.Mock).mockResolvedValueOnce([
+    { key: 'dep-1', savedAt: 1, data: { node: department, items: [employee], total: 1 } },
+  ]);
+  const view = await render(<NativeCompanyStructureScreen />);
+  await waitFor(() => expect(view.getByTestId('native-company-search').props.editable).toBe(true));
+  await fireEvent.changeText(view.getByTestId('native-company-search'), 'Иванов');
+  await view.findByText('Иванов Иван');
+  expect(companyApi.getCompanyStructureNodePeople).not.toHaveBeenCalled();
   expect(companyApi.searchCompanyStructure).not.toHaveBeenCalled();
 });
 

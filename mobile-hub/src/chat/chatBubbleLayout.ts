@@ -73,10 +73,12 @@ export function buildChatMetaPlainText(input: {
  * text node, so the width is estimated instead of measured. Rounded up on
  * purpose: an overshoot only widens the gap, an undershoot covers a word.
  */
-export function estimateChatMetaWidth(metaPlainText: string): number {
+export function estimateChatMetaWidth(metaPlainText: string, fontScale = 1): number {
   const length = String(metaPlainText || '').length;
   if (!length) return 0;
-  return Math.round(length * 5.9) + 8;
+  const scale = Number.isFinite(fontScale) && fontScale > 0 ? fontScale : 1;
+  // Leave breathing room beyond the time and the fixed delivery indicator.
+  return Math.ceil(length * 5.9 * Math.max(1, scale)) + 24;
 }
 
 /**

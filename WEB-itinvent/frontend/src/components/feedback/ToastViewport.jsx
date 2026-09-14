@@ -3,7 +3,6 @@ import {
   Button,
   Chip,
   IconButton,
-  LinearProgress,
   Snackbar,
   Stack,
   Typography,
@@ -43,7 +42,6 @@ const severityConfig = {
 function ToastViewport({
   toast,
   open,
-  progressValue,
   onClose,
   onPause,
   onResume,
@@ -93,9 +91,10 @@ function ToastViewport({
       onFocusCapture={onPause}
       onBlurCapture={onResume}
       sx={{
-        width: { xs: 'calc(100vw - 24px)', sm: 420 },
-        maxWidth: 'calc(100vw - 24px)',
-        borderRadius: '14px',
+        width: { xs: 'calc(100vw - 24px)', sm: 'fit-content' },
+        minWidth: { sm: 220 },
+        maxWidth: { xs: 'calc(100vw - 24px)', sm: 340 },
+        borderRadius: '10px',
         overflow: 'hidden',
         border: '1px solid',
         borderColor: alpha(severity.accent, isDark ? 0.42 : 0.24),
@@ -109,75 +108,62 @@ function ToastViewport({
         sx={{
           display: 'grid',
           gridTemplateColumns: hideClose ? 'auto 1fr' : 'auto 1fr auto',
-          gap: 1.25,
+          gap: 0.75,
           alignItems: 'start',
-          px: 1.5,
-          py: 1.35,
+          px: 1.15,
+          py: 0.85,
         }}
       >
-        <Box
-          sx={{
-            width: 38,
-            height: 38,
-            borderRadius: '12px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: alpha(severity.accent, isDark ? 0.18 : 0.12),
-            color: severity.accent,
-            mt: 0.1,
-          }}
-        >
-          <Icon fontSize="small" />
-        </Box>
+        <Icon sx={{ fontSize: 17, color: severity.accent, mt: '2px' }} />
 
-        <Stack spacing={0.45} sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Typography
-              variant="subtitle2"
-              sx={{
-                fontWeight: 800,
-                color: 'text.primary',
-                lineHeight: 1.2,
-              }}
-            >
+        <Stack spacing={0.3} sx={{ minWidth: 0 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: alpha(theme.palette.text.primary, isDark ? 0.92 : 0.88),
+              fontSize: '12.5px',
+              lineHeight: 1.35,
+              wordBreak: 'break-word',
+            }}
+          >
+            <Box component="span" sx={{ fontWeight: 700, color: 'text.primary' }}>
               {title}
-            </Typography>
+            </Box>
+            {message && message !== title ? (
+              <Box component="span" sx={{ '&::before': { content: '" — "' } }}>
+                {message}
+              </Box>
+            ) : null}
             {repeatCount > 1 ? (
               <Chip
                 label={`x${repeatCount}`}
                 size="small"
                 sx={{
-                  height: 20,
+                  ml: 0.75,
+                  height: 16,
                   borderRadius: '999px',
-                  fontSize: '0.7rem',
+                  fontSize: '0.65rem',
                   fontWeight: 700,
                   bgcolor: alpha(severity.accent, isDark ? 0.2 : 0.12),
                   color: severity.accent,
+                  verticalAlign: '1px',
+                  '& .MuiChip-label': { px: 0.6 },
                 }}
               />
             ) : null}
-          </Stack>
-
-          <Typography
-            variant="body2"
-            sx={{
-              color: alpha(theme.palette.text.primary, isDark ? 0.92 : 0.88),
-              lineHeight: 1.4,
-              wordBreak: 'break-word',
-            }}
-          >
-            {message}
           </Typography>
 
           {hasAction ? (
-            <Box sx={{ pt: 0.35 }}>
+            <Box>
               <Button
                 size="small"
                 onClick={handleActionClick}
                 sx={{
                   px: 0,
+                  py: 0,
                   minWidth: 0,
+                  minHeight: 0,
+                  fontSize: '12px',
                   fontWeight: 700,
                   color: severity.accent,
                   '&:hover': {
@@ -198,12 +184,13 @@ function ToastViewport({
             onClick={(event) => onClose?.(event, 'closeButton')}
             aria-label="Закрыть уведомление"
             sx={{
+              p: 0.25,
               color: alpha(theme.palette.text.secondary, isDark ? 0.88 : 0.72),
-              mt: -0.2,
-              mr: -0.4,
+              mt: -0.1,
+              mr: -0.3,
             }}
           >
-            <CloseRoundedIcon fontSize="small" />
+            <CloseRoundedIcon sx={{ fontSize: 15 }} />
           </IconButton>
         ) : null}
       </Box>
@@ -215,17 +202,32 @@ function ToastViewport({
       ) : null}
 
       {!isPersistent ? (
-        <LinearProgress
-          variant="determinate"
-          value={Math.max(0, Math.min(100, Number(progressValue || 0)))}
+        <Box
+          aria-hidden="true"
+          data-testid="toast-progress"
           sx={{
-            height: 3,
+            height: 2,
             bgcolor: alpha(severity.accent, isDark ? 0.14 : 0.08),
-            '& .MuiLinearProgress-bar': {
-              bgcolor: severity.accent,
-            },
+            overflow: 'hidden',
           }}
-        />
+        >
+          <Box
+            sx={{
+              'height': '100%',
+              'bgcolor': severity.accent,
+              'transformOrigin': 'left',
+              '@keyframes toast-countdown': {
+                from: { transform: 'scaleX(1)' },
+                to: { transform: 'scaleX(0)' },
+              },
+              'animation': `toast-countdown ${Math.max(1, Number(toast.durationMs || 5000))}ms linear forwards`,
+              'animationPlayState': toast.paused ? 'paused' : 'running',
+              '@media (prefers-reduced-motion: reduce)': {
+                animation: 'none',
+              },
+            }}
+          />
+        </Box>
       ) : null}
     </Box>
   );
@@ -239,11 +241,15 @@ function ToastViewport({
       key={toast.id}
       open={open}
       onClose={onClose}
-      anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
       sx={{
         '&.MuiSnackbar-root': {
-          left: { xs: 12, sm: 24 },
-          bottom: { xs: 12, sm: 24 },
+          left: { xs: 12, sm: 'auto' },
+          right: { xs: 12, sm: 24 },
+          bottom: {
+            xs: 'calc(var(--app-shell-mobile-bottom-nav-height, 0px) + 12px)',
+            sm: 24,
+          },
         },
       }}
     >

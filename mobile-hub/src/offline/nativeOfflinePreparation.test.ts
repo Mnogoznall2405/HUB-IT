@@ -215,7 +215,12 @@ describe('prepareNativeOfflineData', () => {
       page: 1,
       pages: 1,
     });
-    mockMyFiles.mockResolvedValue([{ id: 'file-1', original_file_name: 'report.pdf' } as never]);
+    mockMyFiles.mockResolvedValue({
+    items: [{ id: 'file-1', original_file_name: 'report.pdf' } as never],
+    folders: [],
+    breadcrumbs: [],
+    folder: null,
+  });
     mockMyFilesQuota.mockResolvedValue({ used_bytes: 1024, limit_bytes: 2048, remaining_bytes: 1024 });
     mockCompanyStructure.mockResolvedValue({ items: [{ id: 'root', title: 'Компания' } as never], count: 1 });
     mockReadAddressBookSnapshot.mockResolvedValue({
@@ -419,6 +424,7 @@ describe('prepareNativeOfflineData', () => {
     );
     expect(mockWriteSnapshot).toHaveBeenCalledWith('my-files-inbox', 17, {
       items: [expect.objectContaining({ id: 'file-1' })],
+      folders: [],
       quota: expect.objectContaining({ used_bytes: 1024 }),
     });
     expect(mockWriteSnapshot).toHaveBeenCalledWith('company-structure-tree', 17, {

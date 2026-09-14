@@ -98,6 +98,10 @@ AUTOCOMPLETE_MAX_LIMIT = 50
 WAREHOUSE_AUTOCOMPLETE_MAX_LIMIT = 100
 BALANCES_DEFAULT_LIMIT = 200
 BALANCES_MAX_LIMIT = 500
+DISMISSED_WAREHOUSE_BALANCES_DEFAULT_LIMIT = 1000
+DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT = 5000
+DISMISSED_WAREHOUSE_REFS_MAX = 2000
+DISMISSED_WAREHOUSE_REFS_BATCH = 100
 MOVEMENTS_DEFAULT_LIMIT = 500
 MOVEMENTS_MAX_LIMIT = 2000
 DEFAULT_MAX_ATTACHED_FILE_BYTES = 25 * 1024 * 1024
@@ -147,6 +151,7 @@ PROCESS_BRIDGE_OPERATIONS = (
     "warmup",
     "balances",
     "balances_batch",
+    "balances_by_warehouses",
     "catalog_sync",
     "construction_object_request_detail",
     "construction_object_requests",
@@ -425,6 +430,20 @@ def _is_initial_token(token: str) -> bool:
     return len(token) == 1 and token.isalpha()
 
 
+def _is_likely_person_name(value: str) -> bool:
+    parts = normalize_text(value).split()
+    if len(parts) != 3:
+        return False
+    normalized_parts = [part.strip(".,").casefold() for part in parts]
+    if any(part in _WAREHOUSE_PREFIX_TOKENS for part in normalized_parts):
+        return False
+    return all(
+        len(part.replace("-", "")) >= 2
+        and part.replace("-", "").isalpha()
+        for part in normalized_parts
+    )
+
+
 def _name_part_initial_letters(tokens: list[str]) -> list[str]:
     letters: list[str] = []
     for token in tokens[1:]:
@@ -433,6 +452,20 @@ def _name_part_initial_letters(tokens: list[str]) -> list[str]:
         elif len(token) >= 2:
             letters.append(token[0])
     return letters
+
+
+def _name_parts_match_prefix(expected: list[str], candidate: list[str]) -> bool:
+    if not expected or len(candidate) < len(expected):
+        return False
+    for expected_part, candidate_part in zip(expected, candidate):
+        if expected_part == candidate_part:
+            continue
+        if _is_initial_token(candidate_part) and candidate_part == expected_part[0]:
+            continue
+        if _is_initial_token(expected_part) and expected_part == candidate_part[0]:
+            continue
+        return False
+    return True
 
 
 def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
@@ -461,6 +494,10 @@ def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
     warehouse_only_initials = all(_is_initial_token(token) for token in warehouse_given)
     employee_only_initials = all(_is_initial_token(token) for token in employee_given)
 
+    if _name_parts_match_prefix(employee_given, warehouse_given):
+        return 80
+    if _name_parts_match_prefix(warehouse_given, employee_given):
+        return 80
     if warehouse_only_initials and employee_initials:
         if warehouse_initials == employee_initials[: len(warehouse_initials)]:
             return 80
@@ -2206,6 +2243,250 @@ class Warehouse1CService:
         result["employment_matched_name"] = employment.get("matched_name")
         return result
 
+    def _list_warehouse_catalog_entries(self) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        store = self._catalog_snapshot_store
+        if store is not None and hasattr(store, "list_entries"):
+            try:
+                available, rows = store.list_entries(
+                    catalog_type="warehouses",
+                    limit=CATALOG_WAREHOUSES_MAX_ROWS,
+                    source_base=DEFAULT_1C_REF,
+                )
+                if available:
+                    status = self._app_catalog_status() or {}
+                    items = list(rows or [])
+                    return items, {
+                        "source": "app_snapshot",
+                        "truncated": bool(status.get("warehouses_truncated")) or len(items) >= CATALOG_WAREHOUSES_MAX_ROWS,
+                        "as_of": status.get("updated_at"),
+                    }
+            except Exception as exc:
+                logger.warning("Warehouse 1C app catalogue list failed: %s", exc)
+
+        if self._warehouses_cache:
+            rows = [
+                {"ref": ref, "name": name}
+                for ref, name, _name_cf in self._warehouses_cache
+                if normalize_1c_ref(ref) and normalize_text(name)
+            ]
+            return rows, {
+                "source": "memory_fallback",
+                "truncated": len(rows) >= CATALOG_WAREHOUSES_MAX_ROWS,
+                "as_of": None,
+            }
+
+        cache = self.load_catalog_cache()
+        entries = json_rows_to_catalog_entries(cache.get("warehouses"))
+        rows = [
+            {"ref": ref, "name": name}
+            for ref, name, _name_cf in entries
+            if normalize_1c_ref(ref) and normalize_text(name)
+        ]
+        return rows, {
+            "source": "json_fallback",
+            "truncated": bool(cache.get("warehouses_truncated")),
+            "as_of": cache.get("updated_at"),
+        }
+
+    async def get_dismissed_employee_warehouses(
+        self,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        from backend.services.address_book_service import address_book_service
+        from backend.services.employment_status_service import is_employment_cache_fresh
+
+        address_book_cache = address_book_service.load_cache()
+        dismissed_updated_at = normalize_text(address_book_cache.get("dismissed_updated_at"))
+        if not dismissed_updated_at or not is_employment_cache_fresh(address_book_cache):
+            return {
+                "items": [],
+                "returned": 0,
+                "total": None,
+                "has_more": False,
+                "truncated": True,
+                "as_of": dismissed_updated_at or address_book_cache.get("updated_at") or None,
+                "source": "zup",
+                "status": "unknown",
+                "incomplete_reason": "dismissed_employees_unavailable",
+            }
+
+        dismissed_by_name: dict[str, dict[str, Any]] = {}
+        for raw in address_book_cache.get("dismissed_items") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = normalize_text(raw.get("full_name"))
+            if len(person_name_tokens(name)) < 2:
+                continue
+            key = normalize_match_key(name)
+            candidate = {
+                "name": name,
+                "employee_code": normalize_text(raw.get("employee_code")),
+                "city": normalize_text(raw.get("department_location")),
+                "department": normalize_text(raw.get("department")),
+                "position": normalize_text(raw.get("position")),
+                "dismissal_date": normalize_text(raw.get("dismissal_date")),
+            }
+            current = dismissed_by_name.get(key)
+            if current is None or candidate["dismissal_date"] > current["dismissal_date"]:
+                dismissed_by_name[key] = candidate
+        dismissed = list(dismissed_by_name.values())
+        if not dismissed:
+            return {
+                "items": [],
+                "returned": 0,
+                "total": 0,
+                "has_more": False,
+                "truncated": False,
+                "as_of": dismissed_updated_at,
+                "source": "zup",
+                "status": "ok",
+                "incomplete_reason": None,
+            }
+
+        warehouses, catalog_meta = await asyncio.to_thread(self._list_warehouse_catalog_entries)
+        if not warehouses:
+            raise Warehouse1CCatalogUnavailableError(
+                "Каталог складов 1С ещё не загружен. Запустите обновление каталога и повторите запрос."
+            )
+
+        dismissed_by_surname: dict[str, list[dict[str, Any]]] = {}
+        for employee in dismissed:
+            tokens = person_name_tokens(employee["name"])
+            if tokens:
+                dismissed_by_surname.setdefault(tokens[0], []).append(employee)
+
+        matched_warehouses: dict[str, dict[str, Any]] = {}
+        ambiguous_warehouses = 0
+        for warehouse in warehouses:
+            warehouse_tokens = person_name_tokens(warehouse["name"])
+            candidates = dismissed_by_surname.get(warehouse_tokens[0], []) if warehouse_tokens else []
+            best_score = 0
+            best_employees: list[dict[str, Any]] = []
+            for employee in candidates:
+                score = fio_person_match_score(employee["name"], warehouse["name"])
+                if score > best_score:
+                    best_score = score
+                    best_employees = [employee]
+                elif score and score == best_score:
+                    best_employees.append(employee)
+            unique_employee_keys = {
+                normalize_match_key(employee["name"])
+                for employee in best_employees
+            }
+            if best_score < 50:
+                continue
+            is_ambiguous = len(unique_employee_keys) != 1
+            if is_ambiguous:
+                ambiguous_warehouses += 1
+            employee = best_employees[0] if not is_ambiguous else None
+            matched_warehouses[normalize_1c_ref(warehouse["ref"])] = {
+                "warehouse": {
+                    "ref": normalize_1c_ref(warehouse["ref"]),
+                    "name": normalize_text(warehouse["name"]),
+                },
+                "employee_name": employee["name"] if employee else None,
+                "employee_code": employee["employee_code"] if employee else None,
+                "city": employee["city"] if employee else None,
+                "department": employee["department"] if employee else None,
+                "position": employee["position"] if employee else None,
+                "dismissal_date": employee["dismissal_date"] if employee else None,
+                "owner_nos": [],
+                "employment_status": "ambiguous" if is_ambiguous else "dismissed",
+                "employment_label": "Нужно уточнить" if is_ambiguous else "Сотрудник уволен",
+                "match_score": best_score,
+                "ambiguous": is_ambiguous,
+                "employee_candidates": [
+                    {
+                        "employee_name": candidate["name"],
+                        "employee_code": candidate["employee_code"],
+                        "city": candidate["city"],
+                        "department": candidate["department"],
+                        "position": candidate["position"],
+                        "dismissal_date": candidate["dismissal_date"],
+                    }
+                    for candidate in best_employees
+                ] if is_ambiguous else [],
+            }
+
+        if not matched_warehouses:
+            incomplete = bool(catalog_meta.get("truncated") or ambiguous_warehouses)
+            return {
+                "items": [],
+                "returned": 0,
+                "total": None if incomplete else 0,
+                "has_more": bool(catalog_meta.get("truncated")),
+                "truncated": bool(catalog_meta.get("truncated")),
+                "as_of": catalog_meta.get("as_of") or address_book_cache.get("updated_at") or None,
+                "source": catalog_meta.get("source") or "warehouse_catalog",
+                "status": "incomplete" if incomplete else "ok",
+                "incomplete_reason": (
+                    "catalog_limit" if catalog_meta.get("truncated")
+                    else ("ambiguous_warehouse_match" if ambiguous_warehouses else None)
+                ),
+                "ambiguous_warehouses": ambiguous_warehouses,
+            }
+
+        balance_payload = await self.get_balances_for_warehouses(
+            warehouse_refs=list(matched_warehouses),
+            limit=limit,
+        )
+        balance_rows = list(balance_payload.get("items") or [])
+        rows_by_warehouse: dict[str, list[dict[str, Any]]] = {}
+        for row in balance_rows:
+            ref = normalize_1c_ref(row.get("warehouse_ref"))
+            if ref in matched_warehouses:
+                rows_by_warehouse.setdefault(ref, []).append(row)
+
+        balances_truncated = bool(balance_payload.get("truncated") or balance_payload.get("has_more"))
+        last_warehouse_ref = normalize_1c_ref(balance_rows[-1].get("warehouse_ref")) if balance_rows else ""
+        items: list[dict[str, Any]] = []
+        for warehouse_ref, rows in rows_by_warehouse.items():
+            match = matched_warehouses[warehouse_ref]
+            row_incomplete = balances_truncated and warehouse_ref == last_warehouse_ref
+            items.append({
+                **match,
+                "totals": {
+                    "qty": sum(float(row.get("qty_balance") or 0) for row in rows),
+                    "cost": sum(float(row.get("cost_balance") or 0) for row in rows),
+                    "cost_accounting": sum(
+                        float(row.get("cost_accounting_balance") or 0)
+                        for row in rows
+                    ),
+                    "positions": len(rows),
+                },
+                "balances": rows,
+                "balances_meta": {
+                    "returned": len(rows),
+                    "total": None if row_incomplete else len(rows),
+                    "truncated": row_incomplete,
+                    "has_more": row_incomplete,
+                    "status": "incomplete" if row_incomplete else "ok",
+                },
+            })
+        items.sort(key=lambda item: str(item.get("employee_name") or "").casefold())
+
+        source_truncated = bool(balances_truncated or catalog_meta.get("truncated"))
+        incomplete = bool(source_truncated or ambiguous_warehouses)
+        incomplete_reason = None
+        if balances_truncated:
+            incomplete_reason = "balances_limit"
+        elif catalog_meta.get("truncated"):
+            incomplete_reason = "catalog_limit"
+        elif ambiguous_warehouses:
+            incomplete_reason = "ambiguous_warehouse_match"
+        return {
+            "items": items,
+            "returned": len(items),
+            "total": None if incomplete else len(items),
+            "has_more": balances_truncated,
+            "truncated": source_truncated,
+            "as_of": balance_payload.get("as_of") or utc_now_iso(),
+            "source": balance_payload.get("source") or "live_1c",
+            "status": "incomplete" if incomplete else "ok",
+            "incomplete_reason": incomplete_reason,
+            "ambiguous_warehouses": ambiguous_warehouses,
+        }
+
     async def suggest_nomenclature(
         self,
         text: str = "",
@@ -2445,6 +2726,153 @@ class Warehouse1CService:
             if has_positive_qty(row.get("qty_balance")):
                 rows.append(row)
         return rows
+
+    def _get_balances_for_warehouse_refs_sync(
+        self,
+        connection: Any,
+        warehouse_refs: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        refs = list(dict.fromkeys(
+            normalize_1c_ref(ref)
+            for ref in warehouse_refs or []
+            if normalize_1c_ref(ref)
+        ))
+        if not refs:
+            return []
+        references = connection.NewObject("Массив")
+        for ref in refs:
+            references.Добавить(self._rebuild_ref(connection, WAREHOUSE_CATALOG, ref))
+
+        query = connection.NewObject("Query")
+        query.Text = f"""
+ВЫБРАТЬ ПЕРВЫЕ {limit}
+    О.Склад КАК Склад,
+    О.Номенклатура КАК Номенклатура,
+    О.Номенклатура.Код КАК КодНоменклатуры,
+    СУММА(О.КоличествоОстаток) КАК КоличествоОстаток,
+    СУММА(О.СтоимостьОстаток) КАК СтоимостьОстаток,
+    СУММА(О.СтоимостьБухОстаток) КАК СтоимостьБухОстаток
+ИЗ
+    РегистрНакопления.бит_стр_ПартииТоваровНаСкладах.Остатки КАК О
+ГДЕ
+    О.Склад В (&Склады)
+    И О.КоличествоОстаток > 0
+СГРУППИРОВАТЬ ПО
+    О.Склад,
+    О.Номенклатура,
+    О.Номенклатура.Код
+"""
+        query.SetParameter("Склады", references)
+
+        selection = query.Execute().Select()
+        rows: list[dict[str, Any]] = []
+        while selection.Next():
+            qty = one_c_number(selection.КоличествоОстаток)
+            if not has_positive_qty(qty):
+                continue
+            cost = one_c_number(selection.СтоимостьОстаток)
+            cost_accounting = one_c_number(selection.СтоимостьБухОстаток)
+            rows.append({
+                "warehouse_ref": ref_uuid(connection, selection.Склад),
+                "warehouse_name": one_c_text(connection, selection.Склад),
+                "nomenclature_ref": ref_uuid(connection, selection.Номенклатура),
+                "nomenclature_code": one_c_text(connection, selection.КодНоменклатуры),
+                "nomenclature_name": one_c_text(connection, selection.Номенклатура),
+                "qty_balance": qty,
+                "cost_balance": cost,
+                "cost_accounting_balance": cost_accounting,
+                "avg_price": round(cost_accounting / qty, 2) if qty else 0.0,
+            })
+        rows.sort(key=lambda row: (
+            str(row.get("warehouse_name") or "").casefold(),
+            str(row.get("nomenclature_name") or "").casefold(),
+        ))
+        return rows
+
+    async def get_balances_for_warehouses(
+        self,
+        *,
+        warehouse_refs: list[str],
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        refs = list(dict.fromkeys(
+            normalize_1c_ref(ref)
+            for ref in warehouse_refs or []
+            if normalize_1c_ref(ref)
+        ))
+        if not refs:
+            return {
+                "items": [],
+                "returned": 0,
+                "total": 0,
+                "has_more": False,
+                "truncated": False,
+                "as_of": utc_now_iso(),
+                "source": "live_1c",
+                "status": "ok",
+            }
+        if len(refs) > DISMISSED_WAREHOUSE_REFS_MAX:
+            raise Warehouse1CValidationError(
+                f"За один запрос допускается не более {DISMISSED_WAREHOUSE_REFS_MAX} складов"
+            )
+        normalized_limit = clamp_limit(
+            limit,
+            DISMISSED_WAREHOUSE_BALANCES_DEFAULT_LIMIT,
+            DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT,
+        )
+        bridged = await self._run_process_bridge(
+            "balances_by_warehouses",
+            {"warehouse_refs": refs, "limit": normalized_limit},
+        )
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return dict(bridged)
+        batch_size = DISMISSED_WAREHOUSE_REFS_BATCH
+        batch_limit = normalized_limit + 1
+        batch_results: list[list[dict[str, Any]]] = []
+        total_refs = len(refs)
+        i = 0
+        while i < total_refs:
+            tasks = []
+            for _ in range(MAX_CONCURRENT_1C_CALLS):
+                if i >= total_refs:
+                    break
+                batch_refs = refs[i : i + batch_size]
+                if not batch_refs:
+                    break
+                tasks.append(
+                    self._run_pooled(
+                        self._get_balances_for_warehouse_refs_sync,
+                        batch_refs,
+                        batch_limit,
+                    )
+                )
+                i += batch_size
+            if not tasks:
+                break
+            batch_results.extend(await asyncio.gather(*tasks))
+
+        all_rows = [row for batch in batch_results for row in batch]
+        all_rows.sort(key=lambda row: (
+            str(row.get("warehouse_name") or "").casefold(),
+            str(row.get("nomenclature_name") or "").casefold(),
+        ))
+        any_batch_truncated = any(
+            len(batch) > normalized_limit for batch in batch_results
+        )
+        truncated = len(all_rows) > normalized_limit or any_batch_truncated
+        items = all_rows[:normalized_limit]
+        return {
+            "items": items,
+            "returned": len(items),
+            "total": None if truncated else len(items),
+            "has_more": truncated,
+            "truncated": truncated,
+            "as_of": utc_now_iso(),
+            "source": "live_1c",
+            "status": "incomplete" if truncated else "ok",
+            "incomplete_reason": "limit_cap" if truncated else None,
+        }
 
     async def get_balances(
         self,
@@ -3840,6 +4268,8 @@ class Warehouse1CService:
         stage: str,
         overdue: bool | None,
         warehouse_ref: str,
+        buyer: str,
+        responsible: str,
         limit: int,
         cursor: str,
         refresh: bool,
@@ -3856,6 +4286,8 @@ class Warehouse1CService:
             stage=stage,
             overdue=overdue,
             warehouse_ref=warehouse_ref,
+            buyer=buyer,
+            responsible=responsible,
             limit=limit,
             cursor=cursor,
             refresh=refresh,
@@ -3889,6 +4321,8 @@ class Warehouse1CService:
         stage: str = "",
         overdue: bool | None = None,
         warehouse_ref: str = "",
+        buyer: str = "",
+        responsible: str = "",
         limit: int = 25,
         cursor: str | None = None,
         refresh: bool = False,
@@ -3915,6 +4349,10 @@ class Warehouse1CService:
         if normalized_stage and normalized_stage not in STAGE_META:
             raise Warehouse1CValidationError("Неизвестный этап заявки")
         normalized_warehouse_ref = normalize_text(warehouse_ref).lower()
+        normalized_buyer = normalize_text(buyer)
+        normalized_responsible = normalize_text(responsible)
+        if len(normalized_buyer) > 255 or len(normalized_responsible) > 255:
+            raise Warehouse1CValidationError("Слишком длинное значение фильтра сотрудника")
         normalized_limit = clamp_limit(limit, 25, 100)
         try:
             _, offset = decode_snapshot_cursor(cursor)
@@ -3930,6 +4368,8 @@ class Warehouse1CService:
             "stage": normalized_stage,
             "overdue": overdue,
             "warehouse_ref": normalized_warehouse_ref,
+            "buyer": normalized_buyer,
+            "responsible": normalized_responsible,
             "limit": normalized_limit,
             "cursor": cursor or "",
             "refresh": bool(refresh),
@@ -3945,6 +4385,8 @@ class Warehouse1CService:
             normalized_stage,
             overdue,
             normalized_warehouse_ref,
+            normalized_buyer,
+            normalized_responsible,
             normalized_limit,
             cursor or "",
             bool(refresh),

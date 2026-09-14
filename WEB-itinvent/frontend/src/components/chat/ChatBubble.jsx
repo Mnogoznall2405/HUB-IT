@@ -894,9 +894,9 @@ export function ChatBubble({
     && emojiOnlyCount === 0
     && Boolean(body)
     && !showMediaMetaOverlay;
-  const mediaPreviewMaxWidth = compactMobile ? 216 : 276;
-  const mediaPreviewMaxHeight = compactMobile ? 176 : 216;
-  const mediaPreviewMinWidth = compactMobile ? 148 : 164;
+  const mediaPreviewMaxWidth = compactMobile ? 216 : 360;
+  const mediaPreviewMaxHeight = compactMobile ? 176 : 360;
+  const mediaPreviewMinWidth = compactMobile ? 148 : 200;
   const galleryPreviewMaxWidth = compactMobile ? 196 : 248;
   const displayedGalleryAttachments = imageOnlyGallery ? getGalleryAttachmentsForDisplay(attachments) : [];
   const galleryHiddenCount = imageOnlyGallery && attachments.length > displayedGalleryAttachments.length
@@ -905,7 +905,7 @@ export function ChatBubble({
   const mediaFrameSx = imageOnlyGallery
     ? { width: galleryPreviewMaxWidth, maxWidth: '100%' }
     : mediaOnlyAttachments
-      ? { width: 'fit-content', maxWidth: mediaPreviewMaxWidth }
+      ? { width: 'fit-content', maxWidth: '100%' }
       : { width: '100%', maxWidth: '100%' };
   const isLongAiReply = conversationKind === 'ai'
     && !message?.is_own
@@ -947,7 +947,7 @@ export function ChatBubble({
         }
         onReplyMessage?.(message);
       }}
-      className={joinClasses('relative flex flex-col', message?.is_own ? 'items-end' : 'items-start')}
+      className={joinClasses('relative flex flex-col', message?.is_own && !ui.wideMessageLayout ? 'items-end' : 'items-start')}
       sx={{
         width: '100%',
         pt: showSender ? (density.bubbleSenderRowPt ?? 0.35) : groupedWithPrevious ? '2px' : (density.bubbleRowPt ?? 1.1),
@@ -1073,7 +1073,7 @@ export function ChatBubble({
           transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
           px: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
           py: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
-          borderRadius: emojiOnlyCount ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+          borderRadius: emojiOnlyCount ? 0 : getBubbleRadius(Boolean(message?.is_own) && !ui.wideMessageLayout, groupedWithPrevious, groupedWithNext, compactMobile),
           bgcolor: emojiOnlyCount || pureMediaBubble ? 'transparent' : bubbleBg,
           color: bubbleText,
           boxShadow: emojiOnlyCount || pureMediaBubble
@@ -1104,7 +1104,7 @@ export function ChatBubble({
             height: 16,
             backgroundColor: bubbleBg,
             boxShadow: ui.bubbleTailShadow || 'none',
-            ...(message?.is_own ? {
+            ...(message?.is_own && !ui.wideMessageLayout ? {
               right: -5,
               clipPath: 'polygon(0 0, 100% 100%, 0 100%)',
             } : {

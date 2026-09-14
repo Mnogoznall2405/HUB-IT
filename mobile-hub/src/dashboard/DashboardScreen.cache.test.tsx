@@ -43,6 +43,8 @@ describe('DashboardScreen cache', () => {
   beforeEach(() => {
     mockOfflineMode = false;
     jest.clearAllMocks();
+    jest.mocked(hubApi.getHubDashboard).mockReset();
+    jest.mocked(docflowApi.getInboxSummary).mockReset().mockResolvedValue({ status: 'available', count: 0, truncated: false });
     jest.mocked(nativeUnreadSnapshot.getNativeUnreadSnapshot).mockResolvedValue({
       tasks_open: 0,
       tasks_open_total: 0,
@@ -55,6 +57,32 @@ describe('DashboardScreen cache', () => {
     });
   });
 
+
+it('offline pull refresh must not issue API reads', async () => {
+    mockOfflineMode=true;
+    const view = await render(<DashboardScreen />);
+    await act(async () => {});
+    expect(hubApi.getHubDashboard).not.toHaveBeenCalled();
+    const {fireEvent}=require('@testing-library/react-native');
+    await fireEvent.press(view.getByLabelText('Обновить главную'));
+    await act(async () => { await view.getByTestId('native-dashboard-scroll').props.refreshControl.props.onRefresh(); });
+    expect(hubApi.getHubDashboard).not.toHaveBeenCalled();
+  });
+  it('keeps the newer refresh when initial loading finishes last', async () => {
+    let finish!: (value: hubApi.HubDashboard) => void;
+    const payload = (title: string) => ({ announcements: { items: [], total: 0 }, my_tasks: {
+      items: [{ id: title, title, status: 'open' }], total: 1,
+    }, unread_counts: {}, summary: {}, absences_today: { count: 0, items: [] } });
+    jest.mocked(hubApi.getHubDashboard).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    jest.mocked(hubApi.getHubDashboard).mockResolvedValueOnce(payload('New refresh'));
+    const view = await render(<DashboardScreen />);
+    await waitFor(() => expect(hubApi.getHubDashboard).toHaveBeenCalledTimes(1));
+    await act(async () => { await view.getByTestId('native-dashboard-scroll').props.refreshControl.props.onRefresh(); });
+    await waitFor(() => expect(view.getByText('New refresh')).toBeTruthy());
+    await act(async () => finish(payload('Old initial')));
+    expect(view.queryByText('Old initial')).toBeNull();
+    expect(view.getByText('New refresh')).toBeTruthy();
+  });
   it('reuses the shared unread snapshot instead of loading Chat and Mail counters separately', async () => {
     jest.mocked(hubApi.getHubDashboard).mockResolvedValueOnce({
       announcements: { items: [], total: 0 },

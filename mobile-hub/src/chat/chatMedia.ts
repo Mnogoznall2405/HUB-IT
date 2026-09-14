@@ -29,6 +29,11 @@ export function isMediaChatAttachment(attachment?: ChatAttachment | null): boole
 
 export function pickChatAttachmentPreviewUrl(attachment?: ChatAttachment | null): string | null {
   if (!attachment) return null;
+  if (isVideoChatAttachment(attachment)) {
+    return String(attachment.variant_urls?.poster || attachment.variant_urls?.thumbnail
+      || attachment.variant_urls?.thumb || attachment.variant_urls?.preview
+      || attachment.preview_url || '').trim() || null;
+  }
   return String(
     attachment.variant_urls?.preview
     || attachment.variant_urls?.thumbnail

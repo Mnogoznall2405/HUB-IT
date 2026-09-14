@@ -1,4 +1,5 @@
 import {
+  appendChatImageStrokePoint,
   appendChatImageEditOperation,
   centeredCropRect,
   commitChatImageEditorOperation,
@@ -96,5 +97,20 @@ describe('native chat image editor helpers', () => {
     });
     expect(drawn.present.operations).toHaveLength(1);
     expect(undoChatImageEditorHistory(drawn).present.operations).toEqual([]);
+  });
+
+  it('bounds long strokes without dropping their starting point', () => {
+    let points = [{ x: 0, y: 0 }];
+    for (let i = 1; i <= 1800; i++) points = appendChatImageStrokePoint(points, { x: i / 1800, y: i % 2 });
+    expect(points.length).toBeLessThanOrEqual(600);
+    expect(points[0]).toEqual({ x: 0, y: 0 });
+    expect(points[points.length - 1]).toEqual({ x: 1, y: 0 });
+    expect(appendChatImageStrokePoint(points, points[points.length - 1])).toBe(points);
+  });
+
+  it('does not turn a tap or an invalid selection into a two-pixel crop', () => {
+    expect(cropRectFromNormalized(1200, 800, { x: 0.5, y: 0.5, width: 0, height: 0 })).toBeNull();
+    expect(cropRectFromNormalized(1200, 800, { x: 0.5, y: 0.5, width: 0.01, height: 0.01 })).toBeNull();
+    expect(cropRectFromNormalized(1200, 800, { x: NaN, y: 0, width: 0.5, height: 0.5 })).toBeNull();
   });
 });

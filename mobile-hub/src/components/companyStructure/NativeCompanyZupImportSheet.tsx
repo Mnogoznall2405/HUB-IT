@@ -126,6 +126,9 @@ export function NativeCompanyZupImportSheet({
             </View>
           ) : null}
           <FlatList
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            windowSize={7}
             data={items}
             extraData={selected}
             keyExtractor={(item) => item.department}

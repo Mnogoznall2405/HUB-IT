@@ -1,5 +1,6 @@
 import { clearMailQuickReplyDrafts } from '../mail/mailQuickReplyDrafts';
 import { clearMailComposeDrafts } from '../mail/nativeMailComposeDrafts';
+import { clearNativeFormDrafts } from '../drafts/nativeFormDrafts';
 import { clearNativeChatOutbox } from '../chat/nativeChatOutbox';
 import { clearMailComposeTransfers } from '../mail/nativeMailComposeTransfer';
 import * as authApi from '../api/authApi';
@@ -8,6 +9,7 @@ import { chatSocket } from '../chat/chatSocket';
 import { clearNativeDatabaseFileCache } from '../database/nativeDatabaseFiles';
 import { clearNativeFeedFileCache } from '../feed/nativeFeedFiles';
 import { clearAttachmentCache } from '../files/nativeAttachmentDownloads';
+import { clearNativeImageCache } from '../files/nativeImageCache';
 import { clearOfflineCommandQueue } from '../offline/offlineCommandQueue';
 import { revokeNativePushToken } from '../notifications/nativePush';
 import { clearPendingChatReplies } from '../notifications/pendingNotificationReplies';
@@ -69,6 +71,7 @@ export async function endMobileSession(): Promise<void> {
       // Cache cleanup must not prevent credential revocation.
     }
     await Promise.allSettled([
+      clearNativeImageCache(),
       tokenStore.clearTokens({ clearOfflineData: true }),
       disableBiometricLogin(),
       clearOfflineCommandQueue(),
@@ -77,6 +80,7 @@ export async function endMobileSession(): Promise<void> {
       clearNativeChatOutbox(),
       clearMailQuickReplyDrafts(),
       clearMailComposeDrafts(),
+      clearNativeFormDrafts(),
     ]);
   }
 }

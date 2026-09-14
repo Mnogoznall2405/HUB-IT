@@ -14,6 +14,7 @@ from backend.services.address_book_service import (
     classify_department_location,
     deduplicate_email_records,
     deduplicate_phone_records,
+    dismissed_employee_query,
     emails_query,
     employee_query,
     employee_states_query,
@@ -320,6 +321,10 @@ def test_employee_query_selects_department_code():
     query = employee_query()
     assert "КАК DepartmentCode" in query
     assert "Подразделение.Код" in query
+    assert "Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)" in query
+    dismissed_query = dismissed_employee_query(2)
+    assert "Текущие.ДатаУвольнения <> ДАТАВРЕМЯ(1, 1, 1)" in dismissed_query
+    assert "Текущие.ДатаУвольнения <= &НаДату" in dismissed_query
 
 
 def test_personal_queries_target_zup_registers():
@@ -741,6 +746,20 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
                     "department": "",
                     "department_location": "",
                     "position": "",
+                    "dismissal_date": "",
+                }
+            ]
+
+        def _load_dismissed_employees(self, connection):
+            calls.append("dismissed")
+            return [
+                {
+                    "full_name": "Petrov Former",
+                    "_employee_code": "E2",
+                    "department": "",
+                    "department_location": "Москва",
+                    "position": "",
+                    "dismissal_date": "2026-08-31",
                 }
             ]
 
@@ -772,12 +791,22 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
                 }
             }
 
-    items, personal = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
+    items, dismissed_items, personal = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
 
-    assert calls == ["init", "connect", "employees", "phones", "emails", "personal", "uninit"]
+    assert calls == ["init", "connect", "employees", "dismissed", "phones", "emails", "personal", "uninit"]
     assert items[0]["employee_code"] == "E1"
     assert items[0]["work_emails"][0]["value"] == "ivanov@zsgp.ru"
     assert items[0]["work_phones"][0]["value"] == "83452384202"
+    assert dismissed_items == [
+        {
+            "full_name": "Petrov Former",
+            "employee_code": "E2",
+            "department": "",
+            "department_location": "Москва",
+            "position": "",
+            "dismissal_date": "2026-08-31",
+        }
+    ]
     assert personal["E1"]["passport_number"] == "123456"
 
 

@@ -8,6 +8,7 @@ const mockUser = { id: 7, role: 'viewer' };
 jest.mock('./AuthContext', () => ({
   useAuth: () => ({
     user: mockUser, hasPermission: () => false,
+    biometricEnrollmentAvailable: true,
     skipBiometrics: mockSkip, enableBiometrics: mockEnable,
   }),
 }));

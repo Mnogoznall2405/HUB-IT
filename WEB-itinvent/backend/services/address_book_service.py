@@ -320,6 +320,8 @@ def build_connection_string(server: str, ref: str, user: str, password: str) -> 
 def one_c_text(connection: Any, value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, str):
+        return normalize_text(value)
     text = connection.String(value)
     return normalize_text(text)
 
@@ -475,12 +477,61 @@ def employee_states_query() -> str:
 """
 
 
+def dismissed_employee_query(surname_count: int) -> str:
+    surname_filter = " ИЛИ ".join(
+        f"Текущие.Сотрудник.Наименование ПОДОБНО &Фамилия{index}"
+        for index in range(max(1, int(surname_count)))
+    )
+    return f"""
+ВЫБРАТЬ РАЗЛИЧНЫЕ
+    ПРЕДСТАВЛЕНИЕ(Текущие.Сотрудник) КАК FullName,
+    Текущие.Сотрудник КАК EmployeeRef,
+    Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ДатаПриема КАК HireDate,
+    Текущие.ДатаУвольнения КАК DismissalDate,
+    ПРЕДСТАВЛЕНИЕ(Текущие.ТекущееПодразделение) КАК Department,
+    Текущие.ТекущееПодразделение.Код КАК DepartmentCode,
+    ПодразделенияДополнительныеРеквизиты.Значение КАК DepartmentLocation,
+    ПРЕДСТАВЛЕНИЕ(Текущие.ТекущаяДолжность) КАК Position
+ИЗ
+    РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
+        ЛЕВОЕ СОЕДИНЕНИЕ Справочник.ПодразделенияОрганизаций.ДополнительныеРеквизиты КАК ПодразделенияДополнительныеРеквизиты
+        ПО ПодразделенияДополнительныеРеквизиты.Ссылка = Текущие.ТекущееПодразделение
+            И ПодразделенияДополнительныеРеквизиты.Свойство.Наименование = "Местонахождение (Подразделения)"
+ГДЕ
+    Текущие.ДатаУвольнения <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.ДатаУвольнения <= &НаДату
+    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+    И ({surname_filter})
+"""
+
+
+def dismissed_employee_history_query() -> str:
+    return """
+ВЫБРАТЬ
+    История.Сотрудник.Код КАК EmployeeCode,
+    ПРЕДСТАВЛЕНИЕ(История.Подразделение) КАК Department,
+    История.Подразделение.Код КАК DepartmentCode,
+    ПодразделенияДополнительныеРеквизиты.Значение КАК DepartmentLocation,
+    ПРЕДСТАВЛЕНИЕ(История.Должность) КАК Position
+ИЗ
+    РегистрСведений.КадроваяИсторияСотрудников.СрезПоследних(
+        , Сотрудник В (&Сотрудники)
+    ) КАК История
+        ЛЕВОЕ СОЕДИНЕНИЕ Справочник.ПодразделенияОрганизаций.ДополнительныеРеквизиты КАК ПодразделенияДополнительныеРеквизиты
+        ПО ПодразделенияДополнительныеРеквизиты.Ссылка = История.Подразделение
+            И ПодразделенияДополнительныеРеквизиты.Свойство.Наименование = "Местонахождение (Подразделения)"
+"""
+
+
 def employee_query() -> str:
     return """
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник КАК FullName,
     Текущие.Сотрудник.Код КАК EmployeeCode,
     Текущие.ДатаПриема КАК HireDate,
+    Текущие.ДатаУвольнения КАК DismissalDate,
     ЕСТЬNULL(
         История.Подразделение,
         ЕСТЬNULL(
@@ -676,8 +727,10 @@ PERSONAL_CACHE_KEYS = (
 def empty_cache() -> dict[str, Any]:
     return {
         "items": [],
+        "dismissed_items": [],
         "personal_by_code": {},
         "updated_at": "",
+        "dismissed_updated_at": "",
         "last_attempt_at": "",
         "last_error": "",
     }
@@ -821,6 +874,8 @@ class AddressBookService:
         result.update(payload)
         if not isinstance(result.get("items"), list):
             result["items"] = []
+        if not isinstance(result.get("dismissed_items"), list):
+            result["dismissed_items"] = []
         personal = result.get("personal_by_code")
         if not isinstance(personal, dict):
             result["personal_by_code"] = {}
@@ -870,6 +925,7 @@ class AddressBookService:
         cache = self.load_cache()
         return {
             "count": len(cache.get("items") or []),
+            "dismissed_count": len(cache.get("dismissed_items") or []),
             "updated_at": normalize_text(cache.get("updated_at")),
             "last_attempt_at": normalize_text(cache.get("last_attempt_at")),
             "last_error": normalize_text(cache.get("last_error")),
@@ -1424,17 +1480,21 @@ class AddressBookService:
         cache = self.load_cache()
         cache["last_attempt_at"] = utc_now_iso()
         try:
-            items, personal_by_code = self._load_items_from_1c()
+            items, dismissed_items, personal_by_code = self._load_items_from_1c()
+            updated_at = utc_now_iso()
             next_cache = {
                 "items": items,
+                "dismissed_items": dismissed_items,
                 "personal_by_code": personal_by_code,
-                "updated_at": utc_now_iso(),
+                "updated_at": updated_at,
+                "dismissed_updated_at": updated_at,
                 "last_attempt_at": cache["last_attempt_at"],
                 "last_error": "",
             }
             self.save_cache(next_cache)
             return {
                 "count": len(items),
+                "dismissed_count": len(dismissed_items),
                 "personal_count": len(personal_by_code),
                 "updated_at": next_cache["updated_at"],
                 "last_attempt_at": next_cache["last_attempt_at"],
@@ -1449,7 +1509,9 @@ class AddressBookService:
         finally:
             self._sync_lock.release()
 
-    def _load_items_from_1c(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    def _load_items_from_1c(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, str]]]:
         pythoncom = None
         connection = None
         com_initialized = False
@@ -1462,6 +1524,7 @@ class AddressBookService:
 
             connection = self._connect_1c()
             employees = self._load_employees(connection)
+            dismissed_employees = self._load_dismissed_employees(connection)
             phones = self._load_phones(connection)
             emails = self._load_emails(connection)
             personal_by_code = self._load_personal_data(connection)
@@ -1483,7 +1546,24 @@ class AddressBookService:
                 if absence:
                     employee["absence"] = absence
             employees.sort(key=lambda item: normalize_search_text(item.get("full_name")))
-            return employees, personal_by_code
+            active_names = {
+                normalize_search_text(employee.get("full_name"))
+                for employee in employees
+                if normalize_search_text(employee.get("full_name"))
+            }
+            dismissed_items: list[dict[str, Any]] = []
+            for employee in dismissed_employees:
+                employee["employee_code"] = employee.pop("_employee_code", "")
+                if normalize_search_text(employee.get("full_name")) in active_names:
+                    continue
+                dismissed_items.append(employee)
+            dismissed_items.sort(
+                key=lambda item: (
+                    normalize_search_text(item.get("full_name")),
+                    normalize_text(item.get("dismissal_date")),
+                )
+            )
+            return employees, dismissed_items, personal_by_code
         finally:
             connection = None
             if com_initialized and pythoncom is not None:
@@ -1502,22 +1582,94 @@ class AddressBookService:
         connector = win32com.client.Dispatch("V83.COMConnector")
         return connector.Connect(build_connection_string(server, ref, user, password))
 
-    def _load_employees(self, connection: Any) -> list[dict[str, Any]]:
-        selection = execute_query(connection, employee_query())
+    @staticmethod
+    def _dismissed_candidate_surnames() -> list[str]:
+        from backend.services.warehouse_1c_service import person_name_tokens, warehouse_1c_service
+
+        warehouses, _ = warehouse_1c_service._list_warehouse_catalog_entries()
+        surnames = {
+            tokens[0]
+            for warehouse in warehouses
+            if len(tokens := person_name_tokens(warehouse.get("name"))) >= 2
+        }
+        if not surnames:
+            raise RuntimeError("Warehouse 1C catalog has no employee surname candidates")
+        return sorted(surnames)
+
+    @staticmethod
+    def _read_employee_selection(connection: Any, selection: Any) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         while selection.Next():
-            rows.append(
-                {
-                    "full_name": one_c_text(connection, selection.FullName),
-                    "_employee_code": one_c_text(connection, selection.EmployeeCode),
-                    "hire_date": one_c_date_iso(connection, selection.HireDate),
+            row = {
+                "full_name": one_c_text(connection, selection.FullName),
+                "_employee_code": one_c_text(connection, selection.EmployeeCode),
+                "hire_date": one_c_date_iso(connection, selection.HireDate),
+                "dismissal_date": one_c_date_iso(connection, getattr(selection, "DismissalDate", None)),
+                "department": one_c_text(connection, selection.Department),
+                "department_code": one_c_text(connection, selection.DepartmentCode),
+                "department_location": one_c_text(connection, selection.DepartmentLocation),
+                "position": one_c_text(connection, selection.Position),
+            }
+            employee_ref = getattr(selection, "EmployeeRef", None)
+            if employee_ref is not None:
+                row["_employee_ref"] = employee_ref
+            rows.append(row)
+        return rows
+
+    def _load_employees(self, connection: Any) -> list[dict[str, Any]]:
+        selection = execute_query(connection, employee_query())
+        return self._read_employee_selection(connection, selection)
+
+    def _load_dismissed_employees(self, connection: Any) -> list[dict[str, Any]]:
+        surnames = self._dismissed_candidate_surnames()
+        rows: list[dict[str, Any]] = []
+        for offset in range(0, len(surnames), 50):
+            batch = surnames[offset : offset + 50]
+            parameters = {"НаДату": datetime.now()}
+            parameters.update({
+                f"Фамилия{index}": f"{surname} %"
+                for index, surname in enumerate(batch)
+            })
+            selection = execute_query(
+                connection,
+                dismissed_employee_query(len(batch)),
+                parameters=parameters,
+            )
+            rows.extend(self._read_employee_selection(connection, selection))
+        self._enrich_dismissed_employee_history(connection, rows)
+        return rows
+
+    @staticmethod
+    def _enrich_dismissed_employee_history(connection: Any, rows: list[dict[str, Any]]) -> None:
+        by_code = {
+            normalize_text(row.get("_employee_code")): row
+            for row in rows
+            if normalize_text(row.get("_employee_code")) and row.get("_employee_ref") is not None
+        }
+        employee_rows = list(by_code.values())
+        for offset in range(0, len(employee_rows), 500):
+            batch = employee_rows[offset : offset + 500]
+            references = connection.NewObject("Массив")
+            for row in batch:
+                references.Добавить(row["_employee_ref"])
+            selection = execute_query(
+                connection,
+                dismissed_employee_history_query(),
+                parameters={"Сотрудники": references},
+            )
+            while selection.Next():
+                code = one_c_text(connection, selection.EmployeeCode)
+                row = by_code.get(code)
+                if row is None:
+                    continue
+                row.update({
                     "department": one_c_text(connection, selection.Department),
                     "department_code": one_c_text(connection, selection.DepartmentCode),
                     "department_location": one_c_text(connection, selection.DepartmentLocation),
                     "position": one_c_text(connection, selection.Position),
-                }
-            )
-        return rows
+                })
+        for row in rows:
+            row.pop("_employee_ref", None)
 
     def _load_employee_absences(self, connection: Any) -> dict[str, dict[str, Any]]:
         """Current ZUP HR states (vacation/sick/trip/…) with return date; fail-soft."""

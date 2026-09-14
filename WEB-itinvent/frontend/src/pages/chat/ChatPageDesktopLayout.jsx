@@ -2,6 +2,9 @@ import { useRef } from 'react';
 import { Box, Paper } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
+import { ChatSidebarSizingContext } from '../../components/chat/ChatSidebarSizingContext';
+import useChatSidebarSizing from './useChatSidebarSizing';
+import ChatSidebarResizeHandle from './ChatSidebarResizeHandle';
 
 import {
   CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
@@ -76,18 +79,23 @@ export default function ChatPageDesktopLayout({
     desktopRightPanelWidth,
     CHAT_RIGHT_PANEL_DEFAULT_WIDTH,
   );
+  const sidebarSizing = useChatSidebarSizing({
+    enabled: !isMobile && !showTaskSplitLayout && !gridTemplateColumns,
+    rightPanelWidth: renderPersistentRightPanel ? resolvedDesktopRightPanelWidth : 0,
+  });
   const resolvedGridTemplateColumns = gridTemplateColumns ?? (
     showTaskSplitLayout
       ? 'minmax(0, 1fr) minmax(320px, 400px)'
       : resolveChatDesktopGridTemplateColumns({
-        sidebarMin: ui.density.sidebarColumnMin,
-        sidebarMax: ui.density.sidebarColumnMax,
+        sidebarMin: sidebarSizing.width,
+        sidebarMax: sidebarSizing.width,
         rightPanelWidth: resolvedDesktopRightPanelWidth,
-        persistent: renderPersistentRightPanel,
+        persistent: sidebarSizing.persistent,
       })
   );
 
   return (
+    <ChatSidebarSizingContext.Provider value={sidebarSizing.context}>
     <Paper
       data-testid="chat-desktop-shell"
       elevation={0}
@@ -105,6 +113,7 @@ export default function ChatPageDesktopLayout({
       }}
     >
       <Box
+        ref={sidebarSizing.containerRef}
         sx={{
           display: isMobile ? 'block' : 'grid',
           gridTemplateColumns: isMobile ? undefined : resolvedGridTemplateColumns,
@@ -203,11 +212,23 @@ export default function ChatPageDesktopLayout({
           </>
         ) : (
           <>
-            {sidebarPane}
+            {sidebarPane ? (
+              <Box sx={{ position: 'relative', display: 'flex', minWidth: 0, minHeight: 0 }}>
+                {sidebarPane}
+                {!sidebarSizing.context.collapsed && !gridTemplateColumns ? (
+                  <ChatSidebarResizeHandle
+                    width={sidebarSizing.width}
+                    maxWidth={sidebarSizing.maxWidth}
+                    onWidthChange={sidebarSizing.setWidth}
+                    onCollapse={sidebarSizing.context.setCollapsed}
+                  />
+                ) : null}
+              </Box>
+            ) : null}
             <Box sx={{ position: 'relative', minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
               {threadPane}
 
-              {renderDesktopRightPanel && !renderPersistentRightPanel ? (
+              {renderDesktopRightPanel && !sidebarSizing.persistent ? (
                 <>
                   <Box
                     onClick={showTaskPanel ? closeTaskPanel : onCloseContextPanel}
@@ -251,7 +272,7 @@ export default function ChatPageDesktopLayout({
                 </>
               ) : null}
             </Box>
-            {renderPersistentRightPanel ? (
+            {sidebarSizing.persistent ? (
               <Box
                 data-testid="chat-desktop-right-panel-persistent"
                 sx={{
@@ -274,5 +295,6 @@ export default function ChatPageDesktopLayout({
         )}
       </Box>
     </Paper>
+    </ChatSidebarSizingContext.Provider>
   );
 }

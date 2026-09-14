@@ -332,8 +332,9 @@ export async function deleteFeedPost(postId: string): Promise<void> {
 export async function listManagedFeedPosts(
   status: FeedManagedStatus,
   limit = 100,
+  options: { offset?: number; q?: string; category_id?: string; tag?: string } = {},
 ): Promise<FeedListResponse> {
-  const { data } = await apiClient.get('/hub/announcements/manage', { params: { status, limit } });
+  const { data } = await apiClient.get('/hub/announcements/manage', { params: { status, limit, ...options } });
   return normalizeList(data);
 }
 

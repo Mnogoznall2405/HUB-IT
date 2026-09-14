@@ -54,3 +54,37 @@ it('commits a complete refreshed Chat catalog', async () => {
   await expect(writeNativeChatInboxSnapshot(17, page(false))).resolves.toBe(true);
   expect(writeNativeCollectionSnapshot).toHaveBeenCalledWith('chat-inbox', 17, 'default', page(false));
 });
+
+it('removes conversations from a complete cached catalog while merging a partial page', async () => {
+  jest.mocked(readNativeCollectionSnapshot).mockResolvedValueOnce({
+    savedAt: 10,
+    data: { ...page(false), items: [{ id: 'removed' }, { id: 'retained' }] },
+  });
+  await writeNativeChatInboxSnapshot(17, page(true), { removedConversationIds: ['removed'] });
+  expect(writeNativeCollectionSnapshot).toHaveBeenLastCalledWith('chat-inbox', 17, 'default', {
+    has_more: false, next_cursor: null, items: [{ id: 'retained' }, { id: 'partial' }],
+  });
+});
+
+it('serializes read-merge-write operations so an older snapshot cannot commit last', async () => {
+  let finishFirst!: (value: boolean) => void;
+  jest.mocked(writeNativeCollectionSnapshot).mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
+  const first = writeNativeChatInboxSnapshot(17, page(false));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  const second = writeNativeChatInboxSnapshot(17, page(true));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(writeNativeCollectionSnapshot).toHaveBeenCalledTimes(1);
+  finishFirst(true);
+  await Promise.all([first, second]);
+  expect(writeNativeCollectionSnapshot).toHaveBeenCalledTimes(2);
+});
+
+it('skips a stale owner write after asynchronous snapshot reading', async () => {
+  let current = true;
+  jest.mocked(readNativeCollectionSnapshot).mockImplementationOnce(async () => {
+    current = false;
+    return null;
+  });
+  await expect(writeNativeChatInboxSnapshot(17, page(false), { isCurrent: () => current })).resolves.toBe(false);
+  expect(writeNativeCollectionSnapshot).not.toHaveBeenCalled();
+});

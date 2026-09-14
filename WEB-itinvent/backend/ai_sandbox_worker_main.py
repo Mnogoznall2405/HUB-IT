@@ -39,7 +39,7 @@ def build_worker(*, worker_id: str, shutdown_event: threading.Event, cleanup_onl
     repository = SqlAlchemySandboxQueueRepository()
     provisioner = FilesystemWorkspaceProvisioner(
         settings=settings,
-        quota_verifier=ExternalQuotaVerifier(quota_helper),
+        quota_verifier=ExternalQuotaVerifier(quota_helper, provision=True),
     )
     executor = ConcreteSandboxJobExecutor(
         settings=settings,

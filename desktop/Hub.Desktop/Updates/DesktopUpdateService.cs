@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Hub.Desktop.Configuration;
 using Hub.Desktop.Diagnostics;
@@ -150,6 +152,14 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
             if (!File.Exists(installedRunnerPath))
             {
                 DesktopLog.Warning("Update runner is missing");
+                return false;
+            }
+
+            var runnerHashPath = Path.Combine(AppContext.BaseDirectory, $"{RunnerFileName}.sha256");
+            if (File.Exists(runnerHashPath)
+                && !VerifyRunnerHash(installedRunnerPath, runnerHashPath))
+            {
+                DesktopLog.Warning("Update runner hash verification failed");
                 return false;
             }
 
@@ -460,15 +470,73 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
 
     private static HttpClient CreateHttpClient()
     {
+        var trustedSpkiHashes = new HashSet<string>(
+            DesktopUpdateTrust.GetTrustedSpkiHashes(),
+            StringComparer.OrdinalIgnoreCase);
+
         var handler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseCookies = false,
+            ServerCertificateCustomValidationCallback = (sender, cert, chain, errors) =>
+            {
+                if (errors != SslPolicyErrors.None || cert is null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    using var certificate = new X509Certificate2(cert);
+                    var spkiHash = DesktopUpdateTrust.ComputeSpkiHash(certificate);
+                    if (trustedSpkiHashes.Contains(spkiHash))
+                    {
+                        return true;
+                    }
+
+                    DesktopLog.Warning($"Update endpoint certificate is not pinned; spki={spkiHash}");
+                }
+                catch (Exception exception)
+                {
+                    DesktopLog.Error("Update endpoint certificate pinning failed", exception);
+                }
+
+                return false;
+            },
         };
         return new HttpClient(handler)
         {
             Timeout = TimeSpan.FromMinutes(15),
         };
+    }
+
+    private static bool VerifyRunnerHash(string runnerPath, string hashPath)
+    {
+        try
+        {
+            var expectedHash = File.ReadAllText(hashPath).Trim().Split(' ', 2)[0];
+            if (string.IsNullOrWhiteSpace(expectedHash))
+            {
+                DesktopLog.Warning("Update runner hash file is empty");
+                return false;
+            }
+
+            using var stream = File.OpenRead(runnerPath);
+            var actualHash = SHA256.HashData(stream);
+            var actualHashHex = Convert.ToHexString(actualHash);
+            if (!string.Equals(actualHashHex, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                DesktopLog.Warning($"Update runner hash mismatch; expected={expectedHash}; actual={actualHashHex}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Update runner hash verification failed", exception);
+            return false;
+        }
     }
 
 }

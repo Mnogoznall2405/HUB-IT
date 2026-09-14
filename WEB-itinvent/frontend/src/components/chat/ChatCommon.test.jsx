@@ -300,7 +300,7 @@ describe('FileAttachment', () => {
       />,
     );
 
-    expect(screen.getByRole('link')).toHaveStyle({ width: '180px', maxWidth: '220px' });
+    expect(screen.getByRole('link')).toHaveStyle({ width: '180px', maxWidth: 'min(100%, 220px)' });
   });
 
   it('keeps portrait media previews from collapsing narrower than the chat minimum', () => {
@@ -320,7 +320,8 @@ describe('FileAttachment', () => {
       />,
     );
 
-    expect(screen.getByRole('link')).toHaveStyle({ width: '148px', maxWidth: '216px', minWidth: '148px' });
+    expect(screen.getByRole('link')).toHaveStyle({ width: '148px', maxWidth: 'min(100%, 216px)', minWidth: 'min(100%, 148px)' });
+    expect(screen.getByRole('img')).toHaveStyle({ objectFit: 'contain' });
   });
 
   it('renders video attachments with a preview surface and duration badge', () => {

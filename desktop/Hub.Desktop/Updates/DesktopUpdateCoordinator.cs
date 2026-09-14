@@ -13,7 +13,7 @@ public sealed class DesktopUpdateCoordinator : IDisposable
     private DesktopUpdatePackage? _readyPackage;
     private Task? _loopTask;
     private int _checkInProgress;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public DesktopUpdateCoordinator(
         IDesktopUpdateService service,

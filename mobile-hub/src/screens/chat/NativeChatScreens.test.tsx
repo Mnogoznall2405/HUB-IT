@@ -15,12 +15,13 @@ import * as nativeFilePicker from '../../files/nativeFilePicker';
 import * as nativeSnapshotCache from '../../cache/nativeSnapshotCache';
 import * as nativeChatInboxSnapshot from '../../chat/nativeChatInboxSnapshot';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
-import { NativeChatThreadScreen } from './NativeChatThreadScreen';
+import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockSocketHandlers = new Map<string, Set<(payload: unknown) => void>>();
 let mockOfflineMode = false;
 let mockChatUserId = 1;
 let mockChatWriteAllowed = true;
+const mockThreadSnapshots = new Map<string, unknown>();
 
 function emitSocket(event: string, payload: unknown) {
   mockSocketHandlers.get(event)?.forEach((handler) => handler(payload));
@@ -42,6 +43,7 @@ jest.mock('../../api/chatApi', () => ({
   deleteAiConversation: jest.fn(),
   resetAiConversationContext: jest.fn(),
   getAiSandboxConversation: jest.fn(),
+  getAiConversationAccess: jest.fn(),
   respondAiSandboxPermission: jest.fn(),
   attachAiSandboxArchive: jest.fn(),
   attachAiSandboxFile: jest.fn(),
@@ -65,6 +67,8 @@ jest.mock('../../api/chatApi', () => ({
   updateConversationSettings: jest.fn(),
   getStickerPacks: jest.fn(),
   sendSticker: jest.fn(),
+  shareTask: jest.fn(),
+  getShareableTasks: jest.fn(),
   importStickerPack: jest.fn(),
   removeStickerPack: jest.fn(),
   getLinkPreview: jest.fn(),
@@ -142,8 +146,14 @@ describe('native Chat screens', () => {
     mockChatWriteAllowed = true;
     jest.mocked(nativeSnapshotCache.readNativeSnapshot).mockResolvedValue(null);
     jest.mocked(nativeSnapshotCache.writeNativeSnapshot).mockResolvedValue(true);
-    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockResolvedValue(null);
-    jest.mocked(nativeSnapshotCache.writeNativeEntitySnapshot).mockResolvedValue(undefined);
+    mockThreadSnapshots.clear();
+    jest.mocked(nativeSnapshotCache.readNativeEntitySnapshot).mockImplementation(async (scope, userId, id) => {
+      const data = mockThreadSnapshots.get(JSON.stringify([scope, userId, id]));
+      return (data ? { savedAt: Date.now(), data } : null) as never;
+    });
+    jest.mocked(nativeSnapshotCache.writeNativeEntitySnapshot).mockImplementation(async (scope, userId, id, data) => {
+      mockThreadSnapshots.set(JSON.stringify([scope, userId, id]), JSON.parse(JSON.stringify(data)));
+    });
     jest.mocked(nativeChatInboxSnapshot.readNativeChatInboxSnapshot).mockResolvedValue(null);
     jest.mocked(nativeChatInboxSnapshot.writeNativeChatInboxSnapshot).mockResolvedValue(true);
     mockedChatApi.getConversations.mockResolvedValue([{
@@ -194,6 +204,7 @@ describe('native Chat screens', () => {
     mockedChatApi.deleteAiConversation.mockResolvedValue(undefined);
     mockedChatApi.resetAiConversationContext.mockResolvedValue(undefined);
     mockedChatApi.getAiSandboxConversation.mockResolvedValue({ enabled: false });
+    mockedChatApi.getAiConversationAccess.mockResolvedValue({ can_use: true });
     mockedChatApi.openAiBot.mockResolvedValue({
       id: 'ai-bot',
       kind: 'ai',
@@ -454,7 +465,7 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatInboxScreen />);
 
     await waitFor(() => expect(view.getByText('Мария Иванова')).toBeTruthy());
-    await fireEvent.press(view.getByLabelText(/Мария Иванова/));
+    await fireEvent.press(view.getByLabelText(/^Мария Иванова/));
 
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/(shell)/chat/[conversationId]',
@@ -623,6 +634,7 @@ describe('native Chat screens', () => {
     const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(restored.getAllByText('Переживает перезапуск')).toHaveLength(1));
     await fireEvent.press(restored.getByLabelText('Повторить отправку сообщения'));
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenLastCalledWith('conversation-1', 'Переживает перезапуск', expect.objectContaining({ clientMessageId: id })));
     expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2);
     await restored.unmount();
@@ -721,22 +733,26 @@ describe('native Chat screens', () => {
     try {
       await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'Storage failure send');
       await fireEvent.press(view.getByLabelText('Отправить сообщение'));
-      expect(mockedChatApi.sendTextMessage).toHaveBeenCalledWith('conversation-1', 'Storage failure send', expect.anything());
+      await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledWith('conversation-1', 'Storage failure send', expect.anything()));
       expect(clear).toHaveBeenCalled();
     } finally { clear.mockRestore(); }
   });
 
   it('keeps both rapid sends visible before either HTTP response arrives', async () => {
-    mockedChatApi.sendTextMessage.mockReturnValue(new Promise(() => undefined));
+    let finish!: (value: import('../../api/types').ChatMessage) => void;
+    mockedChatApi.sendTextMessage.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
     for (const body of ['Rapid one', 'Rapid two']) {
       await fireEvent.changeText(view.getByLabelText('Текст сообщения'), body);
       await fireEvent.press(view.getByLabelText('Отправить сообщение'));
     }
-    expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
     expect(view.getAllByText('Rapid one')).toHaveLength(1);
     expect(view.getAllByText('Rapid two')).toHaveLength(1);
+    await act(async () => { finish({ id: 'rapid-first', conversation_id: 'conversation-1', sender_user_id: 1,
+      body_text: 'Rapid one', client_message_id: mockedChatApi.sendTextMessage.mock.calls[0][2]?.clientMessageId }); });
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2));
     const calls = mockedChatApi.sendTextMessage.mock.calls;
     expect(calls[0][2]?.clientMessageId).not.toBe(calls[1][2]?.clientMessageId);
   });
@@ -850,6 +866,188 @@ describe('native Chat screens', () => {
 
     await waitFor(() => expect(view.getByText('Пропущенное при reconnect')).toBeTruthy());
     expect(mockedChatApi.getMessagesPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('delivers text queued offline automatically when the session returns online', async () => {
+    mockedChatApi.sendTextMessage.mockImplementationOnce(async (dialog, body, options) => ({
+      id: 'offline-ack', conversation_id: dialog, sender_user_id: 1, body_text: body,
+      client_message_id: options?.clientMessageId,
+    }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'Текст из офлайна');
+    await fireEvent.press(view.getByLabelText('Отправить сообщение'));
+    const queue = require('../../chat/nativeChatOutbox') as typeof import('../../chat/nativeChatOutbox');
+    await waitFor(async () => expect(await queue.readNativeChatOutbox(1)).toHaveLength(1));
+    expect(mockedChatApi.sendTextMessage).not.toHaveBeenCalled();
+    const id = (await queue.readNativeChatOutbox(1))[0].message.client_message_id;
+    mockOfflineMode = false;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledWith(
+      'conversation-1', 'Текст из офлайна', expect.objectContaining({ clientMessageId: id }),
+    ));
+    await waitFor(async () => expect(await queue.readNativeChatOutbox(1)).toHaveLength(0));
+    expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts suspended text delivery and resumes the same intent without consuming a retry', async () => {
+    mockedChatApi.sendTextMessage.mockImplementationOnce((_dialog, _body, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => reject({ code: 'ERR_CANCELED' }));
+    })).mockImplementationOnce(async (dialog, body, options) => ({
+      id: 'resumed-ack', conversation_id: dialog, sender_user_id: 1, body_text: body,
+      client_message_id: options?.clientMessageId,
+    }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'Прерванная отправка');
+    await fireEvent.press(view.getByLabelText('Отправить сообщение'));
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
+    const options = mockedChatApi.sendTextMessage.mock.calls[0][2];
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    expect(options?.signal?.aborted).toBe(true);
+    const queue = require('../../chat/nativeChatOutbox') as typeof import('../../chat/nativeChatOutbox');
+    await waitFor(async () => expect((await queue.readNativeChatOutbox(1))[0].delivery).toEqual(
+      expect.objectContaining({ state: 'retry', attempts: 0 }),
+    ));
+    mockOfflineMode = false;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2));
+    expect(mockedChatApi.sendTextMessage.mock.calls[1][2]?.clientMessageId).toBe(options?.clientMessageId);
+    await waitFor(async () => expect(await queue.readNativeChatOutbox(1)).toHaveLength(0));
+  });
+
+  it.each([[true, false], [false, false], [true, true], [false, true]])('keeps a reachable history cursor after a reconnect gap (near bottom: %s, fresh WS: %s)', async (nearBottom, freshSocket) => {
+    const base = await mockedChatApi.getMessagesPage('conversation-1');
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    if (!nearBottom) await fireEvent.scroll(view.getByTestId('native-chat-message-list'), {
+      nativeEvent: { contentOffset: { y: 600 } },
+    });
+    const latestItems = Array.from({ length: 80 }, (_, index) => ({
+      id: `reconnect-${index}`, conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: `Reconnect ${index}`, created_at: new Date(Date.UTC(2026, 8, 14, 10, 0, 80 - index)).toISOString(),
+    }));
+    if (freshSocket) await act(async () => { emitSocket('chat.message.created', { payload: { message: latestItems[0] } }); });
+    mockedChatApi.getMessagesPage.mockResolvedValueOnce({ ...base, items: latestItems,
+      has_older: true, older_cursor_message_id: 'reconnect-79',
+    });
+    await act(async () => { emitSocket('status', 'reconnecting'); emitSocket('status', 'connected'); });
+    if (nearBottom) await fireEvent(view.getByTestId('native-chat-message-list'), 'onEndReached');
+    else await fireEvent.scroll(view.getByTestId('native-chat-message-list'),
+      { nativeEvent: { contentOffset: { y: 0 } } });
+    await waitFor(() => expect(mockedChatApi.getMessagesPage).toHaveBeenLastCalledWith(
+      'conversation-1', expect.objectContaining(nearBottom
+        ? { beforeMessageId: 'reconnect-79' }
+        : { afterMessageId: 'message-1' }),
+    ));
+  });
+
+  it('renders one pending bubble before HTTP ACK and replaces its spinner without duplicating text', async () => {
+    let finish!: (message: import('../../api/types').ChatMessage) => void;
+    mockedChatApi.sendTextMessage.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await view.findByText('Первое сообщение');
+    await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'UI pending to confirmed');
+    await fireEvent.press(view.getByLabelText('Отправить сообщение'));
+    expect(view.getAllByText('UI pending to confirmed')).toHaveLength(1);
+    expect(view.getByTestId('chat-message-sending-spinner')).toBeTruthy();
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
+    await act(async () => { finish({ id: 'ui-ack', conversation_id: 'conversation-1', sender_user_id: 1,
+      body_text: 'UI pending to confirmed', client_message_id: mockedChatApi.sendTextMessage.mock.calls[0][2]?.clientMessageId }); });
+    await waitFor(() => expect(view.queryByTestId('chat-message-sending-spinner')).toBeNull());
+    expect(view.getAllByText('UI pending to confirmed')).toHaveLength(1);
+    expect(view.queryByText('Не отправлено · повторить')).toBeNull();
+    await view.unmount();
+  });
+
+  it('restores one offline bubble across remount and confirms it once after reconnect', async () => {
+    const queue = createNativeChatOutbox(1, 'conversation-1');
+    mockedChatApi.sendTextMessage.mockImplementationOnce(async (dialog, body, options) => ({
+      id: 'ui-offline-ack', conversation_id: dialog, sender_user_id: 1, body_text: body,
+      client_message_id: options?.clientMessageId,
+    }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await view.findByText('Первое сообщение');
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'UI offline remount');
+    await fireEvent.press(view.getByLabelText('Отправить сообщение'));
+    await waitFor(() => expect(view.getByText('Ожидает подключения')).toBeTruthy());
+    expect(view.getAllByText('UI offline remount')).toHaveLength(1);
+    const clientId = (await queue.read())[0].client_message_id;
+    await view.unmount();
+    const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(restored.getByText('Ожидает подключения')).toBeTruthy());
+    expect(restored.getAllByText('UI offline remount')).toHaveLength(1);
+    expect(mockedChatApi.sendTextMessage).not.toHaveBeenCalled();
+    mockOfflineMode = false;
+    await restored.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(async () => expect(await queue.read()).toHaveLength(0));
+    expect(restored.getAllByText('UI offline remount')).toHaveLength(1);
+    expect(restored.queryByText('Ожидает подключения')).toBeNull();
+    expect(restored.queryByTestId('chat-message-sending-spinner')).toBeNull();
+    expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(mockedChatApi.sendTextMessage.mock.calls[0][2]?.clientMessageId).toBe(clientId);
+    await restored.unmount();
+  });
+
+  it('renders cancellation before the native transport finishes aborting', async () => {
+    let rejectTransport!: (cause: unknown) => void;
+    mockedChatApi.sendTextMessage.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectTransport = reject; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await view.findByText('Первое сообщение');
+    await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'UI cancelled while aborting');
+    await fireEvent.press(view.getByLabelText('Отправить сообщение'));
+    await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
+    const options = mockedChatApi.sendTextMessage.mock.calls[0][2];
+    await act(async () => { await createNativeChatOutbox(1, 'conversation-1').cancelDelivery(options!.clientMessageId!); });
+    await waitFor(() => expect(view.getByText('Отправка отменена · повторить')).toBeTruthy());
+    expect(view.queryByTestId('chat-message-sending-spinner')).toBeNull();
+    expect(view.getAllByText('UI cancelled while aborting')).toHaveLength(1);
+    expect(options?.signal?.aborted).toBe(true);
+    await act(async () => { rejectTransport({ code: 'ERR_CANCELED' }); });
+    await view.unmount();
+  });
+
+  it('preserves a websocket message received while a disconnected latest page is loading', async () => {
+    const base = await mockedChatApi.getMessagesPage('conversation-1');
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    let finish!: (page: typeof base) => void;
+    mockedChatApi.getMessagesPage.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await act(async () => { emitSocket('status', 'reconnecting'); emitSocket('status', 'connected'); });
+    await act(async () => { emitSocket('chat.message.created', { payload: { message: {
+      id: 'newer-than-rest', conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: 'Newer than REST', created_at: '2026-09-14T10:02:00Z',
+    } } }); });
+    expect(view.getByText('Newer than REST')).toBeTruthy();
+    await act(async () => { finish({ ...base, items: [{
+      id: 'latest-rest', conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: 'Latest REST', created_at: '2026-09-14T10:01:00Z',
+    }], has_older: true, older_cursor_message_id: 'latest-rest' }); });
+    expect(view.getByText('Newer than REST')).toBeTruthy();
+  });
+
+  it('ignores a late reconnect page after switching to offline mode', async () => {
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    let finish!: (value: any) => void;
+    mockedChatApi.getMessagesPage.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    await act(async () => {
+      emitSocket('status', 'offline');
+      emitSocket('status', 'connected');
+    });
+    await waitFor(() => expect(finish).toBeDefined());
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await act(async () => {
+      finish({ items: [{ id: 'late-page', conversation_id: 'conversation-1', sender_user_id: 2,
+        body_text: 'Поздний ответ старой загрузки' }], has_newer: false });
+    });
+    expect(view.queryByText('Поздний ответ старой загрузки')).toBeNull();
   });
 
   it('marks the latest message read after loading the final newer page', async () => {
@@ -1070,6 +1268,28 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledWith('conversation-1', 'Мой ответ', expect.objectContaining({ replyToMessageId: 'message-1' })));
   });
 
+  it('ignores update/delete events for messages outside the loaded window', async () => {
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+
+    await act(async () => { emitSocket('chat.message.updated', { payload: { message: {
+      id: 'far-away-message', conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: 'Отредактировано вне окна', created_at: '2026-01-01T00:00:00Z',
+    } } }); });
+    await act(async () => { emitSocket('chat.message.deleted', { payload: { message: {
+      id: 'deleted-away', conversation_id: 'conversation-1', sender_user_id: 2, is_deleted: true,
+    } } }); });
+
+    // Events for messages the user never loaded must not appear in the list.
+    expect(view.queryByText('Отредактировано вне окна')).toBeNull();
+
+    // While a known message is patched in place.
+    await act(async () => { emitSocket('chat.message.deleted', { payload: { message: {
+      id: 'message-1', conversation_id: 'conversation-1', sender_user_id: 2, is_deleted: true, body_text: '',
+    } } }); });
+    await waitFor(() => expect(view.queryByText('Первое сообщение')).toBeNull());
+  });
+
   it('ignores an already captured cancel callback while an edit is saving', async () => {
     mockedChatApi.getMessagesPage.mockResolvedValueOnce({
       items: [{ id: 'edit-owned', conversation_id: 'conversation-1', sender_user_id: 1,
@@ -1180,6 +1400,101 @@ describe('native Chat screens', () => {
     ));
   });
 
+  it.each(['edit', 'delete'])('ignores a late %s result after changing conversation', async (action) => {
+    const base = await mockedChatApi.getMessagesPage('conversation-1');
+    mockedChatApi.getMessagesPage.mockResolvedValueOnce({ ...base, items: [{
+      id: 'own-late-action', conversation_id: 'conversation-1', sender_user_id: 1,
+      body_text: 'Own action source', is_own: true,
+    }] });
+    let finish!: (message: Awaited<ReturnType<typeof chatApi.editMessage>>) => void;
+    const pending = new Promise<Awaited<ReturnType<typeof chatApi.editMessage>>>((resolve) => { finish = resolve; });
+    if (action === 'edit') mockedChatApi.editMessage.mockReturnValueOnce(pending);
+    else mockedChatApi.deleteMessage.mockReturnValueOnce(pending);
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Own action source')).toBeTruthy());
+    await openMessageActions(view, 'Own action source', action === 'edit' ? 'Редактировать' : 'Удалить');
+    await fireEvent.press(view.getByLabelText(action === 'edit' ? 'Редактировать' : 'Удалить'));
+    if (action === 'edit') {
+      await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'Changed source');
+      await fireEvent.press(view.getByLabelText('Сохранить изменения'));
+    } else {
+      await act(async () => { alert.mock.calls.at(-1)?.[2]?.find((button) => button.style === 'destructive')?.onPress?.(); });
+    }
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish({ id: 'stale-action-result', conversation_id: 'conversation-1',
+      sender_user_id: 1, body_text: 'Stale action result' }); });
+    expect(view.queryByText('Stale action result')).toBeNull();
+  });
+
+  it('ignores a late forward picker after changing conversation', async () => {
+    let finish!: (items: Awaited<ReturnType<typeof chatApi.getConversations>>) => void;
+    mockedChatApi.getConversations.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await openMessageActions(view, 'Первое сообщение', 'Переслать');
+    await fireEvent.press(view.getByLabelText('Переслать'));
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish([{ id: 'target', kind: 'direct', title: 'Old forward target' }]); });
+    expect(view.queryByLabelText('Переслать в Old forward target')).toBeNull();
+  });
+
+  it('does not surface a previous conversation reaction failure', async () => {
+    let reject!: (error: Error) => void;
+    mockedChatApi.toggleReaction.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await openMessageActions(view, 'Первое сообщение', 'Добавить реакцию 👍');
+    await fireEvent.press(view.getByLabelText('Добавить реакцию 👍'));
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    alert.mockClear();
+    await act(async () => { reject(new Error('Old request failed')); });
+    expect(alert).not.toHaveBeenCalled();
+  });
+
+  it('stops an obsolete forward batch after its current acknowledgement', async () => {
+    let finish!: (message: Awaited<ReturnType<typeof chatApi.forwardMessage>>) => void;
+    mockedChatApi.forwardMessage.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await openMessageActions(view, 'Первое сообщение', 'Выбрать');
+    await fireEvent.press(view.getByLabelText('Выбрать'));
+    await fireEvent.press(view.getByText('Второе сообщение'));
+    await fireEvent.press(view.getByLabelText('Переслать'));
+    await fireEvent.press(await view.findByLabelText('Переслать в Мария Иванова'));
+    await waitFor(() => expect(mockedChatApi.forwardMessage).toHaveBeenCalledTimes(1));
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish({ id: 'old-forward-ack', conversation_id: 'conversation-1',
+      sender_user_id: 1, body_text: 'Old forward ACK' }); });
+    expect(mockedChatApi.forwardMessage).toHaveBeenCalledTimes(1);
+    expect(view.queryByText('Old forward ACK')).toBeNull();
+  });
+
+  it('ignores previous conversation details returned after opening another chat', async () => {
+    const base = await mockedChatApi.getConversation('conversation-1');
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    let finish!: (conversation: typeof base) => void;
+    mockedChatApi.getConversation.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await fireEvent.press(view.getByLabelText(/^Информация о чате/));
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish({ ...base, title: 'Old conversation details' }); });
+    expect(view.queryAllByText('Old conversation details')).toHaveLength(0);
+    expect(view.queryByLabelText('Информация о чате Old conversation details')).toBeNull();
+  });
+
+  it('closes completed search results when changing conversation', async () => {
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Поиск в диалоге'));
+    await fireEvent.changeText(view.getByLabelText('Поиск сообщений в диалоге'), 'найденное');
+    await fireEvent.press(view.getByLabelText('Найти сообщения'));
+    expect(await view.findByLabelText('Перейти к сообщению: Найденное сообщение')).toBeTruthy();
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    expect(view.queryByLabelText('Перейти к сообщению: Найденное сообщение')).toBeNull();
+  });
+
   it('searches inside the current conversation and opens a focused bootstrap', async () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
 
@@ -1195,6 +1510,50 @@ describe('native Chat screens', () => {
       expect.objectContaining({ focusMessageId: 'message-search' }),
     ));
     await waitFor(() => expect(view.getByLabelText(/Результат поиска.*Найденное сообщение/)).toBeTruthy());
+  });
+
+  it.each(['conversation', 'offline'])('ignores a late focused history page after changing %s', async (change) => {
+    let finish!: (page: Awaited<ReturnType<typeof chatApi.getThreadBootstrap>>) => void;
+    const focusedPage = await mockedChatApi.getThreadBootstrap('conversation-1');
+    mockedChatApi.getThreadBootstrap.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Поиск в диалоге'));
+    await fireEvent.changeText(view.getByLabelText('Поиск сообщений в диалоге'), 'найденное');
+    await fireEvent.press(view.getByLabelText('Найти сообщения'));
+    await fireEvent.press(await view.findByLabelText('Перейти к сообщению: Найденное сообщение'));
+    expect(finish).toBeDefined();
+    if (change === 'offline') mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId={change === 'conversation' ? 'conversation-2' : 'conversation-1'} />);
+    await act(async () => { finish({ ...focusedPage, items: [{
+      id: 'stale-focused-page', conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: 'Stale focused page', created_at: '2026-08-23T07:00:00Z',
+    }] }); });
+    expect(view.queryByText('Stale focused page')).toBeNull();
+  });
+
+  it.each(['older', 'newer', 'latest'])('ignores late %s pagination after changing conversation', async (direction) => {
+    const base = await mockedChatApi.getMessagesPage('conversation-1');
+    mockedChatApi.getMessagesPage.mockResolvedValueOnce({ ...base,
+      has_older: direction === 'older', has_newer: direction !== 'older',
+      older_cursor_message_id: 'message-1', newer_cursor_message_id: 'message-1',
+    });
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    let finish!: (page: typeof base) => void;
+    mockedChatApi.getMessagesPage.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    if (direction === 'older') await fireEvent(view.getByTestId('native-chat-message-list'), 'onEndReached');
+    else if (direction === 'latest') await fireEvent.press(view.getByLabelText('Перейти к последним сообщениям'));
+    else await fireEvent.scroll(view.getByTestId('native-chat-message-list'), {
+      nativeEvent: { contentOffset: { y: 0 } },
+    });
+    expect(finish).toBeDefined();
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish({ ...base, items: [{
+      id: 'stale-pagination', conversation_id: 'conversation-1', sender_user_id: 2,
+      body_text: 'Stale pagination page', created_at: '2026-08-23T07:00:00Z',
+    }] }); });
+    expect(view.queryByText('Stale pagination page')).toBeNull();
   });
 
   it('shows an explicit empty state after a completed message search', async () => {
@@ -1362,6 +1721,83 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(mockedChatApi.sendFileMessage).toHaveBeenCalledTimes(1));
   });
 
+  it('keeps a single photo caption in the offline queue and sends both on reconnect', async () => {
+    jest.spyOn(Image, 'getSize').mockImplementation((_uri, success) => {
+      success?.(1200, 800);
+      return Promise.resolve({ width: 1200, height: 800 });
+    });
+    const photo = { uri: 'file:///caption.png', name: 'caption.png', mimeType: 'image/png', size: 123, source: 'gallery' as const };
+    jest.spyOn(nativeFilePicker, 'pickNativeAttachments').mockResolvedValue([photo]);
+    const build = jest.spyOn(nativeFilePicker, 'buildAttachmentsFormData').mockReturnValue(new FormData());
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.press(view.getByLabelText('Добавить вложение'));
+    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await waitFor(() => expect(view.getByLabelText('Подпись к фото')).toBeTruthy());
+    await fireEvent.changeText(view.getByLabelText('Подпись к фото'), 'Фото оборудования');
+    await fireEvent.press(view.getByLabelText('Отправить фото'));
+    const queue = require('../../chat/nativeChatOutbox') as typeof import('../../chat/nativeChatOutbox');
+    await waitFor(async () => expect((await queue.readNativeChatOutbox(1))[0]?.upload).toEqual(
+      expect.objectContaining({ body: 'Фото оборудования', files: [photo] }),
+    ));
+    expect(mockedChatApi.sendFileMessage).not.toHaveBeenCalled();
+    mockOfflineMode = false;
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(build).toHaveBeenCalledWith([photo], expect.objectContaining({ body: 'Фото оборудования' })));
+    expect(mockedChatApi.sendFileMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('edits one photo in a group without sending it or losing the group caption', async () => {
+    jest.spyOn(Image, 'getSize').mockImplementation((_uri, success) => {
+      success?.(1200, 800); return Promise.resolve({ width: 1200, height: 800 });
+    });
+    const files = [
+      { uri: 'file:///one.png', name: 'one.png', mimeType: 'image/png', size: 123, source: 'gallery' as const },
+      { uri: 'file:///two.jpg', name: 'two.jpg', mimeType: 'image/jpeg', size: 456, source: 'gallery' as const },
+    ];
+    jest.spyOn(nativeFilePicker, 'pickNativeAttachments').mockResolvedValue(files);
+    const build = jest.spyOn(nativeFilePicker, 'buildAttachmentsFormData').mockReturnValue(new FormData());
+    jest.spyOn(require('expo-image-manipulator'), 'manipulateAsync').mockResolvedValueOnce({ uri: 'file:///edited-one.jpg', width: 800, height: 1200 });
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.press(view.getByLabelText('Добавить вложение'));
+    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await waitFor(() => expect(view.getByText('Выбрано файлов: 2')).toBeTruthy());
+    await fireEvent.changeText(view.getByLabelText('Подпись к вложениям'), 'Комплект');
+    await fireEvent.press(view.getByLabelText('Редактировать one.png'));
+    expect(view.getByLabelText('Подпись к фото').props.value).toBe('Комплект');
+    await fireEvent.press(view.getByLabelText('Повернуть на 90 градусов'));
+    await waitFor(() => expect(view.getByLabelText('Отменить').props.accessibilityState.disabled).toBe(false));
+    await fireEvent.press(view.getByLabelText('Сохранить фото'));
+    expect(mockedChatApi.sendFileMessage).not.toHaveBeenCalled();
+    expect(view.getByLabelText('Подпись к вложениям').props.value).toBe('Комплект');
+    await fireEvent.press(view.getByLabelText('Отправить вложения'));
+    await waitFor(() => expect(build).toHaveBeenCalledWith([
+      expect.objectContaining({ uri: 'file:///edited-one.jpg', name: 'one.jpg', mimeType: 'image/jpeg' }), files[1],
+    ], expect.objectContaining({ body: 'Комплект' })));
+  });
+
+  it('keeps the single photo and caption when durable file preparation fails', async () => {
+    jest.spyOn(Image, 'getSize').mockImplementation((_uri, success) => {
+      success?.(1200, 800); return Promise.resolve({ width: 1200, height: 800 });
+    });
+    const storage = require('../../chat/nativeChatDraftFiles');
+    jest.spyOn(storage, 'persistNativeChatDraftFiles').mockRejectedValueOnce(new Error('disk full'));
+    jest.spyOn(nativeFilePicker, 'pickNativeAttachments').mockResolvedValue([
+      { uri: 'file:///one.png', name: 'one.png', mimeType: 'image/png', size: 123, source: 'gallery' },
+    ]);
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.press(view.getByLabelText('Добавить вложение'));
+    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await waitFor(() => expect(view.getByLabelText('Подпись к фото')).toBeTruthy());
+    await fireEvent.changeText(view.getByLabelText('Подпись к фото'), 'Не потерять подпись');
+    await fireEvent.press(view.getByLabelText('Отправить фото'));
+    await waitFor(() => expect(view.getByLabelText('Подпись к фото').props.editable).toBe(true));
+    expect(view.getByLabelText('Подпись к фото').props.value).toBe('Не потерять подпись');
+    expect(mockedChatApi.sendFileMessage).not.toHaveBeenCalled();
+  });
+
   it('reuses the same client message id when a multi-file upload is retried', async () => {
     const files = [{
       uri: 'file:///cache/one.pdf',
@@ -1451,7 +1887,7 @@ describe('native Chat screens', () => {
     await fireEvent.press(view.getByLabelText('Файл'));
 
     await waitFor(() => expect(view.getByText('report.pdf')).toBeTruthy());
-    expect(view.getByText('Отправка 0%')).toBeTruthy();
+    await waitFor(() => expect(view.getByText('Отправка 0%')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Отменить: report.pdf'));
 
     await waitFor(() => expect(view.getByText('Отправка отменена')).toBeTruthy());
@@ -1692,7 +2128,7 @@ describe('native Chat screens', () => {
   it('assigns a conversation to a custom folder from a long press', async () => {
     const view = await render(<NativeChatInboxScreen />);
     await waitFor(() => expect(view.getByText('Мария Иванова')).toBeTruthy());
-    await fireEvent(view.getByLabelText(/Мария Иванова/), 'longPress');
+    await fireEvent(view.getByLabelText(/^Мария Иванова/), 'longPress');
     await fireEvent.press(view.getByLabelText('Добавить в папку'));
     await waitFor(() => expect(view.getByText('Добавить в папку')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Работа'));
@@ -1707,7 +2143,7 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatInboxScreen />);
     await waitFor(() => expect(view.getByText('Мария Иванова')).toBeTruthy());
 
-    await fireEvent(view.getByLabelText(/Мария Иванова/), 'longPress');
+    await fireEvent(view.getByLabelText(/^Мария Иванова/), 'longPress');
 
     expect(view.getByLabelText('Закрепить')).toBeTruthy();
     expect(view.getByLabelText('Выключить уведомления')).toBeTruthy();
@@ -2034,6 +2470,31 @@ describe('native Chat screens', () => {
     });
   });
 
+  it.each(['sticker', 'task'])('ignores a late %s acknowledgement after changing conversation', async (kind) => {
+    let finish!: (message: Awaited<ReturnType<typeof chatApi.sendSticker>>) => void;
+    const pending = new Promise<Awaited<ReturnType<typeof chatApi.sendSticker>>>((resolve) => { finish = resolve; });
+    if (kind === 'sticker') mockedChatApi.sendSticker.mockReturnValueOnce(pending);
+    else mockedChatApi.shareTask.mockReturnValueOnce(pending);
+    mockedChatApi.getShareableTasks.mockResolvedValue([{ id: 'task-1', title: 'Test task' }]);
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    if (kind === 'sticker') {
+      await fireEvent.press(view.getByLabelText('Открыть эмодзи'));
+      await fireEvent.press(view.getByLabelText('Стикеры'));
+      await fireEvent.press(await view.findByLabelText('Отправить стикер 📎'));
+    } else {
+      await fireEvent.press(view.getByLabelText('Добавить вложение'));
+      await fireEvent.press(view.getByLabelText('Отправить задачу'));
+      await fireEvent.press(await view.findByLabelText('Отправить задачу Test task'));
+    }
+    await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
+    await act(async () => { finish({
+      id: 'stale-special-send', conversation_id: 'conversation-1', sender_user_id: 1,
+      body_text: 'Stale special send', created_at: '2026-08-23T08:00:00Z',
+    }); });
+    expect(view.queryByText('Stale special send')).toBeNull();
+  });
+
   it('renders a sticker image instead of the attachment file name', async () => {
     mockedChatApi.getMessagesPage.mockResolvedValueOnce({
       items: [{
@@ -2191,10 +2652,10 @@ describe('native Chat screens', () => {
       viewer_last_read_at: null,
     });
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
-    await waitFor(() => expect(view.getByLabelText('Действия с вложением clip.mp4')).toBeTruthy());
-    await fireEvent.press(view.getByLabelText('Действия с вложением clip.mp4'));
+    await waitFor(() => expect(view.getByLabelText('Воспроизвести видео clip.mp4')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Воспроизвести видео clip.mp4'));
     expect(view.getByLabelText('Воспроизвести видео')).toBeTruthy();
-    expect(view.queryByText('Видео')).toBeNull();
+    expect(view.getByTestId('chat-media-modal')).toBeTruthy();
   });
 
   it('renames an AI conversation from the ИИ workspace', async () => {
@@ -2212,13 +2673,33 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatInboxScreen />);
     await fireEvent.press(view.getByRole('tab', { name: /ИИ/ }));
     await waitFor(() => expect(view.getByText('HUB Ассистент')).toBeTruthy());
-    await fireEvent(view.getByLabelText(/HUB Ассистент/), 'longPress');
+    await fireEvent.press(view.getByLabelText('Действия диалога HUB Ассистент'));
     await waitFor(() => expect(view.getByLabelText('Переименовать')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Переименовать'));
     await waitFor(() => expect(view.getByLabelText('Новое название диалога')).toBeTruthy());
     await fireEvent.changeText(view.getByLabelText('Новое название диалога'), 'Склад');
     await fireEvent.press(view.getByLabelText('Сохранить'));
     await waitFor(() => expect(mockedChatApi.renameAiConversation).toHaveBeenCalledWith('ai-today', 'Склад'));
+  });
+
+  it('blocks a revoked agent composer and preserves its draft when access returns', async () => {
+    mockedChatApi.getConversation.mockResolvedValue({ id: 'ai-today', kind: 'ai', title: 'OpenCode' });
+    const view = await render(<NativeChatThreadScreen conversationId="ai-today" />);
+    await fireEvent.changeText(await view.findByLabelText('Текст сообщения'), 'Keep my draft');
+    mockedChatApi.getAiConversationAccess.mockResolvedValue({ can_use: false });
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="ai-today" />);
+    mockOfflineMode = false;
+    await view.rerender(<NativeChatThreadScreen conversationId="ai-today" />);
+    await waitFor(() => expect(view.getByText('Доступ к ИИ-агенту не предоставлен или отозван. История доступна, черновик не удалён.')).toBeTruthy());
+    expect(view.queryByLabelText('Отправить сообщение')).toBeNull();
+    expect(mockedChatApi.sendTextMessage).not.toHaveBeenCalled();
+    mockedChatApi.getAiConversationAccess.mockResolvedValue({ can_use: true });
+    mockOfflineMode = true;
+    await view.rerender(<NativeChatThreadScreen conversationId="ai-today" />);
+    mockOfflineMode = false;
+    await view.rerender(<NativeChatThreadScreen conversationId="ai-today" />);
+    await waitFor(() => expect(view.getByLabelText('Текст сообщения').props.value).toBe('Keep my draft'));
   });
 
   it('shows OpenCode and AI history actions in the conversation info sheet', async () => {

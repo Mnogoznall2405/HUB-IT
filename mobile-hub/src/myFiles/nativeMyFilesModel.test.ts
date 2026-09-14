@@ -21,6 +21,7 @@ const file = (overrides: Partial<MyFileRecord> = {}) => ({
   stored_size_bytes: 900,
   saved_size_bytes: 124,
   retention_days: 7,
+  folder_id: null,
   status: 'ready',
   storage_mode: 'stored',
   error_text: '',
@@ -30,6 +31,7 @@ const file = (overrides: Partial<MyFileRecord> = {}) => ({
   preview_status: 'ready',
   preview_max_bytes: 0,
   is_shared: false,
+  is_favorite: false,
   share_expires_at: null,
   created_at: null,
   updated_at: null,
@@ -49,8 +51,8 @@ it('keeps the server retention allowlist', () => {
   expect(normalizeMyFilesRetention(14)).toBe(1);
 });
 
-it('uses the IIS uint32 maximum instead of the former one-gigabyte limit', () => {
-  expect(MY_FILES_MAX_FILE_BYTES).toBe((2 ** 32) - 1);
+it('uses the chunked upload reservation limit from the backend', () => {
+  expect(MY_FILES_MAX_FILE_BYTES).toBe(10 * 1024 * 1024 * 1024);
 });
 
 it('builds only a trusted public HUB path', () => {

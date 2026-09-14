@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
-import { Box, Button, Paper, Stack, Typography } from '@mui/material';
+import { Box, Button, Collapse, Paper, Stack, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import ComputerOutlinedIcon from '@mui/icons-material/ComputerOutlined';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
@@ -13,7 +14,23 @@ import {
   skipDesktopHandoffThisSession,
 } from '../../lib/desktopProtocolHandoff';
 
+let handoffHost = null;
+const hostListeners = new Set();
+const subscribeHost = (listener) => { hostListeners.add(listener); return () => hostListeners.delete(listener); };
+const getHost = () => handoffHost;
+
+// Keep the protocol launcher mounted once in App, but render inside the shell.
+export function DesktopHandoffSlot() {
+  const bindHost = useCallback((node) => {
+    handoffHost = node;
+    hostListeners.forEach((listener) => listener());
+  }, []);
+  return <Box ref={bindHost} data-testid="desktop-handoff-slot" sx={{ flexShrink: 0, minWidth: 0 }} />;
+}
+
 export default function DesktopProtocolHandoff() {
+  const host = useSyncExternalStore(subscribeHost, getHost, () => null);
+  const [expanded, setExpanded] = useState(false);
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const location = useLocation();
@@ -52,16 +69,13 @@ export default function DesktopProtocolHandoff() {
     setVisible(false);
   };
 
-  return (
+  const content = (
     <Paper
       elevation={0}
       data-testid="desktop-protocol-handoff"
       sx={{
-        position: 'sticky',
-        top: 'var(--hubit-global-banner-offset, 0px)',
-        zIndex: 20,
-        mx: { xs: 1, sm: 2 },
-        mt: { xs: 1, sm: 1.5 },
+        mx: host ? 0 : { xs: 1, sm: 2 },
+        my: 1,
         px: 1.5,
         py: 1.25,
         borderRadius: '12px',
@@ -72,9 +86,9 @@ export default function DesktopProtocolHandoff() {
       }}
     >
       <Stack
-        direction={{ xs: 'column', sm: 'row' }}
+        direction="row"
         spacing={1}
-        alignItems={{ xs: 'stretch', sm: 'center' }}
+        alignItems="center"
         justifyContent="space-between"
       >
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
@@ -83,12 +97,17 @@ export default function DesktopProtocolHandoff() {
             <Typography sx={{ fontWeight: 700, fontSize: 14, color: ui.textPrimary }}>
               Открыть в HUB Desktop
             </Typography>
-            <Typography sx={{ fontSize: 13, color: ui.textSecondary, lineHeight: 1.45 }}>
-              Ссылка может открыться в приложении, а не в браузере. Если Windows спросит — разрешите HUB Desktop.
-            </Typography>
           </Box>
         </Stack>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ flexShrink: 0 }}>
+        <Button aria-expanded={expanded} aria-controls="desktop-handoff-actions" onClick={() => setExpanded((value) => !value)} sx={{ flexShrink: 0, minHeight: 44 }}>
+          {expanded ? 'Свернуть' : 'Подробнее'}
+        </Button>
+      </Stack>
+      <Collapse in={expanded} id="desktop-handoff-actions">
+        <Typography sx={{ fontSize: 13, color: ui.textSecondary, lineHeight: 1.45, my: 1 }}>
+          Ссылка может открыться в приложении, а не в браузере. Если Windows спросит — разрешите HUB Desktop.
+        </Typography>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
           <Button
             variant="contained"
             onClick={() => launchHubitProtocol(protocolHref)}
@@ -111,7 +130,8 @@ export default function DesktopProtocolHandoff() {
             Больше не предлагать
           </Button>
         </Stack>
-      </Stack>
+      </Collapse>
     </Paper>
   );
+  return host ? createPortal(content, host) : content;
 }

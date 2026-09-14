@@ -200,7 +200,14 @@ export function NativeAddressBookScreen() {
         }));
         setLoading(false);
       }
-      if (offlineMode) return;
+      if (offlineMode) {
+        if (!hadCachedSnapshot) {
+          setDirectoryItems([]);
+          setTotal(0);
+          setError('Адресная книга ещё не сохранена на устройстве. Загрузите её при подключении к сети.');
+        }
+        return;
+      }
 
       const data = await getCompleteAddressBook();
       if (requestId !== searchRequestRef.current) return;
@@ -484,6 +491,9 @@ export function NativeAddressBookScreen() {
         <AccountLoading tokens={tokens} />
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           style={styles.list}
           testID="address-book-entry-list"
           data={items}

@@ -29,6 +29,14 @@ def test_fio_exact_full_name():
     assert score == 100
 
 
+def test_fio_matches_warehouse_with_trailing_location():
+    score = fio_person_match_score(
+        "Рябов Александр Сергеевич",
+        "Склад Рябов А.С. Тюмень",
+    )
+    assert score >= 80
+
+
 def test_fio_surname_only_does_not_match():
     assert fio_person_match_score("Манько", "Манько Иван") == 0
     assert fio_person_match_score("Манько Иван", "Манько") == 0

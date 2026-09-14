@@ -9,6 +9,7 @@ public static class DesktopLog
 {
     private const long MaximumFileSizeBytes = 2 * 1024 * 1024;
     private const int RetainedFiles = 5;
+    private const int MaximumLogAgeDays = 30;
     private static readonly object Sync = new();
     private static string? _currentLogPath;
 
@@ -18,6 +19,7 @@ public static class DesktopLog
         {
             Directory.CreateDirectory(DesktopPaths.LogsFolder);
             _currentLogPath = Path.Combine(DesktopPaths.LogsFolder, "hub-desktop.log");
+            DeleteOldLogFiles();
             RollIfNeeded();
         }
 
@@ -30,7 +32,8 @@ public static class DesktopLog
 
     public static void Error(string context, Exception exception)
     {
-        Write("ERROR", $"{context}; exception={exception.GetType().Name}");
+        var details = DesktopRedaction.Redact(exception.ToString());
+        Write("ERROR", $"{context}; exception={exception.GetType().Name}{Environment.NewLine}{details}");
     }
 
     private static void Write(string level, string message)
@@ -79,5 +82,29 @@ public static class DesktopLog
         }
 
         File.Move(_currentLogPath, $"{_currentLogPath}.1", overwrite: true);
+    }
+
+    private static void DeleteOldLogFiles()
+    {
+        if (!Directory.Exists(DesktopPaths.LogsFolder))
+        {
+            return;
+        }
+
+        var cutoff = DateTime.Now.AddDays(-MaximumLogAgeDays);
+        foreach (var file in Directory.EnumerateFiles(DesktopPaths.LogsFolder, "hub-desktop.log*"))
+        {
+            try
+            {
+                if (File.GetLastWriteTime(file) < cutoff)
+                {
+                    File.Delete(file);
+                }
+            }
+            catch
+            {
+                // Log cleanup must not stop the desktop client.
+            }
+        }
     }
 }

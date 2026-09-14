@@ -22,6 +22,25 @@ describe('nativeConnectivityGrace', () => {
     jest.useRealTimers();
   });
 
+  it.each(['resolve', 'reject'])('ignores a stale recheck %s after a newer online event', async (outcome) => {
+    let finish!: (value: NativeConnectivitySnapshot) => void;
+    let fail!: (error: Error) => void;
+    const setOffline = jest.fn();
+    const controller = createDeferredOfflineConnectivityController({
+      getLastApiSuccessAt: () => 1000, getNow: () => 2000,
+      setOffline, setKnownOnline: jest.fn(), setVpnActive: jest.fn(),
+      recheck: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }),
+    });
+    controller.apply(snapshot({}));
+    jest.advanceTimersByTime(RECENT_API_SUCCESS_GRACE_MS);
+    controller.apply(snapshot({ connected: true, online: true, transport: 'wifi' }));
+    if (outcome === 'resolve') finish(snapshot({})); else fail(new Error('offline'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(setOffline).toHaveBeenLastCalledWith(false);
+    controller.dispose();
+  });
+
   it('does not lose a single offline event inside the API success grace window', async () => {
     const setOffline = jest.fn();
     const setKnownOnline = jest.fn();

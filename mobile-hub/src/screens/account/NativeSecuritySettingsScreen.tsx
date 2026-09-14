@@ -1,7 +1,8 @@
 import * as Clipboard from 'expo-clipboard';
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import * as ScreenCapture from 'expo-screen-capture';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { APP_LOCK_TIMEOUT_LABELS } from '../../account/accountConstants';
 import {
   formatDateTime,
@@ -38,6 +39,24 @@ export function NativeSecuritySettingsScreen() {
   const [devices, setDevices] = useState<authSecurityApi.TrustedDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const codesGeneration = useRef(0);
+  useEffect(() => {
+    if (!backupCodes.length) return;
+    const key = 'hubit-backup-codes';
+    let active = true;
+    void ScreenCapture.preventScreenCaptureAsync(key).then(() => {
+      if (!active) void ScreenCapture.allowScreenCaptureAsync(key).catch(() => undefined);
+    }).catch(() => setBackupCodes([]));
+    return () => {
+      active = false;
+      void ScreenCapture.allowScreenCaptureAsync(key).catch(() => undefined);
+    };
+  }, [backupCodes.length]);
+  useFocusEffect(useCallback(() => {
+    const clear = () => { codesGeneration.current += 1; setBackupCodes([]); };
+    const subscription = AppState.addEventListener('change', state => { if (state !== 'active') clear(); });
+    return () => { subscription.remove(); clear(); };
+  }, [user?.id]));
   const [lockState, setLockState] = useState<LockState | null>(null);
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState({ error: '', message: '' });
@@ -45,12 +64,16 @@ export function NativeSecuritySettingsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextDevices, nextLock] = await Promise.all([
-        authSecurityApi.listTrustedDevices(),
-        execute('appLock.getState') as Promise<LockState>,
+      const results = await Promise.allSettled([
+        authSecurityApi.listTrustedDevices().then(setDevices),
+        (execute('appLock.getState') as Promise<LockState>).then(setLockState),
       ]);
-      setDevices(nextDevices);
-      setLockState(nextLock);
+      const failures = results.flatMap((result, index) => result.status === 'rejected'
+        ? [formatApiError(result.reason, index === 0
+          ? 'Не удалось загрузить доверенные устройства.'
+          : 'Не удалось загрузить локальную блокировку.')]
+        : []);
+      setStatus({ error: failures.join('\n'), message: '' });
     } catch (error) {
       setStatus({ error: formatApiError(error, 'Не удалось загрузить безопасность.'), message: '' });
     } finally {
@@ -70,8 +93,10 @@ export function NativeSecuritySettingsScreen() {
         onPress: () => {
           void (async () => {
             setBusy('codes');
+            const generation = ++codesGeneration.current;
             try {
               const codes = await authSecurityApi.regenerateBackupCodes();
+              if (generation !== codesGeneration.current || AppState.currentState !== 'active') return;
               setBackupCodes(codes);
               setStatus({ error: '', message: 'Новые резервные коды готовы. Сохраните их в надёжном месте.' });
             } catch (error) {

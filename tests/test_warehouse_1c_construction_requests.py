@@ -116,12 +116,16 @@ def test_object_request_snapshot_loads_non_it_numbers_for_all_linked_groups_once
     assert second["items"][0]["request_ref"] != first["items"][0]["request_ref"]
     assert first["summary"] == {"total": 2, "active": 2, "history": 0, "overdue": 0}
     assert first["overview"] == {
-        "buyers": [{"name": "Сидоров С.С.", "active_requests": 2}],
-        "request_responsibles": [{"name": "Петров П.П.", "active_requests": 2}],
         "departments": [{"name": "УМТО", "active_requests": 2}],
         "warehouses": [{"name": "Склад ЕАСИ", "active_requests": 2}],
         "stages": [{"key": "assigned", "label": "Назначен закупщик", "count": 2}],
     }
+    assert first["direction_stats"] == [
+        {"group_ref": GROUP_ONE, "group_name": "ЕАСИ", "active": 1, "overdue": 0},
+        {"group_ref": GROUP_TWO, "group_name": "ЕАСИ", "active": 1, "overdue": 0},
+    ]
+    assert first["buyer_facets"] == [{"name": "Сидоров С.С.", "count": 2}]
+    assert first["responsible_facets"] == [{"name": "Петров П.П.", "count": 2}]
     assert {item["group_ref"] for item in first["source_groups"]} == {GROUP_ONE, GROUP_TWO}
     assert len(calls) == 1
     assert calls[0][0] == [GROUP_ONE, GROUP_TWO]
@@ -142,6 +146,21 @@ def test_object_request_detail_rejects_request_from_another_group(monkeypatch):
     )
 
     assert result is None
+
+
+def test_request_detail_cache_expires_without_a_list_refresh(monkeypatch):
+    now = [1000.0]
+    view = request_view()
+    monkeypatch.setattr(object_requests, '_rebuild_group_references', lambda _connection, refs: list(refs))
+    monkeypatch.setattr(object_requests, '_load_construction_request_summaries',
+                        lambda *_args, **_kwargs: ([object_requests._summary_from_view(view)], False, '2025-09-01'))
+    store = object_requests.ConstructionObjectRequestsSnapshotStore(ttl_seconds=300, clock=lambda: now[0])
+    store.get(object(), [GROUP_ONE])
+    store.remember_detail([GROUP_ONE], REQUEST_ONE, view)
+    assert store.get_detail([GROUP_ONE], REQUEST_ONE)['request_ref'] == REQUEST_ONE
+    assert store.get_detail([GROUP_TWO], REQUEST_ONE) is None
+    now[0] += 300
+    assert store.get_detail([GROUP_ONE], REQUEST_ONE) is None
 
 
 def test_object_request_summary_treats_receipt_as_delivery_for_the_whole_request():
@@ -297,6 +316,10 @@ def test_object_request_api_uses_only_the_objects_groups(monkeypatch):
                 {"group_ref": GROUP_TWO, "group_name": "ЕАСИ доп."},
             ],
             "warehouse_facets": [],
+            "buyer_facets": [],
+            "responsible_facets": [],
+            "direction_stats": [],
+            "overview": {"departments": [], "warehouses": [], "stages": []},
             "summary": {"total": 0, "active": 0, "history": 0, "overdue": 0},
             "cache": {},
             "query_metrics": {"query_count": 9},
@@ -331,3 +354,113 @@ def test_object_request_api_requires_construction_read(monkeypatch):
     client = _api_client(permissions=["warehouse_1c.read"])
 
     assert client.get(f"/construction/objects/{GROUP_ONE}/requests").status_code == 403
+
+
+def test_direction_request_filters_and_rejects_foreign_group(monkeypatch):
+    calls = []
+
+    class FakeManagementService:
+        def get_object(self, object_id, *, include_history):
+            return {
+                "id": object_id,
+                "name": "ЕАСИ",
+                "groups": [
+                    {"group_ref": GROUP_ONE, "group_name": "ЕАСИ"},
+                    {"group_ref": GROUP_TWO, "group_name": "ЕАСИ доп."},
+                ],
+                "team": [],
+                "role_history": [],
+            }
+
+    async def fake_list(**kwargs):
+        calls.append(kwargs)
+        return {
+            "items": [],
+            "next_cursor": None,
+            "has_more": False,
+            "total": 0,
+            "snapshot_id": "snapshot-1",
+            "snapshot_changed": False,
+            "as_of": "2026-09-01T10:00:00+00:00",
+            "window_from": "2025-09-01",
+            "truncated": False,
+            "source_groups": [{"group_ref": GROUP_ONE, "group_name": "ЕАСИ"}],
+            "warehouse_facets": [],
+            "buyer_facets": [{"name": "Сидоров С.С.", "count": 1}],
+            "responsible_facets": [{"name": "__empty__", "count": 1}],
+            "direction_stats": [],
+            "overview": {"departments": [], "warehouses": [], "stages": []},
+            "summary": {"total": 0, "active": 0, "history": 0, "overdue": 0},
+            "cache": {},
+            "query_metrics": {"query_count": 1},
+        }
+
+    monkeypatch.setattr(construction_api, "_management_service", lambda: FakeManagementService())
+    monkeypatch.setattr(
+        construction_api.warehouse_1c_service,
+        "get_construction_object_requests",
+        fake_list,
+    )
+    client = _api_client(permissions=["construction.read"])
+
+    ok = client.get(
+        f"/construction/objects/construction-easi/directions/{GROUP_ONE}/requests",
+        params={"buyer": "Сидоров С.С.", "responsible": "__empty__", "view": "history"},
+    )
+    foreign = client.get(
+        "/construction/objects/construction-easi/directions/33333333-3333-3333-3333-333333333333/requests"
+    )
+
+    assert ok.status_code == 200
+    assert calls[0]["group_refs"] == [GROUP_ONE]
+    assert calls[0]["buyer"] == "Сидоров С.С."
+    assert calls[0]["responsible"] == "__empty__"
+    assert calls[0]["view"] == "history"
+    assert foreign.status_code == 404
+
+
+def test_buyer_and_responsible_filters_apply_before_pagination(monkeypatch):
+    views = []
+    for index in range(30):
+        ref = f"{index:08x}-0000-4000-8000-000000000000"
+        summary = object_requests._summary_from_view(
+            request_view(
+                request_ref=ref,
+                number=f"REQ-{index}",
+                group_ref=GROUP_ONE,
+            )
+        )
+        if index == 0:
+            summary["manager_names"] = ["Сидоров С.С."]
+            summary["responsible_name"] = "Петров П.П."
+        elif index == 25:
+            summary["manager_names"] = ["Сидоров С.С."]
+            summary["responsible_name"] = ""
+        else:
+            summary["manager_names"] = ["Другой"]
+        views.append(summary)
+
+    monkeypatch.setattr(
+        object_requests,
+        "_rebuild_group_references",
+        lambda _connection, refs: list(refs),
+    )
+    monkeypatch.setattr(
+        object_requests,
+        "_load_construction_request_summaries",
+        lambda *_args, **_kwargs: (views, False, "2025-09-01"),
+    )
+    store = object_requests.ConstructionObjectRequestsSnapshotStore(ttl_seconds=300)
+    page = object_requests.query_construction_object_requests(
+        object(),
+        group_refs=[GROUP_ONE],
+        view="all",
+        buyer="Сидоров С.С.",
+        responsible="__empty__",
+        limit=25,
+        snapshot_store=store,
+    )
+    assert page["total"] == 1
+    assert page["items"][0]["request_ref"] == "00000019-0000-4000-8000-000000000000"
+    assert any(item["name"] == "Сидоров С.С." for item in page["buyer_facets"])
+    assert any(item["name"] == "__empty__" for item in page["responsible_facets"])

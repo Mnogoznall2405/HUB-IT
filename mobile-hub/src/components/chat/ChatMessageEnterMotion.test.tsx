@@ -63,3 +63,32 @@ it('keeps the bubble mounted when its entry animation is consumed', async () => 
   expect(mount).toHaveBeenCalledTimes(1);
   expect(unmount).not.toHaveBeenCalled();
 });
+
+it('settles an interrupted native animation instead of leaving the bubble translucent', async () => {
+  let finish!: (value: { finished: boolean }) => void;
+  let progress!: Animated.Value;
+  const timing = jest.spyOn(Animated, 'timing').mockImplementation((value) => {
+    progress = value as Animated.Value;
+    return { start: (callback) => { finish = callback!; }, stop: jest.fn(), reset: jest.fn() };
+  });
+  const onFinished = jest.fn();
+  const view = await render(<ChatMessageEnterMotion motionKey="cancelled" kind="incoming" reduceMotion={false} onFinished={onFinished}><Text>message</Text></ChatMessageEnterMotion>);
+  await act(async () => finish({ finished: false }));
+  expect((progress as unknown as { __getValue(): number }).__getValue()).toBe(1);
+  expect(onFinished).toHaveBeenCalledTimes(1);
+  await view.unmount();
+  timing.mockRestore();
+});
+
+it('consumes a motion once when reduced motion changes mid-animation and does not replay it', async () => {
+  const timing = jest.spyOn(Animated, 'timing').mockImplementation(() => ({ start: jest.fn(), stop: jest.fn(), reset: jest.fn() }));
+  const onFinished = jest.fn();
+  const child = <Text>message</Text>;
+  const view = await render(<ChatMessageEnterMotion motionKey="one" kind="incoming" reduceMotion={false} onFinished={onFinished}>{child}</ChatMessageEnterMotion>);
+  await view.rerender(<ChatMessageEnterMotion motionKey="one" kind="incoming" reduceMotion onFinished={onFinished}>{child}</ChatMessageEnterMotion>);
+  await view.rerender(<ChatMessageEnterMotion motionKey="one" kind="incoming" reduceMotion={false} onFinished={onFinished}>{child}</ChatMessageEnterMotion>);
+  expect(onFinished).toHaveBeenCalledTimes(1);
+  expect(timing).toHaveBeenCalledTimes(1);
+  await view.unmount();
+  timing.mockRestore();
+});

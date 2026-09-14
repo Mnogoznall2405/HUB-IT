@@ -37,6 +37,9 @@ export type LegacyBiometricCredential = Omit<BiometricCredential, 'version' | 'r
 
 export type StoredBiometricCredential = BiometricCredential | LegacyBiometricCredential;
 
+/** Thrown when the stored biometric credential is gone — callers should offer re-login. */
+export class BiometricUnavailableError extends Error {}
+
 export type AppLockSettings = {
   enabled: boolean;
   timeoutSeconds: number;
@@ -176,7 +179,7 @@ export async function unlockBiometricLogin(): Promise<StoredBiometricCredential>
     const credential = raw ? parseCredential(raw) : null;
     if (!credential) {
       await disableBiometricLoginInternal();
-      throw new Error('Вход по отпечатку недоступен. Войдите по логину и паролю.');
+      throw new BiometricUnavailableError('Вход по отпечатку недоступен. Войдите по логину и паролю.');
     }
     return credential;
   });

@@ -136,14 +136,14 @@ foreach ($brandingAsset in @($iconPath, $setupLogoPath)) {
 
 New-Item -ItemType Directory -Path $prerequisiteDirectory -Force | Out-Null
 $vcRedist = Join-Path $prerequisiteDirectory 'VC_redist.x64.exe'
-$webView2Bootstrapper = Join-Path $prerequisiteDirectory 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+$webView2Bootstrapper = Join-Path $prerequisiteDirectory 'MicrosoftEdgeWebview2Setup.exe'
 $windowsAppRuntime = Join-Path $prerequisiteDirectory 'WindowsAppRuntimeInstall-x64.exe'
 
 Get-MicrosoftPrerequisite `
     'https://aka.ms/vs/17/release/vc_redist.x64.exe' `
     $vcRedist
 Get-MicrosoftPrerequisite `
-    'https://go.microsoft.com/fwlink/p/?LinkId=2124701' `
+    'https://go.microsoft.com/fwlink/p/?LinkId=2124703' `
     $webView2Bootstrapper
 Get-MicrosoftPrerequisite `
     'https://download.microsoft.com/download/712421b4-6f72-47fc-acb8-2ebf030b2260/WindowsAppRuntimeInstall-x64.exe' `
@@ -231,7 +231,7 @@ $bundleHash = Get-FileHash -LiteralPath $finalBundle -Algorithm SHA256
 $policyArchiveHash = Get-FileHash -LiteralPath $policyArchive -Algorithm SHA256
 $prerequisiteInventory = @(
     [ordered]@{ name = 'Microsoft Visual C++ Redistributable x64'; file = $vcRedist },
-    [ordered]@{ name = 'Microsoft Edge WebView2 Evergreen Standalone x64'; file = $webView2Bootstrapper },
+    [ordered]@{ name = 'Microsoft Edge WebView2 Evergreen Bootstrapper x64'; file = $webView2Bootstrapper },
     [ordered]@{ name = 'Microsoft Windows App SDK Runtime 1.8 x64'; file = $windowsAppRuntime }
 ) | ForEach-Object {
     $file = Get-Item -LiteralPath $_.file

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Hub.Desktop.UpdateCore;
@@ -11,4 +12,23 @@ public static class DesktopUpdateTrust
 
     public static X509Certificate2 LoadCertificate() =>
         new(Convert.FromBase64String(PublicCertificateBase64));
+
+    public static IReadOnlyCollection<string> GetTrustedSpkiHashes()
+    {
+        using var certificate = LoadCertificate();
+        return new[] { ComputeSpkiHash(certificate) };
+    }
+
+    public static string ComputeSpkiHash(X509Certificate2 certificate)
+    {
+        using var rsa = certificate.GetRSAPublicKey();
+        if (rsa is null)
+        {
+            throw new InvalidOperationException("Update certificate does not contain an RSA public key.");
+        }
+
+        var spki = rsa.ExportSubjectPublicKeyInfo();
+        var hash = SHA256.HashData(spki);
+        return Convert.ToHexString(hash);
+    }
 }

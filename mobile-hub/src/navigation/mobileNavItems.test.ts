@@ -17,10 +17,10 @@ describe('resolveMobileNavigationItems', () => {
     expect(paths).toEqual(expect.arrayContaining([
       '/dashboard', '/feed', '/tasks', '/chat', '/mail', '/docflow',
       '/address-book', '/company-structure', '/my-files', '/database',
-      '/passwords', '/mfu',
+      '/passwords', '/mfu', '/statistics',
     ]));
     [
-      '/tickets', '/networks', '/vcs', '/dlp', '/statistics', '/kb', '/file-egress',
+      '/tickets', '/networks', '/vcs', '/dlp', '/kb', '/file-egress',
       '/scan-center', '/computers', '/groups-access', '/warehouse-1c',
     ].forEach((path) => expect(paths).not.toContain(path));
   });

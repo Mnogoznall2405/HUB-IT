@@ -84,6 +84,12 @@ describe('chatBubbleLayout meta mode', () => {
 });
 
 describe('chatBubbleLayout meta spacer', () => {
+  it('reserves more space when the system font is enlarged', () => {
+    const normal = estimateChatMetaWidth('14:03 · изм. ✓✓');
+    expect(estimateChatMetaWidth('14:03 · изм. ✓✓', 2)).toBeGreaterThan(normal);
+    expect(estimateChatMetaWidth('14:03 · изм. ✓✓', Number.NaN)).toBe(normal);
+  });
+
   it('reserves room for time and read ticks', () => {
     expect(buildChatMetaPlainText({
       timeLabel: '14:03',

@@ -1,12 +1,18 @@
 # HUB OpenCode sandbox worker
 
+Развёрнутый контур, результаты реальной проверки OpenCode Go и файлового хранилища:
+[LIVE_STATUS.md](LIVE_STATUS.md). План и порядок rollout: [ROLLOUT_PLAN.md](ROLLOUT_PLAN.md).
+Offline проверка service env: `python scripts/ai-sandbox/preflight.py --env-file
+<env-file> --role hub|worker|gateway` из корня репозитория. Она не выполняет
+runtime-проверки и не изменяет настройки.
+
 OpenCode запускается только на отдельной Linux VM с rootless Podman. Worker не
 работает на web/chat host, не монтирует репозиторий или каталоги HUB и не получает
 RouterAI/provider key. Функция по умолчанию выключена через
 `AI_SANDBOX_ENABLED=0`.
 
-Этот каталог содержит runtime-контракт и сборочный контекст. Production,
-миграции и процессы при подготовке этих файлов не менялись.
+Этот каталог содержит runtime-контракт и сборочный контекст. Production rollout
+выполнен по разрешению пользователя; фактическое состояние указано в LIVE_STATUS.md.
 
 ## Архитектура и сетевые границы
 

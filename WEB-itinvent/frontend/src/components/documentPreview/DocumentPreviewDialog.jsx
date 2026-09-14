@@ -70,6 +70,7 @@ export default function DocumentPreviewDialog({
   const isExcel = sourceKind === 'excel' || kind === 'office_excel';
   const hasExcelTable = Boolean(isExcel && excelWorkbook);
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
+  const hasImagePreview = Boolean(objectUrl && kind === 'image');
   const canOpenInDesktopApplication = Boolean(onDownloadOriginal && canDownloadOriginal && isNativeShellRuntime());
   const desktopOpenLabel = getDesktopOfficeOpenLabel(sourceKind);
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
@@ -153,6 +154,28 @@ export default function DocumentPreviewDialog({
       );
     }
 
+    if (hasImagePreview) {
+      return (
+        <Box sx={{
+          minHeight: 0,
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'auto',
+          p: { xs: 1, sm: 1.5 },
+        }}
+        >
+          <Box
+            component="img"
+            src={objectUrl}
+            alt={heading}
+            sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '8px' }}
+          />
+        </Box>
+      );
+    }
+
     if (resolvedMode === 'table' && hasExcelTable) {
       return (
         <Box sx={{ p: { xs: 1, sm: 1.5 }, minHeight: 0, flex: 1, overflow: 'auto' }}>
@@ -202,6 +225,7 @@ export default function DocumentPreviewDialog({
     error,
     excelWorkbook,
     hasExcelTable,
+    hasImagePreview,
     hasPdfPreview,
     heading,
     isMobile,

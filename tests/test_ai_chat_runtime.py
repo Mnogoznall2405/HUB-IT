@@ -124,7 +124,7 @@ def _make_tool_execution_context(*, enabled_tools: list[str], database_id: str =
     )
 
 
-def test_chat_ai_routes_require_chat_ai_use_permission(tmp_path, monkeypatch):
+def test_chat_ai_catalog_is_available_with_baseline_permissions(tmp_path, monkeypatch):
     _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_routes.db")
     deps = importlib.import_module("backend.api.deps")
     chat_api = importlib.import_module("backend.api.v1.chat")
@@ -167,8 +167,8 @@ def test_chat_ai_routes_require_chat_ai_use_permission(tmp_path, monkeypatch):
     assert "default_model" not in response.json()
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
-    forbidden = TestClient(app).get("/chat/ai/bots")
-    assert forbidden.status_code == 403
+    baseline = TestClient(app).get("/chat/ai/bots")
+    assert baseline.status_code == 200
 
 
 def test_chat_ai_generic_memory_and_reset_routes(tmp_path, monkeypatch):
@@ -360,7 +360,7 @@ def test_ai_queue_rechecks_revoked_bot_permission(monkeypatch):
         )
 
 
-def test_sandbox_status_and_cancel_recheck_visible_bot_access(monkeypatch):
+def test_sandbox_history_and_cancel_remain_available_after_revoke(monkeypatch):
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     sandbox_app_module = importlib.import_module("backend.ai_sandbox.app_service")
     service = ai_chat_module.AiChatService()
@@ -384,7 +384,7 @@ def test_sandbox_status_and_cancel_recheck_visible_bot_access(monkeypatch):
 
     assert service.get_conversation_status(conversation_id="sandbox-conv", current_user_id=99)["status"] == "idle"
     assert service.cancel_active_run(conversation_id="sandbox-conv", current_user_id=99)["status"] == "cancelled"
-    assert [item["allow_hidden"] for item in access_checks] == [False, False]
+    assert access_checks == []
 
 
 def test_ai_chat_service_keeps_multiple_agent_conversations_isolated(tmp_path, monkeypatch):
@@ -424,6 +424,11 @@ def test_ai_chat_service_keeps_multiple_agent_conversations_isolated(tmp_path, m
         custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
     )
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
 
     first = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     second = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
@@ -2248,7 +2253,7 @@ def test_chat_message_serialization_includes_ai_action_card(tmp_path, monkeypatc
     assert serialized["action_card"]["preview"]["summary"] == "Списать 1 шт."
 
 
-def test_chat_ai_action_confirm_requires_chat_ai_use_permission(tmp_path, monkeypatch):
+def test_chat_ai_action_confirm_delegates_agent_policy_with_baseline_permissions(tmp_path, monkeypatch):
     _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_route_permission.db")
     deps = importlib.import_module("backend.api.deps")
     chat_api = importlib.import_module("backend.api.v1.chat")
@@ -2259,8 +2264,8 @@ def test_chat_ai_action_confirm_requires_chat_ai_use_permission(tmp_path, monkey
     monkeypatch.setattr(action_cards, "confirm_action", lambda **kwargs: {"id": "action-1", "status": "confirmed"})
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
-    forbidden = TestClient(app).post("/chat/ai/actions/action-1/confirm")
-    assert forbidden.status_code == 403
+    baseline = TestClient(app).post("/chat/ai/actions/action-1/confirm")
+    assert baseline.status_code == 200
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
     allowed = TestClient(app).post("/chat/ai/actions/action-1/confirm")
@@ -2656,6 +2661,11 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     reopened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     second_dialog = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
@@ -2923,6 +2933,11 @@ def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, 
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["ai.files.create"],
         "allow_generated_artifacts": True,
@@ -3033,6 +3048,11 @@ def test_ai_run_prompt_keeps_attachment_metadata_when_extraction_is_empty(tmp_pa
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     conversation = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     upload = UploadFile(
         filename="request.pdf",
@@ -3115,6 +3135,11 @@ def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeyp
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     conversation = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
     upload = UploadFile(
         filename="request.pdf",
@@ -3242,6 +3267,11 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["itinvent.equipment.search"],
         "tool_settings": {
@@ -3462,6 +3492,11 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["itinvent.employee.search", "itinvent.employee.list_equipment"],
         "tool_settings": {
@@ -3704,6 +3739,11 @@ def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(
         bot["id"],
         {
@@ -3929,6 +3969,11 @@ def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tm
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["itinvent.equipment.search_universal"],
         "tool_settings": {
@@ -4184,6 +4229,11 @@ def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["itinvent.consumables.search"],
         "tool_settings": {
@@ -4367,6 +4417,11 @@ def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_pa
     )
 
     bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
     updated_bot = temp_ai_service.update_bot(bot["id"], {
         "enabled_tools": ["itinvent.equipment.list_by_branch"],
         "tool_settings": {

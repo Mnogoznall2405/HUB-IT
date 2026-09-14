@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import {
@@ -51,6 +52,7 @@ import { NativeEquipmentActCard } from '../../components/database/NativeEquipmen
 import { NativeDatabaseActUploadModal } from '../../components/database/NativeDatabaseActUploadModal';
 import { NativeDatabaseCreateModal } from '../../components/database/NativeDatabaseCreateModal';
 import { NativeDatabaseQrScannerModal } from '../../components/database/NativeDatabaseQrScannerModal';
+import { NativeDatabasePickerSheet } from '../../components/database/NativeDatabasePickerSheet';
 import { NativeConsumableRow } from '../../components/database/NativeConsumableRow';
 import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow';
@@ -67,6 +69,7 @@ import {
   type NativeEquipmentDetailSnapshot,
   type NativeDatabaseListSnapshot,
 } from '../../database/nativeDatabaseSnapshot';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -88,10 +91,13 @@ function useDebouncedValue(value: string): string {
 }
 
 export function NativeDatabaseScreen() {
+  const { width, fontScale } = useWindowDimensions();
+  const stackModeTabs = (width - 32) / Math.max(fontScale, 1) < 300;
   const params = useLocalSearchParams<{ q?: string | string[]; mode?: string | string[] }>();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const emptyListInset = useNativeBottomNavInset();
   const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const allowed = hasPermission('database.read');
   const canWrite = hasPermission('database.write');
@@ -655,7 +661,6 @@ export function NativeDatabaseScreen() {
               backgroundColor: tokens.panelInset,
               borderColor: tokens.borderSoft,
               opacity: databases.length === 0 ? 0.55 : pressed ? 0.88 : 1,
-              transform: [{ scale: pressed && databases.length > 0 ? 0.96 : 1 }],
             },
           ]}
         >
@@ -675,7 +680,7 @@ export function NativeDatabaseScreen() {
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.textSecondary }]}>{notice}</Text> : null}
 
-      <View style={[styles.modeTabs, { backgroundColor: tokens.panelInset }]} accessibilityRole="tablist">
+      <View style={[styles.modeTabs, stackModeTabs && styles.modeTabsStacked, { backgroundColor: tokens.panelInset }]} accessibilityRole="tablist">
         {(['equipment', 'consumables', 'acts'] as const).map((value) => {
           const selected = mode === value;
           return (
@@ -685,9 +690,9 @@ export function NativeDatabaseScreen() {
               accessibilityRole="tab"
               accessibilityState={{ selected }}
               onPress={() => setMode(value)}
-              style={[styles.modeTab, { backgroundColor: selected ? tokens.panelSolid : 'transparent' }]}
+              style={[styles.modeTab, stackModeTabs && styles.modeTabStacked, { backgroundColor: selected ? tokens.panelSolid : 'transparent' }]}
             >
-              <Text numberOfLines={2} style={[styles.modeText, { color: selected ? accentColor : tokens.textSecondary }]}>
+              <Text style={[styles.modeText, { color: selected ? accentColor : tokens.textSecondary }]}>
                 {value === 'equipment' ? 'Оборудование' : value === 'consumables' ? 'Расходники' : 'Акты'}
               </Text>
             </Pressable>
@@ -727,29 +732,23 @@ export function NativeDatabaseScreen() {
 
       </View>
 
-      <View style={styles.countRow}>
-        <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}> 
-          {mode === 'acts' ? `Актов: ${displayTotal}` : mode === 'consumables' ? `Расходников: ${displayTotal}` : `Найдено: ${displayTotal}`}
-        </Text>
-        <View style={styles.countActions}>
+      <View testID="native-database-toolbar" style={styles.toolbar}>
           {canWrite && mode !== 'acts' ? (
-            <Pressable testID="native-database-create" onPress={() => setCreateOpen(true)} disabled={offlineMode} accessibilityRole="button" accessibilityLabel={mode === 'consumables' ? 'Добавить расходник' : 'Добавить оборудование'} accessibilityState={{ disabled: offlineMode }} style={[styles.resultAction, { borderColor: tokens.border, opacity: offlineMode ? 0.5 : 1 }]}>
+            <Pressable testID="native-database-create" onPress={() => setCreateOpen(true)} disabled={offlineMode} accessibilityRole="button" accessibilityLabel={mode === 'consumables' ? 'Добавить расходник' : 'Добавить оборудование'} accessibilityState={{ disabled: offlineMode }} style={({ pressed }) => [styles.resultAction, styles.toolbarAction, { backgroundColor: tokens.panelInset, borderColor: tokens.border, opacity: offlineMode ? 0.5 : pressed ? 0.75 : 1 }]}>
               <MaterialCommunityIcons name="plus" size={19} color={accentColor} />
               <Text style={[styles.resultActionText, { color: accentColor }]}>Добавить</Text>
             </Pressable>
           ) : null}
           {canWrite && mode === 'acts' ? (
-            <Pressable testID="native-database-upload-act" onPress={() => setUploadActOpen(true)} disabled={offlineMode} accessibilityRole="button" accessibilityLabel="Загрузить подписанный PDF-акт" accessibilityState={{ disabled: offlineMode }} style={[styles.resultAction, { borderColor: tokens.border, opacity: offlineMode ? 0.5 : 1 }]}>
+            <Pressable testID="native-database-upload-act" onPress={() => setUploadActOpen(true)} disabled={offlineMode} accessibilityRole="button" accessibilityLabel="Загрузить подписанный PDF-акт" accessibilityState={{ disabled: offlineMode }} style={({ pressed }) => [styles.resultAction, styles.toolbarAction, { backgroundColor: tokens.panelInset, borderColor: tokens.border, opacity: offlineMode ? 0.5 : pressed ? 0.75 : 1 }]}>
               <MaterialCommunityIcons name="file-upload-outline" size={19} color={accentColor} />
               <Text style={[styles.resultActionText, { color: accentColor }]}>Загрузить</Text>
             </Pressable>
           ) : null}
-          <Pressable testID="native-database-more" accessibilityRole="button" accessibilityLabel="Ещё действия с инвентарём" accessibilityState={{ expanded: moreOpen }} onPress={() => setMoreOpen(!moreOpen)} style={[styles.resultAction, { borderColor: tokens.border }]}>
+          {canWrite && !offlineMode && mode === 'equipment' ? <Pressable testID="native-database-select" accessibilityRole="button" accessibilityState={{ selected: selectionMode }} onPress={() => { setSelectionRequested(!selectionMode); setSelectedInvNos(new Set()); }} style={({ pressed }) => [styles.resultAction, styles.toolbarAction, { borderColor: tokens.border, opacity: pressed ? 0.75 : 1 }]}><Text style={[styles.resultActionText, { color: accentColor }]}>{selectionMode ? 'Отмена' : 'Выбрать'}</Text></Pressable> : null}
+          <Pressable testID="native-database-more" accessibilityRole="button" accessibilityLabel="Ещё действия с инвентарём" accessibilityState={{ expanded: moreOpen }} onPress={() => setMoreOpen(!moreOpen)} style={({ pressed }) => [styles.resultAction, styles.moreAction, { borderColor: tokens.border, backgroundColor: moreOpen ? tokens.panelInset : 'transparent', opacity: pressed ? 0.75 : 1 }]}>
             <MaterialCommunityIcons name="dots-horizontal" size={22} color={accentColor} />
           </Pressable>
-          {canWrite && !offlineMode && mode === 'equipment' ? <Pressable testID="native-database-select" accessibilityRole="button" accessibilityState={{ selected: selectionMode }} onPress={() => { setSelectionRequested(!selectionMode); setSelectedInvNos(new Set()); }} style={[styles.resultAction, { borderColor: tokens.border }]}><Text style={[styles.resultActionText, { color: accentColor }]}>{selectionMode ? 'Отмена' : 'Выбрать'}</Text></Pressable> : null}
-
-        </View>
       </View>
 
       {moreOpen ? <View style={styles.countActions}>
@@ -767,13 +766,19 @@ export function NativeDatabaseScreen() {
             <Text style={[styles.resultActionText, { color: accentColor }]}>Обновить</Text>
           </Pressable>
       </View> : null}
-      {!query.trim() && !selectionMode && mode !== 'consumables' && (mode === 'acts' ? recentActs.length : recentCards.length) ? (
-        <View style={styles.recentSection}>
+      <View style={styles.countRow}>
+        <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>
+          {mode === 'acts' ? `Актов: ${displayTotal}` : mode === 'consumables' ? `Расходников: ${displayTotal}` : `Найдено: ${displayTotal}`}
+        </Text>
+        {!query.trim() && !selectionMode && mode !== 'consumables' && (mode === 'acts' ? recentActs.length : recentCards.length) ? (
           <Pressable accessibilityRole="button" accessibilityLabel="Недавние карточки" accessibilityState={{ expanded: recentOpen }} onPress={() => setRecentOpen(!recentOpen)} style={styles.recentToggle}>
             <Text style={[styles.recentLabel, { color: tokens.textSecondary }]}>Недавние</Text>
             <MaterialCommunityIcons name={recentOpen ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
           </Pressable>
-          {recentOpen ? (
+        ) : null}
+      </View>
+      {!query.trim() && !selectionMode && mode !== 'consumables' && (mode === 'acts' ? recentActs.length : recentCards.length) && recentOpen ? (
+        <View style={styles.recentSection}>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -808,7 +813,6 @@ export function NativeDatabaseScreen() {
                 </Pressable>
               ))}
             </ScrollView>
-          ) : null}
         </View>
       ) : null}
 
@@ -816,6 +820,9 @@ export function NativeDatabaseScreen() {
         <View style={styles.loading}><ActivityIndicator color={accentColor} /></View>
       ) : mode === 'equipment' ? (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-database-results"
           data={equipment}
           keyExtractor={(item) => `e:${item.inv_no}`}
@@ -824,32 +831,38 @@ export function NativeDatabaseScreen() {
           onRefresh={() => { void loadContent(true); }}
           onEndReached={() => { if (hasMoreEquipment && !loadingMore && !loading) void loadContent(false, true); }}
           onEndReachedThreshold={0.35}
-          contentContainerStyle={equipment.length ? styles.listContent : styles.emptyContent}
+          contentContainerStyle={equipment.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footer} color={accentColor} /> : null}
           renderItem={renderEquipmentRow}
         />
       ) : mode === 'consumables' ? (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-database-results"
           data={visibleConsumables}
           keyExtractor={(item) => `c:${item.id}`}
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadContent(true); }}
-          contentContainerStyle={visibleConsumables.length ? styles.listContent : styles.emptyContent}
+          contentContainerStyle={visibleConsumables.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           renderItem={renderConsumableRow}
         />
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID="native-database-results"
           data={acts}
           keyExtractor={(item) => `a:${item.doc_no}`}
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadContent(true); }}
-          contentContainerStyle={acts.length ? styles.listContent : styles.emptyContent}
+          contentContainerStyle={acts.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           renderItem={renderEquipmentAct}
         />
@@ -881,98 +894,23 @@ export function NativeDatabaseScreen() {
         </View>
       ) : null}
 
-      <Modal
+      <NativeDatabasePickerSheet
         visible={databasePickerOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDatabasePickerOpen(false)}
-      >
-        <View style={styles.databasePickerRoot}>
-          <Pressable
-            testID="native-database-picker-backdrop"
-            accessibilityRole="button"
-            accessibilityLabel="Закрыть выбор базы данных"
-            onPress={() => setDatabasePickerOpen(false)}
-            style={styles.databasePickerBackdrop}
-          />
-          <View
-            testID="native-database-picker-sheet"
-            accessibilityViewIsModal
-            style={[styles.databasePickerSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}
-          >
-            <View style={styles.databasePickerHeader}>
-              <View style={styles.databasePickerHeading}>
-                <Text accessibilityRole="header" style={[styles.databasePickerTitle, { color: tokens.textPrimary }]}>Выберите базу</Text>
-                <Text style={[styles.databasePickerSubtitle, { color: tokens.textSecondary }]}>Инвентарь и поиск переключатся на выбранную базу</Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Закрыть"
-                onPress={() => setDatabasePickerOpen(false)}
-                style={({ pressed }) => [styles.databasePickerClose, { opacity: pressed ? 0.65 : 1 }]}
-              >
-                <MaterialCommunityIcons name="close" size={24} color={tokens.iconMuted} />
-              </Pressable>
-            </View>
-            {currentDatabase?.locked ? (
-              <View style={[styles.databaseLockedNotice, { backgroundColor: tokens.panelInset }]}>
-                <MaterialCommunityIcons name="lock-outline" size={17} color={tokens.iconMuted} />
-                <Text style={[styles.databaseLockedText, { color: tokens.textSecondary }]}>База закреплена администратором и недоступна для переключения.</Text>
-              </View>
-            ) : null}
-            <ScrollView contentContainerStyle={styles.databasePickerOptions} keyboardShouldPersistTaps="handled">
-              {databases.map((database) => {
-                const selected = database.id === currentDatabase?.id;
-                const busy = switchingDatabase === database.id;
-                const disabled = Boolean(switchingDatabase) || (!selected && Boolean(currentDatabase?.locked));
-                return (
-                  <Pressable
-                    key={database.id}
-                    testID={`native-database-option-${database.id}`}
-                    accessibilityRole="radio"
-                    accessibilityLabel={`${database.name}${selected ? ', выбрана' : ''}`}
-                    accessibilityState={{ selected, disabled, busy }}
-                    disabled={disabled}
-                    onPress={() => {
-                      if (selected) {
-                        setDatabasePickerOpen(false);
-                        return;
-                      }
-                      void changeDatabase(database.id).then((changed) => {
-                        if (changed) setDatabasePickerOpen(false);
-                      });
-                    }}
-                    style={({ pressed }) => [
-                      styles.databasePickerOption,
-                      {
-                        backgroundColor: selected ? tokens.selected : tokens.panelInset,
-                        borderColor: selected ? tokens.selectedBorder : tokens.borderSoft,
-                        opacity: disabled ? 0.55 : pressed ? 0.84 : 1,
-                        transform: [{ scale: pressed && !disabled ? 0.96 : 1 }],
-                      },
-                    ]}
-                  >
-                    <View style={[styles.databasePickerIcon, { backgroundColor: selected ? tokens.accentSoft : tokens.panelSolid }]}>
-                      {busy ? (
-                        <ActivityIndicator size="small" color={accentColor} />
-                      ) : (
-                        <MaterialCommunityIcons name="database-outline" size={21} color={selected ? accentColor : tokens.iconMuted} />
-                      )}
-                    </View>
-                    <View style={styles.databasePickerOptionText}>
-                      <Text numberOfLines={1} style={[styles.databasePickerOptionTitle, { color: tokens.textPrimary }]}>{database.name}</Text>
-                      {database.id !== database.name ? (
-                        <Text numberOfLines={1} style={[styles.databasePickerOptionId, { color: tokens.textSecondary }]}>{database.id}</Text>
-                      ) : null}
-                    </View>
-                    <MaterialCommunityIcons name={selected ? 'check-circle' : 'chevron-right'} size={22} color={selected ? accentColor : tokens.iconMuted} />
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+        subtitle="Инвентарь и поиск переключатся на выбранную базу"
+        options={databases}
+        currentId={currentDatabase?.id}
+        locked={Boolean(currentDatabase?.locked)}
+        switching={Boolean(switchingDatabase)}
+        switchingId={switchingDatabase || null}
+        accentColor={accentColor}
+        tokens={tokens}
+        onClose={() => setDatabasePickerOpen(false)}
+        onSelect={(database) => {
+          void changeDatabase(database.id).then((changed) => {
+            if (changed) setDatabasePickerOpen(false);
+          });
+        }}
+      />
       <Modal
         visible={Boolean(quantityItem)}
         transparent
@@ -1070,12 +1008,14 @@ const styles = StyleSheet.create({
   recentSection: { marginBottom: 4 },
   recentToggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
   selectionActions: { maxHeight: 150 },
-  recentLabel: { marginBottom: 6, fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  recentLabel: { flexShrink: 1, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   recentStrip: { gap: 8, paddingRight: 20, paddingBottom: 2 },
   recentCard: { width: 184, minHeight: 68, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, justifyContent: 'center' },
   recentTitle: { fontSize: 13, lineHeight: 17, fontWeight: '800' },
   recentMeta: { marginTop: 3, fontSize: 11, lineHeight: 15 },
   modeTabs: { minHeight: 48, borderRadius: 12, padding: 3, flexDirection: 'row', alignItems: 'stretch', marginBottom: 9 },
+  modeTabsStacked: { flexDirection: 'column' },
+  modeTabStacked: { flex: 0 },
   modeTab: { flex: 1, minHeight: 42, borderRadius: 10, paddingHorizontal: 4, paddingVertical: 7, alignItems: 'center', justifyContent: 'center' },
   modeText: { flexShrink: 1, textAlign: 'center', fontSize: 13, lineHeight: 17, fontWeight: '800' },
   searchRow: { flexDirection: 'row', alignItems: 'stretch', gap: 7 },
@@ -1083,11 +1023,14 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, minWidth: 0, minHeight: 46, paddingVertical: 8, fontSize: 16, lineHeight: 21 },
   clearButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   searchAction: { width: 48, minHeight: 48, borderRadius: 13, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  countRow: { minHeight: 52, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  toolbar: { marginTop: 10, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', gap: 8 },
+  toolbarAction: { flexGrow: 1, flexBasis: 100, minWidth: 0 },
+  moreAction: { minWidth: 44, marginLeft: 'auto' },
+  countRow: { minHeight: 44, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   count: { flexGrow: 1, fontSize: 12, lineHeight: 17, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  countActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
-  resultAction: { minHeight: 44, borderRadius: 11, borderWidth: 1, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
-  resultActionText: { fontSize: 12, lineHeight: 16, fontWeight: '800' },
+  countActions: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  resultAction: { minHeight: 44, maxWidth: '100%', borderRadius: 11, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  resultActionText: { flexShrink: 1, textAlign: 'center', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   selectionPanel: { borderWidth: 1, borderRadius: 14, padding: 11, marginTop: 9 },
   selectionHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   selectionTitle: { fontSize: 14, fontWeight: '900' },
@@ -1095,25 +1038,10 @@ const styles = StyleSheet.create({
   selectionClearText: { fontSize: 12, fontWeight: '800' },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   listContent: { paddingBottom: 8 },
-  emptyContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 60 },
+  emptyContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
   empty: { textAlign: 'center', fontSize: 14, lineHeight: 20 },
   footer: { paddingVertical: 16 },
-  databasePickerRoot: { flex: 1, justifyContent: 'flex-end' },
-  databasePickerBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.48)' },
-  databasePickerSheet: { maxHeight: '72%', borderWidth: 1, borderBottomWidth: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 8, paddingBottom: 24, overflow: 'hidden' },
-  databasePickerHeader: { minHeight: 64, paddingLeft: 18, paddingRight: 8, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  databasePickerHeading: { flex: 1, minWidth: 0 },
-  databasePickerTitle: { fontSize: 18, lineHeight: 23, fontWeight: '900' },
-  databasePickerSubtitle: { marginTop: 2, fontSize: 12, lineHeight: 16 },
-  databasePickerClose: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
-  databaseLockedNotice: { minHeight: 42, marginHorizontal: 14, marginBottom: 8, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  databaseLockedText: { flex: 1, fontSize: 12, lineHeight: 16, fontWeight: '700' },
-  databasePickerOptions: { paddingHorizontal: 12, paddingTop: 4, gap: 8 },
-  databasePickerOption: { minHeight: 64, borderRadius: 16, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 11 },
-  databasePickerIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  databasePickerOptionText: { flex: 1, minWidth: 0 },
-  databasePickerOptionTitle: { fontSize: 15, lineHeight: 20, fontWeight: '800' },
-  databasePickerOptionId: { marginTop: 2, fontSize: 11, lineHeight: 15, fontVariant: ['tabular-nums'] },
+
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.42)', alignItems: 'center', justifyContent: 'center', padding: 24 },
   quantityDialog: { width: '100%', maxWidth: 420, borderWidth: 1, borderRadius: 18, padding: 18 },
   quantityTitle: { fontSize: 18, fontWeight: '900' },

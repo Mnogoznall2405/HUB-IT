@@ -9,7 +9,7 @@
         MinWidth="640"
         MinHeight="480"
         WindowStyle="None"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="CanResize"
         WindowStartupLocation="Manual"
         Loaded="Window_Loaded"
         Activated="Window_Activated"
@@ -238,7 +238,9 @@
             </Grid>
         </Border>
 
-        <Grid x:Name="BrowserHost" Grid.Row="1" />
+        <!-- Margin keeps the WebView2 HWND off the window edges so the
+             WindowChrome resize border stays hit-testable. -->
+        <Grid x:Name="BrowserHost" Grid.Row="1" Margin="10,0,10,10" />
 
         <ProgressBar x:Name="LoadingIndicator"
                      Grid.Row="1"

@@ -11,6 +11,9 @@ from backend.config import config
 
 
 GIB_BYTES = 1024**3
+MIB_BYTES = 1024**2
+# Soft ceiling so a multi‑GB archive cannot pin a worker forever.
+_MAX_SCAN_TIMEOUT_SEC = 3600
 
 
 @dataclass(frozen=True)
@@ -29,10 +32,18 @@ class MyFilesAntivirusError(RuntimeError):
 
 
 def _scan_timeout_seconds(path: Path, configured_timeout_sec: int) -> int:
+    """Scale AV timeout with size.
+
+    GiB-only scaling left ~500 MB Telegram archives on the 300 s floor, where
+    Kaspersky often needs longer. Budget ~2 s per MiB (min configured, max 1 h).
+    """
     base_timeout = max(1, int(configured_timeout_sec))
     size_bytes = max(0, int(path.stat().st_size))
-    size_units = max(1, (size_bytes + GIB_BYTES - 1) // GIB_BYTES)
-    return base_timeout * size_units
+    size_gib_units = max(1, (size_bytes + GIB_BYTES - 1) // GIB_BYTES)
+    size_mib = max(1, (size_bytes + MIB_BYTES - 1) // MIB_BYTES)
+    by_gib = base_timeout * size_gib_units
+    by_size = min(_MAX_SCAN_TIMEOUT_SEC, max(base_timeout, size_mib * 2))
+    return int(max(by_gib, by_size))
 
 
 def _resolve_kaspersky_path(explicit_path: str = "") -> Path | None:
@@ -165,9 +176,14 @@ def _scan_with_kaspersky(executable: Path, path: Path, *, timeout: int) -> Secur
         and detected == 0
         and errors == 0
         and skipped == 0
-        and password_protected == 0
         and corrupted == 0
     ):
+        if password_protected:
+            return SecurityScanResult(
+                status="clean",
+                engine="kaspersky-endpoint-security",
+                detail="Password-protected archive; contents not scanned",
+            )
         return SecurityScanResult(status="clean", engine="kaspersky-endpoint-security")
     raise MyFilesAntivirusError(
         f"Kaspersky scan failed with exit code {result.returncode}",

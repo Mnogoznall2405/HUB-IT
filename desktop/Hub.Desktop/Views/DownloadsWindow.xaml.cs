@@ -29,6 +29,19 @@ public partial class DownloadsWindow : Window
 
     public void ApplyTheme(DesktopThemeMode mode)
     {
+        if (mode == DesktopThemeMode.HighContrast)
+        {
+            SetColorResource("WindowBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("TitleBarBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("SurfaceBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("BorderBrush", System.Windows.SystemColors.ActiveBorderColor.ToString());
+            SetColorResource("PrimaryTextBrush", System.Windows.SystemColors.WindowTextColor.ToString());
+            SetColorResource("MutedTextBrush", System.Windows.SystemColors.GrayTextColor.ToString());
+            SetColorResource("AccentBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("FocusBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            return;
+        }
+
         var dark = mode == DesktopThemeMode.Dark;
         SetColorResource("WindowBackgroundBrush", dark ? "#0F1115" : "#F3F2F1");
         SetColorResource("TitleBarBrush", dark ? "#11151B" : "#FAF9F8");

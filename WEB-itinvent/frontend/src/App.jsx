@@ -4,6 +4,7 @@
 import { Component, lazy, Suspense, useCallback, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Box } from '@mui/material';
+import './components/construction/useConstructionWorkLeaveGuard';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED } from './lib/chatFeature';
 import BrandedRouteLoader from './components/layout/BrandedRouteLoader';
@@ -57,6 +58,7 @@ import {
   loadPasswordsRoute,
   loadGroupsAccessRoute,
   loadSharedFileRoute,
+  loadSharedFolderRoute,
   loadStatisticsRoute,
   loadTasksRoute,
   loadTicketsRoute,
@@ -65,6 +67,7 @@ import {
   loadItPurchaseRequestsRoute,
   loadConstructionObjectsRoute,
   loadConstructionObjectDetailRoute,
+  loadConstructionDirectionDetailRoute,
   loadFileEgressRoute,
 } from './lib/routeLoaders';
 
@@ -96,11 +99,13 @@ const Warehouse1C = lazy(loadWarehouse1CRoute);
 const ItPurchaseRequests = lazy(loadItPurchaseRequestsRoute);
 const ConstructionObjects = lazy(loadConstructionObjectsRoute);
 const ConstructionObjectDetail = lazy(loadConstructionObjectDetailRoute);
+const ConstructionDirectionDetail = lazy(loadConstructionDirectionDetailRoute);
 const Docflow = lazy(loadDocflowRoute);
 const Passwords = lazy(loadPasswordsRoute);
 const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
 const SharedFile = lazy(loadSharedFileRoute);
+const SharedFolder = lazy(loadSharedFolderRoute);
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
@@ -568,6 +573,7 @@ function AuthenticatedAppShell() {
               <Route path="/" element={<RootRoute />} />
               <Route path="/login" element={<LoginRoute />} />
               <Route path="/shared-files/:token" element={<SharedFile />} />
+              <Route path="/shared-folders/:token" element={<SharedFolder />} />
 
               <Route element={<ProtectedRoute />}>
                 <Route path="/about" element={<About mode="onboarding" />} />
@@ -674,6 +680,14 @@ function AuthenticatedAppShell() {
                 <Route
                   path="/construction/objects/:objectId"
                   element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
+                />
+                <Route
+                  path="/construction/objects/:objectId/directions/:groupRef"
+                  element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
+                />
+                <Route
+                  path="/construction/objects/:objectId/directions/:groupRef/requests/:requestRef"
+                  element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
                 />
                 <Route
                   path="/construction/objects/:objectId/requests/:requestRef"

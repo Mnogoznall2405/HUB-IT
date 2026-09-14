@@ -36,6 +36,13 @@ const BASE_USER_PERMISSIONS = new Set([
 
 export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
   {
+    group: 'Объекты строительства',
+    permissions: [
+      { value: 'construction.read', label: 'Объекты строительства: просмотр' },
+      { value: 'construction.write', label: 'Объекты строительства: настройка карточек и команды' },
+    ],
+  },
+  {
     group: 'Корпоративный чат',
     permissions: [
       { value: 'chat.read', label: 'Чат: просмотр' },

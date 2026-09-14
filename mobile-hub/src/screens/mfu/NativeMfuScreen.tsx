@@ -19,8 +19,11 @@ import { getMfuDevices, type MfuDevice, type MfuDevicesPayload } from '../../api
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import { NativeMfuDeviceCard } from '../../components/mfu/NativeMfuDeviceCard';
+import { NativeFilterButton, NativeFilterChip } from '../../components/ui/NativeFilterControls';
+import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import { filterMfuDevices, mfuSnmpStatusLabel, type MfuPingFilter, type MfuSnmpFilter } from '../../mfu/nativeMfuModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -29,14 +32,6 @@ function formatDateTime(value: string): string {
   if (!value) return 'Нет данных';
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ru-RU');
-}
-
-function FilterChip({ label, selected, onPress, tokens }: { label: string; selected: boolean; onPress: () => void; tokens: FluentTokens }) {
-  return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityState={{ selected }} style={[styles.chip, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}>
-      <Text style={[styles.chipText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
 }
 
 function DetailField({ label, value, tokens }: { label: string; value: unknown; tokens: FluentTokens }) {
@@ -99,6 +94,7 @@ export function NativeMfuScreen() {
   const { hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const emptyListInset = useNativeBottomNavInset();
   const canRead = hasPermission('mfu.read');
   const [payload, setPayload] = useState<MfuDevicesPayload | null>(null);
   const [query, setQuery] = useState('');
@@ -209,18 +205,11 @@ export function NativeMfuScreen() {
       {(payload?.list_truncated || payload?.source_maybe_truncated) ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Список может быть неполным. Уточните фильтр и повторите запрос.</Text> : null}
       <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}><MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} /><TextInput testID="native-mfu-search" value={query} onChangeText={(value) => setQuery(value.slice(0, 200))} editable={!offlineMode} placeholder="Модель, номер, IP или сотрудник" placeholderTextColor={tokens.textTertiary} accessibilityLabel="Поиск МФУ" style={[styles.searchInput, { color: tokens.textPrimary }]} />{query ? <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={20} color={tokens.iconMuted} /></Pressable> : null}</View>
       <View style={styles.quickFilters}>
-        <FilterChip label="Все" selected={ping === 'all' && snmp === 'all' && branch === 'all'} onPress={() => { setPing('all'); setSnmp('all'); setBranch('all'); }} tokens={tokens} />
-        <FilterChip label="Оффлайн" selected={ping === 'offline'} onPress={() => setPing(ping === 'offline' ? 'all' : 'offline')} tokens={tokens} />
-        <FilterChip label="Расходник < 20%" selected={snmp === 'low_toner'} onPress={() => setSnmp(snmp === 'low_toner' ? 'all' : 'low_toner')} tokens={tokens} />
-        <Pressable testID="native-mfu-filters" accessibilityRole="button" accessibilityState={{ expanded: filtersOpen }} onPress={() => setFiltersOpen(!filtersOpen)} style={[styles.chip, { borderColor: tokens.border }]}>
-          <Text style={[styles.chipText, { color: tokens.primary }]}>Фильтры · {[branch !== 'all', ping !== 'all', snmp !== 'all'].filter(Boolean).length}</Text>
-        </Pressable>
+        <NativeFilterChip label="Все" selected={ping === 'all' && snmp === 'all' && branch === 'all'} onPress={() => { setPing('all'); setSnmp('all'); setBranch('all'); }} tokens={tokens} />
+        <NativeFilterChip label="Оффлайн" selected={ping === 'offline'} onPress={() => setPing(ping === 'offline' ? 'all' : 'offline')} tokens={tokens} />
+        <NativeFilterChip label="Расходник < 20%" selected={snmp === 'low_toner'} onPress={() => setSnmp(snmp === 'low_toner' ? 'all' : 'low_toner')} tokens={tokens} />
+        <NativeFilterButton testID="native-mfu-filters" count={[branch !== 'all', ping !== 'all', snmp !== 'all'].filter(Boolean).length} tokens={tokens} onPress={() => setFiltersOpen(true)} />
       </View>
-      {filtersOpen ? <View style={styles.header}>
-      {payload?.branches.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Все филиалы" selected={branch === 'all'} onPress={() => setBranch('all')} tokens={tokens} />{payload.branches.map((item) => <FilterChip key={item} label={item} selected={branch === item} onPress={() => setBranch(item)} tokens={tokens} />)}</ScrollView> : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любая сеть" selected={ping === 'all'} onPress={() => setPing('all')} tokens={tokens} /><FilterChip label="В сети" selected={ping === 'online'} onPress={() => setPing('online')} tokens={tokens} /><FilterChip label="Не в сети" selected={ping === 'offline'} onPress={() => setPing('offline')} tokens={tokens} /><FilterChip label="Неизвестно" selected={ping === 'unknown'} onPress={() => setPing('unknown')} tokens={tokens} /></ScrollView>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}><FilterChip label="Любой SNMP" selected={snmp === 'all'} onPress={() => setSnmp('all')} tokens={tokens} /><FilterChip label="Мало расходника" selected={snmp === 'low_toner'} onPress={() => setSnmp('low_toner')} tokens={tokens} /><FilterChip label="Нет данных" selected={snmp === 'no_data'} onPress={() => setSnmp('no_data')} tokens={tokens} /><FilterChip label="Ошибка SNMP" selected={snmp === 'error'} onPress={() => setSnmp('error')} tokens={tokens} /></ScrollView>
-      </View> : null}
       {payload ? <Text style={[styles.updated, { color: tokens.textSecondary }]}>Всего {payload.totals.devices} · В сети {payload.totals.online} · Оффлайн {payload.totals.offline}</Text> : null}
       <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Показано: {filtered.length}</Text>
       {loading && !payload ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Загружаем состояние устройств…</Text></View> : null}
@@ -234,8 +223,59 @@ export function NativeMfuScreen() {
         <MaterialCommunityIcons name="information-outline" size={23} color={tokens.iconMuted} />
       </Pressable>
     )}>
-      <FlatList testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : styles.emptyList} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'В выбранной базе пока нет МФУ.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
+      <FlatList
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'В выбранной базе пока нет МФУ.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
       <Modal visible={Boolean(selected)} transparent animationType="slide" onRequestClose={closeDevice}>{selected ? <DeviceDetails device={selected} tokens={tokens} onClose={closeDevice} /> : null}</Modal>
+      <NativeFilterSheet
+        visible={filtersOpen}
+        title="Фильтры МФУ"
+        subtitle="Секции применяются сразу"
+        tokens={tokens}
+        onClose={() => setFiltersOpen(false)}
+        onReset={() => { setPing('all'); setSnmp('all'); setBranch('all'); }}
+        sections={[
+          ...(payload?.branches.length ? [{
+            kind: 'options' as const,
+            key: 'branch',
+            title: 'Филиал',
+            selected: branch,
+            onSelect: setBranch,
+            testIDPrefix: 'native-mfu-filter-branch',
+            options: [{ value: 'all', label: 'Все филиалы' }, ...payload.branches.map((item) => ({ value: item, label: item }))],
+          }] : []),
+          {
+            kind: 'options' as const,
+            key: 'ping',
+            title: 'Доступность',
+            selected: ping,
+            onSelect: (value) => setPing(value as MfuPingFilter),
+            testIDPrefix: 'native-mfu-filter-ping',
+            options: [
+              { value: 'all', label: 'Любая сеть' },
+              { value: 'online', label: 'В сети' },
+              { value: 'offline', label: 'Не в сети' },
+              { value: 'unknown', label: 'Неизвестно' },
+            ],
+          },
+          {
+            kind: 'options' as const,
+            key: 'snmp',
+            title: 'SNMP',
+            selected: snmp,
+            onSelect: (value) => setSnmp(value as MfuSnmpFilter),
+            testIDPrefix: 'native-mfu-filter-snmp',
+            options: [
+              { value: 'all', label: 'Любой SNMP' },
+              { value: 'low_toner', label: 'Мало расходника' },
+              { value: 'no_data', label: 'Нет данных' },
+              { value: 'error', label: 'Ошибка SNMP' },
+            ],
+          },
+        ]}
+      />
     </AccountScreenScaffold>
   );
 }
@@ -248,14 +288,11 @@ const styles = StyleSheet.create({
   search: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  filters: { gap: 7 },
   quickFilters: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  chip: { minHeight: 42, borderRadius: 21, borderWidth: 1, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
-  chipText: { fontSize: 12, lineHeight: 17, fontWeight: '800' },
   count: { minHeight: 24, fontSize: 12, lineHeight: 18, fontWeight: '700' },
   loading: { minHeight: 110, alignItems: 'center', justifyContent: 'center', gap: 9 },
   list: { gap: 9, paddingBottom: 8 },
-  emptyList: { flexGrow: 1, paddingBottom: 60 },
+  emptyList: { flexGrow: 1 },
   emptyText: { paddingVertical: 12, textAlign: 'center', fontSize: 13, lineHeight: 19 },
   primaryAction: { minHeight: 44, borderRadius: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   primaryActionText: { color: '#fff', fontSize: 13, lineHeight: 18, fontWeight: '800', textAlign: 'center' },

@@ -42,6 +42,7 @@ import {
   SCAN_CENTER_SECTIONS,
 } from '../../scanCenter/nativeScanCenterModel';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { NativeFilterChip, NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const PAGE_SIZE = 50;
@@ -57,42 +58,6 @@ function scanRowKey(row: ScanRow): string {
   if (row.kind === 'incident' || row.kind === 'review') return `${row.kind}:${row.item.id}`;
   if (row.kind === 'agent') return `agent:${row.item.agent_id}`;
   return `host:${row.item.hostname}`;
-}
-
-function FilterChip({
-  label,
-  selected,
-  onPress,
-  disabled,
-  tokens,
-  testID,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  disabled?: boolean;
-  tokens: ReturnType<typeof useFluentTokens>;
-  testID?: string;
-}) {
-  return (
-    <Pressable
-      testID={testID}
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityState={{ selected, disabled }}
-      style={[
-        styles.filterChip,
-        {
-          backgroundColor: selected ? tokens.primary : tokens.panelSolid,
-          borderColor: selected ? tokens.primary : tokens.border,
-          opacity: disabled ? 0.55 : 1,
-        },
-      ]}
-    >
-      <Text style={[styles.filterChipText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
 }
 
 export function NativeScanCenterScreen() {
@@ -459,6 +424,9 @@ export function NativeScanCenterScreen() {
         </ScrollView>
       ) : (
         <FlatList
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           testID={`native-scan-list-${section}`}
           data={rows}
           keyExtractor={scanRowKey}
@@ -490,25 +458,37 @@ export function NativeScanCenterScreen() {
                 </View>
               ) : null}
               {section === 'incidents' ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-                  <FilterChip label="Новые" selected={incidentStatus === 'new'} onPress={() => setIncidentStatus('new')} tokens={tokens} />
-                  <FilterChip label="Просмотренные" selected={incidentStatus === 'ack'} onPress={() => setIncidentStatus('ack')} tokens={tokens} />
-                  <FilterChip label="Все" selected={!incidentStatus} onPress={() => setIncidentStatus('')} tokens={tokens} />
-                </ScrollView>
+                <NativeSegmentedControl
+                  options={[
+                    { value: '', label: 'Все' },
+                    { value: 'new', label: 'Новые' },
+                    { value: 'ack', label: 'Просмотренные' },
+                  ]}
+                  selected={incidentStatus}
+                  onSelect={(value) => setIncidentStatus(value as '' | 'new' | 'ack')}
+                  tokens={tokens}
+                  testIDPrefix="native-scan-incident-status"
+                />
               ) : null}
               {section === 'agents' ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-                  <FilterChip label="Все" selected={!agentOnline} onPress={() => setAgentOnline('')} tokens={tokens} />
-                  <FilterChip label="На связи" selected={agentOnline === 'online'} onPress={() => setAgentOnline('online')} tokens={tokens} />
-                  <FilterChip label="Офлайн" selected={agentOnline === 'offline'} onPress={() => setAgentOnline('offline')} tokens={tokens} />
-                </ScrollView>
+                <NativeSegmentedControl
+                  options={[
+                    { value: '', label: 'Все' },
+                    { value: 'online', label: 'На связи' },
+                    { value: 'offline', label: 'Офлайн' },
+                  ]}
+                  selected={agentOnline}
+                  onSelect={(value) => setAgentOnline(value as '' | 'online' | 'offline')}
+                  tokens={tokens}
+                  testIDPrefix="native-scan-agent-online"
+                />
               ) : null}
               {section === 'hosts' ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-                  <FilterChip label="Все" selected={!hostStatus && !hostSeverity} onPress={() => { setHostStatus(''); setHostSeverity(''); }} tokens={tokens} />
-                  <FilterChip label="Есть новые" selected={hostStatus === 'new'} onPress={() => setHostStatus(hostStatus === 'new' ? '' : 'new')} tokens={tokens} />
-                  <FilterChip label="Высокая важность" selected={hostSeverity === 'high'} onPress={() => setHostSeverity(hostSeverity === 'high' ? '' : 'high')} tokens={tokens} />
-                </ScrollView>
+                <View style={styles.filters}>
+                  <NativeFilterChip label="Все" selected={!hostStatus && !hostSeverity} onPress={() => { setHostStatus(''); setHostSeverity(''); }} tokens={tokens} />
+                  <NativeFilterChip label="Есть новые" selected={hostStatus === 'new'} onPress={() => setHostStatus(hostStatus === 'new' ? '' : 'new')} tokens={tokens} />
+                  <NativeFilterChip label="Высокая важность" selected={hostSeverity === 'high'} onPress={() => setHostSeverity(hostSeverity === 'high' ? '' : 'high')} tokens={tokens} />
+                </View>
               ) : null}
               <View style={styles.listMeta}>
                 <Text style={[styles.metaText, { color: tokens.textSecondary }]}>Найдено: {formatScanCount(currentTotal)}</Text>
@@ -583,9 +563,7 @@ const styles = StyleSheet.create({
   search: { minHeight: 48, borderWidth: 1, borderRadius: 14, paddingLeft: 12, paddingRight: 5, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minWidth: 0, minHeight: 44, fontSize: 15 },
   searchAction: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  filters: { gap: 8 },
-  filterChip: { minHeight: 44, borderWidth: 1, borderRadius: 22, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
-  filterChipText: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   listMeta: { minHeight: 28, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   metaText: { flexShrink: 1, fontSize: 11, lineHeight: 16 },
   separator: { height: 8 },

@@ -51,3 +51,24 @@ it('leaves an unchanged form immediately', async () => {
   expect(navigate).toHaveBeenCalledTimes(1);
   expect(alert).not.toHaveBeenCalled();
 });
+
+it('waits for durable save before leaving and stays on failure so the same action can retry', async () => {
+  const alert = jest.spyOn(Alert, 'alert');
+  let finish: () => void = () => undefined;
+  const save = jest.fn().mockRejectedValueOnce(new Error('disk full')).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const error = jest.fn();
+  const navigate = jest.fn();
+  const view = await renderHook(() => useUnsavedFormGuard(true, false, {
+    title: 'Сохранить черновик и выйти?', message: 'Локальная копия', confirmLabel: 'Сохранить и выйти', beforeLeave: save, onLeaveError: error,
+  }));
+  await act(async () => view.result.current.requestLeave(navigate));
+  expect(alert.mock.calls[0][2]?.[1].text).toBe('Сохранить и выйти');
+  await act(async () => alert.mock.calls[0][2]?.[1].onPress?.());
+  expect(navigate).not.toHaveBeenCalled(); expect(error).toHaveBeenCalled(); expect(mockPrevented).toBe(true);
+  await act(async () => view.result.current.requestLeave(navigate));
+  await act(async () => alert.mock.calls[1][2]?.[1].onPress?.());
+  expect(navigate).not.toHaveBeenCalled(); expect(mockPrevented).toBe(true);
+  await act(async () => { finish(); });
+  expect(navigate).toHaveBeenCalledTimes(1); expect(mockPrevented).toBe(false);
+  await view.unmount();
+});

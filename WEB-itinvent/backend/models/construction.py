@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 ConstructionObjectKind = Literal["project", "general", "unassigned"]
-ConstructionRoleKey = Literal["project_lead", "pto_manager", "umto_coordinator"]
-
-
-class ConstructionObjectGroup(BaseModel):
-    group_ref: str
-    group_name: str = ""
+ConstructionObjectRoleKey = Literal[
+    "project_lead",
+    "pto_manager",
+    "umto_coordinator",
+    "chief_project_engineer",
+]
+ConstructionRoleKey = ConstructionObjectRoleKey  # backward-compatible alias
 
 
 class ConstructionTeamMember(BaseModel):
-    role_key: ConstructionRoleKey
+    role_key: str
     employee_code: str
     full_name: str
     position: str = ""
@@ -23,6 +25,14 @@ class ConstructionTeamMember(BaseModel):
     department_location: str = ""
     valid_from: str | None = None
     valid_to: str | None = None
+    group_ref: str | None = None
+
+
+class ConstructionObjectGroup(BaseModel):
+    group_ref: str
+    group_name: str = ""
+    active_request_count: int | None = None
+    overdue_request_count: int | None = None
 
 
 class ConstructionRecentRequest(BaseModel):
@@ -107,14 +117,16 @@ class ConstructionObjectGroupInput(BaseModel):
 
 
 class ConstructionRoleSelection(BaseModel):
-    role_key: ConstructionRoleKey
-    employee_code: str = Field(min_length=1, max_length=128)
+    role_key: ConstructionObjectRoleKey
+    # None/empty = explicit clear. Omitted roles are not in the list (= leave unchanged).
+    employee_code: str | None = Field(default=None, max_length=128)
 
 
 class ConstructionObjectSaveRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     groups: list[ConstructionObjectGroupInput] = Field(min_length=1, max_length=100)
-    roles: list[ConstructionRoleSelection] = Field(default_factory=list, max_length=3)
+    roles: list[ConstructionRoleSelection] | None = Field(default=None, max_length=4)
+    expected_updated_at: datetime | None = None
 
 
 class ConstructionObjectDetail(BaseModel):
@@ -128,6 +140,16 @@ class ConstructionObjectDetail(BaseModel):
     role_history: list[ConstructionTeamMember] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class ConstructionDirectionDetail(BaseModel):
+    object_id: str
+    object_name: str = ""
+    group_ref: str
+    group_name: str = ""
+    managed: bool = False
+    object_team: list[ConstructionTeamMember] = Field(default_factory=list)
+    role_history: list[ConstructionTeamMember] = Field(default_factory=list)
 
 
 class ConstructionObjectRequestTotals(BaseModel):
@@ -148,9 +170,19 @@ class ConstructionObjectStageStat(BaseModel):
     count: int = Field(ge=0)
 
 
+class ConstructionFilterFacet(BaseModel):
+    name: str
+    count: int = Field(ge=0)
+
+
+class ConstructionDirectionStat(BaseModel):
+    group_ref: str
+    group_name: str = ""
+    active: int | None = None
+    overdue: int | None = None
+
+
 class ConstructionObjectRequestOverview(BaseModel):
-    buyers: list[ConstructionObjectContactStat] = Field(default_factory=list)
-    request_responsibles: list[ConstructionObjectContactStat] = Field(default_factory=list)
     departments: list[ConstructionObjectContactStat] = Field(default_factory=list)
     warehouses: list[ConstructionObjectContactStat] = Field(default_factory=list)
     stages: list[ConstructionObjectStageStat] = Field(default_factory=list)
@@ -168,6 +200,9 @@ class ConstructionObjectRequestsResponse(BaseModel):
     truncated: bool = False
     source_groups: list[ConstructionObjectGroup] = Field(default_factory=list)
     warehouse_facets: list[dict[str, Any]] = Field(default_factory=list)
+    buyer_facets: list[ConstructionFilterFacet] = Field(default_factory=list)
+    responsible_facets: list[ConstructionFilterFacet] = Field(default_factory=list)
+    direction_stats: list[ConstructionDirectionStat] = Field(default_factory=list)
     overview: ConstructionObjectRequestOverview = Field(default_factory=ConstructionObjectRequestOverview)
     summary: ConstructionObjectRequestTotals
     cache: dict[str, Any] = Field(default_factory=dict)

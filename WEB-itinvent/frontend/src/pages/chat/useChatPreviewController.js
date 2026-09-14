@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import chatAttachmentsAPI from '../../api/chatAttachments';
+import { mediaGalleryKey, mergeGalleryItems, toGalleryItem } from '../../components/chat/chatMediaGallery';
 import {
   buildAttachmentUrl,
   isMediaAttachment,
@@ -18,6 +19,8 @@ import {
   createEmptyAttachmentPreview,
   downloadBlobFile,
 } from '../../components/mail/mailMessageFileActions';
+import { canOpenInDesktopApplication } from '../../components/fileActions/FileActionsContextMenu';
+import { openOriginalWithDesktopApplication } from '../../components/documentPreview/desktopOfficeOpen';
 import { isSendingOptimisticThreadMessage } from './chatThreadMessages';
 
 export function revokeDocumentPreviewObjectUrl(current) {
@@ -39,15 +42,23 @@ export default function useChatPreviewController({
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
   const documentPreviewRequestRef = useRef(null);
+  const mediaRequestSeqRef = useRef(0);
 
   useEffect(() => () => {
     documentPreviewRequestRef.current?.abort();
     documentPreviewRequestRef.current = null;
+    mediaRequestSeqRef.current += 1;
   }, []);
 
   const closeAttachmentPreview = useCallback(() => {
+    mediaRequestSeqRef.current += 1;
     setAttachmentPreview(null);
   }, []);
+  useEffect(() => {
+    if (attachmentPreview?.conversationId && attachmentPreview.conversationId !== activeConversationIdRef.current) {
+      closeAttachmentPreview();
+    }
+  });
 
   const closeDocumentPreview = useCallback(() => {
     documentPreviewRequestRef.current?.abort();
@@ -58,16 +69,37 @@ export default function useChatPreviewController({
     });
   }, []);
 
+  const downloadChatAttachment = useCallback(async (messageId, attachment) => {
+    const attachmentId = String(attachment?.id || '').trim();
+    if (!attachmentId) return;
+    const response = await chatAttachmentsAPI.downloadAttachment(messageId, attachmentId);
+    const { blob, filename } = buildAttachmentBlobPayload({
+      response,
+      attachment: mapChatAttachmentForPreview(attachment),
+    });
+    downloadBlobFile(blob, filename, { preferOpenFallback: true });
+  }, []);
+
   const openDocumentPreview = useCallback(async (messageId, attachment) => {
     void loadChatDialogsModule();
     const normalizedMessageId = String(messageId || '').trim();
     const attachmentId = String(attachment?.id || '').trim();
     if (!normalizedMessageId || !attachmentId) return;
+
+    const mapped = mapChatAttachmentForPreview(attachment);
+    // Mail parity: inside HUB Desktop an office/pdf attachment opens in the
+    // associated application directly instead of the in-app preview.
+    if (canOpenInDesktopApplication(mapped.name)) {
+      const desktopOpen = await openOriginalWithDesktopApplication({
+        onDownload: () => downloadChatAttachment(normalizedMessageId, attachment),
+      });
+      if (desktopOpen.accepted) return;
+    }
+
     documentPreviewRequestRef.current?.abort();
     const requestController = new AbortController();
     documentPreviewRequestRef.current = requestController;
 
-    const mapped = mapChatAttachmentForPreview(attachment);
     setDocumentPreview((current) => {
       revokeDocumentPreviewObjectUrl(current);
       return {
@@ -113,22 +145,17 @@ export default function useChatPreviewController({
         documentPreviewRequestRef.current = null;
       }
     }
-  }, [loadChatDialogsModule]);
+  }, [downloadChatAttachment, loadChatDialogsModule]);
 
   const handleDownloadDocumentPreview = useCallback(async () => {
     const ctx = documentPreview?.downloadContext;
     if (!ctx?.messageId || !ctx?.attachmentId) return;
     try {
-      const response = await chatAttachmentsAPI.downloadAttachment(ctx.messageId, ctx.attachmentId);
-      const { blob, filename } = buildAttachmentBlobPayload({
-        response,
-        attachment: mapChatAttachmentForPreview(ctx.attachment),
-      });
-      downloadBlobFile(blob, filename, { preferOpenFallback: true });
+      await downloadChatAttachment(ctx.messageId, ctx.attachment);
     } catch (error) {
       notifyApiError(error, 'Не удалось скачать файл.');
     }
-  }, [documentPreview, notifyApiError]);
+  }, [documentPreview, downloadChatAttachment, notifyApiError]);
 
   const handleDownloadDocumentPreviewPdf = useCallback(async () => {
     const ctx = documentPreview?.downloadContext;
@@ -149,6 +176,7 @@ export default function useChatPreviewController({
   }, [documentPreview, notifyApiError]);
 
   const openAttachmentPreview = useCallback((messageId, attachment) => {
+    mediaRequestSeqRef.current += 1;
     void loadChatDialogsModule();
     const normalizedMessageId = String(messageId || '').trim();
     const attachmentId = String(attachment?.id || '').trim();
@@ -258,16 +286,44 @@ export default function useChatPreviewController({
       || sourceMessage?.sender?.username
       || '',
     ).trim();
-    const mediaItems = (Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [])
-      .map(normalizePreviewAttachment)
-      .filter(Boolean)
-      .filter(isMediaAttachment);
-    const previewItems = mediaItems.length > 0 ? mediaItems : [normalizedAttachment];
-    const activeIndex = Math.max(0, previewItems.findIndex((item) => item.id === attachmentId));
+    const conversationId = activeConversationIdRef.current;
+    const galleryKind = isVideoAttachment(attachment) ? 'video' : 'image';
+    const requestSeq = ++mediaRequestSeqRef.current;
+    const clickedItem = toGalleryItem(attachment, sourceMessage || { id: normalizedMessageId });
+    const previewItems = mergeGalleryItems(
+      messagesRef.current.filter((message) => !message.is_deleted && (!message.conversation_id || message.conversation_id === conversationId))
+        .flatMap((message) => (message.attachments || []).filter((item) => isVideoAttachment(item) === (galleryKind === 'video')).map((item) => toGalleryItem(item, message))),
+      [clickedItem],
+    );
+    const activeIndex = Math.max(0, previewItems.findIndex((item) => mediaGalleryKey(item) === mediaGalleryKey(clickedItem)));
     const activeAttachment = previewItems[activeIndex] || normalizedAttachment;
+    let cursor;
+    let busy = false;
+    const loadMore = async () => {
+      if (busy || requestSeq !== mediaRequestSeqRef.current) return;
+      busy = true;
+      setAttachmentPreview((current) => current ? { ...current, galleryLoading: true, galleryError: '' } : current);
+      try {
+        const payload = await chatAttachmentsAPI.getConversationAttachments(conversationId, { kind: galleryKind, limit: 100, before_attachment_id: cursor });
+        if (requestSeq !== mediaRequestSeqRef.current || activeConversationIdRef.current !== conversationId) return;
+        const nextCursor = payload?.next_before_attachment_id;
+        const hasMore = Boolean(payload?.has_more && nextCursor && nextCursor !== cursor);
+        cursor = nextCursor;
+        setAttachmentPreview((current) => current ? {
+          ...current,
+          items: mergeGalleryItems(current.items, (payload?.items || []).map((item) => toGalleryItem(item))),
+          galleryHasMore: hasMore, galleryLoading: false,
+        } : current);
+      } catch (error) {
+        if (requestSeq === mediaRequestSeqRef.current && activeConversationIdRef.current === conversationId) {
+          setAttachmentPreview((current) => current ? { ...current, galleryLoading: false, galleryError: error?.message || 'Не удалось загрузить фото чата.' } : current);
+        }
+      } finally { busy = false; }
+    };
 
     const isProcessing = isSendingOptimisticThreadMessage(sourceMessage, activeConversationIdRef.current)
       || String(sourceMessage?.delivery_status || '').trim() === 'sending';
+    activeAttachment.isProcessing = isProcessing;
 
     setAttachmentPreview({
       messageId: normalizedMessageId,
@@ -277,6 +333,9 @@ export default function useChatPreviewController({
       originalUrl: activeAttachment.originalUrl || activeAttachment.fileUrl,
       posterUrl: activeAttachment.posterUrl || '',
       items: previewItems,
+      conversationId,
+      galleryHasMore: true,
+      loadMore,
       activeIndex,
       totalCount: previewItems.length,
       senderName,
@@ -285,6 +344,7 @@ export default function useChatPreviewController({
       startedFromGallery: previewItems.length > 1,
       isProcessing,
     });
+    if (!isProcessing) void loadMore();
   }, [activeConversationIdRef, loadChatDialogsModule, messagesRef, openDocumentPreview]);
 
   return {

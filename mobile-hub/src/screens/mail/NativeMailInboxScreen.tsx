@@ -65,7 +65,6 @@ import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChr
 
 const PAGE_SIZE = 50;
 const SEARCH_DELAY_MS = 320;
-const UNDO_DURATION_MS = 5_000;
 
 type NativeMailAdvancedFilters = {
   dateFrom: string;
@@ -254,6 +253,11 @@ export function NativeMailInboxScreen() {
     favoritesFirst: mailViewPreferences.show_favorites_first,
   }), [folderTree, mailViewPreferences.show_favorites_first, summary]);
   const currentFolderLabel = folderOptions.find((entry) => entry.id === folder)?.label || folder;
+  const currentFolderWellKnown = folderOptions.find((entry) => entry.id === folder)?.wellKnown || folder;
+  const mailboxEmails = useMemo(
+    () => mailboxes.map((mailbox) => String(mailbox.mailbox_email || '').trim().toLowerCase()).filter(Boolean),
+    [mailboxes],
+  );
   const currentFolderUnread = Math.max(0, Number(folderOptions.find((entry) => entry.id === folder)?.unread || summary[folder]?.unread || 0));
   const activeMailbox = mailboxes.find((item) => String(item.id) === mailboxId) || mailboxes.find((item) => item.is_primary) || mailboxes[0];
   const activeMailboxLabel = String(activeMailbox?.label || activeMailbox?.mailbox_email || 'Почта');
@@ -273,6 +277,8 @@ export function NativeMailInboxScreen() {
   const listScope = JSON.stringify([user?.id, mailboxId, folder, debouncedQuery, unreadOnly, hasAttachments, advancedFilters, view]);
   const listScopeRef = useRef(listScope);
   const listGenerationRef = useRef(0);
+  const loadedScopeRef = useRef('');
+  const metadataFreshRef = useRef({ scope: '', savedAt: 0 });
   if (listScopeRef.current !== listScope) listGenerationRef.current += 1;
   listScopeRef.current = listScope;
   const listGeneration = listGenerationRef.current;
@@ -288,17 +294,14 @@ export function NativeMailInboxScreen() {
     entry.kind === 'message' ? selected.has(entry.value.id) && entry.value.is_read === false : selected.has(entry.value.conversation_id) && Number(entry.value.unread_count) > 0
   )), [items, selected]);
 
-  useEffect(() => {
-    if (!undo) return undefined;
-    const timer = setTimeout(() => setUndo(null), UNDO_DURATION_MS);
-    return () => clearTimeout(timer);
-  }, [undo]);
 
-  const load = useCallback(async ({ reset, refresh = false }: { reset: boolean; refresh?: boolean }) => {
+  const load = useCallback(async ({ reset, refresh = false, silent = false }: { reset: boolean; refresh?: boolean; silent?: boolean }) => {
     const requestId = ++requestRef.current;
-    if (refresh) setRefreshing(true);
-    else if (reset) setLoading(true);
-    else setLoadingMore(true);
+    if (!silent) {
+      if (refresh) setRefreshing(true);
+      else if (reset) setLoading(true);
+      else setLoadingMore(true);
+    }
     setError('');
     const offset = reset ? 0 : items.length;
     const filters = {
@@ -320,8 +323,16 @@ export function NativeMailInboxScreen() {
     };
     const signature = JSON.stringify({ ...filters, offset: 0, view });
     const userId = Number(user?.id || 0);
-    let cached = false;
-    if (reset && !refresh && userId) {
+    const dataScope = `${userId}:${signature}`;
+    let cached = loadedScopeRef.current === dataScope;
+    if (reset && !cached) {
+      loadedScopeRef.current = '';
+      setItems([]);
+      setTotal(0);
+      setHasMore(false);
+      setSelected(new Set());
+    }
+    if (reset && !cached && userId) {
       const snapshot = await readNativeCollectionSnapshot<NativeMailInboxSnapshot>(
         'mail-inbox',
         userId,
@@ -330,6 +341,7 @@ export function NativeMailInboxScreen() {
       if (requestId !== requestRef.current) return;
       if (snapshot?.data.signature === signature) {
         cached = true;
+        loadedScopeRef.current = dataScope;
         setItems(snapshot.data.items.map((item) => item.kind === 'message'
           ? { ...item, value: applyPendingMailReadOverrides([item.value], mailboxId)[0] }
           : item));
@@ -357,11 +369,14 @@ export function NativeMailInboxScreen() {
         try { return await request; }
         catch { warnings.push(label); return null; }
       };
+      const metadataScope = `${userId}:${mailboxId}`;
+      const reloadMetadata = reset && (refresh || metadataFreshRef.current.scope !== metadataScope
+        || Date.now() - metadataFreshRef.current.savedAt >= 60_000);
       const metadata = Promise.all([
         reset ? optional(getMailFolderSummary(mailboxId), 'Не обновлены счётчики папок.') : Promise.resolve(null),
-        reset ? optional(getMailFolderTree(mailboxId), 'Не обновлён список папок.') : Promise.resolve(null),
+        reloadMetadata ? optional(getMailFolderTree(mailboxId), 'Не обновлён список папок.') : Promise.resolve(null),
         reset && mailboxes.length === 0 ? optional(listMailboxes(true), 'Не обновлён список почтовых ящиков.') : Promise.resolve(null),
-        reset ? optional(getNativeMailPreferences(), 'Не обновлены настройки отображения.') : Promise.resolve(null),
+        reloadMetadata ? optional(getNativeMailPreferences(), 'Не обновлены настройки отображения.') : Promise.resolve(null),
       ]);
       const pageResult = await (view === 'conversations' ? getMailConversations(filters) : getMailMessages(filters));
       if (requestId !== requestRef.current) return;
@@ -372,6 +387,7 @@ export function NativeMailInboxScreen() {
       const cachedItems = reset
         ? nextItems
         : [...items, ...nextItems.filter((item) => !items.some((old) => old.key === item.key))];
+      loadedScopeRef.current = dataScope;
       setItems(cachedItems);
       setTotal(pageResult.total);
       setHasMore(pageResult.has_more);
@@ -380,6 +396,7 @@ export function NativeMailInboxScreen() {
       setLoadingMore(false);
       const [summaryResult, folderTreeResult, mailboxesResult, viewPreferencesResult] = await metadata;
       if (requestId !== requestRef.current) return;
+      if (folderTreeResult && viewPreferencesResult) metadataFreshRef.current = { scope: metadataScope, savedAt: Date.now() };
       if (summaryResult) {
         setSummary(summaryResult);
         if (mailboxId) {
@@ -428,7 +445,7 @@ export function NativeMailInboxScreen() {
 
   useFocusEffect(useCallback(() => {
     if (!allowed) return undefined;
-    const key = JSON.stringify({ advancedFilters, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view });
+    const key = JSON.stringify({ advancedFilters, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view, offlineMode, userId: user?.id });
     const previous = lastFocusLoadRef.current;
     if (previous?.key === key && (previous.pending || Date.now() - previous.finishedAt < 250)) return undefined;
     const state = { key, pending: true, finishedAt: 0 };
@@ -437,8 +454,8 @@ export function NativeMailInboxScreen() {
       state.pending = false;
       state.finishedAt = Date.now();
     });
-    return undefined;
-  }, [advancedFilters, allowed, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view])); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { requestRef.current += 1; lastFocusLoadRef.current = null; };
+  }, [advancedFilters, allowed, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view, offlineMode, user?.id])); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!allowed || offlineMode) return undefined;
@@ -447,7 +464,7 @@ export function NativeMailInboxScreen() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void load({ reset: true, refresh: true });
+        void load({ reset: true, silent: true });
       }, 100);
     };
     const releases = [
@@ -851,6 +868,9 @@ export function NativeMailInboxScreen() {
               showPreview={mailViewPreferences.show_preview_snippets}
               compact={mailViewPreferences.density === 'compact'}
               canDelete={folder !== 'trash'}
+              folder={currentFolderWellKnown}
+              isSearch={filtersActive}
+              mailboxEmails={mailboxEmails}
               busy={swipeBusyId === item.value.id}
               actionsDisabled={offlineMode || Boolean(swipeBusyId)}
               onOpen={openMessage}
@@ -877,6 +897,9 @@ export function NativeMailInboxScreen() {
           <Text style={[styles.undoText, { color: tokens.textPrimary }]}>{undo.label}</Text>
           <Pressable testID="native-mail-undo" accessibilityRole="button" accessibilityLabel="Отменить последнее действие с письмом" disabled={Boolean(swipeBusyId) || offlineMode} onPress={() => { void undoLastAction(); }} style={styles.undoAction}>
             <Text style={[styles.undoActionText, { color: tokens.primary }]}>Отменить</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Скрыть отмену действия" disabled={Boolean(swipeBusyId)} onPress={() => setUndo(null)} style={{ minWidth: 44, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
+            <MaterialCommunityIcons name="close" size={20} color={tokens.textSecondary} />
           </Pressable>
         </View>
       ) : null}

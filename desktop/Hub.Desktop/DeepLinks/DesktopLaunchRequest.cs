@@ -3,12 +3,16 @@ namespace Hub.Desktop.DeepLinks;
 public sealed record DesktopLaunchRequest(
     bool StartInBackground,
     string? Route,
-    bool OpenDownloads)
+    bool OpenDownloads,
+    IReadOnlyList<string> SharedFiles)
 {
     public static DesktopLaunchRequest Default { get; } = new(
         StartInBackground: false,
         Route: null,
-        OpenDownloads: false);
+        OpenDownloads: false,
+        SharedFiles: Array.Empty<string>());
+
+    public bool HasSharedFiles => SharedFiles.Count > 0;
 
     public static bool TryParse(IReadOnlyList<string> arguments, out DesktopLaunchRequest request)
     {
@@ -49,6 +53,13 @@ public sealed record DesktopLaunchRequest(
         {
             request = Default with { Route = route };
             return true;
+        }
+
+        if (arguments[0].Equals("--share", StringComparison.OrdinalIgnoreCase))
+        {
+            var files = arguments.Skip(1).Where(path => !string.IsNullOrWhiteSpace(path)).ToList();
+            request = Default with { SharedFiles = files };
+            return files.Count > 0;
         }
 
         return false;

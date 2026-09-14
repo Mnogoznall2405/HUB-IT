@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects import postgresql
 
 
@@ -19,6 +19,7 @@ if str(WEB_ROOT) not in sys.path:
 
 from backend.services.one_c_catalog_snapshot_service import (  # noqa: E402
     CATALOG_NOMENCLATURE,
+    CATALOG_WAREHOUSES,
     OneCCatalogSnapshotStore,
 )
 from backend.services.one_c_catalog_search import catalog_rows_fingerprint  # noqa: E402
@@ -155,6 +156,44 @@ def test_catalog_snapshot_search_lookup_and_generation_are_indexed(temp_dir):
     available, old = store.lookup_entry(catalog_type=CATALOG_NOMENCLATURE, ref="nom-1")
     assert available is True
     assert old is None
+
+
+def test_catalog_snapshot_search_matches_legacy_yo_tokens_with_ye_query(temp_dir):
+    store = _store(temp_dir)
+    status = store.replace_snapshot(
+        nomenclature=[],
+        warehouses=[("wh-yo", "Кузьмичёва Юлия Александровна")],
+    )
+
+    with app_session(store._database_url) as session:
+        session.execute(
+            update(AppOneCCatalogEntry)
+            .where(
+                AppOneCCatalogEntry.generation == status["generation"],
+                AppOneCCatalogEntry.catalog_type == CATALOG_WAREHOUSES,
+                AppOneCCatalogEntry.ref == "wh-yo",
+            )
+            .values(name_normalized="кузьмичёва юлия александровна")
+        )
+        session.execute(
+            update(AppOneCCatalogToken)
+            .where(
+                AppOneCCatalogToken.generation == status["generation"],
+                AppOneCCatalogToken.catalog_type == CATALOG_WAREHOUSES,
+                AppOneCCatalogToken.entry_ref == "wh-yo",
+                AppOneCCatalogToken.token == "кузьмичева",
+            )
+            .values(token="кузьмичёва")
+        )
+
+    for query in ("Кузьмичёва", "Кузьмичева"):
+        available, rows = store.search_entries(
+            catalog_type=CATALOG_WAREHOUSES,
+            text=query,
+            limit=20,
+        )
+        assert available is True
+        assert [row["ref"] for row in rows] == ["wh-yo"]
 
 
 def test_catalog_snapshot_reads_never_initialize_app_schema(temp_dir, monkeypatch):
@@ -758,3 +797,22 @@ def test_balances_with_hub_never_turns_truncated_source_into_exact_result(monkey
     assert payload["as_of"] == "2026-07-13T10:00:00+00:00"
     assert payload["items"][0]["status"] == "incomplete"
     assert payload["items"][0]["exact_linked_count"] is None
+
+
+def test_list_entries_reads_all_warehouses_from_active_snapshot(temp_dir):
+    store = _store(temp_dir)
+    store.replace_snapshot(
+        nomenclature=[("nom-1", "PN-1", "Monitor")],
+        warehouses=[
+            ("wh-2", "Петров П.П."),
+            ("wh-1", "Иванов И.И."),
+        ],
+    )
+
+    available, rows = store.list_entries(catalog_type="warehouses", limit=100)
+
+    assert available is True
+    assert rows == [
+        {"ref": "wh-1", "name": "Иванов И.И."},
+        {"ref": "wh-2", "name": "Петров П.П."},
+    ]

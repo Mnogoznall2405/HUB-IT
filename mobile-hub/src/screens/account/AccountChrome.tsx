@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
+import { useBottomNavHidden } from '../../navigation/bottomNavVisibility';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
@@ -26,7 +27,7 @@ export function AccountScreenScaffold({
   onRefresh,
   scroll = true,
   footer,
-  includeBottomNav = true,
+  includeBottomNav,
   backTestID = 'account-header-back',
 }: {
   title: string;
@@ -41,9 +42,11 @@ export function AccountScreenScaffold({
   includeBottomNav?: boolean;
   backTestID?: string;
 }) {
+  const navHidden = useBottomNavHidden();
   const navInset = useNativeBottomNavInset();
   const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
-  const bottomInset = includeBottomNav ? navInset : (safeInsets?.bottom || 0);
+  const reserveNav = includeBottomNav ?? !navHidden;
+  const bottomInset = reserveNav ? navInset : (safeInsets?.bottom || 0);
   const body = (
     <View style={[styles.body, { paddingBottom: bottomInset + 12 }]}>
       {children}
@@ -89,8 +92,9 @@ export function AccountScreenScaffold({
   );
 }
 
-export function AccountSubpage({ visible, title, tokens, onClose, children, footer }: {
+export function AccountSubpage({ visible, title, tokens, onClose, children, footer, scroll = true }: {
   visible: boolean;
+  scroll?: boolean;
   title: string;
   tokens: FluentTokens;
   onClose: () => void;
@@ -100,7 +104,7 @@ export function AccountSubpage({ visible, title, tokens, onClose, children, foot
   if (!visible) return null;
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
-      <AccountScreenScaffold title={title} tokens={tokens} onBack={onClose} footer={footer} includeBottomNav={false} backTestID="account-subpage-back">
+      <AccountScreenScaffold title={title} tokens={tokens} onBack={onClose} footer={footer} scroll={scroll} includeBottomNav={false} backTestID="account-subpage-back">
         {children}
       </AccountScreenScaffold>
     </Modal>

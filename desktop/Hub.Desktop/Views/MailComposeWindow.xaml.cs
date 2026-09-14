@@ -130,6 +130,8 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
             var core = await _webViewHost.RecreateAsync(_shutdown.Token);
             _memoryUsageTargetLevel = null;
             ConfigureWebView(core);
+            _webViewHost.SetZoomFactor(
+                new DesktopSettingsStore(DesktopPaths.SettingsFile).Load().WebViewZoom);
             core.Navigate(new Uri(_options.BaseUri, _route).AbsoluteUri);
             return null;
         }
@@ -171,7 +173,8 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
             _navigationPolicy,
             _notifications,
             Environment.UserName,
-            new DesktopVncHandlerProbe());
+            new DesktopVncHandlerProbe(),
+            _options.BaseUri);
         _bridge.Ready += Bridge_Ready;
         _bridge.MailComposeWindowCloseResult += Bridge_MailComposeWindowCloseResult;
         _bridge.MailComposeWindowSent += Bridge_MailComposeWindowSent;
@@ -197,35 +200,49 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
 
     private async void Core_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        CancelNavigationTimeout();
-        if (e.IsSuccess)
+        try
         {
-            LoadingPanel.Visibility = Visibility.Collapsed;
-            return;
-        }
+            CancelNavigationTimeout();
+            if (e.IsSuccess)
+            {
+                LoadingPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
 
-        var status = e.WebErrorStatus.ToString();
-        DesktopLog.Warning($"Mail compose navigation failed with status '{status}'");
-        await RecoverWebViewAsync(
-            status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
-                ? WebViewFailureKind.NavigationTimeout
-                : WebViewFailureKind.Network);
+            var status = e.WebErrorStatus.ToString();
+            DesktopLog.Warning($"Mail compose navigation failed with status '{status}'");
+            await RecoverWebViewAsync(
+                status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
+                    ? WebViewFailureKind.NavigationTimeout
+                    : WebViewFailureKind.Network);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Mail compose navigation completed handler failed", exception);
+        }
     }
 
     private async void Core_ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        CancelNavigationTimeout();
-        DesktopLog.Warning($"Mail compose WebView2 process failed: {e.ProcessFailedKind}");
-        var failure = e.ProcessFailedKind switch
+        try
         {
-            CoreWebView2ProcessFailedKind.RenderProcessExited
-                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
-                WebViewFailureKind.RendererProcessExited,
-            CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
-                WebViewFailureKind.FrameProcessExited,
-            _ => WebViewFailureKind.BrowserProcessExited,
-        };
-        await RecoverWebViewAsync(failure);
+            CancelNavigationTimeout();
+            DesktopLog.Warning($"Mail compose WebView2 process failed: {e.ProcessFailedKind}");
+            var failure = e.ProcessFailedKind switch
+            {
+                CoreWebView2ProcessFailedKind.RenderProcessExited
+                    or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
+                    WebViewFailureKind.RendererProcessExited,
+                CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
+                    WebViewFailureKind.FrameProcessExited,
+                _ => WebViewFailureKind.BrowserProcessExited,
+            };
+            await RecoverWebViewAsync(failure);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Mail compose process failed handler failed", exception);
+        }
     }
 
     private async Task RecoverWebViewAsync(WebViewFailureKind failure)

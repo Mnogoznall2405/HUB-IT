@@ -118,15 +118,20 @@ describe('AuthProvider biometric unlock', () => {
   });
 
   it('keeps credentials after a temporary restore failure and retries explicitly', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
     jest.mocked(tokenStore.hasSession).mockResolvedValue(true);
-    jest.mocked(authApi.fetchMe).mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+    jest.mocked(authApi.fetchMe).mockImplementation(async () => {
+      now += 4_000;
+      throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+    });
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
-    await waitFor(() => expect(currentAuth?.sessionRestoreState).toBe('unavailable'));
+    await waitFor(() => expect(currentAuth?.sessionRestoreState).toBe('unavailable'), { timeout: 10_000 });
     expect(tokenStore.clearTokens).not.toHaveBeenCalled();
-    jest.mocked(authApi.fetchMe).mockResolvedValueOnce(cachedUser);
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
     await act(async () => { currentAuth!.retrySessionRestore(); currentAuth!.retrySessionRestore(); });
     await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
-    expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(4);
     expect(currentAuth?.sessionRestoreState).toBe('idle');
   });
 
@@ -421,24 +426,29 @@ describe('AuthProvider biometric unlock', () => {
 
     await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
     expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
-    expect(authApi.fetchMe).toHaveBeenNthCalledWith(1, { timeoutMs: 5_000 });
-    expect(authApi.fetchMe).toHaveBeenNthCalledWith(2, { timeoutMs: 1_500 });
+    expect(authApi.fetchMe).toHaveBeenNthCalledWith(1, { timeoutMs: 4_000 });
+    expect(authApi.fetchMe).toHaveBeenNthCalledWith(2, { timeoutMs: 4_000 });
     expect(biometricAuth.unlockBiometricLogin).not.toHaveBeenCalled();
   });
 
-  it('does not double the startup wait after the auth request already timed out', async () => {
+  it('retries timed-out startup requests inside the total restore budget', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
-    jest.mocked(authApi.fetchMe).mockRejectedValue(Object.assign(new Error('timeout of 5000ms exceeded'), {
-      isAxiosError: true,
-      code: 'ECONNABORTED',
-      response: undefined,
-    }));
+    jest.mocked(authApi.fetchMe).mockImplementation(async () => {
+      now += 4_000;
+      throw Object.assign(new Error('timeout of 4000ms exceeded'), {
+        isAxiosError: true,
+        code: 'ECONNABORTED',
+        response: undefined,
+      });
+    });
 
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
 
-    await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
-    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(view.getByText('locked')).toBeTruthy(), { timeout: 10_000 });
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(3);
     expect(view.getByTestId('offline-mode').props.children).toBe('offline');
   });
 
@@ -464,19 +474,24 @@ describe('AuthProvider biometric unlock', () => {
   });
 
   it('keeps the login gate locked until biometric unlock when startup transport retries are exhausted', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
-    jest.mocked(authApi.fetchMe).mockRejectedValue(Object.assign(new Error('Network Error'), {
-      isAxiosError: true,
-      code: 'ERR_NETWORK',
-      response: undefined,
-    }));
+    jest.mocked(authApi.fetchMe).mockImplementation(async () => {
+      now += 4_000;
+      throw Object.assign(new Error('Network Error'), {
+        isAxiosError: true,
+        code: 'ERR_NETWORK',
+        response: undefined,
+      });
+    });
 
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
 
-    await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
+    await waitFor(() => expect(view.getByText('locked')).toBeTruthy(), { timeout: 10_000 });
     await waitFor(() => expect(view.getByTestId('offline-mode').props.children).toBe('offline'));
-    expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(3);
     expect(tokenStore.clearTokens).not.toHaveBeenCalled();
   });
 

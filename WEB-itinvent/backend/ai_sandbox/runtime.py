@@ -236,6 +236,11 @@ class PodmanArgvBuilder:
             "--env=HOME=/tmp/home",
             "--env=TMPDIR=/tmp",
             "--env=OPENCODE_CONFIG=/etc/opencode/opencode.json",
+            "--env=OPENCODE_DISABLE_DEFAULT_PLUGINS=1",
+            "--env=OPENCODE_DISABLE_MODELS_FETCH=1",
+            "--env=OPENCODE_DISABLE_LSP_DOWNLOAD=1",
+            "--env=OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "--env=OPENCODE_PURE=1",
             "--env=XDG_DATA_HOME=/workspace/.hub-opencode/data",
             "--env=XDG_STATE_HOME=/workspace/.hub-opencode/state",
             "--env=XDG_CACHE_HOME=/tmp/opencode-cache",
@@ -275,7 +280,7 @@ class PodmanProcessRunner:
         self._environment = {
             key: value
             for key, value in source.items()
-            if key in {"PATH", "HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "LC_ALL"}
+            if key in {"PATH", "HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "LC_ALL", "CONTAINERS_CONF"}
         }
 
     def start(self, spec: PodmanContainerSpec, *, timeout_seconds: int = 30) -> str:

@@ -79,6 +79,13 @@ describe('NativeTaskAnalyticsScreen', () => {
     });
   });
 
+
+it('opening analytics offline must not start remote loads',async()=>{
+    mockOfflineMode=true;
+    await render(<NativeTaskAnalyticsScreen />);
+    await act(async()=>{});
+    expect(taskApi.getTaskAnalytics).not.toHaveBeenCalled();
+  });
   it('builds the same calendar presets as the web analytics', () => {
     expect(taskAnalyticsRange('7d', new Date(2026, 7, 24))).toEqual({ startDate: '2026-08-18', endDate: '2026-08-24' });
     expect(taskAnalyticsRange('quarter', new Date(2026, 7, 24))).toEqual({ startDate: '2026-07-01', endDate: '2026-08-24' });

@@ -156,14 +156,14 @@ export async function getThreadBootstrap(
 export async function sendTextMessage(
   conversationId: string,
   bodyText: string,
-  options: { clientMessageId?: string; replyToMessageId?: string; bodyFormat?: 'plain' | 'markdown' } = {},
+  options: { clientMessageId?: string; replyToMessageId?: string; bodyFormat?: 'plain' | 'markdown'; signal?: AbortSignal } = {},
 ): Promise<ChatMessage> {
   const { data } = await apiClient.post<unknown>(`/chat/conversations/${conversationId}/messages`, {
     body: bodyText,
     body_format: options.bodyFormat || detectChatBodyFormat(bodyText),
     client_message_id: options.clientMessageId || undefined,
     reply_to_message_id: options.replyToMessageId || undefined,
-  });
+  }, { signal: options.signal });
   return requiredMessage(data);
 }
 
@@ -639,6 +639,11 @@ export async function getAiSandboxConversation(conversationId: string): Promise<
     `/chat/ai/sandbox/conversations/${encodeURIComponent(conversationId)}`,
   );
   return data;
+}
+
+export async function getAiConversationAccess(conversationId: string): Promise<{ can_use: boolean }> {
+  const { data } = await apiClient.get(`/chat/ai/conversations/${encodeURIComponent(conversationId)}/access`);
+  return { can_use: data?.can_use === true };
 }
 
 export async function respondAiSandboxPermission(

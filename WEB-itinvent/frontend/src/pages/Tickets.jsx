@@ -4,7 +4,6 @@ import AddIcon from '@mui/icons-material/Add';
 import BusinessIcon from '@mui/icons-material/Business';
 import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import TicketEmployeeCard from '../components/tickets/TicketEmployeeCard';
@@ -66,7 +65,7 @@ export default function Tickets() {
               </Stack>
               <Typography color="text.secondary">Список заявок, сотрудники и справочник объектов</Typography>
             </Box>
-            <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'stretch', md: 'flex-end' }}>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent={{ xs: 'stretch', md: 'flex-end' }}>
               {canWrite ? (
                 <>
                   <Button startIcon={<AddIcon />} variant="contained" onClick={() => setCreateOpen(true)}>
@@ -80,7 +79,6 @@ export default function Tickets() {
                   </Button>
                 </>
               ) : null}
-              <Button startIcon={<RefreshIcon />} onClick={requestChanged}>Обновить</Button>
             </Stack>
           </Stack>
 
@@ -91,6 +89,7 @@ export default function Tickets() {
             objects={activeObjects}
             canWrite={canWrite}
             onSelectRequest={setSelectedRequestId}
+            onRefreshObjects={loadObjects}
           />
 
           <TicketRequestCard

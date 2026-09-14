@@ -8,6 +8,7 @@ import {
 import { normalizeNotificationChannels, type NotificationChannels } from '../../account/accountFormat';
 import { formatApiError } from '../../api/formatError';
 import * as notificationApi from '../../api/notificationApi';
+import { useAuth } from '../../auth/AuthContext';
 import { useNativeCommands } from '../../native/useNativeCommands';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -29,6 +30,7 @@ const PUSH_STATUS_LABELS: Record<string, string> = {
 };
 
 export function NativeNotificationsSettingsScreen() {
+  const { offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const { execute } = useNativeCommands();
@@ -40,6 +42,7 @@ export function NativeNotificationsSettingsScreen() {
   const [status, setStatus] = useState({ error: '', message: '' });
 
   const loadChannels = useCallback(async () => {
+    if (offlineMode) { setLoading(false); return; }
     setLoading(true);
     try {
       const data = await notificationApi.getNotificationPreferences();
@@ -49,7 +52,7 @@ export function NativeNotificationsSettingsScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [offlineMode]);
 
   const loadPush = useCallback(async (command: 'notifications.getState' | 'notifications.requestPermission' = 'notifications.getState') => {
     setPushBusy(true);
@@ -69,6 +72,8 @@ export function NativeNotificationsSettingsScreen() {
   }, [loadChannels, loadPush]);
 
   const toggleChannel = useCallback(async (key: string, enabled: boolean) => {
+    if (offlineMode || saving) return;
+    const previous = channels;
     const optimistic = key === 'chat'
       ? { chat: enabled, chat_direct: enabled, chat_group: enabled, chat_task: enabled }
       : { [key]: enabled };
@@ -78,12 +83,12 @@ export function NativeNotificationsSettingsScreen() {
       const data = await notificationApi.updateNotificationPreferences({ [key]: enabled });
       setChannels(normalizeNotificationChannels(data?.channels));
     } catch (error) {
+      setChannels(previous);
       setStatus({ error: formatApiError(error, 'Не удалось сохранить канал.'), message: '' });
-      await loadChannels();
     } finally {
       setSaving(false);
     }
-  }, [loadChannels]);
+  }, [channels, offlineMode, saving]);
 
   const chatEnabled = CHAT_NOTIFICATION_CHANNEL_LABELS.some(([key]) => Boolean(channels[key as keyof NotificationChannels]));
 
@@ -101,7 +106,7 @@ export function NativeNotificationsSettingsScreen() {
               tokens={tokens}
               label="Получать уведомления о чатах"
               value={chatEnabled}
-              disabled={saving}
+              disabled={saving || loading || offlineMode}
               onValueChange={(value) => { void toggleChannel('chat', value); }}
             />
             {CHAT_NOTIFICATION_CHANNEL_LABELS.map(([key, label]) => (
@@ -111,7 +116,7 @@ export function NativeNotificationsSettingsScreen() {
                 label={label}
                 indent
                 value={Boolean(channels[key as keyof NotificationChannels])}
-                disabled={saving}
+                disabled={saving || loading || offlineMode}
                 onValueChange={(value) => { void toggleChannel(key, value); }}
               />
             ))}
@@ -121,7 +126,7 @@ export function NativeNotificationsSettingsScreen() {
                 tokens={tokens}
                 label={label}
                 value={Boolean(channels[key as keyof NotificationChannels])}
-                disabled={saving}
+                disabled={saving || loading || offlineMode}
                 onValueChange={(value) => { void toggleChannel(key, value); }}
               />
             ))}

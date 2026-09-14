@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { downloadAuthenticatedFile } from './authenticatedFileDownload';
-import { cleanupAttachmentCache, downloadTrustedChatMedia } from './nativeAttachmentDownloads';
+import { clearAttachmentCache, cleanupAttachmentCache, downloadTrustedChatMedia } from './nativeAttachmentDownloads';
+import { getSessionGeneration } from '../auth/tokenStore';
 
 const mockFiles = new Map<string, { size: number; modifiedAt: number }>();
 const mockDirectoryList = jest.fn();
@@ -64,6 +65,7 @@ jest.mock('./authenticatedFileDownload', () => ({
 
 jest.mock('../auth/tokenStore', () => ({
   getSessionUserId: jest.fn(async () => 7),
+  getSessionGeneration: jest.fn(() => 0),
 }));
 
 const mockedDownload = downloadAuthenticatedFile as jest.MockedFunction<typeof downloadAuthenticatedFile>;
@@ -77,6 +79,7 @@ beforeEach(() => {
   mockDirectoryList.mockClear();
   mockDirectoryListError = null;
   mockedDownload.mockReset();
+  jest.mocked(getSessionGeneration).mockReturnValue(0);
 });
 
 afterEach(() => {
@@ -205,4 +208,87 @@ it('drops an aborted preview while it is waiting for a download slot', async () 
   await Promise.all(active);
 
   expect(mockedDownload).toHaveBeenCalledTimes(3);
+});
+
+it('replaces an empty cached media file instead of returning it for decoding', async () => {
+  const uri = 'file:///document/hubit-attachments-v2/7-empty.img';
+  mockFiles.set(uri, { size: 0, modifiedAt: Date.now() });
+  mockedDownload.mockImplementation(async (_url, destination) => {
+    mockFiles.set(destination.uri, { size: 1024, modifiedAt: Date.now() });
+    return destination;
+  });
+  const file = await downloadTrustedChatMedia('/api/v1/chat/messages/m/attachments/a/file', 'empty.img');
+  expect(file.size).toBe(1024);
+  expect(mockedDownload).toHaveBeenCalledTimes(1);
+});
+
+it('waits for an active refresh rather than returning the stale cached image', async () => {
+  const uri = 'file:///document/hubit-attachments-v2/7-refresh.img';
+  mockFiles.set(uri, { size: 10, modifiedAt: Date.now() });
+  let finish!: () => void;
+  mockedDownload.mockImplementation((_url, destination) => new Promise((resolve) => {
+    finish = () => { mockFiles.set(destination.uri, { size: 100, modifiedAt: Date.now() }); resolve(destination); };
+  }));
+  const first = downloadTrustedChatMedia('/api/v1/chat/messages/m/attachments/a/file', 'refresh.img', { forceDownload: true });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  let completedEarly = false;
+  const second = downloadTrustedChatMedia('/api/v1/chat/messages/m/attachments/a/file', 'refresh.img').then((file) => {
+    completedEarly = true; return file;
+  });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  const early = completedEarly;
+  finish();
+  const results = await Promise.all([first, second]);
+  expect(early).toBe(false);
+  expect(results.map((file) => file.size)).toEqual([100, 100]);
+  expect(mockedDownload).toHaveBeenCalledTimes(1);
+});
+
+it.each(['cache', 'session'] as const)('rejects late media completion after %s invalidation', async (kind) => {
+  let finish!: () => void;
+  let destinationUri = '';
+  mockedDownload.mockImplementation((_url, destination) => new Promise((resolve) => {
+    destinationUri = destination.uri;
+    finish = () => { mockFiles.set(destination.uri, { size: 100, modifiedAt: Date.now() }); resolve(destination); };
+  }));
+  const pending = downloadTrustedChatMedia('/api/v1/chat/messages/m/attachments/a/file', `late-${kind}.img`);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  if (kind === 'cache') clearAttachmentCache();
+  else jest.mocked(getSessionGeneration).mockReturnValue(1);
+  finish();
+  await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  expect(mockFiles.has(destinationUri)).toBe(false);
+});
+
+it('does not restore a refreshed original after the attachment cache is cleared', async () => {
+  const uri = 'file:///document/hubit-attachments-v2/7-cleared-refresh.img';
+  mockFiles.set(uri, { size: 10, modifiedAt: Date.now() });
+  let finish!: () => void;
+  mockedDownload.mockImplementation((_url, destination) => new Promise((resolve) => {
+    finish = () => { mockFiles.set(destination.uri, { size: 100, modifiedAt: Date.now() }); resolve(destination); };
+  }));
+  const pending = downloadTrustedChatMedia('/api/v1/chat/messages/m/attachments/a/file', 'cleared-refresh.img', { forceDownload: true });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  clearAttachmentCache();
+  finish();
+  await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  expect(mockFiles.size).toBe(0);
+});
+
+it('does not start queued media transfers after their cache generation is cleared', async () => {
+  const releases: Array<() => void> = [];
+  mockedDownload.mockImplementation((_url, destination) => new Promise((resolve) => {
+    releases.push(() => { mockFiles.set(destination.uri, { size: 100, modifiedAt: Date.now() }); resolve(destination); });
+  }));
+  const pending = [1, 2, 3, 4].map((id) => downloadTrustedChatMedia(
+    `/api/v1/chat/messages/m/attachments/a${id}/file`, `clear-queue-${id}.img`,
+  ));
+  const settled = Promise.allSettled(pending);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  clearAttachmentCache();
+  releases.forEach((release) => release());
+  const results = await settled;
+  expect(results.every((result) => result.status === 'rejected')).toBe(true);
+  expect(mockedDownload).toHaveBeenCalledTimes(3);
+  expect(mockFiles.size).toBe(0);
 });

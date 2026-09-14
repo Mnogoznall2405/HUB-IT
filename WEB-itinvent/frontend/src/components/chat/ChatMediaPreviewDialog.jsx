@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
+  Button,
   CircularProgress,
   Dialog,
   DialogContent,
@@ -24,6 +25,7 @@ import {
   formatFullDate,
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
+import { mediaGalleryKey } from './chatMediaGallery';
 
 const clampPreviewIndex = (value, length) => {
   const normalizedLength = Number(length || 0);
@@ -49,21 +51,22 @@ export default function ChatMediaPreviewDialog({
     mode: 'none',
   });
   const previewChromeTimeoutRef = useRef(null);
-  const [previewIndex, setPreviewIndex] = useState(0);
+  const [previewSelection, setPreviewSelection] = useState('');
   const [previewChromeVisible, setPreviewChromeVisible] = useState(true);
   const [previewMenuAnchorEl, setPreviewMenuAnchorEl] = useState(null);
   const [activePreviewUrl, setActivePreviewUrl] = useState('');
   const [mediaLoadState, setMediaLoadState] = useState('idle');
   const previewMenuOpen = Boolean(previewMenuAnchorEl);
   const previewChromeActive = previewChromeVisible || previewMenuOpen;
-  const previewIsProcessing = Boolean(attachmentPreview?.isProcessing);
   const previewItems = useMemo(() => {
     const items = Array.isArray(attachmentPreview?.items) ? attachmentPreview.items : [];
     if (items.length > 0) return items;
     return attachmentPreview?.attachment ? [attachmentPreview.attachment] : [];
   }, [attachmentPreview]);
-  const safePreviewIndex = clampPreviewIndex(previewIndex, previewItems.length);
+  const selectedIndex = previewItems.findIndex((item) => mediaGalleryKey(item) === previewSelection);
+  const safePreviewIndex = selectedIndex >= 0 ? selectedIndex : clampPreviewIndex(attachmentPreview?.activeIndex, previewItems.length);
   const activePreviewItem = previewItems[safePreviewIndex] || attachmentPreview?.attachment || null;
+  const previewIsProcessing = Boolean(activePreviewItem?.isProcessing ?? attachmentPreview?.isProcessing);
   const activePreviewOriginalUrl = normalizeChatAttachmentUrl(
     activePreviewItem?.originalUrl
     || activePreviewItem?.fileUrl
@@ -82,13 +85,13 @@ export default function ChatMediaPreviewDialog({
     || attachmentPreview?.posterUrl
     || '',
   );
-  const canStepPreview = previewItems.length > 1;
+  const canStepPreview = previewItems.length > 1 || Boolean(attachmentPreview?.galleryHasMore);
   const activePreviewIsVideo = isPreviewVideo(activePreviewItem);
   const previewKindLabel = activePreviewIsVideo ? 'Видео' : 'Фотография';
   const previewTotalCount = Math.max(1, previewItems.length || Number(attachmentPreview?.totalCount || 0) || 1);
-  const previewCountLabel = `${previewKindLabel} ${safePreviewIndex + 1} из ${previewTotalCount}`;
-  const previewSenderName = String(attachmentPreview?.senderName || '').trim();
-  const previewCreatedAt = String(attachmentPreview?.createdAt || '').trim();
+  const previewCountLabel = `${previewKindLabel} ${safePreviewIndex + 1} из ${previewTotalCount}${attachmentPreview?.galleryHasMore ? '+' : ''}`;
+  const previewSenderName = String(activePreviewItem?.senderName ?? attachmentPreview?.senderName ?? '').trim();
+  const previewCreatedAt = String(activePreviewItem?.createdAt ?? attachmentPreview?.createdAt ?? '').trim();
   const previewMetaLine = [previewSenderName, previewCreatedAt ? formatFullDate(previewCreatedAt) : '']
     .filter(Boolean)
     .join(' • ');
@@ -97,8 +100,8 @@ export default function ChatMediaPreviewDialog({
   const previewLoadingLabel = previewIsProcessing ? 'Отправка фото…' : 'Загрузка изображения…';
 
   useEffect(() => {
-    setPreviewIndex(clampPreviewIndex(attachmentPreview?.activeIndex, previewItems.length));
-  }, [attachmentPreview, previewItems.length]);
+    setPreviewSelection(attachmentPreview ? mediaGalleryKey({ ...attachmentPreview.attachment, messageId: attachmentPreview.messageId }) : '');
+  }, [attachmentPreview?.messageId, attachmentPreview?.attachment?.id]);
 
   useEffect(() => {
     const nextBaseUrl = activePreviewBaseUrl || activePreviewOriginalUrl;
@@ -127,14 +130,14 @@ export default function ChatMediaPreviewDialog({
   }, [safePreviewIndex, attachmentPreview]);
 
   const stepPreview = useCallback((direction) => {
+    if (direction > 0 && safePreviewIndex === previewItems.length - 1 && attachmentPreview?.galleryHasMore) {
+      void attachmentPreview.loadMore?.();
+      return;
+    }
     if (!canStepPreview) return;
-    setPreviewIndex((current) => {
-      const nextIndex = current + direction;
-      if (nextIndex < 0) return previewItems.length - 1;
-      if (nextIndex >= previewItems.length) return 0;
-      return nextIndex;
-    });
-  }, [canStepPreview, previewItems.length]);
+    const nextIndex = (safePreviewIndex + direction + previewItems.length) % previewItems.length;
+    setPreviewSelection(mediaGalleryKey(previewItems[nextIndex]));
+  }, [attachmentPreview, canStepPreview, previewItems, safePreviewIndex]);
 
   const clearPreviewChromeTimer = useCallback(() => {
     if (previewChromeTimeoutRef.current) {
@@ -603,6 +606,12 @@ export default function ChatMediaPreviewDialog({
               >
                 {previewCountLabel}
               </Typography>
+              {attachmentPreview?.galleryError ? <Typography role="alert" sx={{ fontSize: 12 }}>{attachmentPreview.galleryError}</Typography> : null}
+              {attachmentPreview?.galleryHasMore || attachmentPreview?.galleryError ? (
+                <Button size="small" disabled={attachmentPreview.galleryLoading} onClick={attachmentPreview.loadMore} sx={{ color: '#fff', textTransform: 'none' }}>
+                  {attachmentPreview.galleryLoading ? 'Загрузка…' : attachmentPreview.galleryError ? 'Повторить загрузку' : 'Загрузить ещё из чата'}
+                </Button>
+              ) : null}
               {previewMetaLine ? (
                 <Typography
                   variant="caption"

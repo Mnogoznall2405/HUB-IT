@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { PanResponder, StyleSheet, View } from 'react-native';
 import {
   BACK_SWIPE_EDGE_DP,
@@ -17,39 +17,55 @@ export function EdgeBackSwipeOverlay({
 }) {
   const tracking = useRef(false);
   const engaged = useRef(false);
+  const scope = useMemo(() => Symbol('edge-back-gesture'), [enabled, onBack]);
+  const currentScope = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    currentScope.current = enabled ? scope : null;
+    tracking.current = false;
+    engaged.current = false;
+    return () => {
+      currentScope.current = null;
+      tracking.current = false;
+      engaged.current = false;
+    };
+  }, [enabled, scope]);
 
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (event, gesture) => {
-      if (!enabled) return false;
-      const startX = Number(event.nativeEvent.locationX || gesture.moveX || 0);
+      if (!enabled || currentScope.current !== scope) return false;
+      const startX = Number.isFinite(gesture.x0) ? gesture.x0 : Number(event.nativeEvent.locationX || 0) - gesture.dx;
       return shouldTrackEdgeBackSwipe(startX) && shouldEngageEdgeBackSwipe(gesture.dx, gesture.dy);
     },
     onMoveShouldSetPanResponderCapture: (event, gesture) => {
-      if (!enabled) return false;
-      const startX = Number(event.nativeEvent.locationX || gesture.moveX || 0);
+      if (!enabled || currentScope.current !== scope) return false;
+      const startX = Number.isFinite(gesture.x0) ? gesture.x0 : Number(event.nativeEvent.locationX || 0) - gesture.dx;
       return shouldTrackEdgeBackSwipe(startX) && shouldEngageEdgeBackSwipe(gesture.dx, gesture.dy);
     },
     onPanResponderGrant: () => {
+      if (!enabled || currentScope.current !== scope) return;
       tracking.current = true;
       engaged.current = false;
     },
     onPanResponderMove: (_, gesture) => {
-      if (!tracking.current) return;
+      if (!tracking.current || currentScope.current !== scope) return;
       if (shouldEngageEdgeBackSwipe(gesture.dx, gesture.dy)) engaged.current = true;
     },
     onPanResponderRelease: (_, gesture) => {
-      if (shouldTriggerEdgeBackSwipe(gesture.dx, engaged.current)) onBack();
+      if (currentScope.current !== scope) return;
+      const shouldGoBack = enabled && tracking.current && shouldTriggerEdgeBackSwipe(gesture.dx, engaged.current);
       tracking.current = false;
       engaged.current = false;
+      if (shouldGoBack) onBack();
     },
     onPanResponderTerminate: () => {
+      if (currentScope.current !== scope) return;
       tracking.current = false;
       engaged.current = false;
     },
     onPanResponderTerminationRequest: (_, gesture) => (
-      !engaged.current || !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy)
+      currentScope.current !== scope || !engaged.current || !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy)
     ),
-  }), [enabled, onBack]);
+  }), [enabled, onBack, scope]);
 
   if (!enabled) return null;
   return (

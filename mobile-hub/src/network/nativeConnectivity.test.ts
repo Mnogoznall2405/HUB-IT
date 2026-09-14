@@ -1,5 +1,4 @@
 import {
-  buildPortalNativeConnectivityScript,
   normalizeNativeConnectivitySnapshot,
 } from './nativeConnectivity';
 
@@ -35,17 +34,4 @@ describe('native Android connectivity bridge', () => {
     })).toEqual(expect.objectContaining({ available: false }));
   });
 
-  it('updates only the APK offline flag and emits a bounded DOM event', () => {
-    const script = buildPortalNativeConnectivityScript(false);
-    expect(script).toContain('__HUBIT_MOBILE_APP__ !== true');
-    expect(script).toContain("readOnly = true");
-    expect(script).toContain('hubit:mobile-network-state');
-    expect(script).toContain("new Event('offline')");
-    expect(script).not.toContain('ssid');
-    expect(script).not.toContain('content');
-
-    const onlineScript = buildPortalNativeConnectivityScript(true);
-    expect(onlineScript).toContain('readOnly = false');
-    expect(onlineScript).toContain("new Event('online')");
-  });
 });

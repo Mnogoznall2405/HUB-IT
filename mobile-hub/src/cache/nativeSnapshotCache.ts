@@ -9,6 +9,7 @@ import {
 } from './nativeSnapshotStorage';
 
 export const NATIVE_SNAPSHOT_SCOPES = [
+  'construction-details',
   'dashboard',
   'feed-inbox',
   'feed-post-details',
@@ -29,9 +30,11 @@ export const NATIVE_SNAPSHOT_SCOPES = [
   'database-inbox',
   'database-item-details',
   'my-files-inbox',
+  'my-files-lists',
   'my-file-details',
   'company-structure-tree',
   'company-structure-people',
+  'statistics-inbox',
 ] as const;
 
 export type NativeSnapshotScope = typeof NATIVE_SNAPSHOT_SCOPES[number];
@@ -46,10 +49,10 @@ type NativeSnapshotEnvelope<T> = {
 export type NativeSnapshot<T> = Pick<NativeSnapshotEnvelope<T>, 'savedAt' | 'data'>;
 
 export type NativeEntitySnapshotScope = Extract<NativeSnapshotScope,
-  'feed-post-details' | 'chat-thread-details' | 'address-book-chat-links' | 'mail-message-details' | 'mail-conversation-details' | 'task-details' | 'docflow-task-details' | 'database-item-details' | 'my-file-details' | 'company-structure-people'>;
+  'construction-details' | 'feed-post-details' | 'chat-thread-details' | 'address-book-chat-links' | 'mail-message-details' | 'mail-conversation-details' | 'task-details' | 'docflow-task-details' | 'database-item-details' | 'my-file-details' | 'company-structure-people'>;
 
 export type NativeCollectionSnapshotScope = Extract<NativeSnapshotScope,
-  'feed-inbox' | 'tasks-inbox' | 'chat-inbox' | 'mail-inbox' | 'docflow-inbox' | 'database-inbox'>;
+  'feed-inbox' | 'tasks-inbox' | 'chat-inbox' | 'mail-inbox' | 'docflow-inbox' | 'database-inbox' | 'statistics-inbox' | 'my-files-lists'>;
 
 export type NativeCollectionSnapshot<T> = NativeSnapshot<T> & { key: string };
 
@@ -118,6 +121,8 @@ const MAX_COLLECTION_ENTRIES = 8;
 // 256K UTF-16 code units also leaves ample room for escapes and multibyte text.
 const COLLECTION_SHARD_TARGET_CHARS = 256 * 1024;
 const entityWriteLocks = new Map<string, Promise<void>>();
+const clearingUsers = new Map<number, Promise<void>>();
+const generations = new Map<number, number>();
 let collectionRevisionSequence = 0;
 
 function normalizedUserId(userId: number): number | null {
@@ -231,6 +236,9 @@ function nativeCollectionPayloadIsComplete(
     return total == null || !Number.isFinite(total)
       || (Array.isArray(result.items) && result.items.length >= total);
   }
+  if (scope === 'statistics-inbox') {
+    return payload.totals != null && typeof payload.totals === 'object';
+  }
   return false;
 }
 
@@ -338,18 +346,21 @@ export async function readNativeSnapshot<T>(
   maxAgeMs = DEFAULT_MAX_AGE_MS,
 ): Promise<NativeSnapshot<T> | null> {
   const owner = normalizedUserId(userId);
-  if (!owner || Platform.OS === 'web') return null;
+  if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return null;
+  const generation = generations.get(owner);
   const key = cacheKey(scope, owner);
   let stage = 'snapshot-read';
   try {
     let raw = await readEncryptedNativeSnapshot(scope, owner);
+    if (generation !== generations.get(owner)) return null;
     if (!raw) {
       raw = await SecureStore.getItemAsync(key);
+      if (generation !== generations.get(owner)) return null;
       if (raw && await writeEncryptedNativeSnapshot(scope, owner, raw)) {
         await SecureStore.deleteItemAsync(key).catch(() => undefined);
       }
     }
-    if (!raw) return null;
+    if (!raw || generation !== generations.get(owner)) return null;
     stage = 'snapshot-parse';
     const parsed = JSON.parse(raw) as Partial<NativeSnapshotEnvelope<T>>;
     const savedAt = Number(parsed.savedAt || 0);
@@ -380,7 +391,7 @@ export async function writeNativeSnapshot<T>(
   data: T,
 ): Promise<boolean> {
   const owner = normalizedUserId(userId);
-  if (!owner || Platform.OS === 'web') return false;
+  if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return false;
   try {
     const serialized = JSON.stringify({
       version: 1,
@@ -486,7 +497,7 @@ export async function writeNativeCollectionSnapshot<T>(
 ): Promise<boolean> {
   const owner = normalizedUserId(userId);
   const key = String(collectionKey || '').trim();
-  if (!owner || !key || Platform.OS === 'web') return false;
+  if (!owner || !key || Platform.OS === 'web' || clearingUsers.has(owner)) return false;
   const lockKey = `${scope}:${owner}`;
   const previous = entityWriteLocks.get(lockKey) || Promise.resolve();
   let stored = false;
@@ -622,6 +633,23 @@ export async function readNativeEntitySnapshot<T>(
   return { savedAt: entry.savedAt, data: entry.data };
 }
 
+export async function readNativeEntitySnapshots<T>(
+  scope: NativeEntitySnapshotScope,
+  userId: number,
+): Promise<Array<NativeSnapshot<T> & { key: string }>> {
+  const snapshot = await readNativeSnapshot<NativeEntitySnapshotManifest | NativeEntitySnapshotBundle<T>>(scope, userId);
+  if (!snapshot) return [];
+  const legacy = snapshot.data as NativeEntitySnapshotBundle<T>;
+  if (Array.isArray(legacy.entries)) return legacy.entries.slice(0, MAX_ENTITY_ENTRIES);
+  const manifest = snapshot.data as NativeEntitySnapshotManifest;
+  const result: Array<NativeSnapshot<T> & { key: string }> = [];
+  for (const entry of (manifest.entityKeys || []).slice(0, MAX_ENTITY_ENTRIES)) {
+    const stored = await readNativeEntitySnapshot<T>(scope, userId, entry.key);
+    if (stored) result.push({ key: entry.key, ...stored });
+  }
+  return result;
+}
+
 export async function writeNativeEntitySnapshot<T>(
   scope: NativeEntitySnapshotScope,
   userId: number,
@@ -630,7 +658,7 @@ export async function writeNativeEntitySnapshot<T>(
 ): Promise<void> {
   const owner = normalizedUserId(userId);
   const key = String(entityKey || '').trim();
-  if (!owner || !key || Platform.OS === 'web') return;
+  if (!owner || !key || Platform.OS === 'web' || clearingUsers.has(owner)) return;
   const lockKey = `${scope}:${owner}`;
   const previous = entityWriteLocks.get(lockKey) || Promise.resolve();
   let current: Promise<void>;
@@ -710,8 +738,17 @@ export async function writeNativeEntitySnapshot<T>(
 export async function clearNativeSnapshots(userId: number): Promise<void> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return;
-  await Promise.allSettled(
-    NATIVE_SNAPSHOT_SCOPES.map((scope) => SecureStore.deleteItemAsync(cacheKey(scope, owner))),
-  );
-  await clearEncryptedNativeSnapshots(owner);
+  const existing = clearingUsers.get(owner);
+  if (existing) return existing;
+  generations.set(owner, (generations.get(owner) || 0) + 1);
+  const pending = (async () => {
+    await Promise.allSettled([...entityWriteLocks.entries()]
+      .filter(([key]) => key.endsWith(`:${owner}`)).map(([, operation]) => operation));
+    await Promise.allSettled(
+      NATIVE_SNAPSHOT_SCOPES.map((scope) => SecureStore.deleteItemAsync(cacheKey(scope, owner))),
+    );
+    await clearEncryptedNativeSnapshots(owner);
+  })().finally(() => { if (clearingUsers.get(owner) === pending) clearingUsers.delete(owner); });
+  clearingUsers.set(owner, pending);
+  return pending;
 }

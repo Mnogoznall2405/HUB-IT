@@ -9,10 +9,12 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.api.deps import require_permission
+from backend.api.v1.construction_work import router as work_router
 from backend.appdb.db import AppDatabaseConfigurationError
 from backend.models.auth import User
 from backend.models.company_structure import CompanyStructureLeaderCandidatesResponse
 from backend.models.construction import (
+    ConstructionDirectionDetail,
     ConstructionManagedObject,
     ConstructionManagementResponse,
     ConstructionObjectDetail,
@@ -23,7 +25,12 @@ from backend.models.construction import (
 from backend.services.address_book_service import address_book_service
 from backend.services.authorization_service import PERM_CONSTRUCTION_READ, PERM_CONSTRUCTION_WRITE
 from backend.services.company_structure_service import get_company_structure_service
-from backend.services.construction_management_service import get_construction_management_service
+from backend.services.construction_management_service import (
+    ConstructionObjectConflict,
+    OBJECT_ROLE_KEYS,
+    get_construction_management_service,
+    normalize_construction_group_ref,
+)
 from backend.services.warehouse_1c_service import (
     Warehouse1CCatalogUnavailableError,
     Warehouse1CQueryError,
@@ -33,6 +40,7 @@ from backend.services.warehouse_1c_service import (
 
 
 router = APIRouter()
+router.include_router(work_router)
 logger = logging.getLogger(__name__)
 
 
@@ -84,35 +92,106 @@ def _group_refs(detail: ConstructionObjectDetail) -> list[str]:
     return [item.group_ref for item in detail.groups]
 
 
-async def _resolve_role_candidates(payload: ConstructionObjectSaveRequest) -> dict[str, dict | None]:
-    requested: dict[str, str] = {}
+def _resolve_direction(object_id: str, group_ref: str) -> tuple[ConstructionObjectDetail, str]:
+    detail = _resolve_object_detail(object_id)
+    try:
+        normalized_group = normalize_construction_group_ref(group_ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    owned = {item.group_ref for item in detail.groups}
+    if normalized_group not in owned:
+        raise HTTPException(status_code=404, detail="Направление не найдено в объекте")
+    return detail, normalized_group
+
+
+def _direction_detail(detail: ConstructionObjectDetail, group_ref: str) -> ConstructionDirectionDetail:
+    group = next(item for item in detail.groups if item.group_ref == group_ref)
+    object_history = [item for item in detail.role_history if not item.group_ref]
+    return ConstructionDirectionDetail(
+        object_id=detail.id,
+        object_name=detail.name,
+        group_ref=group.group_ref,
+        group_name=group.group_name,
+        managed=detail.managed,
+        object_team=detail.team,
+        role_history=object_history,
+    )
+
+
+async def _resolve_person(employee_code: str) -> dict[str, str]:
+    person = await run_in_threadpool(address_book_service.get_person_by_code, employee_code)
+    if person is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сотрудник с кодом ЗУП {employee_code} не найден",
+        )
+    return {
+        "employee_code": str(person.get("employee_code") or "").strip(),
+        "full_name": str(person.get("full_name") or "").strip(),
+        "position": str(person.get("position") or "").strip(),
+        "department": str(person.get("department") or "").strip(),
+        "department_location": str(person.get("department_location") or "").strip(),
+    }
+
+
+async def _resolve_role_candidates(
+    payload: ConstructionObjectSaveRequest,
+) -> dict[str, dict | None] | None:
+    if payload.roles is None:
+        return None
+    requested: dict[str, str | None] = {}
     for item in payload.roles:
         if item.role_key in requested:
             raise HTTPException(status_code=400, detail="Одна роль не может быть указана дважды")
-        requested[item.role_key] = item.employee_code.strip()
+        if item.role_key not in OBJECT_ROLE_KEYS:
+            raise HTTPException(status_code=400, detail=f"Недопустимая роль: {item.role_key}")
+        code = str(item.employee_code or "").strip()
+        requested[item.role_key] = code or None
 
-    result: dict[str, dict | None] = {
-        "project_lead": None,
-        "pto_manager": None,
-        "umto_coordinator": None,
-    }
-    if not requested:
-        return result
+    result: dict[str, dict | None] = {}
     for role_key, employee_code in requested.items():
-        person = await run_in_threadpool(address_book_service.get_person_by_code, employee_code)
-        if person is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Сотрудник с кодом ЗУП {employee_code} не найден",
-            )
-        result[role_key] = {
-            "employee_code": str(person.get("employee_code") or "").strip(),
-            "full_name": str(person.get("full_name") or "").strip(),
-            "position": str(person.get("position") or "").strip(),
-            "department": str(person.get("department") or "").strip(),
-            "department_location": str(person.get("department_location") or "").strip(),
-        }
+        if not employee_code:
+            result[role_key] = None
+            continue
+        result[role_key] = await _resolve_person(employee_code)
     return result
+
+
+async def _fetch_object_requests(
+    *,
+    group_refs: list[str],
+    view: str,
+    q: str,
+    stage: str,
+    overdue: bool | None,
+    warehouse_ref: str,
+    buyer: str,
+    responsible: str,
+    limit: int,
+    cursor: str,
+    refresh: bool,
+) -> ConstructionObjectRequestsResponse:
+    try:
+        result = await warehouse_1c_service.get_construction_object_requests(
+            group_refs=group_refs,
+            view=view,
+            search=q,
+            stage=stage,
+            overdue=overdue,
+            warehouse_ref=warehouse_ref,
+            buyer=buyer,
+            responsible=responsible,
+            limit=limit,
+            cursor=cursor or None,
+            refresh=refresh,
+        )
+        return ConstructionObjectRequestsResponse.model_validate(result)
+    except Warehouse1CCatalogUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Warehouse1CValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Warehouse1CQueryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/objects", response_model=ConstructionObjectsResponse)
@@ -160,6 +239,19 @@ async def get_construction_object(
 
 
 @router.get(
+    "/objects/{object_id}/directions/{group_ref}",
+    response_model=ConstructionDirectionDetail,
+)
+async def get_construction_direction(
+    object_id: str,
+    group_ref: str,
+    _current_user: User = Depends(require_permission(PERM_CONSTRUCTION_READ)),
+) -> ConstructionDirectionDetail:
+    detail, normalized_group = await run_in_threadpool(_resolve_direction, object_id, group_ref)
+    return _direction_detail(detail, normalized_group)
+
+
+@router.get(
     "/objects/{object_id}/requests",
     response_model=ConstructionObjectRequestsResponse,
 )
@@ -170,31 +262,62 @@ async def list_construction_object_requests(
     stage: str = Query("", max_length=32),
     overdue: bool | None = Query(None),
     warehouse_ref: str = Query("", max_length=64),
+    buyer: str = Query("", max_length=255),
+    responsible: str = Query("", max_length=255),
     limit: int = Query(25, ge=1, le=100),
     cursor: str = Query("", max_length=512),
     refresh: bool = Query(False),
     _current_user: User = Depends(require_permission(PERM_CONSTRUCTION_READ)),
 ) -> ConstructionObjectRequestsResponse:
     detail = await run_in_threadpool(_resolve_object_detail, object_id)
-    try:
-        result = await warehouse_1c_service.get_construction_object_requests(
-            group_refs=_group_refs(detail),
-            view=view,
-            search=q,
-            stage=stage,
-            overdue=overdue,
-            warehouse_ref=warehouse_ref,
-            limit=limit,
-            cursor=cursor or None,
-            refresh=refresh,
-        )
-        return ConstructionObjectRequestsResponse.model_validate(result)
-    except Warehouse1CCatalogUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Warehouse1CValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Warehouse1CQueryError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return await _fetch_object_requests(
+        group_refs=_group_refs(detail),
+        view=view,
+        q=q,
+        stage=stage,
+        overdue=overdue,
+        warehouse_ref=warehouse_ref,
+        buyer=buyer,
+        responsible=responsible,
+        limit=limit,
+        cursor=cursor,
+        refresh=refresh,
+    )
+
+
+@router.get(
+    "/objects/{object_id}/directions/{group_ref}/requests",
+    response_model=ConstructionObjectRequestsResponse,
+)
+async def list_construction_direction_requests(
+    object_id: str,
+    group_ref: str,
+    view: str = Query("active", max_length=16),
+    q: str = Query("", max_length=200),
+    stage: str = Query("", max_length=32),
+    overdue: bool | None = Query(None),
+    warehouse_ref: str = Query("", max_length=64),
+    buyer: str = Query("", max_length=255),
+    responsible: str = Query("", max_length=255),
+    limit: int = Query(25, ge=1, le=100),
+    cursor: str = Query("", max_length=512),
+    refresh: bool = Query(False),
+    _current_user: User = Depends(require_permission(PERM_CONSTRUCTION_READ)),
+) -> ConstructionObjectRequestsResponse:
+    _detail, normalized_group = await run_in_threadpool(_resolve_direction, object_id, group_ref)
+    return await _fetch_object_requests(
+        group_refs=[normalized_group],
+        view=view,
+        q=q,
+        stage=stage,
+        overdue=overdue,
+        warehouse_ref=warehouse_ref,
+        buyer=buyer,
+        responsible=responsible,
+        limit=limit,
+        cursor=cursor,
+        refresh=refresh,
+    )
 
 
 @router.get("/objects/{object_id}/requests/{request_ref}", response_model=dict[str, Any])
@@ -217,6 +340,33 @@ async def get_construction_object_request(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Заявка объекта не найдена")
+    return result
+
+
+@router.get(
+    "/objects/{object_id}/directions/{group_ref}/requests/{request_ref}",
+    response_model=dict[str, Any],
+)
+async def get_construction_direction_request(
+    object_id: str,
+    group_ref: str,
+    request_ref: str,
+    _current_user: User = Depends(require_permission(PERM_CONSTRUCTION_READ)),
+) -> dict[str, Any]:
+    _detail, normalized_group = await run_in_threadpool(_resolve_direction, object_id, group_ref)
+    try:
+        result = await warehouse_1c_service.get_construction_object_request_detail(
+            group_refs=[normalized_group],
+            request_ref=request_ref,
+        )
+    except Warehouse1CCatalogUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Warehouse1CValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Warehouse1CQueryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Заявка направления не найдена")
     return result
 
 
@@ -294,7 +444,10 @@ async def _save_managed_object(
             groups=[item.model_dump() for item in payload.groups],
             role_candidates=role_candidates,
             actor_user_id=current_user.id,
+            expected_updated_at=payload.expected_updated_at,
         )
+    except ConstructionObjectConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         _raise_data_error(exc)
     return ConstructionManagedObject.model_validate(result)

@@ -1,3 +1,5 @@
+import AgentAccessPanel from './AgentAccessPanel';
+import { useAuth } from '../../../contexts/AuthContext';
 import { useCallback, useMemo } from 'react';
 import {
   Accordion,
@@ -32,6 +34,9 @@ import {
 import SectionCard from '../shared/SectionCard';
 
 export default function UserDraftFields({ draft, onChange, dbOptions, linkedSessions, users }) {
+
+  const { user, hasPermission } = useAuth();
+  const canManageAgents = user?.role === 'admin' || hasPermission('settings.ai.manage');
 
   const togglePermission = useCallback((permission) => {
     const current = normalizePermissions(draft.custom_permissions);
@@ -70,6 +75,7 @@ export default function UserDraftFields({ draft, onChange, dbOptions, linkedSess
 
   return (
     <Stack spacing={2}>
+      {draft.id && canManageAgents && <AgentAccessPanel userId={draft.id} key={draft.id} />}
       <SectionCard title="Профиль" description="Базовые данные пользователя и история изменений.">
         <Grid container spacing={1.5}>
           <Grid item xs={12}>

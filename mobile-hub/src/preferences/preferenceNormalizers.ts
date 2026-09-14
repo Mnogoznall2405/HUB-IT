@@ -1,6 +1,7 @@
 export const DEFAULT_MOBILE_BOTTOM_NAV_ITEMS = ['/dashboard', '/tasks', '/chat', '/mail'];
 
 export const MOBILE_BOTTOM_NAV_ALLOWED_PATHS = [
+  '/construction',
   '/dashboard',
   '/feed',
   '/tasks',
@@ -17,6 +18,7 @@ export const MOBILE_BOTTOM_NAV_ALLOWED_PATHS = [
   '/computers',
   '/scan-center',
   '/warehouse-1c',
+  '/statistics',
 ] as const;
 
 export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'absences', 'communication', 'news'] as const;

@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 
 from backend.appdb.db import app_session
 from shared.llm import iter_openai_sse, normalize_gateway_request, openrouter_client
+from shared.llm.errors import OpenRouterClientError
 from shared.llm.openai_gateway import MAX_GATEWAY_INPUT_BYTES, OpenAiGatewayValidationError
 
 from .models import AppAiSandboxGatewayGrant, AppAiSandboxJob, AppAiSandboxSession
@@ -343,7 +344,7 @@ async def sandbox_chat_completions(
         gateway_settings = SandboxGatewaySettings.from_env()
     except GatewayConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Sandbox LLM gateway unavailable") from exc
-    await run_in_threadpool(
+    request_scope = await run_in_threadpool(
         _gateway_headers,
         authorization,
         x_hub_sandbox_job_id,
@@ -372,7 +373,7 @@ async def sandbox_chat_completions(
     except (ValueError, json.JSONDecodeError, OpenAiGatewayValidationError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid gateway request") from exc
 
-    def _stream():
+    def _open_stream():
         chunks = openrouter_client.stream_chat_completion(
             messages=normalized["messages"],
             model=normalized["model"],
@@ -382,8 +383,31 @@ async def sandbox_chat_completions(
             tools=normalized.get("tools"),
             tool_choice=normalized.get("tool_choice"),
             timeout=900.0,
+            session_id=request_scope.session_id,
         )
-        yield from iter_openai_sse(chunks)
+        events = iter(iter_openai_sse(chunks))
+        try:
+            return events, next(events)
+        except BaseException:
+            events.close()
+            raise
+
+    # Validate the upstream connection before committing HTTP 200. A rejected
+    # provider key otherwise becomes a broken SSE connection and endless retries.
+    try:
+        events, first_event = await run_in_threadpool(_open_stream)
+    except OpenRouterClientError as exc:
+        raise HTTPException(status_code=502, detail="Sandbox model provider unavailable") from exc
+
+    def _stream():
+        try:
+            yield first_event
+            yield from events
+        except OpenRouterClientError:
+            yield b'data: {"error":{"message":"Sandbox model provider stream failed","type":"provider_error"}}\n\n'
+            yield b'data: [DONE]\n\n'
+        finally:
+            events.close()
 
     return StreamingResponse(
         _stream(),

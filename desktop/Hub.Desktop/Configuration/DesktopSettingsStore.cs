@@ -55,7 +55,8 @@ public sealed record DesktopSettings(
     bool GlobalHotkeyEnabled = false,
     string? InstalledReleaseNotesVersion = null,
     IReadOnlyList<string>? InstalledReleaseNotes = null,
-    bool TaskbarPinPromptHandled = false)
+    bool TaskbarPinPromptHandled = false,
+    double WebViewZoom = 1.0)
 {
     public static DesktopSettings Default { get; } = new(
         DeferredUpdateVersion: null,
@@ -73,7 +74,8 @@ public sealed record DesktopSettings(
         GlobalHotkeyEnabled: false,
         InstalledReleaseNotesVersion: null,
         InstalledReleaseNotes: null,
-        TaskbarPinPromptHandled: false);
+        TaskbarPinPromptHandled: false,
+        WebViewZoom: 1.0);
 }
 
 public sealed class DesktopSettingsStore
@@ -165,7 +167,8 @@ public sealed class DesktopSettingsStore
                 settings.GlobalHotkeyEnabled,
                 settings.InstalledReleaseNotesVersion,
                 settings.InstalledReleaseNotes,
-                settings.TaskbarPinPromptHandled);
+                settings.TaskbarPinPromptHandled,
+                settings.WebViewZoom);
             var json = JsonSerializer.Serialize(document, JsonOptions);
             File.WriteAllText(temporaryPath, json, new UTF8Encoding(false));
             File.Move(temporaryPath, SettingsPath, overwrite: true);
@@ -262,7 +265,8 @@ public sealed class DesktopSettingsStore
             document.GlobalHotkeyEnabled,
             document.InstalledReleaseNotesVersion,
             document.InstalledReleaseNotes,
-            document.TaskbarPinPromptHandled);
+            document.TaskbarPinPromptHandled,
+            document.WebViewZoom);
         try
         {
             Validate(candidate);
@@ -353,6 +357,12 @@ public sealed class DesktopSettingsStore
                 "Desktop quiet mode cannot have both an expiry and an indefinite flag.",
                 nameof(settings));
         }
+
+        if (settings.WebViewZoom is < 0.5 or > 2.0 or double.NaN or double.PositiveInfinity
+            or double.NegativeInfinity)
+        {
+            throw new ArgumentException("Desktop webview zoom is invalid.", nameof(settings));
+        }
     }
 
     private sealed record DesktopSettingsDocument(
@@ -372,5 +382,6 @@ public sealed class DesktopSettingsStore
         bool GlobalHotkeyEnabled = false,
         string? InstalledReleaseNotesVersion = null,
         IReadOnlyList<string>? InstalledReleaseNotes = null,
-        bool TaskbarPinPromptHandled = false);
+        bool TaskbarPinPromptHandled = false,
+        double WebViewZoom = 1.0);
 }

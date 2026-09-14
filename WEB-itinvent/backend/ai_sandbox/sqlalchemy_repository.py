@@ -226,6 +226,8 @@ class SqlAlchemySandboxQueueRepository:
         )
         try:
             with self._session_provider() as db:
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(job.conversation_id, job.user_id, db=db, lock=True)
                 session_row = db.execute(
                     select(AppAiSandboxSession)
                     .where(

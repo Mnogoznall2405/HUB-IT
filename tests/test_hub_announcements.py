@@ -144,6 +144,26 @@ def _create_announcement(client: TestClient, **payload) -> dict:
     return response.json()
 
 
+def test_managed_announcements_paginate_and_filter(announcement_env):
+    client = announcement_env["client"]
+    created = [_create_announcement(client, title=f"Paging needle {i}", status="draft") for i in range(5)]
+    first = client.get("/hub/announcements/manage", params={"status": "draft", "limit": 2, "q": "needle"})
+    assert first.status_code == 200, first.text
+    page = first.json()
+    assert page["total"] == 5 and page["has_more"] and page["next_offset"] == 2
+    second = client.get("/hub/announcements/manage", params={"status": "draft", "limit": 3, "offset": 2, "q": "needle"}).json()
+    assert not second["has_more"]
+    ids = [item["id"] for item in page["items"] + second["items"]]
+    assert len(set(ids)) == 5
+    assert set(ids) == {item["id"] for item in created}
+    assert client.get("/hub/announcements/manage", params={"q": "missing"}).json()["total"] == 0
+    russian = _create_announcement(client, title="Проверка публикации", status="draft")
+    assert client.get("/hub/announcements/manage", params={"q": "проверка"}).json()["items"][0]["id"] == russian["id"]
+    assert client.get("/hub/announcements/manage", params={"offset": -1}).status_code == 422
+    announcement_env["set_user"](2)
+    assert client.get("/hub/announcements/manage").status_code == 403
+
+
 def test_targeted_announcements_visibility_and_author_seen_state(announcement_env):
     client = announcement_env["client"]
     set_user = announcement_env["set_user"]

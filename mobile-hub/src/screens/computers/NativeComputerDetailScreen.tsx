@@ -31,6 +31,12 @@ function statusColor(status: ComputerRecord['status'], tokens: ReturnType<typeof
 }
 
 export function NativeComputerDetailScreen() {
+  const params = useLocalSearchParams<{ macAddress?: string | string[]; scope?: string | string[] }>();
+  const { user } = useAuth();
+  return <ComputerDetailContent key={`${user?.id}:${firstParam(params.macAddress)}:${firstParam(params.scope)}`} />;
+}
+
+function ComputerDetailContent() {
   const params = useLocalSearchParams<{ macAddress?: string | string[]; scope?: string | string[]; q?: string | string[] }>();
   const macAddress = firstParam(params.macAddress);
   const scope: ComputerScope = firstParam(params.scope) === 'all' ? 'all' : 'selected';

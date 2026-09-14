@@ -521,6 +521,7 @@ class OpenRouterClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         timeout: float | None = None,
+        session_id: str = "",
     ) -> Iterator[Any]:
         """Stream a validated OpenAI-compatible chat request through RouterAI.
 
@@ -544,6 +545,13 @@ class OpenRouterClient:
             request_kwargs["tools"] = [dict(item) for item in tools if isinstance(item, dict)]
         if tool_choice is not None:
             request_kwargs["tool_choice"] = tool_choice
+        if urlparse(self._resolve_base_url()).hostname == "opencode.ai":
+            if not session_id or len(session_id) > 200 or any(c in session_id for c in '\r\n\x00'):
+                raise OpenRouterClientError("OpenCode Go requires a stable session id")
+            request_kwargs['extra_headers'] = {
+                'User-Agent': 'hub-opencode-gateway/1.0',
+                'x-opencode-session': session_id,
+            }
 
         try:
             stream = self._with_transient_retry(

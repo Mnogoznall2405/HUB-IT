@@ -47,6 +47,19 @@ public sealed class HubTrayContextMenuTests
     }
 
     [Fact]
+    public void AppliesHighContrastTheme()
+    {
+        using var menu = new HubTrayContextMenu();
+        var item = new ToolStripMenuItem("Открыть HUB");
+        menu.Items.Add(item);
+
+        menu.ApplyTheme(DesktopThemeMode.HighContrast);
+
+        Assert.Equal(DesktopThemeMode.HighContrast, menu.ThemeMode);
+        Assert.NotNull(menu.Palette);
+    }
+
+    [Fact]
     public void AlignsMenuIconsOnePixelAboveTheGeometricCenter()
     {
         var bounds = HubTrayContextMenu.GetAlignedImageBounds(

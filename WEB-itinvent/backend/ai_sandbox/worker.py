@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 from typing import Protocol
+import logging
+import traceback
 
 from .config import SandboxSettings
 from .contracts import (
@@ -194,7 +196,17 @@ class AiSandboxWorker:
                 claimed_job_id=job.id,
                 outcome="stopping" if self.shutdown_event.is_set() else "cancelled",
             )
-        except Exception:
+        except Exception as exc:
+            # Types and code locations only: exception messages may contain
+            # credentials, provider responses or user file contents.
+            failure = exc
+            chain = []
+            while failure is not None and len(chain) < 5:
+                frames = traceback.extract_tb(failure.__traceback__)
+                location = frames[-1].name + ':' + str(frames[-1].lineno) if frames else 'unknown'
+                chain.append(type(failure).__name__ + '@' + location)
+                failure = failure.__cause__
+            logging.getLogger(__name__).warning('sandbox execution failed job=%s causes=%s', job.id, ','.join(chain))
             self.repository.mark_cleanup_pending(
                 job_id=job.id,
                 worker_id=self.worker_id,

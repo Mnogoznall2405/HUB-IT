@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-09-07 04:41 UTC_  
-_Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
+_Сгенерировано: 2026-09-14 08:42 UTC_  
+_Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@10.103.0.10:5432/hubit_chat?sslmode=require` (`10.103.0.10:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (141 tables)
+## Schema `app` (154 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -18,6 +18,22 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `updated_at` | timestamptz | no | `` |
 
 - **Primary key:** `login`
+
+---
+
+### `app.ai_bot_access`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `bot_id` **PK** | varchar(64) | no | `` |
+| `user_id` **PK** | integer | no | `` |
+| `allowed` | boolean | no | `false` |
+| `updated_by` | integer | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `bot_id, user_id`
+- **Indexes:**
+  - `ix_app_ai_bot_access_user_id`: (user_id)
 
 ---
 
@@ -218,6 +234,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `chat_attachment_id` | varchar(36) | yes | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `delivery_status` | varchar(24) | no | `'not_applicable'::character varying` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -230,6 +247,40 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_ai_sandbox_files_session_id`: (session_id)
   - `ix_app_ai_sandbox_files_session_kind`: (session_id, file_kind, created_at)
   - `uq_app_ai_sandbox_files_job_path` UNIQUE: (job_id, relative_path)
+
+---
+
+### `app.ai_sandbox_gateway_grants`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `job_id` | varchar(64) | no | `` |
+| `session_id` | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `token_hash` | varchar(64) | no | `` |
+| `status` | varchar(24) | no | `'active'::character varying` |
+| `request_count` | integer | no | `0` |
+| `max_requests` | integer | no | `128` |
+| `expires_at` | timestamptz | no | `` |
+| `last_used_at` | timestamptz | yes | `` |
+| `revoked_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `job_id` → `app.ai_sandbox_jobs` (`id`)
+  - `session_id` → `app.ai_sandbox_sessions` (`id`)
+- **Indexes:**
+  - `ix_app_ai_sandbox_gateway_grants_expires_at`: (expires_at)
+  - `ix_app_ai_sandbox_gateway_grants_expiry`: (status, expires_at)
+  - `ix_app_ai_sandbox_gateway_grants_job_id`: (job_id)
+  - `ix_app_ai_sandbox_gateway_grants_job_status`: (job_id, status)
+  - `ix_app_ai_sandbox_gateway_grants_session_id`: (session_id)
+  - `ix_app_ai_sandbox_gateway_grants_status`: (status)
+  - `ix_app_ai_sandbox_gateway_grants_user_id`: (user_id)
+  - `uq_app_ai_sandbox_gateway_grants_token_hash` UNIQUE: (token_hash)
 
 ---
 
@@ -256,6 +307,10 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `completed_at` | timestamptz | yes | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `finalization_state` | varchar(24) | no | `'not_required'::character varying` |
+| `finalization_markdown` | text | no | `''::text` |
+| `assistant_message_id` | varchar(36) | yes | `` |
+| `cleanup_terminal_status` | varchar(24) | yes | `` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -263,6 +318,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_ai_sandbox_jobs_conversation_id`: (conversation_id)
   - `ix_app_ai_sandbox_jobs_deadline_at`: (deadline_at)
+  - `ix_app_ai_sandbox_jobs_finalization`: (status, finalization_state, updated_at)
+  - `ix_app_ai_sandbox_jobs_finalization_state`: (finalization_state)
   - `ix_app_ai_sandbox_jobs_heartbeat`: (status, heartbeat_at)
   - `ix_app_ai_sandbox_jobs_job_type`: (job_type)
   - `ix_app_ai_sandbox_jobs_prompt_message_id`: (prompt_message_id)
@@ -327,6 +384,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `expires_at` | timestamptz | no | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `purge_token` | varchar(64) | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**
@@ -337,6 +395,38 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_ai_sandbox_sessions_user_id`: (user_id)
   - `uq_app_ai_sandbox_sessions_conversation` UNIQUE: (conversation_id)
   - `uq_app_ai_sandbox_sessions_workspace_key` UNIQUE: (workspace_key)
+
+---
+
+### `app.ai_sandbox_transfer_grants`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `job_id` | varchar(64) | no | `` |
+| `file_id` | varchar(64) | no | `` |
+| `user_id` | integer | no | `` |
+| `direction` | varchar(24) | no | `` |
+| `token_hash` | varchar(64) | no | `` |
+| `status` | varchar(24) | no | `'issued'::character varying` |
+| `expires_at` | timestamptz | no | `` |
+| `consumed_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `file_id` → `app.ai_sandbox_files` (`id`)
+  - `job_id` → `app.ai_sandbox_jobs` (`id`)
+- **Indexes:**
+  - `ix_app_ai_sandbox_transfer_grants_expires_at`: (expires_at)
+  - `ix_app_ai_sandbox_transfer_grants_expiry`: (status, expires_at)
+  - `ix_app_ai_sandbox_transfer_grants_file_id`: (file_id)
+  - `ix_app_ai_sandbox_transfer_grants_job`: (job_id, created_at)
+  - `ix_app_ai_sandbox_transfer_grants_job_id`: (job_id)
+  - `ix_app_ai_sandbox_transfer_grants_status`: (status)
+  - `ix_app_ai_sandbox_transfer_grants_user_id`: (user_id)
+  - `uq_app_ai_sandbox_transfer_grants_token_hash` UNIQUE: (token_hash)
 
 ---
 
@@ -440,6 +530,45 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.construction_day_crews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `object_id` **PK** | varchar(64) | no | `` |
+| `work_date` **PK** | date | no | `` |
+| `version` | integer | no | `` |
+| `payload_json` | text | no | `` |
+
+- **Primary key:** `object_id, work_date`
+
+---
+
+### `app.construction_direction_role_assignments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_direction_role_assignments_id_seq'::regclass)` |
+| `object_id` | varchar(64) | no | `` |
+| `group_ref` | varchar(64) | no | `` |
+| `role_key` | varchar(32) | no | `` |
+| `employee_code` | varchar(128) | no | `` |
+| `employee_name` | varchar(255) | no | `` |
+| `employee_position` | varchar(255) | no | `''::character varying` |
+| `employee_department` | varchar(255) | no | `''::character varying` |
+| `employee_department_location` | varchar(255) | no | `''::character varying` |
+| `valid_from` | timestamptz | no | `now()` |
+| `valid_to` | timestamptz | yes | `` |
+| `assigned_by_user_id` | integer | no | `` |
+| `created_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_construction_direction_roles_employee`: (employee_code)
+  - `ix_app_construction_direction_roles_object_group`: (object_id, group_ref, role_key)
+  - `uq_app_construction_direction_active_role` UNIQUE: (object_id, group_ref, role_key)
+
+---
+
 ### `app.construction_object_1c_groups`
 
 | Column | Type | Nullable | Default |
@@ -498,6 +627,95 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Primary key:** `id`
 - **Indexes:**
   - `ix_app_construction_objects_active_name`: (is_active, name)
+
+---
+
+### `app.construction_planning_audit`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_planning_audit_id_seq'::regclass)` |
+| `object_id` | varchar(64) | no | `` |
+| `period` | date | no | `` |
+| `kind` | varchar(16) | no | `` |
+| `actor_user_id` | integer | no | `` |
+| `actor_name` | varchar(255) | no | `` |
+| `changed_at` | timestamptz | no | `` |
+| `before_json` | text | no | `` |
+| `after_json` | text | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_construction_planning_audit_scope`: (object_id, period, id)
+
+---
+
+### `app.construction_week_plans`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `object_id` **PK** | varchar(64) | no | `` |
+| `week_start` **PK** | date | no | `` |
+| `version` | integer | no | `` |
+| `payload_json` | text | no | `` |
+| `baseline_json` | text | no | `` |
+
+- **Primary key:** `object_id, week_start`
+
+---
+
+### `app.construction_work_audit`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_work_audit_id_seq'::regclass)` |
+| `work_id` | varchar(36) | no | `` |
+| `actor_user_id` | integer | no | `` |
+| `actor_name` | varchar(255) | no | `` |
+| `changed_at` | timestamptz | no | `` |
+| `action` | varchar(16) | no | `` |
+| `before_json` | text | no | `` |
+| `after_json` | text | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `work_id` → `app.construction_work_items` (`id`)
+- **Indexes:**
+  - `ix_app_construction_work_audit`: (work_id, id)
+
+---
+
+### `app.construction_work_entries`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.construction_work_entries_id_seq'::regclass)` |
+| `work_id` | varchar(36) | no | `` |
+| `work_date` | date | no | `` |
+| `quantity` | numeric | no | `` |
+| `details_json` | text | no | `` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `work_id` → `app.construction_work_items` (`id`)
+- **Indexes:**
+  - `uq_app_construction_work_day` UNIQUE: (work_id, work_date)
+
+---
+
+### `app.construction_work_items`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `object_id` | varchar(64) | no | `` |
+| `group_ref` | varchar(64) | no | `` |
+| `plan_json` | text | no | `` |
+| `version` | integer | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_construction_work_scope`: (object_id, group_ref)
 
 ---
 
@@ -1864,6 +2082,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `id` **PK** | varchar(64) | no | `` |
+| `owner_user_id` | integer | no | `0` |
+| `original_sha256` | varchar(64) | no | `''::character varying` |
 | `storage_path` | text | no | `''::text` |
 | `storage_mode` | varchar(32) | no | `'stored'::character varying` |
 | `stored_sha256` | varchar(64) | no | `''::character varying` |
@@ -1878,7 +2098,33 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 - **Primary key:** `id`
 - **Indexes:**
+  - `ix_app_my_file_blobs_original_sha256`: (original_sha256)
+  - `ix_app_my_file_blobs_owner_user_id`: (owner_user_id)
   - `ix_app_my_file_blobs_ref_count`: (ref_count)
+  - `uq_app_my_file_blobs_owner_original_sha` UNIQUE: (owner_user_id, original_sha256)
+
+---
+
+### `app.my_file_blobs_v1`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `storage_path` | text | no | `''::text` |
+| `storage_mode` | varchar(32) | no | `'stored'::character varying` |
+| `stored_sha256` | varchar(64) | no | `''::character varying` |
+| `original_size_bytes` | bigint | no | `'0'::bigint` |
+| `stored_size_bytes` | bigint | no | `'0'::bigint` |
+| `output_mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `output_extension` | varchar(32) | no | `''::character varying` |
+| `ref_count` | integer | no | `0` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `last_used_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_my_file_blobs_v1_ref_count`: (ref_count)
 
 ---
 
@@ -1887,21 +2133,77 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `token_hash` **PK** | varchar(64) | no | `` |
-| `file_id` | varchar(64) | no | `` |
+| `file_id` | varchar(64) | yes | `` |
 | `owner_user_id` | integer | no | `` |
 | `expires_at` | timestamptz | no | `` |
 | `used_at` | timestamptz | yes | `` |
 | `created_at` | timestamptz | no | `` |
+| `folder_id` | varchar(64) | yes | `` |
 
 - **Primary key:** `token_hash`
 - **Indexes:**
   - `ix_app_my_file_download_grants_expires_at`: (expires_at)
   - `ix_app_my_file_download_grants_file_id`: (file_id)
+  - `ix_app_my_file_download_grants_folder_id`: (folder_id)
   - `ix_app_my_file_download_grants_owner_created`: (owner_user_id, created_at)
 
 ---
 
+### `app.my_file_folders`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `owner_user_id` | integer | no | `` |
+| `parent_id` | varchar(64) | yes | `` |
+| `name` | varchar(255) | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `deleted_at` | timestamptz | yes | `` |
+| `share_token` | varchar(128) | yes | `` |
+| `share_token_enc` | text | yes | `` |
+| `share_token_hash` | varchar(64) | yes | `` |
+| `share_created_at` | timestamptz | yes | `` |
+| `is_favorite` | boolean | no | `false` |
+
+- **Primary key:** `id`
+- **Foreign keys:**
+  - `parent_id` → `app.my_file_folders` (`id`)
+- **Indexes:**
+  - `ix_app_my_file_folders_owner_deleted`: (owner_user_id, deleted_at)
+  - `ix_app_my_file_folders_owner_parent`: (owner_user_id, parent_id)
+  - `ix_app_my_file_folders_share_token_hash`: (share_token_hash)
+
+---
+
 ### `app.my_file_previews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `blob_id` **PK** | varchar(64) | no | `` |
+| `status` | varchar(32) | no | `'queued'::character varying` |
+| `preview_kind` | varchar(32) | no | `'unsupported'::character varying` |
+| `source_kind` | varchar(32) | no | `''::character varying` |
+| `source_filename` | varchar(512) | no | `''::character varying` |
+| `content_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `preview_path` | text | no | `''::text` |
+| `preview_mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `preview_filename` | varchar(512) | no | `''::character varying` |
+| `page_count` | integer | no | `0` |
+| `sheets_json` | text | no | `'[]'::text` |
+| `error_text` | text | no | `''::text` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `generated_at` | timestamptz | yes | `` |
+
+- **Primary key:** `blob_id`
+- **Indexes:**
+  - `ix_app_my_file_previews_kind_status`: (preview_kind, status)
+  - `ix_app_my_file_previews_status_updated`: (status, updated_at)
+
+---
+
+### `app.my_file_previews_v1`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
@@ -1923,8 +2225,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 - **Primary key:** `blob_id`
 - **Indexes:**
-  - `ix_app_my_file_previews_kind_status`: (preview_kind, status)
-  - `ix_app_my_file_previews_status_updated`: (status, updated_at)
+  - `ix_app_my_file_previews_v1_kind_status`: (preview_kind, status)
+  - `ix_app_my_file_previews_v1_status_updated`: (status, updated_at)
 
 ---
 
@@ -1959,11 +2261,16 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `security_scan_engine` | varchar(64) | no | `''::character varying` |
 | `security_scanned_at` | timestamptz | yes | `` |
 | `share_token_enc` | text | yes | `` |
+| `folder_id` | varchar(64) | yes | `` |
+| `is_favorite` | boolean | no | `false` |
 
 - **Primary key:** `id`
+- **Foreign keys:**
+  - `folder_id` → `app.my_file_folders` (`id`)
 - **Indexes:**
   - `ix_app_my_files_expires_at`: (expires_at)
   - `ix_app_my_files_expires_status`: (expires_at, status)
+  - `ix_app_my_files_folder`: (folder_id)
   - `ix_app_my_files_original_sha256`: (original_sha256)
   - `ix_app_my_files_owner_status_created`: (owner_user_id, status, created_at)
   - `ix_app_my_files_owner_user_id`: (owner_user_id)

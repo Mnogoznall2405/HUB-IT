@@ -7,6 +7,36 @@ import { NativeMailSettingsScreen } from './NativeMailSettingsScreen';
 let mockPermissions = ['mail.access'];
 let mockOffline = false;
 
+it('ignores a late response for another mailbox when editing and saving a signature', async () => {
+  (useLocalSearchParams as jest.Mock).mockReturnValue({ mailboxId: 'B' });
+  (mailboxApi.listMailboxes as jest.Mock).mockResolvedValue([
+    { id: 'A', label: 'Mailbox A', is_active: true },
+    { id: 'B', label: 'Mailbox B', is_active: true },
+  ]);
+  const configA = { mailbox_id: 'A', mailbox_email: 'a@example.test', mail_signature_html: '<p>Signature A</p>', mail_is_configured: true };
+  const configB = { mailbox_id: 'B', mailbox_email: 'b@example.test', mail_signature_html: '<p>Signature B</p>', mail_is_configured: true };
+  let finishA!: (value: unknown) => void;
+  let finishB!: (value: unknown) => void;
+  (mailConfigApi.getMyMailConfig as jest.Mock).mockResolvedValueOnce(configB)
+    .mockImplementationOnce(() => new Promise((resolve) => { finishA = resolve; }))
+    .mockImplementationOnce(() => new Promise((resolve) => { finishB = resolve; }));
+  (mailConfigApi.updateMyMailSignature as jest.Mock).mockResolvedValue(configB);
+  const view = await render(<NativeMailSettingsScreen />);
+  await waitFor(() => expect(view.getAllByText('b@example.test').length).toBeGreaterThan(0));
+  await fireEvent.press(view.getByTestId('native-mail-settings-mailbox-A'));
+  await waitFor(() => expect(mailConfigApi.getMyMailConfig).toHaveBeenLastCalledWith('A'));
+  await fireEvent.press(view.getByTestId('native-mail-settings-mailbox-B'));
+  await waitFor(() => expect(mailConfigApi.getMyMailConfig).toHaveBeenLastCalledWith('B'));
+  await act(async () => { finishB(configB); });
+  await act(async () => { finishA(configA); });
+  expect(view.getByTestId('native-mail-settings-mailbox-B').props.accessibilityState.selected).toBe(true);
+  expect(view.queryByText('a@example.test')).toBeNull();
+  await fireEvent.press(view.getByTestId('native-mail-edit-signature'));
+  expect((await view.findByTestId('native-mail-signature-html')).props.value).toBe('<p>Signature B</p>');
+  await fireEvent.press(view.getByTestId('native-mail-save-signature'));
+  await waitFor(() => expect(mailConfigApi.updateMyMailSignature).toHaveBeenCalledWith('B', '<p>Signature B</p>'));
+});
+
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     offlineMode: mockOffline,

@@ -48,6 +48,16 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
                 limit_per_nomenclature=int(payload.get("limit_per_nomenclature") or 50),
             )
         )
+    if operation == "balances_by_warehouses":
+        refs = payload.get("warehouse_refs")
+        if not isinstance(refs, list):
+            raise ValueError("warehouse_refs должен быть массивом")
+        return asyncio.run(
+            service.get_balances_for_warehouses(
+                warehouse_refs=[str(ref or "") for ref in refs],
+                limit=int(payload.get("limit") or 1000),
+            )
+        )
     if operation == "movements":
         return asyncio.run(
             service.get_movements(
@@ -105,6 +115,8 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
                 stage=str(payload.get("stage") or ""),
                 overdue=overdue,
                 warehouse_ref=str(payload.get("warehouse_ref") or ""),
+                buyer=str(payload.get("buyer") or ""),
+                responsible=str(payload.get("responsible") or ""),
                 limit=int(payload.get("limit") or 25),
                 cursor=str(payload.get("cursor") or "") or None,
                 refresh=bool(payload.get("refresh")),

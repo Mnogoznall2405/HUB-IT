@@ -163,6 +163,35 @@ def _sum_quantity(events: Iterable[dict[str, Any]], event_type: str) -> float:
     return sum(max(0.0, _number(event.get("quantity"))) for event in events if event.get("type") == event_type)
 
 
+def _first_filled(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _events_of_type(events: Iterable[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    return [event for event in events if str(event.get("type") or "") == event_type]
+
+
+def _optional_quantity(events: Iterable[dict[str, Any]], event_type: str) -> float | None:
+    matched = _events_of_type(events, event_type)
+    if not matched:
+        return None
+    return _sum_quantity(matched, event_type)
+
+
+def _latest_supply_event(events: Iterable[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
+    matched = _events_of_type(events, event_type)
+    if not matched:
+        return None
+    return max(
+        matched,
+        key=lambda item: (str(item.get("date") or ""), str(item.get("document_number") or "")),
+    )
+
+
 def _aggregate_timeline(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for source in events:
@@ -338,17 +367,19 @@ def _request_journey(
 
 
 def _group_positions(positions: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str, bool], dict[str, Any]] = {}
+    grouped: dict[tuple[str, str, str, str, bool], dict[str, Any]] = {}
     for position in positions:
         nomenclature_ref = str(position.get("nomenclature_ref") or "").strip().lower()
         nomenclature_name = str(position.get("nomenclature_name") or "").strip()
         characteristic_name = str(position.get("characteristic_name") or "").strip()
         unit_name = str(position.get("unit_name") or "").strip()
+        section_code = str(position.get("section_code") or "").strip()
         cancelled = bool(position.get("cancelled"))
         key = (
             nomenclature_ref or f"name:{nomenclature_name.casefold()}",
             characteristic_name.casefold(),
             unit_name.casefold(),
+            section_code.casefold(),
             cancelled,
         )
         current = grouped.get(key)
@@ -358,7 +389,17 @@ def _group_positions(positions: Iterable[dict[str, Any]]) -> list[dict[str, Any]
                 "name": nomenclature_name,
                 "characteristic_name": characteristic_name,
                 "unit": unit_name,
+                "section_code": section_code,
+                "replacement_name": str(position.get("replacement_name") or "").strip(),
+                "replacement_unit": str(position.get("replacement_unit") or "").strip(),
                 "quantity": 0.0,
+                "qty_requested": 0.0,
+                "qty_ordered": None,
+                "qty_received": None,
+                "receipt_number": "",
+                "receipt_warehouse_name": "",
+                "invoice_number": "",
+                "receipt_mol_name": "",
                 "cancelled": cancelled,
                 "cancelled_quantity": 0.0,
                 "cancellation_reasons": [],
@@ -368,10 +409,29 @@ def _group_positions(positions: Iterable[dict[str, Any]]) -> list[dict[str, Any]
             grouped[key] = current
         quantity = max(0.0, _number(position.get("quantity")))
         current["quantity"] += quantity
+        current["qty_requested"] += quantity
         current["source_line_count"] += 1
         line_key = str(position.get("line_key") or "").strip()
         if line_key:
             current["source_line_keys"].append(line_key)
+        if not current["replacement_name"]:
+            current["replacement_name"] = str(position.get("replacement_name") or "").strip()
+        if not current["replacement_unit"]:
+            current["replacement_unit"] = str(position.get("replacement_unit") or "").strip()
+        ordered = position.get("qty_ordered")
+        if ordered is not None:
+            current["qty_ordered"] = _number(current.get("qty_ordered")) + _number(ordered)
+        received = position.get("qty_received")
+        if received is not None:
+            current["qty_received"] = _number(current.get("qty_received")) + _number(received)
+        for field_name in (
+            "receipt_number",
+            "receipt_warehouse_name",
+            "invoice_number",
+            "receipt_mol_name",
+        ):
+            if not current.get(field_name):
+                current[field_name] = str(position.get(field_name) or "").strip()
         if cancelled:
             current["cancelled_quantity"] += quantity
             reason = str(position.get("cancellation_reason") or "").strip()
@@ -544,12 +604,36 @@ def build_line_state(
         }
     )
     timeline = _aggregate_timeline(events)
+    receipt_event = _latest_supply_event(events, "received")
+    ordered_event = _latest_supply_event(events, "ordered")
+    replacement_name = _first_filled(
+        line.get("replacement_name"),
+        *(event.get("replacement_name") for event in _events_of_type(events, "ordered")),
+    )
+    replacement_unit = _first_filled(
+        line.get("replacement_unit"),
+        *(event.get("replacement_unit") for event in _events_of_type(events, "ordered")),
+    )
     return {
         **line,
         "stage": stage,
         "completed": completed,
         "overdue": overdue,
         "quantities": quantities,
+        "qty_requested": requested,
+        "qty_ordered": _optional_quantity(events, "ordered"),
+        "qty_received": _optional_quantity(events, "received"),
+        "section_code": str(line.get("section_code") or "").strip(),
+        "replacement_name": replacement_name,
+        "replacement_unit": replacement_unit,
+        "receipt_number": str((receipt_event or {}).get("document_number") or "").strip(),
+        "receipt_warehouse_name": str((receipt_event or {}).get("destination_name") or "").strip(),
+        "invoice_number": str((receipt_event or {}).get("invoice_number") or "").strip(),
+        "receipt_mol_name": str((receipt_event or {}).get("receipt_mol_name") or "").strip(),
+        "delivery_responsible_name": _first_filled(
+            *(event.get("delivery_responsible_name") for event in _events_of_type(events, "ordered")),
+            (ordered_event or {}).get("delivery_responsible_name"),
+        ),
         "manager_names": managers,
         "supplier_names": suppliers,
         "timeline": timeline,
@@ -644,6 +728,23 @@ def build_request_view(
 
     managers = sorted({name for position in positions for name in position.get("manager_names", [])})
     suppliers = sorted({name for position in positions for name in position.get("supplier_names", [])})
+    delivery_responsible_names = sorted(
+        {
+            str(name or "").strip()
+            for name in (
+                *(position.get("delivery_responsible_name") for position in positions),
+                *(event.get("delivery_responsible_name") for event in events),
+            )
+            if str(name or "").strip()
+        }
+    )
+    section_codes = sorted(
+        {
+            str(position.get("section_code") or "").strip()
+            for position in positions
+            if str(position.get("section_code") or "").strip()
+        }
+    )
     ordered_cost = sum(
         max(0.0, _number(event.get("amount")))
         for event in events
@@ -665,6 +766,7 @@ def build_request_view(
             "characteristic_name": str(item.get("characteristic_name") or ""),
             "quantity": _number(item.get("quantity")),
             "unit": str(item.get("unit") or ""),
+            "section_code": str(item.get("section_code") or ""),
         }
         for item in item_groups[:3]
     ]
@@ -674,6 +776,16 @@ def build_request_view(
             "characteristic_name": str(item.get("characteristic_name") or ""),
             "quantity": _number(item.get("quantity")),
             "unit": str(item.get("unit") or ""),
+            "section_code": str(item.get("section_code") or ""),
+            "replacement_name": str(item.get("replacement_name") or ""),
+            "replacement_unit": str(item.get("replacement_unit") or ""),
+            "qty_requested": item.get("qty_requested"),
+            "qty_ordered": item.get("qty_ordered"),
+            "qty_received": item.get("qty_received"),
+            "receipt_number": str(item.get("receipt_number") or ""),
+            "receipt_warehouse_name": str(item.get("receipt_warehouse_name") or ""),
+            "invoice_number": str(item.get("invoice_number") or ""),
+            "receipt_mol_name": str(item.get("receipt_mol_name") or ""),
         }
         for item in item_groups
     ]
@@ -711,6 +823,8 @@ def build_request_view(
         "nomenclature_items": nomenclature_items,
         "manager_names": managers,
         "supplier_names": suppliers,
+        "delivery_responsible_names": delivery_responsible_names,
+        "section_codes": section_codes,
         "ordered_cost": ordered_cost,
         "diagnostics": diagnostics,
         "item_groups": item_groups,
@@ -847,7 +961,10 @@ def _load_lines(connection: Any, references: list[Any]) -> list[dict[str, Any]]:
     Строка.ПричинаОтмены КАК ПричинаОтмены,
     Строка.Поставщик КАК Поставщик,
     Строка.ФизическоеЛицо КАК ФизическоеЛицо,
-    Строка.Комментарий КАК Комментарий
+    Строка.Комментарий КАК Комментарий,
+    Строка.тмб_Раздел КАК ШифрРаздела,
+    Строка.НоменклатураЗамещ КАК НоменклатураЗамены,
+    Строка.ЕдиницаИзмеренияЗамещ КАК ЕдиницаИзмеренияЗамены
 ИЗ Документ.{REQUEST_DOCUMENT}.Товары КАК Строка
 ГДЕ Строка.Ссылка В (&Заявки)
 УПОРЯДОЧИТЬ ПО Строка.Ссылка.Дата УБЫВ, Строка.НомерСтроки
@@ -873,6 +990,9 @@ def _load_lines(connection: Any, references: list[Any]) -> list[dict[str, Any]]:
                 "supplier_name": _text(connection, _field(selection, "Поставщик")),
                 "physical_person_name": _text(connection, _field(selection, "ФизическоеЛицо")),
                 "comment": _text(connection, _field(selection, "Комментарий")),
+                "section_code": _text(connection, _field(selection, "ШифрРаздела")),
+                "replacement_name": _text(connection, _field(selection, "НоменклатураЗамены")),
+                "replacement_unit": _text(connection, _field(selection, "ЕдиницаИзмеренияЗамены")),
             }
         )
     return rows
@@ -928,6 +1048,9 @@ DOCUMENT_EVENT_SPECS = (
             "Поставщик": "Строка.Ссылка.Контрагент",
             "ЦенаДокумента": "Строка.Цена",
             "СуммаДокумента": "Строка.Сумма",
+            "ОтветственныйЗаПоставку": "Строка.Ссылка.Ответственный",
+            "НоменклатураЗамены": "Строка.НоменклатураЗамены",
+            "ЕдиницаИзмеренияЗамены": "Строка.ЕдиницаИзмеренияЗамены",
         },
     },
     {
@@ -946,6 +1069,7 @@ DOCUMENT_EVENT_SPECS = (
             "СкладПолучатель": "Строка.Ссылка.Склад",
             "ЦенаДокумента": "Строка.Цена",
             "СуммаДокумента": "Строка.Сумма",
+            "МОЛ": "Строка.Ссылка.ФизическоеЛицо",
         },
     },
     {
@@ -1001,6 +1125,10 @@ def _load_document_events(
             supplier = _field(selection, "Поставщик")
             sender = _field(selection, "СкладОтправитель")
             destination = _field(selection, "СкладПолучатель")
+            mol = _field(selection, "МОЛ")
+            delivery_responsible = _field(selection, "ОтветственныйЗаПоставку")
+            replacement = _field(selection, "НоменклатураЗамены")
+            replacement_unit = _field(selection, "ЕдиницаИзмеренияЗамены")
             event.update(
                 {
                     "supplier_name": _text(connection, supplier),
@@ -1010,6 +1138,10 @@ def _load_document_events(
                     "destination_name": _text(connection, destination),
                     "price": _number(_field(selection, "ЦенаДокумента")),
                     "amount": _number(_field(selection, "СуммаДокумента")),
+                    "receipt_mol_name": _text(connection, mol),
+                    "delivery_responsible_name": _text(connection, delivery_responsible),
+                    "replacement_name": _text(connection, replacement),
+                    "replacement_unit": _text(connection, replacement_unit),
                 }
             )
             rows.append(event)
@@ -1019,6 +1151,47 @@ def _load_document_events(
                 1,
             )
     return rows
+
+
+def _load_receipt_invoices(connection: Any, references: list[Any]) -> dict[str, str]:
+    """Map receipt document UUID -> invoice number via incoming documents register."""
+    if not references:
+        return {}
+    selection = _execute_rows(
+        connection,
+        f"""
+ВЫБРАТЬ ПЕРВЫЕ {IT_REQUEST_EVENT_MAX}
+    Строка.Ссылка КАК СсылкаДокумента,
+    Входящие.НомерДокумента КАК НомерСчета
+ИЗ Документ.{RECEIPT_DOCUMENT}.Товары КАК Строка
+    ВНУТРЕННЕЕ СОЕДИНЕНИЕ РегистрСведений.бит_стр_ВходящиеДокументы КАК Входящие
+    ПО Строка.Ссылка = Входящие.ДокументОснование
+        И (Входящие.ВидДокумента = ЗНАЧЕНИЕ(Справочник.бит_стр_ВидыДокументов.СчетФактура))
+ГДЕ Строка.ЗаявкаНаМПЗ В (&Заявки)
+    И Строка.Ссылка.Проведен
+    И НЕ Строка.Ссылка.ПометкаУдаления
+""",
+        {"Заявки": _make_reference_array(connection, references)},
+    )
+    invoices: dict[str, str] = {}
+    while selection.Next():
+        document_ref = _ref_uuid(connection, _field(selection, "СсылкаДокумента"))
+        invoice_number = _text(connection, _field(selection, "НомерСчета"))
+        if document_ref and invoice_number and document_ref not in invoices:
+            invoices[document_ref] = invoice_number
+    return invoices
+
+
+def _attach_receipt_invoices(events: list[dict[str, Any]], invoices: dict[str, str]) -> None:
+    if not invoices:
+        return
+    for event in events:
+        if str(event.get("type") or "") != "received":
+            continue
+        document_ref = str(event.get("document_ref") or "").strip().lower()
+        invoice_number = invoices.get(document_ref)
+        if invoice_number:
+            event["invoice_number"] = invoice_number
 
 
 def _load_reserves(connection: Any, references: list[Any]) -> list[dict[str, Any]]:
@@ -1083,6 +1256,12 @@ def _load_views(
         timings["assignments_ms"] = round((time.perf_counter() - stage_started) * 1000, 1)
     events.extend(_load_document_events(connection, references, timings))
     stage_started = time.perf_counter()
+    invoices = _load_receipt_invoices(connection, references)
+    _attach_receipt_invoices(events, invoices)
+    if timings is not None:
+        timings["receipt_invoices_ms"] = round((time.perf_counter() - stage_started) * 1000, 1)
+        timings["receipt_invoices"] = len(invoices)
+    stage_started = time.perf_counter()
     events.extend(_load_reserves(connection, references))
     if timings is not None:
         timings["reserves_ms"] = round((time.perf_counter() - stage_started) * 1000, 1)
@@ -1131,8 +1310,11 @@ def _summary_from_view(view: dict[str, Any]) -> dict[str, Any]:
         summary.get("warehouse_name"),
         *summary.get("manager_names", []),
         *summary.get("supplier_names", []),
+        *summary.get("delivery_responsible_names", []),
+        *summary.get("section_codes", []),
         *(item.get("name") for item in summary.get("nomenclature_items", [])),
         *(item.get("characteristic_name") for item in summary.get("nomenclature_items", [])),
+        *(item.get("section_code") for item in summary.get("nomenclature_items", [])),
     ]
     summary["_search_blob"] = " ".join(str(value or "") for value in values).casefold()
     return summary

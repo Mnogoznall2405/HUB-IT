@@ -2699,6 +2699,9 @@ class ChatService:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if getattr(conversation, "kind", None) == "ai":
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
             message = session.get(ChatMessage, normalized_message_id)
             if message is None or message.conversation_id != conversation.id:
                 raise LookupError("Message not found")

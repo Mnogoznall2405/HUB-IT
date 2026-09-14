@@ -32,6 +32,8 @@ import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativePasswordEntryCard } from '../../components/passwords/NativePasswordEntryCard';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { NativeAppliedChip, NativeFilterButton } from '../../components/ui/NativeFilterControls';
+import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import { AccountField, AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const PASSWORD_SCREEN_CAPTURE_KEY = 'hubit-password-vault';
@@ -52,19 +54,6 @@ const EMPTY_DRAFT: PasswordEntryDraft = {
   description: '',
   password: '',
 };
-
-function FilterChip({ label, selected, onPress, tokens }: { label: string; selected: boolean; onPress: () => void; tokens: ReturnType<typeof useFluentTokens> }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      style={[styles.filterChip, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}
-    >
-      <Text style={[styles.filterText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
-}
 
 function SheetActionButton({
   label,
@@ -130,6 +119,7 @@ export function NativePasswordsScreen() {
   const [group, setGroup] = useState('');
   const [tag, setTag] = useState('');
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<PasswordVaultEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -516,21 +506,20 @@ export function NativePasswordsScreen() {
         />
         {queryDraft ? <Pressable onPress={() => { setQueryDraft(''); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} /></Pressable> : null}
       </View>
-      {groups.length ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-          <FilterChip label="Все группы" selected={!group} onPress={() => setGroup('')} tokens={tokens} />
-          {groups.map((item) => <FilterChip key={item} label={item} selected={group === item} onPress={() => setGroup(item)} tokens={tokens} />)}
-        </ScrollView>
-      ) : null}
-      {tags.length ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-          <FilterChip label="Все теги" selected={!tag} onPress={() => setTag('')} tokens={tokens} />
-          {tags.map((item) => <FilterChip key={item} label={`#${item}`} selected={tag === item} onPress={() => setTag(item)} tokens={tokens} />)}
-        </ScrollView>
+      {(group || tag) ? (
+        <View style={styles.appliedRow}>
+          {group ? <NativeAppliedChip label={`Группа: ${group}`} tokens={tokens} onRemove={() => setGroup('')} /> : null}
+          {tag ? <NativeAppliedChip label={`#${tag}`} tokens={tokens} onRemove={() => setTag('')} /> : null}
+        </View>
       ) : null}
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Записей: {entries.length}</Text>
-        <FilterChip label="Показывать архив" selected={includeArchived} onPress={() => setIncludeArchived((value) => !value)} tokens={tokens} />
+        <NativeFilterButton
+          testID="native-passwords-filters"
+          count={[group, tag, includeArchived].filter(Boolean).length}
+          tokens={tokens}
+          onPress={() => setFiltersOpen(true)}
+        />
       </View>
       {loading && entries.length === 0 ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Загружаем метаданные…</Text></View> : null}
       {!loading && error && entries.length === 0 ? <Pressable testID="native-passwords-retry" onPress={() => { void load(); }} disabled={offlineMode} accessibilityRole="button" style={[styles.primaryAction, { backgroundColor: tokens.primary, opacity: offlineMode ? 0.5 : 1 }]}><Text style={styles.primaryActionText}>Повторить</Text></Pressable> : null}
@@ -545,6 +534,9 @@ export function NativePasswordsScreen() {
       scroll={false}
     >
       <FlatList
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
         testID="native-passwords-list"
         data={entries}
         keyExtractor={(entry) => entry.id}
@@ -555,6 +547,41 @@ export function NativePasswordsScreen() {
         renderItem={renderEntry}
         refreshing={refreshing}
         onRefresh={refreshEntries}
+      />
+      <NativeFilterSheet
+        visible={filtersOpen}
+        title="Фильтры паролей"
+        tokens={tokens}
+        onClose={() => setFiltersOpen(false)}
+        onReset={() => { setGroup(''); setTag(''); setIncludeArchived(false); }}
+        sections={[
+          ...(groups.length ? [{
+            kind: 'options' as const,
+            key: 'group',
+            title: 'Группа',
+            selected: group,
+            onSelect: setGroup,
+            testIDPrefix: 'native-passwords-group',
+            options: [{ value: '', label: 'Все группы' }, ...groups.map((item) => ({ value: item, label: item }))],
+          }] : []),
+          ...(tags.length ? [{
+            kind: 'options' as const,
+            key: 'tag',
+            title: 'Тег',
+            selected: tag,
+            onSelect: setTag,
+            testIDPrefix: 'native-passwords-tag',
+            options: [{ value: '', label: 'Все теги' }, ...tags.map((item) => ({ value: item, label: `#${item}` }))],
+          }] : []),
+          {
+            kind: 'toggles' as const,
+            key: 'flags',
+            title: 'Список',
+            items: [
+              { key: 'archived', label: 'Показывать архив', value: includeArchived, onToggle: () => setIncludeArchived((value) => !value), testID: 'native-passwords-archived' },
+            ],
+          },
+        ]}
       />
 
       <Modal visible={Boolean(selected)} transparent animationType="slide" onRequestClose={closeEntry} statusBarTranslucent>
@@ -756,9 +783,7 @@ const styles = StyleSheet.create({
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   searchBox: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
-  filters: { gap: 7 },
-  filterChip: { minHeight: 40, borderRadius: 20, borderWidth: 1, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
-  filterText: { fontSize: 12, fontWeight: '800' },
+  appliedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   countRow: { flexWrap: 'wrap', minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   count: { fontSize: 12, fontWeight: '700' },
   loading: { minHeight: 120, alignItems: 'center', justifyContent: 'center', gap: 9 },

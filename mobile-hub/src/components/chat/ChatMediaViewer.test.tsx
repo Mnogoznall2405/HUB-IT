@@ -4,14 +4,19 @@ import { Animated, PanResponder, StyleSheet } from 'react-native';
 import type { ChatMediaItem } from '../../chat/chatMedia';
 import { ChatMediaViewer } from './ChatMediaViewer';
 
-jest.mock('./ChatAuthenticatedImage', () => ({ ChatAuthenticatedImage: () => null }));
+const mockImageMount = jest.fn();
+const mockImageUnmount = jest.fn();
+jest.mock('./ChatAuthenticatedImage', () => ({ ChatAuthenticatedImage: ({ uri }: { uri: string }) => {
+  require('react').useEffect(() => { mockImageMount(uri); return () => mockImageUnmount(uri); }, [uri]);
+  return null;
+} }));
 jest.mock('./ChatVideoPlayer', () => ({ ChatVideoPlayer: () => null }));
 const mockReduced = jest.fn(() => false);
 jest.mock('../../accessibility/useReducedMotion', () => ({ useReducedMotion: () => mockReduced() }));
 
 const items: ChatMediaItem[] = ['a', 'b', 'c'].map((id) => ({
   message: { id: `message-${id}`, conversation_id: 'conversation', sender_user_id: 1 },
-  attachment: { id, kind: 'image', file_name: `${id}.jpg`, preview_url: `file:///preview-${id}.jpg`, original_url: `file:///original-${id}.jpg` },
+  attachment: { id, kind: 'image', file_name: `${id}.jpg`, preview_url: `/api/v1/chat/preview-${id}.jpg`, original_url: `/api/v1/chat/original-${id}.jpg` },
 }));
 const actions = { onClose: jest.fn(), onOpen: jest.fn(), onShare: jest.fn(), onSave: jest.fn(), onForward: jest.fn() };
 
@@ -165,4 +170,33 @@ it('updates current top, bottom and side insets without replacing the selected p
   await view.rerender(<SafeAreaInsetsContext.Provider value={{ top: 0, bottom: 0, left: 44, right: 20 }}><ChatMediaViewer {...props} /></SafeAreaInsetsContext.Provider>);
   expect(view.getByTestId('chat-media-safe-area')).toHaveStyle({ paddingTop: 0, paddingBottom: 12, paddingLeft: 44, paddingRight: 20 });
   expect(props.onChange).not.toHaveBeenCalled();
+});
+
+
+it('keeps the decoded adjacent preview mounted when it becomes the current photo', async () => {
+  const view = await render(<ChatMediaViewer {...actions} item={items[0]} items={items} onChange={jest.fn()} />);
+  const uri = items[1].attachment.preview_url;
+  expect(mockImageMount.mock.calls.filter(([value]) => value.endsWith(uri))).toHaveLength(1);
+  await view.rerender(<ChatMediaViewer {...actions} item={items[1]} items={items} onChange={jest.fn()} />);
+  expect(mockImageUnmount.mock.calls.filter(([value]) => value.endsWith(uri))).toHaveLength(0);
+  expect(mockImageMount.mock.calls.filter(([value]) => value.endsWith(uri))).toHaveLength(1);
+  await view.rerender(<ChatMediaViewer {...actions} item={items[0]} items={items} onChange={jest.fn()} />);
+  expect(mockImageMount.mock.calls.filter(([value]) => value.endsWith(uri))).toHaveLength(1);
+});
+
+
+it('renders local pending photos in the viewer while offline', async () => {
+  const local = { ...items[0], attachment: { ...items[0].attachment, id: 'pending-attachment:1', local_uri: 'file:///pending.jpg', preview_url: undefined, original_url: undefined } };
+  await render(<ChatMediaViewer {...actions} item={local} />);
+  expect(mockImageMount).toHaveBeenCalledWith('file:///pending.jpg');
+});
+
+it('unlocks paging after the parent commits the next photo', async () => {
+  mockReduced.mockReturnValue(true);
+  const onChange = jest.fn();
+  const view = await render(<ChatMediaViewer {...actions} item={items[0]} items={items} onChange={onChange} />);
+  await fireEvent.press(view.getByLabelText('Следующее фото'));
+  await view.rerender(<ChatMediaViewer {...actions} item={items[1]} items={items} onChange={onChange} />);
+  await fireEvent.press(view.getByLabelText('Следующее фото'));
+  expect(onChange.mock.calls.map(([item]) => item.attachment.id)).toEqual(['b', 'c']);
 });

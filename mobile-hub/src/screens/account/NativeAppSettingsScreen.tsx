@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { formatApiError } from '../../api/formatError';
@@ -27,6 +27,11 @@ function formatBytes(value: unknown): string {
 }
 
 type CommandState = Record<string, unknown>;
+type StateGroup = 'update' | 'offline' | 'diagnostics' | 'network';
+const STATE_LABELS: Record<StateGroup, string> = {
+  update: 'Обновления', offline: 'Офлайн-данные', diagnostics: 'Диагностика', network: 'Сеть',
+};
+export const SETTINGS_STATE_TIMEOUT_MS = 15_000;
 
 type OfflinePreparationDisplayState = {
   completedModules: number;
@@ -143,6 +148,41 @@ export function NativeAppSettingsScreen() {
   const [offlinePreparation, setOfflinePreparation] = useState<OfflinePreparationDisplayState | null>(null);
   const [busyCommands, setBusyCommands] = useState<string[]>([]);
   const [status, setStatus] = useState({ error: '', message: '' });
+  const [stateErrors, setStateErrors] = useState<Partial<Record<StateGroup, string>>>({});
+  const [loadingStates, setLoadingStates] = useState<Partial<Record<StateGroup, boolean>>>({});
+  const stateRequests = useRef(new Map<string, symbol>());
+  const commands = useRef(new Map<string, symbol>());
+  const mounted = useRef(true);
+
+  const applyState = useCallback((group: string, result: CommandState) => {
+    if (group === 'update') setUpdateState(current => ({ ...(current || {}), ...result }));
+    if (group === 'offline') setOfflineState(result);
+    if (group === 'diagnostics') setDiagnosticsState(result);
+    if (group === 'network') setNetworkState(result);
+  }, []);
+
+  const loadState = useCallback(async (group: StateGroup) => {
+    const lease = Symbol(group);
+    stateRequests.current.set(group, lease);
+    const current = () => mounted.current && stateRequests.current.get(group) === lease;
+    setLoadingStates(value => ({ ...value, [group]: true }));
+    setStateErrors(value => ({ ...value, [group]: '' }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        execute(`${group}.getState`),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Проверка заняла слишком много времени. Действия доступны, состояние можно проверить повторно.')), SETTINGS_STATE_TIMEOUT_MS);
+        }),
+      ]);
+      if (current()) applyState(group, result as CommandState);
+    } catch (error) {
+      if (current()) setStateErrors(value => ({ ...value, [group]: formatApiError(error, 'Не удалось получить состояние.') }));
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (current()) setLoadingStates(value => ({ ...value, [group]: false }));
+    }
+  }, [applyState, execute]);
 
   const setCommandBusy = useCallback((command: string, active: boolean) => {
     setBusyCommands((current) => {
@@ -156,45 +196,39 @@ export function NativeAppSettingsScreen() {
     payload: Record<string, unknown> = {},
     executionOptions: Parameters<typeof execute>[2] = {},
   ) => {
+    if (commands.current.has(command)) return null;
+    const lease = Symbol(command);
+    commands.current.set(command, lease);
+    const group = command.split('.')[0] as StateGroup;
+    stateRequests.current.set(group, lease);
+    const current = () => mounted.current && stateRequests.current.get(group) === lease;
+    setLoadingStates(value => ({ ...value, [group]: false }));
+    setStateErrors(value => ({ ...value, [group]: '' }));
     setCommandBusy(command, true);
     setStatus({ error: '', message: '' });
     try {
       const result = await execute(command, payload, executionOptions) as CommandState;
-      if (command.startsWith('update.')) setUpdateState((current) => ({ ...(current || {}), ...result }));
-      if (command.startsWith('offline.')) setOfflineState(result);
-      if (command.startsWith('diagnostics.')) setDiagnosticsState(result);
-      if (command.startsWith('network.')) setNetworkState(result);
+      if (!current()) return null;
+      applyState(group, result);
       setStatus({ error: '', message: 'Готово.' });
       return result;
     } catch (error) {
-      setStatus({ error: formatApiError(error, 'Не удалось выполнить действие Android.'), message: '' });
+      if (current()) setStatus({ error: formatApiError(error, 'Не удалось выполнить действие Android.'), message: '' });
       return null;
     } finally {
-      setCommandBusy(command, false);
+      if (commands.current.get(command) === lease) {
+        commands.current.delete(command);
+        if (mounted.current) setCommandBusy(command, false);
+      }
     }
-  }, [execute, setCommandBusy]);
+  }, [applyState, execute, setCommandBusy]);
 
   useEffect(() => {
-    void (async () => {
-      setCommandBusy('initial', true);
-      try {
-        const [update, offline, diagnostics, network] = await Promise.all([
-          execute('update.getState'),
-          execute('offline.getState'),
-          execute('diagnostics.getState'),
-          execute('network.getState'),
-        ]);
-        setUpdateState(update as CommandState);
-        setOfflineState(offline as CommandState);
-        setDiagnosticsState(diagnostics as CommandState);
-        setNetworkState(network as CommandState);
-      } catch (error) {
-        setStatus({ error: formatApiError(error, 'Не удалось получить настройки Android.'), message: '' });
-      } finally {
-        setCommandBusy('initial', false);
-      }
-    })();
-  }, [execute, setCommandBusy]);
+    mounted.current = true;
+    setBusyCommands([]);
+    for (const group of Object.keys(STATE_LABELS) as StateGroup[]) void loadState(group);
+    return () => { mounted.current = false; stateRequests.current.clear(); commands.current.clear(); };
+  }, [loadState, user?.id]);
 
   useEffect(() => {
     if (updater?.state) setUpdateState(updater.state as unknown as CommandState);
@@ -202,7 +236,7 @@ export function NativeAppSettingsScreen() {
 
   const updateAvailable = Boolean(updater?.state && hasPendingMobileUpdate(updater.state))
     && ['available', 'paused', 'ready', 'error'].includes(String(updateState?.status || ''));
-  const updateBusy = ['downloading', 'verifying', 'installing'].includes(String(updateState?.status || ''));
+  const updateBusy = ['checking', 'downloading', 'verifying', 'installing'].includes(String(updateState?.status || ''));
   const feed = updateState?.feed as { version?: string } | undefined;
   const updateActionLabel = updateState?.status === 'paused'
     ? 'Продолжить'
@@ -237,8 +271,14 @@ export function NativeAppSettingsScreen() {
   const canPrepareCompanyStructure = hasPermission('company_structure.read');
   const canPrepareNotifications = canPrepareDashboard || canPrepareTasks || canPrepareChat || canPrepareMail;
   const canPrepareAnything = canPrepareDashboard || canPrepareTasks || canPrepareChat || canPrepareMail || canPrepareDocflow || canPrepareAddressBook || canPrepareDatabase || canPrepareMyFiles || canPrepareCompanyStructure;
-  const initializing = busyCommands.includes('initial');
   const commandBusy = (command: string) => busyCommands.includes(command);
+  const stateStatus = (group: StateGroup) => <>
+    {loadingStates[group] ? <Text style={{ color: tokens.textSecondary }}>Проверяется состояние: {STATE_LABELS[group]}. Действия доступны.</Text> : null}
+    {stateErrors[group] ? <>
+      <Text accessibilityRole="alert" style={{ color: tokens.error }}>{STATE_LABELS[group]}: {stateErrors[group]}</Text>
+      <AccountSecondaryButton tokens={tokens} label={`Повторить проверку: ${STATE_LABELS[group]}`} onPress={() => { void loadState(group); }} />
+    </> : null}
+  </>;
   const readyModules = offlinePreparation?.items.filter((item) => item.status === 'completed' && item.complete !== false).length || 0;
   const retryableModules = offlinePreparation?.items.filter((item) => item.status === 'failed' || item.complete === false) || [];
   const offlinePreparationPercent = offlinePreparation?.totalModules
@@ -319,6 +359,7 @@ export function NativeAppSettingsScreen() {
       {!activeSection ? <AccountStatusText tokens={tokens} error={status.error} message={status.message} /> : null}
       <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="cellphone-arrow-down" label="Обновления APK" subtitle={`Версия ${updateState?.currentVersion || '—'} · ${updateState?.message || 'Проверка обновлений'}`} onPress={() => setActiveSection('updates')} /></AccountSectionCard>
       <AccountSubpage visible={activeSection === 'updates'} title="Обновления APK" tokens={tokens} onClose={() => setActiveSection(null)}>
+        {stateStatus('update')}
         <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <AccountSectionCard
         tokens={tokens}
@@ -352,7 +393,7 @@ export function NativeAppSettingsScreen() {
           <AccountSecondaryButton
             tokens={tokens}
             testID="native-app-check-update"
-            disabled={initializing || updateBusy}
+            disabled={updateBusy}
             loading={commandBusy('update.check')}
             label="Проверить обновление"
             onPress={() => { void run('update.check'); }}
@@ -360,7 +401,7 @@ export function NativeAppSettingsScreen() {
           {updateAvailable ? (
             <AccountPrimaryButton
               tokens={tokens}
-              disabled={initializing || updateBusy}
+              disabled={updateBusy}
               loading={commandBusy('update.install')}
               label={updateActionLabel}
               onPress={() => { void run('update.install'); }}
@@ -369,7 +410,7 @@ export function NativeAppSettingsScreen() {
           {updateState?.canOpenInstallerSettings ? (
             <AccountSecondaryButton
               tokens={tokens}
-              disabled={initializing}
+
               loading={commandBusy('update.openInstallerSettings')}
               label="Разрешить установку APK"
               onPress={() => { void run('update.openInstallerSettings'); }}
@@ -380,6 +421,7 @@ export function NativeAppSettingsScreen() {
       </AccountSubpage>
       <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="cloud-off-outline" label="Офлайн-данные" subtitle={offlineState?.snapshotReady ? 'Данные сохранены для работы без сети' : 'Подготовка данных и состояние загрузки'} onPress={() => setActiveSection('offline')} /></AccountSectionCard>
       <AccountSubpage visible={activeSection === 'offline'} title="Офлайн-данные" tokens={tokens} onClose={() => setActiveSection(null)}>
+        {stateStatus('offline')}{stateStatus('network')}
         <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
 
 
@@ -488,7 +530,7 @@ export function NativeAppSettingsScreen() {
         <View style={styles.actions}>
           <AccountPrimaryButton
             tokens={tokens}
-            disabled={initializing || offlineMode || !canPrepareAnything}
+            disabled={offlineMode || !canPrepareAnything}
             loading={commandBusy('offline.prepareNative')}
             label="Подготовить автономный режим"
             onPress={() => { void prepareOffline(); }}
@@ -496,19 +538,20 @@ export function NativeAppSettingsScreen() {
           {retryableModules.length ? <AccountSecondaryButton
             testID="native-offline-retry-incomplete"
             tokens={tokens}
-            disabled={initializing || offlineMode || commandBusy('offline.prepareNative')}
+            disabled={offlineMode || commandBusy('offline.prepareNative')}
             label="Повторить неготовые разделы"
             onPress={() => { void prepareOffline(true); }}
           /> : null}
-          <AccountSecondaryButton testID="native-app-check-network" tokens={tokens} disabled={initializing} loading={commandBusy('network.getState')} label="Проверить сеть" onPress={() => { void run('network.getState'); }} />
-          <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('system.openBackgroundSettings')} label="Настройки батареи и фона" onPress={() => { void run('system.openBackgroundSettings'); }} />
-          <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('offline.retryQueues')} label="Повторить отправку" onPress={() => { void run('offline.retryQueues'); }} />
-          <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('offline.clearFileCache')} label="Очистить кэш файлов" onPress={() => { void run('offline.clearFileCache'); }} />
+          <AccountSecondaryButton testID="native-app-check-network" tokens={tokens} loading={commandBusy('network.getState')} label="Проверить сеть" onPress={() => { void run('network.getState'); }} />
+          <AccountSecondaryButton tokens={tokens} loading={commandBusy('system.openBackgroundSettings')} label="Настройки батареи и фона" onPress={() => { void run('system.openBackgroundSettings'); }} />
+          <AccountSecondaryButton tokens={tokens} loading={commandBusy('offline.retryQueues')} label="Повторить отправку" onPress={() => { void run('offline.retryQueues'); }} />
+          <AccountSecondaryButton tokens={tokens} loading={commandBusy('offline.clearFileCache')} label="Очистить кэш файлов" onPress={() => { void run('offline.clearFileCache'); }} />
         </View>
       </AccountSectionCard>
       </AccountSubpage>
       <AccountSectionCard tokens={tokens}><AccountActionRow tokens={tokens} icon="stethoscope" label="Диагностика" subtitle={'Отчёт о работе приложения'} onPress={() => setActiveSection('diagnostics')} /></AccountSectionCard>
       <AccountSubpage visible={activeSection === 'diagnostics'} title="Диагностика" tokens={tokens} onClose={() => setActiveSection(null)}>
+        {stateStatus('diagnostics')}
         <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
 
 
@@ -525,8 +568,8 @@ export function NativeAppSettingsScreen() {
           </Text>
         ) : null}
         <View style={styles.actions}>
-          <AccountSecondaryButton tokens={tokens} disabled={initializing} loading={commandBusy('diagnostics.share')} label="Поделиться отчётом" onPress={() => { void run('diagnostics.share'); }} />
-          <AccountSecondaryButton tokens={tokens} danger disabled={initializing} loading={commandBusy('diagnostics.clear')} label="Очистить диагностику" onPress={() => { void run('diagnostics.clear'); }} />
+          <AccountSecondaryButton tokens={tokens} loading={commandBusy('diagnostics.share')} label="Поделиться отчётом" onPress={() => { void run('diagnostics.share'); }} />
+          <AccountSecondaryButton tokens={tokens} danger loading={commandBusy('diagnostics.clear')} label="Очистить диагностику" onPress={() => { void run('diagnostics.clear'); }} />
         </View>
       </AccountSectionCard>
       </AccountSubpage>

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { NativeAppSettingsScreen } from './NativeAppSettingsScreen';
+import { NativeAppSettingsScreen, SETTINGS_STATE_TIMEOUT_MS } from './NativeAppSettingsScreen';
 
 const mockExecute = jest.fn();
 const mockNativeUpdaterState = {
@@ -78,6 +78,59 @@ describe('NativeAppSettingsScreen', () => {
       }
       return {};
     });
+  });
+
+  it.each(['offline.getState', 'diagnostics.getState', 'network.getState', 'update.getState'])('keeps actions available while %s is pending', async (pendingCommand) => {
+    const original = mockExecute.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    mockExecute.mockImplementation((command: string, ...args: unknown[]) => command === pendingCommand
+      ? new Promise(resolve => { finish = resolve; }) : original(command, ...args));
+    const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Обновления APK' }));
+    expect(view.getByTestId('native-app-check-update').props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(view.getByTestId('native-app-check-update'));
+    expect(mockExecute).toHaveBeenCalledWith('update.check', {}, {});
+    await fireEvent.press(view.getByTestId('account-subpage-back'));
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
+    expect(view.getByTestId('native-app-check-network').props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(view.getByText('Подготовить автономный режим'));
+    expect(mockExecute).toHaveBeenCalledWith('offline.prepareNative', expect.any(Object), expect.any(Object));
+    await act(async () => { finish({}); });
+  });
+
+  it('times out a state read, permits retry and ignores its late result', async () => {
+    jest.useFakeTimers();
+    try {
+      const original = mockExecute.getMockImplementation()!;
+      let finish!: (value: unknown) => void;
+      mockExecute.mockImplementation((command: string, ...args: unknown[]) => command === 'offline.getState'
+        ? new Promise(resolve => { finish = resolve; }) : original(command, ...args));
+      const view = await render(<NativeAppSettingsScreen />);
+      await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
+      await act(async () => { jest.advanceTimersByTime(SETTINGS_STATE_TIMEOUT_MS); });
+      expect(view.getByText(/Проверка заняла слишком много времени/)).toBeTruthy();
+      mockExecute.mockImplementation(original);
+      await fireEvent.press(view.getByText('Повторить проверку: Офлайн-данные'));
+      await waitFor(() => expect(view.getByText(/2692 из 2692 сотрудников/)).toBeTruthy());
+      await act(async () => { finish({ snapshotReady: false, offlineCoverage: [] }); });
+      expect(view.getByText(/2692 из 2692 сотрудников/)).toBeTruthy();
+      expect(view.queryByText(/Проверка заняла слишком много времени/)).toBeNull();
+      await view.unmount();
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('does not let an initial offline read overwrite completed preparation', async () => {
+    const original = mockExecute.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    mockExecute.mockImplementation((command: string, ...args: unknown[]) => command === 'offline.getState'
+      ? new Promise(resolve => { finish = resolve; }) : original(command, ...args));
+    const view = await render(<NativeAppSettingsScreen />);
+    await fireEvent.press(view.getByRole('button', { name: 'Офлайн-данные' }));
+    mockExecute.mockImplementation((command: string) => command === 'offline.prepareNative'
+      ? Promise.resolve({ snapshotReady: true, snapshotScopes: ['dashboard'], preparedModules: ['Главная'], failedModules: [] }) : original(command));
+    await fireEvent.press(view.getByText('Подготовить автономный режим'));
+    await act(async () => { finish({ snapshotReady: false, snapshotMissingScopes: ['mail-inbox'] }); });
+    expect(view.getByTestId('native-offline-readiness')).toHaveTextContent('Сохранено для офлайн-просмотра: главная.');
   });
 
   it('shows the exact native sections available without a network', async () => {

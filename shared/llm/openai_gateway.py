@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable, Iterator
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 MAX_GATEWAY_INPUT_BYTES = 160_000
@@ -51,12 +52,15 @@ class GatewayChatMessage(BaseModel):
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list[GatewayTextPart] | None = None
+    reasoning_content: str | None = Field(default=None, max_length=128_000)
     name: str | None = Field(default=None, max_length=128)
     tool_call_id: str | None = Field(default=None, max_length=128)
     tool_calls: list[GatewayToolCall] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def _validate_role_fields(self):
+        if self.reasoning_content is not None and self.role != "assistant":
+            raise ValueError("Reasoning content belongs to assistant messages")
         if self.role == "tool" and not self.tool_call_id:
             raise ValueError("Tool messages require tool_call_id")
         if self.name and not _SAFE_NAME_RE.fullmatch(self.name):
@@ -105,6 +109,12 @@ class GatewayNamedToolChoice(BaseModel):
     function: GatewayNamedToolChoiceFunction
 
 
+class GatewayStreamOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    include_usage: bool = True
+
+
 class OpenAiChatCompletionRequest(BaseModel):
     """Subset accepted from an untrusted sandbox container."""
 
@@ -116,6 +126,7 @@ class OpenAiChatCompletionRequest(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1, le=MAX_GATEWAY_OUTPUT_TOKENS)
     max_completion_tokens: int | None = Field(default=None, ge=1, le=MAX_GATEWAY_OUTPUT_TOKENS)
     stream: Literal[True] = True
+    stream_options: GatewayStreamOptions | None = None
     tools: list[GatewayToolDefinition] = Field(default_factory=list, max_length=128)
     tool_choice: Literal["none", "auto", "required"] | GatewayNamedToolChoice | None = None
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
@@ -133,6 +144,17 @@ def normalize_gateway_request(
     """Validate a sandbox request and map it to ``OpenRouterClient`` arguments."""
     try:
         request = OpenAiChatCompletionRequest.model_validate(payload)
+    except ValidationError as exc:
+        # Report schema locations only: never include input values or prompts.
+        known = {'seed', 'user', 'metadata', 'reasoning_effort', 'verbosity', 'parallel_tool_calls', 'response_format', 'store'}.union(*(model.model_fields for model in (
+            OpenAiChatCompletionRequest, GatewayChatMessage, GatewayTextPart,
+            GatewayToolCall, GatewayToolCallFunction, GatewayToolDefinition,
+            GatewayFunctionDefinition, GatewayNamedToolChoice,
+        )))
+        issues = [(error['type'], '.'.join(str(part) if isinstance(part, int) or part in known else '<extra>'
+                    for part in error['loc'])) for error in exc.errors(include_input=False, include_context=False, include_url=False)]
+        logging.getLogger(__name__).warning('Gateway schema validation failed: %s', issues)
+        raise OpenAiGatewayValidationError("Invalid OpenAI-compatible request") from exc
     except Exception as exc:
         raise OpenAiGatewayValidationError("Invalid OpenAI-compatible request") from exc
 

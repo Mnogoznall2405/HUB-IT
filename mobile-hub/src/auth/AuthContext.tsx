@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as authApi from '../api/authApi';
+import { warmApiConnection } from '../api/client';
 import type { HubUser, LoginResponse, TwoFactorSetupResponse } from '../api/types';
 import * as tokenStore from './tokenStore';
 import { subscribeSessionExpired } from './sessionEvents';
@@ -52,18 +53,14 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-const SESSION_RESTORE_RETRY_DELAY_MS = 300;
-const SESSION_RESTORE_TIMEOUT_MS = 5_000;
+const SESSION_RESTORE_RETRY_DELAY_MS = 400;
+const SESSION_RESTORE_TIMEOUT_MS = 12_000;
+const SESSION_RESTORE_ATTEMPT_TIMEOUT_MS = 4_000;
+const SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS = 5_000;
 
 function isTransportFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return true;
   return !('response' in error) || (error as { response?: unknown }).response == null;
-}
-
-function isRequestTimeout(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = String((error as { code?: unknown }).code || '').toUpperCase();
-  return code === 'ECONNABORTED' || code === 'ETIMEDOUT';
 }
 
 async function restoreUserWithRetry(
@@ -72,16 +69,23 @@ async function restoreUserWithRetry(
 ): Promise<void> {
   const deadlineAtMs = Date.now() + totalTimeoutMs;
   const remainingTimeoutMs = () => Math.max(0, Math.trunc(deadlineAtMs - Date.now()));
-  try {
-    await refreshUser(totalTimeoutMs);
-  } catch (error) {
-    if (!isTransportFailure(error) || isRequestTimeout(error)) throw error;
-    if (remainingTimeoutMs() <= SESSION_RESTORE_RETRY_DELAY_MS) throw error;
-    await new Promise((resolve) => setTimeout(resolve, SESSION_RESTORE_RETRY_DELAY_MS));
-    const retryTimeoutMs = remainingTimeoutMs();
-    if (retryTimeoutMs <= 0) throw error;
-    await refreshUser(retryTimeoutMs);
+  // Flaky links most often fail by timeout, so every transport failure gets a
+  // retry inside one total budget — instead of dropping to the login screen
+  // after a single stalled attempt.
+  let delayMs = SESSION_RESTORE_RETRY_DELAY_MS;
+  let lastError: unknown;
+  while (remainingTimeoutMs() > 0) {
+    try {
+      await refreshUser(Math.min(SESSION_RESTORE_ATTEMPT_TIMEOUT_MS, remainingTimeoutMs()));
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransportFailure(error) || remainingTimeoutMs() <= delayMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
   }
+  throw lastError;
 }
 
 async function persistLoginResult(result: LoginResponse, assertCurrent: () => void): Promise<void> {
@@ -156,7 +160,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return subscribeSessionExpired(() => {
       authGenerationRef.current += 1;
       restorePending.current = false;
-      setSessionRestoreState('expired');
+      // An in-flight request can hit a definitive 401 while a user-initiated
+      // logout is still finishing; that is not an expired session.
+      if (!logoutPromise.current) setSessionRestoreState('expired');
       chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
       setUser(null);
       setLoginChallengeId(null);
@@ -189,12 +195,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const generation = authGenerationRef.current;
     const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
     void (async () => {
-      let cachedUser: HubUser | null = null;
       try {
-        const [biometrics, hasSession, storedUser, initialConnectivity] = await Promise.all([
+        // Warm TCP+TLS while SecureStore reads run; the first authenticated
+        // request then skips the handshake.
+        warmApiConnection();
+        // The cached session user is deliberately not read here: identity is
+        // only trusted after the network session check, and parsing the cached
+        // blob would just add SecureStore IPC + JSON parse to the cold path.
+        const [biometrics, hasSession, initialConnectivity] = await Promise.all([
           isBiometricLoginEnabled(),
           tokenStore.hasSession(),
-          tokenStore.getCachedSessionUser(),
           getNativeConnectivitySnapshot(),
         ]);
         if (!isCurrent()) return;
@@ -212,7 +222,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         if (!hasSession) { setSessionRestoreState('idle'); return; }
         setSessionRestoreState('checking');
-        cachedUser = storedUser;
         try {
           await restoreUserWithRetry(async (timeoutMs) => {
             if (!isCurrent()) return;
@@ -243,7 +252,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         if (isCurrent()) {
-          if (!cachedUser) setUser(null);
+          setUser(null);
           setSessionRestoreState('unavailable');
         }
       } finally {
@@ -276,7 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const recover = async (attempt: number) => {
       if (!isCurrent()) return;
       try {
-        const me = await authApi.fetchMe({ timeoutMs: SESSION_RESTORE_TIMEOUT_MS });
+        const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
         if (!isCurrent()) return;
         setUser(me);
         markApiOnline();
@@ -473,6 +482,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const unlockWithBiometrics = useCallback(async (): Promise<BiometricUnlockResult> => {
     const assertCurrent = beginAuthentication();
     const generation = authGenerationRef.current;
+    // Reachable from the startup loader now: this flow supersedes any in-flight
+    // session restore, so release its pending flag and spinner state the same
+    // way login() does — otherwise a failed unlock strands the manual retry.
+    restorePending.current = false;
+    setSessionRestoreState('idle');
     setLoading(true);
     try {
       const credential = await unlockBiometricLogin();

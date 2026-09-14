@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Pressable,
   ScrollView,
   Share,
@@ -82,6 +83,12 @@ type NativeFeedPostSnapshot = {
 
 export function NativeFeedPostScreen() {
   const params = useLocalSearchParams<{ postId?: string | string[] }>();
+  const { user, hasPermission } = useAuth();
+  return <FeedPostContent key={JSON.stringify([user?.id, params.postId, hasPermission('dashboard.read')])} />;
+}
+
+function FeedPostContent() {
+  const params = useLocalSearchParams<{ postId?: string | string[] }>();
   const postId = String(Array.isArray(params.postId) ? params.postId[0] : params.postId || '').trim();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
@@ -127,6 +134,7 @@ export function NativeFeedPostScreen() {
   const [pollDraftOptionIds, setPollDraftOptionIds] = useState<string[]>([]);
   const [pollVoting, setPollVoting] = useState(false);
   const commentRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
+  const contentRequestRef = useRef(0);
 
   const reactionTotal = Object.values(post?.reaction_counts || {})
     .reduce((sum, count) => sum + Math.max(0, Number(count || 0)), 0);
@@ -138,6 +146,8 @@ export function NativeFeedPostScreen() {
   });
 
   const loadContent = useCallback(async () => {
+    const lease = ++contentRequestRef.current;
+    const current = () => lease === contentRequestRef.current;
     if (!postId) return;
     setLoading(true);
     setCommentsLoading(true);
@@ -149,7 +159,8 @@ export function NativeFeedPostScreen() {
         postId,
       )
       : null;
-    if (cached) {
+    if (!current()) return;
+    if (cached && String(cached.data.post.id) === postId) {
       setPost(cached.data.post);
       setComments(cached.data.comments || []);
       setCommentsTotal(cached.data.commentsTotal || 0);
@@ -159,7 +170,7 @@ export function NativeFeedPostScreen() {
       setCommentsLoading(false);
     }
     if (offlineMode) {
-      if (!cached) {
+      if (!cached || String(cached.data.post.id) !== postId) {
         setPost(null);
         setComments([]);
         setCommentsTotal(0);
@@ -180,6 +191,7 @@ export function NativeFeedPostScreen() {
           sort: commentsSort,
         }),
       ]);
+      if (!current()) return;
       setPost(next);
       setComments(commentsPayload.items);
       setCommentsTotal(commentsPayload.comments_total ?? commentsPayload.total);
@@ -188,27 +200,29 @@ export function NativeFeedPostScreen() {
       setExpandedRoots(new Set());
       void markFeedPostRead(postId)
         .then((updated) => {
+          if (!current()) return;
           if (updated) setPost((current) => (current ? { ...current, ...updated, is_unread: false } : updated));
           else setPost((current) => (current ? { ...current, is_unread: false } : current));
         })
         .catch(() => undefined);
     } catch (cause) {
+      if (!current()) return;
       setError(formatApiError(cause, cached
         ? 'Показана сохранённая публикация. Не удалось получить обновления.'
         : 'Не удалось открыть публикацию.'));
       if (!cached) setPost(null);
     } finally {
-      setLoading(false);
-      setCommentsLoading(false);
+      if (current()) { setLoading(false); setCommentsLoading(false); }
     }
   }, [commentsSort, offlineMode, postId, user?.id]);
 
   useEffect(() => {
     if (allowed && postId) void loadContent();
+    return () => { contentRequestRef.current += 1; };
   }, [allowed, loadContent, postId]);
 
   useEffect(() => {
-    if (!user?.id || !post || loading || commentsLoading || offlineMode) return;
+    if (!user?.id || !post || String(post.id) !== postId || loading || commentsLoading || offlineMode) return;
     void writeNativeEntitySnapshot<NativeFeedPostSnapshot>('feed-post-details', user.id, postId, {
       post,
       comments,
@@ -724,11 +738,15 @@ export function NativeFeedPostScreen() {
         <AccountStatusText tokens={tokens} error={error || 'Публикация не найдена.'} />
       ) : (
         <View style={styles.flex}>
-          <ScrollView
+          <FlatList
             style={styles.flex}
             contentContainerStyle={{ gap: 12, paddingBottom: bottomInset + 88 }}
             keyboardShouldPersistTaps="handled"
-          >
+            data={comments.flatMap(comment => [{ comment, isReply: false }, ...(expandedRoots.has(comment.id) ? (replies[comment.id] || []).map(reply => ({ comment: reply, isReply: true })) : [])])}
+            keyExtractor={row => `${row.isReply ? 'reply' : 'root'}:${row.comment.id}`}
+            initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
+            ListHeaderComponent={<>
+
             <AccountStatusText tokens={tokens} error={error} message={message} />
             {offlineMode ? (
               <Text accessibilityRole="alert" style={{ color: tokens.warning }}>
@@ -1003,12 +1021,43 @@ export function NativeFeedPostScreen() {
                 })}
               </View>
             </View>
-            {commentsLoading && comments.length === 0 ? (
-              <ActivityIndicator color={tokens.primary} />
-            ) : comments.length === 0 ? (
-              <Text style={{ color: tokens.textSecondary }}>Пока нет комментариев.</Text>
-            ) : (
-              comments.map((comment) => {
+            </>}
+            ListEmptyComponent={commentsLoading ? <ActivityIndicator color={tokens.primary} /> : <Text style={{ color: tokens.textSecondary }}>Пока нет комментариев.</Text>}
+            renderItem={({ item: row }) => {
+              const comment = row.comment;
+              if (row.isReply) {
+                const reply = comment;
+                return (
+                      <FeedCommentCard
+                        key={reply.id}
+                        comment={reply}
+                        tokens={tokens}
+                        reply
+                        editing={editingCommentId === reply.id}
+                        editText={editingCommentId === reply.id ? editingCommentText : ''}
+                        reactionPickerOpen={commentReactionPickerId === reply.id}
+                        reactionsEnabled={post.reactions_enabled !== false}
+                        busy={busyCommentId === reply.id}
+                        onReply={() => startReply(reply)}
+                        onEdit={() => {
+                          setEditingCommentId(reply.id);
+                          setEditingCommentText(String(reply.body || ''));
+                        }}
+                        onEditText={setEditingCommentText}
+                        onSaveEdit={() => { void saveCommentEdit(); }}
+                        onCancelEdit={() => {
+                          setEditingCommentId('');
+                          setEditingCommentText('');
+                        }}
+                        onDelete={() => confirmDeleteComment(reply)}
+                        onToggleReactionPicker={() => setCommentReactionPickerId((current) => (
+                          current === reply.id ? '' : reply.id
+                        ))}
+                        onReaction={(reactionType) => { void handleCommentReaction(reply, reactionType); }}
+                        onOpenAttachment={(attachment) => { void handleOpenAttachment(attachment, reply.id); }}
+                      />
+                );
+              }
                 const replyCount = Math.max(0, Number(comment.reply_count ?? comment.replies_count ?? 0));
                 const expanded = expandedRoots.has(comment.id);
                 return (
@@ -1062,43 +1111,11 @@ export function NativeFeedPostScreen() {
                         </Text>
                       </Pressable>
                     ) : null}
-                    {expanded && loadingReplies.has(comment.id) ? (
-                      <ActivityIndicator color={tokens.primary} />
-                    ) : null}
-                    {expanded ? (replies[comment.id] || []).map((reply) => (
-                      <FeedCommentCard
-                        key={reply.id}
-                        comment={reply}
-                        tokens={tokens}
-                        reply
-                        editing={editingCommentId === reply.id}
-                        editText={editingCommentId === reply.id ? editingCommentText : ''}
-                        reactionPickerOpen={commentReactionPickerId === reply.id}
-                        reactionsEnabled={post.reactions_enabled !== false}
-                        busy={busyCommentId === reply.id}
-                        onReply={() => startReply(reply)}
-                        onEdit={() => {
-                          setEditingCommentId(reply.id);
-                          setEditingCommentText(String(reply.body || ''));
-                        }}
-                        onEditText={setEditingCommentText}
-                        onSaveEdit={() => { void saveCommentEdit(); }}
-                        onCancelEdit={() => {
-                          setEditingCommentId('');
-                          setEditingCommentText('');
-                        }}
-                        onDelete={() => confirmDeleteComment(reply)}
-                        onToggleReactionPicker={() => setCommentReactionPickerId((current) => (
-                          current === reply.id ? '' : reply.id
-                        ))}
-                        onReaction={(reactionType) => { void handleCommentReaction(reply, reactionType); }}
-                        onOpenAttachment={(attachment) => { void handleOpenAttachment(attachment, reply.id); }}
-                      />
-                    )) : null}
+                    {expanded && loadingReplies.has(comment.id) ? <ActivityIndicator color={tokens.primary} /> : null}
                   </View>
                 );
-              })
-            )}
+            }}
+            ListFooterComponent={<>
             {commentsNextOffset != null ? (
               <Pressable
                 testID="feed-comments-load-more"
@@ -1116,7 +1133,7 @@ export function NativeFeedPostScreen() {
                 )}
               </Pressable>
             ) : null}
-          </ScrollView>
+            </>} />
 
           {post.comments_enabled !== false && !offlineMode ? (
             <View

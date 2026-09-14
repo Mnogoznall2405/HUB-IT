@@ -7,6 +7,9 @@ describe('getAvailableAdminSections', () => {
       hasPermission: () => false,
     });
     expect(sections.map((item) => item.key)).toEqual([
+      'ad-users',
+      'ai-bots',
+      'system',
       'users',
       'departments',
       'sessions',

@@ -11,9 +11,7 @@ import {
   useWindowDimensions,
   View,
   type GestureResponderEvent,
-  type ImageLoadEventData,
   type LayoutChangeEvent,
-  type NativeSyntheticEvent,
 } from 'react-native';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
@@ -31,7 +29,7 @@ import {
   type ChatMediaItem,
 } from '../../chat/chatMedia';
 import { resolveAttachmentUrl } from '../../utils/attachmentUrl';
-import { ChatAuthenticatedImage } from './ChatAuthenticatedImage';
+import { ChatAuthenticatedImage, type ChatImageLoadEvent } from './ChatAuthenticatedImage';
 import { ChatVideoPlayer } from './ChatVideoPlayer';
 
 type Point = { x: number; y: number };
@@ -60,7 +58,7 @@ export function ChatMediaViewer(props: Omit<ComponentProps<typeof ChatMediaViewe
   return (
     <Modal testID="chat-media-modal" visible={Boolean(props.item)} animationType={reduceMotion ? 'none' : 'fade'} transparent
       statusBarTranslucent navigationBarTranslucent presentationStyle="overFullScreen" onRequestClose={() => (closeRequestRef.current || props.onClose)()}>
-      {props.item ? <ChatMediaViewerPage key={mediaKey(props.item)} {...props} closeRequestRef={closeRequestRef} /> : null}
+      {props.item ? <ChatMediaViewerPage {...props} closeRequestRef={closeRequestRef} /> : null}
     </Modal>
   );
 }
@@ -96,7 +94,6 @@ function ChatMediaViewerPage({
   const transitionGeneration = useRef(0);
   const transitioning = useRef(false);
   const offsetY = useRef(new Animated.Value(0)).current;
-  const originalOpacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(1)).current;
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
@@ -117,10 +114,8 @@ function ChatMediaViewerPage({
   const [chromeVisible, setChromeVisible] = useState(true);
   const [zoomed, setZoomed] = useState(false);
   const [stageSize, setStageSize] = useState({ width: windowWidth, height: windowHeight });
-  const [mediaSize, setMediaSize] = useState({ width: 0, height: 0 });
-  const previewUrl = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(attachment));
-  const originalUrl = resolveAttachmentUrl(pickChatAttachmentOriginalUrl(attachment));
-  const hasProgressiveOriginal = Boolean(originalUrl && originalUrl !== previewUrl);
+  const [loadedMediaSize, setLoadedMediaSize] = useState({ key: '', width: 0, height: 0 });
+  const mediaSize = loadedMediaSize.key === mediaKey(item) ? loadedMediaSize : { width: 0, height: 0 };
   const isVideo = isVideoChatAttachment(attachment);
   const senderName = message?.sender?.full_name || message?.sender?.username || 'Участник';
   const createdAt = message?.created_at ? new Date(message.created_at) : null;
@@ -162,12 +157,14 @@ function ChatMediaViewerPage({
   }, [offsetY, scale, setTranslation, translateX, translateY]);
 
   useLayoutEffect(() => {
+    transitionGeneration.current += 1;
+    transitioning.current = false;
+    if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+    singleTapTimer.current = null;
+    lastTapAt.current = 0;
     resetTransforms();
     setChromeVisible(true);
-    setMediaSize({ width: 0, height: 0 });
-    originalOpacity.stopAnimation();
-    originalOpacity.setValue(0);
-  }, [item?.message.id, item?.attachment.id, originalOpacity, resetTransforms]);
+  }, [item?.message.id, item?.attachment.id, resetTransforms]);
 
   useEffect(() => {
     if (visible && safeIndex >= Math.max(0, resolvedItems.length - 3)) onRequestMore?.();
@@ -176,8 +173,8 @@ function ChatMediaViewerPage({
   useLayoutEffect(() => () => {
     transitionGeneration.current += 1;
     if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
-    [offsetY, originalOpacity, scale, translateX, translateY].forEach((value) => value.stopAnimation());
-  }, [offsetY, originalOpacity, scale, translateX, translateY]);
+    [offsetY, scale, translateX, translateY].forEach((value) => value.stopAnimation());
+  }, [offsetY, scale, translateX, translateY]);
 
   const animateTransform = useCallback((nextScale: number, x: number, y: number) => {
     scaleValue.current = nextScale;
@@ -251,7 +248,7 @@ function ChatMediaViewerPage({
       resetTransforms();
       return;
     }
-    // Keep the outgoing frame offscreen until React commits the next keyed page.
+    // Keep the outgoing frame offscreen until React commits the next active slot.
     onChange?.(next);
   }, [onChange, resetTransforms, resolvedItems, safeIndex]);
 
@@ -494,22 +491,9 @@ function ChatMediaViewerPage({
     translateX,
   ]);
 
-  const handleImageLoad = (event: NativeSyntheticEvent<ImageLoadEventData>) => {
+  const handleImageLoad = (event: ChatImageLoadEvent) => {
     const source = event.nativeEvent.source;
-    if (source?.width && source?.height) setMediaSize({ width: source.width, height: source.height });
-  };
-
-  const handleOriginalLoad = (event: NativeSyntheticEvent<ImageLoadEventData>) => {
-    handleImageLoad(event);
-    if (reduceMotion) {
-      originalOpacity.setValue(1);
-      return;
-    }
-    Animated.timing(originalOpacity, {
-      toValue: 1,
-      duration: 160,
-      useNativeDriver: true,
-    }).start();
+    if (source?.width && source?.height) setLoadedMediaSize({ key: mediaKey(item), width: source.width, height: source.height });
   };
 
   const handleStageLayout = (event: LayoutChangeEvent) => {
@@ -578,21 +562,29 @@ function ChatMediaViewerPage({
             ) : null}
           </View>
         <View style={styles.stage} onLayout={handleStageLayout} testID="chat-media-viewer-stage">
-          <MediaPreviewSlot item={previousItem} translateX={Animated.add(translateX, -stageSize.width)} />
+          {[previousItem, item, nextItem].filter((candidate): candidate is ChatMediaItem => Boolean(candidate))
+            .map((slotItem) => {
+              const active = mediaKey(slotItem) === mediaKey(item);
+              const pageOffset = active ? 0 : mediaKey(slotItem) === mediaKey(previousItem) ? -stageSize.width : stageSize.width;
+              return (
           <Animated.View
-            testID="chat-media-current-slot"
+            key={mediaKey(slotItem)}
+            testID={active ? "chat-media-current-slot" : undefined}
+            pointerEvents={active ? "auto" : "none"}
+            accessibilityElementsHidden={!active}
+            importantForAccessibility={active ? "auto" : "no-hide-descendants"}
             style={[
               styles.currentSlot,
               {
                 transform: [
-                  { translateX },
-                  { translateY: Animated.add(offsetY, translateY) },
-                  { scale },
+                  { translateX: active ? translateX : Animated.add(translateX, pageOffset) },
+                  { translateY: active ? Animated.add(offsetY, translateY) : 0 },
+                  { scale: active ? scale : 1 },
                 ],
                 opacity: dismissProgress,
               },
             ]}
-            accessible={!isVideo}
+            accessible={active && !isVideo}
             accessibilityLabel={attachment?.file_name || (isVideo ? 'Видео' : 'Изображение')}
             accessibilityHint={!isVideo ? 'Двойное нажатие увеличивает фото' : undefined}
             accessibilityActions={!isVideo ? [
@@ -605,40 +597,12 @@ function ChatMediaViewerPage({
               else if (event.nativeEvent.actionName === 'decrement') zoomAt(Math.max(1, scaleValue.current - 1));
               else if (event.nativeEvent.actionName === 'activate') zoomAt(1);
             }}
-            {...panResponder.panHandlers}
+            {...(active ? panResponder.panHandlers : {})}
           >
-            {isVideo ? (
-              <View style={styles.videoHitbox}>
-                <ChatVideoPlayer attachment={attachment} />
-              </View>
-            ) : previewUrl ? (
-              <View style={styles.imageHitbox} pointerEvents="box-none">
-                <ChatAuthenticatedImage
-                  uri={previewUrl}
-                  style={styles.image}
-                  resizeMode="contain"
-                  accessible={false}
-                  onLoad={handleImageLoad}
-                />
-                {hasProgressiveOriginal && originalUrl ? (
-                  <Animated.View style={[styles.progressiveOriginal, { opacity: originalOpacity }]}>
-                    <ChatAuthenticatedImage
-                      uri={originalUrl}
-                      style={styles.image}
-                      resizeMode="contain"
-                      accessible={false}
-                      loadingFallback={null}
-                      errorFallback={null}
-                      onLoad={handleOriginalLoad}
-                    />
-                  </Animated.View>
-                ) : null}
-              </View>
-            ) : (
-              <Text style={styles.placeholder}>{attachment?.file_name || 'Вложение'}</Text>
-            )}
+            <MediaSlotContent item={slotItem} active={active} onLoad={handleImageLoad} reduceMotion={reduceMotion} />
           </Animated.View>
-          <MediaPreviewSlot item={nextItem} translateX={Animated.add(translateX, stageSize.width)} />
+              );
+            })}
         </View>
           <View testID="chat-media-actions" style={[styles.actions, !chromeVisible && styles.hiddenChrome]} accessibilityRole="toolbar"
             pointerEvents={chromeVisible ? 'auto' : 'none'} accessibilityElementsHidden={!chromeVisible}
@@ -652,26 +616,49 @@ function ChatMediaViewerPage({
   );
 }
 
-function MediaPreviewSlot({
-  item,
-  translateX,
-}: {
-  item: ChatMediaItem | null;
-  translateX: Animated.AnimatedAddition<number>;
+function resolveMediaUri(uri: string | null): string | null {
+  return uri && /^(file|content):/i.test(uri) ? uri : resolveAttachmentUrl(uri);
+}
+
+// Stable media keys keep the decoded preview alive when a neighbour becomes active.
+function MediaSlotContent({ item, active, onLoad, reduceMotion }: {
+  item: ChatMediaItem; active: boolean; onLoad: (event: ChatImageLoadEvent) => void; reduceMotion: boolean;
 }) {
-  const previewUrl = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(item?.attachment));
-  if (!item || !previewUrl) return null;
-  return (
-    <Animated.View pointerEvents="none" style={[styles.previewSlot, { transform: [{ translateX }] }]}>
-      <ChatAuthenticatedImage
-        key={mediaKey(item)}
-        uri={previewUrl}
-        style={styles.image}
-        resizeMode="contain"
-        accessible={false}
-      />
-    </Animated.View>
-  );
+  const video = isVideoChatAttachment(item.attachment);
+  const localPhoto = !video && item.attachment.id.startsWith('pending-attachment:')
+    && /^(file|content):/i.test(item.attachment.local_uri || '') ? item.attachment.local_uri : null;
+  const previewUrl = resolveMediaUri(localPhoto || pickChatAttachmentPreviewUrl(item.attachment));
+  const originalUrl = resolveMediaUri(localPhoto || pickChatAttachmentOriginalUrl(item.attachment));
+  const originalOpacity = useRef(new Animated.Value(0)).current;
+  const dimensions = useRef<ChatImageLoadEvent | null>(null);
+  const latest = useRef({ active, onLoad });
+  latest.current = { active, onLoad };
+  useLayoutEffect(() => {
+    originalOpacity.stopAnimation();
+    originalOpacity.setValue(0);
+    if (active && dimensions.current) latest.current.onLoad(dimensions.current);
+    return () => originalOpacity.stopAnimation();
+  }, [active, originalOpacity]);
+  const loaded = (event: ChatImageLoadEvent) => {
+    dimensions.current = event;
+    if (latest.current.active) latest.current.onLoad(event);
+  };
+  if (video && active) return <View style={styles.videoHitbox}><ChatVideoPlayer attachment={item.attachment} /></View>;
+  if (!previewUrl) return <Text style={styles.placeholder}>{video ? 'Видео' : item.attachment.file_name || 'Вложение'}</Text>;
+  return <View style={styles.imageHitbox} pointerEvents="box-none">
+    <ChatAuthenticatedImage uri={previewUrl} style={styles.image} resizeMode="contain" accessible={false} onLoad={loaded} />
+    {active && !video && originalUrl && originalUrl !== previewUrl ? (
+      <Animated.View style={[styles.progressiveOriginal, { opacity: originalOpacity }]}>
+        <ChatAuthenticatedImage uri={originalUrl} style={styles.image} resizeMode="contain" accessible={false}
+          loadingFallback={null} errorFallback={null} onLoad={(event) => {
+            if (!latest.current.active) return;
+            loaded(event);
+            if (reduceMotion) originalOpacity.setValue(1);
+            else Animated.timing(originalOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start();
+          }} />
+      </Animated.View>
+    ) : null}
+  </View>;
 }
 
 function Action({ label, onPress }: { label: string; onPress: () => void }) {
@@ -706,11 +693,6 @@ const styles = StyleSheet.create({
   time: { color: 'rgba(255,255,255,0.72)', fontSize: 12, marginTop: 2 },
   stage: { flex: 1, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   currentSlot: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  previewSlot: {
     ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',

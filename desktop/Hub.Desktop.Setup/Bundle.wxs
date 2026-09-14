@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
@@ -12,6 +13,7 @@
                                               LicenseUrl=""
                                               LogoFile="$(LogoPath)"
                                               ShowVersion="yes"
+                                              LocalizationFile="HyperlinkTheme.ru-ru.wxl"
                                               LaunchTarget="[ProgramFiles64Folder]HUB-IT\HUB Desktop\HUB.Desktop.exe"
                                               LaunchWorkingFolder="[ProgramFiles64Folder]HUB-IT\HUB Desktop" />
     </BootstrapperApplication>
@@ -79,7 +81,8 @@
                   DisplayName="HUB Desktop"
                   SourceFile="$(MsiPath)"
                   Visible="no"
-                  Vital="yes" />
+                  Vital="yes"
+                  bal:DisplayInternalUICondition="WixBundleAction = 3" />
     </Chain>
   </Bundle>
 </Wix>

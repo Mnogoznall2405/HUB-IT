@@ -3,6 +3,7 @@ using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
 using Hub.Desktop.Printing;
 using Hub.Desktop.Shell;
+using Hub.Desktop.Transfers;
 using Xunit;
 
 namespace Hub.Desktop.Tests;
@@ -126,6 +127,7 @@ public sealed class DesktopBridgeProtocolTests
     [Theory]
     [InlineData("light", DesktopThemeMode.Light)]
     [InlineData("dark", DesktopThemeMode.Dark)]
+    [InlineData("high-contrast", DesktopThemeMode.HighContrast)]
     public void AcceptsExactThemeMessage(string mode, DesktopThemeMode expected)
     {
         var parsed = DesktopBridgeProtocol.TryParseInbound(
@@ -172,6 +174,33 @@ public sealed class DesktopBridgeProtocolTests
         var json = new string('x', DesktopBridgeProtocol.MaximumInboundMessageLength + 1);
 
         Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void CreatesAccessibilityMessage()
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateAccessibilityMessage(true, true, "High Contrast Black"));
+        var root = document.RootElement;
+
+        Assert.Equal("desktop.accessibility", root.GetProperty("type").GetString());
+        Assert.Equal(DesktopBridgeProtocol.CurrentVersion, root.GetProperty("version").GetInt32());
+        Assert.True(root.GetProperty("highContrast").GetBoolean());
+        Assert.True(root.GetProperty("reducedMotion").GetBoolean());
+        Assert.Equal("High Contrast Black", root.GetProperty("scheme").GetString());
+    }
+
+    [Fact]
+    public void CreatesAccessibilityMessageWithNullScheme()
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateAccessibilityMessage(false, false, null));
+        var root = document.RootElement;
+
+        Assert.Equal("desktop.accessibility", root.GetProperty("type").GetString());
+        Assert.False(root.GetProperty("highContrast").GetBoolean());
+        Assert.False(root.GetProperty("reducedMotion").GetBoolean());
+        Assert.Null(root.GetProperty("scheme").GetString());
     }
 
     [Fact]
@@ -454,5 +483,78 @@ public sealed class DesktopBridgeProtocolTests
     public void RejectsUnsafeActivationRoutes(string? route)
     {
         Assert.False(DesktopBridgeProtocol.IsValidInternalRoute(route));
+    }
+
+    [Fact]
+    public void ParsesOpenFileDialogCommand()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"file.openDialog","version":1,"requestId":"dlg-1","multiple":true,"accept":[".pdf",".docx"],"title":"Выберите документ"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.OpenFileDialog, message.Type);
+        Assert.Equal("dlg-1", message.OpenFileDialog?.RequestId);
+        Assert.True(message.OpenFileDialog?.Multiple);
+        Assert.Equal(new[] { ".pdf", ".docx" }, message.OpenFileDialog?.Accept);
+        Assert.Equal("Выберите документ", message.OpenFileDialog?.Title);
+    }
+
+    [Fact]
+    public void CreatesOpenFileDialogResultMessage()
+    {
+        using var result = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateOpenFileDialogResultMessage("dlg-1", new[] { "C:\\file.pdf" }));
+        var root = result.RootElement;
+
+        Assert.Equal("file.openDialogResult", root.GetProperty("type").GetString());
+        Assert.Equal(1, root.GetProperty("version").GetInt32());
+        Assert.Equal("dlg-1", root.GetProperty("requestId").GetString());
+        Assert.Equal("C:\\file.pdf", root.GetProperty("paths").EnumerateArray().First().GetString());
+        Assert.False(root.GetProperty("cancelled").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("""{"type":"file.openDialog","version":1,"requestId":"bad id"}""")]
+    [InlineData("""{"type":"file.openDialog","version":1,"requestId":"dlg-2","accept":[""]}""")]
+    public void RejectsMalformedOpenFileDialogCommands(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void CreatesFileDroppedMessage()
+    {
+        var files = new[]
+        {
+            new DesktopSharedFileDescriptor("file1.pdf", 10, "https://hub.test/__desktop_share__/a"),
+            new DesktopSharedFileDescriptor("file2.pdf", 20, "https://hub.test/__desktop_share__/b"),
+        };
+
+        using var result = JsonDocument.Parse(DesktopBridgeProtocol.CreateFileDroppedMessage(files));
+        var root = result.RootElement;
+
+        Assert.Equal("file.dropped", root.GetProperty("type").GetString());
+        var entries = root.GetProperty("files").EnumerateArray().ToList();
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("file1.pdf", entries[0].GetProperty("name").GetString());
+        Assert.Equal(10, entries[0].GetProperty("size").GetInt64());
+        Assert.Equal(
+            "https://hub.test/__desktop_share__/a",
+            entries[0].GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public void CreatesFileSharedMessage()
+    {
+        var files = new[]
+        {
+            new DesktopSharedFileDescriptor("file1.pdf", 10, "https://hub.test/__desktop_share__/a"),
+            new DesktopSharedFileDescriptor("file2.pdf", 20, "https://hub.test/__desktop_share__/b"),
+        };
+
+        using var result = JsonDocument.Parse(DesktopBridgeProtocol.CreateFileSharedMessage(files));
+        var root = result.RootElement;
+
+        Assert.Equal("file.shared", root.GetProperty("type").GetString());
+        Assert.Equal(2, root.GetProperty("files").EnumerateArray().Count());
     }
 }

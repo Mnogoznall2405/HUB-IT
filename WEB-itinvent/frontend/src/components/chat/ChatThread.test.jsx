@@ -24,6 +24,10 @@ vi.mock('../../api/chatStickers', () => ({
   chatStickersAPI: { listPacks: vi.fn(async () => ({ items: [] })) },
 }));
 
+vi.mock('./useAiAgentAccess', () => ({
+  default: () => ({ allowed: true, loading: false, error: false }),
+}));
+
 const theme = createTheme();
 const ui = {
   textSecondary: '#64748b',
@@ -386,7 +390,7 @@ describe('ChatBubble', () => {
       paddingTop: '0px',
       paddingBottom: '0px',
     });
-    expect(composerCapsule).toHaveStyle({ minHeight: '34px' });
+    expect(composerCapsule).toHaveStyle({ minHeight: '44px' });
   });
 
   it('renders reactions in a Telegram-style footer beside the message time', () => {
@@ -2074,7 +2078,7 @@ describe('ChatBubble', () => {
 });
 
 describe('ChatThread composer', () => {
-  it('opens the deferred emoji and sticker picker as a full-height desktop side panel', async () => {
+  it('opens the deferred picker as a right overlay without squeezing the thread', async () => {
     const onCloseEmojiPicker = vi.fn();
 
     renderWithTheme(
@@ -2090,6 +2094,8 @@ describe('ChatThread composer', () => {
 
     const panel = screen.getByTestId('chat-desktop-emoji-panel');
     expect(panel).toHaveAttribute('role', 'dialog');
+    expect(panel).toHaveAttribute('data-layout', 'overlay');
+    expect(panel).toHaveStyle({ maxWidth: '100%' });
     expect(await within(panel).findByTestId('chat-emoji-panel')).toHaveAttribute(
       'data-layout',
       'desktop-docked',
@@ -2101,11 +2107,44 @@ describe('ChatThread composer', () => {
       'Закрыть панель эмодзи',
     );
     expect(screen.getByTestId('chat-thread-root')).toHaveStyle({
-      paddingInlineEnd: 'clamp(300px, 36%, 384px)',
+      paddingInlineEnd: '0px',
     });
 
     fireEvent.click(screen.getByTestId('chat-composer-emoji-button'));
     expect(onCloseEmojiPicker).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Закрыть панель эмодзи' }));
+    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(panel, { key: 'Escape' });
+    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(3);
+  });
+
+  it('docks only when the actual thread has room and switches to overlay after resizing', () => {
+    let width = 1000;
+    const measure = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ width, height: 800, top: 0, bottom: 800, left: 0, right: width }));
+    const previousObserver = globalThis.ResizeObserver;
+    const callbacks = [];
+    globalThis.ResizeObserver = class {
+      constructor(callback) { callbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    };
+    try {
+      const { unmount } = renderWithTheme(<ChatThread {...buildThreadProps({ isMobile: false, compactMobile: false, desktopEmojiPickerOpen: true })} />);
+      const root = screen.getByTestId('chat-thread-root');
+      const panel = screen.getByTestId('chat-desktop-emoji-panel');
+      expect(panel).toHaveAttribute('data-layout', 'docked');
+      expect(root).toHaveStyle({ paddingInlineEnd: 'clamp(300px, 36%, 384px)' });
+      act(() => { width = 460; callbacks.forEach(callback => callback([])); });
+      expect(panel).toHaveAttribute('data-layout', 'overlay');
+      expect(root).toHaveStyle({ paddingInlineEnd: '0px' });
+      act(() => { width = 1000; callbacks.forEach(callback => callback([])); });
+      expect(panel).toHaveAttribute('data-layout', 'docked');
+      unmount();
+    } finally {
+      measure.mockRestore();
+      globalThis.ResizeObserver = previousObserver;
+    }
   });
 
   it('does not render the desktop picker panel in compact mobile layout', () => {

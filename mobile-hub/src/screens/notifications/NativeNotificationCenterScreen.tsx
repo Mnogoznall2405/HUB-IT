@@ -6,7 +6,6 @@ import {
   Alert,
   Pressable,
   SectionList,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -31,6 +30,7 @@ import {
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
+import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 import { goBackOrReplace } from '../account/accountBack';
 
@@ -160,7 +160,7 @@ function NotificationCenterContent() {
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; loadGeneration.current += 1; }; }, []);
 
-  const load = useCallback(async (refresh = false) => {
+  const load = useCallback(async (refresh = false, silent = false) => {
     if (readActionPending.current) { refreshAfterAction.current = true; return; }
     loadPending.current = true;
     const generation = ++loadGeneration.current;
@@ -171,7 +171,7 @@ function NotificationCenterContent() {
       return;
     }
     if (refresh) setRefreshing(true);
-    else setLoading(true);
+    else if (!silent) setLoading(true);
     setError('');
     const userId = Number(user?.id || 0);
     let cached = snapshotAvailableRef.current === userId;
@@ -251,7 +251,7 @@ function NotificationCenterContent() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void load(true);
+        void load(false, true);
       }, 100);
     };
     const releases = [
@@ -509,9 +509,13 @@ function NotificationCenterContent() {
         </Pressable>
       </View>
       <View style={{ marginBottom: 10 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} accessibilityRole="tablist" contentContainerStyle={{ gap: 8 }}>
-          {[['all', 'Все'], ['task', 'Задачи'], ['chat', 'Чат'], ['mail', 'Почта'], ['announcement', 'Лента']].map(([key, label]) => <Pressable key={key} testID={`native-notifications-filter-${key}`} accessibilityRole="tab" accessibilityState={{ selected: sourceFilter === key }} onPress={() => setSourceFilter(key)} style={{ minHeight: 44, paddingHorizontal: 14, borderRadius: 22, justifyContent: 'center', backgroundColor: sourceFilter === key ? tokens.primary : tokens.actionBg }}><Text style={{ color: sourceFilter === key ? '#fff' : tokens.textPrimary }}>{label}</Text></Pressable>)}
-        </ScrollView>
+        <NativeSegmentedControl
+          options={[['all', 'Все'], ['task', 'Задачи'], ['chat', 'Чат'], ['mail', 'Почта'], ['announcement', 'Лента']].map(([value, label]) => ({ value, label }))}
+          selected={sourceFilter}
+          onSelect={(value) => setSourceFilter(value)}
+          tokens={tokens}
+          testIDPrefix="native-notifications-filter"
+        />
       </View>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {error && !offlineMode ? <Pressable testID="native-notifications-retry" accessibilityRole="button" accessibilityLabel="Повторить загрузку уведомлений" disabled={loading || refreshing} onPress={() => { void load(true); }} style={[styles.markAll, { alignSelf: 'flex-start', marginBottom: 8, borderColor: tokens.actionBorder }]}><Text style={[styles.markAllText, { color: tokens.primary }]}>Повторить загрузку</Text></Pressable> : null}

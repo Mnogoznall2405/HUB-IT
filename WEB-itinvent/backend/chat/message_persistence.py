@@ -290,6 +290,9 @@ class ChatTextMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if getattr(conversation, "kind", None) == "ai":
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
             member_user_ids = self._conversation_member_ids(session, conversation.id)
             conversation_kind = (
                 _normalize_text(getattr(conversation, "kind", None), "direct") or "direct"
@@ -623,6 +626,9 @@ class ChatFileMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if getattr(conversation, "kind", None) == "ai":
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
             conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             conversation_kind = _normalize_text(getattr(conversation, "kind", ""))
             member_user_ids = self._conversation_member_ids(session, conversation.id)
@@ -823,6 +829,9 @@ class ChatForwardMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if getattr(conversation, "kind", None) == "ai":
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
             member_user_ids = self._conversation_member_ids(session, conversation.id)
             if normalized_client_message_id:
                 existing = session.execute(select(ChatMessage).where(
@@ -1000,6 +1009,9 @@ class ChatTaskShareMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if getattr(conversation, "kind", None) == "ai":
+                from backend.ai_chat.access import require_conversation_access
+                require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
             conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             member_user_ids = [
                 int(item)

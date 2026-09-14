@@ -55,6 +55,9 @@ export default function LoginScreen() {
   const onBiometricLogin = async () => {
     if (attemptInProgressRef.current) return;
     attemptInProgressRef.current = true;
+    // This flow navigates explicitly; keep the restore effect from issuing a
+    // second router.replace — postAuthDestination consumes the pending deep link.
+    restoreVisible.current = false;
     setPasswordVisible(false);
     setError('');
     setBiometricSubmitting(true);
@@ -68,6 +71,9 @@ export default function LoginScreen() {
       );
       router.replace(postAuthDestination(Platform.OS, home) as never);
     } catch (e: unknown) {
+      // Failed attempt: a pending session restore may still succeed and should
+      // be allowed to navigate again.
+      restoreVisible.current = true;
       setError(formatApiError(e, 'Не удалось войти по отпечатку'));
     } finally {
       attemptInProgressRef.current = false;
@@ -91,6 +97,7 @@ export default function LoginScreen() {
     }
     setInvalidField('');
     attemptInProgressRef.current = true;
+    restoreVisible.current = false;
     setPasswordVisible(false);
     setError('');
     setSubmitting(true);
@@ -113,6 +120,7 @@ export default function LoginScreen() {
       );
       router.replace(postAuthDestination(Platform.OS, home) as never);
     } catch (e: unknown) {
+      restoreVisible.current = true;
       setError(formatApiError(e, 'Не удалось войти'));
     } finally {
       attemptInProgressRef.current = false;

@@ -125,6 +125,20 @@ def _like_fragment(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _yo_token_variants(value: str, limit: int = 16) -> tuple[str, ...]:
+    variants = [value]
+    for index, character in enumerate(value):
+        if character != "е":
+            continue
+        variants.extend(
+            variant[:index] + "ё" + variant[index + 1 :]
+            for variant in variants.copy()
+        )
+        if len(variants) >= limit:
+            break
+    return tuple(dict.fromkeys(variants[:limit]))
+
+
 class OneCCatalogSnapshotStore:
     """Storage seam for one current indexed snapshot per 1C source base.
 
@@ -949,47 +963,61 @@ class OneCCatalogSnapshotStore:
                     entry.generation == generation,
                     entry.catalog_type == kind,
                 ]
-                for token in tokens:
-                    pattern = f"%{_like_fragment(token)}%"
-                    matching_entry_refs = select(AppOneCCatalogToken.entry_ref).where(
-                        AppOneCCatalogToken.source_base == source,
-                        AppOneCCatalogToken.generation == generation,
-                        AppOneCCatalogToken.catalog_type == kind,
-                        AppOneCCatalogToken.token.like(pattern, escape="\\"),
+                token_variants = [
+                    _yo_token_variants(token) if kind == CATALOG_WAREHOUSES else (token,)
+                    for token in tokens
+                ]
+                for variants in token_variants:
+                    matching_conditions = []
+                    for variant in variants:
+                        pattern = f"%{_like_fragment(variant)}%"
+                        matching_entry_refs = select(AppOneCCatalogToken.entry_ref).where(
+                            AppOneCCatalogToken.source_base == source,
+                            AppOneCCatalogToken.generation == generation,
+                            AppOneCCatalogToken.catalog_type == kind,
+                            AppOneCCatalogToken.token.like(pattern, escape="\\"),
+                        )
+                        # Start from matching tokens so PostgreSQL can use the
+                        # trigram GIN index for a leading-wildcard typeahead.
+                        matching_conditions.append(entry.ref.in_(matching_entry_refs))
+                    conditions.append(or_(*matching_conditions))
+                primary_variants = token_variants[0]
+                primary_exact = or_(*(
+                    exists(
+                        select(1).where(
+                            AppOneCCatalogToken.source_base == source,
+                            AppOneCCatalogToken.generation == generation,
+                            AppOneCCatalogToken.catalog_type == kind,
+                            AppOneCCatalogToken.entry_ref == entry.ref,
+                            AppOneCCatalogToken.token == variant,
+                        )
                     )
-                    # Start from matching tokens so PostgreSQL can use the
-                    # trigram GIN index for a leading-wildcard typeahead.
-                    conditions.append(entry.ref.in_(matching_entry_refs))
-                primary = tokens[0]
-                primary_exact = exists(
-                    select(1).where(
-                        AppOneCCatalogToken.source_base == source,
-                        AppOneCCatalogToken.generation == generation,
-                        AppOneCCatalogToken.catalog_type == kind,
-                        AppOneCCatalogToken.entry_ref == entry.ref,
-                        AppOneCCatalogToken.token == primary,
+                    for variant in primary_variants
+                ))
+                primary_prefixes = [f"{_like_fragment(variant)}%" for variant in primary_variants]
+                primary_starts = or_(*(
+                    exists(
+                        select(1).where(
+                            AppOneCCatalogToken.source_base == source,
+                            AppOneCCatalogToken.generation == generation,
+                            AppOneCCatalogToken.catalog_type == kind,
+                            AppOneCCatalogToken.entry_ref == entry.ref,
+                            AppOneCCatalogToken.token.like(prefix, escape="\\"),
+                        )
                     )
-                )
-                primary_prefix = f"{_like_fragment(primary)}%"
-                primary_starts = exists(
-                    select(1).where(
-                        AppOneCCatalogToken.source_base == source,
-                        AppOneCCatalogToken.generation == generation,
-                        AppOneCCatalogToken.catalog_type == kind,
-                        AppOneCCatalogToken.entry_ref == entry.ref,
-                        AppOneCCatalogToken.token.like(primary_prefix, escape="\\"),
+                    for prefix in primary_prefixes
+                ))
+                entry_starts = or_(*(
+                    condition
+                    for prefix in primary_prefixes
+                    for condition in (
+                        entry.name_normalized.like(prefix, escape="\\"),
+                        entry.code_normalized.like(prefix, escape="\\"),
                     )
-                )
+                ))
                 relevance_rank = case(
                     (primary_exact, 0),
-                    (
-                        or_(
-                            entry.name_normalized.like(primary_prefix, escape="\\"),
-                            entry.code_normalized.like(primary_prefix, escape="\\"),
-                            primary_starts,
-                        ),
-                        1,
-                    ),
+                    (or_(entry_starts, primary_starts), 1),
                     else_=2,
                 )
                 dialect_name = session.get_bind().dialect.name
@@ -1072,6 +1100,54 @@ class OneCCatalogSnapshotStore:
         if kind == CATALOG_WAREHOUSES:
             return True, {"ref": str(row.ref), "name": str(row.name or "")}
         return True, {"ref": str(row.ref), "code": str(row.code or ""), "name": str(row.name or "")}
+
+    def list_entries(
+        self,
+        *,
+        catalog_type: str,
+        limit: int,
+        source_base: str = DEFAULT_SOURCE_BASE,
+    ) -> tuple[bool, list[dict[str, str]]]:
+        if not self._storage_enabled():
+            return False, []
+        source = self._source_base(source_base)
+        kind = self._catalog_type(catalog_type)
+        safe_limit = max(1, min(int(limit or 1), 50_000))
+        try:
+            with app_session(self._database_url) as session:
+                state = self._read_snapshot(session, source)
+                if state is None:
+                    return False, []
+                rows = session.execute(
+                    select(
+                        AppOneCCatalogEntry.ref,
+                        AppOneCCatalogEntry.code,
+                        AppOneCCatalogEntry.name,
+                    ).where(
+                        AppOneCCatalogEntry.source_base == source,
+                        AppOneCCatalogEntry.generation == int(state.active_generation),
+                        AppOneCCatalogEntry.catalog_type == kind,
+                    ).order_by(
+                        AppOneCCatalogEntry.name_normalized,
+                        AppOneCCatalogEntry.ref,
+                    ).limit(safe_limit)
+                ).all()
+        except Exception as exc:
+            logger.warning("1C app catalogue list is unavailable: %s", exc)
+            return False, []
+        if kind == CATALOG_WAREHOUSES:
+            return True, [
+                {"ref": str(row.ref), "name": str(row.name or "")}
+                for row in rows
+            ]
+        return True, [
+            {
+                "ref": str(row.ref),
+                "code": str(row.code or ""),
+                "name": str(row.name or ""),
+            }
+            for row in rows
+        ]
 
     def lookup_nomenclature_refs(
         self,

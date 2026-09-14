@@ -33,6 +33,7 @@
         "process_vm_writev",
         "ptrace",
         "quotactl",
+        "quotactl_fd",
         "reboot",
         "request_key",
         "setns",
@@ -46,6 +47,24 @@
       ],
       "action": "SCMP_ACT_ERRNO",
       "errnoRet": 1
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [{"index": 1, "value": 4294967295, "valueTwo": 1075599392, "op": "SCMP_CMP_MASKED_EQ"}]
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [{"index": 1, "value": 4294967295, "valueTwo": 1074292226, "op": "SCMP_CMP_MASKED_EQ"}]
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [{"index": 1, "value": 4294967295, "valueTwo": 1074030082, "op": "SCMP_CMP_MASKED_EQ"}]
     }
   ]
 }

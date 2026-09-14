@@ -26,6 +26,7 @@ jest.mock('./AuthContext', () => ({
 }));
 
 jest.mock('./biometricAuth', () => ({
+  BiometricUnavailableError: class BiometricUnavailableError extends Error {},
   getAppLockSettings: jest.fn(async () => ({ enabled: true, timeoutSeconds: 0 })),
   shouldLockAfterBackground: jest.fn(() => true),
   subscribeAppLockSettings: (listener: (settings: {

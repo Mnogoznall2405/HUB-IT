@@ -377,7 +377,7 @@ def test_gateway_containerfile_is_a_buildable_pinned_release_artifact(tmp_path: 
     copy_sources = [
         line.split()[1]
         for line in containerfile.splitlines()
-        if line.strip().startswith("COPY ")
+        if line.strip().startswith("COPY ") and not line.split()[1].startswith("--from=")
     ]
     assert "WEB-itinvent/backend" not in copy_sources
     assert "shared" not in copy_sources
@@ -410,6 +410,11 @@ def test_gateway_containerfile_is_a_buildable_pinned_release_artifact(tmp_path: 
     bundle_root = tmp_path / "gateway-bundle"
     for line in containerfile.splitlines():
         if not line.strip().startswith("COPY "):
+            continue
+        if line.split()[1].startswith("--from="):
+            # Runtime files copied from a build stage are not repository paths.
+            # Their compatibility is checked by the real Linux image build.
+            assert line.split() == ["COPY", "--from=cpython", "/usr/local", "/usr/local"]
             continue
         _, source_text, destination_text = line.split()
         source = PROJECT_ROOT / source_text

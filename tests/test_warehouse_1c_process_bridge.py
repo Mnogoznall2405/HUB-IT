@@ -170,3 +170,22 @@ def test_warehouse_dispatcher_warmup_opens_the_read_connection(monkeypatch):
 
     assert warehouse_1c_process_dispatcher.dispatch("warmup", {}) == {"ready": True}
     assert calls == ["warmup"]
+
+
+def test_warehouse_dispatcher_routes_balances_by_warehouses(monkeypatch):
+    calls = []
+
+    class FakeService:
+        async def get_balances_for_warehouses(self, **kwargs):
+            calls.append(kwargs)
+            return {"status": "ok", "items": []}
+
+    monkeypatch.setattr(warehouse_1c_process_dispatcher, "_service", FakeService())
+
+    payload = warehouse_1c_process_dispatcher.dispatch(
+        "balances_by_warehouses",
+        {"warehouse_refs": ["wh-1", "wh-2"], "limit": 750},
+    )
+
+    assert payload == {"status": "ok", "items": []}
+    assert calls == [{"warehouse_refs": ["wh-1", "wh-2"], "limit": 750}]

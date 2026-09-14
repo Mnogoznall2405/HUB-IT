@@ -8,6 +8,7 @@ const mockTaskCardRender = jest.fn();
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
   useLocalSearchParams: () => ({}),
+  usePathname: () => '/docflow',
 }));
 
 jest.mock('../../auth/AuthContext', () => ({

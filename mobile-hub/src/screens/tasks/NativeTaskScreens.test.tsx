@@ -1,12 +1,15 @@
+import { File, Paths } from 'expo-file-system';
+import { clearNativeFormDrafts } from '../../drafts/nativeFormDrafts';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as departmentsApi from '../../api/departmentsApi';
 import * as taskApi from '../../api/taskApi';
-import { writeNativeEntitySnapshot } from '../../cache/nativeSnapshotCache';
+import { readNativeEntitySnapshot, writeNativeEntitySnapshot } from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
 import * as nativeTaskFiles from '../../tasks/nativeTaskFiles';
+import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { NativeTaskCreateScreen } from './NativeTaskCreateScreen';
 import { NativeTaskDetailScreen } from './NativeTaskDetailScreen';
 import { NativeTasksInboxScreen } from './NativeTasksInboxScreen';
@@ -100,7 +103,8 @@ function setAuth(permissions = ['tasks.read', 'tasks.create']) {
 }
 
 describe('Native Tasks screens', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearNativeFormDrafts();
     jest.clearAllMocks();
     mockedUseLocalSearchParams.mockReturnValue({});
     setAuth();
@@ -174,11 +178,69 @@ describe('Native Tasks screens', () => {
     });
     (taskApi.deleteTask as jest.Mock).mockResolvedValue({ ok: true, task_id: 'task-1' });
     (nativeTaskFiles.pickNativeTaskFile as jest.Mock).mockResolvedValue({
-      uri: 'file:///report.pdf',
+      uri: new File(Paths.cache, 'report.pdf').uri,
       name: 'report.pdf',
       mimeType: 'application/pdf',
       size: 512,
     });
+    const pickedFixture = await nativeTaskFiles.pickNativeTaskFile();
+    if (pickedFixture) new File(pickedFixture.uri).write('x'.repeat(pickedFixture.size));
+    jest.mocked(nativeTaskFiles.pickNativeTaskFile).mockClear();
+  });
+
+  it('ignores an older task response after navigating to another task', async () => {
+    let resolveOld!: (value: unknown) => void;
+    (taskApi.getTask as jest.Mock).mockImplementation((id) => id === 'old-task'
+      ? new Promise((resolve) => { resolveOld = resolve; })
+      : Promise.resolve({ ...detailTask, id: 'new-task', title: 'Current task' }));
+    const view = await render(<NativeTaskDetailScreen taskId="old-task" />);
+    await waitFor(() => expect(taskApi.getTask).toHaveBeenCalledWith('old-task'));
+    await view.rerender(<NativeTaskDetailScreen taskId="new-task" />);
+    await waitFor(() => expect(view.getByText('Current task')).toBeTruthy());
+    await act(async () => { resolveOld({ ...detailTask, id: 'old-task', title: 'Stale task' }); });
+    expect(view.queryByText('Stale task')).toBeNull();
+    expect(view.getByText('Current task')).toBeTruthy();
+    const cached = await readNativeEntitySnapshot<{ task: { id: string } }>('task-details', 1, 'new-task');
+    expect(cached?.data.task.id).toBe('new-task');
+  });
+
+  it('ignores a network response after switching to the offline copy', async () => {
+    await writeNativeEntitySnapshot('task-details', 1, 'offline-race', {
+      task: { ...detailTask, id: 'offline-race', title: 'Saved task' }, comments: [], statusLog: [],
+    });
+    let finish!: (value: unknown) => void;
+    (taskApi.getTask as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeTaskDetailScreen taskId="offline-race" />);
+    await waitFor(() => expect(taskApi.getTask).toHaveBeenCalled());
+    mockAuth.offlineMode = true;
+    await view.rerender(<NativeTaskDetailScreen taskId="offline-race" />);
+    await waitFor(() => expect(view.getByText('Saved task')).toBeTruthy());
+    await act(async () => { finish({ ...detailTask, id: 'offline-race', title: 'Late network task' }); });
+    expect(view.queryByText('Late network task')).toBeNull();
+    expect(view.getByText('Saved task')).toBeTruthy();
+  });
+
+  it('keeps the newest refresh when requests for the same task finish out of order', async () => {
+    const listener = jest.spyOn(hubRealtimeSocket, 'onTaskChanged');
+    let finishOld!: (value: unknown) => void;
+    (taskApi.getTask as jest.Mock)
+      .mockResolvedValueOnce(detailTask)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValueOnce({ ...detailTask, title: 'Newest refresh' });
+    try {
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByText(detailTask.title)).toBeTruthy());
+      const refresh = listener.mock.calls[0][0];
+      await act(async () => { refresh({ payload: { task_id: 'task-1' } }); });
+      await waitFor(() => expect(taskApi.getTask).toHaveBeenCalledTimes(2));
+      await act(async () => { refresh({ payload: { task_id: 'task-1' } }); });
+      await waitFor(() => expect(view.getByText('Newest refresh')).toBeTruthy());
+      await act(async () => { finishOld({ ...detailTask, title: 'Older refresh' }); });
+      expect(view.queryByText('Older refresh')).toBeNull();
+      expect(view.getByText('Newest refresh')).toBeTruthy();
+    } finally {
+      listener.mockRestore();
+    }
   });
 
   it('loads the native task list and opens a task detail', async () => {
@@ -511,7 +573,7 @@ describe('Native Tasks screens', () => {
     await fireEvent.changeText(view.getByTestId('native-task-create-checklist-input'), 'Проверить кабель');
     await fireEvent.press(view.getByLabelText('Назад'));
     expect(router.back).not.toHaveBeenCalled();
-    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    expect(alert).toHaveBeenCalledWith('Сохранить черновик и выйти?', expect.any(String), expect.any(Array), expect.any(Object));
     alert.mockRestore();
   });
 
@@ -522,7 +584,7 @@ describe('Native Tasks screens', () => {
     await fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Несохранённая задача');
     await fireEvent.press(view.getByLabelText('Назад'));
     expect(router.back).not.toHaveBeenCalled();
-    expect(alert).toHaveBeenCalledWith('Выйти без сохранения?', expect.any(String), expect.any(Array), expect.any(Object));
+    expect(alert).toHaveBeenCalledWith('Сохранить черновик и выйти?', expect.any(String), expect.any(Array), expect.any(Object));
     await act(async () => alert.mock.calls[0][2]?.[0].onPress?.());
     expect(view.getByTestId('native-task-create-title').props.value).toBe('Несохранённая задача');
     await fireEvent.press(view.getByLabelText('Назад'));

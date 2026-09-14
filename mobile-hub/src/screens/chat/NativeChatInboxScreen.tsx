@@ -2,6 +2,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -19,6 +20,7 @@ import * as chatApi from '../../api/chatApi';
 import { formatApiError } from '../../api/formatError';
 import type {
   ChatConversationSummary,
+  ChatConversationPage,
   ChatFolderListResponse,
   ChatGlobalMessageSearchHit,
   ChatUserSummary,
@@ -80,11 +82,31 @@ export function NativeChatInboxScreen() {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, offlineMode } = useAuth();
+  const ownerId = Number(user?.id || 0);
+  const ownerRef = useRef(ownerId);
+  ownerRef.current = ownerId;
+  const [hydratedOwner, setHydratedOwner] = useState<number | null>(null);
+  const [snapshotRevision, setSnapshotRevision] = useState(0);
+  const removedConversationIdsRef = useRef(new Set<string>());
+  const pendingSnapshotRef = useRef<{
+    owner: number; page: ChatConversationPage; removedConversationIds: string[];
+  } | null>(null);
+  const flushInboxSnapshot = useCallback(() => {
+    const pending = pendingSnapshotRef.current;
+    pendingSnapshotRef.current = null;
+    if (!pending || ownerRef.current !== pending.owner) return;
+    void writeNativeChatInboxSnapshot(pending.owner, pending.page, {
+      removedConversationIds: pending.removedConversationIds,
+      isCurrent: () => ownerRef.current === pending.owner,
+    }).catch(() => undefined);
+  }, []);
   const bottomInset = useNativeBottomNavInset();
   const mountedRef = useRef(true);
   const loadingMoreRef = useRef(false);
   const loadStartingRef = useRef(false);
+  const loadScopeRef = useRef<{ owner: number } | null>(null);
   const foldersStartingRef = useRef(false);
+  const foldersScopeRef = useRef<{ owner: number } | null>(null);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
   const foldersInFlightRef = useRef<Promise<void> | null>(null);
   const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
@@ -118,32 +140,52 @@ export function NativeChatInboxScreen() {
   const [aiArchiveOpen, setAiArchiveOpen] = useState(false);
   const [folderSwipeActive, setFolderSwipeActive] = useState(false);
   const searchRequestRef = useRef(0);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const remoteSearchItemsRef = useRef<ChatConversationSummary[]>([]);
 
   const load = useCallback(async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
+    const userId = Number(user?.id || 0);
+    if (ownerRef.current !== userId) return;
+    if (loadScopeRef.current?.owner !== userId) {
+      loadScopeRef.current = { owner: userId };
+      loadStartingRef.current = false;
+      loadInFlightRef.current = null;
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+      setItems([]);
+      setHydratedOwner(null);
+      setHasMore(false);
+      setNextCursor(null);
+      setError('');
+    }
+    const scope = loadScopeRef.current;
+    const isCurrent = () => mountedRef.current && ownerRef.current === userId && loadScopeRef.current === scope;
     if (loadStartingRef.current && !loadInFlightRef.current) return;
     if (loadInFlightRef.current) {
       if (mode === 'refresh') setRefreshing(true);
       await loadInFlightRef.current;
-      if (mode === 'refresh' && mountedRef.current) setRefreshing(false);
+      if (mode === 'refresh' && isCurrent()) setRefreshing(false);
       return;
     }
     loadStartingRef.current = true;
     if (mode === 'initial') setLoading(true);
     if (mode === 'refresh') setRefreshing(true);
-    const userId = Number(user?.id || 0);
     let cached = false;
     if (mode === 'initial' && userId) {
       const snapshot = await readNativeChatInboxSnapshot(userId);
-      if (mountedRef.current && snapshot) {
+      if (!isCurrent()) return;
+      if (snapshot) {
         cached = true;
         setItems(snapshot.data.items);
         setHasMore(snapshot.data.has_more);
         setNextCursor(snapshot.data.next_cursor);
+        setHydratedOwner(userId);
         setLoading(false);
       }
     }
     if (offlineMode) {
-      if (mountedRef.current) {
+      if (isCurrent()) {
         if (!cached && mode !== 'silent') {
           setError('Нет подключения и сохранённых диалогов.');
         }
@@ -157,7 +199,8 @@ export function NativeChatInboxScreen() {
     loadInFlightRef.current = request.then(() => undefined, () => undefined);
     try {
       const page = await request;
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
+      page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
       if (mode === 'silent') {
         setItems((current) => {
           const byId = new Map(current.map((item) => [item.id, item]));
@@ -169,18 +212,19 @@ export function NativeChatInboxScreen() {
       }
       setHasMore(page.has_more);
       setNextCursor(page.next_cursor);
+      setHydratedOwner(userId);
       setError('');
       if (userId) void writeNativeChatInboxSnapshot(userId, page);
     } catch (cause) {
-      if (mountedRef.current && mode !== 'silent') {
+      if (isCurrent() && mode !== 'silent') {
         setError(cached
           ? 'Нет подключения. Показаны сохранённые диалоги.'
           : formatApiError(cause, 'Не удалось загрузить диалоги'));
       }
     } finally {
-      loadStartingRef.current = false;
-      loadInFlightRef.current = null;
-      if (mountedRef.current) {
+      if (isCurrent()) {
+        loadStartingRef.current = false;
+        loadInFlightRef.current = null;
         if (mode === 'initial') setLoading(false);
         if (mode === 'refresh') setRefreshing(false);
       }
@@ -189,16 +233,17 @@ export function NativeChatInboxScreen() {
 
   const loadMore = useCallback(async () => {
     if (offlineMode || !hasMore || !nextCursor || loadingMoreRef.current) return;
+    const userId = Number(user?.id || 0);
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       const page = await chatApi.getConversationPage({ cursor: nextCursor, limit: 50 });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || ownerRef.current !== userId) return;
+      page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
       setItems((current) => {
         const byId = new Map(current.map((item) => [item.id, item]));
         page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
         const merged = [...byId.values()];
-        const userId = Number(user?.id || 0);
         if (userId) {
           void writeNativeChatInboxSnapshot(userId, {
             items: merged,
@@ -211,21 +256,35 @@ export function NativeChatInboxScreen() {
       setHasMore(page.has_more);
       setNextCursor(page.next_cursor);
     } catch (cause) {
-      if (mountedRef.current) setError(formatApiError(cause, 'Не удалось загрузить следующие диалоги'));
+      if (mountedRef.current && ownerRef.current === userId) setError(formatApiError(cause, 'Не удалось загрузить следующие диалоги'));
     } finally {
-      loadingMoreRef.current = false;
-      if (mountedRef.current) setLoadingMore(false);
+      if (ownerRef.current === userId) {
+        loadingMoreRef.current = false;
+        if (mountedRef.current) setLoadingMore(false);
+      }
     }
   }, [hasMore, nextCursor, offlineMode, user?.id]);
 
   const loadFolders = useCallback(async () => {
+    const userId = Number(user?.id || 0);
+    if (ownerRef.current !== userId) return;
+    if (foldersScopeRef.current?.owner !== userId) {
+      foldersScopeRef.current = { owner: userId };
+      foldersStartingRef.current = false;
+      foldersInFlightRef.current = null;
+      setCustomFolders([]);
+      setConversationIdsByFolder({});
+      setSystemUnreadCounts({});
+      setActiveFolderKey(DEFAULT_CHAT_FOLDER_KEY);
+    }
+    const scope = foldersScopeRef.current;
+    const isCurrent = () => mountedRef.current && ownerRef.current === userId && foldersScopeRef.current === scope;
     if (foldersStartingRef.current && !foldersInFlightRef.current) return;
     if (foldersInFlightRef.current) {
       await foldersInFlightRef.current;
       return;
     }
     foldersStartingRef.current = true;
-    const userId = Number(user?.id || 0);
     let cached = false;
     const applyFolders = (payload: ChatFolderListResponse) => {
       setCustomFolders(payload.items);
@@ -236,32 +295,35 @@ export function NativeChatInboxScreen() {
       setSystemUnreadCounts(payload.folder_unread_counts || {});
     };
     if (userId) {
-      const snapshot = await readNativeSnapshot<ChatFolderListResponse>('chat-folders', userId);
-      if (mountedRef.current && snapshot) {
+      const snapshot = await readNativeSnapshot<ChatFolderListResponse>('chat-folders', userId).catch(() => null);
+      if (!isCurrent()) return;
+      if (snapshot) {
         cached = true;
         applyFolders(snapshot.data);
       }
     }
     if (offlineMode) {
-      foldersStartingRef.current = false;
+      if (isCurrent()) foldersStartingRef.current = false;
       return;
     }
     const request = chatApi.listChatFolders();
     foldersInFlightRef.current = request.then(() => undefined, () => undefined);
     try {
       const payload = await request;
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       applyFolders(payload);
       if (userId) void writeNativeSnapshot('chat-folders', userId, payload);
     } catch {
-      if (mountedRef.current && !cached) {
+      if (isCurrent() && !cached) {
         setCustomFolders([]);
         setConversationIdsByFolder({});
         setSystemUnreadCounts({});
       }
     } finally {
-      foldersStartingRef.current = false;
-      foldersInFlightRef.current = null;
+      if (isCurrent()) {
+        foldersStartingRef.current = false;
+        foldersInFlightRef.current = null;
+      }
     }
   }, [offlineMode, user?.id]);
 
@@ -303,13 +365,14 @@ export function NativeChatInboxScreen() {
   useAndroidBackHandler(leaveInbox);
 
   useEffect(() => {
+    let active = true;
     mountedRef.current = true;
     void load();
     void loadFolders();
     const userId = Number(user?.id || 0);
     if (userId) {
       void getActiveChatFolderKey(userId).then((folderKey) => {
-        if (mountedRef.current) setActiveFolderKey(folderKey);
+        if (active && mountedRef.current && ownerRef.current === userId) setActiveFolderKey(folderKey);
       });
     }
     chatSocket.subscribeInbox();
@@ -327,12 +390,23 @@ export function NativeChatInboxScreen() {
       }
     });
     const applyEnvelope = (envelope: unknown) => {
+      if (ownerRef.current !== Number(user?.id || 0)) return;
+      const remoteIds = new Set(remoteSearchItemsRef.current.map((item) => item.id));
+      if (remoteIds.size) {
+        remoteSearchItemsRef.current = applyConversationEnvelope(
+          remoteSearchItemsRef.current, envelope, user?.id, getActiveNativeChatConversationId(),
+        ).items.filter((item) => remoteIds.has(item.id));
+      }
+      const payload = (envelope as { payload?: { conversation?: { id?: string }; item?: { id?: string } } })?.payload;
+      const restoredId = String(payload?.conversation?.id || payload?.item?.id || '').trim();
+      if (restoredId) removedConversationIdsRef.current.delete(restoredId);
       setItems((current) => applyConversationEnvelope(
         current,
         envelope,
         user?.id,
         getActiveNativeChatConversationId(),
       ).items);
+      setSnapshotRevision((revision) => revision + 1);
     };
     const offUpdated = chatSocket.on('chat.conversation.updated', applyEnvelope);
     const offMessage = chatSocket.on('chat.message.created', applyEnvelope);
@@ -342,14 +416,23 @@ export function NativeChatInboxScreen() {
       const conversationId = String(
         (envelope as { payload?: { conversation_id?: string } })?.payload?.conversation_id || '',
       ).trim();
-      if (conversationId) setItems((current) => current.filter((item) => item.id !== conversationId));
+      if (conversationId && ownerRef.current === Number(user?.id || 0)) {
+        removedConversationIdsRef.current.add(conversationId);
+        remoteSearchItemsRef.current = remoteSearchItemsRef.current.filter((item) => item.id !== conversationId);
+        setItems((current) => current.filter((item) => item.id !== conversationId));
+        setSnapshotRevision((revision) => revision + 1);
+      }
     });
     const offConversationRead = subscribeNativeChatConversationRead((conversationId) => {
+      if (ownerRef.current !== Number(user?.id || 0)) return;
+      remoteSearchItemsRef.current = clearConversationUnread(remoteSearchItemsRef.current, conversationId);
       setItems((current) => clearConversationUnread(current, conversationId));
+      setSnapshotRevision((revision) => revision + 1);
       setSystemUnreadCounts({});
     });
 
     return () => {
+      active = false;
       mountedRef.current = false;
       offStatus();
       offUpdated();
@@ -378,48 +461,93 @@ export function NativeChatInboxScreen() {
   }, [load, loadFolders]));
 
   useEffect(() => {
+    if (!snapshotRevision || hydratedOwner !== ownerId || ownerId <= 0) return;
+    pendingSnapshotRef.current = {
+      owner: ownerId,
+      page: { items, has_more: hasMore, next_cursor: nextCursor },
+      removedConversationIds: [...removedConversationIdsRef.current],
+    };
+    const timer = setTimeout(flushInboxSnapshot, 250);
+    return () => clearTimeout(timer);
+  }, [snapshotRevision, hydratedOwner, ownerId, items, hasMore, nextCursor, flushInboxSnapshot]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') flushInboxSnapshot();
+    });
+    return () => {
+      subscription.remove();
+      flushInboxSnapshot();
+    };
+  }, [flushInboxSnapshot]);
+
+  useEffect(() => {
+    removedConversationIdsRef.current.clear();
+  }, [ownerId]);
+
+  const mergeSearchResults = useCallback((local: ChatConversationSummary[]) => {
+    const byId = new Map<string, ChatConversationSummary>();
+    [...local, ...remoteSearchItemsRef.current].forEach((item) => {
+      if (item?.id) byId.set(item.id, item);
+    });
+    return [...byId.values()];
+  }, []);
+
+  useEffect(() => {
     const query = search.trim();
     if (!query || workspace === 'ai') {
+      remoteSearchItemsRef.current = [];
+      searchRequestRef.current += 1;
       setSearchItems(null);
       setSearchMessages([]);
       setSearching(false);
       return undefined;
     }
+    const local = filterConversationsByLocalQuery(itemsRef.current, query);
+    remoteSearchItemsRef.current = [];
+    const requestId = ++searchRequestRef.current;
     // Immediate local filter so offline/saved titles stay findable (OFF-06).
-    setSearchItems(filterConversationsByLocalQuery(items, query));
+    setSearchItems(local);
     setSearchMessages([]);
     if (offlineMode) {
       setSearching(false);
       return undefined;
     }
-    const requestId = ++searchRequestRef.current;
     setSearching(true);
     const timer = setTimeout(() => {
       void Promise.all([
         chatApi.getConversationPage({ query, limit: 50 }),
         chatApi.searchMessagesGlobal(query, 20).catch(() => []),
       ]).then(([page, messages]) => {
-        if (!mountedRef.current || requestId !== searchRequestRef.current) return;
+        if (!mountedRef.current || ownerRef.current !== ownerId || requestId !== searchRequestRef.current) return;
         const remote = page.items || [];
-        const local = filterConversationsByLocalQuery(items, query);
-        const byId = new Map<string, ChatConversationSummary>();
-        [...local, ...remote].forEach((item) => {
-          if (item?.id) byId.set(item.id, item);
-        });
-        setSearchItems([...byId.values()]);
+        remoteSearchItemsRef.current = remote;
+        setSearchItems(mergeSearchResults(filterConversationsByLocalQuery(itemsRef.current, query)));
         setSearchMessages(messages);
         setSearching(false);
       }).catch((cause) => {
-        if (!mountedRef.current || requestId !== searchRequestRef.current) return;
+        if (!mountedRef.current || ownerRef.current !== ownerId || requestId !== searchRequestRef.current) return;
         setSearching(false);
         // Keep local results; only surface an error when nothing local matched.
-        if (!filterConversationsByLocalQuery(items, query).length) {
+        if (!filterConversationsByLocalQuery(itemsRef.current, query).length) {
           setError(formatApiError(cause, 'Не удалось найти диалоги'));
         }
       });
     }, 350);
-    return () => clearTimeout(timer);
-  }, [items, offlineMode, search, workspace]);
+    return () => {
+      clearTimeout(timer);
+      if (searchRequestRef.current === requestId) searchRequestRef.current += 1;
+    };
+  }, [mergeSearchResults, offlineMode, ownerId, search, workspace]);
+
+  // Realtime inbox updates only refresh local matches. They must not cancel
+  // the pending debounce or restart an in-flight remote search.
+  useEffect(() => {
+    const query = search.trim();
+    if (query && workspace !== 'ai') {
+      setSearchItems(mergeSearchResults(filterConversationsByLocalQuery(items, query)));
+    }
+  }, [items, mergeSearchResults, ownerId, search, workspace]);
 
   const unreadCounts = useMemo(
     () => buildFolderUnreadCounts(items, customFolders, conversationIdsByFolder, systemUnreadCounts),
@@ -837,19 +965,12 @@ export function NativeChatInboxScreen() {
         ) : null}
       </View>
       {workspace === 'chats' ? (
-        <FolderSwipeHost
-          fill={false}
-          capture
-          onSwipeFolder={swipeFolder}
-          onSwipeEngage={setFolderSwipeActive}
-        >
           <ChatFolderTabs
             activeFolderKey={activeFolderKey}
             customFolders={customFolders}
             unreadCounts={unreadCounts}
             onFolderChange={changeFolder}
           />
-        </FolderSwipeHost>
       ) : null}
 
       {loading ? (
@@ -872,6 +993,7 @@ export function NativeChatInboxScreen() {
       ) : (
         <FolderSwipeHost
           enabled={workspace === 'chats'}
+          capture
           onSwipeFolder={swipeFolder}
           onSwipeEngage={setFolderSwipeActive}
         >

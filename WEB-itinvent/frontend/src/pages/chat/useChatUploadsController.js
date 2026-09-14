@@ -130,6 +130,10 @@ export default function useChatUploadsController({
     notifyWarning,
   });
 
+  useEffect(() => () => {
+    cancelVoiceRecording?.();
+  }, [activeConversationId, cancelVoiceRecording]);
+
   const handleComposerPaste = useCallback((event) => {
     const files = Array.from(event?.clipboardData?.files || []);
     if (files.length === 0) return;

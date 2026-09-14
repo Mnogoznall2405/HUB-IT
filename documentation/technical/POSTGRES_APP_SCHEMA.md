@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-09-14 08:42 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **141** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **154** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **9** | — |
@@ -29,7 +29,7 @@ _Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (141 таблиц)
+## Схема `app` (154 таблиц)
 
 ### Auth и пользователи
 
@@ -151,6 +151,7 @@ _Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hub
 
 | Таблица | Назначение |
 |---------|------------|
+| `ai_bot_access` | — |
 | `ai_bot_conversations` | Привязка bot ↔ user ↔ conversation_id |
 | `ai_bot_runs` | Запуски / стадии ответа |
 | `ai_bots` | Конфигурация AI-ботов в чате |
@@ -158,9 +159,11 @@ _Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hub
 | `ai_kb_documents` | Документы KB для RAG |
 | `ai_pending_actions` | Действия, ждущие подтверждения |
 | `ai_sandbox_files` | — |
+| `ai_sandbox_gateway_grants` | — |
 | `ai_sandbox_jobs` | — |
 | `ai_sandbox_permissions` | — |
 | `ai_sandbox_sessions` | — |
+| `ai_sandbox_transfer_grants` | — |
 | `ai_user_memories` | — |
 | `ai_user_memory_sources` | — |
 | `transfer_act_jobs` | Фоновые jobs по актам перемещения |
@@ -180,9 +183,16 @@ _Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hub
 |---------|------------|
 | `browser_probe_media` | — |
 | `browser_probe_visits` | — |
+| `construction_day_crews` | — |
+| `construction_direction_role_assignments` | — |
 | `construction_object_1c_groups` | — |
 | `construction_object_role_assignments` | — |
 | `construction_objects` | — |
+| `construction_planning_audit` | — |
+| `construction_week_plans` | — |
+| `construction_work_audit` | — |
+| `construction_work_entries` | — |
+| `construction_work_items` | — |
 | `desktop_presence` | — |
 | `docflow_audit_events` | — |
 | `docflow_commands` | — |
@@ -199,8 +209,11 @@ _Обновлено: 2026-09-07 04:41 UTC_ · инстанс `127.0.0.1:5432/hub
 | `mobile_biometric_credentials` | — |
 | `my_file_audit` | — |
 | `my_file_blobs` | — |
+| `my_file_blobs_v1` | — |
 | `my_file_download_grants` | — |
+| `my_file_folders` | — |
 | `my_file_previews` | — |
+| `my_file_previews_v1` | — |
 | `my_files` | — |
 | `one_c_catalog_entries` | — |
 | `one_c_catalog_search_documents` | — |
@@ -347,7 +360,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-09-07:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 141, `chat` 4, `system` 8).
+- **2026-09-14:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 154, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

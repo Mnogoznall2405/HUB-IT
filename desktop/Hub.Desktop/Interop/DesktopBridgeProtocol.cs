@@ -5,6 +5,7 @@ using Hub.Desktop.Downloads;
 using Hub.Desktop.Lifecycle;
 using Hub.Desktop.Printing;
 using Hub.Desktop.Shell;
+using Hub.Desktop.Transfers;
 
 namespace Hub.Desktop.Interop;
 
@@ -15,6 +16,7 @@ public enum DesktopInboundMessageType
     SetTheme,
     OpenDownloadedFile,
     PrepareDownloadedFile,
+    OpenFileDialog,
     UpdateShellStatus,
     UpdateQuickRoutes,
     PrintCurrentDocument,
@@ -33,6 +35,7 @@ public enum DesktopThemeMode
 {
     Light,
     Dark,
+    HighContrast,
 }
 
 public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
@@ -40,6 +43,11 @@ public sealed record DesktopMailComposeWindowCommand(string RequestId, string Ro
 public sealed record DesktopEquipmentQrPrintCommand(
     string RequestId,
     DesktopEquipmentQrPrintMode Mode);
+public sealed record DesktopOpenFileDialogCommand(
+    string RequestId,
+    bool Multiple,
+    IReadOnlyList<string> Accept,
+    string? Title);
 
 public sealed record DesktopInboundMessage(
     DesktopInboundMessageType Type,
@@ -49,7 +57,8 @@ public sealed record DesktopInboundMessage(
     IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
     DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
-    DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null);
+    DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
+    DesktopOpenFileDialogCommand? OpenFileDialog = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -70,6 +79,10 @@ public static class DesktopBridgeProtocol
     private const string SetThemeMessageType = "appearance.theme";
     private const string OpenDownloadedFileMessageType = "file.openDownloaded";
     private const string PrepareDownloadedFileMessageType = "file.prepareDownload";
+    private const string OpenFileDialogMessageType = "file.openDialog";
+    private const string OpenFileDialogResultMessageType = "file.openDialogResult";
+    private const string FileDroppedMessageType = "file.dropped";
+    private const string FileSharedMessageType = "file.shared";
     private const string ShellStatusMessageType = "shell.status";
     private const string QuickRoutesMessageType = "shell.quickRoutes";
     private const string PrintCurrentDocumentMessageType = "document.printCurrent";
@@ -90,6 +103,7 @@ public static class DesktopBridgeProtocol
     private const string SystemNetworkChangedMessageType = "desktop.network.changed";
     private const string CapabilitiesMessageType = "desktop.capabilities";
     private const string OpenCommandPaletteMessageType = "command.openPalette";
+    private const string AccessibilityMessageType = "desktop.accessibility";
     private const string MailComposeWindowOpenMessageType = "mail.composeWindow.open";
     private const string MailComposeWindowResultMessageType = "mail.composeWindow.result";
     private const string MailComposeWindowCloseRequestedMessageType = "mail.composeWindow.closeRequested";
@@ -132,6 +146,7 @@ public static class DesktopBridgeProtocol
                 SetThemeMessageType => TryParseTheme(root, out message),
                 OpenDownloadedFileMessageType => TryParseOpenDownloadedFile(root, out message),
                 PrepareDownloadedFileMessageType => TryParsePrepareDownloadedFile(root, out message),
+                OpenFileDialogMessageType => TryParseOpenFileDialog(root, out message),
                 ShellStatusMessageType => TryParseShellStatus(root, out message),
                 QuickRoutesMessageType => TryParseQuickRoutes(root, out message),
                 PrintCurrentDocumentMessageType => TryParsePrintCurrentDocument(root, out message),
@@ -239,6 +254,18 @@ public static class DesktopBridgeProtocol
             version = CurrentVersion,
         });
 
+    public static string CreateAccessibilityMessage(bool highContrast, bool reducedMotion, string? scheme)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = AccessibilityMessageType,
+            version = CurrentVersion,
+            highContrast,
+            reducedMotion,
+            scheme = string.IsNullOrWhiteSpace(scheme) ? null : scheme,
+        });
+    }
+
     public static string CreateWindowStateMessage(bool foreground)
     {
         return JsonSerializer.Serialize(new
@@ -314,6 +341,56 @@ public static class DesktopBridgeProtocol
             action = FormatDownloadedFileAction(action),
             status = accepted ? "accepted" : "busy",
         });
+    }
+
+    public static string CreateOpenFileDialogResultMessage(
+        string requestId,
+        IReadOnlyList<string> paths)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid request id.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = OpenFileDialogResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            paths,
+            cancelled = paths.Count == 0,
+        });
+    }
+
+    public static string CreateFileDroppedMessage(IReadOnlyList<DesktopSharedFileDescriptor> files)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = FileDroppedMessageType,
+            version = CurrentVersion,
+            files = files.Take(100).Select(SerializeSharedFile),
+        });
+    }
+
+    public static string CreateFileSharedMessage(IReadOnlyList<DesktopSharedFileDescriptor> files)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = FileSharedMessageType,
+            version = CurrentVersion,
+            files = files.Take(100).Select(SerializeSharedFile),
+        });
+    }
+
+    private static object SerializeSharedFile(DesktopSharedFileDescriptor file)
+    {
+        return new
+        {
+            name = file.Name,
+            size = file.Size,
+            url = file.Url,
+            relativePath = file.RelativePath,
+        };
     }
 
     public static string CreateVncPreflightResultMessage(bool available)
@@ -456,7 +533,7 @@ public static class DesktopBridgeProtocol
     {
         message = default!;
         if (!HasExactProperties(root, "type", "version", "mode")
-            || !TryGetBoundedString(root, "mode", 5, out var mode))
+            || !TryGetBoundedString(root, "mode", 15, out var mode))
         {
             return false;
         }
@@ -465,6 +542,7 @@ public static class DesktopBridgeProtocol
         {
             "light" => DesktopThemeMode.Light,
             "dark" => DesktopThemeMode.Dark,
+            "high-contrast" => DesktopThemeMode.HighContrast,
             _ => (DesktopThemeMode?)null,
         };
         if (themeMode is null)
@@ -517,6 +595,26 @@ public static class DesktopBridgeProtocol
         message = new DesktopInboundMessage(
             DesktopInboundMessageType.PrepareDownloadedFile,
             DownloadedFileAction: action);
+        return true;
+    }
+
+    private static bool TryParseOpenFileDialog(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId)
+            || !TryGetOptionalStringArray(root, "accept", 32, 256, out var accept)
+            || !TryGetOptionalString(root, "title", 128, out var title))
+        {
+            return false;
+        }
+
+        var multiple = TryGetBoolean(root, "multiple", out var multipleValue) && multipleValue;
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenFileDialog,
+            OpenFileDialog: new DesktopOpenFileDialogCommand(requestId, multiple, accept, title));
         return true;
     }
 
@@ -707,6 +805,81 @@ public static class DesktopBridgeProtocol
             && element.TryGetInt32(out value)
             && value >= 0
             && value <= MaximumShellCounter;
+    }
+
+    private static bool TryGetOptionalString(
+        JsonElement root,
+        string propertyName,
+        int maximumLength,
+        out string? value)
+    {
+        value = null;
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var text = element.GetString()!;
+        if (text.Length > maximumLength || text.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        value = text;
+        return true;
+    }
+
+    private static bool TryGetOptionalStringArray(
+        JsonElement root,
+        string propertyName,
+        int maximumCount,
+        int maximumItemLength,
+        out IReadOnlyList<string> value)
+    {
+        value = Array.Empty<string>();
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var items = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            var text = item.GetString()!;
+            if (string.IsNullOrWhiteSpace(text)
+                || text.Length > maximumItemLength
+                || text.Any(char.IsControl))
+            {
+                return false;
+            }
+
+            items.Add(text);
+        }
+
+        if (items.Count > maximumCount)
+        {
+            return false;
+        }
+
+        value = items;
+        return true;
     }
 
     private static bool IsValidNotificationId(string value)

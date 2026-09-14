@@ -49,7 +49,7 @@ describe('native-only route registry', () => {
   });
 
   it('reduces unsupported workflows to a safe native root', () => {
-    expect(hrefForPortalPath('/admin/system')).toEqual({ pathname: '/(shell)/menu/admin' });
+    expect(hrefForPortalPath('/admin/system')).toEqual({ pathname: '/(shell)/menu/admin/system' });
     expect(hrefForPortalPath('/tasks?view=board')).toEqual({ pathname: '/(shell)/tasks' });
     expect(hrefForPortalPath('/mail?compose=android-share&android_share_id=share-1'))
       .toEqual({ pathname: '/(shell)/mail' });

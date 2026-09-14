@@ -1,3 +1,4 @@
+import ChatSidebarDesktopHeader from '../chat/ChatSidebarDesktopHeader';
 import React from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -334,11 +335,12 @@ async function advanceHubPollInterval() {
   });
 }
 
-function installMatchMedia({ mobile = false, windowControlsOverlay = false } = {}) {
+function installMatchMedia({ mobile = false, tablet = false, windowControlsOverlay = false } = {}) {
   const previousMatchMedia = window.matchMedia;
   window.matchMedia = vi.fn().mockImplementation((query) => ({
     matches: Boolean(
       (mobile && query.includes('max-width:599.95px'))
+      || ((mobile || tablet) && query.includes('max-width:899.95px'))
       || (windowControlsOverlay && query.includes('display-mode: window-controls-overlay')),
     ),
     media: query,
@@ -1465,7 +1467,7 @@ describe('MainLayout hub Windows notifications', () => {
 
     render(
       <MainLayout>
-        <div>Child content</div>
+        <ChatSidebarDesktopHeader ui={{}} workspace="chats" />
       </MainLayout>,
     );
 
@@ -1474,7 +1476,8 @@ describe('MainLayout hub Windows notifications', () => {
       await Promise.resolve();
     });
 
-    fireEvent.click(screen.getByLabelText('Открыть уведомления'));
+    expect(screen.getByTestId('main-layout-shell')).toHaveAttribute('data-app-bar-height', '0');
+    fireEvent.click(screen.getByRole('button', { name: 'Уведомления' }));
 
     await act(async () => {
       await Promise.resolve();
@@ -2637,6 +2640,23 @@ describe('MainLayout desktop account navigation', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([
+    { tablet: true, search: '' },
+    { tablet: false, search: '?task_layout=split' },
+  ])('keeps shell actions when the sidebar is not persistently visible: %j', async ({ tablet, search }) => {
+    const restore = installMatchMedia({ tablet });
+    mockLocation.pathname = '/chat';
+    mockLocation.search = search;
+    try {
+      render(<MainLayout><div>Chat content</div></MainLayout>);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByTestId('main-layout-app-bar')).toBeInTheDocument();
+      expect(screen.getByLabelText('Открыть уведомления')).toBeInTheDocument();
+    } finally {
+      restore();
+    }
   });
 
   it('loads a route only after click, not hover or keyboard focus', async () => {

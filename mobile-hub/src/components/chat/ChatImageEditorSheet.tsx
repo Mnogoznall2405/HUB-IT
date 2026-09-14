@@ -1,35 +1,35 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
   Modal,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { File } from 'expo-file-system';
+import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import {
   appendChatImageEditOperation,
-  commitChatImageEditorOperation,
+  appendChatImageStrokePoint,
   containedImageRect,
   createChatImageEditorHistory,
   cropRectForAspect,
   cropRectFromNormalized,
-  hasOverlayChatImageEdits,
   nextImageRotation,
   overlayChatImageEditRecipe,
   pointInContainedImage,
-  redoChatImageEditorHistory,
-  resetChatImageEditorHistory,
+  type ChatImageEditRecipe,
   type ChatImageCropAspect,
   type ChatImageEditOperation,
   type ChatImageEditorTool,
   type ChatImagePoint,
-  undoChatImageEditorHistory,
 } from '../../chat/chatImageEditor';
 import {
   readLocalImageDataUrl,
@@ -42,6 +42,8 @@ import { ChatImageRecipeExporter } from './ChatImageRecipeExporter';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
 
 const BRUSH_COLORS = ['#ffffff', '#ff3b30', '#ffcc00', '#000000'] as const;
+type ImageFrame = { uri: string; size: { width: number; height: number }; recipe: ChatImageEditRecipe };
+type ExportedImage = ReturnType<typeof writeEditedImageFromDataUrl>;
 const TOOL_HELP: Record<ChatImageEditorTool, string> = {
   crop: 'Проведите по фото, чтобы выделить новую область, или выберите кадр.',
   draw: 'Рисуйте по фото пальцем.',
@@ -56,7 +58,7 @@ async function manipulatePickedImage(
     | { crop: { originX: number; originY: number; width: number; height: number } }
   >,
 ): Promise<{ uri: string; width?: number; height?: number }> {
-  const ImageManipulator = await import('expo-image-manipulator');
+  const ImageManipulator = require('expo-image-manipulator') as typeof import('expo-image-manipulator');
   return ImageManipulator.manipulateAsync(uri, actions, {
     compress: 0.85,
     format: ImageManipulator.SaveFormat.JPEG,
@@ -66,15 +68,23 @@ async function manipulatePickedImage(
 export function ChatImageEditorSheet({
   file,
   busy,
+  caption,
+  onChangeCaption,
+  confirmLabel = 'Отправить фото',
   onCancel,
   onConfirm,
 }: {
   file: NativePickedFile | null;
   busy?: boolean;
+  caption?: string;
+  onChangeCaption?: (value: string) => void;
+  confirmLabel?: string;
   onCancel: () => void;
-  onConfirm: (file: NativePickedFile) => void;
+  onConfirm: (file: NativePickedFile) => void | Promise<void>;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const reduceMotion = useReducedMotion();
   const [previewUri, setPreviewUri] = useState(file?.uri || '');
   const [working, setWorking] = useState(false);
@@ -87,22 +97,32 @@ export function ChatImageEditorSheet({
   const [draft, setDraft] = useState<ChatImageEditOperation | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
+  const [pastFrames, setPastFrames] = useState<ImageFrame[]>([]);
+  const [futureFrames, setFutureFrames] = useState<ImageFrame[]>([]);
+  const frameRef = useRef<ImageFrame>({ uri: previewUri, size: imageSize, recipe: history.present });
+  frameRef.current = { uri: previewUri, size: imageSize, recipe: history.present };
+  const pendingExportRef = useRef<{ id: string; resolve: (image: ExportedImage) => void; reject: (error: Error) => void } | null>(null);
+  const exportSequenceRef = useRef(0);
   const [exportJob, setExportJob] = useState<{
     requestId: string;
     imageDataUrl: string;
     recipeJson: string;
   } | null>(null);
   const originalUri = file?.uri || '';
+  const activeFileRef = useRef(file);
+  const operationRef = useRef<symbol | null>(null);
+  const disabledRef = useRef(false);
+  disabledRef.current = working || Boolean(busy);
   const startPointRef = useRef<ChatImagePoint | null>(null);
   const previewUriRef = useRef(previewUri);
   const toolRef = useRef(tool);
   const draftRef = useRef(draft);
-  const imageBoxRef = useRef(containedImageRect(stageSize.width, stageSize.height, imageSize.width, imageSize.height));
+  const imageBox = useMemo(() => containedImageRect(stageSize.width, stageSize.height, imageSize.width, imageSize.height), [stageSize.width, stageSize.height, imageSize.width, imageSize.height]);
+  const imageBoxRef = useRef(imageBox);
   const imageSizeRef = useRef(imageSize);
   const textValueRef = useRef(textValue);
   const brushColorRef = useRef(brushColor);
   const brushSizeRef = useRef(brushSize);
-  const imageBox = containedImageRect(stageSize.width, stageSize.height, imageSize.width, imageSize.height);
   previewUriRef.current = previewUri;
   toolRef.current = tool;
   draftRef.current = draft;
@@ -111,11 +131,13 @@ export function ChatImageEditorSheet({
   textValueRef.current = textValue;
   brushColorRef.current = brushColor;
   brushSizeRef.current = brushSize;
-  const overlayRecipe = overlayChatImageEditRecipe(
+  const overlayRecipe = useMemo(() => overlayChatImageEditRecipe(
     draft && draft.type !== 'crop' ? appendChatImageEditOperation(history.present, draft) : history.present,
-  );
+  ), [history.present, draft]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    activeFileRef.current = file;
+    operationRef.current = null;
     setPreviewUri(file?.uri || '');
     setError('');
     setWorking(false);
@@ -123,8 +145,19 @@ export function ChatImageEditorSheet({
     setTextValue('');
     setDraft(null);
     setHistory(createChatImageEditorHistory());
+    setPastFrames([]);
+    setFutureFrames([]);
+    setImageSize({ width: 0, height: 0 });
     setExportJob(null);
-  }, [file?.uri]);
+    startPointRef.current = null;
+    draftRef.current = null;
+    return () => {
+      activeFileRef.current = null;
+      operationRef.current = null;
+      pendingExportRef.current?.reject(new Error('Редактор закрыт'));
+      pendingExportRef.current = null;
+    };
+  }, [file]);
 
   useEffect(() => {
     if (!previewUri) return undefined;
@@ -138,13 +171,37 @@ export function ChatImageEditorSheet({
     }).then((size) => {
       if (!cancelled) setImageSize(size);
     }).catch(() => {
-      if (!cancelled) setImageSize({ width: 1200, height: 800 });
+      if (!cancelled) {
+        setImageSize({ width: 0, height: 0 });
+        setError('Не удалось определить размер фото. Повторите выбор изображения.');
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [previewUri]);
 
+  const rememberFrame = (frame = frameRef.current) => {
+    setPastFrames((frames) => [...frames, frame].slice(-30));
+    setFutureFrames([]);
+  };
+  const restoreFrame = (frame: ImageFrame) => {
+    setPreviewUri(frame.uri);
+    setImageSize(frame.size);
+    setHistory(createChatImageEditorHistory(frame.recipe));
+    setDraft(null);
+    draftRef.current = null;
+    startPointRef.current = null;
+  };
+  const exportImage = async (uri: string, recipe: ChatImageEditRecipe, operation: symbol) => {
+    const imageDataUrl = await readLocalImageDataUrl(uri);
+    if (activeFileRef.current !== file || operationRef.current !== operation) throw new Error('Редактор закрыт');
+    const requestId = `export-${++exportSequenceRef.current}`;
+    return new Promise<ExportedImage>((resolve, reject) => {
+      pendingExportRef.current = { id: requestId, resolve, reject };
+      setExportJob({ requestId, imageDataUrl, recipeJson: JSON.stringify(recipe) });
+    });
+  };
   const applyActions = async (
     actions: Array<
       | { rotate: number }
@@ -152,32 +209,68 @@ export function ChatImageEditorSheet({
     >,
   ) => {
     const currentUri = previewUriRef.current;
-    if (!file || !currentUri || working || busy) return;
+    if (!file || !currentUri || disabledRef.current || operationRef.current) return;
+    const operation = Symbol('image-transform');
+    operationRef.current = operation;
+    const current = () => activeFileRef.current === file && operationRef.current === operation;
     setWorking(true);
     setError('');
+    const previous = frameRef.current;
     try {
-      const result = await manipulatePickedImage(currentUri, actions);
+      // Bake annotations before changing geometry so marks stay on the same pixels.
+      const source = previous.recipe.operations.length
+        ? await exportImage(currentUri, previous.recipe, operation) : { uri: currentUri };
+      if (!current()) return;
+      let scaledActions = actions;
+      if (source.uri !== currentUri && actions.some((action) => 'crop' in action)) {
+        const size = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+          Image.getSize(source.uri, (width, height) => resolve({ width, height }), reject);
+        });
+        if (!current()) return;
+        scaledActions = actions.map((action) => {
+          if (!('crop' in action)) return action;
+          const rect = cropRectFromNormalized(size.width, size.height, {
+            x: action.crop.originX / previous.size.width, y: action.crop.originY / previous.size.height,
+            width: action.crop.width / previous.size.width, height: action.crop.height / previous.size.height,
+          });
+          if (!rect) throw new Error('Не удалось определить область кадрирования');
+          return { crop: rect };
+        });
+      }
+      const result = await manipulatePickedImage(source.uri, scaledActions);
+      if (!current()) return;
+      rememberFrame(previous);
       setPreviewUri(result.uri);
+      setHistory(createChatImageEditorHistory());
       if (result.width && result.height) setImageSize({ width: result.width, height: result.height });
       setDraft(null);
     } catch {
-      setError('Не удалось изменить фото');
+      if (current()) setError('Не удалось изменить фото');
     } finally {
-      setWorking(false);
+      if (current()) { operationRef.current = null; setWorking(false); }
     }
   };
+  const applyActionsRef = useRef(applyActions);
+  applyActionsRef.current = applyActions;
 
   const commitOverlay = (operation: ChatImageEditOperation | null) => {
     if (!operation) return;
-    setHistory((current) => commitChatImageEditorOperation(current, operation));
+    rememberFrame();
+    setHistory((current) => ({ past: [], present: appendChatImageEditOperation(current.present, operation), future: [] }));
     setDraft(null);
+    draftRef.current = null;
     startPointRef.current = null;
+  };
+  const updateDraft = (value: ChatImageEditOperation | null) => {
+    draftRef.current = value;
+    setDraft(value);
   };
 
   const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponder: () => !disabledRef.current && !operationRef.current,
+    onMoveShouldSetPanResponder: () => !disabledRef.current && !operationRef.current,
     onPanResponderGrant: (event) => {
+      if (disabledRef.current || operationRef.current) return;
       const point = pointInContainedImage(
         event.nativeEvent.locationX,
         event.nativeEvent.locationY,
@@ -195,16 +288,18 @@ export function ChatImageEditorSheet({
             color: brushColorRef.current,
             size: brushSizeRef.current / 40,
           });
+          setTextValue('');
+          textValueRef.current = '';
         }
         return;
       }
       startPointRef.current = point;
       if (currentTool === 'crop') {
-        setDraft({ type: 'crop', ...point, width: 0, height: 0 });
+        updateDraft({ type: 'crop', ...point, width: 0, height: 0 });
         return;
       }
       const size = brushSizeRef.current / 100;
-      setDraft(currentTool === 'draw'
+      updateDraft(currentTool === 'draw'
         ? { type: 'draw', points: [point], size, color: brushColorRef.current }
         : { type: 'blur', points: [point], size });
     },
@@ -217,7 +312,7 @@ export function ChatImageEditorSheet({
       const start = startPointRef.current;
       if (!point || !start) return;
       if (toolRef.current === 'crop') {
-        setDraft({
+        updateDraft({
           type: 'crop',
           x: Math.min(start.x, point.x),
           y: Math.min(start.y, point.y),
@@ -227,11 +322,11 @@ export function ChatImageEditorSheet({
         return;
       }
       if (toolRef.current === 'draw' || toolRef.current === 'blur') {
-        setDraft((current) => (
-          current && (current.type === 'draw' || current.type === 'blur')
-            ? { ...current, points: [...current.points, point].slice(-600) }
-            : current
-        ));
+        const current = draftRef.current;
+        if (current && (current.type === 'draw' || current.type === 'blur')) {
+          const points = appendChatImageStrokePoint(current.points, point);
+          if (points !== current.points) updateDraft({ ...current, points });
+        }
       }
     },
     onPanResponderRelease: () => {
@@ -244,7 +339,7 @@ export function ChatImageEditorSheet({
         );
         setDraft(null);
         startPointRef.current = null;
-        if (rect) void applyActions([{ crop: rect }]);
+        if (rect) void applyActionsRef.current([{ crop: rect }]);
         return;
       }
       if (currentDraft && currentDraft.type !== 'crop') commitOverlay(currentDraft);
@@ -252,12 +347,14 @@ export function ChatImageEditorSheet({
     },
     onPanResponderTerminate: () => {
       setDraft(null);
+      draftRef.current = null;
       startPointRef.current = null;
     },
   }), []);
 
-  const finishEditedFile = (uri: string, name = file?.name, mimeType = file?.mimeType, size?: number) => {
+  const finishEditedFile = async (uri: string, name = file?.name, mimeType = file?.mimeType, size?: number) => {
     if (!file) return;
+    if (uri === file.uri) { await onConfirm(file); return; }
     let nextSize = Number(size || 0);
     if (!(nextSize > 0)) {
       try {
@@ -266,7 +363,7 @@ export function ChatImageEditorSheet({
         nextSize = Number(file.size || 0);
       }
     }
-    onConfirm({
+    await onConfirm({
       ...file,
       uri,
       name: String(name || file.name).replace(/\.[^.]+$/, '') + (String(mimeType || '').includes('png') ? '.png' : '.jpg'),
@@ -276,25 +373,81 @@ export function ChatImageEditorSheet({
   };
 
   const sendCurrent = async () => {
-    if (!file || !previewUri || working || busy) return;
-    if (!shouldExportChatImageRecipe(history.present)) {
-      finishEditedFile(previewUri, file.name.replace(/\.[^.]+$/, '') + '.jpg', 'image/jpeg');
-      return;
-    }
+    if (!file || !previewUri || disabledRef.current || operationRef.current) return;
+    const operation = Symbol('image-send');
+    operationRef.current = operation;
+    const current = () => activeFileRef.current === file && operationRef.current === operation;
     setWorking(true);
     setError('');
     try {
-      const imageDataUrl = await readLocalImageDataUrl(previewUri);
-      setExportJob({
-        requestId: `export-${Date.now()}`,
-        imageDataUrl,
-        recipeJson: JSON.stringify(overlayChatImageEditRecipe(history.present)),
-      });
+      let recipe = history.present;
+      if (tool === 'text' && textValue.trim()) {
+        const textOperation: ChatImageEditOperation = { type: 'text', x: 0.5, y: 0.5,
+          text: textValue.trim(), color: brushColor, size: brushSize / 40 };
+        recipe = appendChatImageEditOperation(recipe, textOperation);
+        commitOverlay(textOperation);
+        setTextValue('');
+      }
+      if (shouldExportChatImageRecipe(recipe)) {
+        const exported = await exportImage(previewUri, recipe, operation);
+        if (current()) await finishEditedFile(exported.uri, exported.name, exported.mimeType, exported.size);
+      } else await finishEditedFile(previewUri, file.name.replace(/\.[^.]+$/, '') + '.jpg', 'image/jpeg');
     } catch {
-      setWorking(false);
-      setError('Не удалось подготовить фото к отправке');
+      if (current()) {
+        setError('Не удалось подготовить фото к отправке');
+      }
+    } finally {
+      if (current()) { operationRef.current = null; setWorking(false); }
     }
   };
+
+  const cancel = () => {
+    operationRef.current = null;
+    activeFileRef.current = null;
+    pendingExportRef.current?.reject(new Error('Редактор закрыт'));
+    pendingExportRef.current = null;
+    setExportJob(null);
+    onCancel();
+  };
+
+  const overlayNodes = useMemo(() => imageBox ? (overlayRecipe.operations.map((operation, index) => {
+    if (operation.type === 'text') {
+      return (
+        <Text
+          key={`text-${index}`}
+          style={[
+            styles.overlayText,
+            {
+              left: operation.x * imageBox.width - 80,
+              top: operation.y * imageBox.height - 12,
+              color: operation.color,
+              fontSize: Math.max(16, operation.size * Math.min(imageBox.width, imageBox.height)),
+            },
+          ]}
+        >
+          {operation.text}
+        </Text>
+      );
+    }
+    if (operation.type !== 'draw' && operation.type !== 'blur') return null;
+    const radius = Math.max(4, operation.size * Math.min(imageBox.width, imageBox.height));
+    return operation.points.map((point, pointIndex) => (
+      <View
+        key={`${operation.type}-${index}-${pointIndex}`}
+        style={[
+          styles.stamp,
+          {
+            left: point.x * imageBox.width - radius / 2,
+            top: point.y * imageBox.height - radius / 2,
+            width: radius,
+            height: radius,
+            borderRadius: radius / 2,
+            backgroundColor: operation.type === 'draw' ? operation.color : 'rgba(20,20,20,0.42)',
+          },
+        ]}
+      />
+    ));
+  })) : null, [imageBox, overlayRecipe, styles]);
 
   const disabled = working || Boolean(busy);
 
@@ -303,15 +456,17 @@ export function ChatImageEditorSheet({
       visible={Boolean(file)}
       animationType={reduceMotion ? 'none' : 'slide'}
       transparent
-      onRequestClose={onCancel}
+      onRequestClose={cancel}
     >
       <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <View style={styles.sheet} accessibilityViewIsModal>
+        <View style={[styles.sheet, { paddingBottom: Math.max(16, (insets?.bottom || 0) + 12) }]} accessibilityViewIsModal>
           <View style={styles.handle} />
           <Text style={styles.title}>Редактировать фото</Text>
+          <ScrollView testID="chat-image-editor-scroll" style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           <Text style={styles.hint}>{TOOL_HELP[tool]}</Text>
           <View
-            style={styles.stage}
+            testID="chat-image-editor-stage"
+            style={[styles.stage, { height: Math.min(280, Math.max(140, windowHeight * 0.35)) }]}
             onLayout={(event) => setStageSize({
               width: event.nativeEvent.layout.width,
               height: event.nativeEvent.layout.height,
@@ -334,44 +489,7 @@ export function ChatImageEditorSheet({
                     },
                   ]}
                 >
-                  {overlayRecipe.operations.map((operation, index) => {
-                    if (operation.type === 'text') {
-                      return (
-                        <Text
-                          key={`text-${index}`}
-                          style={[
-                            styles.overlayText,
-                            {
-                              left: operation.x * imageBox.width - 80,
-                              top: operation.y * imageBox.height - 12,
-                              color: operation.color,
-                              fontSize: Math.max(16, operation.size * Math.min(imageBox.width, imageBox.height)),
-                            },
-                          ]}
-                        >
-                          {operation.text}
-                        </Text>
-                      );
-                    }
-                    if (operation.type !== 'draw' && operation.type !== 'blur') return null;
-                    const radius = Math.max(4, operation.size * Math.min(imageBox.width, imageBox.height));
-                    return operation.points.map((point, pointIndex) => (
-                      <View
-                        key={`${operation.type}-${index}-${pointIndex}`}
-                        style={[
-                          styles.stamp,
-                          {
-                            left: point.x * imageBox.width - radius / 2,
-                            top: point.y * imageBox.height - radius / 2,
-                            width: radius,
-                            height: radius,
-                            borderRadius: radius / 2,
-                            backgroundColor: operation.type === 'draw' ? operation.color : 'rgba(20,20,20,0.42)',
-                          },
-                        ]}
-                      />
-                    ));
-                  })}
+                  {overlayNodes}
                   {draft?.type === 'crop' ? (
                     <View
                       style={[
@@ -389,7 +507,14 @@ export function ChatImageEditorSheet({
               ) : null}
             </View>
           </View>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {onChangeCaption ? <View style={styles.captionSection}>
+            <Text style={styles.fieldLabel}>Подпись к фото</Text>
+            <TextInput value={caption || ''} onChangeText={onChangeCaption}
+              editable={!disabled} multiline maxLength={12000}
+              placeholder="Добавить подпись" placeholderTextColor={chatTokens.textSecondary}
+              accessibilityLabel="Подпись к фото" style={styles.captionInput} />
+          </View> : null}
+          {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
           <View style={styles.toolbar} accessibilityRole="toolbar" accessibilityLabel="Инструменты редактирования">
             <ToolChip label="Кадрировать" active={tool === 'crop'} disabled={disabled} onPress={() => setTool('crop')} />
             <ToolChip
@@ -402,20 +527,33 @@ export function ChatImageEditorSheet({
             <ToolChip label="Размыть" active={tool === 'blur'} disabled={disabled} onPress={() => setTool('blur')} />
             <ToolChip
               label="Отменить"
-              disabled={disabled || history.past.length === 0}
-              onPress={() => setHistory((current) => undoChatImageEditorHistory(current))}
+              disabled={disabled || pastFrames.length === 0}
+              onPress={() => {
+                const frame = pastFrames[pastFrames.length - 1];
+                if (!frame) return;
+                setFutureFrames((frames) => [frameRef.current, ...frames].slice(0, 30));
+                setPastFrames((frames) => frames.slice(0, -1));
+                restoreFrame(frame);
+              }}
             />
             <ToolChip
               label="Повторить"
-              disabled={disabled || history.future.length === 0}
-              onPress={() => setHistory((current) => redoChatImageEditorHistory(current))}
+              disabled={disabled || futureFrames.length === 0}
+              onPress={() => {
+                const frame = futureFrames[0];
+                if (!frame) return;
+                setPastFrames((frames) => [...frames, frameRef.current].slice(-30));
+                setFutureFrames((frames) => frames.slice(1));
+                restoreFrame(frame);
+              }}
             />
             <ToolChip
               label="Сбросить изменения"
-              disabled={disabled || (!hasOverlayChatImageEdits(history.present) && previewUri === originalUri)}
+              disabled={disabled || (!overlayRecipe.operations.length && previewUri === originalUri)}
               onPress={() => {
+                rememberFrame();
                 setPreviewUri(originalUri);
-                setHistory((current) => resetChatImageEditorHistory(current));
+                setHistory(createChatImageEditorHistory());
                 setDraft(null);
                 setError('');
               }}
@@ -442,6 +580,7 @@ export function ChatImageEditorSheet({
               {BRUSH_COLORS.map((color) => (
                 <Pressable
                   key={color}
+                  disabled={disabled}
                   onPress={() => setBrushColor(color)}
                   style={[styles.color, { backgroundColor: color }, brushColor === color && styles.colorActive]}
                   accessibilityRole="button"
@@ -451,6 +590,14 @@ export function ChatImageEditorSheet({
               ))}
             </View>
           ) : null}
+          {tool !== 'crop' ? <View style={styles.actions}>
+            <Text style={styles.fieldLabel}>{tool === 'text' ? 'Размер текста' : 'Толщина кисти'}</Text>
+            {([{ label: 'Маленький', value: 1.2 }, { label: 'Средний', value: 2.2 }, { label: 'Большой', value: 3.5 }]).map((size) => (
+              <ToolChip key={size.value} label={size.label} active={brushSize === size.value}
+                disabled={disabled} onPress={() => setBrushSize(size.value)} />
+            ))}
+          </View> : null}
+          {tool === 'text' ? <Text style={styles.fieldLabel}>Надпись на изображении</Text> : null}
           {tool === 'text' ? (
             <View style={styles.textRow}>
               <TextInput
@@ -460,6 +607,9 @@ export function ChatImageEditorSheet({
                 placeholderTextColor={chatTokens.textSecondary}
                 style={styles.textInput}
                 accessibilityLabel="Текст на фото"
+                editable={!disabled}
+                multiline
+                maxLength={500}
               />
               <Pressable
                 onPress={() => {
@@ -473,6 +623,8 @@ export function ChatImageEditorSheet({
                     color: brushColor,
                     size: brushSize / 40,
                   });
+                  setTextValue('');
+                  textValueRef.current = '';
                 }}
                 disabled={disabled || !textValue.trim()}
                 style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
@@ -484,9 +636,10 @@ export function ChatImageEditorSheet({
             </View>
           ) : null}
           {working || busy ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
+          </ScrollView>
           <View style={styles.footer}>
             <Pressable
-              onPress={onCancel}
+              onPress={cancel}
               style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
               accessibilityRole="button"
               accessibilityLabel="Отменить фото"
@@ -498,9 +651,9 @@ export function ChatImageEditorSheet({
               disabled={disabled || !previewUri}
               style={({ pressed }) => [styles.primary, disabled && styles.disabled, pressed && styles.pressed]}
               accessibilityRole="button"
-              accessibilityLabel="Отправить фото"
+              accessibilityLabel={confirmLabel}
             >
-              <Text style={styles.primaryText}>Отправить</Text>
+              <Text style={styles.primaryText}>{confirmLabel === 'Отправить фото' ? 'Отправить' : confirmLabel}</Text>
             </Pressable>
           </View>
           {exportJob ? (
@@ -510,23 +663,22 @@ export function ChatImageEditorSheet({
               recipeJson={exportJob.recipeJson}
               onReady={() => undefined}
               onExported={(requestId, dataUrl) => {
-                if (requestId !== exportJob.requestId) return;
+                const pending = pendingExportRef.current;
+                if (pending?.id !== requestId || activeFileRef.current !== file) return;
+                pendingExportRef.current = null;
+                setExportJob(null);
                 try {
-                  const exported = writeEditedImageFromDataUrl(dataUrl);
-                  setExportJob(null);
-                  setWorking(false);
-                  finishEditedFile(exported.uri, exported.name, exported.mimeType, exported.size);
+                  pending.resolve(writeEditedImageFromDataUrl(dataUrl));
                 } catch {
-                  setExportJob(null);
-                  setWorking(false);
-                  setError('Не удалось сохранить изменения. Исходное фото не изменено.');
+                  pending.reject(new Error('Не удалось сохранить изменения'));
                 }
               }}
               onError={(requestId) => {
-                if (requestId !== exportJob.requestId) return;
+                const pending = pendingExportRef.current;
+                if (pending?.id !== requestId) return;
+                pendingExportRef.current = null;
                 setExportJob(null);
-                setWorking(false);
-                setError('Не удалось сохранить изменения. Исходное фото не изменено.');
+                pending.reject(new Error('Не удалось сохранить изменения'));
               }}
             />
           ) : null}
@@ -588,11 +740,12 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     borderRadius: 2,
     backgroundColor: chatTokens.borderSoft,
   },
+  scroll: { flexShrink: 1 },
+  scrollContent: { gap: 10 },
   title: { color: chatTokens.textPrimary, fontSize: 18, fontWeight: '700' },
   hint: { color: chatTokens.textSecondary, fontSize: 13, lineHeight: 18 },
   stage: {
     width: '100%',
-    height: 280,
     borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#0b1118',
@@ -629,16 +782,21 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   chipTextActive: { color: '#fff' },
   color: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: 'transparent' },
   colorActive: { borderColor: chatTokens.composerActionBg },
-  textRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  textRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  captionSection: { gap: 6 },
+  fieldLabel: { color: chatTokens.textSecondary, fontSize: 13 },
+  captionInput: { minHeight: 48, maxHeight: 112, padding: 12, borderRadius: 12,
+    backgroundColor: chatTokens.sidebarSearchBg, color: chatTokens.textPrimary, fontSize: 15 },
   textInput: {
     flex: 1,
+    minWidth: 120,
     minHeight: 44,
     borderRadius: 12,
     paddingHorizontal: 12,
     backgroundColor: chatTokens.sidebarSearchBg,
     color: chatTokens.textPrimary,
   },
-  footer: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  footer: { flexDirection: 'row', flexShrink: 0, gap: 10, marginTop: 4 },
   secondary: {
     flex: 1,
     minHeight: 44,

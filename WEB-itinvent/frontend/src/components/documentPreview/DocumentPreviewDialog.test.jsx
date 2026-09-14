@@ -93,6 +93,25 @@ describe('DocumentPreviewDialog', () => {
     expect(window.getComputedStyle(dialogRoot).zIndex).toBe(String(theme.zIndex.tooltip - 1));
   });
 
+  it('renders an image preview inline instead of the unavailable fallback', () => {
+    setMobileMedia(false);
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="photo.webp"
+          kind="image"
+          objectUrl="blob:preview-image"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    const image = screen.getByRole('img', { name: 'photo.webp' });
+    expect(image).toHaveAttribute('src', 'blob:preview-image');
+    expect(screen.queryByText('Предпросмотр готовится или временно недоступен. Оригинал можно скачать.')).toBeNull();
+  });
+
   it('rotates a PDF preview left and right without changing the source file', async () => {
     setMobileMedia(false);
     render(

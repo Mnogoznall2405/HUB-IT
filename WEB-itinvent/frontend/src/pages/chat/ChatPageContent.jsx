@@ -1684,6 +1684,8 @@ export function ChatPageContent({
           fileInputRef={fileInputRef}
           mediaFileInputRef={mediaFileInputRef}
           onSelectFiles={handleSelectFiles}
+          sandboxScope={activeConversationId && activeConversation?.kind === 'ai' && activeAiBot?.surface === 'sandbox' ? `${user?.id}:${activeConversationId}` : ''}
+          filesBusy={preparingFiles || sendingFiles}
           healthError={healthError}
           activeAiLiveDataNotice={activeAiLiveDataNotice}
           {...messageChromeProps}

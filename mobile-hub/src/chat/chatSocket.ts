@@ -17,7 +17,9 @@ export function shouldUseChatHttpFallback(status: ChatSocketStatus): boolean {
 
 const HEARTBEAT_MS = 25_000;
 const HEARTBEAT_TIMEOUT_MS = 60_000;
+const CONNECT_TIMEOUT_MS = 15_000;
 const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 20000, 30000];
+const MAX_BUFFERED_BYTES = 256 * 1024;
 
 function buildWsUrl(): string {
   const base = new URL(API_V1_BASE);
@@ -32,6 +34,7 @@ export class ChatSocketClient {
   private socket: WebSocket | null = null;
   private handlers = new Map<string, Set<SocketHandler>>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastServerActivityAt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
@@ -49,7 +52,9 @@ export class ChatSocketClient {
   }
 
   private emit(eventType: string, payload: unknown) {
-    this.handlers.get(eventType)?.forEach((handler) => handler(payload));
+    this.handlers.get(eventType)?.forEach((handler) => {
+      try { handler(payload); } catch { /* One observer cannot interrupt delivery or reconnect. */ }
+    });
   }
 
   private emitStatus(status: ChatSocketStatus) {
@@ -79,8 +84,7 @@ export class ChatSocketClient {
       const socket = this.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastServerActivityAt >= HEARTBEAT_TIMEOUT_MS) {
-        this.emitStatus('error');
-        socket.close();
+        this.abandonSocket(socket);
         return;
       }
       this.send({ type: 'chat.ping' });
@@ -94,9 +98,45 @@ export class ChatSocketClient {
     }
   }
 
+  private clearConnectWatchdog() {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  private abandonSocket(socket: WebSocket) {
+    if (this.socket !== socket) return;
+    this.socket = null;
+    this.clearConnectWatchdog();
+    this.stopHeartbeat();
+    // Native close is asynchronous and may never deliver onclose on a dead link.
+    socket.onclose = null;
+    try { socket.close(); } catch { /* Reconnect still proceeds. */ }
+    this.emitStatus('error');
+    this.scheduleReconnect();
+  }
+
+  private armConnectWatchdog(socket: WebSocket) {
+    this.clearConnectWatchdog();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      // A stalled TCP/TLS handshake fires neither onopen nor onerror and would
+      // otherwise pin the client in 'connecting' until the OS gives up.
+      if (this.socket === socket && socket.readyState === WebSocket.CONNECTING) {
+        this.abandonSocket(socket);
+      }
+    }, CONNECT_TIMEOUT_MS);
+  }
+
   send(message: Record<string, unknown>) {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (Number(socket.bufferedAmount || 0) > MAX_BUFFERED_BYTES) return;
+    try {
+      socket.send(JSON.stringify(message));
+    } catch {
+      /* a dying socket must not throw into UI handlers */
     }
   }
 
@@ -182,12 +222,14 @@ export class ChatSocketClient {
     }
 
     this.socket = socket;
+    this.armConnectWatchdog(socket);
 
     socket.onopen = () => {
       if (this.socket !== socket || !this.reconnectEnabled || this.suspended) {
         socket.close();
         return;
       }
+      this.clearConnectWatchdog();
       this.reconnectAttempt = 0;
       this.startHeartbeat();
       if (this.wantInbox) this.subscribeInbox();
@@ -196,6 +238,7 @@ export class ChatSocketClient {
     };
 
     socket.onmessage = (event) => {
+      if (this.socket !== socket || !this.reconnectEnabled || this.suspended) return;
       this.lastServerActivityAt = Date.now();
       try {
         const envelope = JSON.parse(String(event.data || '{}')) as {
@@ -215,13 +258,16 @@ export class ChatSocketClient {
     socket.onclose = () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.clearConnectWatchdog();
       this.stopHeartbeat();
       this.emitStatus(this.suspended ? 'suspended' : 'offline');
       this.scheduleReconnect();
     };
 
     socket.onerror = () => {
-      if (this.socket === socket) this.emitStatus('error');
+      // Native transports do not always follow an error with onclose. Release
+      // the failed socket now so a CLOSED/CLOSING handle cannot pin reconnect.
+      this.abandonSocket(socket);
     };
   }
 
@@ -233,6 +279,7 @@ export class ChatSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearConnectWatchdog();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
@@ -258,6 +305,7 @@ export class ChatSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearConnectWatchdog();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;

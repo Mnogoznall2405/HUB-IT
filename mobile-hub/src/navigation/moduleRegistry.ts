@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import { nativeConstructionDestinationFromPortalPath, type NativeConstructionDestination } from '../construction/nativeConstructionRoutes';
 import { normalizeNativeRoutePath } from './nativeRoutePath';
 import type { NativeChatDestination } from '../chat/nativeChatFeature';
 import {
@@ -74,8 +75,14 @@ import {
   nativeMfuDestinationFromPortalPath,
   type NativeMfuDestination,
 } from '../mfu/nativeMfuFeature';
+import {
+  NATIVE_STATISTICS_ENABLED,
+  nativeStatisticsDestinationFromPortalPath,
+  type NativeStatisticsDestination,
+} from '../statistics/nativeStatisticsFeature';
 
 export type NativeModuleHref =
+  | NativeConstructionDestination
   | { pathname: '/(shell)/dashboard' }
   | { pathname: '/(shell)/notifications' }
   | { pathname: '/(shell)/menu' }
@@ -94,7 +101,8 @@ export type NativeModuleHref =
   | NativePasswordsDestination
   | NativeGroupsAccessDestination
   | NativeWarehouse1CDestination
-  | NativeMfuDestination;
+  | NativeMfuDestination
+  | NativeStatisticsDestination;
 
 function nativeRootFallback(pathname: string): NativeModuleHref {
   if (pathname === '/feed' || pathname.startsWith('/feed/')) return { pathname: '/(shell)/feed' };
@@ -102,6 +110,7 @@ function nativeRootFallback(pathname: string): NativeModuleHref {
   if (pathname === '/chat' || pathname.startsWith('/chat/')) return { pathname: '/(shell)/chat' };
   if (pathname === '/mail' || pathname.startsWith('/mail/')) return { pathname: '/(shell)/mail' };
   if (pathname === '/database' || pathname.startsWith('/database/')) return { pathname: '/(shell)/database' };
+  if (pathname === '/statistics' || pathname.startsWith('/statistics/')) return { pathname: '/(shell)/statistics' };
   if (pathname === '/my-files' || pathname.startsWith('/my-files/')) return { pathname: '/(shell)/my-files' };
   if (pathname === '/company-structure' || pathname.startsWith('/company-structure/')) {
     return { pathname: '/(shell)/company-structure' };
@@ -127,6 +136,8 @@ export function hrefForPortalPath(
     return { pathname: '/(shell)/dashboard' };
   }
   const pathname = parsed.pathname;
+  const construction = nativeConstructionDestinationFromPortalPath(normalized);
+  if (construction) return construction;
 
   if (pathname === '/notifications') {
     if (NATIVE_NOTIFICATIONS_ENABLED) {
@@ -203,6 +214,11 @@ export function hrefForPortalPath(
   if (NATIVE_MFU_ENABLED) {
     const mfuHref = nativeMfuDestinationFromPortalPath(normalized);
     if (mfuHref) return mfuHref;
+  }
+
+  if (NATIVE_STATISTICS_ENABLED) {
+    const statisticsHref = nativeStatisticsDestinationFromPortalPath(normalized);
+    if (statisticsHref) return statisticsHref;
   }
 
   if (NATIVE_CHAT_ENABLED) {
@@ -316,6 +332,7 @@ function routePathFromHref(href: NativeModuleHref): string {
   if (href.pathname === '/(shell)/groups-access') return '/groups-access';
   if (href.pathname === '/(shell)/warehouse-1c') return '/warehouse-1c';
   if (href.pathname === '/(shell)/mfu') return '/mfu';
+  if (href.pathname === '/(shell)/statistics') return '/statistics';
   if (href.pathname === '/(shell)/chat') return '/chat';
   if (href.pathname === '/(shell)/chat/[conversationId]') {
     const query = href.params.messageId

@@ -7,6 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from backend.api.deps import require_permission
 from backend.api.v1.my_files_download_grant_rate_limit import (
@@ -27,14 +28,21 @@ from backend.models.auth import User
 from backend.models.my_files import (
     MyFileAuditResponse,
     MyFileDownloadGrantResponse,
+    MyFileFolderCreateRequest,
+    MyFileFolderListResponse,
+    MyFileFolderResponse,
+    MyFileFolderUpdateRequest,
     MyFileListResponse,
     MyFileQuotaResponse,
     MyFileResponse,
     MyFileShareResponse,
+    MyFileTrashResponse,
+    MyFileUpdateRequest,
     MyFileUploadSessionCreateRequest,
     MyFileUploadSessionResponse,
     PublicMyFilePreviewResponse,
     PublicMyFileResponse,
+    PublicMyFolderResponse,
 )
 from backend.services.authorization_service import (
     PERM_MY_FILES_AUDIT_READ,
@@ -43,6 +51,7 @@ from backend.services.authorization_service import (
     PERM_MY_FILES_WRITE,
 )
 from backend.services.my_files_service import (
+    _UNSET,
     DEFAULT_RETENTION_DAYS,
     MAX_FILE_SIZE_BYTES,
     STORAGE_ZSTD,
@@ -180,14 +189,346 @@ def _download_response(payload) -> Response:
         media_type=payload.media_type,
         filename=payload.file_name,
         headers=_DOWNLOAD_SECURITY_HEADERS,
+        background=BackgroundTask(payload.path.unlink, missing_ok=True) if getattr(payload, "cleanup_after", False) else None,
     )
 
 
 @router.get("", response_model=MyFileListResponse)
 @router.get("/", response_model=MyFileListResponse)
-async def list_my_files(current_user: User = Depends(require_permission(PERM_MY_FILES_READ))) -> dict:
+async def list_my_files(
+    folder_id: str | None = Query(default=None, max_length=64),
+    view: str = Query(default="", max_length=16),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
     try:
-        return await run_in_threadpool(my_files_service.list_files, user_id=int(current_user.id))
+        return await run_in_threadpool(
+            my_files_service.list_files,
+            user_id=int(current_user.id),
+            folder_id=folder_id,
+            view=view,
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/folders", response_model=MyFileFolderListResponse)
+async def list_my_file_folders(
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    try:
+        return {"items": await run_in_threadpool(my_files_service.list_folders, user_id=int(current_user.id))}
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/folders", response_model=MyFileFolderResponse, status_code=status.HTTP_201_CREATED)
+async def create_my_file_folder(
+    payload: MyFileFolderCreateRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_folder,
+            actor=current_user,
+            name=payload.name,
+            parent_id=payload.parent_id,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.patch("/folders/{folder_id}", response_model=MyFileFolderResponse)
+async def update_my_file_folder(
+    folder_id: str,
+    payload: MyFileFolderUpdateRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        fields_set = payload.model_fields_set
+        return await run_in_threadpool(
+            my_files_service.update_folder,
+            actor=current_user,
+            folder_id=folder_id,
+            name=payload.name if "name" in fields_set else _UNSET,
+            parent_id=payload.parent_id if "parent_id" in fields_set else _UNSET,
+            is_favorite=payload.is_favorite if "is_favorite" in fields_set else _UNSET,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/folders/{folder_id}/archive-grant", response_model=MyFileDownloadGrantResponse)
+async def create_my_file_folder_archive_grant(
+    folder_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    enforce_download_grant_mint_limits(request, user_id=int(current_user.id))
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_folder_archive_grant,
+            folder_id=folder_id,
+            user_id=int(current_user.id),
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_my_file_folder(
+    folder_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.delete_folder,
+            actor=current_user,
+            folder_id=folder_id,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/folders/{folder_id}/share", response_model=MyFileShareResponse)
+async def create_my_file_folder_share(
+    folder_id: str,
+    request: Request,
+    rotate: bool = Query(default=False),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_folder_share,
+            actor=current_user,
+            folder_id=folder_id,
+            rotate=rotate,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/folders/{folder_id}/share", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_my_file_folder_share(
+    folder_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.revoke_folder_share,
+            actor=current_user,
+            folder_id=folder_id,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/public-folders/{token}", response_model=PublicMyFolderResponse)
+async def get_public_my_files_folder(
+    token: str,
+    request: Request,
+    response: Response,
+) -> dict:
+    enforce_public_meta_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(my_files_service.get_public_folder, token=token)
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/public-folders/{token}/files/{file_id}/preview", response_model=PublicMyFilePreviewResponse)
+async def get_public_folder_file_preview(
+    token: str,
+    file_id: str,
+    request: Request,
+    response: Response,
+) -> dict:
+    enforce_public_preview_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(
+            my_files_service.get_public_folder_file_preview_meta,
+            token=token,
+            file_id=file_id,
+        )
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/public-folders/{token}/files/{file_id}/preview/content")
+async def download_public_folder_file_preview_content(
+    token: str,
+    file_id: str,
+    request: Request,
+    variant: str = Query(default="", max_length=16),
+):
+    enforce_public_preview_content_limits(request, token)
+    try:
+        content, media_type, filename = await run_in_threadpool(
+            my_files_service.get_public_folder_file_preview_content,
+            token=token,
+            file_id=file_id,
+            variant=variant,
+        )
+        headers = dict(_DOWNLOAD_SECURITY_HEADERS)
+        headers["Content-Disposition"] = _content_disposition(filename, inline=True)
+        headers["Cache-Control"] = "private, max-age=300"
+        return Response(content=content, media_type=media_type, headers=headers)
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.post("/public-folders/{token}/files/{file_id}/download-grant", response_model=MyFileDownloadGrantResponse)
+async def create_public_folder_download_grant(
+    token: str,
+    file_id: str,
+    request: Request,
+    response: Response,
+) -> dict:
+    enforce_public_meta_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_public_folder_download_grant,
+            token=token,
+            file_id=file_id,
+        )
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/trash", response_model=MyFileTrashResponse)
+async def list_my_files_trash(
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    try:
+        return await run_in_threadpool(my_files_service.list_trash, user_id=int(current_user.id))
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/trash/empty", status_code=status.HTTP_204_NO_CONTENT)
+async def empty_my_files_trash(
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.empty_trash,
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/trash/files/{file_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_my_file(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.restore_file,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/trash/folders/{folder_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_my_file_folder(
+    folder_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.restore_folder,
+            actor=current_user,
+            folder_id=folder_id,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/trash/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def purge_my_file(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.purge_file,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/trash/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def purge_my_file_folder(
+    folder_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.purge_folder,
+            actor=current_user,
+            folder_id=folder_id,
+            meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
 
@@ -219,6 +560,7 @@ async def upload_my_file(
     file_name: str = Query(..., min_length=1, max_length=512),
     file_size: int = Query(..., gt=0, le=MAX_FILE_SIZE_BYTES),
     retention_days: int = Query(DEFAULT_RETENTION_DAYS),
+    folder_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
@@ -234,6 +576,7 @@ async def upload_my_file(
             spool_path=spool_path,
             expected_size_bytes=file_size,
             retention_days=retention_days,
+            folder_id=folder_id,
             meta=_request_meta(request),
         )
         reserved_file_id = str(reserved["id"])
@@ -287,6 +630,7 @@ async def create_my_file_upload_session(
             spool_path=spool_path,
             expected_size_bytes=payload.file_size,
             retention_days=payload.retention_days,
+            folder_id=payload.folder_id,
             meta=_request_meta(request),
         )
         return await run_in_threadpool(
@@ -364,14 +708,16 @@ async def cancel_my_file_upload_session(
     file_id: str,
     request: Request,
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+    reason: str | None = Query(default=None, max_length=2000),
 ) -> Response:
     _enforce_trusted_browser_origin(request)
+    error_text = str(reason or "").strip() or "Upload cancelled"
     try:
         await run_in_threadpool(
             my_files_service.abort_upload,
             file_id=file_id,
             user_id=int(current_user.id),
-            error_text="Upload cancelled",
+            error_text=error_text,
             actor=current_user,
             meta=_request_meta(request),
         )
@@ -435,12 +781,14 @@ async def get_public_my_file_preview(
 async def download_public_my_file_preview_content(
     token: str,
     request: Request,
+    variant: str = Query(default="", max_length=16),
 ):
     enforce_public_preview_content_limits(request, token)
     try:
         content, media_type, filename = await run_in_threadpool(
             my_files_service.get_public_preview_content,
             token=token,
+            variant=variant,
         )
         headers = dict(_DOWNLOAD_SECURITY_HEADERS)
         headers["Content-Disposition"] = _content_disposition(filename, inline=True)
@@ -492,12 +840,14 @@ async def get_my_file_preview(
 async def download_my_file_preview_content(
     file_id: str,
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+    variant: str = Query(default="", max_length=16),
 ):
     try:
         content, media_type, filename = await run_in_threadpool(
             my_files_service.get_file_preview_content,
             file_id=file_id,
             user_id=int(current_user.id),
+            variant=variant,
         )
         headers = dict(_DOWNLOAD_SECURITY_HEADERS)
         headers["Content-Disposition"] = _content_disposition(filename, inline=True)
@@ -602,6 +952,29 @@ async def revoke_my_file_share(
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{file_id}", response_model=MyFileResponse)
+async def update_my_file(
+    file_id: str,
+    payload: MyFileUpdateRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        fields_set = payload.model_fields_set
+        return await run_in_threadpool(
+            my_files_service.update_file,
+            actor=current_user,
+            file_id=file_id,
+            name=payload.name if "name" in fields_set else _UNSET,
+            folder_id=payload.folder_id if "folder_id" in fields_set else _UNSET,
+            is_favorite=payload.is_favorite if "is_favorite" in fields_set else _UNSET,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

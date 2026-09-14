@@ -28,6 +28,8 @@ jest.mock('../../api/myFilesApi', () => ({
 
 jest.mock('../../cache/nativeSnapshotCache', () => ({
   readNativeSnapshot: jest.fn(async () => null),
+  readNativeCollectionSnapshot: jest.fn(async () => null),
+  writeNativeCollectionSnapshot: jest.fn(async () => true),
   writeNativeSnapshot: jest.fn(async () => true),
   readNativeEntitySnapshot: jest.fn(async () => null),
   writeNativeEntitySnapshot: jest.fn(async () => true),
@@ -70,6 +72,7 @@ const files = Array.from({ length: 30 }, (_, index) => ({
   stored_size_bytes: 900,
   saved_size_bytes: 124,
   retention_days: 7,
+  folder_id: null,
   status: 'ready',
   storage_mode: 'stored',
   error_text: '',
@@ -79,6 +82,7 @@ const files = Array.from({ length: 30 }, (_, index) => ({
   preview_status: 'ready',
   preview_max_bytes: 0,
   is_shared: false,
+  is_favorite: false,
   share_expires_at: null,
   created_at: null,
   updated_at: null,
@@ -89,7 +93,7 @@ const mockedApi = myFilesApi as jest.Mocked<typeof myFilesApi>;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockedApi.listMyFiles.mockResolvedValue(files);
+  mockedApi.listMyFiles.mockResolvedValue({ items: files, folders: [], breadcrumbs: [], folder: null });
   mockedApi.getMyFilesQuota.mockResolvedValue({
     used_bytes: files.length * 1024,
     limit_bytes: 5 * 1024 ** 3,

@@ -7,6 +7,7 @@ import { getNativeUnreadSnapshot, nativeUnreadTotal } from '../notifications/nat
 import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 
 export const HUB_POLL_INTERVAL_MS = 20_000;
+export const HUB_REALTIME_REFRESH_DEBOUNCE_MS = 1500;
 
 export type NavUnreadCounts = {
   tasks_open: number;
@@ -52,13 +53,22 @@ export function useNavUnreadCounts(): NavUnreadCounts {
   useEffect(() => {
     mountedRef.current = true;
     void load();
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    // Realtime bursts (busy chats, mass task updates) collapse into one refresh.
+    const scheduleRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void load(true);
+      }, HUB_REALTIME_REFRESH_DEBOUNCE_MS);
+    };
     const timer = setInterval(() => { void load(true); }, HUB_POLL_INTERVAL_MS);
-    const offUpdated = chatSocket.on('chat.conversation.updated', () => { void load(true); });
-    const offMessage = chatSocket.on('chat.message.created', () => { void load(true); });
+    const offUpdated = chatSocket.on('chat.conversation.updated', scheduleRefresh);
+    const offMessage = chatSocket.on('chat.message.created', scheduleRefresh);
     const offHubConnected = hubRealtimeSocket.on('hub.realtime.connected', () => { void load(); });
-    const offHubNotification = hubRealtimeSocket.on('hub.notification.created', () => { void load(true); });
-    const offHubTasks = hubRealtimeSocket.onTaskChanged(() => { void load(true); });
-    const offHubMail = hubRealtimeSocket.onMailChanged(() => { void load(true); });
+    const offHubNotification = hubRealtimeSocket.on('hub.notification.created', scheduleRefresh);
+    const offHubTasks = hubRealtimeSocket.onTaskChanged(scheduleRefresh);
+    const offHubMail = hubRealtimeSocket.onMailChanged(scheduleRefresh);
     const offMailUnread = subscribeNativeMailUnread((change) => {
       if (!mountedRef.current) return;
       setCounts((current) => {
@@ -74,6 +84,7 @@ export function useNavUnreadCounts(): NavUnreadCounts {
     return () => {
       mountedRef.current = false;
       clearInterval(timer);
+      if (refreshTimer) clearTimeout(refreshTimer);
       offUpdated();
       offMessage();
       offHubConnected();

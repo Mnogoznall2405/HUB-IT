@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as chatApi from '../../api/chatApi';
-import { NativeChatThreadScreen } from './NativeChatThreadScreen';
+import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockChatBubbleRender = jest.fn();
 const mockAuthValue = {

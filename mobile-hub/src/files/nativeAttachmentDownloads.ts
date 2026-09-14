@@ -3,7 +3,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import type { ChatAttachment } from '../api/types';
-import { getSessionUserId } from '../auth/tokenStore';
+import { getSessionGeneration, getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from './authenticatedFileDownload';
 import {
   resolveTrustedAttachmentUrl,
@@ -24,6 +24,7 @@ const queuedChatMediaDownloads: Array<() => void> = [];
 let lastAttachmentCacheCleanupAt = 0;
 let attachmentCacheBytesAddedSinceCleanup = 0;
 let activeChatMediaDownloads = 0;
+let attachmentCacheGeneration = 0;
 
 export type NativeTransferProgress = {
   loaded: number;
@@ -146,6 +147,7 @@ function withChatMediaDownloadSlot<T>(
 }
 
 export function clearAttachmentCache(): void {
+  attachmentCacheGeneration += 1;
   const directory = attachmentCacheDirectory();
   for (const entry of directory.list()) entry.delete();
   lastAttachmentCacheCleanupAt = Date.now();
@@ -223,15 +225,26 @@ export async function downloadTrustedChatMedia(
   if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
     throw new Error('Нативное скачивание доступно только в приложении');
   }
+  const cacheGeneration = attachmentCacheGeneration;
+  const sessionGeneration = getSessionGeneration();
+  const assertCurrent = () => {
+    if (cacheGeneration !== attachmentCacheGeneration || sessionGeneration !== getSessionGeneration() || options.signal?.aborted) {
+      throw chatMediaAbortError();
+    }
+  };
   const sourceUrl = resolveTrustedChatMediaUrl(url);
   const destination = await attachmentCacheFile(sanitizeNativeFileName(cacheName));
-  if (destination.exists && !options.forceDownload) {
+  assertCurrent();
+  // A decode-triggered refresh owns this URI until completion, even while its
+  // previous cached file still exists. Share it before considering a cache hit.
+  const pending = chatMediaDownloads.get(destination.uri);
+  if (pending) return pending;
+  if (destination.exists && destination.size > 0 && !options.forceDownload) {
     maintainAttachmentCache(destination.uri);
     return destination;
   }
-  const pending = chatMediaDownloads.get(destination.uri);
-  if (pending) return pending;
   const download = withChatMediaDownloadSlot(async () => {
+    assertCurrent();
     const hadExisting = destination.exists && destination.size > 0;
     if (!hadExisting) {
       if (destination.exists) destination.delete();
@@ -242,6 +255,7 @@ export async function downloadTrustedChatMedia(
           signal: options.signal,
           preserveSessionOnAuthFailure: true,
         });
+        assertCurrent();
         maintainAttachmentCache(downloaded.uri, downloaded.size);
         return downloaded;
       } catch (error) {
@@ -252,6 +266,7 @@ export async function downloadTrustedChatMedia(
 
     // Refresh without deleting the working original until the replacement is verified.
     const staging = await attachmentCacheFile(`pending-${sanitizeNativeFileName(cacheName)}`);
+    assertCurrent();
     if (staging.exists) staging.delete();
     try {
       const downloaded = await downloadAuthenticatedFile(sourceUrl, staging, {
@@ -259,6 +274,7 @@ export async function downloadTrustedChatMedia(
         signal: options.signal,
         preserveSessionOnAuthFailure: true,
       });
+      assertCurrent();
       if (typeof downloaded.move === 'function') {
         await downloaded.move(destination, { overwrite: true });
       } else if (typeof downloaded.copy === 'function') {
@@ -266,6 +282,12 @@ export async function downloadTrustedChatMedia(
         if (staging.exists) staging.delete();
       } else {
         throw new Error('Не удалось заменить локальную копию вложения');
+      }
+      try {
+        assertCurrent();
+      } catch (error) {
+        if (destination.exists) destination.delete();
+        throw error;
       }
       maintainAttachmentCache(destination.uri, destination.size);
       return destination;

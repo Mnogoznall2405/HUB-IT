@@ -88,3 +88,43 @@ it('offers a valid external address when Exchange has no matching contact', () =
   ]);
   expect(buildNativeMailContactSuggestions('broken@', [])).toEqual([]);
 });
+import { mailCorrespondent, isMailOutgoingMessage } from './nativeMailModel';
+import type { MailMessagePreview } from '../api/mailApi';
+
+const sentMessage: MailMessagePreview = {
+  id: 'm1',
+  sender_person: { name: 'Я', email: 'me@corp.local' },
+  sender_email: 'me@corp.local',
+  recipient_people: [{ name: 'Коллега', email: 'peer@corp.local' }],
+  subject: 'Тест',
+};
+
+describe('mailCorrespondent', () => {
+  it('shows the recipient in Sent and Drafts instead of the own mailbox', () => {
+    expect(mailCorrespondent(sentMessage, { folder: 'sent' }).label).toBe('Коллега');
+    expect(mailCorrespondent(sentMessage, { folder: 'drafts' }).label).toBe('Коллега');
+  });
+
+  it('keeps the sender in Inbox', () => {
+    expect(mailCorrespondent(sentMessage, { folder: 'inbox' }).label).toBe('Я');
+  });
+
+  it('marks outgoing by own mailbox email when folder key is unknown', () => {
+    expect(isMailOutgoingMessage(sentMessage, { folder: 'all', mailboxEmails: ['me@corp.local'] })).toBe(true);
+    expect(mailCorrespondent(sentMessage, { folder: 'trash', mailboxEmails: ['me@corp.local'] }).label).toBe('Коллега');
+  });
+
+  it('falls back to recipients array and counts extras', () => {
+    const multi = { ...sentMessage, recipient_people: undefined, recipients: ['a@x.ru', 'b@x.ru', 'c@x.ru'] };
+    expect(mailCorrespondent(multi, { folder: 'sent' }).label).toBe('a@x.ru +2');
+  });
+
+  it('uses the search prefix for outgoing results', () => {
+    expect(mailCorrespondent(sentMessage, { folder: 'inbox', isSearch: true, mailboxEmails: ['me@corp.local'] }).label).toBe('Кому: Коллега');
+  });
+
+  it('handles a missing recipient gracefully', () => {
+    const empty = { ...sentMessage, recipient_people: [], recipients: [] };
+    expect(mailCorrespondent(empty, { folder: 'sent' }).label).toBe('Нет получателя');
+  });
+});

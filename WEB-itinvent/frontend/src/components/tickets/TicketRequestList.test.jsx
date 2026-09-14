@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ticketsAPI } from '../../api/tickets';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketRequestList from './TicketRequestList';
 import { STATUS_ROW_COLORS } from './ticketUi';
+const viewport = vi.hoisted(() => ({ phone: false }));
+vi.mock('@mui/material', async () => ({ ...await vi.importActual('@mui/material'), useMediaQuery: () => viewport.phone }));
 
 vi.mock('../../api/tickets', () => ({
   ticketsAPI: {
@@ -39,6 +41,21 @@ vi.mock('../../api/tickets', () => ({
 }));
 
 describe('TicketRequestList', () => {
+  beforeEach(() => { viewport.phone = false; });
+  it('opens mobile cards and keeps the full table available', async () => {
+    viewport.phone = true;
+    const onSelectRequest = vi.fn();
+    render(<TicketRequestList onSelectRequest={onSelectRequest} />);
+    expect(await screen.findByText('Иванов И.И.')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-mobile-list')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Открыть заявку 42/ }));
+    expect(onSelectRequest).toHaveBeenCalledWith(42);
+    fireEvent.click(screen.getByRole('button', { name: 'Таблица' }));
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Фильтры' }));
+    expect(screen.getByRole('button', { name: 'Фильтры' })).toHaveAttribute('aria-expanded', 'true');
+  });
   it('keeps the latest search when an older response finishes last', async () => {
     const pending = [];
     ticketsAPI.listRequests.mockImplementationOnce(() => new Promise((resolve) => pending.push(resolve)));

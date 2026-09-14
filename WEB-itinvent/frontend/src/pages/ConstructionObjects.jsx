@@ -37,8 +37,11 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import ConstructionObjectSettingsDialog from '../components/construction/ConstructionObjectSettingsDialog';
+import ConstructionPersonLink from '../components/construction/ConstructionPersonLink';
+import { OBJECT_TEAM_ROLES } from '../components/construction/constructionShared';
 import { useAuth } from '../contexts/AuthContext';
 import { constructionAPI } from '../api/construction';
+import { CONSTRUCTION_PORTFOLIO_FRESH_MS, portfolioSelection, rememberPortfolioSelection, readPortfolioCache, writePortfolioCache, clearConstructionPortfolioCache, portfolioCacheGeneration } from '../lib/constructionPortfolioCache';
 
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -49,12 +52,6 @@ const KIND_OPTIONS = [
   { value: 'project', label: 'Объекты' },
   { value: 'general', label: 'Общие заявки' },
   { value: 'unassigned', label: 'Без группы' },
-];
-
-const ROLE_OPTIONS = [
-  { key: 'project_lead', label: 'Руководитель проекта' },
-  { key: 'pto_manager', label: 'Менеджер ПТО' },
-  { key: 'umto_coordinator', label: 'Координатор УМТО' },
 ];
 
 const formatDate = (value, withTime = false) => {
@@ -117,40 +114,37 @@ function TeamPreview({ team = [] }) {
   const byRole = new Map(team.map((member) => [member.role_key, member]));
   return (
     <Box component="section" aria-label="Команда объекта">
-      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.75 }}>
+      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.5 }}>
         <Groups2OutlinedIcon fontSize="small" color="action" />
         <Typography variant="subtitle2" fontWeight={800}>Команда объекта</Typography>
-        <Typography variant="caption" color="text.secondary">постоянные роли</Typography>
       </Stack>
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 135px), 1fr))',
-          gap: 0.75,
+          gridTemplateColumns: 'minmax(0, 1fr)',
+          gap: 0.5,
         }}
       >
-        {ROLE_OPTIONS.map((role) => {
+        {OBJECT_TEAM_ROLES.map((role) => {
           const member = byRole.get(role.key);
           return (
           <Box
             key={role.key}
             sx={{
               minWidth: 0,
-              p: 0.85,
-              borderRadius: 2,
-              border: '1px dashed',
-              borderColor: 'divider',
-              bgcolor: 'action.hover',
+              overflowWrap: 'anywhere',
             }}
           >
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
-              {role.label}
+            <Box sx={{ lineHeight: 1.35 }}>
+            <Typography component="span" variant="caption" color="text.secondary" sx={{ mr: 0.75 }}>
+              {role.label}:
             </Typography>
-            <Typography variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>
-              {member?.full_name || 'Не назначен'}
+            <Typography component="span" variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere', lineHeight: 1.35 }}>
+              <ConstructionPersonLink member={member} />
             </Typography>
+            </Box>
             {member?.position || member?.department ? (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflowWrap: 'anywhere' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflowWrap: 'anywhere', lineHeight: 1.3 }}>
                 {[member.position, member.department].filter(Boolean).join(' · ')}
               </Typography>
             ) : null}
@@ -184,13 +178,13 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        borderRadius: 3.5,
+        borderRadius: 2,
         borderColor: alpha(accent, theme.palette.mode === 'dark' ? 0.44 : 0.28),
         boxShadow: `0 10px 28px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.18 : 0.055)}`,
       }}
     >
-      <Box sx={{ height: 4, bgcolor: accent }} />
-      <Stack spacing={1.5} sx={{ p: { xs: 1.5, sm: 2 }, flex: 1 }}>
+      <Box sx={{ height: 3, bgcolor: accent }} />
+      <Stack spacing={1} sx={{ p: 1.25 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
           <Box sx={{ minWidth: 0 }}>
             <Chip
@@ -199,9 +193,9 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
               label={kindLabel}
               color={isProject ? 'primary' : isGeneral ? 'info' : 'warning'}
               variant="outlined"
-              sx={{ mb: 0.9, fontWeight: 750 }}
+              sx={{ mb: 0.5, fontWeight: 750, height: 22 }}
             />
-            <Typography component="h2" variant="h6" fontWeight={850} sx={{ overflowWrap: 'anywhere' }}>
+            <Typography component="h2" variant="h6" fontWeight={750} sx={{ overflowWrap: 'anywhere', lineHeight: 1.3, fontSize: 18 }}>
               {item.name}
             </Typography>
           </Box>
@@ -213,8 +207,9 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
             display: 'grid',
             gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
             gap: 1,
-            p: 1.25,
-            borderRadius: 2.5,
+            px: 1,
+            py: 0.75,
+            borderRadius: 1.5,
             bgcolor: alpha(accent, theme.palette.mode === 'dark' ? 0.12 : 0.055),
           }}
         >
@@ -227,8 +222,8 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
           <Stack direction="row" spacing={1} alignItems="flex-start">
             <AssignmentOutlinedIcon fontSize="small" color="action" sx={{ mt: 0.15, flexShrink: 0 }} />
             <Box sx={{ minWidth: 0 }}>
-              <Typography variant="caption" color="text.secondary">Последняя заявка</Typography>
-              <Typography variant="body2" fontWeight={750} sx={{ overflowWrap: 'anywhere' }}>
+              <Typography component="span" variant="caption" color="text.secondary" sx={{ mr: 0.75 }}>Последняя заявка</Typography>
+              <Typography component="span" variant="body2" fontWeight={750} sx={{ overflowWrap: 'anywhere' }}>
                 {item.latest_request_number} · {formatDate(item.latest_request_at)}
               </Typography>
             </Box>
@@ -238,7 +233,7 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
         {item.department_names?.length ? (
           <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.65} aria-label="Подразделения">
             {item.department_names.slice(0, 2).map((name) => (
-              <Chip key={name} size="small" label={name} sx={{ maxWidth: '100%' }} />
+              <Chip key={name} size="small" label={name} sx={{ maxWidth: '100%', height: 'auto', '& .MuiChip-label': { whiteSpace: 'normal', py: 0.25, lineHeight: 1.3 } }} />
             ))}
             {item.department_names.length > 2 ? (
               <Chip size="small" variant="outlined" label={`ещё ${item.department_names.length - 2}`} />
@@ -254,30 +249,34 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
           </Alert>
         )}
 
-        <Box sx={{ mt: 'auto' }}>
+        <Box>
+          <Box sx={{ display: 'grid', gridTemplateColumns: isProject && canWrite ? 'repeat(2, minmax(0, 1fr))' : 'minmax(0, 1fr)', gap: 0.75 }}>
           {isProject ? (
             <Button
               component={RouterLink}
               to={`/construction/objects/${encodeURIComponent(item.managed_object_id || item.object_ref)}`}
               fullWidth
               variant="contained"
+              aria-label="Открыть карточку объекта"
               startIcon={<ApartmentRoundedIcon />}
-              sx={{ minHeight: 44, mb: 0.75 }}
+              sx={{ minHeight: { xs: 44, sm: 36 }, px: 1, borderRadius: 1.5 }}
             >
-              Открыть карточку объекта
+              Открыть
             </Button>
           ) : null}
           {isProject && canWrite ? (
             <Button
               fullWidth
               variant={item.managed ? 'outlined' : 'contained'}
+              aria-label={item.managed ? 'Настроить объект' : 'Вести отдельно'}
               startIcon={item.managed ? <EditOutlinedIcon /> : <AddRoundedIcon />}
               onClick={() => onConfigure(item)}
-              sx={{ minHeight: 44, mb: 0.5 }}
+              sx={{ minHeight: { xs: 44, sm: 36 }, px: 1, borderRadius: 1.5 }}
             >
-              {item.managed ? 'Настроить объект' : 'Создать карточку объекта'}
+              {item.managed ? 'Настроить' : 'Вести отдельно'}
             </Button>
           ) : null}
+          </Box>
           <Button
             fullWidth
             variant="text"
@@ -294,7 +293,7 @@ function ObjectCard({ item, prefersReducedMotion = false, canWrite = false, onCo
                 }}
               />
             )}
-            sx={{ minHeight: 44, justifyContent: 'space-between' }}
+            sx={{ minHeight: { xs: 44, sm: 36 }, justifyContent: 'space-between', mt: 0.25, px: 0.5 }}
           >
             {expanded ? 'Скрыть данные' : 'Последние заявки и склады'}
           </Button>
@@ -353,30 +352,46 @@ function PortfolioSkeleton() {
 }
 
 export default function ConstructionObjects() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
+  const initialSelection = portfolioSelection(user);
+  const initialCache = readPortfolioCache(user, initialSelection.search, initialSelection.kind);
+  const initialResponse = initialCache?.response;
   const canWrite = hasPermission('construction.write');
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { defaultMatches: false });
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
-  const [kind, setKind] = useState('all');
-  const [items, setItems] = useState([]);
-  const [summary, setSummary] = useState(null);
-  const [asOf, setAsOf] = useState('');
-  const [windowFrom, setWindowFrom] = useState('');
-  const [scanTruncated, setScanTruncated] = useState(false);
-  const [cache, setCache] = useState(null);
-  const [managementAvailable, setManagementAvailable] = useState(true);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [searchInput, setSearchInput] = useState(initialSelection.search);
+  const [search, setSearch] = useState(initialSelection.search);
+  const [kind, setKind] = useState(initialSelection.kind);
+  const [items, setItems] = useState(initialResponse?.items || []);
+  const itemsRef = useRef(items);
+  const [summary, setSummary] = useState(initialResponse?.summary || null);
+  const [asOf, setAsOf] = useState(initialResponse?.as_of || '');
+  const [windowFrom, setWindowFrom] = useState(initialResponse?.window_from || '');
+  const [scanTruncated, setScanTruncated] = useState(Boolean(initialResponse?.scan_truncated));
+  const [cache, setCache] = useState(initialResponse?.cache || null);
+  const [managementAvailable, setManagementAvailable] = useState(initialResponse?.management_available !== false);
+  const [hasMore, setHasMore] = useState(Boolean(initialResponse?.has_more));
+  const [loading, setLoading] = useState(!initialResponse);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [settingsItem, setSettingsItem] = useState(undefined);
-  const nextCursorRef = useRef('');
+  const nextCursorRef = useRef(initialResponse?.next_cursor || '');
   const abortRef = useRef(null);
   const requestIdRef = useRef(0);
   const busyRef = useRef(false);
   const refreshRef = useRef(null);
-  const lastSuccessAtRef = useRef(0);
+  const lastSuccessAtRef = useRef(initialCache?.savedAt || 0);
+  const applySnapshot = useCallback((response) => {
+    itemsRef.current = response?.items || [];
+    setItems(itemsRef.current);
+    nextCursorRef.current = String(response?.next_cursor || '');
+    setHasMore(Boolean(response?.has_more));
+    setSummary(response?.summary || null);
+    setAsOf(String(response?.as_of || ''));
+    setWindowFrom(String(response?.window_from || ''));
+    setScanTruncated(Boolean(response?.scan_truncated));
+    setCache(response?.cache || null);
+    setManagementAvailable(response?.management_available !== false);
+  }, []);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
@@ -392,6 +407,7 @@ export default function ConstructionObjects() {
     if (busyRef.current && !cancelPrevious) return null;
     if (cancelPrevious) abortRef.current?.abort();
     const controller = new AbortController();
+    const cacheGeneration = portfolioCacheGeneration();
     abortRef.current = controller;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -411,24 +427,19 @@ export default function ConstructionObjects() {
       if (requestId !== requestIdRef.current) return null;
       const nextItems = Array.isArray(response?.items) ? response.items : [];
       const canAppend = append && !response?.snapshot_changed;
-      setItems((current) => {
-        if (!canAppend) return nextItems;
-        const byRef = new Map(current.map((item) => [item.object_ref, item]));
-        nextItems.forEach((item) => byRef.set(item.object_ref, item));
-        return [...byRef.values()];
-      });
-      nextCursorRef.current = String(response?.next_cursor || '');
-      setHasMore(Boolean(response?.has_more));
-      setSummary(response?.summary || null);
-      setAsOf(String(response?.as_of || ''));
-      setWindowFrom(String(response?.window_from || ''));
-      setScanTruncated(Boolean(response?.scan_truncated));
-      setCache(response?.cache || null);
-      setManagementAvailable(response?.management_available !== false);
+      const merged = new Map((canAppend ? itemsRef.current : []).map((item) => [item.object_ref, item]));
+      nextItems.forEach((item) => merged.set(item.object_ref, item));
+      const snapshot = { ...response, items: [...merged.values()] };
+      applySnapshot(snapshot);
+      writePortfolioCache(user, search, kind, snapshot, cacheGeneration);
       lastSuccessAtRef.current = Date.now();
       return response;
     } catch (requestError) {
       if (!isCancelled(requestError) && requestId === requestIdRef.current) {
+        if ([401, 403].includes(requestError?.response?.status)) {
+          clearConstructionPortfolioCache();
+          applySnapshot(null);
+        }
         setError(getErrorMessage(requestError));
       }
       return null;
@@ -439,12 +450,23 @@ export default function ConstructionObjects() {
         setRefreshing(false);
       }
     }
-  }, [kind, search]);
+  }, [kind, search, user, applySnapshot]);
 
   useEffect(() => {
-    nextCursorRef.current = '';
-    void loadObjects({ cancelPrevious: true });
-  }, [loadObjects]);
+    rememberPortfolioSelection(user, search, kind);
+    const cached = readPortfolioCache(user, search, kind);
+    abortRef.current?.abort();
+    requestIdRef.current += 1;
+    busyRef.current = false;
+    setError('');
+    setRefreshing(false);
+    applySnapshot(cached?.response || null);
+    setLoading(!cached);
+    if (cached) lastSuccessAtRef.current = cached.savedAt;
+    if (!cached || Date.now() - cached.savedAt >= CONSTRUCTION_PORTFOLIO_FRESH_MS) {
+      void loadObjects({ cancelPrevious: true, silent: Boolean(cached) });
+    }
+  }, [loadObjects, user, search, kind, applySnapshot]);
 
   useEffect(() => {
     refreshRef.current = () => loadObjects({ silent: true });
@@ -476,7 +498,7 @@ export default function ConstructionObjects() {
 
   return (
     <MainLayout pageTitle="Объекты строительства">
-      <PageShell sx={{ minWidth: 0, p: { xs: 1, sm: 2, lg: 2.5 } }}>
+      <PageShell sx={{ minWidth: 0, p: { xs: 1, sm: 2, lg: 2.5 }, '& .MuiButton-root': { textTransform: 'none', fontWeight: 600 }, '& input': { fontSize: { xs: 16, sm: 14 } } }}>
         <Stack spacing={{ xs: 1.5, sm: 2 }}>
           <Stack component="header" direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
             <Box sx={{ minWidth: 0 }}>
@@ -484,7 +506,7 @@ export default function ConstructionObjects() {
                 Объекты строительства
               </Typography>
               <Typography color="text.secondary">
-                Портфель объектов и заявок на МПЗ по данным 1С
+              Команды, направления, ход работ и снабжение объектов
               </Typography>
             </Box>
             <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
@@ -574,7 +596,7 @@ export default function ConstructionObjects() {
 
           {loading || refreshing ? <LinearProgress aria-label={refreshing ? 'Обновление портфеля' : 'Загрузка портфеля'} /> : null}
           {error ? (
-            <Alert severity="warning">
+            <Alert severity="warning" action={<Button disabled={loading || refreshing} onClick={() => void loadObjects({ silent: true, forceRefresh: true })}>Повторить</Button>}>
               {error}. {items.length ? 'Показаны данные предыдущей успешной загрузки.' : 'Повторите попытку позже.'}
             </Alert>
           ) : null}
@@ -602,7 +624,7 @@ export default function ConstructionObjects() {
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
                 gap: { xs: 1.25, sm: 1.75 },
-                alignItems: 'stretch',
+                alignItems: 'start',
               }}
             >
               {items.map((item) => (
@@ -637,7 +659,7 @@ export default function ConstructionObjects() {
           ) : null}
 
           <Typography variant="caption" color="text.secondary" textAlign="center">
-            {summary ? `${requestCountLabel(summary.request_count)} обработано одним пакетным запросом.` : 'Источник: 1С, только чтение.'}
+            {summary ? `${requestCountLabel(summary.request_count)} · ${shownPeriod}` : 'Заявки и снабжение — по данным 1С'}
           </Typography>
         </Stack>
       </PageShell>

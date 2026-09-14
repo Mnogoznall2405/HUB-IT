@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
@@ -44,72 +44,95 @@ export const SwipeableChatBubble = memo(function SwipeableChatBubble({
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
   const offset = useRef(new Animated.Value(0)).current;
-  useEffect(() => () => offset.stopAnimation(), [offset]);
+  const active = useRef(false);
+  const messageKey = JSON.stringify([bubbleProps.message.conversation_id, bubbleProps.message.id]);
+  const access = useRef({ swipeEnabled, onSwipeReply, onSwipeForward, reduceMotion, messageKey });
+  useLayoutEffect(() => {
+    if (!swipeEnabled || access.current.messageKey !== messageKey) {
+      active.current = false;
+      offset.stopAnimation();
+      offset.setValue(0);
+    }
+    if (reduceMotion) { offset.stopAnimation(); offset.setValue(0); }
+    access.current = { swipeEnabled, onSwipeReply, onSwipeForward, reduceMotion, messageKey };
+  }, [messageKey, offset, onSwipeForward, onSwipeReply, reduceMotion, swipeEnabled]);
+  useEffect(() => () => { active.current = false; offset.stopAnimation(); }, [offset]);
   const thresholdDirection = useRef<'reply' | 'forward' | null>(null);
 
-  const reset = () => {
-    thresholdDirection.current = null;
-    if (reduceMotion) {
-      offset.setValue(0);
-      return;
-    }
-    Animated.spring(offset, {
-      toValue: 0,
-      useNativeDriver: true,
-      speed: 28,
-      bounciness: 0,
-    }).start();
-  };
+  const panResponder = useMemo(() => {
+    const reset = () => {
+      active.current = false;
+      thresholdDirection.current = null;
+      if (access.current.reduceMotion) {
+        offset.setValue(0);
+        return;
+      }
+      Animated.spring(offset, {
+        toValue: 0,
+        useNativeDriver: true,
+        speed: 28,
+        bounciness: 0,
+      }).start();
+    };
 
-  const startSwipe = (dx: number, dy: number) => Boolean(
-    swipeEnabled
-    && !isChatVoiceSurfaceLocked()
-    && shouldStartMessageSwipe(dx, dy, {
-      canReply: Boolean(onSwipeReply),
-      canForward: Boolean(onSwipeForward),
-    }),
-  );
+    const startSwipe = (dx: number, dy: number) => Boolean(
+      access.current.swipeEnabled
+      && !isChatVoiceSurfaceLocked()
+      && shouldStartMessageSwipe(dx, dy, {
+        canReply: Boolean(access.current.onSwipeReply),
+        canForward: Boolean(access.current.onSwipeForward),
+      }),
+    );
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
-    onMoveShouldSetPanResponderCapture: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
-    onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
-    onPanResponderGrant: () => { offset.stopAnimation(); thresholdDirection.current = null; },
-    onPanResponderMove: (_, gesture) => {
-      const minimum = onSwipeForward ? -MAX_OFFSET : 0;
-      const maximum = onSwipeReply ? MAX_OFFSET : 0;
-      const nextOffset = Math.max(minimum, Math.min(maximum, gesture.dx));
-      if (!reduceMotion) offset.setValue(nextOffset);
-      const nextDirection = shouldTriggerReply(gesture.dx) && onSwipeReply
-        ? 'reply'
-        : shouldTriggerForward(gesture.dx) && onSwipeForward
-          ? 'forward'
-          : null;
-      if (nextDirection && thresholdDirection.current !== nextDirection) {
-        thresholdDirection.current = nextDirection;
-        void Haptics.selectionAsync().catch(() => undefined);
-      }
-      if (
-        thresholdDirection.current === 'reply'
-        && gesture.dx < REPLY_THRESHOLD - 8
-      ) {
-        thresholdDirection.current = null;
-      }
-      if (
-        thresholdDirection.current === 'forward'
-        && gesture.dx > -REPLY_THRESHOLD + 8
-      ) {
-        thresholdDirection.current = null;
-      }
-    },
-    onPanResponderRelease: (_, gesture) => {
-      if (!shouldKeepHorizontalSwipe(gesture.dx, gesture.dy)) { reset(); return; }
-      if (onSwipeReply && shouldTriggerReply(gesture.dx)) onSwipeReply();
-      else if (onSwipeForward && shouldTriggerForward(gesture.dx)) onSwipeForward();
-      reset();
-    },
-    onPanResponderTerminate: reset,
-  }), [offset, onSwipeForward, onSwipeReply, reduceMotion, swipeEnabled]);
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
+      onMoveShouldSetPanResponderCapture: (_, gesture) => startSwipe(gesture.dx, gesture.dy),
+      onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
+      onPanResponderGrant: () => {
+        active.current = access.current.swipeEnabled && !isChatVoiceSurfaceLocked();
+        offset.stopAnimation(); thresholdDirection.current = null;
+      },
+      onPanResponderMove: (_, gesture) => {
+        if (!active.current) return;
+        if (!access.current.swipeEnabled || isChatVoiceSurfaceLocked()) { reset(); return; }
+        const { onSwipeReply, onSwipeForward, reduceMotion } = access.current;
+        const minimum = onSwipeForward ? -MAX_OFFSET : 0;
+        const maximum = onSwipeReply ? MAX_OFFSET : 0;
+        const nextOffset = Math.max(minimum, Math.min(maximum, gesture.dx));
+        if (!reduceMotion) offset.setValue(nextOffset);
+        const nextDirection = shouldTriggerReply(gesture.dx) && onSwipeReply
+          ? 'reply'
+          : shouldTriggerForward(gesture.dx) && onSwipeForward
+            ? 'forward'
+            : null;
+        if (nextDirection && thresholdDirection.current !== nextDirection) {
+          thresholdDirection.current = nextDirection;
+          void Haptics.selectionAsync().catch(() => undefined);
+        }
+        if (
+          thresholdDirection.current === 'reply'
+          && gesture.dx < REPLY_THRESHOLD - 8
+        ) {
+          thresholdDirection.current = null;
+        }
+        if (
+          thresholdDirection.current === 'forward'
+          && gesture.dx > -REPLY_THRESHOLD + 8
+        ) {
+          thresholdDirection.current = null;
+        }
+      },
+      onPanResponderRelease: (_, gesture) => {
+        if (!active.current) return;
+        const { swipeEnabled, onSwipeReply, onSwipeForward } = access.current;
+        const allowed = swipeEnabled && !isChatVoiceSurfaceLocked() && shouldKeepHorizontalSwipe(gesture.dx, gesture.dy);
+        reset();
+        if (allowed && onSwipeReply && shouldTriggerReply(gesture.dx)) onSwipeReply();
+        else if (allowed && onSwipeForward && shouldTriggerForward(gesture.dx)) onSwipeForward();
+      },
+      onPanResponderTerminate: reset,
+    });
+  }, [offset]);
 
   const replyIndicatorOpacity = offset.interpolate({
     inputRange: [0, REPLY_THRESHOLD],

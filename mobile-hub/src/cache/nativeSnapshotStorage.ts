@@ -10,6 +10,7 @@ export const MAX_NATIVE_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 export const MAX_NATIVE_ADDRESS_BOOK_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 const encryptionKeyRequests = new Map<number, Promise<Crypto.AESEncryptionKey>>();
 const snapshotWriteRequests = new Map<string, Promise<void>>();
+const clearingUsers = new Map<number, Promise<void>>();
 
 function normalizedUserId(userId: number): number | null {
   const value = Number(userId || 0);
@@ -211,13 +212,13 @@ async function performEncryptedNativeSnapshotWrite(scope: string, owner: number,
 
 export function writeEncryptedNativeSnapshot(scope: string, userId: number, plaintext: string): Promise<boolean> {
   const owner = normalizedUserId(userId);
-  if (!owner || Platform.OS === 'web') return Promise.resolve(false);
+  if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return Promise.resolve(false);
   return withSnapshotOperation(scope, owner, () => performEncryptedNativeSnapshotWrite(scope, owner, plaintext));
 }
 
 export function readEncryptedNativeSnapshot(scope: string, userId: number): Promise<string | null> {
   const owner = normalizedUserId(userId);
-  if (!owner || Platform.OS === 'web') return Promise.resolve(null);
+  if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return Promise.resolve(null);
   return withSnapshotOperation(scope, owner, async () => {
     let stage = 'directory';
     let file: File | undefined;
@@ -280,19 +281,28 @@ export async function deleteEncryptedNativeSnapshot(scope: string, userId: numbe
 export async function clearEncryptedNativeSnapshots(userId: number): Promise<void> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return;
-  const prefix = `snapshot-${owner}-`;
-  for (const entry of snapshotDirectory().list()) {
-    if (entry instanceof File && entry.name.startsWith(prefix) && entry.exists) entry.delete();
-  }
-  const legacyDirectory = legacySnapshotDirectory();
-  if (legacyDirectory.exists) {
-    for (const entry of legacyDirectory.list()) {
+  const existing = clearingUsers.get(owner);
+  if (existing) return existing;
+  const pending = (async () => {
+    // Finish native copy/move/key operations before deleting their files and key.
+    await Promise.allSettled([...snapshotWriteRequests.entries()]
+      .filter(([key]) => key.startsWith(`${owner}:`)).map(([, operation]) => operation));
+    const prefix = `snapshot-${owner}-`;
+    for (const entry of snapshotDirectory().list()) {
       if (entry instanceof File && entry.name.startsWith(prefix) && entry.exists) entry.delete();
     }
-  }
-  encryptionKeyRequests.delete(owner);
-  for (const key of snapshotWriteRequests.keys()) {
-    if (key.startsWith(`${owner}:`)) snapshotWriteRequests.delete(key);
-  }
-  await SecureStore.deleteItemAsync(encryptionKeyName(owner)).catch(() => undefined);
+    const legacyDirectory = legacySnapshotDirectory();
+    if (legacyDirectory.exists) {
+      for (const entry of legacyDirectory.list()) {
+        if (entry instanceof File && entry.name.startsWith(prefix) && entry.exists) entry.delete();
+      }
+    }
+    encryptionKeyRequests.delete(owner);
+    for (const key of snapshotWriteRequests.keys()) {
+      if (key.startsWith(`${owner}:`)) snapshotWriteRequests.delete(key);
+    }
+    await SecureStore.deleteItemAsync(encryptionKeyName(owner)).catch(() => undefined);
+  })().finally(() => { if (clearingUsers.get(owner) === pending) clearingUsers.delete(owner); });
+  clearingUsers.set(owner, pending);
+  return pending;
 }

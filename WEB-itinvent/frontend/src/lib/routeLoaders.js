@@ -74,6 +74,7 @@ export const loadWarehouse1CRoute = defineRouteLoader(() => import('../pages/War
 export const loadItPurchaseRequestsRoute = defineRouteLoader(() => import('../pages/ItPurchaseRequests'));
 export const loadConstructionObjectsRoute = defineRouteLoader(() => import('../pages/ConstructionObjects'));
 export const loadConstructionObjectDetailRoute = defineRouteLoader(() => import('../pages/ConstructionObjectDetail'));
+export const loadConstructionDirectionDetailRoute = defineRouteLoader(() => import('../pages/ConstructionDirectionDetail'));
 export const loadDocflowRoute = defineRouteLoader(() => import('../pages/Docflow'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
 export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
@@ -84,6 +85,7 @@ export const loadMyFilesRoute = defineRouteLoader(() => {
   return import('../pages/MyFiles');
 });
 export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
+export const loadSharedFolderRoute = defineRouteLoader(() => import('../pages/SharedFolder'));
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
@@ -115,11 +117,13 @@ const ROUTE_LOADERS = new Map([
   ['/it/requests', loadItPurchaseRequestsRoute],
   ['/construction', loadConstructionObjectsRoute],
   ['/construction/objects', loadConstructionObjectDetailRoute],
+  ['/construction/objects/directions', loadConstructionDirectionDetailRoute],
   ['/docflow', loadDocflowRoute],
   ['/passwords', loadPasswordsRoute],
   ['/groups-access', loadGroupsAccessRoute],
   ['/my-files', loadMyFilesRoute],
   ['/shared-files', loadSharedFileRoute],
+  ['/shared-folders', loadSharedFolderRoute],
 ]);
 
 export const normalizeRouteLoaderPath = (path) => {

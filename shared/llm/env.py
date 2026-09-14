@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 
@@ -43,6 +44,9 @@ def normalize_openrouter_base_url(
     elif lower.endswith("/completions"):
         value = value[: -len("/completions")]
         lower = value.lower()
+    # OpenCode Go uses a provider-specific prefix, not RouterAI's /api/v1.
+    if urlsplit(value).hostname == "opencode.ai" and urlsplit(value).path == "/zen/go/v1":
+        return value
     if lower.endswith("/api"):
         value = f"{value}/v1"
         lower = value.lower()

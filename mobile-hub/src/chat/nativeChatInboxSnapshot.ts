@@ -6,6 +6,7 @@ import {
 } from '../cache/nativeSnapshotCache';
 
 export const NATIVE_CHAT_INBOX_SNAPSHOT_KEY = 'default';
+const pendingWrites = new Map<number, Promise<boolean>>();
 
 function isConversationPage(value: unknown): value is ChatConversationPage {
   const page = value as Partial<ChatConversationPage> | null;
@@ -25,19 +26,36 @@ export async function readNativeChatInboxSnapshot(userId: number) {
   return legacy && isConversationPage(legacy.data) ? legacy : null;
 }
 
-export async function writeNativeChatInboxSnapshot(
+export function writeNativeChatInboxSnapshot(
   userId: number,
   page: ChatConversationPage,
+  options: { removedConversationIds?: string[]; isCurrent?: () => boolean } = {},
 ): Promise<boolean> {
-  if (!isConversationPage(page)) return false;
+  const previous = pendingWrites.get(userId) || Promise.resolve(true);
+  const operation = previous.catch(() => false).then(() => persistInboxSnapshot(userId, page, options));
+  pendingWrites.set(userId, operation);
+  void operation.finally(() => {
+    if (pendingWrites.get(userId) === operation) pendingWrites.delete(userId);
+  }).catch(() => undefined);
+  return operation;
+}
+
+async function persistInboxSnapshot(
+  userId: number,
+  page: ChatConversationPage,
+  options: { removedConversationIds?: string[]; isCurrent?: () => boolean },
+): Promise<boolean> {
+  if (!isConversationPage(page) || options.isCurrent?.() === false) return false;
   const existing = await readNativeChatInboxSnapshot(userId);
+  if (options.isCurrent?.() === false) return false;
+  const removedIds = new Set(options.removedConversationIds || []);
   // A first online page must not replace a previously complete offline catalog,
   // but fresh items from that page still need to be merged in (OFF-08).
   if (page.has_more && existing?.data.has_more === false) {
     const byId = new Map<string, ChatConversationPage['items'][number]>();
     [...(existing.data.items || []), ...(page.items || [])].forEach((item) => {
       const id = String(item?.id || '').trim();
-      if (id) byId.set(id, item);
+      if (id && !removedIds.has(id)) byId.set(id, item);
     });
     return writeNativeCollectionSnapshot(
       'chat-inbox',
@@ -55,6 +73,6 @@ export async function writeNativeChatInboxSnapshot(
     'chat-inbox',
     userId,
     NATIVE_CHAT_INBOX_SNAPSHOT_KEY,
-    page,
+    removedIds.size ? { ...page, items: page.items.filter((item) => !removedIds.has(item.id)) } : page,
   );
 }

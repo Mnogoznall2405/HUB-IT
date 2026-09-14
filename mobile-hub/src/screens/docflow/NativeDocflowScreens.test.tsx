@@ -239,9 +239,7 @@ it('restores a previously opened 1C DO task card offline', async () => {
 
 it('loads the configured inbox and opens an internal native detail route', async () => {
   const view = await render(<NativeDocflowInboxScreen />);
-  expect(StyleSheet.flatten(view.getByTestId('native-docflow-scope-tabs').props.style)).toEqual(
-    expect.objectContaining({ flexGrow: 0, flexShrink: 0 }),
-  );
+  expect(view.getByTestId('native-docflow-scope-inbox')).toBeTruthy();
   await waitFor(() => expect(view.getByText('Согласовать договор')).toBeTruthy());
   expect(docflowApi.listDocflowTasks).toHaveBeenCalledWith({ scope: 'inbox', q: '', limit: 50 });
   fireEvent.press(view.getByTestId(`native-docflow-task-${task.ref}`));

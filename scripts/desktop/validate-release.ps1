@@ -93,7 +93,7 @@ $prerequisites = Get-Content -LiteralPath $prerequisiteInventoryPath -Raw -Encod
     ConvertFrom-Json
 $expectedPrerequisiteFiles = @(
     'VC_redist.x64.exe',
-    'MicrosoftEdgeWebView2RuntimeInstallerX64.exe',
+    'MicrosoftEdgeWebview2Setup.exe',
     'WindowsAppRuntimeInstall-x64.exe'
 )
 if ($prerequisites.Count -ne $expectedPrerequisiteFiles.Count) {
@@ -176,6 +176,7 @@ $requiredPublishFiles = @(
     'HUB.Desktop.exe',
     'HUB.Desktop.dll',
     'HUB.Desktop.UpdateRunner.exe',
+    'HUB.Desktop.UpdateRunner.exe.sha256',
     'appsettings.json',
     'Microsoft.Web.WebView2.Core.dll',
     'WebView2Loader.dll',

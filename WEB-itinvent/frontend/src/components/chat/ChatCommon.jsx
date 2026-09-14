@@ -740,8 +740,8 @@ export function FileAttachment({
   const mediaSurfaceStyle = {
     ...surfaceStyle,
     width: constrainedMediaWidth ? `${Math.round(constrainedMediaWidth)}px` : (hasNumericMediaMaxWidth ? `${mediaMaxWidth}px` : '100%'),
-    maxWidth: hasNumericMediaMaxWidth ? `${mediaMaxWidth}px` : mediaMaxWidth,
-    minWidth: hasNumericMediaMinWidth ? `${mediaMinWidth}px` : undefined,
+    maxWidth: hasNumericMediaMaxWidth ? `min(100%, ${mediaMaxWidth}px)` : mediaMaxWidth,
+    minWidth: hasNumericMediaMinWidth ? `min(100%, ${mediaMinWidth}px)` : undefined,
     padding: 0,
     border: 'none',
     backgroundColor: 'transparent',
@@ -859,7 +859,7 @@ export function FileAttachment({
           display: 'block',
           width: '100%',
           height: '100%',
-          objectFit: 'cover',
+          objectFit: forcedAspectRatio ? 'cover' : 'contain',
           backgroundColor: ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)',
         }}
       />

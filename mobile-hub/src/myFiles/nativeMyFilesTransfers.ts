@@ -1,16 +1,19 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { Directory, File, Paths, UploadType } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 import HubitFolderZip from '../../modules/hubit-folder-zip';
 import { API_V1_BASE, HUB_WEB_ORIGIN } from '../api/config';
-import { getAuthenticatedAccessToken, withMobileAuthHeaders } from '../api/client';
 import {
+  cancelMyFileUploadSession,
+  completeMyFileUploadSession,
   createMyFileDownloadGrant,
-  normalizeMyFile,
+  createMyFileUploadSession,
+  getMyFileUploadSession,
+  uploadMyFileChunk,
   type MyFilePreview,
   type MyFileRecord,
+  type MyFileUploadSession,
 } from '../api/myFilesApi';
-import { getClientDeviceId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
 import {
@@ -23,6 +26,13 @@ import { getNativeMyFilesOfflineFile } from './nativeMyFilesOfflineStore';
 const CACHE_DIRECTORY_NAME = 'hubit-my-files';
 const NATIVE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
 const TEXT_PREVIEW_MAX_CHARACTERS = 200_000;
+/** Паритет с вебом: сервер резервирует сессию на upload_reservation_ttl_sec (2ч). */
+const UPLOAD_RESUME_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const UPLOAD_RETRY_DELAYS_MS = [1_000, 2_500, 5_000, 10_000, 20_000];
+const UPLOAD_SESSION_CAPACITY_MAX_RETRIES = 40;
+const UPLOAD_SESSION_CAPACITY_FALLBACK_MS = 5_000;
+const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15_000;
+const UPLOAD_RESUME_FILE_NAME = 'hubit-my-files-upload-resume.json';
 
 export type NativeMyFileUpload = {
   uri: string;
@@ -74,17 +84,6 @@ export function getNativeMyFilesCacheSize(): number {
     .reduce((sum, entry) => sum + Math.max(0, Number(entry.size || 0)), 0);
 }
 
-function responseError(status: number, body: string, fallback: string): Error {
-  let detail = '';
-  try {
-    const parsed = JSON.parse(String(body || '')) as { detail?: unknown; message?: unknown };
-    detail = String(parsed.detail || parsed.message || '').trim();
-  } catch {
-    detail = '';
-  }
-  return new Error(detail || (status === 401 ? 'Сессия истекла. Обновите экран и войдите снова' : fallback));
-}
-
 export async function pickNativeMyFiles(): Promise<NativeMyFileUpload[]> {
   assertNativeRuntime();
   const result = await DocumentPicker.getDocumentAsync({
@@ -98,7 +97,7 @@ export async function pickNativeMyFiles(): Promise<NativeMyFileUpload[]> {
     const size = Math.max(0, Number(asset.size || file.size || 0));
     const name = sanitizeNativeFileName(asset.name || file.name || 'file.bin');
     if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
-    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает лимит 4 ГБ`);
+    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает лимит 10 ГБ`);
     return {
       uri: asset.uri,
       name,
@@ -120,7 +119,7 @@ export async function pickNativeMyFilesFolder(): Promise<NativeMyFileUpload | nu
   const size = Math.max(0, Number(asset.size || file.size || 0));
   const name = sanitizeNativeFileName(asset.name || `${asset.folderName || 'folder'}.zip`);
   if (!file.exists || size <= 0) throw new Error(`Архив «${name}» пустой или недоступен`);
-  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает лимит 4 ГБ`);
+  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает лимит 10 ГБ`);
   return {
     uri: asset.uri,
     name,
@@ -129,11 +128,181 @@ export async function pickNativeMyFilesFolder(): Promise<NativeMyFileUpload | nu
   };
 }
 
+type UploadResumeEntry = { fileId?: unknown; savedAt?: unknown };
+
+function uploadResumeFile(): File {
+  return new File(Paths.document, UPLOAD_RESUME_FILE_NAME);
+}
+
+async function readUploadResumeMap(): Promise<Record<string, UploadResumeEntry>> {
+  try {
+    const file = uploadResumeFile();
+    if (!file.exists) return {};
+    const parsed = JSON.parse(await file.text()) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, UploadResumeEntry>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeUploadResumeMap(map: Record<string, UploadResumeEntry>): Promise<void> {
+  try {
+    const cutoff = Date.now() - UPLOAD_RESUME_MAX_AGE_MS;
+    const pruned = Object.fromEntries(
+      Object.entries(map).filter(([, entry]) => Number(entry?.savedAt || 0) > cutoff),
+    );
+    const file = uploadResumeFile();
+    if (!file.exists) file.create();
+    file.write(JSON.stringify(pruned));
+  } catch {
+    // Resume map is best-effort.
+  }
+}
+
+function uploadResumeKey(name: string, size: number, folderId: string, modifiedAtMs: number): string {
+  return [String(name || ''), String(Math.max(0, Math.trunc(size))), String(folderId || ''), String(Math.trunc(modifiedAtMs || 0))].join('|');
+}
+
+async function findResumableUploadSession(
+  key: string,
+  expectedSize: number,
+  signal?: AbortSignal,
+): Promise<MyFileUploadSession | null> {
+  const entry = (await readUploadResumeMap())[key];
+  const fileId = String(entry?.fileId || '').trim();
+  if (!fileId || Date.now() - Number(entry?.savedAt || 0) > UPLOAD_RESUME_MAX_AGE_MS) return null;
+  try {
+    const session = await getMyFileUploadSession(fileId, signal);
+    if (session.file_size_bytes !== expectedSize || session.complete) return null;
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+async function saveUploadResume(key: string, fileId: string): Promise<void> {
+  const map = await readUploadResumeMap();
+  map[key] = { fileId, savedAt: Date.now() };
+  await writeUploadResumeMap(map);
+}
+
+async function clearUploadResume(key: string): Promise<void> {
+  const map = await readUploadResumeMap();
+  if (!(key in map)) return;
+  delete map[key];
+  await writeUploadResumeMap(map);
+}
+
+function createUploadAbortError(): Error {
+  return Object.assign(new Error('Upload aborted'), { name: 'AbortError' });
+}
+
+function waitForUploadRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createUploadAbortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createUploadAbortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
+}
+
+function isRetriableUploadError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { name?: string; code?: string; response?: { status?: number } };
+  if (candidate.name === 'AbortError' || candidate.code === 'ERR_CANCELED') return false;
+  const status = Number(candidate.response?.status || 0);
+  if (!status) return true;
+  if (status === 408 || status === 425 || status === 429) return true;
+  return status >= 500;
+}
+
+function describeUploadFailure(error: unknown, aborted = false): string {
+  const candidate = error as {
+    name?: string;
+    code?: string;
+    message?: string;
+    response?: { status?: number; data?: { detail?: unknown } };
+  } | null;
+  if (aborted || candidate?.name === 'AbortError' || candidate?.code === 'ERR_CANCELED') {
+    return 'Upload cancelled';
+  }
+  const detail = candidate?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail.trim().slice(0, 2000);
+  if (Array.isArray(detail)) {
+    const first = detail.find((item) => typeof item?.msg === 'string' && String(item.msg).trim());
+    if (first) return String(first.msg).trim().slice(0, 2000);
+  }
+  const message = String(candidate?.message || '').trim();
+  if (message) return message.slice(0, 2000);
+  const status = Number(candidate?.response?.status || 0);
+  return status > 0 ? `Upload failed (HTTP ${status})` : 'Upload failed';
+}
+
+function capacityRetryDelayMs(error: unknown): number {
+  const headers = (error as { response?: { headers?: Record<string, unknown> } } | null)
+    ?.response?.headers;
+  const retryAfterSeconds = Number(headers?.['retry-after'] || 0);
+  const suggested = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? retryAfterSeconds * 1000
+    : UPLOAD_SESSION_CAPACITY_FALLBACK_MS;
+  return Math.min(Math.max(suggested, 2_000), UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS);
+}
+
+async function createUploadSessionWithCapacityRetry(input: {
+  fileName: string;
+  fileSize: number;
+  retentionDays: number;
+  mimeType: string;
+  folderId?: string | null;
+  signal?: AbortSignal;
+}): Promise<MyFileUploadSession> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await createMyFileUploadSession(input);
+    } catch (error) {
+      const status = Number(
+        (error as { response?: { status?: number } } | null)?.response?.status || 0,
+      );
+      if (status !== 429 || input.signal?.aborted || attempt >= UPLOAD_SESSION_CAPACITY_MAX_RETRIES) {
+        throw error;
+      }
+      await waitForUploadRetry(capacityRetryDelayMs(error), input.signal);
+    }
+  }
+}
+
+function emitUploadProgress(
+  callback: ((progress: MyFileTransferProgress) => void) | undefined,
+  loaded: number,
+  total: number,
+): void {
+  if (typeof callback !== 'function') return;
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeLoaded = Math.max(0, Math.min(safeTotal || loaded, Number(loaded) || 0));
+  callback({
+    loaded: safeLoaded,
+    total: safeTotal || null,
+    progress: safeTotal > 0 ? Math.max(0, Math.min(1, safeLoaded / safeTotal)) : null,
+  });
+}
+
 export async function uploadNativeMyFile(
   picked: NativeMyFileUpload,
   retentionDays: number,
   options: {
     signal?: AbortSignal;
+    folderId?: string | null;
     onProgress?: (progress: MyFileTransferProgress) => void;
   } = {},
 ): Promise<MyFileRecord> {
@@ -141,46 +310,99 @@ export async function uploadNativeMyFile(
   const source = new File(picked.uri);
   const actualSize = Math.max(0, Number(source.size || picked.size || 0));
   if (!source.exists || actualSize <= 0) throw new Error('Файл пустой или недоступен');
-  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает лимит 4 ГБ');
-  const accessToken = await getAuthenticatedAccessToken();
-  const deviceId = await getClientDeviceId();
-  const query = new URLSearchParams({
-    file_name: sanitizeNativeFileName(picked.name),
-    file_size: String(actualSize),
-    retention_days: String(normalizeMyFilesRetention(retentionDays)),
-  });
-  const task = source.createUploadTask(`${API_V1_BASE}/my-files?${query.toString()}`, {
-    httpMethod: 'POST',
-    uploadType: UploadType.BINARY_CONTENT,
-    mimeType: picked.mimeType || source.type || 'application/octet-stream',
-    signal: options.signal,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': picked.mimeType || source.type || 'application/octet-stream',
-      ...withMobileAuthHeaders(deviceId),
-    },
-    onProgress: ({ bytesSent, totalBytes }) => {
-      const total = totalBytes > 0 ? totalBytes : actualSize || null;
-      options.onProgress?.({
-        loaded: bytesSent,
-        total,
-        progress: total ? Math.max(0, Math.min(1, bytesSent / total)) : null,
-      });
-    },
-  });
-  const result = await task.uploadAsync();
-  if (result.status < 200 || result.status >= 300) {
-    throw responseError(result.status, result.body, 'Не удалось загрузить файл');
-  }
-  let payload: unknown;
+  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает лимит 10 ГБ');
+  const signal = options.signal;
+  const safeName = sanitizeNativeFileName(picked.name);
+  const mimeType = picked.mimeType || source.type || 'application/octet-stream';
+  const resumeKey = uploadResumeKey(safeName, actualSize, String(options.folderId || ''), Number(source.modificationTime || 0));
+  let fileId = '';
+  emitUploadProgress(options.onProgress, 0, actualSize);
   try {
-    payload = JSON.parse(result.body);
-  } catch {
-    throw new Error('Сервер вернул некорректный результат загрузки');
+    const session = (await findResumableUploadSession(resumeKey, actualSize, signal))
+      || await createUploadSessionWithCapacityRetry({
+        fileName: safeName,
+        fileSize: actualSize,
+        retentionDays: normalizeMyFilesRetention(retentionDays),
+        mimeType,
+        folderId: options.folderId || null,
+        signal,
+      });
+    fileId = session.file_id;
+    await saveUploadResume(resumeKey, fileId);
+    const chunkSizeBytes = Number(session.chunk_size_bytes || 0);
+    let uploadedBytes = Math.max(0, Number(session.uploaded_bytes || 0));
+    if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0 || uploadedBytes > actualSize) {
+      throw new Error('Сервер вернул некорректную сессию загрузки');
+    }
+
+    emitUploadProgress(options.onProgress, uploadedBytes, actualSize);
+    while (uploadedBytes < actualSize) {
+      const chunkOffset = uploadedBytes;
+      const chunk = source.slice(chunkOffset, Math.min(actualSize, chunkOffset + chunkSizeBytes));
+      let acknowledged = false;
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt <= UPLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+        try {
+          const result = await uploadMyFileChunk(fileId, chunk, {
+            offset: chunkOffset,
+            signal,
+            onUploadProgress: (event) => {
+              const sent = Math.min(chunk.size, Number(event?.loaded || 0));
+              emitUploadProgress(options.onProgress, chunkOffset + sent, actualSize);
+            },
+          });
+          const nextUploadedBytes = Math.max(0, Number(result.uploaded_bytes || 0));
+          if (nextUploadedBytes <= chunkOffset || nextUploadedBytes > actualSize) {
+            throw new Error('Сервер подтвердил некорректный объём загрузки');
+          }
+          uploadedBytes = nextUploadedBytes;
+          acknowledged = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (signal?.aborted) throw error;
+          try {
+            const status = await getMyFileUploadSession(fileId, signal);
+            const recoveredBytes = Math.max(0, Number(status.uploaded_bytes || 0));
+            if (recoveredBytes > chunkOffset && recoveredBytes <= actualSize) {
+              uploadedBytes = recoveredBytes;
+              acknowledged = true;
+              break;
+            }
+          } catch (statusError) {
+            if (signal?.aborted) throw statusError;
+          }
+          if (!isRetriableUploadError(error)) throw error;
+          if (attempt < UPLOAD_RETRY_DELAYS_MS.length) {
+            await waitForUploadRetry(UPLOAD_RETRY_DELAYS_MS[attempt], signal);
+          }
+        }
+      }
+
+      if (!acknowledged) throw lastError || new Error('Не удалось отправить часть файла');
+      emitUploadProgress(options.onProgress, uploadedBytes, actualSize);
+    }
+
+    const completed = await completeMyFileUploadSession(fileId, signal);
+    emitUploadProgress(options.onProgress, actualSize, actualSize);
+    await clearUploadResume(resumeKey);
+    return completed;
+  } catch (error) {
+    const aborted = Boolean(signal?.aborted)
+      || (error as { name?: string; code?: string } | null)?.name === 'AbortError'
+      || (error as { name?: string; code?: string } | null)?.code === 'ERR_CANCELED';
+    if (fileId && (aborted || !isRetriableUploadError(error))) {
+      // Точные провалы отменяем на сервере; сетевые сбои оставляем сессию для resume.
+      await clearUploadResume(resumeKey);
+      try {
+        await cancelMyFileUploadSession(fileId, describeUploadFailure(error, aborted));
+      } catch {
+        // Сервер сам истечёт незавершённые резервации.
+      }
+    }
+    throw aborted ? createUploadAbortError() : error;
   }
-  const normalized = normalizeMyFile(payload);
-  if (!normalized) throw new Error('Сервер вернул некорректную карточку файла');
-  return normalized;
 }
 
 export function resolveMyFileDownloadGrantUrl(downloadPath: string): string {

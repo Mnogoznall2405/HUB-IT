@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { useNativeAdminData } from './useNativeAdminData';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { SESSION_STATUS_META } from '../../account/accountConstants';
 import { formatDateTime } from '../../account/accountFormat';
 import { canAccessAdminSection } from '../../account/accountNavigation';
@@ -17,7 +18,19 @@ import {
 } from './AccountChrome';
 import { goBackOrReplace } from './accountBack';
 
+const adminScreenReady = async () => true;
 export function NativeAdminSessionsScreen() {
+  const access = useAuth();
+  const { preferences } = usePreferences();
+  const tokens = useFluentTokens(preferences.theme_mode);
+  const lifecycle = useNativeAdminData('sessions', adminScreenReady);
+  if (!lifecycle.ready) return <AccountScreenScaffold title="Администрирование" tokens={tokens} onBack={() => goBackOrReplace('/(shell)/menu/admin')}><Text style={{ color: tokens.textSecondary }}>Раздел доступен при наличии прав и подключения к сети.</Text></AccountScreenScaffold>;
+  return <NativeAdminSessionsScreenContent key={`${access.user?.id}:${access.user?.role}`} />;
+}
+function NativeAdminSessionsScreenContent() {
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -29,6 +42,7 @@ export function NativeAdminSessionsScreen() {
   const [status, setStatus] = useState({ error: '', message: '' });
 
   const load = useCallback(async () => {
+    if (!mounted.current) return;
     setLoading(true);
     try {
       setSessions(await sessionsApi.listSessions());
@@ -59,6 +73,7 @@ export function NativeAdminSessionsScreen() {
       {
         text: 'Выполнить',
         onPress: () => {
+            if (!mounted.current) return;
           void (async () => {
             setBusy(key);
             try {
@@ -83,6 +98,7 @@ export function NativeAdminSessionsScreen() {
     setStatus({ error: '', message: '' });
     try {
       const preview = await sessionsApi.normalizeSessionLimit(false);
+      if (!mounted.current) return;
       setCleanup(preview);
       const sessionsToClose = Number(preview.sessions_to_close || 0);
       const usersAffected = Number(preview.users_affected || 0);
@@ -99,6 +115,7 @@ export function NativeAdminSessionsScreen() {
             text: 'Закрыть сессии',
             style: 'destructive',
             onPress: () => {
+            if (!mounted.current) return;
               setBusy('normalize');
               void sessionsApi.normalizeSessionLimit(true)
                 .then(async (result) => {
@@ -138,7 +155,11 @@ export function NativeAdminSessionsScreen() {
       onBack={() => goBackOrReplace('/(shell)/menu/admin')}
       onRefresh={() => { void load(); }}
       refreshing={loading}
+      scroll={false}
     >
+      <FlatList data={sessions} keyExtractor={item => item.session_id} initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
+        refreshing={loading} onRefresh={() => { void load(); }}
+        ListHeaderComponent={<View>
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <AccountSectionCard tokens={tokens} title="Обслуживание">
         <Text style={{ color: tokens.textSecondary, marginBottom: 8 }}>
@@ -179,7 +200,8 @@ export function NativeAdminSessionsScreen() {
           />
         </View>
       </AccountSectionCard>
-      {loading && sessions.length === 0 ? <AccountLoading tokens={tokens} /> : sessions.map((item) => (
+      </View>} ListEmptyComponent={loading ? <AccountLoading tokens={tokens} /> : null}
+        renderItem={({ item }) => (
         <View key={item.session_id} style={[styles.row, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
           <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{item.username}</Text>
           <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>
@@ -201,6 +223,7 @@ export function NativeAdminSessionsScreen() {
                     text: 'Завершить',
                     style: 'destructive',
                     onPress: () => {
+            if (!mounted.current) return;
                       void (async () => {
                         try {
                           await sessionsApi.terminateSession(item.session_id);
@@ -217,7 +240,7 @@ export function NativeAdminSessionsScreen() {
             />
           </View> : null}
         </View>
-      ))}
+        )} />
     </AccountScreenScaffold>
   );
 }

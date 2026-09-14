@@ -70,7 +70,9 @@ export function NativeMenuScreen() {
   const updater = useMobileUpdater();
   const visibleItems = getVisibleNavigationItems({ user, hasPermission });
   const workItems = visibleItems.filter((item) => item.group === 'main');
-  const toolItems = visibleItems.filter((item) => item.group === 'tools');
+  const toolItems = visibleItems
+    .filter((item) => item.group === 'tools')
+    .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
   const showAdminArea = canAccessAdminArea({ user, hasPermission });
   const avatarUrl = resolveAvatarUrl(user?.avatar_url);
 

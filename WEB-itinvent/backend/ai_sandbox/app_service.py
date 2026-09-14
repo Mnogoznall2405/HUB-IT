@@ -287,6 +287,8 @@ class AiSandboxAppService:
         current_user_id: int,
     ) -> dict[str, Any]:
         settings = self.ensure_enabled()
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(conversation_id, current_user_id)
         bot, _ = self._require_conversation(
             conversation_id=conversation_id,
             user_id=current_user_id,
@@ -1147,6 +1149,11 @@ class AiSandboxAppService:
             ).scalar_one_or_none()
             if preview is None:
                 raise LookupError("Sandbox permission was not found")
+            from backend.ai_chat.access import require_conversation_access
+            access_session = db.get(AppAiSandboxSession, preview.session_id)
+            if access_session is None:
+                raise LookupError('Sandbox session not found')
+            require_conversation_access(access_session.conversation_id, current_user_id, db=db, lock=True)
             # All cancellation/approval paths lock job -> permission in this
             # order. The unlocked lookup only discovers the immutable job id;
             # the permission is re-read under lock before any decision.

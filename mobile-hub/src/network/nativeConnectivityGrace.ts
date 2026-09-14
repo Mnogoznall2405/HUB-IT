@@ -27,6 +27,7 @@ export function createDeferredOfflineConnectivityController(options: {
   let deferredTimer: unknown = null;
   let pendingOffline: NativeConnectivitySnapshot | null = null;
   let active = true;
+  let generation = 0;
 
   const clearDeferred = () => {
     if (deferredTimer != null) {
@@ -38,6 +39,7 @@ export function createDeferredOfflineConnectivityController(options: {
 
   const apply = (snapshot: NativeConnectivitySnapshot) => {
     if (!active || !snapshot.available) return;
+    generation += 1;
     const canReachNetwork = snapshot.connected || snapshot.online;
     options.setVpnActive(snapshot.transport === 'vpn');
     if (canReachNetwork) {
@@ -62,8 +64,9 @@ export function createDeferredOfflineConnectivityController(options: {
       deferredTimer = null;
       if (!active || !pendingOffline) return;
       pendingOffline = null;
+      const lease = generation;
       void options.recheck().then((current) => {
-        if (!active) return;
+        if (!active || lease !== generation) return;
         if (!current.available) {
           options.setOffline(true);
           options.setKnownOnline(false);
@@ -74,7 +77,7 @@ export function createDeferredOfflineConnectivityController(options: {
         options.setKnownOnline(recovered);
         options.setVpnActive(current.transport === 'vpn');
       }).catch(() => {
-        if (!active) return;
+        if (!active || lease !== generation) return;
         options.setOffline(true);
         options.setKnownOnline(false);
       });

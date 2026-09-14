@@ -417,12 +417,18 @@ describe('ChatSidebar', () => {
     expect(screen.getByRole('button', { name: /HUB Ассистент/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Fresh Bot/i })).toBeInTheDocument();
     expect(screen.queryByText('IT-помощник')).not.toBeInTheDocument();
-    expect(screen.queryByText('OpenCode')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /OpenCode/i })).toBeInTheDocument();
 
     const botPicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
     fireEvent.click(within(botPicker).getByRole('button', { name: /Fresh Bot/i }));
     await waitFor(() => expect(onCreateAiBotConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'ai-2' })));
     await waitForElementToBeRemoved(botPicker);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
+    const openCodePicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
+    fireEvent.click(within(openCodePicker).getByRole('button', { name: /OpenCode/i }));
+    await waitFor(() => expect(onCreateAiBotConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'sandbox' })));
+    await waitForElementToBeRemoved(openCodePicker);
 
     fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
     const personalPicker = screen.getByRole('dialog', { name: 'Новый AI-чат' });
@@ -468,6 +474,17 @@ describe('ChatSidebar', () => {
     expect(screen.queryByText('Закреплённый бот')).not.toBeInTheDocument();
   });
 
+  it.each([
+    [],
+    [{ id: 'sandbox', title: 'OpenCode', slug: 'opencode', surface: 'sandbox', is_enabled: false }],
+    [{ id: 'sandbox', title: 'OpenCode', slug: 'opencode', surface: 'sandbox', placement: 'hidden' }],
+  ])('does not offer OpenCode when absent, disabled, or hidden: %j', (...agents) => {
+    renderWithTheme(buildProps({ showAiSection: true, aiAgents: agents }));
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
+    expect(screen.queryByRole('button', { name: /OpenCode/i })).not.toBeInTheDocument();
+  });
+
   it('shows bot loading and error states inside the new-chat picker', () => {
     const { rerender } = renderWithTheme(buildProps({
       activeFolderKey: 'personal',
@@ -495,7 +512,7 @@ describe('ChatSidebar', () => {
     expect(screen.getByRole('button', { name: /HUB Ассистент/i })).toBeInTheDocument();
   });
 
-  it('shows read receipts and full date for own direct messages', () => {
+  it('shows read receipts and compact date for own direct messages', () => {
     renderWithTheme(buildProps({
       activeConversationId: 'direct-read',
       conversations: [{
@@ -513,7 +530,7 @@ describe('ChatSidebar', () => {
     }));
 
     expect(screen.getByTestId('sidebar-delivery-read')).toBeInTheDocument();
-    expect(screen.getByText('08.06.2026')).toBeInTheDocument();
+    expect(screen.getByText(new Date().getFullYear() === 2026 ? '08.06' : '08.06.2026')).toBeInTheDocument();
   });
 
   it('hides read receipts for incoming direct messages', () => {
@@ -535,7 +552,7 @@ describe('ChatSidebar', () => {
 
     expect(screen.queryByTestId('sidebar-delivery-read')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-delivery-sent')).not.toBeInTheDocument();
-    expect(screen.getByText('08.06.2026')).toBeInTheDocument();
+    expect(screen.getByText(new Date().getFullYear() === 2026 ? '08.06' : '08.06.2026')).toBeInTheDocument();
   });
 
   it('shows system folders without All on compact mobile', () => {

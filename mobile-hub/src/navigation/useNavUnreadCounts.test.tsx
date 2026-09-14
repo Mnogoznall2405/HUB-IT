@@ -3,7 +3,7 @@ import { Text } from 'react-native';
 import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import { setNativeBadgeCount } from '../notifications/notificationBadge';
 import { getNativeUnreadSnapshot } from '../notifications/nativeUnreadSnapshot';
-import { useNavUnreadCounts } from './useNavUnreadCounts';
+import { HUB_REALTIME_REFRESH_DEBOUNCE_MS, useNavUnreadCounts } from './useNavUnreadCounts';
 
 let taskChanged: ((payload: unknown) => void) | null = null;
 let localMailChanged: ((payload: unknown) => void) | null = null;
@@ -83,18 +83,23 @@ it('shares the initial unread snapshot with the launcher badge', async () => {
   view.unmount();
 });
 
-it('refreshes navigation counters immediately after a Hub task event', async () => {
+it('coalesces Hub task events into one delayed counter refresh', async () => {
   const view = await render(<Probe />);
   await waitFor(() => expect(view.getByText('2')).toBeTruthy());
   jest.mocked(getNativeUnreadSnapshot).mockClear();
 
-  await act(async () => taskChanged?.({}));
+  await act(async () => {
+    taskChanged?.({});
+    taskChanged?.({});
+  });
+  expect(getNativeUnreadSnapshot).not.toHaveBeenCalled();
 
   await waitFor(() => expect(getNativeUnreadSnapshot).toHaveBeenCalledWith({
     canReadChat: true,
     canReadMail: true,
     force: true,
-  }));
+  }), { timeout: HUB_REALTIME_REFRESH_DEBOUNCE_MS + 2000 });
+  expect(getNativeUnreadSnapshot).toHaveBeenCalledTimes(1);
   expect(hubRealtimeSocket.onTaskChanged).toHaveBeenCalledTimes(1);
   view.unmount();
 });

@@ -12,6 +12,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private const string DefaultApplicationId = "HUBIT.Desktop";
     private const string ActivateCommand = "ACTIVATE";
     private const string OpenDownloadsCommand = "OPEN_DOWNLOADS";
+    private const string ShareCommandPrefix = "SHARE:";
     private const string RouteCommandPrefix = "ROUTE:";
     private const int MaximumCommandLength = DesktopDeepLinkParser.MaximumInputLength + 16;
     private readonly CancellationTokenSource _listenerCancellation = new();
@@ -100,6 +101,19 @@ public sealed class SingleInstanceCoordinator : IDisposable
 
         _disposed = true;
         _listenerCancellation.Cancel();
+
+        if (_listenerTask is not null)
+        {
+            try
+            {
+                _listenerTask.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Single-instance listener task did not complete in time", exception);
+            }
+        }
+
         _listenerCancellation.Dispose();
 
         if (_ownsMutex)
@@ -170,6 +184,19 @@ public sealed class SingleInstanceCoordinator : IDisposable
             return ActivateCommand;
         }
 
+        if (request.HasSharedFiles && request.Route is null)
+        {
+            var command = ShareCommandPrefix + string.Join("|", request.SharedFiles);
+            if (command.Length <= MaximumCommandLength)
+            {
+                return command;
+            }
+
+            DesktopLog.Warning(
+                $"Shared file list too long for single-instance pipe ({command.Length} > {MaximumCommandLength}); " +
+                "falling back to activate");
+        }
+
         if (request.OpenDownloads && request.Route is null)
         {
             return OpenDownloadsCommand;
@@ -198,6 +225,25 @@ public sealed class SingleInstanceCoordinator : IDisposable
         {
             request = DesktopLaunchRequest.Default with { OpenDownloads = true };
             return true;
+        }
+
+        if (command is not null
+            && command.StartsWith(ShareCommandPrefix, StringComparison.Ordinal)
+            && command.Length <= MaximumCommandLength)
+        {
+            var payload = command[ShareCommandPrefix.Length..];
+            var files = payload
+                .Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToList();
+
+            if (files.Count > 0)
+            {
+                request = DesktopLaunchRequest.Default with { SharedFiles = files };
+                return true;
+            }
+
+            return false;
         }
 
         if (command is null

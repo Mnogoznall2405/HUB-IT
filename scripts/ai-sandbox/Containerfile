@@ -1,25 +1,32 @@
 ARG OPENCODE_IMAGE=ghcr.io/anomalyco/opencode@sha256:d99f6cb95094eb9934ead4b600242e950ae6681d20c5a5f131a1c0a62208517f
+# CPython 3.12 toolchain (apk on current Alpine no longer ships 3.12).
+ARG CPYTHON_IMAGE=docker.io/library/python@sha256:aed27d7387bcf51a8f43b4a5b998857591c7933caa405920267ad42fb609a6d5
+FROM ${CPYTHON_IMAGE} AS cpython
+
 FROM ${OPENCODE_IMAGE}
 
 ARG OPENCODE_VERSION=1.18.18
 
 USER root
 
-# The reviewed OpenCode image is the immutable base. The branch supports the
-# package manager present in that exact image; a base-image change must be
-# reviewed instead of silently falling through.
+# Keep the reviewed OpenCode base immutable; bring CPython 3.12 from a pinned
+# official image because Alpine apk now resolves python3 to 3.14.
+COPY --from=cpython /usr/local /usr/local
+ENV PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 RUN set -eu; \
     if command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache python3 py3-pip bash git ripgrep ca-certificates; \
+      apk add --no-cache bash git ripgrep ca-certificates; \
     elif command -v apt-get >/dev/null 2>&1; then \
       apt-get update; \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip bash git ripgrep ca-certificates; \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash git ripgrep ca-certificates; \
       rm -rf /var/lib/apt/lists/*; \
     else \
       echo 'Unsupported reviewed base image' >&2; exit 1; \
     fi; \
     opencode --version | grep -F "${OPENCODE_VERSION}" >/dev/null; \
-    python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+    python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'; \
+    python3 -m pip --version >/dev/null
 
 COPY requirements.lock /tmp/requirements.lock
 RUN python3 -m pip install --no-cache-dir --disable-pip-version-check --break-system-packages -r /tmp/requirements.lock; \

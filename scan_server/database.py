@@ -798,6 +798,7 @@ class ScanStore:
         self._counts_cache_lock = threading.Lock()
         self._job_status_counts_cache: Optional[Tuple[float, Dict[str, int]]] = None
         self._pdf_job_status_counts_cache: Optional[Tuple[float, Dict[str, int]]] = None
+        self._pending_job_status_counts_cache: Optional[Tuple[float, Dict[str, int]]] = None
         # Reconcile debounce: skip heavy job-count UPDATE unless force / TTL / every N jobs.
         self._reconcile_debounce_sec = max(1.0, min(2.0, _env_float("SCAN_RECONCILE_DEBOUNCE_SEC", 1.5)))
         self._reconcile_every_n_jobs = max(5, min(100, _env_int("SCAN_RECONCILE_EVERY_N_JOBS", 25)))
@@ -1266,12 +1267,18 @@ class ScanStore:
     def _get_counts_cache(self, slot: str) -> Optional[Dict[str, int]]:
         now = time.monotonic()
         with self._counts_cache_lock:
-            hit = self._pdf_job_status_counts_cache if slot == "pdf" else self._job_status_counts_cache
+            hit = (
+                self._pending_job_status_counts_cache if slot == "pending"
+                else self._pdf_job_status_counts_cache if slot == "pdf"
+                else self._job_status_counts_cache
+            )
             if not hit:
                 return None
             ts, payload = hit
             if (now - ts) > self._counts_cache_ttl_sec:
-                if slot == "pdf":
+                if slot == "pending":
+                    self._pending_job_status_counts_cache = None
+                elif slot == "pdf":
                     self._pdf_job_status_counts_cache = None
                 else:
                     self._job_status_counts_cache = None
@@ -1281,7 +1288,9 @@ class ScanStore:
     def _set_counts_cache(self, slot: str, payload: Dict[str, int]) -> None:
         stamped = (time.monotonic(), dict(payload))
         with self._counts_cache_lock:
-            if slot == "pdf":
+            if slot == "pending":
+                self._pending_job_status_counts_cache = stamped
+            elif slot == "pdf":
                 self._pdf_job_status_counts_cache = stamped
             else:
                 self._job_status_counts_cache = stamped
@@ -1344,6 +1353,30 @@ class ScanStore:
         self._set_counts_cache("jobs", counts)
         return counts
 
+    def pending_job_status_counts(self) -> Dict[str, int]:
+        """Count only live queue entries using the existing status/source index."""
+        cached = self._get_counts_cache("pending")
+        if cached is not None:
+            return cached
+        counts = {"pdf_queued": 0, "pdf_processing": 0, "pdf_pending": 0, "pending": 0}
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, source_kind, COUNT(*) AS c
+                FROM scan_jobs
+                WHERE status IN ('queued', 'processing')
+                GROUP BY status, source_kind
+                """
+            ).fetchall()
+        for row in rows:
+            count = int(row["c"] or 0)
+            counts["pending"] += count
+            if row["source_kind"] in {"pdf", "pdf_slice", "image", "office"}:
+                counts[f"pdf_{row['status']}"] += count
+                counts["pdf_pending"] += count
+        self._set_counts_cache("pending", counts)
+        return counts
+
     def ingest_backpressure_status(
         self,
         *,
@@ -1359,8 +1392,12 @@ class ScanStore:
     ) -> Dict[str, Any]:
         # Prefer caller-provided counters (e.g. dashboard job_queue) to avoid a second
         # full scan_jobs GROUP BY on the cold dashboard path.
+        counts = (
+            self.pending_job_status_counts()
+            if pdf_queued is None or pdf_processing is None or total_pending is None
+            else {}
+        )
         if pdf_queued is None or pdf_processing is None:
-            counts = self.pdf_job_status_counts()
             pdf_queued_v = int(counts["pdf_queued"])
             pdf_processing_v = int(counts["pdf_processing"])
             pdf_pending = int(counts["pdf_pending"])
@@ -1383,8 +1420,7 @@ class ScanStore:
         # General (all source kinds) queue-depth check, used to also throttle
         # non-PDF ingest instead of only guarding the PDF/OCR pipeline.
         if total_pending is None:
-            total_counts = self.job_status_counts()
-            total_pending_v = int(total_counts["pending"])
+            total_pending_v = int(counts["pending"])
         else:
             total_pending_v = int(total_pending or 0)
         total_limit = max(1, int(max_pending_jobs)) if max_pending_jobs else None

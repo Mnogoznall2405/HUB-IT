@@ -141,6 +141,18 @@
                         </StackPanel>
                     </Border>
 
+                    <Border Style="{StaticResource SectionStyle}">
+                        <StackPanel>
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="Масштаб интерфейса" />
+                            <ComboBox x:Name="WebViewZoomCombo"
+                                      Margin="0,10,0,0"
+                                      HorizontalAlignment="Left"
+                                      MinWidth="160"
+                                      AutomationProperties.Name="Масштаб интерфейса внутри окна" />
+                            <TextBlock Margin="0,6,0,0" Foreground="{StaticResource MutedTextBrush}" Text="Применяется к содержимому окна сразу после сохранения." TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock x:Name="ValidationText"
                                Margin="0,0,0,8"
                                Foreground="#FF99A4"

@@ -232,6 +232,10 @@ Desktop — тонкая оболочка web-портала: auth, REST, WebSoc
 | **JSON** | Перемещения, работы, кэши | `data/*.json` — [data/README.md](../../data/README.md) |
 | **PostgreSQL `scan`** | Scan Center runtime | `SCAN_DATABASE_URL` (fallback SQLite `data/scan_server/scan_server.db`) |
 
+Рабочие `APP_DATABASE_URL`, `CHAT_DATABASE_URL` и `SCAN_DATABASE_URL` с 08.09.2026
+используют общую БД `hubit_chat` на `TMN-SRV-DB-06` (`10.103.0.10:5432`, TLS).
+[Размещение, проверка переноса и откат](POSTGRES_DB06_MIGRATION.md).
+
 **Важно:** `data/*.json` общие для **bot** и **web**. При записи учитывать гонки (атомарная запись, блокировки — смотреть существующие паттерны в `bot/local_json_store.py` и backend JSON API).
 
 В production (`APP_ENV=production`) JSON runtime **не** должен silently откатываться на SQLite — нужен PostgreSQL и миграция (`scripts/migrate_json_store_sqlite_to_postgres.py`).

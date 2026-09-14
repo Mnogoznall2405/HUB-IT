@@ -33,6 +33,9 @@ const MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE = 'mail.composeWindow.clo
 const MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE = 'mail.composeWindow.closeResult';
 const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
 const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
+const FILE_SHARED_MESSAGE_TYPE = 'file.shared';
+const FILE_DROPPED_MESSAGE_TYPE = 'file.dropped';
+const SHARED_FILE_URL_PATH_PREFIX = '/__desktop_share__/';
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1000;
 const OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS = 600;
 const VNC_PREFLIGHT_RESULT_TIMEOUT_MS = 1000;
@@ -72,6 +75,7 @@ let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
 let pendingEquipmentQrPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
+let pendingDesktopSharedFiles = [];
 const mailComposeCloseListeners = new Set();
 const pendingNotificationResults = new Map();
 let legacyOpenIntentBusyUntil = 0;
@@ -87,6 +91,7 @@ export const DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY = 'equipment-qr-print';
 export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
 export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
 export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
+export const DESKTOP_SHARED_FILES_EVENT = 'itinvent:desktop-shared-files';
 
 const getWebViewTransport = () => {
   if (typeof window === 'undefined') return null;
@@ -500,6 +505,78 @@ const isValidMailComposeCompleted = (message) => {
     && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION;
 };
 
+const isValidSharedFileEntry = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const keys = Object.keys(entry);
+  if (keys.length !== 4
+    || !keys.includes('name')
+    || !keys.includes('size')
+    || !keys.includes('url')
+    || !keys.includes('relativePath')) return false;
+  if (!isValidBoundedText(entry.name, 260)) return false;
+  if (!Number.isInteger(entry.size) || entry.size < 0) return false;
+  if (typeof entry.url !== 'string' || entry.url.length > 2048) return false;
+  if (entry.relativePath !== null
+    && !(typeof entry.relativePath === 'string'
+      && entry.relativePath.length <= 1024
+      && entry.relativePath.includes('/')
+      && !entry.relativePath.split('/').includes('..'))) return false;
+  try {
+    const url = new URL(entry.url);
+    return url.origin === window.location.origin
+      && url.pathname.startsWith(SHARED_FILE_URL_PATH_PREFIX);
+  } catch {
+    return false;
+  }
+};
+
+const isValidSharedFilesMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('files')
+    && (message.type === FILE_SHARED_MESSAGE_TYPE || message.type === FILE_DROPPED_MESSAGE_TYPE)
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && Array.isArray(message.files)
+    && message.files.length <= 100
+    && message.files.every(isValidSharedFileEntry);
+};
+
+const fetchDesktopSharedFile = async (entry) => {
+  try {
+    const response = await fetch(entry.url, { credentials: 'same-origin' });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    const file = new File([blob], entry.name, { lastModified: Date.now() });
+    if (typeof entry.relativePath === 'string' && entry.relativePath) {
+      const { attachRelativePath } = await import('./myFilesFolderZip');
+      return attachRelativePath(file, entry.relativePath);
+    }
+    return file;
+  } catch {
+    return null;
+  }
+};
+
+const handleDesktopSharedFiles = (entries) => {
+  void (async () => {
+    const files = (await Promise.all(entries.map(fetchDesktopSharedFile))).filter(Boolean);
+    if (files.length === 0) return;
+    pendingDesktopSharedFiles = pendingDesktopSharedFiles.concat(files);
+    window.dispatchEvent(new CustomEvent(DESKTOP_SHARED_FILES_EVENT, {
+      detail: { count: files.length },
+    }));
+  })();
+};
+
+export function consumeDesktopSharedFiles() {
+  const files = pendingDesktopSharedFiles;
+  pendingDesktopSharedFiles = [];
+  return files;
+}
+
 export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS } = {}) {
   if (bridgeReady) return Promise.resolve(true);
   if (initializationPromise) return initializationPromise;
@@ -645,6 +722,11 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
 
       if (bridgeReady && isValidMailComposeCompleted(message)) {
         window.dispatchEvent(new CustomEvent(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT));
+        return;
+      }
+
+      if (bridgeReady && isValidSharedFilesMessage(message)) {
+        handleDesktopSharedFiles(message.files);
         return;
       }
 

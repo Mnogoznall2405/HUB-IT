@@ -814,3 +814,27 @@ it('selects equipment through a visible button and cancels selection without nav
   expect(view.queryByTestId('native-database-selection')).toBeNull();
   expect(view.getByTestId('native-database-select').props.accessibilityState.selected).toBe(false);
 });
+
+it('late equipment A must not replace equipment B', async () => {
+  let finishA: (value: any) => void = () => {};
+  params.mockReturnValue({invNo:'A',databaseId:'ITINVENT'});
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((id: string) => id === 'A' ? new Promise(resolve => {finishA=resolve;}) : Promise.resolve({...equipment,inv_no:'B',serial_no:'SERIAL-B'}));
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledWith('A','ITINVENT'));
+  params.mockReturnValue({invNo:'B',databaseId:'ITINVENT'});
+  await view.rerender(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('SERIAL-B')).toBeTruthy());
+  await act(async () => {finishA({...equipment,inv_no:'A',serial_no:'SERIAL-A'});});
+  expect(view.queryByText('SERIAL-B')).toBeTruthy();
+});
+
+it('offline navigation to uncached equipment must clear prior card', async () => {
+  params.mockReturnValue({invNo:'INV-1',databaseId:'ITINVENT'});
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('SN-1')).toBeTruthy());
+  mockOfflineMode=true;
+  params.mockReturnValue({invNo:'UNCACHED',databaseId:'ITINVENT'});
+  await view.rerender(<NativeEquipmentDetailScreen />);
+  await act(async () => {});
+  expect(view.queryByText('SN-1')).toBeNull();
+});

@@ -3,8 +3,6 @@ import HubitDeviceHealthModule, {
   type HubitAndroidConnectivityResult,
 } from '../../modules/hubit-device-health';
 
-export const MOBILE_NATIVE_NETWORK_STATE_EVENT = 'hubit:mobile-network-state';
-
 const TRANSPORTS = [
   'none',
   'wifi',
@@ -58,25 +56,6 @@ export function normalizeNativeConnectivitySnapshot(
     metered: raw.metered,
     changedAtMs,
   };
-}
-
-export function buildPortalNativeConnectivityScript(online: boolean): string {
-  const eventName = JSON.stringify(MOBILE_NATIVE_NETWORK_STATE_EVENT);
-  const browserEvent = online ? 'online' : 'offline';
-  return `
-(function () {
-  if (window.__HUBIT_MOBILE_APP__ !== true) return;
-  var session = window.__HUBIT_MOBILE_OFFLINE_SESSION__;
-  if (session && typeof session === 'object') session.readOnly = ${online ? 'false' : 'true'};
-  try { window.dispatchEvent(new Event('${browserEvent}')); } catch (_) {}
-  try {
-    window.dispatchEvent(new CustomEvent(${eventName}, {
-      detail: { online: ${online ? 'true' : 'false'}, source: 'android' }
-    }));
-  } catch (_) {}
-})();
-true;
-`;
 }
 
 export async function getNativeConnectivitySnapshot(): Promise<NativeConnectivitySnapshot> {

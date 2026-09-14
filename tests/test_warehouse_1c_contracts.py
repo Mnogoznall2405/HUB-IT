@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -266,3 +267,250 @@ def test_enabled_process_bridge_routes_typed_balance_read_without_local_com():
     assert payload["status"] == "ok"
     assert calls[0][0] == "balances"
     assert calls[0][1]["nomenclature_ref"] == "nom-1"
+
+
+def test_dismissed_warehouses_route_is_independent_of_hub_database(monkeypatch):
+    captured = {}
+
+    async def fake_dismissed(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok", "items": []}
+
+    monkeypatch.setattr(
+        warehouse_1c_api.warehouse_1c_service,
+        "get_dismissed_employee_warehouses",
+        fake_dismissed,
+    )
+    current_user = User(id=42, username="warehouse-user", role="admin")
+
+    payload = asyncio.run(
+        warehouse_1c_api.get_dismissed_employee_warehouses(
+            limit=750,
+            _=current_user,
+        )
+    )
+
+    assert payload == {"status": "ok", "items": []}
+    assert captured == {"limit": 750}
+
+
+def test_dismissed_warehouses_only_return_zup_matched_warehouses_with_positive_balances(monkeypatch):
+    service = Warehouse1CService(enable_process_bridge=False)
+    updated_at = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(
+        "backend.services.address_book_service.address_book_service.load_cache",
+        lambda: {
+            "updated_at": updated_at,
+            "dismissed_updated_at": updated_at,
+            "last_error": "",
+            "items": [{"full_name": "Петров Петр Петрович"}],
+            "dismissed_items": [
+                {
+                    "employee_code": "E-10",
+                    "full_name": "Иванов Иван Иванович",
+                    "department": "ИТ",
+                    "department_location": "Тюмень",
+                    "position": "Инженер",
+                    "dismissal_date": "2026-08-31",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_list_warehouse_catalog_entries",
+        lambda: (
+            [
+                {"ref": "wh-dismissed", "name": "Склад Иванов И.И."},
+                {"ref": "wh-empty", "name": "Иванов Иван Иванович Резерв"},
+                {"ref": "wh-active", "name": "Петров П.П."},
+            ],
+            {"source": "app_snapshot", "truncated": False},
+        ),
+    )
+
+    async def fake_balances(*, warehouse_refs, limit=None):
+        assert warehouse_refs == ["wh-dismissed", "wh-empty"]
+        return {
+            "items": [
+                {
+                    "warehouse_ref": "wh-dismissed",
+                    "warehouse_name": "Склад Иванов И.И.",
+                    "nomenclature_ref": "nom-1",
+                    "nomenclature_code": "PN-1",
+                    "nomenclature_name": "Монитор",
+                    "qty_balance": 2,
+                    "cost_balance": 100,
+                    "cost_accounting_balance": 90,
+                }
+            ],
+            "returned": 1,
+            "total": 1,
+            "has_more": False,
+            "truncated": False,
+            "as_of": "2026-09-10T08:05:00+00:00",
+            "source": "live_1c",
+            "status": "ok",
+        }
+
+    monkeypatch.setattr(service, "get_balances_for_warehouses", fake_balances)
+    try:
+        payload = asyncio.run(
+            service.get_dismissed_employee_warehouses(limit=1000)
+        )
+    finally:
+        service.shutdown()
+
+    assert payload["status"] == "ok"
+    assert payload["total"] == 1
+    assert [item["warehouse"]["ref"] for item in payload["items"]] == ["wh-dismissed"]
+    assert payload["items"][0]["employee_name"] == "Иванов Иван Иванович"
+    assert payload["items"][0]["city"] == "Тюмень"
+    assert payload["items"][0]["employee_code"] == "E-10"
+    assert payload["items"][0]["dismissal_date"] == "2026-08-31"
+    assert payload["items"][0]["totals"] == {
+        "qty": 2.0,
+        "cost": 100.0,
+        "cost_accounting": 90.0,
+        "positions": 1,
+    }
+    assert payload["items"][0]["balances"][0]["nomenclature_name"] == "Монитор"
+
+
+def test_dismissed_warehouses_report_ambiguous_matches_without_pagination(monkeypatch):
+    service = Warehouse1CService(enable_process_bridge=False)
+    updated_at = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(
+        "backend.services.address_book_service.address_book_service.load_cache",
+        lambda: {
+            "updated_at": updated_at,
+            "dismissed_updated_at": updated_at,
+            "last_error": "",
+            "dismissed_items": [
+                {
+                    "employee_code": "E-21",
+                    "full_name": "Иванов Иван Иванович",
+                    "department": "ИТ",
+                    "department_location": "Тюмень",
+                    "position": "Инженер",
+                    "dismissal_date": "2026-08-01",
+                },
+                {
+                    "employee_code": "E-22",
+                    "full_name": "Иванов Илья Игоревич",
+                    "department": "ИТ",
+                    "department_location": "Москва",
+                    "position": "Инженер",
+                    "dismissal_date": "2026-08-02",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_list_warehouse_catalog_entries",
+        lambda: ([{"ref": "wh-ambiguous", "name": "Склад Иванов И.И."}], {"truncated": False}),
+    )
+
+    async def fake_balances(*, warehouse_refs, limit=None):
+        assert warehouse_refs == ["wh-ambiguous"]
+        return {
+            "items": [
+                {
+                    "warehouse_ref": "wh-ambiguous",
+                    "warehouse_name": "Склад Иванов И.И.",
+                    "nomenclature_ref": "nom-1",
+                    "nomenclature_code": "PN-1",
+                    "nomenclature_name": "Монитор",
+                    "qty_balance": 1,
+                    "cost_balance": 50,
+                    "cost_accounting_balance": 45,
+                }
+            ],
+            "returned": 1,
+            "total": 1,
+            "has_more": False,
+            "truncated": False,
+            "as_of": "2026-09-10T08:05:00+00:00",
+            "source": "live_1c",
+            "status": "ok",
+        }
+
+    monkeypatch.setattr(service, "get_balances_for_warehouses", fake_balances)
+    try:
+        payload = asyncio.run(service.get_dismissed_employee_warehouses(limit=1000))
+    finally:
+        service.shutdown()
+
+    assert payload["status"] == "incomplete"
+    assert payload["incomplete_reason"] == "ambiguous_warehouse_match"
+    assert payload["ambiguous_warehouses"] == 1
+    assert payload["has_more"] is False
+    assert payload["truncated"] is False
+    assert payload["returned"] == 1
+    assert payload["items"][0]["warehouse"]["ref"] == "wh-ambiguous"
+    assert payload["items"][0]["ambiguous"] is True
+    assert payload["items"][0]["employment_status"] == "ambiguous"
+    assert payload["items"][0]["employee_name"] is None
+    assert payload["items"][0]["employee_code"] is None
+    assert payload["items"][0]["city"] is None
+    assert len(payload["items"][0]["employee_candidates"]) == 2
+    candidate_names = {c["employee_name"] for c in payload["items"][0]["employee_candidates"]}
+    assert candidate_names == {"Иванов Иван Иванович", "Иванов Илья Игоревич"}
+    assert payload["items"][0]["totals"]["qty"] == 1.0
+
+
+def test_dismissed_warehouses_do_not_report_zero_when_zup_cache_is_unknown(monkeypatch):
+    service = Warehouse1CService(enable_process_bridge=False)
+    monkeypatch.setattr(
+        "backend.services.address_book_service.address_book_service.load_cache",
+        lambda: {"updated_at": "", "dismissed_updated_at": "", "dismissed_items": []},
+    )
+    try:
+        payload = asyncio.run(
+            service.get_dismissed_employee_warehouses(limit=1000)
+        )
+    finally:
+        service.shutdown()
+
+    assert payload["items"] == []
+    assert payload["status"] == "unknown"
+    assert payload["truncated"] is True
+    assert payload["total"] is None
+
+
+def test_dismissed_warehouse_balances_use_process_bridge():
+    calls = []
+
+    class FakeBridge:
+        def call(self, operation, payload, *, timeout):
+            calls.append((operation, payload, timeout))
+            return {
+                "items": [],
+                "returned": 0,
+                "total": 0,
+                "has_more": False,
+                "truncated": False,
+                "status": "ok",
+                "source": "live_1c",
+            }
+
+        def shutdown(self):
+            return None
+
+    service = Warehouse1CService(enable_process_bridge=False)
+    service._process_bridge_enabled = True
+    service._process_bridge = FakeBridge()
+    try:
+        payload = asyncio.run(
+            service.get_balances_for_warehouses(
+                warehouse_refs=["wh-1", "wh-1", "wh-2"],
+                limit=1000,
+            )
+        )
+    finally:
+        service.shutdown()
+
+    assert payload["status"] == "ok"
+    assert calls[0][0] == "balances_by_warehouses"
+    assert calls[0][1] == {"warehouse_refs": ["wh-1", "wh-2"], "limit": 1000}

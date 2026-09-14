@@ -6,7 +6,6 @@ import {
   AppState,
   FlatList,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -29,7 +28,11 @@ import {
   mergeComputerPage,
 } from '../../computers/nativeComputersModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { NativeFilterButton } from '../../components/ui/NativeFilterControls';
+import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
+import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const PAGE_SIZE = 50;
@@ -39,48 +42,13 @@ function firstParam(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim().slice(0, 200);
 }
 
-function FilterChip({
-  label,
-  selected,
-  onPress,
-  disabled,
-  tokens,
-  testID,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  disabled?: boolean;
-  tokens: ReturnType<typeof useFluentTokens>;
-  testID?: string;
-}) {
-  return (
-    <Pressable
-      testID={testID}
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityState={{ selected, disabled }}
-      style={[
-        styles.filterChip,
-        {
-          backgroundColor: selected ? tokens.primary : tokens.panelSolid,
-          borderColor: selected ? tokens.primary : tokens.border,
-          opacity: disabled ? 0.5 : 1,
-        },
-      ]}
-    >
-      <Text style={[styles.filterText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
-}
-
 export function NativeComputersScreen() {
   const params = useLocalSearchParams<{ q?: string | string[] }>();
   const initialQuery = firstParam(params.q);
   const { hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const emptyListInset = useNativeBottomNavInset();
   const canRead = hasPermission('computers.read');
   const canReadAll = hasPermission('computers.read_all');
   const [items, setItems] = useState<ComputerRecord[]>([]);
@@ -88,6 +56,7 @@ export function NativeComputersScreen() {
   const [queryDraft, setQueryDraft] = useState(initialQuery);
   const [query, setQuery] = useState(initialQuery);
   const [scope, setScope] = useState<ComputerScope>('selected');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [status, setStatus] = useState<'' | ComputerStatus>('');
   const [changedOnly, setChangedOnly] = useState(false);
   const [hideVm172, setHideVm172] = useState(true);
@@ -279,27 +248,22 @@ export function NativeComputersScreen() {
           </Pressable>
         ) : null}
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters} accessibilityRole="tablist">
-        {COMPUTER_STATUS_OPTIONS.map((option) => (
-          <FilterChip
-            key={option.id || 'all'}
-            testID={`native-computers-status-${option.id || 'all'}`}
-            label={option.label}
-            selected={status === option.id}
-            onPress={() => setStatus(option.id)}
-            tokens={tokens}
-          />
-        ))}
-      </ScrollView>
+      <NativeSegmentedControl
+        options={COMPUTER_STATUS_OPTIONS.map((option) => ({ value: option.id || 'all', label: option.label }))}
+        selected={status || 'all'}
+        onSelect={(value) => setStatus(value === 'all' ? '' : value as ComputerStatus)}
+        tokens={tokens}
+        testIDPrefix="native-computers-status"
+      />
       <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>{summaryCards.map((card) => `${card.label}: ${card.value}`).join(' · ')}</Text>
-      <AccountSectionCard tokens={tokens} title="Дополнительные фильтры" collapsible>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-        <FilterChip label="Моя база" selected={scope === 'selected'} onPress={() => setScope('selected')} tokens={tokens} />
-        {canReadAll ? <FilterChip testID="native-computers-scope-all" label="Все базы" selected={scope === 'all'} onPress={() => setScope('all')} tokens={tokens} /> : null}
-        <FilterChip label="С изменениями" selected={changedOnly} onPress={() => setChangedOnly((value) => !value)} tokens={tokens} />
-        <FilterChip label="Скрыть ПК только с IP 172.16–31.*" selected={hideVm172} onPress={() => setHideVm172((value) => !value)} tokens={tokens} />
-      </ScrollView>
-      </AccountSectionCard>
+      <View>
+        <NativeFilterButton
+          testID="native-computers-filters"
+          count={[scope === 'all', changedOnly, hideVm172].filter(Boolean).length}
+          tokens={tokens}
+          onPress={() => setFiltersOpen(true)}
+        />
+      </View>
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {total}</Text>
         <Pressable
@@ -329,11 +293,14 @@ export function NativeComputersScreen() {
       scroll={false}
     >
       <FlatList
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
         testID="native-computers-list"
         data={items}
         keyExtractor={(item) => item.mac_address || item.hostname}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={items.length ? styles.list : styles.emptyList}
+        contentContainerStyle={items.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{query ? 'По запросу ничего не найдено.' : 'В выбранной базе пока нет данных от агентов.'}</Text> : null}
         renderItem={renderComputer}
@@ -342,6 +309,36 @@ export function NativeComputersScreen() {
         onEndReached={loadNextPage}
         onEndReachedThreshold={0.35}
         ListFooterComponent={loadingMore ? <ActivityIndicator color={tokens.primary} style={styles.footerLoader} /> : null}
+      />
+      <NativeFilterSheet
+        visible={filtersOpen}
+        title="Фильтры компьютеров"
+        tokens={tokens}
+        onClose={() => setFiltersOpen(false)}
+        onReset={() => { setScope('selected'); setChangedOnly(false); setHideVm172(true); }}
+        sections={[
+          ...(canReadAll ? [{
+            kind: 'options' as const,
+            key: 'scope',
+            title: 'База',
+            selected: scope,
+            onSelect: (value: string) => setScope(value as ComputerScope),
+            testIDPrefix: 'native-computers-scope',
+            options: [
+              { value: 'selected', label: 'Моя база' },
+              { value: 'all', label: 'Все базы' },
+            ],
+          }] : []),
+          {
+            kind: 'toggles' as const,
+            key: 'flags',
+            title: 'Список',
+            items: [
+              { key: 'changed', label: 'С изменениями', value: changedOnly, onToggle: () => setChangedOnly((value) => !value), testID: 'native-computers-filter-changed' },
+              { key: 'vm172', label: 'Скрыть ПК только с IP 172.16–31.*', value: hideVm172, onToggle: () => setHideVm172((value) => !value), testID: 'native-computers-filter-vm172' },
+            ],
+          },
+        ]}
       />
     </AccountScreenScaffold>
   );
@@ -353,16 +350,14 @@ const styles = StyleSheet.create({
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   searchBox: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
-  filters: { gap: 7 },
-  filterChip: { minHeight: 40, borderRadius: 20, borderWidth: 1, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
-  filterText: { fontSize: 12, fontWeight: '800' },
+
   countRow: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   count: { fontSize: 12, fontWeight: '700' },
   loading: { minHeight: 120, alignItems: 'center', justifyContent: 'center', gap: 9 },
   retry: { alignSelf: 'flex-start', minHeight: 42, borderRadius: 12, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
   retryText: { color: '#fff', fontSize: 13, fontWeight: '800' },
   list: { gap: 9, paddingBottom: 8 },
-  emptyList: { flexGrow: 1, paddingBottom: 60 },
+  emptyList: { flexGrow: 1 },
   emptyText: { textAlign: 'center', fontSize: 14, lineHeight: 20 },
   footerLoader: { paddingVertical: 18 },
 });

@@ -67,6 +67,10 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
                     new AppNotificationButton(actionLabel)
                         .AddArgument("action", "open")
                         .AddArgument("route", request.Route))
+                .AddButton(
+                    new AppNotificationButton("Закрыть")
+                        .AddArgument("action", "dismiss")
+                        .AddArgument("eventId", request.Id))
                 .BuildNotification();
 
             _manager.Show(notification);
@@ -114,10 +118,13 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
             && DesktopBridgeProtocol.IsValidInternalRoute(requestedRoute)
                 ? requestedRoute
                 : null;
+        var action = args.Arguments.TryGetValue("action", out var requestedAction)
+            ? requestedAction
+            : "open";
 
-        DesktopLog.Info("Windows app notification activated");
-        Activated?.Invoke(this, new DesktopNotificationActivationEventArgs(route));
+        DesktopLog.Info($"Windows app notification activated; action={action}");
+        Activated?.Invoke(this, new DesktopNotificationActivationEventArgs(route, action));
     }
 }
 
-public sealed record DesktopNotificationActivationEventArgs(string? Route);
+public sealed record DesktopNotificationActivationEventArgs(string? Route, string Action = "open");

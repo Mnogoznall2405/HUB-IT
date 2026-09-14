@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -11,7 +11,7 @@ from backend.api.v1 import my_files as my_files_api
 from backend.config import MyFilesPublicRateLimitConfig, config
 from backend.models.auth import User
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
-from backend.services.my_files_service import DownloadPayload, MyFilesNotFoundError
+from backend.services.my_files_service import DownloadPayload, MyFilesNotFoundError, _UNSET
 
 
 def _user() -> User:
@@ -59,11 +59,67 @@ class FakeMyFilesService:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
         self.seen_user_id = None
+        self.seen_folder_id = None
         self.upload = None
+        self.folders = {}
+        self.folder_calls = []
 
-    def list_files(self, *, user_id: int):
+    def list_files(self, *, user_id: int, folder_id=None, view: str = ""):
         self.seen_user_id = user_id
-        return {"items": []}
+        self.seen_folder_id = folder_id
+        return {"items": [], "folders": [], "breadcrumbs": [], "folder": None}
+
+    def list_folders(self, *, user_id: int):
+        return [f for f in self.folders.values()]
+
+    def create_folder(self, *, actor, name, parent_id=None, meta=None):
+        self.folder_calls.append(("create", name, parent_id))
+        folder = {
+            "id": f"folder-{len(self.folders) + 1}",
+            "name": name,
+            "parent_id": parent_id,
+            "created_at": "2026-09-11T10:00:00+00:00",
+            "updated_at": "2026-09-11T10:00:00+00:00",
+        }
+        self.folders[folder["id"]] = folder
+        return folder
+
+    def update_folder(self, *, actor, folder_id, name=None, parent_id=None, is_favorite=_UNSET, meta=None):
+        folder = self.folders.get(folder_id)
+        if folder is None:
+            raise MyFilesNotFoundError("Folder not found")
+        if name is not None and name is not _UNSET:
+            folder["name"] = name
+        if parent_id is not _UNSET:
+            folder["parent_id"] = parent_id
+        if is_favorite is not _UNSET:
+            folder["is_favorite"] = bool(is_favorite)
+        return folder
+
+    def delete_folder(self, *, actor, folder_id, meta=None):
+        if folder_id not in self.folders:
+            raise MyFilesNotFoundError("Folder not found")
+        self.folder_calls.append(("delete", folder_id))
+        return 0
+
+    def update_file(self, *, actor, file_id, name=None, folder_id=None, is_favorite=_UNSET, meta=None):
+        return {
+            "id": file_id,
+            "original_file_name": name if name and name is not _UNSET else "file.bin",
+            "download_file_name": name if name and name is not _UNSET else "file.bin",
+            "mime_type": "application/octet-stream",
+            "download_mime_type": "application/octet-stream",
+            "original_size_bytes": 1,
+            "stored_size_bytes": 1,
+            "saved_size_bytes": 0,
+            "retention_days": 1,
+            "folder_id": None if folder_id is _UNSET else folder_id,
+            "status": "ready",
+            "storage_mode": "stored",
+            "error_text": "",
+            "security_scan_status": "clean",
+            "is_shared": False,
+        }
 
     def quota(self, *, user_id: int):
         self.seen_user_id = user_id
@@ -84,6 +140,7 @@ class FakeMyFilesService:
         spool_path: Path,
         original_size_bytes: int,
         retention_days: int,
+        folder_id: str | None = None,
     ):
         self.upload = {
             "actor_id": actor.id,
@@ -118,6 +175,7 @@ class FakeMyFilesService:
         spool_path: Path,
         expected_size_bytes: int,
         retention_days: int,
+        folder_id: str | None = None,
         meta=None,
     ):
         self.upload = {
@@ -127,6 +185,7 @@ class FakeMyFilesService:
             "spool_path": spool_path,
             "expected_size": expected_size_bytes,
             "retention_days": retention_days,
+            "folder_id": folder_id,
         }
         return {"id": "reserved-file"}
 
@@ -180,7 +239,13 @@ class FakeMyFilesService:
         return self.get_upload_session(file_id=file_id, user_id=user_id)
 
     def abort_upload(self, *, file_id: str, user_id: int, error_text: str, actor=None, meta=None):
-        self.upload = {**(self.upload or {}), "aborted": True, "file_id": file_id, "user_id": user_id}
+        self.upload = {
+            **(self.upload or {}),
+            "aborted": True,
+            "file_id": file_id,
+            "user_id": user_id,
+            "error_text": error_text,
+        }
 
     def get_public_file(self, *, token: str):
         if token not in {"share-token", "share-token-b"}:
@@ -218,7 +283,7 @@ class FakeMyFilesService:
             "preview_url": f"/api/v1/my-files/public/{token}/preview/content",
         }
 
-    def get_public_preview_content(self, *, token: str):
+    def get_public_preview_content(self, *, token: str, variant: str = ""):
         if token not in {"share-token", "share-token-b"}:
             raise MyFilesNotFoundError("File not found")
         return b"hello world", "text/plain", f"{token}.txt"
@@ -332,7 +397,7 @@ def test_authenticated_list_uses_current_user(monkeypatch, tmp_path):
     response = client.get("/my-files")
 
     assert response.status_code == 200
-    assert response.json() == {"items": []}
+    assert response.json()["items"] == []
     assert fake_service.seen_user_id == 42
 
 
@@ -361,6 +426,7 @@ def test_authenticated_upload_streams_raw_body_directly_to_spool(monkeypatch, tm
         "file_id": "reserved-file",
         "user_id": 42,
         "retention_days": 30,
+        "folder_id": None,
     }
 
 
@@ -463,6 +529,25 @@ def test_chunked_upload_rejects_oversized_chunk_before_service_write(monkeypatch
 
     assert response.status_code == 400
     assert not fake_service.upload["spool_path"].exists()
+
+
+def test_cancel_upload_session_passes_reason(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    client.post(
+        "/my-files/upload-sessions",
+        json={"file_name": "large.bin", "file_size": 5, "retention_days": 1},
+    )
+
+    response = client.delete(
+        "/my-files/upload-sessions/reserved-file",
+        params={"reason": "chunk timeout after network error"},
+    )
+
+    assert response.status_code == 204
+    assert fake_service.upload["aborted"] is True
+    assert fake_service.upload["error_text"] == "chunk timeout after network error"
 
 
 def test_custom_permissions_retain_viewer_upload_baseline(monkeypatch, tmp_path):
@@ -587,3 +672,91 @@ def test_public_download_rate_limit_does_not_bypass_internal_requests(
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+def test_list_files_accepts_folder_filter(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.get("/my-files", params={"folder_id": "folder-1"})
+
+    assert response.status_code == 200
+    assert fake_service.seen_folder_id == "folder-1"
+
+
+def test_create_folder_endpoint(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.post("/my-files/folders", json={"name": "Документы"})
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Документы"
+    assert body["parent_id"] is None
+    assert fake_service.folder_calls == [("create", "Документы", None)]
+
+
+def test_update_folder_endpoint_passes_sentinel_for_missing_fields(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    fake_service.create_folder(actor=None, name="Старое")
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.patch("/my-files/folders/folder-1", json={"name": "Новое"})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Новое"
+
+
+def test_update_folder_move_to_root(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    folder = fake_service.create_folder(actor=None, name="Внутренняя", parent_id="folder-parent")
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.patch(f"/my-files/folders/{folder['id']}", json={"parent_id": None})
+
+    assert response.status_code == 200
+    assert response.json()["parent_id"] is None
+
+
+def test_delete_folder_endpoint(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    folder = fake_service.create_folder(actor=None, name="Удаляемая")
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.delete(f"/my-files/folders/{folder['id']}")
+
+    assert response.status_code == 204
+    assert ("delete", folder["id"]) in fake_service.folder_calls
+
+
+def test_update_file_move_and_rename_endpoint(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.patch("/my-files/file-1", json={"name": "renamed.bin", "folder_id": "folder-9"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["original_file_name"] == "renamed.bin"
+    assert body["folder_id"] == "folder-9"
+
+
+def test_list_folders_endpoint(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    fake_service.create_folder(actor=None, name="Папка А")
+    fake_service.create_folder(actor=None, name="Папка Б")
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.get("/my-files/folders")
+
+    assert response.status_code == 200
+    names = [f["name"] for f in response.json()["items"]]
+    assert names == ["Папка А", "Папка Б"]

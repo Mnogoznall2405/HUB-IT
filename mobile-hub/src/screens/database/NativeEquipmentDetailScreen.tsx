@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   getCurrentDatabase,
@@ -80,6 +80,12 @@ function asDetailTab(value: string): EquipmentDetailTab {
 }
 
 export function NativeEquipmentDetailScreen() {
+  const params = useLocalSearchParams<{ invNo?: string | string[]; databaseId?: string | string[] }>();
+  const { user, hasPermission } = useAuth();
+  return <EquipmentDetailContent key={JSON.stringify([user?.id, first(params.invNo), first(params.databaseId), hasPermission('database.read')])} />;
+}
+
+function EquipmentDetailContent() {
   const params = useLocalSearchParams<{
     invNo?: string | string[];
     databaseId?: string | string[];
@@ -91,6 +97,8 @@ export function NativeEquipmentDetailScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('database.read');
+  const requestRef = useRef(0);
+  const tabRequests = useRef(new Map<EquipmentDetailTab, number>());
   const canWrite = hasPermission('database.write');
   const canDeleteEquipment = String(user?.role || '').trim().toLowerCase() === 'admin';
   const [tab, setTab] = useState<EquipmentDetailTab>(asDetailTab(first(params.tab)));
@@ -138,6 +146,8 @@ export function NativeEquipmentDetailScreen() {
   }, [requestedDatabaseId]);
 
   const loadEquipment = useCallback(async (refresh = false) => {
+    const lease = ++requestRef.current;
+    const current = () => requestRef.current === lease;
     if (!allowed || !invNo) {
       setLoading(false);
       return;
@@ -150,6 +160,7 @@ export function NativeEquipmentDetailScreen() {
     let cachedDatabaseId = requestedDatabaseId;
     if (!cachedDatabaseId && userId) {
       const bootstrap = await readNativeSnapshot<NativeDatabaseBootstrapSnapshot>('database-bootstrap', userId);
+      if (!current()) return;
       cachedDatabaseId = bootstrap?.data.currentDatabase.id || '';
     }
     if (userId && cachedDatabaseId) {
@@ -158,6 +169,7 @@ export function NativeEquipmentDetailScreen() {
         userId,
         nativeEquipmentSnapshotKey(cachedDatabaseId, invNo),
       );
+      if (!current()) return;
       if (snapshot) {
         cached = snapshot.data;
         applyCachedDetail(snapshot.data);
@@ -165,6 +177,7 @@ export function NativeEquipmentDetailScreen() {
       }
       if (!cached) {
         const catalog = await readNativeEquipmentCatalogSnapshot(userId, cachedDatabaseId);
+        if (!current()) return;
         const normalizedInvNo = invNo.trim().toLocaleUpperCase('ru-RU');
         const catalogItem = catalog?.data.equipment.find(
           (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
@@ -192,7 +205,9 @@ export function NativeEquipmentDetailScreen() {
     }
     try {
       const activeDatabaseId = await ensureDatabase();
+      if (!current()) return;
       const result = await getEquipment(invNo, activeDatabaseId);
+      if (!current()) return;
       setDatabaseId(activeDatabaseId);
       setEquipment(result);
       void touchRecentEquipmentCard(invNo, result, 'view', activeDatabaseId).catch(() => undefined);
@@ -213,18 +228,25 @@ export function NativeEquipmentDetailScreen() {
         );
       }
     } catch (cause) {
+      if (!current()) return;
       if (cached) setError('Показана сохранённая карточка. Обновить данные не удалось.');
       else setError(formatApiError(cause, 'Не удалось открыть карточку оборудования.'));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (current()) { setLoading(false); setRefreshing(false); }
     }
   }, [allowed, applyCachedDetail, ensureDatabase, invNo, offlineMode, requestedDatabaseId, user?.id]);
 
-  useEffect(() => { void loadEquipment(); }, [loadEquipment]);
+  useEffect(() => {
+    void loadEquipment();
+    return () => { requestRef.current += 1; tabRequests.current.clear(); };
+  }, [loadEquipment]);
 
   const loadTab = useCallback(async (target: EquipmentDetailTab, force = false) => {
     if (!invNo || target === 'general' || (target === 'works' && !equipment) || (!force && loadedTabs.has(target))) return;
+    const lease = requestRef.current;
+    const tabLease = (tabRequests.current.get(target) || 0) + 1;
+    tabRequests.current.set(target, tabLease);
+    const current = () => lease === requestRef.current && tabRequests.current.get(target) === tabLease;
     setTabLoading(true);
     setTabError('');
     const userId = Number(user?.id || 0);
@@ -236,6 +258,7 @@ export function NativeEquipmentDetailScreen() {
         userId,
         snapshotKey,
       );
+      if (!current()) return;
       if (snapshot) {
         cached = snapshot.data;
         if (snapshot.data.loadedTabs.includes(target as 'works' | 'acts' | 'history')) {
@@ -257,14 +280,17 @@ export function NativeEquipmentDetailScreen() {
       let nextUnavailable = cached?.unavailableWorkKinds || unavailableWorkKinds;
       if (target === 'acts') {
         const result = await getEquipmentActs(invNo, databaseId);
+        if (!current()) return;
         setActs(result.acts);
         nextActs = result.acts;
       } else if (target === 'history') {
         const result = await getEquipmentHistory(invNo, databaseId);
+        if (!current()) return;
         setHistory(result.history);
         nextHistory = result.history;
       } else if (equipment) {
         const result = await getEquipmentWorkHistories(equipment, equipmentWorkKinds(equipment));
+        if (!current()) return;
         setWorkHistory(result.histories);
         setUnavailableWorkKinds(result.unavailable);
         nextWorkHistory = result.histories;
@@ -296,9 +322,10 @@ export function NativeEquipmentDetailScreen() {
         );
       }
     } catch (cause) {
+      if (!current()) return;
       setTabError(formatApiError(cause, target === 'acts' ? 'Не удалось загрузить акты.' : target === 'works' ? 'Не удалось загрузить историю обслуживания.' : 'Не удалось загрузить историю.'));
     } finally {
-      setTabLoading(false);
+      if (current()) setTabLoading(false);
     }
   }, [acts, applyCachedDetail, databaseId, equipment, history, invNo, loadedTabs, offlineMode, requestedDatabaseId, unavailableWorkKinds, user?.id, workHistory]);
 

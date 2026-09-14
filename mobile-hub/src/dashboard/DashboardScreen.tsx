@@ -63,6 +63,11 @@ type DashboardSnapshot = {
 };
 
 export function DashboardScreen() {
+  const { user } = useAuth();
+  return <DashboardContent key={Number(user?.id || 0)} />;
+}
+
+function DashboardContent() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences, savePreferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -80,6 +85,8 @@ export function DashboardScreen() {
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [customizeSaving, setCustomizeSaving] = useState(false);
   const hasSnapshotRef = useRef(false);
+  const dashboardRequestRef = useRef(0);
+  const docflowRequestRef = useRef(0);
   const payloadRef = useRef<HubDashboard>(EMPTY_DASHBOARD);
   const communicationCountsRef = useRef({ chat: 0, mail: 0 });
   const docflowSummaryRef = useRef<DocflowInboxSummary>({
@@ -130,12 +137,14 @@ export function DashboardScreen() {
   ]);
 
   const loadDashboard = useCallback(async (mode: 'initial' | 'refresh' | 'background' = 'initial') => {
+    const request = ++dashboardRequestRef.current;
     if (mode === 'refresh') setRefreshing(true);
     else if (mode === 'initial') setLoading(true);
     setError('');
-    if (offlineMode && mode !== 'refresh') {
+    if (offlineMode) {
       if (!hasSnapshotRef.current) setError('Нет подключения и сохранённых данных главной.');
       setLoading(false);
+      setRefreshing(false);
       return;
     }
     const [dashboardResult, unreadResult] = await Promise.allSettled([
@@ -146,6 +155,7 @@ export function DashboardScreen() {
         force: mode === 'refresh',
       }),
     ]);
+    if (request !== dashboardRequestRef.current) return;
     if (dashboardResult.status === 'fulfilled') {
       const nextPayload = dashboardResult.value || EMPTY_DASHBOARD;
       payloadRef.current = nextPayload;
@@ -181,13 +191,16 @@ export function DashboardScreen() {
   }, [canReadChat, canReadMail, offlineMode, persistDashboardSnapshot]);
 
   const refreshDocflowSummary = useCallback(async () => {
+    const request = ++docflowRequestRef.current;
     if (!canReadDocflow || offlineMode) return;
     try {
       const result = await docflowApi.getInboxSummary();
+      if (request !== docflowRequestRef.current) return;
       docflowSummaryRef.current = result;
       setDocflowSummary(result);
       persistDashboardSnapshot(result);
     } catch {
+      if (request !== docflowRequestRef.current) return;
       const unavailable: DocflowInboxSummary = {
         status: 'unavailable', count: null, truncated: false,
       };
@@ -198,12 +211,13 @@ export function DashboardScreen() {
 
   useEffect(() => {
     let active = true;
+    const generation = dashboardRequestRef.current;
     void (async () => {
       const userId = Number(user?.id || 0);
       const snapshot = userId
         ? await readNativeSnapshot<DashboardSnapshot>('dashboard', userId)
         : null;
-      if (!active) return;
+      if (!active || generation !== dashboardRequestRef.current) return;
       if (snapshot) {
         hasSnapshotRef.current = true;
         payloadRef.current = snapshot.data.payload;
@@ -220,6 +234,8 @@ export function DashboardScreen() {
     })();
     return () => {
       active = false;
+      dashboardRequestRef.current += 1;
+      docflowRequestRef.current += 1;
     };
   }, [loadDashboard, user?.id]);
 
@@ -295,6 +311,7 @@ export function DashboardScreen() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: tokens.pageBg }]} edges={['top', 'left', 'right']}>
       <ScrollView
+        testID="native-dashboard-scroll"
         contentContainerStyle={[styles.scroll, { paddingBottom: bottomInset + 12 }]}
         refreshControl={(
           <RefreshControl

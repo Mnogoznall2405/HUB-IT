@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockListFiles,
+  mockListFolders,
+  mockCreateFolder,
+  mockUpdateFolder,
+  mockDeleteFolder,
+  mockUpdateFile,
   mockGetQuota,
   mockUploadFile,
   mockDownloadFile,
@@ -19,6 +24,12 @@ const {
   mockRevokeShare,
   mockDeleteFile,
   mockBuildPublicUrl,
+  mockListTrash,
+  mockRestoreFile,
+  mockRestoreFolder,
+  mockPurgeFile,
+  mockPurgeFolder,
+  mockEmptyTrash,
   mockNotifySuccess,
   mockNotifyWarning,
   mockNotifyApiError,
@@ -26,6 +37,11 @@ const {
   mockCollectDataTransferFiles,
 } = vi.hoisted(() => ({
   mockListFiles: vi.fn(),
+  mockListFolders: vi.fn(),
+  mockCreateFolder: vi.fn(),
+  mockUpdateFolder: vi.fn(),
+  mockDeleteFolder: vi.fn(),
+  mockUpdateFile: vi.fn(),
   mockGetQuota: vi.fn(),
   mockUploadFile: vi.fn(),
   mockDownloadFile: vi.fn(),
@@ -39,6 +55,12 @@ const {
   mockRevokeShare: vi.fn(),
   mockDeleteFile: vi.fn(),
   mockBuildPublicUrl: vi.fn(),
+  mockListTrash: vi.fn(),
+  mockRestoreFile: vi.fn(),
+  mockRestoreFolder: vi.fn(),
+  mockPurgeFile: vi.fn(),
+  mockPurgeFolder: vi.fn(),
+  mockEmptyTrash: vi.fn(),
   mockNotifySuccess: vi.fn(),
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
@@ -57,10 +79,15 @@ vi.mock('../lib/myFilesFolderZip', async () => {
 
 vi.mock('../api/myFiles', () => ({
   myFilesRetentionOptions: [1, 3, 7, 10, 30],
-  MY_FILES_MAX_UPLOAD_BYTES: (2 ** 32) - 1,
-  formatMyFilesUploadLimitLabel: () => 'до 4 ГБ на файл, 5 ГБ всего',
+  MY_FILES_MAX_UPLOAD_BYTES: 10 * 1024 * 1024 * 1024,
+  formatMyFilesUploadLimitLabel: () => 'до 10 ГБ на файл, 50 ГБ всего',
   myFilesAPI: {
     listFiles: mockListFiles,
+    listFolders: mockListFolders,
+    createFolder: mockCreateFolder,
+    updateFolder: mockUpdateFolder,
+    deleteFolder: mockDeleteFolder,
+    updateFile: mockUpdateFile,
     getQuota: mockGetQuota,
     uploadFile: mockUploadFile,
     downloadFile: mockDownloadFile,
@@ -74,6 +101,12 @@ vi.mock('../api/myFiles', () => ({
     revokeShare: mockRevokeShare,
     deleteFile: mockDeleteFile,
     buildPublicUrl: mockBuildPublicUrl,
+    listTrash: mockListTrash,
+    restoreFile: mockRestoreFile,
+    restoreFolder: mockRestoreFolder,
+    purgeFile: mockPurgeFile,
+    purgeFolder: mockPurgeFolder,
+    emptyTrash: mockEmptyTrash,
   },
 }));
 
@@ -188,7 +221,20 @@ describe('MyFiles page', () => {
     mockNotifyApiError.mockReset();
     mockPackFolderFilesToZip.mockReset();
     mockCollectDataTransferFiles.mockReset();
+    mockListFolders.mockReset();
+    mockCreateFolder.mockReset();
+    mockUpdateFolder.mockReset();
+    mockDeleteFolder.mockReset();
+    mockUpdateFile.mockReset();
+    mockListTrash.mockReset();
+    mockRestoreFile.mockReset();
+    mockRestoreFolder.mockReset();
+    mockPurgeFile.mockReset();
+    mockPurgeFolder.mockReset();
+    mockEmptyTrash.mockReset();
+    mockListTrash.mockResolvedValue({ items: [], folders: [] });
     mockListFiles.mockResolvedValue({ items: [] });
+    mockListFolders.mockResolvedValue({ items: [] });
     mockGetQuota.mockResolvedValue({ used_bytes: 0, limit_bytes: 5 * 1024 * 1024 * 1024, remaining_bytes: 5 * 1024 * 1024 * 1024 });
     mockUploadFile.mockResolvedValue({ id: 'queued-file', status: 'queued' });
     mockPackFolderFilesToZip.mockImplementation(async (files, options = {}) => {
@@ -244,8 +290,8 @@ describe('MyFiles page', () => {
   it('shows retention notice and uploads with default one-day retention', async () => {
     renderPage();
 
-    await screen.findByText('Мой диск');
-    expect(screen.getByText(/Файлы хранятся в системе до 30 дней/)).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Мой диск' });
+    expect(screen.getByText(/Файлы хранятся до 30 дней/)).toBeInTheDocument();
 
     const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
     fireEvent.change(screen.getByTestId('my-files-input'), { target: { files: [file] } });
@@ -267,7 +313,7 @@ describe('MyFiles page', () => {
 
   it('allows a file larger than the former one-gigabyte limit', async () => {
     renderPage();
-    await screen.findByText('Мой диск');
+    await screen.findByRole('heading', { name: 'Мой диск' });
 
     const file = new File(['small-test-payload'], 'archive.bin', { type: 'application/octet-stream' });
     Object.defineProperty(file, 'size', { configurable: true, value: (1024 ** 3) + 1 });
@@ -310,7 +356,7 @@ describe('MyFiles page', () => {
     );
   });
 
-  it('treats a dropped folder as a zip archive upload', async () => {
+  it('treats a dropped folder as a real folder upload', async () => {
     const nested = new File(['hello'], 'readme.txt', { type: 'text/plain' });
     Object.defineProperty(nested, 'webkitRelativePath', {
       configurable: true,
@@ -322,7 +368,7 @@ describe('MyFiles page', () => {
     });
 
     renderPage();
-    await screen.findByText('Мой диск');
+    await screen.findByRole('heading', { name: 'Мой диск' });
 
     fireEvent.drop(screen.getByTestId('my-files-drop-zone'), {
       dataTransfer: { files: [], items: [], dropEffect: 'copy' },
@@ -330,37 +376,44 @@ describe('MyFiles page', () => {
     });
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByTestId('my-files-folder-archive-notice')).toHaveTextContent('Docs.zip');
+    expect(within(dialog).getByTestId('my-files-folder-structure-notice')).toHaveTextContent('Docs');
     expect(mockCollectDataTransferFiles).toHaveBeenCalled();
   });
 
-  it('packs a selected folder into a zip before upload', async () => {
+  it('creates a real folder structure before uploading folder contents', async () => {
     renderPage();
 
-    await screen.findByText('Мой диск');
-    expect(screen.getByTestId('my-files-upload-folder-button')).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Мой диск' });
+    expect(screen.getByTestId('my-files-folder-input')).toBeInTheDocument();
 
     const nested = new File(['hello'], 'readme.txt', { type: 'text/plain' });
     Object.defineProperty(nested, 'webkitRelativePath', {
       configurable: true,
-      value: 'Docs/readme.txt',
+      value: 'Docs/Sub/readme.txt',
     });
+    mockCreateFolder.mockImplementation(async ({ name, parentId }) => ({
+      id: `created-${name}`,
+      name,
+      parent_id: parentId,
+    }));
     fireEvent.change(screen.getByTestId('my-files-folder-input'), { target: { files: [nested] } });
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByTestId('my-files-folder-archive-notice')).toHaveTextContent('Docs.zip');
+    expect(within(dialog).getByTestId('my-files-folder-structure-notice')).toHaveTextContent('Docs');
     expect(mockUploadFile).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Упаковать и загрузить' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить папку' }));
 
     await waitFor(() => {
-      expect(mockPackFolderFilesToZip).toHaveBeenCalled();
+      expect(mockCreateFolder).toHaveBeenCalledWith({ name: 'Docs', parentId: null });
+      expect(mockCreateFolder).toHaveBeenCalledWith({ name: 'Sub', parentId: 'created-Docs' });
       expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({
+        file: nested,
+        folderId: 'created-Sub',
         retentionDays: 1,
         onUploadProgress: expect.any(Function),
       }));
     });
-    expect(mockUploadFile.mock.calls[0][0].file.name).toBe('Docs.zip');
-    expect(mockUploadFile.mock.calls[0][0].file.type).toBe('application/zip');
+    expect(mockPackFolderFilesToZip).not.toHaveBeenCalled();
   });
 
   it('opens a private document preview for a ready supported file', async () => {
@@ -389,4 +442,228 @@ describe('MyFiles page', () => {
     expect(mockCreateShare).not.toHaveBeenCalled();
     expect(await screen.findByTestId('document-preview-dialog')).toHaveTextContent('report.pdf:pdf');
   });
+
+  it('renders folders and navigates into them', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-1', name: 'Документы', parent_id: null }] });
+    renderPage();
+
+    const folderCard = await screen.findByTestId('my-files-folder-folder-1');
+    expect(folderCard).toHaveTextContent('Документы');
+
+    mockListFiles.mockResolvedValue({
+      items: [],
+      folders: [],
+      breadcrumbs: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      folder: { id: 'folder-1', name: 'Документы', parent_id: null },
+    });
+    fireEvent.click(folderCard);
+
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ folderId: 'folder-1' })));
+    expect(await screen.findByTestId('my-files-breadcrumbs')).toHaveTextContent('Мой диск');
+  });
+
+  it('creates a folder via dialog', async () => {
+    mockListFiles.mockResolvedValue({ items: [], folders: [], breadcrumbs: [], folder: null });
+    mockCreateFolder.mockResolvedValue({ id: 'folder-new', name: 'Новая папка', parent_id: null });
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId('my-files-create-button'));
+    fireEvent.click(await screen.findByTestId('my-files-create-folder-button'));
+    const input = await screen.findByTestId('my-files-folder-name-input');
+    fireEvent.change(input, { target: { value: 'Новая папка' } });
+    fireEvent.click(screen.getByTestId('my-files-create-folder-confirm'));
+
+    await waitFor(() => expect(mockCreateFolder).toHaveBeenCalledWith({ name: 'Новая папка', parentId: null }));
+  });
+
+  it('renames a file via context menu', async () => {
+    mockListFiles.mockResolvedValue({ items: [readyFile], folders: [], breadcrumbs: [], folder: null });
+    mockUpdateFile.mockResolvedValue({ ...readyFile, original_file_name: 'renamed.txt' });
+    renderPage();
+
+    const card = await screen.findByTestId('my-files-card-file-1');
+    fireEvent.contextMenu(card);
+    fireEvent.click(await screen.findByTestId('file-action-rename'));
+
+    const input = await screen.findByTestId('my-files-rename-input');
+    fireEvent.change(input, { target: { value: 'renamed.txt' } });
+    fireEvent.click(screen.getByTestId('my-files-rename-confirm'));
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { name: 'renamed.txt' }));
+  });
+
+  it('moves a file to a folder via context menu', async () => {
+    mockListFiles.mockResolvedValue({ items: [readyFile], folders: [], breadcrumbs: [], folder: null });
+    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-7', name: 'Архив', parent_id: null }] });
+    mockUpdateFile.mockResolvedValue({ ...readyFile, folder_id: 'folder-7' });
+    renderPage();
+
+    const card = await screen.findByTestId('my-files-card-file-1');
+    fireEvent.contextMenu(card);
+    fireEvent.click(await screen.findByTestId('file-action-move'));
+
+    const select = await screen.findByRole('combobox');
+    fireEvent.mouseDown(select);
+    const option = await screen.findByRole('option', { name: 'Архив' });
+    fireEvent.click(option);
+    fireEvent.click(screen.getByTestId('my-files-move-confirm'));
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
+  });
+
+  it('filters rows by search query', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile, { ...readyFile, id: 'file-2', original_file_name: 'photo.png', download_file_name: 'photo.png' }],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.change(screen.getByTestId('my-files-search-input'), { target: { value: 'photo' } });
+
+    expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('my-files-folder-folder-1')).not.toBeInTheDocument();
+    expect(await screen.findByText('photo.png')).toBeInTheDocument();
+  });
+
+  it('sorts rows by size when the size column is clicked', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [
+        { ...readyFile, id: 'file-small', original_file_name: 'small.txt', original_size_bytes: 10 },
+        { ...readyFile, id: 'file-big', original_file_name: 'big.txt', original_size_bytes: 9999 },
+      ],
+      folders: [],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('small.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-sort-size'));
+
+    const cards = screen.getAllByTestId(/^my-files-card-/);
+    expect(cards[0]).toHaveAttribute('data-testid', 'my-files-card-file-small');
+    expect(cards[1]).toHaveAttribute('data-testid', 'my-files-card-file-big');
+  });
+
+  it('selects all rows and bulk-deletes them', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    const bar = await screen.findByTestId('my-files-selection-bar');
+    expect(bar).toHaveTextContent('Выбрано: 2');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+      await waitFor(() => {
+        expect(mockDeleteFolder).toHaveBeenCalledWith('folder-1');
+        expect(mockDeleteFile).toHaveBeenCalledWith('file-1');
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('bulk-moves selected rows to a chosen folder', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [],
+      breadcrumbs: [],
+      folder: null,
+    });
+    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-7', name: 'Архив', parent_id: null }] });
+    mockUpdateFile.mockResolvedValue({ ...readyFile, folder_id: 'folder-7' });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-bulk-move'));
+
+    const select = await screen.findByRole('combobox');
+    fireEvent.mouseDown(select);
+    fireEvent.click(await screen.findByRole('option', { name: 'Архив' }));
+    fireEvent.click(screen.getByTestId('my-files-move-confirm'));
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
+  });
+
+  it('switches to grid view and shows folder file counts', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null, file_count: 3 }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-view-toggle'));
+
+    const grid = await screen.findByTestId('my-files-grid');
+    expect(within(grid).getByText('Документы')).toBeInTheDocument();
+    expect(within(grid).getByText('3 шт.')).toBeInTheDocument();
+    expect(within(grid).getByText('report.txt')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('my-files-view-list'));
+    await waitFor(() => expect(screen.queryByTestId('my-files-grid')).not.toBeInTheDocument());
+  });
+
+  it('shows trash entries and restores a file', async () => {
+    mockListTrash.mockResolvedValue({
+      items: [{ ...readyFile, id: 'file-dead' }],
+      folders: [{ id: 'folder-dead', name: 'Старое' }],
+    });
+    render(
+      <MemoryRouter initialEntries={['/?view=trash']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('report.txt');
+    expect(screen.getByText('Старое')).toBeInTheDocument();
+    expect(mockListTrash).toHaveBeenCalled();
+    expect(screen.getAllByText('Корзина').length).toBeGreaterThanOrEqual(2);
+
+    fireEvent.click(screen.getByTestId('my-files-restore-file-dead'));
+    await waitFor(() => expect(mockRestoreFile).toHaveBeenCalledWith('file-dead'));
+  });
+
+  it('purges a trashed file after confirmation', async () => {
+    mockListTrash.mockResolvedValue({ items: [{ ...readyFile, id: 'file-dead' }], folders: [] });
+    render(
+      <MemoryRouter initialEntries={['/?view=trash']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText('report.txt');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.click(screen.getByTestId('my-files-purge-file-dead'));
+      await waitFor(() => expect(mockPurgeFile).toHaveBeenCalledWith('file-dead'));
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
 });

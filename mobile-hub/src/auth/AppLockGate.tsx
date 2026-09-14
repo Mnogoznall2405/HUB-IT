@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as ScreenCapture from 'expo-screen-capture';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   Image,
@@ -17,7 +17,9 @@ import { HubButton } from '../components/ui/HubButton';
 import { type FluentTokens, useAppFluentTokens } from '../theme/fluentTokens';
 import { hapticError, hapticSuccess } from '../native/haptics';
 import { useAuth } from './AuthContext';
+import { setNativeChatDeliveryBlocked } from '../chat/nativeChatDeliveryGate';
 import {
+  BiometricUnavailableError,
   getAppLockSettings,
   shouldLockAfterBackground,
   subscribeAppLockSettings,
@@ -35,8 +37,13 @@ export function AppLockGate() {
   const { biometricEnabled, logout, user } = useAuth();
   const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
   const [locked, setLocked] = useState(false);
+  useLayoutEffect(() => {
+    setNativeChatDeliveryBlocked(!user || locked);
+    return () => setNativeChatDeliveryBlocked(true);
+  }, [user?.id, locked]);
   const [unlocking, setUnlocking] = useState(false);
   const [error, setError] = useState('');
+  const [credentialLost, setCredentialLost] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef(0);
   const automaticAttemptRef = useRef(false);
@@ -77,6 +84,8 @@ export function AppLockGate() {
         if (shouldLockAfterBackground(backgroundAtRef.current, Date.now(), settings)) {
           automaticAttemptRef.current = false;
           setError('');
+          setCredentialLost(false);
+          setNativeChatDeliveryBlocked(true);
           setLocked(true);
         } else {
           backgroundAtRef.current = 0;
@@ -97,11 +106,13 @@ export function AppLockGate() {
     try {
       await unlockBiometricAppLock();
       backgroundAtRef.current = 0;
+      setCredentialLost(false);
       setLocked(false);
       await ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
       void hapticSuccess();
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : 'Не удалось подтвердить отпечаток');
+      setCredentialLost(cause instanceof BiometricUnavailableError);
       void hapticError();
     } finally {
       setUnlocking(false);
@@ -160,7 +171,7 @@ export function AppLockGate() {
             >
               Разблокировать
             </HubButton>
-            {error.includes('Вход по отпечатку недоступен') ? (
+            {credentialLost ? (
               <HubButton mode="text" onPress={() => { void logout(); }}>
                 Войти заново
               </HubButton>

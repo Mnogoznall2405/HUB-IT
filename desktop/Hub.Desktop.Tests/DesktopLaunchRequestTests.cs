@@ -30,6 +30,29 @@ public sealed class DesktopLaunchRequestTests
         Assert.True(request.OpenDownloads);
     }
 
+    [Fact]
+    public void ParsesSingleSharedFileLaunch()
+    {
+        Assert.True(DesktopLaunchRequest.TryParse(["--share", "C:\\file.pdf"], out var request));
+        Assert.Equal(new[] { "C:\\file.pdf" }, request.SharedFiles);
+        Assert.True(request.HasSharedFiles);
+    }
+
+    [Fact]
+    public void ParsesMultipleSharedFileLaunch()
+    {
+        Assert.True(DesktopLaunchRequest.TryParse(
+            ["--share", "C:\\a.pdf", "C:\\b.pdf", "C:\\c.pdf"],
+            out var request));
+        Assert.Equal(new[] { "C:\\a.pdf", "C:\\b.pdf", "C:\\c.pdf" }, request.SharedFiles);
+    }
+
+    [Fact]
+    public void RejectsEmptySharedFileList()
+    {
+        Assert.False(DesktopLaunchRequest.TryParse(["--share"], out _));
+    }
+
     [Theory]
     [InlineData("--route")]
     [InlineData("--route", "https://evil.example")]

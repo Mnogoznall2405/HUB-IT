@@ -28,6 +28,28 @@ from backend.ai_sandbox.gateway import GatewayAccessGrant, GatewayBearerToken  #
 PINNED_TEST_IMAGE = "registry.internal/hub/opencode@sha256:" + ("8" * 64)
 
 
+def test_persisted_session_wait_retries_only_readiness_reads(monkeypatch):
+    from backend.ai_sandbox.control import OpenCodeHttpControlClient, OpenCodeControlError
+    client = object.__new__(OpenCodeHttpControlClient)
+    calls = []
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs['timeout']))
+        if len(calls) == 1:
+            raise ConnectionError('not listening yet')
+        return object()
+    client._request = request
+    monkeypatch.setattr('backend.ai_sandbox.control.time.sleep', lambda _: None)
+    client.wait_for_session(session_id='session-1')
+    assert [(method, path) for method, path, _ in calls] == [('GET', '/session/session-1')] * 2
+    assert all(0 < timeout <= 5 for _, _, timeout in calls)
+    def missing(*args, **kwargs):
+        raise OpenCodeControlError('missing', status_code=404)
+    client._request = missing
+    with pytest.raises(OpenCodeControlError) as error:
+        client.wait_for_session(session_id='missing')
+    assert error.value.status_code == 404
+
+
 def _settings(tmp_path: Path) -> SandboxSettings:
     workspace_root = tmp_path / "workspaces"
     workspace_root.mkdir()
@@ -121,6 +143,9 @@ class _AmbiguousPromptControl:
         self.prompts.append(prompt)
         raise TimeoutError("accepted response was lost")
 
+    def wait_for_session(self, **kwargs):
+        return None
+
     def create_session(self, **kwargs):
         self.create_calls += 1
         return {"id": "must-not-be-created"}
@@ -164,7 +189,8 @@ def test_ambiguous_persisted_session_prompt_error_is_never_resent(tmp_path: Path
     assert len(controls) == 1
     assert controls[0].create_calls == 0
     assert len(controls[0].prompts) == 1
-    assert controls[0].prompts[0]["messageID"]
+    message_id = controls[0].prompts[0]["messageID"]
+    assert message_id.startswith('msg_') and len(message_id) == 30
     assert runtime.started == 1
     assert runtime.stopped == 1
     assert gateway.revoked == [("grant-control", "job-control")]
@@ -209,4 +235,3 @@ def test_prestart_spec_failure_revokes_gateway_and_removes_env_file(
     assert runtime.stopped == 0
     assert gateway.revoked == [("grant-control", "job-control")]
     assert list(settings.runtime_secret_root.glob("*.env")) == []
-

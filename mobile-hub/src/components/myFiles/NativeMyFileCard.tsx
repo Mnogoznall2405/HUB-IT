@@ -14,44 +14,34 @@ import {
 } from '../../myFiles/nativeMyFilesModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
-export type MyFileCardAction = 'preview' | 'open' | 'share-file' | 'save-offline' | 'remove-offline' | 'share-link' | 'rotate' | 'revoke' | 'delete';
+export type MyFileCardAction =
+  | 'preview' | 'open' | 'share-file' | 'save-offline' | 'remove-offline'
+  | 'share-link' | 'rotate' | 'revoke' | 'favorite' | 'rename' | 'move' | 'delete';
 
 export const NativeMyFileCard = memo(function NativeMyFileCard({
   item,
   tokens,
-  canWrite,
-  canShare,
   offline,
   availableOffline,
   actionsLocked,
   busyAction,
-  onPreview,
+  trashed = false,
+  onPrimary,
   onOpen,
   onShareFile,
-  onSaveOffline,
-  onRemoveOffline,
-  onShareLink,
-  onRotate,
-  onRevoke,
-  onDelete,
+  onMore,
 }: {
   item: MyFileRecord;
   tokens: FluentTokens;
-  canWrite: boolean;
-  canShare: boolean;
   offline: boolean;
   availableOffline: boolean;
   actionsLocked: boolean;
   busyAction: MyFileCardAction | null;
-  onPreview: (item: MyFileRecord) => void;
+  trashed?: boolean;
+  onPrimary: (item: MyFileRecord) => void;
   onOpen: (item: MyFileRecord) => void;
   onShareFile: (item: MyFileRecord) => void;
-  onSaveOffline: (item: MyFileRecord) => void;
-  onRemoveOffline: (item: MyFileRecord) => void;
-  onShareLink: (item: MyFileRecord) => void;
-  onRotate: (item: MyFileRecord) => void;
-  onRevoke: (item: MyFileRecord) => void;
-  onDelete: (item: MyFileRecord) => void;
+  onMore: (item: MyFileRecord) => void;
 }) {
   const [nameExpanded, setNameExpanded] = useState(false);
   const ready = isMyFileReady(item);
@@ -64,15 +54,11 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
       ? tokens.success
       : tokens.warning;
   const fileName = myFileName(item);
-  const handlePreview = useCallback(() => onPreview(item), [item, onPreview]);
+  const handlePrimary = useCallback(() => onPrimary(item), [item, onPrimary]);
   const handleOpen = useCallback(() => onOpen(item), [item, onOpen]);
   const handleShareFile = useCallback(() => onShareFile(item), [item, onShareFile]);
-  const handleSaveOffline = useCallback(() => onSaveOffline(item), [item, onSaveOffline]);
-  const handleRemoveOffline = useCallback(() => onRemoveOffline(item), [item, onRemoveOffline]);
-  const handleShareLink = useCallback(() => onShareLink(item), [item, onShareLink]);
-  const handleRotate = useCallback(() => onRotate(item), [item, onRotate]);
-  const handleRevoke = useCallback(() => onRevoke(item), [item, onRevoke]);
-  const handleDelete = useCallback(() => onDelete(item), [item, onDelete]);
+  const handleMore = useCallback(() => onMore(item), [item, onMore]);
+
   return (
     <View
       testID={`native-my-file-${item.id}`}
@@ -90,6 +76,9 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
           <View style={styles.statusRow}>
             {processing ? <ActivityIndicator size="small" color={statusColor} /> : <View style={[styles.statusDot, { backgroundColor: statusColor }]} />}
             <Text style={[styles.status, { color: statusColor }]}>{myFileStatusLabel(item)}</Text>
+            {item.is_favorite ? (
+              <MaterialCommunityIcons name="star" size={15} color={tokens.warning} />
+            ) : null}
             {item.is_shared ? (
               <View style={[styles.sharedBadge, { backgroundColor: tokens.selected }]}>
                 <MaterialCommunityIcons name="link-variant" size={14} color={tokens.primary} />
@@ -117,12 +106,12 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
         </View>
       </View>
 
-      {item.is_shared ? (
+      {item.is_shared && !trashed ? (
         <Text style={[styles.shareExpiry, { color: tokens.textSecondary }]}>Публичная ссылка действует до {formatMyFileDate(item.share_expires_at || item.expires_at)}</Text>
       ) : null}
 
       <View style={styles.actions}>
-        {previewKind ? (
+        {!trashed && previewKind ? (
           <Action
             testID={`native-my-file-preview-${item.id}`}
             label="Просмотр"
@@ -131,10 +120,10 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             primary
             busy={busyAction === 'preview'}
             disabled={actionsLocked || busy}
-            onPress={handlePreview}
+            onPress={handlePrimary}
           />
         ) : null}
-        {ready ? (
+        {!trashed && ready ? (
           <Action
             testID={`native-my-file-open-${item.id}`}
             label="Открыть"
@@ -146,30 +135,9 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             onPress={handleOpen}
           />
         ) : null}
-        {ready && !availableOffline ? (
+        {ready && !trashed ? (
           <Action
-            testID={`native-my-file-save-offline-${item.id}`}
-            label="Сохранить офлайн"
-            icon="cloud-download-outline"
-            tokens={tokens}
-            busy={busyAction === 'save-offline'}
-            disabled={actionsLocked || busy}
-            onPress={handleSaveOffline}
-          />
-        ) : null}
-        {availableOffline ? (
-          <Action
-            testID={`native-my-file-remove-offline-${item.id}`}
-            label="Удалить офлайн-копию"
-            icon="cloud-off-outline"
-            tokens={tokens}
-            busy={busyAction === 'remove-offline'}
-            disabled={actionsLocked || busy}
-            onPress={handleRemoveOffline}
-          />
-        ) : null}
-        {ready ? (
-          <Action
+            testID={`native-my-file-share-file-${item.id}`}
             label="Файлом"
             icon="share-variant-outline"
             tokens={tokens}
@@ -178,50 +146,15 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
             onPress={handleShareFile}
           />
         ) : null}
-        {ready && canShare ? (
-          <Action
-            testID={`native-my-file-share-link-${item.id}`}
-            label="Ссылкой"
-            icon="link-variant"
-            tokens={tokens}
-            busy={busyAction === 'share-link'}
-            disabled={offline || actionsLocked || busy}
-            onPress={handleShareLink}
-          />
-        ) : null}
-        {item.is_shared && canShare ? (
-          <Action
-            testID={`native-my-file-rotate-link-${item.id}`}
-            label="Новая ссылка"
-            icon="link-variant-plus"
-            tokens={tokens}
-            busy={busyAction === 'rotate'}
-            disabled={offline || actionsLocked || busy}
-            onPress={handleRotate}
-          />
-        ) : null}
-        {item.is_shared && canShare ? (
-          <Action
-            label="Отключить"
-            icon="link-variant-off"
-            tokens={tokens}
-            busy={busyAction === 'revoke'}
-            disabled={offline || actionsLocked || busy}
-            onPress={handleRevoke}
-          />
-        ) : null}
-        {canWrite ? (
-          <Action
-            testID={`native-my-file-delete-${item.id}`}
-            label="Удалить"
-            icon="delete-outline"
-            tokens={tokens}
-            danger
-            busy={busyAction === 'delete'}
-            disabled={offline || actionsLocked || busy}
-            onPress={handleDelete}
-          />
-        ) : null}
+        <Action
+          testID={`native-my-file-more-${item.id}`}
+          label="Ещё"
+          icon="dots-horizontal"
+          tokens={tokens}
+          disabled={actionsLocked}
+          busy={false}
+          onPress={handleMore}
+        />
       </View>
     </View>
   );
@@ -233,7 +166,6 @@ function Action({
   icon,
   tokens,
   primary = false,
-  danger = false,
   busy,
   disabled,
   onPress,
@@ -243,25 +175,24 @@ function Action({
   icon: ComponentProps<typeof MaterialCommunityIcons>['name'];
   tokens: FluentTokens;
   primary?: boolean;
-  danger?: boolean;
   busy: boolean;
   disabled: boolean;
   onPress: () => void;
 }) {
-  const foreground = primary ? '#fff' : danger ? tokens.error : tokens.textPrimary;
+  const foreground = primary ? '#fff' : tokens.textPrimary;
   return (
     <Pressable
       testID={testID}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={label === 'Файлом' ? 'Поделиться файлом' : label === 'Ссылкой' ? 'Поделиться публичной ссылкой' : label}
+      accessibilityLabel={label === 'Файлом' ? 'Поделиться файлом' : label === 'Ещё' ? 'Другие действия с файлом' : label}
       accessibilityState={{ disabled, busy }}
       style={({ pressed }) => [
         styles.action,
         {
           backgroundColor: primary ? tokens.primary : 'transparent',
-          borderColor: danger ? tokens.error : primary ? tokens.primary : tokens.border,
+          borderColor: primary ? tokens.primary : tokens.border,
           opacity: disabled ? 0.5 : pressed ? 0.75 : 1,
           transform: [{ scale: pressed && !disabled ? 0.96 : 1 }],
         },

@@ -1,7 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -123,6 +123,11 @@ type TaskPresencePeer = {
 };
 
 export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
+  const { user, hasPermission } = useAuth();
+  return <NativeTaskDetailContent key={`${user?.id}:${taskId}:${hasPermission('tasks.read')}`} taskId={taskId} />;
+}
+
+function NativeTaskDetailContent({ taskId }: { taskId: string }) {
   const [detailTab, setDetailTab] = useState<'overview' | 'discussion' | 'files'>('overview');
   const [actionsOpen, setActionsOpen] = useState(false);
   const { user, hasPermission, offlineMode } = useAuth();
@@ -130,6 +135,12 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   const tokens = useFluentTokens(preferences.theme_mode);
   const bottomInset = useNativeBottomNavInset();
   const allowed = hasPermission('tasks.read');
+  const loadGeneration = useRef(0);
+  const loadInProgress = useRef(false);
+  useLayoutEffect(() => {
+    loadGeneration.current += 1;
+    return () => { loadGeneration.current += 1; };
+  }, [offlineMode]);
   const [task, setTask] = useState<HubTask | null>(null);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [statusLog, setStatusLog] = useState<TaskStatusLog[]>([]);
@@ -199,12 +210,15 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
     return true;
   });
 
-  const loadTask = useCallback(async (mode: 'initial' | 'refresh' = 'initial') => {
-    if (!taskId) return;
+  const loadTask = useCallback(async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
+    if (!taskId || !allowed) return;
+    const request = ++loadGeneration.current;
+    const isCurrent = () => request === loadGeneration.current;
+    loadInProgress.current = true;
     if (mode === 'refresh') setRefreshing(true);
-    else setLoading(true);
+    else if (mode === 'initial') setLoading(true);
     setError('');
-    const cached = user?.id
+    let cached = user?.id
       ? await readNativeEntitySnapshot<NativeTaskDetailSnapshot>(
         'task-details',
         user.id,
@@ -212,6 +226,8 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
         Number.MAX_SAFE_INTEGER,
       )
       : null;
+    if (!isCurrent()) return;
+    if (cached && cached.data.task.id !== taskId) cached = null;
     if (cached) {
       setTask(cached.data.task);
       setComments(cached.data.comments || []);
@@ -230,32 +246,45 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
       }
       setLoading(false);
       setRefreshing(false);
+      loadInProgress.current = false;
       return;
     }
     try {
       const nextTask = await getTask(taskId);
+      if (!isCurrent()) return;
       setTask(nextTask);
       setCachedAt(0);
       setStatusLogError('');
-      try {
-        setStatusLog(await getTaskStatusLog(taskId));
-      } catch (cause) {
-        setStatusLog([]);
-        setStatusLogError(formatApiError(cause, 'Не удалось загрузить историю статусов.'));
-      }
-      if (nextTask.capabilities?.can_open_discussion) {
-        setComments([]);
-      } else {
+      const loadStatus = async () => {
+        try {
+          const nextStatusLog = await getTaskStatusLog(taskId);
+          if (!isCurrent()) return;
+          setStatusLog(nextStatusLog);
+        } catch (cause) {
+          if (!isCurrent()) return;
+          setStatusLog([]);
+          setStatusLogError(formatApiError(cause, 'Не удалось загрузить историю статусов.'));
+        }
+      };
+      const loadComments = async () => {
+        if (nextTask.capabilities?.can_open_discussion) {
+          setComments([]);
+          return;
+        }
         try {
           const nextComments = await getTaskComments(taskId);
+          if (!isCurrent()) return;
           setComments(nextComments);
           void markTaskCommentsSeen(taskId).catch(() => undefined);
         } catch (cause) {
+          if (!isCurrent()) return;
           setComments([]);
           setError(formatApiError(cause, 'Не удалось загрузить комментарии.'));
         }
-      }
+      };
+      await Promise.all([loadStatus(), loadComments()]);
     } catch (cause) {
+      if (!isCurrent()) return;
       if (!cached) {
         setTask(null);
         setComments([]);
@@ -265,10 +294,13 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
         ? 'Показана сохранённая копия. Не удалось обновить задачу.'
         : 'Не удалось открыть задачу.'));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isCurrent()) {
+        loadInProgress.current = false;
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [offlineMode, taskId, user?.id]);
+  }, [allowed, offlineMode, taskId, user?.id]);
 
   useEffect(() => {
     if (allowed && taskId) void loadTask();
@@ -287,7 +319,7 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void loadTask('refresh');
+        void loadTask('silent');
       }, 100);
     };
     const releases = [
@@ -348,13 +380,13 @@ export function NativeTaskDetailScreen({ taskId }: { taskId: string }) {
   }, [allowed, offlineMode, taskId]);
 
   useEffect(() => {
-    if (!task || offlineMode || loading || refreshing || !user?.id) return;
+    if (!allowed || !task || task.id !== taskId || loadInProgress.current || offlineMode || loading || refreshing || !user?.id) return;
     void writeNativeEntitySnapshot<NativeTaskDetailSnapshot>('task-details', user.id, taskId, {
       task,
       comments,
       statusLog,
     });
-  }, [comments, loading, offlineMode, refreshing, statusLog, task, taskId, user?.id]);
+  }, [allowed, comments, loading, offlineMode, refreshing, statusLog, task, taskId, user?.id]);
 
   const canDeleteTask = Boolean(
     task?.id

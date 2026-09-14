@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>Package</OutputType>
     <InstallerPlatform>x64</InstallerPlatform>
+    <Cultures>ru-ru</Cultures>
     <OutputName>HUB-Desktop-$(DesktopVersion)-win-x64</OutputName>
     <DefineConstants>DesktopVersion=$(DesktopVersion);IconPath=$(IconPath)</DefineConstants>
     <DebugType>none</DebugType>
@@ -13,6 +14,8 @@
   <ItemGroup>
     <BindPath Include="$(PublishDir)" BindName="Publish" />
     <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+    <Content Include="license.rtf" />
   </ItemGroup>
 
 </Project>

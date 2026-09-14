@@ -16,6 +16,7 @@ class MyFileResponse(BaseModel):
     stored_size_bytes: int
     saved_size_bytes: int
     retention_days: int
+    folder_id: str | None = None
     status: str
     storage_mode: str
     error_text: str = ""
@@ -25,14 +26,56 @@ class MyFileResponse(BaseModel):
     preview_status: str = "unsupported"
     preview_max_bytes: int = 0
     is_shared: bool = False
+    is_favorite: bool = False
+    folder_name: str = ""
     share_expires_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     expires_at: datetime | None = None
 
 
+class MyFileFolderResponse(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    file_count: int = 0
+    is_shared: bool = False
+    is_favorite: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MyFileFolderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    parent_id: str | None = Field(default=None, max_length=64)
+
+
+class MyFileFolderUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    parent_id: str | None = Field(default=None, max_length=64)
+    is_favorite: bool | None = None
+
+
+class MyFileUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=512)
+    folder_id: str | None = Field(default=None, max_length=64)
+    is_favorite: bool | None = None
+
+
 class MyFileListResponse(BaseModel):
     items: list[MyFileResponse] = Field(default_factory=list)
+    folders: list[MyFileFolderResponse] = Field(default_factory=list)
+    breadcrumbs: list[MyFileFolderResponse] = Field(default_factory=list)
+    folder: MyFileFolderResponse | None = None
+
+
+class MyFileFolderListResponse(BaseModel):
+    items: list[MyFileFolderResponse] = Field(default_factory=list)
+
+
+class MyFileTrashResponse(BaseModel):
+    items: list[MyFileResponse] = Field(default_factory=list)
+    folders: list[MyFileFolderResponse] = Field(default_factory=list)
 
 
 class MyFileQuotaResponse(BaseModel):
@@ -46,6 +89,7 @@ class MyFileUploadSessionCreateRequest(BaseModel):
     file_size: int = Field(gt=0)
     retention_days: int = 1
     mime_type: str = Field(default="application/octet-stream", max_length=255)
+    folder_id: str | None = Field(default=None, max_length=64)
 
 
 class MyFileUploadSessionResponse(BaseModel):
@@ -60,6 +104,23 @@ class MyFileShareResponse(BaseModel):
     token: str
     public_path: str
     expires_at: datetime | None = None
+
+
+class PublicMyFolderFileResponse(BaseModel):
+    id: str
+    file_name: str
+    relative_path: str = ""
+    size_bytes: int
+    mime_type: str
+    preview_kind: str = "unsupported"
+    preview_available: bool = False
+    expires_at: datetime | None = None
+
+
+class PublicMyFolderResponse(BaseModel):
+    folder_name: str
+    share_created_at: datetime | None = None
+    items: list[PublicMyFolderFileResponse] = Field(default_factory=list)
 
 
 class PublicMyFilePreviewResponse(BaseModel):

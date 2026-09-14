@@ -71,6 +71,11 @@ function createActionIdempotencyKey(): string {
 }
 
 export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
+  const { user } = useAuth();
+  return <DocflowDetailContent key={`${user?.id}:${taskRef}`} taskRef={taskRef} />;
+}
+
+function DocflowDetailContent({ taskRef }: { taskRef: string }) {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -118,14 +123,14 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
     return true;
   });
 
-  const loadTask = useCallback(async (refresh = false) => {
+  const loadTask = useCallback(async (refresh = false, silent = false) => {
     if (!canRead || !taskRef) {
       setLoading(false);
       setRefreshing(false);
       return;
     }
     const requestId = ++requestRef.current;
-    if (refresh) setRefreshing(true); else setLoading(true);
+    if (refresh) setRefreshing(true); else if (!silent) setLoading(true);
     setError('');
     setCorrelationId('');
     setRelatedError('');
@@ -207,7 +212,7 @@ export function NativeDocflowDetailScreen({ taskRef }: { taskRef: string }) {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
-        void loadTask(true);
+        void loadTask(false, true);
       }, 180);
     };
     const releases = [

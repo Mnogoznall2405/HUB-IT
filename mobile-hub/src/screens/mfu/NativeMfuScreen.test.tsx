@@ -115,7 +115,7 @@ it('keeps additional filters discoverable and preserves them when collapsed', as
   await fireEvent.press(view.getByTestId('native-mfu-filters'));
   await fireEvent.press(view.getByText('Ошибка SNMP'));
   await waitFor(() => expect(view.queryByText('Canon MF443')).toBeNull());
-  await fireEvent.press(view.getByTestId('native-mfu-filters'));
+  await fireEvent.press(view.getByLabelText('Закрыть'));
   expect(view.queryByText('Ошибка SNMP')).toBeNull();
   expect(view.queryByText('Canon MF443')).toBeNull();
   await fireEvent.press(view.getByText('Все'));

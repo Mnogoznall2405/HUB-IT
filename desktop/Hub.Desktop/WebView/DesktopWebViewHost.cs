@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Windows.Controls;
 using Hub.Desktop.Diagnostics;
 using Microsoft.Web.WebView2.Core;
@@ -9,6 +10,7 @@ public sealed class DesktopWebViewHost : IDisposable
 {
     private readonly Grid _container;
     private readonly DesktopWebViewEnvironmentProvider _environmentProvider;
+    private readonly object _sync = new();
     private bool _disposed;
 
     public DesktopWebViewHost(
@@ -25,41 +27,54 @@ public sealed class DesktopWebViewHost : IDisposable
     public async Task<CoreWebView2> RecreateAsync(
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            DisposeCurrentLocked();
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
-        DisposeCurrent();
+        DesktopLog.Info("Creating WebView2 control");
         var view = new WebView2();
-        View = view;
-        _container.Children.Add(view);
-        try
+        DesktopLog.Info("Resolving WebView2 environment");
+        var environment = await _environmentProvider.GetAsync(cancellationToken);
+        Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_environment_ready");
+        DesktopLog.Info("WebView2 environment resolved");
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // The WebView2 WPF control must be in the visual tree before
+        // EnsureCoreWebView2Async, otherwise initialization can hang waiting
+        // for a valid HWND/source.
+        lock (_sync)
         {
-            var environment = await _environmentProvider.GetAsync(cancellationToken);
-            Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_environment_ready");
-            cancellationToken.ThrowIfCancellationRequested();
-            await view.EnsureCoreWebView2Async(environment);
-            Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_core_ready");
-            cancellationToken.ThrowIfCancellationRequested();
-            return view.CoreWebView2;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            View = view;
+            _container.Children.Add(view);
         }
-        catch
-        {
-            DisposeCurrent();
-            throw;
-        }
+
+        DesktopLog.Info("Initializing WebView2 core");
+        await view.EnsureCoreWebView2Async(environment);
+        Hub.Desktop.Diagnostics.DesktopPerfBench.MarkOnce("webview_core_ready");
+        DesktopLog.Info("WebView2 core initialized");
+
+        return view.CoreWebView2;
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_sync)
         {
-            return;
-        }
+            if (_disposed)
+            {
+                return;
+            }
 
-        _disposed = true;
-        DisposeCurrent();
+            _disposed = true;
+            DisposeCurrentLocked();
+        }
     }
 
-    private void DisposeCurrent()
+    private void DisposeCurrentLocked()
     {
         var view = View;
         View = null;
@@ -70,5 +85,30 @@ public sealed class DesktopWebViewHost : IDisposable
 
         _container.Children.Remove(view);
         view.Dispose();
+    }
+
+    public void SetZoomFactor(double factor)
+    {
+        if (factor <= 0)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            if (_disposed || View is null)
+            {
+                return;
+            }
+
+            try
+            {
+                View.ZoomFactor = Math.Clamp(factor, 0.25, 5.0);
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Failed to set WebView2 zoom factor", exception);
+            }
+        }
     }
 }

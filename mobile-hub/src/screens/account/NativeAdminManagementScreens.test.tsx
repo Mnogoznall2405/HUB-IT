@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { NativeAdminDepartmentsScreen } from './NativeAdminDepartmentsScreen';
 import { NativeAdminSessionsScreen } from './NativeAdminSessionsScreen';
 import { NativeAdminUsersScreen } from './NativeAdminUsersScreen';
@@ -55,6 +55,7 @@ function mockUserDirectory(items: userAdminApi.AdminUser[]) {
 }
 
 beforeEach(() => {
+  AppState.currentState = 'active';
   jest.clearAllMocks();
   departmentMocks.listDepartments.mockResolvedValue([
     { id: 'it', name: 'ИТ', members_count: 8, managers_count: 2 },
@@ -239,4 +240,17 @@ it('previews session-limit normalization before applying it', async () => {
     buttons.find((button) => button.text === 'Закрыть сессии')?.onPress?.();
   });
   await waitFor(() => expect(sessionMocks.normalizeSessionLimit).toHaveBeenCalledWith(true));
+});
+
+it('late department members must not replace selected department managers', async () => {
+  let finish: (value:any)=>void=()=>{};
+  const member=(id:number,name:string)=>({user_id:id,role:'manager',is_active:true,user:{id,username:name,full_name:name}});
+  departmentMocks.getDepartmentMembers.mockImplementation((id:string | number)=>id==='it'?new Promise(resolve=>{finish=resolve;}):Promise.resolve([member(2,'FINANCE-MANAGER')]));
+  const view=await render(<NativeAdminDepartmentsScreen />);
+  await waitFor(()=>expect(departmentMocks.getDepartmentMembers).toHaveBeenCalledWith('it'));
+  await fireEvent.changeText(view.getByTestId('text-input-outlined'),'фин');
+  await waitFor(()=>expect(view.getByText('FINANCE-MANAGER')).toBeTruthy());
+  await act(async()=>{finish([member(1,'IT-MANAGER')]);});
+  await fireEvent.press(view.getByText('Сохранить руководителей'));
+  expect(departmentMocks.setDepartmentManagers).toHaveBeenCalledWith('finance',[2]);
 });

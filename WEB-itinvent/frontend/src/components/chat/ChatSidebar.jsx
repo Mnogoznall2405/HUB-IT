@@ -23,7 +23,6 @@ import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import ExitToAppRoundedIcon from '@mui/icons-material/ExitToAppRounded';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
-import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
@@ -35,6 +34,8 @@ import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatFolderTabs from './ChatFolderTabs';
+import ChatSidebarDesktopHeader from './ChatSidebarDesktopHeader';
+import { useChatSidebarSizing } from './ChatSidebarSizingContext';
 import { getConversationFolderIds } from './chatFolderUtils';
 import { GENERAL_AI_OPENING_ID, groupAiSidebarRowsByDate } from './chatAiSidebarModel';
 import { useChatFolderSwipe } from './useChatFolderSwipe';
@@ -122,16 +123,14 @@ const getSidebarRowStyle = (density, compactMobile = false) => {
   };
 };
 
-const RETIRED_AI_AGENT_SLUGS = new Set(['it-helper', 'opencode']);
+const RETIRED_AI_AGENT_SLUGS = new Set(['it-helper']);
 
 const isAiAgentAvailableForNewChat = (agent) => {
   const slug = String(agent?.slug || '').trim().toLowerCase();
-  const surface = String(agent?.surface || '').trim().toLowerCase();
   const placement = String(agent?.placement || '').trim().toLowerCase();
   return Boolean(agent?.id)
     && agent?.is_enabled !== false
     && placement !== 'hidden'
-    && surface !== 'sandbox'
     && !RETIRED_AI_AGENT_SLUGS.has(slug);
 };
 
@@ -189,6 +188,7 @@ function ChatSidebar({
   onWorkspaceChange,
 }) {
   const density = getDensity(ui);
+  const { collapsed, setCollapsed } = useChatSidebarSizing();
   const { openDrawer, headerMode } = useMainLayoutShell();
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
@@ -257,11 +257,12 @@ function ChatSidebar({
     searchFocused,
   });
   const handleExpandSearch = useCallback(() => {
+    setCollapsed?.(false);
     expandSearch();
     window.requestAnimationFrame(() => {
       searchInputRef.current?.focus?.();
     });
-  }, [expandSearch]);
+  }, [expandSearch, setCollapsed]);
   const handleOpenConversation = useCallback((conversationId) => {
     if (shouldSuppressListClick()) return;
     onOpenConversation?.(conversationId);
@@ -396,7 +397,7 @@ function ChatSidebar({
         </Button>
       </div>
 
-      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Мои чаты</SearchSectionHeader>
+      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>{aiArchiveOpen ? 'ИИ · Архив' : 'Мои чаты'}</SearchSectionHeader>
       {aiHistoryGroups.length > 0 ? (
         aiHistoryGroups.map((group) => (
           <div key={group.key}>
@@ -435,7 +436,6 @@ function ChatSidebar({
   const mobileSubtitle = unreadTotal > 0
     ? `${unreadTotal} непрочитанных`
     : 'Все прочитано';
-  const desktopSubtitle = `${user?.full_name || user?.username || 'Пользователь'} • ${mobileSubtitle}`;
 
   return (
     <div
@@ -486,12 +486,23 @@ function ChatSidebar({
         borderRight: isMobile ? 'none' : `1px solid ${ui.borderSoft}`,
       }}
     >
+      {!compactMobile && collapsed ? (
+        <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection} onWorkspaceChange={setWorkspace}
+          onCreate={workspace === 'ai' ? openAiCreatePicker : onOpenGroup} unavailable={chatUnavailable} onSearch={handleExpandSearch} />
+      ) : null}
       <div
+        hidden={collapsed}
         className={joinClasses(
           'border-b border-[color:var(--chat-border-soft)] bg-[var(--chat-sidebar-header-bg)] backdrop-blur-2xl',
-          compactMobile ? 'chat-safe-top px-2 pt-1 pb-2.5' : 'px-4 pb-4 pt-4',
+          compactMobile ? 'chat-safe-top px-2 pt-1 pb-2.5' : 'px-2 py-2',
         )}
       >
+        {!compactMobile ? (
+          <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection}
+            onWorkspaceChange={(key) => { setWorkspace(key); if (key === 'ai') setAiArchiveOpen(false); }}
+            onCreate={workspace === 'ai' ? openAiCreatePicker : onOpenGroup} unavailable={chatUnavailable}
+            onSearch={handleExpandSearch} onCollapse={() => { onSidebarQueryChange(''); setCollapsed?.(true); }} />
+        ) : (
         <div className={joinClasses('flex items-center justify-between', compactMobile ? 'mb-3' : 'mb-3.5')}>
           <div className="min-w-0 flex items-center gap-3">
             {showEmbeddedMenuButton ? (
@@ -523,7 +534,7 @@ function ChatSidebar({
               <p className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[13px]' : 'text-[13px]')}>
                 {workspace === 'ai'
                   ? formatRuCount(aiBots.length, 'диалог', 'диалога', 'диалогов')
-                  : (compactMobile ? mobileSubtitle : desktopSubtitle)}
+                  : mobileSubtitle}
               </p>
             </div>
           </div>
@@ -558,12 +569,13 @@ function ChatSidebar({
               compactMobile={compactMobile}
               ui={ui}
             >
-              {workspace === 'ai' || compactMobile ? <CreateRoundedIcon fontSize="small" /> : <GroupAddOutlinedIcon fontSize="small" />}
+              <CreateRoundedIcon fontSize="small" />
             </SidebarActionButton>
           </div>
         </div>
 
-        {showAiSection ? (
+        )}
+        {compactMobile && showAiSection ? (
           <div
             role="tablist"
             aria-label="Раздел чата"
@@ -597,18 +609,6 @@ function ChatSidebar({
           </div>
         ) : null}
 
-        {workspace === 'chats' && !showPeopleSearch ? (
-          <div className={compactMobile ? 'mb-2' : 'mb-3'}>
-            <ChatFolderTabs
-              activeFolderKey={activeFolderKey}
-              customFolders={customFolders}
-              folderUnreadCounts={folderUnreadCounts}
-              onFolderChange={onActiveFolderChange}
-              disableMotion={reducedMotion}
-              includeAllTab={false}
-            />
-          </div>
-        ) : null}
 
         {compactMobile ? (
           <motion.div
@@ -645,7 +645,7 @@ function ChatSidebar({
                 onChange={(event) => onSidebarQueryChange(event.target.value)}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setSearchFocused(false)}
-                className="ml-2 h-full w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
+                className="ml-2 h-full min-w-0 w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
               />
               <SidebarActionButton
                 title="Действия"
@@ -681,12 +681,14 @@ function ChatSidebar({
               sx={{ color: searchFocused ? theme.palette.primary.light : ui.textSecondary }}
             />
             <input
+              ref={searchInputRef}
+              aria-label={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск чатов'}
               placeholder={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск'}
               value={sidebarQuery}
               onChange={(event) => onSidebarQueryChange(event.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
-              className="ml-2 h-full w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
+              className="ml-2 h-full min-w-0 w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
               style={{ fontSize: density.sidebarSearchFontSize }}
             />
             <SidebarActionButton
@@ -701,6 +703,20 @@ function ChatSidebar({
           </div>
         </motion.div>
         )}
+
+        {workspace === 'chats' && !showPeopleSearch ? (
+          <div className={compactMobile ? 'mb-2' : 'mt-2'}>
+            <ChatFolderTabs
+              compact={!compactMobile}
+              activeFolderKey={activeFolderKey}
+              customFolders={customFolders}
+              folderUnreadCounts={folderUnreadCounts}
+              onFolderChange={onActiveFolderChange}
+              disableMotion={reducedMotion}
+              includeAllTab={false}
+            />
+          </div>
+        ) : null}
 
         <Menu
           anchorEl={actionsAnchorEl}
@@ -880,7 +896,22 @@ function ChatSidebar({
             transition: folderSwipeOffset ? 'none' : 'transform 170ms ease-out',
           }}
         >
-        {workspace === 'ai' ? (
+        {collapsed ? (
+          <div className="py-1">
+            {(workspace === 'ai' ? aiBotsLoading : conversationsLoading) ? <CircularProgress size={24} sx={{ m: 3 }} /> : (workspace === 'ai' ? filteredAiRows : conversations).length === 0 ? (
+              <SidebarActionButton title={workspace === 'ai' && aiBotsError ? aiBotsError : chatUnavailable ? 'Чат временно недоступен' : 'Нет чатов. Открыть поиск'} onClick={handleExpandSearch} ui={ui}><SearchRoundedIcon /></SidebarActionButton>
+            ) : workspace === 'ai' ? filteredAiRows.map((bot) => (
+              <AiConversationRow key={bot.conversation_id || bot.id} bot={bot} ui={ui} theme={theme}
+                active={String(bot.conversation_id) === String(activeConversationId)} onOpenConversation={handleOpenConversation}
+                onPrefetchConversation={onPrefetchConversation} openingAiBotId={openingAiBotId} onOpenAiBot={onOpenAiBot}
+                onOpenConversationMenu={handleOpenFolderMenu} reducedMotion />
+            )) : conversations.map((item) => (
+              <ConversationRow key={item.id} item={item} ui={ui} theme={theme} active={item.id === activeConversationId}
+                onOpenConversation={handleOpenConversation} onPrefetchConversation={onPrefetchConversation}
+                onOpenFolderMenu={handleOpenFolderMenu} draftPreview={draftsByConversation?.[item.id] || ''} reducedMotion />
+            ))}
+          </div>
+        ) : workspace === 'ai' ? (
           <div className={compactMobile ? 'pt-2' : 'pt-3'}>
             {aiSection}
           </div>

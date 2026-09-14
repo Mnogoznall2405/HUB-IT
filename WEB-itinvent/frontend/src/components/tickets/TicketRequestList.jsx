@@ -3,6 +3,8 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
+  useMediaQuery,
   FormControl,
   InputLabel,
   LinearProgress,
@@ -24,6 +26,8 @@ import { ticketsAPI } from '../../api/tickets';
 import useRequestGuard from '../../lib/useRequestGuard';
 import {
   STATUS_ROW_COLORS,
+  STATUS_LABELS,
+  STATUS_COLORS,
   TICKET_STATUS_OPTIONS,
   downloadBlob,
   formatArrivalRoute,
@@ -41,7 +45,10 @@ const formatPassportCell = (series, number) => {
   return left || right || '-';
 };
 
-export default function TicketRequestList({ objects = [], onSelectRequest, canWrite = false }) {
+export default function TicketRequestList({ objects = [], onSelectRequest, canWrite = false, onRefreshObjects }) {
+  const isPhone = useMediaQuery('(max-width:599.95px)');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [showFullTable, setShowFullTable] = useState(false);
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -109,7 +116,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
 
   return (
     <Stack spacing={2}>
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', md: 'center' }}>
+      <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" alignItems="center">
         <TextField
           label="Поиск"
           value={search}
@@ -118,9 +125,13 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
             setPage(1);
           }}
           size="small"
-          sx={{ minWidth: { md: 260 } }}
+          sx={{ minWidth: 0, flex: '1 1 220px' }}
         />
-        <FormControl size="small" sx={{ minWidth: 210 }}>
+        {isPhone ? <Button aria-expanded={filtersOpen} aria-controls="ticket-extra-filters" onClick={() => setFiltersOpen((value) => !value)}>
+          Фильтры{objectIds.length + statuses.length ? ` (${objectIds.length + statuses.length})` : ''}
+        </Button> : null}
+        <Box id="ticket-extra-filters" sx={{ display: !isPhone || filtersOpen ? 'flex' : 'none', gap: 1.5, flexWrap: 'wrap', flex: '1 1 320px', minWidth: 0 }}>
+        <FormControl size="small" sx={{ minWidth: 140, flex: 1 }}>
           <InputLabel>Объекты</InputLabel>
           <Select
             multiple
@@ -137,7 +148,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
             ))}
           </Select>
         </FormControl>
-        <FormControl size="small" sx={{ minWidth: 210 }}>
+        <FormControl size="small" sx={{ minWidth: 140, flex: 1 }}>
           <InputLabel>Статусы</InputLabel>
           <Select
             multiple
@@ -154,14 +165,35 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
             ))}
           </Select>
         </FormControl>
-        <Button startIcon={<RefreshIcon />} onClick={load} disabled={loading}>Обновить</Button>
+        </Box>
+        <Button startIcon={<RefreshIcon />} onClick={() => { void load(); void onRefreshObjects?.(); }} disabled={loading}>Обновить</Button>
         {canWrite ? <Button startIcon={<DownloadIcon />} onClick={exportRows} disabled={exporting}>{exporting ? 'Экспортируем…' : 'Экспорт'}</Button> : null}
+        {isPhone ? <Button onClick={() => setShowFullTable((value) => !value)}>{showFullTable ? 'Карточки' : 'Таблица'}</Button> : null}
       </Stack>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
       {loading ? <LinearProgress /> : null}
 
-      <Box sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+      {isPhone && !showFullTable ? (
+        <Stack spacing={1} data-testid="ticket-mobile-list">
+          {rows.map((row) => (
+            <Box key={row.id} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, minWidth: 0 }}>
+              <Typography variant="caption" color="text.secondary">Заявка №{row.id} · {formatDate(row.submitted_at)}</Typography>
+              <Chip size="small" variant="outlined" label={STATUS_LABELS[row.status] || row.status || 'Без статуса'}
+                color={STATUS_COLORS[row.status] || 'default'} sx={{ ml: 1, maxWidth: '100%' }} />
+              <Button onClick={() => onSelectRequest?.(row.id)} aria-label={`Открыть заявку ${row.id}: ${row.employee_name || ''}`}
+                sx={{ display: 'block', textAlign: 'left', px: 0, overflowWrap: 'anywhere' }}>
+                {row.employee_name || `Заявка ${row.id}`}
+              </Button>
+              <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{formatArrivalRoute(row.arrival_date, row.route)}</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                {[row.department, row.object_code].filter(Boolean).join(' · ') || 'Объект не указан'}
+              </Typography>
+            </Box>
+          ))}
+          {!loading && rows.length === 0 ? <Typography color="text.secondary">Заявки не найдены</Typography> : null}
+        </Stack>
+      ) : <Box sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
@@ -234,7 +266,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
             ) : null}
           </TableBody>
         </Table>
-      </Box>
+      </Box>}
 
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center" justifyContent="space-between">
         <Typography variant="body2" color="text.secondary">Всего: {total}</Typography>

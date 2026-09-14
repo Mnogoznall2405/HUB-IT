@@ -7,6 +7,9 @@ export const NATIVE_ACCOUNT_HREF_BY_PATH = {
   '/settings/app': '/(shell)/menu/settings/app',
   '/settings/about': '/(shell)/menu/settings/about',
   '/admin': '/(shell)/menu/admin',
+  '/admin/ad-users': '/(shell)/menu/admin/ad-users',
+  '/admin/ai-bots': '/(shell)/menu/admin/ai-bots',
+  '/admin/system': '/(shell)/menu/admin/system',
   '/admin/users': '/(shell)/menu/admin/users',
   '/admin/departments': '/(shell)/menu/admin/departments',
   '/admin/sessions': '/(shell)/menu/admin/sessions',
@@ -31,6 +34,7 @@ export function isAccountTabPath(path: string): boolean {
 }
 
 export function resolveShellTabPath(pathname: string, _legacyPath?: string): string {
+  if (pathname === '/construction' || pathname.startsWith('/construction/')) return '/construction';
   if (pathname === '/dashboard' || pathname.startsWith('/dashboard')) return '/dashboard';
   if (pathname === '/notifications') return '/dashboard';
   if (pathname === '/menu' || pathname.startsWith('/menu')) return '/menu';
@@ -49,6 +53,7 @@ export function resolveShellTabPath(pathname: string, _legacyPath?: string): str
   if (pathname === '/groups-access' || pathname.startsWith('/groups-access/')) return '/groups-access';
   if (pathname === '/warehouse-1c' || pathname.startsWith('/warehouse-1c/')) return '/warehouse-1c';
   if (pathname === '/mfu' || pathname.startsWith('/mfu/')) return '/mfu';
+  if (pathname === '/statistics' || pathname.startsWith('/statistics/')) return '/statistics';
   if (isAccountTabPath(pathname)) return '/menu';
   return '/dashboard';
 }

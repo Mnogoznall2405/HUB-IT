@@ -10,6 +10,14 @@ export type ChatImageCropRect = {
 
 export type ChatImagePoint = { x: number; y: number };
 
+export function appendChatImageStrokePoint(points: ChatImagePoint[], point: ChatImagePoint): ChatImagePoint[] {
+  const last = points[points.length - 1];
+  if (last && Math.hypot(last.x - point.x, last.y - point.y) < 0.001) return points;
+  // Bound native preview nodes while keeping the beginning of a long stroke.
+  const retained = points.length >= 600 ? points.filter((_, index) => index % 2 === 0) : points;
+  return [...retained, point];
+}
+
 export type ChatImageEditOperation =
   | { type: 'rotate'; turns: number }
   | { type: 'crop'; x: number; y: number; width: number; height: number }
@@ -208,6 +216,9 @@ export function cropRectFromNormalized(
   height: number,
   crop: { x: number; y: number; width: number; height: number },
 ): ChatImageCropRect | null {
+  if (![crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
+    || crop.x < 0 || crop.y < 0 || crop.x >= 1 || crop.y >= 1
+    || crop.width < 0.02 || crop.height < 0.02) return null;
   const sourceWidth = Math.max(0, Math.round(width));
   const sourceHeight = Math.max(0, Math.round(height));
   if (sourceWidth < 2 || sourceHeight < 2) return null;

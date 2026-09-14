@@ -113,6 +113,7 @@ def _load_summary_lines(
     Строка.Номенклатура КАК Номенклатура,
     Строка.ХарактеристикаНоменклатуры КАК Характеристика,
     Строка.ЕдиницаИзмерения КАК ЕдиницаИзмерения,
+    Строка.тмб_Раздел КАК ШифрРаздела,
     Строка.Отмена КАК Отмена,
     Строка.ПричинаОтмены КАК ПричинаОтмены,
     МИНИМУМ(Строка.ДатаВыполнения) КАК ДатаВыполнения,
@@ -124,6 +125,7 @@ def _load_summary_lines(
     Строка.Номенклатура,
     Строка.ХарактеристикаНоменклатуры,
     Строка.ЕдиницаИзмерения,
+    Строка.тмб_Раздел,
     Строка.Отмена,
     Строка.ПричинаОтмены
 """,
@@ -146,6 +148,7 @@ def _load_summary_lines(
                 ),
                 "characteristic_name": _text(connection, _field(selection, "Характеристика")),
                 "unit_name": _text(connection, _field(selection, "ЕдиницаИзмерения")),
+                "section_code": _text(connection, _field(selection, "ШифрРаздела")),
                 "quantity": _number(_field(selection, "КоличествоЗаявлено")),
                 "required_date": _iso_datetime(_field(selection, "ДатаВыполнения")),
                 "cancelled": bool(_field(selection, "Отмена", False)),
@@ -354,12 +357,20 @@ def _build_request_summary(
         {str(event.get("supplier_name") or "").strip() for event in events if event.get("supplier_name")}
     )
     item_groups = _group_positions(lines)
+    section_codes = sorted(
+        {
+            str(item.get("section_code") or "").strip()
+            for item in item_groups
+            if str(item.get("section_code") or "").strip()
+        }
+    )
     nomenclature_items = [
         {
             "name": str(item.get("name") or ""),
             "characteristic_name": str(item.get("characteristic_name") or ""),
             "quantity": _number(item.get("quantity")),
             "unit": str(item.get("unit") or ""),
+            "section_code": str(item.get("section_code") or ""),
         }
         for item in item_groups
     ]
@@ -404,6 +415,7 @@ def _build_request_summary(
         "nomenclature_items": nomenclature_items,
         "manager_names": managers,
         "supplier_names": suppliers,
+        "section_codes": section_codes,
         "ordered_cost": sum(
             max(0.0, _number(event.get("amount")))
             for event in events
@@ -653,6 +665,8 @@ class ConstructionObjectRequestsSnapshotStore:
             snapshot = self._snapshots.get(key)
             if snapshot is None:
                 return None
+            if self._clock() - float(snapshot["created_monotonic"]) >= self.ttl_seconds:
+                return None
             detail = snapshot["details"].get(str(request_ref or "").strip().lower())
             if detail is None:
                 return None
@@ -680,21 +694,109 @@ class ConstructionObjectRequestsSnapshotStore:
 construction_object_requests_store = ConstructionObjectRequestsSnapshotStore()
 
 
+EMPTY_FILTER_SENTINEL = "__empty__"
+
+
+def _normalize_person_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _buyer_names(item: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for name in item.get("manager_names") or []:
+        normalized = _normalize_person_name(name)
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            seen.add(key)
+            names.append(normalized)
+    return names
+
+
+def _match_buyer_filter(item: dict[str, Any], buyer: str) -> bool:
+    normalized = _normalize_person_name(buyer)
+    if not normalized:
+        return True
+    names = _buyer_names(item)
+    if normalized == EMPTY_FILTER_SENTINEL:
+        return not names
+    target = normalized.casefold()
+    return any(name.casefold() == target for name in names)
+
+
+def _match_responsible_filter(item: dict[str, Any], responsible: str) -> bool:
+    normalized = _normalize_person_name(responsible)
+    if not normalized:
+        return True
+    value = _normalize_person_name(item.get("responsible_name"))
+    if normalized == EMPTY_FILTER_SENTINEL:
+        return not value
+    return value.casefold() == normalized.casefold()
+
+
+def _person_facets(items: Iterable[dict[str, Any]], *, field: str) -> list[dict[str, Any]]:
+    counter: Counter[str] = Counter()
+    empty = 0
+    for item in items:
+        if field == "buyer":
+            names = _buyer_names(item)
+            if not names:
+                empty += 1
+            for name in names:
+                counter[name] += 1
+        else:
+            name = _normalize_person_name(item.get("responsible_name"))
+            if not name:
+                empty += 1
+            else:
+                counter[name] += 1
+    facets = [
+        {"name": name, "count": count}
+        for name, count in sorted(counter.items(), key=lambda entry: (-entry[1], entry[0].casefold()))
+    ]
+    if empty:
+        facets.append({"name": EMPTY_FILTER_SENTINEL, "count": empty})
+    return facets
+
+
+def _direction_stats(items: Iterable[dict[str, Any]], source_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    active_by_group: Counter[str] = Counter()
+    overdue_by_group: Counter[str] = Counter()
+    for item in items:
+        group_ref = str(item.get("group_ref") or "").strip().lower()
+        if not group_ref:
+            continue
+        if item.get("is_active"):
+            active_by_group[group_ref] += 1
+            if item.get("overdue"):
+                overdue_by_group[group_ref] += 1
+    names = {
+        str(item.get("group_ref") or "").strip().lower(): str(item.get("group_name") or "")
+        for item in source_groups
+    }
+    ordered_refs = [str(item.get("group_ref") or "").strip().lower() for item in source_groups]
+    seen = set(ordered_refs)
+    for group_ref in sorted(active_by_group):
+        if group_ref not in seen:
+            ordered_refs.append(group_ref)
+    return [
+        {
+            "group_ref": group_ref,
+            "group_name": names.get(group_ref, ""),
+            "active": int(active_by_group.get(group_ref, 0)),
+            "overdue": int(overdue_by_group.get(group_ref, 0)),
+        }
+        for group_ref in ordered_refs
+        if group_ref
+    ]
+
+
 def _request_overview(items: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     active_items = [item for item in items if item.get("is_active")]
-    buyers: Counter[str] = Counter()
-    responsibles: Counter[str] = Counter()
     departments: Counter[str] = Counter()
     warehouses: Counter[str] = Counter()
     stages: Counter[str] = Counter()
     for item in active_items:
-        for name in set(item.get("manager_names") or []):
-            normalized = str(name or "").strip()
-            if normalized:
-                buyers[normalized] += 1
-        responsible = str(item.get("responsible_name") or "").strip()
-        if responsible:
-            responsibles[responsible] += 1
         department = str(item.get("department_name") or "").strip()
         if department:
             departments[department] += 1
@@ -712,8 +814,6 @@ def _request_overview(items: Iterable[dict[str, Any]]) -> dict[str, list[dict[st
         ]
 
     return {
-        "buyers": ranked(buyers),
-        "request_responsibles": ranked(responsibles),
         "departments": ranked(departments),
         "warehouses": ranked(warehouses),
         "stages": [
@@ -733,6 +833,8 @@ def query_construction_object_requests(
     stage: str = "",
     overdue: bool | None = None,
     warehouse_ref: str = "",
+    buyer: str = "",
+    responsible: str = "",
     limit: int = 25,
     cursor: str | None = None,
     refresh: bool = False,
@@ -748,17 +850,28 @@ def query_construction_object_requests(
     )
     filter_started = time.perf_counter()
     tokens = str(search or "").strip().casefold().split()
-    candidates: list[dict[str, Any]] = []
+    view_items: list[dict[str, Any]] = []
     for item in snapshot["summaries"]:
+        if view == "active" and not item.get("is_active"):
+            continue
+        if view == "history" and item.get("is_active"):
+            continue
+        view_items.append(item)
+
+    buyer_facets = _person_facets(view_items, field="buyer")
+    responsible_facets = _person_facets(view_items, field="responsible")
+
+    candidates: list[dict[str, Any]] = []
+    for item in view_items:
         if stage and item.get("stage", {}).get("key") != stage:
             continue
         if overdue is not None and bool(item.get("overdue")) != overdue:
             continue
         if tokens and not all(token in item.get("_search_blob", "") for token in tokens):
             continue
-        if view == "active" and not item.get("is_active"):
+        if not _match_buyer_filter(item, buyer):
             continue
-        if view == "history" and item.get("is_active"):
+        if not _match_responsible_filter(item, responsible):
             continue
         candidates.append(item)
 
@@ -799,6 +912,9 @@ def query_construction_object_requests(
         "truncated": snapshot["truncated"],
         "source_groups": list(snapshot["source_groups"]),
         "warehouse_facets": facets,
+        "buyer_facets": buyer_facets,
+        "responsible_facets": responsible_facets,
+        "direction_stats": _direction_stats(all_items, list(snapshot["source_groups"])),
         "overview": _request_overview(all_items),
         "summary": {
             "total": len(all_items),
@@ -845,7 +961,7 @@ def query_construction_object_request_detail(
         **detail,
         "as_of": datetime.now(timezone.utc).isoformat(),
         "source": "live_1c",
-        "load_metrics": {**timings, "query_count": 9},
+        "load_metrics": {**timings, "query_count": 10},
     }
     construction_object_requests_store.remember_detail(
         normalized_groups,

@@ -26,8 +26,13 @@ function sessionOperation<T>(operation: () => Promise<T>): Promise<T> {
 type AccessTokenChangeListener = (accessToken: string | null) => void;
 
 const accessTokenChangeListeners = new Set<AccessTokenChangeListener>();
+// Mirrors the persisted token so per-request reads skip the SecureStore IPC and
+// the shared session queue. `undefined` means "not loaded yet"; null means
+// "verified absence". Updated only from committed write operations.
+let accessTokenCache: string | null | undefined;
 
 function notifyAccessTokenChanges(accessToken: string | null): void {
+  accessTokenCache = accessToken;
   for (const listener of accessTokenChangeListeners) {
     try {
       listener(accessToken);
@@ -214,7 +219,15 @@ export async function hasSession(): Promise<boolean> {
 }
 
 export function getAccessToken(...args: Parameters<typeof getAccessTokenInternal>): ReturnType<typeof getAccessTokenInternal> {
-  return sessionOperation(() => getAccessTokenInternal(...args));
+  // Reads stay on the shared session queue so they cannot observe a
+  // half-written token pair; the in-memory mirror only skips the SecureStore
+  // IPC once the value is known.
+  return sessionOperation(async () => {
+    if (accessTokenCache === undefined) {
+      accessTokenCache = await getAccessTokenInternal(...args);
+    }
+    return accessTokenCache;
+  });
 }
 
 export function getRefreshToken(...args: Parameters<typeof getRefreshTokenInternal>): ReturnType<typeof getRefreshTokenInternal> {

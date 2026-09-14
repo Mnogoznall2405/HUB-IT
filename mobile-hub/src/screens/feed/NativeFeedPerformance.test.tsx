@@ -7,6 +7,7 @@ const mockFeedPostCardRender = jest.fn();
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
+  usePathname: () => '/feed',
 }));
 
 jest.mock('../../auth/AuthContext', () => ({

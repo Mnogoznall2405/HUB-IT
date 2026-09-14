@@ -91,8 +91,12 @@ describe('formatSidebarConversationTime', () => {
     expect(formatSidebarConversationTime('2026-06-18T14:30:00.000Z')).toMatch(/^\d{2}:\d{2}$/);
   });
 
-  it('returns DD.MM.YYYY for older dates', () => {
-    expect(formatSidebarConversationTime('2026-06-08T10:00:00.000Z')).toBe('08.06.2026');
+  it('returns DD.MM for earlier dates in the same year', () => {
+    expect(formatSidebarConversationTime('2026-06-08T10:00:00.000Z')).toBe('08.06');
+  });
+  it('keeps the year for older years and ignores invalid dates', () => {
+    expect(formatSidebarConversationTime('2025-06-08T10:00:00.000Z')).toBe('08.06.2025');
+    expect(formatSidebarConversationTime('invalid')).toBe('');
   });
 });
 

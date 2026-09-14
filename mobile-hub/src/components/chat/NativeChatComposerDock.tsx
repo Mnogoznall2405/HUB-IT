@@ -61,8 +61,14 @@ export function NativeChatComposerDock({
     startVoiceRecording,
     stopVoiceRecording,
     cancelVoiceRecording,
-    normalizeDuration,
   } = useNativeVoiceRecorder();
+  const mountedRef = useRef(true);
+  const actionGenerationRef = useRef(0);
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; actionGenerationRef.current += 1; };
+  }, []);
   const [voiceHoldLocked, setVoiceHoldLocked] = useState(true);
   const [voiceHoldHint, setVoiceHoldHint] = useState<VoiceHoldGesture>('record');
   const voiceHoldRef = useRef({
@@ -84,6 +90,7 @@ export function NativeChatComposerDock({
   }, [onRecordingChange, voiceRecording]);
 
   const cancelVoice = useCallback(() => {
+    actionGenerationRef.current += 1;
     resetVoiceHold();
     void cancelVoiceRecording();
   }, [cancelVoiceRecording, resetVoiceHold]);
@@ -96,8 +103,13 @@ export function NativeChatComposerDock({
     };
   }, [cancelVoice, cancelVoiceRef]);
 
+  useEffect(() => {
+    if (!canRecord || mode === 'edit') cancelVoice();
+  }, [canRecord, mode, cancelVoice]);
+
   const startVoice = useCallback(async (locked = true) => {
-    if (!canRecord || busy || voiceRecording || mode === 'edit') return;
+    if (!canRecord || busy || voiceRecording || voiceHoldRef.current.active || sendingRef.current || mode === 'edit') return;
+    const generation = actionGenerationRef.current;
     voiceHoldRef.current = {
       active: true,
       locked,
@@ -108,8 +120,10 @@ export function NativeChatComposerDock({
     setVoiceHoldLocked(locked);
     setVoiceHoldHint('record');
     try {
-      await startVoiceRecording();
+      const started = await startVoiceRecording();
+      if (!started && mountedRef.current && generation === actionGenerationRef.current) resetVoiceHold();
     } catch (cause) {
+      if (!mountedRef.current || generation !== actionGenerationRef.current) return;
       resetVoiceHold();
       if (cause instanceof NativeMicrophonePermissionError) {
         Alert.alert(
@@ -134,16 +148,21 @@ export function NativeChatComposerDock({
   }, []);
 
   const sendVoice = useCallback(async () => {
-    const durationSeconds = normalizeDuration(voiceRecordingDuration);
+    if (!canRecord || busy || mode === 'edit' || sendingRef.current) return;
+    sendingRef.current = true;
+    const generation = actionGenerationRef.current;
     try {
       const file = await stopVoiceRecording();
+      if (!mountedRef.current || generation !== actionGenerationRef.current) return;
       resetVoiceHold();
-      await onSendVoiceFile(file, { mediaKind: 'audio', durationSeconds });
+      if (file) await onSendVoiceFile(file, { mediaKind: 'audio', durationSeconds: file.durationSeconds });
     } catch (cause) {
+      if (!mountedRef.current || generation !== actionGenerationRef.current) return;
       resetVoiceHold();
       Alert.alert('Не удалось отправить голосовое', formatApiError(cause, 'Повторите попытку'));
     }
-  }, [normalizeDuration, onSendVoiceFile, resetVoiceHold, stopVoiceRecording, voiceRecordingDuration]);
+    finally { sendingRef.current = false; }
+  }, [busy, canRecord, mode, onSendVoiceFile, resetVoiceHold, stopVoiceRecording]);
 
   const releaseVoiceHold = useCallback(async () => {
     const hold = voiceHoldRef.current;

@@ -3,6 +3,7 @@ import * as clientApi from '../api/client';
 import { ChatSocketClient, shouldUseChatHttpFallback } from './chatSocket';
 
 class MockWebSocket {
+  static CONNECTING = 0;
   static OPEN = 1;
   static CLOSED = 3;
   static instances: MockWebSocket[] = [];
@@ -48,6 +49,62 @@ afterEach(() => {
 });
 
 describe('ChatSocketClient lifecycle', () => {
+  it('reconnects after a native socket error without waiting for an onclose event', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const failed = MockWebSocket.instances[0];
+    failed.open();
+    failed.close = jest.fn();
+    failed.readyState = MockWebSocket.CLOSED;
+    failed.onerror?.();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
+  it('isolates a failing observer from message delivery and reconnect lifecycle', async () => {
+    const client = new ChatSocketClient();
+    const received = jest.fn();
+    client.on('chat.message.created', () => { throw new Error('Broken observer'); });
+    client.on('chat.message.created', received);
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.message.created', payload: { id: 'server-1' } }) });
+    expect(received).toHaveBeenCalledTimes(1);
+    const off = client.on('status', () => { throw new Error('Broken status observer'); });
+    expect(() => socket.close()).not.toThrow();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    off();
+    client.disconnect();
+  });
+
+  it('ignores late frames from a socket belonging to the previous session', async () => {
+    const client = new ChatSocketClient();
+    const received = jest.fn();
+    client.on('chat.message.created', received);
+    await client.connect();
+    const previous = MockWebSocket.instances[0];
+    previous.open();
+    client.disconnect({ clearSubscriptions: true });
+    await client.connect();
+    MockWebSocket.instances[1].open();
+    previous.onmessage?.({ data: JSON.stringify({ type: 'chat.message.created', payload: { id: 'old' } }) });
+    expect(received).not.toHaveBeenCalled();
+    client.disconnect();
+  });
+
+  it('reconnects after the handshake deadline even when native close never reports onclose', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const previous = MockWebSocket.instances[0];
+    previous.close = jest.fn();
+    await jest.advanceTimersByTimeAsync(16_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
   it('uses HTTP fallback only while realtime delivery is degraded', () => {
     expect(shouldUseChatHttpFallback('offline')).toBe(true);
     expect(shouldUseChatHttpFallback('error')).toBe(true);
@@ -67,6 +124,31 @@ describe('ChatSocketClient lifecycle', () => {
     expect(client.getStatus()).toBe('reconnecting');
     await jest.advanceTimersByTimeAsync(1000);
     expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
+  it('abandons a socket whose handshake stalls and reconnects', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const stalled = MockWebSocket.instances[0];
+
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(stalled.readyState).toBe(MockWebSocket.CLOSED);
+    expect(client.getStatus()).toBe('reconnecting');
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
+  it('does not disturb a socket that opens before the watchdog', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    MockWebSocket.instances[0].open();
+
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(client.getStatus()).toBe('connected');
+    expect(MockWebSocket.instances).toHaveLength(1);
     client.disconnect();
   });
 

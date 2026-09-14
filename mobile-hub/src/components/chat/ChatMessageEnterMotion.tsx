@@ -32,30 +32,35 @@ export const ChatMessageEnterMotion = memo(function ChatMessageEnterMotion({
   const progress = useRef(new Animated.Value(reduceMotion || !kind ? 1 : 0)).current;
   const onFinishedRef = useRef(onFinished);
   onFinishedRef.current = onFinished;
+  const consumedMotionRef = useRef<{ key: string; consumed: boolean } | null>(null);
 
   useEffect(() => {
-    if (reduceMotion || !kind) {
+    if (consumedMotionRef.current?.key !== motionKey) {
+      consumedMotionRef.current = { key: motionKey, consumed: false };
+    }
+    const motion = consumedMotionRef.current;
+    const consume = () => {
+      if (motion.consumed) return;
+      motion.consumed = true;
+      onFinishedRef.current(motionKey);
+    };
+    if (reduceMotion || !kind || motion.consumed) {
       progress.setValue(1);
-      if (kind) onFinishedRef.current(motionKey);
+      if (kind) consume();
       return undefined;
     }
 
     progress.setValue(0);
     let stopped = false;
-    let consumed = false;
-    const consume = () => {
-      if (consumed) return;
-      consumed = true;
-      onFinishedRef.current(motionKey);
-    };
     const animation = Animated.timing(progress, {
       toValue: 1,
       duration: CHAT_MESSAGE_ENTER_DURATION_MS,
       easing: Easing.bezier(0.2, 0.01, 0.28, 0.91),
       useNativeDriver: true,
     });
-    animation.start(({ finished }) => {
-      if (stopped || !finished) return;
+    animation.start(() => {
+      if (stopped) return;
+      // Native interruption must not leave the message faded or translated.
       progress.setValue(1);
       consume();
     });

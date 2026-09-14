@@ -1,7 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   getGroupsAccessStatus,
   listGroupsAccessGroups,
@@ -12,7 +12,10 @@ import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import { NativeGroupsAccessGroupCard } from '../../components/groupsAccess/NativeGroupsAccessCards';
 import { usePreferences } from '../../preferences/PreferencesContext';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { NativeAppliedChip, NativeFilterButton } from '../../components/ui/NativeFilterControls';
+import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const PAGE_SIZE = 40;
@@ -23,38 +26,14 @@ function formatDateTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU');
 }
 
-function FilterChip({
-  label,
-  selected,
-  onPress,
-  tokens,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  tokens: ReturnType<typeof useFluentTokens>;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      style={[
-        styles.chip,
-        { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border },
-      ]}
-    >
-      <Text style={[styles.chipText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
-}
-
 export function NativeGroupsAccessScreen() {
   const { hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const emptyListInset = useNativeBottomNavInset();
   const canRead = hasPermission('groups_access.read');
   const [branch, setBranch] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [queryDraft, setQueryDraft] = useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<GroupsAccessStatus | null>(null);
@@ -235,12 +214,11 @@ export function NativeGroupsAccessScreen() {
         {queryDraft ? <Pressable onPress={() => { setQueryDraft(''); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} /></Pressable> : null}
       </View>
       <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>Снимок AD: {formatDateTime(status?.last_sync_at || '')}</Text>
-      <AccountSectionCard tokens={tokens} title={`Филиал: ${branch || 'все'}`} collapsible>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-        <FilterChip label="Все филиалы" selected={!branch} onPress={() => setBranch('')} tokens={tokens} />
-        {branches.map((item) => <FilterChip key={item} label={item} selected={branch === item} onPress={() => setBranch(item)} tokens={tokens} />)}
-      </ScrollView>
-      </AccountSectionCard>
+      {branch ? (
+        <View style={styles.appliedRow}>
+          <NativeAppliedChip label={`Филиал: ${branch}`} tokens={tokens} onRemove={() => setBranch('')} />
+        </View>
+      ) : null}
       <AccountSectionCard tokens={tokens} title="О данных доступа" collapsible>
       <View style={[styles.boundaryBanner, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <MaterialCommunityIcons name="shield-check-outline" size={23} color={tokens.primary} />
@@ -262,6 +240,14 @@ export function NativeGroupsAccessScreen() {
       </AccountSectionCard>
       <View style={styles.countRow}>
         <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {total}</Text>
+        {branches.length ? (
+          <NativeFilterButton
+            testID="native-groups-access-filters"
+            count={branch ? 1 : 0}
+            tokens={tokens}
+            onPress={() => setFiltersOpen(true)}
+          />
+        ) : null}
       </View>
       {loading && groups.length === 0 ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /></View> : null}
       {!loading && error && groups.length === 0 ? <Pressable testID="native-groups-access-retry" onPress={refresh} disabled={offlineMode} accessibilityRole="button" style={[styles.primaryAction, { backgroundColor: tokens.primary, opacity: offlineMode ? 0.5 : 1 }]}><Text style={styles.primaryActionText}>Повторить</Text></Pressable> : null}
@@ -271,11 +257,14 @@ export function NativeGroupsAccessScreen() {
   return (
     <AccountScreenScaffold title="Доступ к папкам" tokens={tokens} scroll={false}>
       <FlatList
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
         testID="native-groups-access-groups-list"
         data={groups}
         keyExtractor={(item) => item.dn}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={groups.length ? styles.list : styles.emptyList}
+        contentContainerStyle={groups.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>По выбранным фильтрам ничего не найдено.</Text> : null}
         ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footer} color={tokens.primary} /> : null}
@@ -284,6 +273,22 @@ export function NativeGroupsAccessScreen() {
         onEndReachedThreshold={0.45}
         refreshing={refreshing}
         onRefresh={refresh}
+      />
+      <NativeFilterSheet
+        visible={filtersOpen}
+        title="Фильтр по филиалу"
+        tokens={tokens}
+        onClose={() => setFiltersOpen(false)}
+        onReset={() => setBranch('')}
+        sections={[{
+          kind: 'options' as const,
+          key: 'branch',
+          title: 'Филиал',
+          selected: branch,
+          onSelect: setBranch,
+          testIDPrefix: 'native-groups-access-branch',
+          options: [{ value: '', label: 'Все филиалы' }, ...branches.map((item) => ({ value: item, label: item }))],
+        }]}
       />
     </AccountScreenScaffold>
   );
@@ -303,9 +308,7 @@ const styles = StyleSheet.create({
   summaryValue: { fontSize: 18, lineHeight: 23, fontWeight: '900' },
   summaryDate: { fontSize: 14, lineHeight: 20, fontWeight: '600' },
   summaryLabel: { fontSize: 13, lineHeight: 19 },
-  filters: { gap: 7 },
-  chip: { minHeight: 42, borderRadius: 21, borderWidth: 1, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
-  chipText: { fontSize: 12, fontWeight: '800' },
+  appliedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   search: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
@@ -315,7 +318,7 @@ const styles = StyleSheet.create({
   webActionText: { fontSize: 11, fontWeight: '800' },
   loading: { minHeight: 86, alignItems: 'center', justifyContent: 'center' },
   list: { gap: 9, paddingBottom: 8 },
-  emptyList: { flexGrow: 1, paddingBottom: 60 },
+  emptyList: { flexGrow: 1 },
   emptyText: { paddingVertical: 22, textAlign: 'center', fontSize: 13, lineHeight: 19 },
   footer: { paddingVertical: 18 },
   primaryAction: { minHeight: 44, borderRadius: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },

@@ -1,0 +1,40 @@
+source_dir: .
+source_dir_exclude:
+  - ".git/**"
+  - ".slopo-venv/**"
+  - ".slopo/**"
+  - ".codex-work/**"
+  - ".gradle-hub/**"
+  - "tools/**"
+  - "deploy_backups/**"
+  - "deploy_staging/**"
+  - "output/**"
+  - "tmp/**"
+  - "one-boat-bitrix-build-staging/**"
+  - "one-boat-bitrix-ui-staging/**"
+  - "_restored_from_git_ec63_b*/**"
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/.expo/**"
+  - "**/.venv/**"
+  - "**/__pycache__/**"
+  - "**/bin/**"
+  - "**/obj/**"
+  - "**/tests/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "documentation/**"
+
+db_file: .slopo/slopo-openai.db
+report_dir: .slopo/clean-report
+ignore_file: .slopo/clean.ignore.txt
+agent_log_file: .slopo/clean.agent.log
+
+embedding_model: openrouter/openai/text-embedding-3-small
+embedding_dimensions: 1536
+embedding_batch_size: 50
+embedding_batch_chars: 50000
+similarity_threshold: 0.92
+rerank_threshold: 0.94
+body_node_count_threshold: 10

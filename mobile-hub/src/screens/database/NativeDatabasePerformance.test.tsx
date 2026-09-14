@@ -12,6 +12,7 @@ let mockPermissions = ['database.read'];
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
   useLocalSearchParams: () => mockParams,
+  usePathname: () => '/database',
 }));
 
 jest.mock('../../auth/AuthContext', () => ({

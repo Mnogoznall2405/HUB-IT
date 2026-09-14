@@ -3,6 +3,8 @@ import { API_V1_BASE } from '../../api/client';
 export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.webm,.m4v,.ogg,.mp3,.wav,.aac,.m4a,.opus,.flac,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
 export const CHAT_MAX_FILE_COUNT = 5;
 export const CHAT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
+export const CHAT_MESSAGE_BODY_MAX_LENGTH = 12000;
+export const CHAT_MESSAGE_COUNTER_THRESHOLD = 500;
 export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 180;
 export const CHAT_IMAGE_ATTACHMENT_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 export const CHAT_VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
@@ -181,7 +183,7 @@ export const formatSidebarConversationTime = (value) => {
   if (date.toDateString() === now.toDateString()) {
     return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   }
-  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
 };
 
 export const formatMessageTime = (value) => {

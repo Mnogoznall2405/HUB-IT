@@ -22,6 +22,7 @@ type OfflineFileEntry = {
   serverUpdatedAt: string;
   expiresAt: string;
   storedAt: number;
+  record?: MyFileRecord;
 };
 
 type OfflineFileManifest = {
@@ -117,6 +118,7 @@ function normalizeEntry(value: unknown): OfflineFileEntry | null {
     serverUpdatedAt: String(raw.serverUpdatedAt || ''),
     expiresAt: String(raw.expiresAt || ''),
     storedAt,
+    record: raw.record && raw.record.id === fileId ? raw.record : undefined,
   };
 }
 
@@ -189,6 +191,35 @@ function entryMatchesItem(entry: OfflineFileEntry, item: MyFileRecord): boolean 
 function entryFileIsValid(userId: number, entry: OfflineFileEntry): boolean {
   const file = offlineFile(userId, entry.localName);
   return file.exists && file.size === entry.size;
+}
+
+/** The pinned manifest is independent of the last visited server folder. */
+export async function listNativeMyFilesOffline(userId: number): Promise<MyFileRecord[]> {
+  const owner = normalizedUserId(userId);
+  if (!owner || Platform.OS === 'web') return [];
+  const manifest = await readManifest(owner);
+  return manifest.entries.filter(entry => {
+    const expires = fileExpiryMs(entry.expiresAt);
+    return (!entry.expiresAt || expires > Date.now()) && entryFileIsValid(owner, entry);
+  }).map(entry => ({
+    id: entry.fileId,
+    original_file_name: String(entry.record?.original_file_name || entry.fileName),
+    download_file_name: entry.fileName,
+    mime_type: entry.mimeType,
+    download_mime_type: entry.mimeType,
+    original_size_bytes: entry.size,
+    stored_size_bytes: entry.size,
+    saved_size_bytes: 0,
+    retention_days: Number(entry.record?.retention_days || 0),
+    folder_id: entry.record?.folder_id ? String(entry.record.folder_id) : null,
+    status: 'ready', storage_mode: 'stored', error_text: '',
+    security_scan_status: String(entry.record?.security_scan_status || 'unknown'),
+    preview_kind: '', preview_available: false, preview_status: '', preview_max_bytes: 0,
+    is_shared: false, is_favorite: false, share_expires_at: null,
+    created_at: entry.record?.created_at ? String(entry.record.created_at) : null,
+    updated_at: entry.serverUpdatedAt || null,
+    expires_at: entry.expiresAt || null,
+  }));
 }
 
 export async function getNativeMyFilesOfflineFile(
@@ -289,6 +320,7 @@ export async function pinNativeMyFileOffline(
         serverUpdatedAt: String(item.updated_at || ''),
         expiresAt: String(item.expires_at || ''),
         storedAt: Date.now(),
+        record: item,
       };
       await writeManifest({
         version: 1,

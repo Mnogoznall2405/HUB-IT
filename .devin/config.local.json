@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(py_compile.compile(r'C:\\Project\\Image_scan\\WEB-itinvent\\backend\\services\\warehouse_1c_service.py',)",
+      "Exec(C:\\Project\\Image_scan\\tools\\dotnet-sdk-8\\dotnet.exe test)",
+      "Exec(@('C:\\Backups\\hub-it\\releases','C:\\HUB-IT-Releases\\incoming','C:\\inetpub\\wwwroot\\itinvent'))",
+      "Exec(@(git status)",
+      "Exec(C:\\inetpub\\wwwroot\\itinvent)",
+      "Exec(powershell)",
+      "Exec(ls)",
+      "Exec(Get-Date)",
+      "Exec(Join-Path)",
+      "Exec(netstat)",
+      "Exec(Start-Sleep)",
+      "Exec(C:\\Project\\Image_scan\\WEB-itinvent\\frontend\\dist\\index.html)",
+      "Exec(Expected=401})",
+      "Exec($sw.Stop())",
+      "Exec(Get-Process)",
+      "Exec(Get-NetTCPConnection)",
+      "Exec($env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe)",
+      "Exec(Get-Content)",
+      "Exec(C:\\Project\\Image_scan\\tools\\dotnet-sdk-8\\dotnet.exe add)",
+      "Exec(C:\\Project\\Image_scan\\tools\\dotnet-sdk-8\\dotnet.exe build)",
+      "Exec(Stop-Process)",
+      "Exec(Get-ChildItem)",
+      "Exec(C:\\Project\\Image_scan\\WEB-itinvent\\backend)",
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(pm2 logs)",
+      "Exec(head)",
+      "Exec(npm run)",
+      "Exec(pm2 status)",
+      "Exec(Select-Object)",
+      "Exec(Select-String)",
+      "Exec(C:\\Project\\Image_scan\\WEB-itinvent)",
+      "Exec(Sort-Object)",
+      "Exec(Write-Host)"
+    ]
+  }
+}

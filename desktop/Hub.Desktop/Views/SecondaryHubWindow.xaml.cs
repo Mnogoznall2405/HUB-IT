@@ -205,6 +205,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
                 ? new Uri(_options.BaseUri, _lastSafeRoute)
                 : _options.BaseUri;
             DesktopLog.Info("WebView2 initialized for the secondary HUB window");
+            _webViewHost.SetZoomFactor(
+                new DesktopSettingsStore(DesktopPaths.SettingsFile).Load().WebViewZoom);
             core.Navigate(target.AbsoluteUri);
             return null;
         }
@@ -259,7 +261,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
             _navigationPolicy,
             _notifications,
             Environment.UserName,
-            new DesktopVncHandlerProbe());
+            new DesktopVncHandlerProbe(),
+            _options.BaseUri);
         _desktopBridge.Ready += DesktopBridge_Ready;
         _desktopBridge.ThemeChanged += DesktopBridge_ThemeChanged;
         _desktopBridge.OpenDownloadedFileRequested += DesktopBridge_OpenDownloadedFileRequested;
@@ -303,23 +306,30 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         object? sender,
         CoreWebView2NavigationCompletedEventArgs e)
     {
-        CancelNavigationTimeout();
-        LoadingIndicator.Visibility = Visibility.Collapsed;
-        if (e.IsSuccess)
+        try
         {
-            HideError();
-            SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
-            return;
-        }
+            CancelNavigationTimeout();
+            LoadingIndicator.Visibility = Visibility.Collapsed;
+            if (e.IsSuccess)
+            {
+                HideError();
+                SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
+                return;
+            }
 
-        var status = e.WebErrorStatus.ToString();
-        DesktopLog.Warning($"Secondary navigation failed with status '{status}'");
-        var failure = status.Contains("Certificate", StringComparison.OrdinalIgnoreCase)
-            ? WebViewFailureKind.Certificate
-            : status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
-                ? WebViewFailureKind.NavigationTimeout
-                : WebViewFailureKind.Network;
-        await RecoverWebViewAsync(failure);
+            var status = e.WebErrorStatus.ToString();
+            DesktopLog.Warning($"Secondary navigation failed with status '{status}'");
+            var failure = status.Contains("Certificate", StringComparison.OrdinalIgnoreCase)
+                ? WebViewFailureKind.Certificate
+                : status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
+                    ? WebViewFailureKind.NavigationTimeout
+                    : WebViewFailureKind.Network;
+            await RecoverWebViewAsync(failure);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Secondary navigation completed handler failed", exception);
+        }
     }
 
     private void Core_HistoryChanged(object? sender, object e) =>
@@ -370,18 +380,25 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private async void Core_ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        CancelNavigationTimeout();
-        DesktopLog.Warning($"Secondary WebView2 process failed: {e.ProcessFailedKind}");
-        var failure = e.ProcessFailedKind switch
+        try
         {
-            CoreWebView2ProcessFailedKind.RenderProcessExited
-                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
-                WebViewFailureKind.RendererProcessExited,
-            CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
-                WebViewFailureKind.FrameProcessExited,
-            _ => WebViewFailureKind.BrowserProcessExited,
-        };
-        await RecoverWebViewAsync(failure);
+            CancelNavigationTimeout();
+            DesktopLog.Warning($"Secondary WebView2 process failed: {e.ProcessFailedKind}");
+            var failure = e.ProcessFailedKind switch
+            {
+                CoreWebView2ProcessFailedKind.RenderProcessExited
+                    or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
+                    WebViewFailureKind.RendererProcessExited,
+                CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
+                    WebViewFailureKind.FrameProcessExited,
+                _ => WebViewFailureKind.BrowserProcessExited,
+            };
+            await RecoverWebViewAsync(failure);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Secondary process failed handler failed", exception);
+        }
     }
 
     private void DesktopBridge_Ready(object? sender, EventArgs e)
@@ -664,6 +681,18 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private void ApplyChromeTheme(DesktopThemeMode mode)
     {
+        if (mode == DesktopThemeMode.HighContrast)
+        {
+            SetColorResource("AppBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("TitleBarBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("TitleBarForegroundBrush", System.Windows.SystemColors.WindowTextColor.ToString());
+            SetColorResource("TitleBarBorderBrush", System.Windows.SystemColors.ActiveBorderColor.ToString());
+            SetColorResource("SecondaryTextBrush", System.Windows.SystemColors.GrayTextColor.ToString());
+            SetColorResource("TitleButtonHoverBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("TitleButtonPressedBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            return;
+        }
+
         var dark = mode == DesktopThemeMode.Dark;
         SetColorResource("AppBackgroundBrush", dark ? "#0F1115" : "#F3F2F1");
         SetColorResource("TitleBarBackgroundBrush", dark ? "#11151B" : "#FAF9F8");

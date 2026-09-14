@@ -4,16 +4,18 @@ import type { HubTask } from '../../api/taskApi';
 import { NativeTasksInboxScreen } from './NativeTasksInboxScreen';
 
 const mockTaskRowRender = jest.fn();
+let mockOfflineMode = false;
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
   useLocalSearchParams: () => ({}),
+  usePathname: () => '/tasks',
 }));
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, username: 'ivanov', role: 'user' },
-    offlineMode: false,
+    offlineMode: mockOfflineMode,
     hasPermission: (permission: string) => permission === 'tasks.read',
   }),
 }));
@@ -65,6 +67,26 @@ const tasks: HubTask[] = Array.from({ length: 30 }, (_, index) => ({
 }));
 
 const mockedApi = taskApi as jest.Mocked<typeof taskApi>;
+beforeEach(() => { jest.clearAllMocks(); mockedApi.getTasksPage.mockReset(); mockOfflineMode = false; });
+
+it('preserves visible tasks when a refresh fails before connectivity updates', async () => {
+  mockedApi.getTasksPage.mockResolvedValueOnce({ items: tasks, total: tasks.length, limit: 40, offset: 0 });
+  const view = await render(<NativeTasksInboxScreen />);
+  await view.findByText('Task 00');
+  mockedApi.getTasksPage.mockRejectedValueOnce(new Error('Connection lost'));
+  await act(async () => { await view.getByTestId('native-tasks-list').props.onRefresh(); });
+  expect(view.getByText('Task 00')).toBeTruthy();
+});
+
+it('clears the previous scope when the offline filter has no saved snapshot', async () => {
+  mockedApi.getTasksPage.mockResolvedValueOnce({ items: tasks, total: tasks.length, limit: 40, offset: 0 });
+  const view = await render(<NativeTasksInboxScreen />);
+  await view.findByText('Task 00');
+  mockOfflineMode = true; await view.rerender(<NativeTasksInboxScreen />);
+  await fireEvent.press(view.getByText('Созданные'));
+  await waitFor(() => expect(view.queryByText('Task 00')).toBeNull());
+  expect(mockedApi.getTasksPage).toHaveBeenCalledTimes(1);
+});
 
 it('does not rerender mounted task rows for a draft keystroke or refresh spinner', async () => {
   mockedApi.getTasksPage

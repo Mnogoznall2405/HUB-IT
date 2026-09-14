@@ -107,11 +107,14 @@ if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
     throw "Published update runner is missing: $runnerPath"
 }
 Copy-Item -LiteralPath $runnerPath -Destination $publishDirectory -Force
+$runnerHash = (Get-FileHash -LiteralPath $runnerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$runnerHash | Set-Content -LiteralPath (Join-Path $publishDirectory 'HUB.Desktop.UpdateRunner.exe.sha256') -Encoding ascii -NoNewline
 
 $requiredFiles = @(
     'HUB.Desktop.exe',
     'HUB.Desktop.dll',
     'HUB.Desktop.UpdateRunner.exe',
+    'HUB.Desktop.UpdateRunner.exe.sha256',
     'appsettings.json',
     'Microsoft.Web.WebView2.Core.dll',
     'WebView2Loader.dll',
@@ -145,6 +148,7 @@ try {
     $requiredArchiveEntries = @(
         "$packageName/HUB.Desktop.exe",
         "$packageName/HUB.Desktop.UpdateRunner.exe",
+        "$packageName/HUB.Desktop.UpdateRunner.exe.sha256",
         "$packageName/appsettings.json",
         "$packageName/WebView2Loader.dll",
         "$packageName/Microsoft.WindowsAppRuntime.dll",

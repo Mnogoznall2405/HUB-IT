@@ -97,6 +97,7 @@ it('does not expose all-database scope without computers.read_all', async () => 
   mockPermissions = ['computers.read'];
   const view = await render(<NativeComputersScreen />);
   await waitFor(() => expect(view.getByText('PC-01')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-computers-filters'));
   expect(view.queryByTestId('native-computers-scope-all')).toBeNull();
 });
 

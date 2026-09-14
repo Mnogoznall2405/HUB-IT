@@ -12,6 +12,7 @@ import { NATIVE_MY_FILES_ENABLED } from '../myFiles/nativeMyFilesFeature';
 import { NATIVE_PASSWORDS_ENABLED } from '../passwords/nativePasswordsFeature';
 import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../preferences/preferenceNormalizers';
 import { NATIVE_SCAN_CENTER_ENABLED } from '../scanCenter/nativeScanCenterFeature';
+import { NATIVE_STATISTICS_ENABLED } from '../statistics/nativeStatisticsFeature';
 import { NATIVE_TASKS_ENABLED } from '../tasks/nativeTasksFeature';
 import { NATIVE_WAREHOUSE_1C_ENABLED } from '../warehouse1c/nativeWarehouse1cFeature';
 
@@ -32,6 +33,7 @@ function whenNative(enabled: boolean, item: MobileNavItem): MobileNavItem[] {
 }
 
 export const navigationItems: MobileNavItem[] = [
+  { path: '/construction', label: 'Объекты строительства', shortLabel: 'Объекты', icon: 'office-building-outline', permission: 'construction.read', group: 'tools' },
   { path: '/dashboard', label: 'Главная', shortLabel: 'Главная', icon: 'view-dashboard', permission: 'dashboard.read', group: 'main' },
   { path: '/feed', label: 'Лента', shortLabel: 'Лента', icon: 'newspaper-variant-outline', permission: 'dashboard.read', group: 'main' },
   ...whenNative(NATIVE_TASKS_ENABLED, { path: '/tasks', label: 'Задачи', shortLabel: 'Задачи', icon: 'check-circle-outline', permission: 'tasks.read', group: 'main' }),
@@ -55,6 +57,7 @@ export const navigationItems: MobileNavItem[] = [
   ...whenNative(NATIVE_COMPUTERS_ENABLED, { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: 'desktop-classic', permission: 'computers.read', group: 'tools' }),
   ...whenNative(NATIVE_SCAN_CENTER_ENABLED, { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: 'shield-search', permission: 'scan.read', group: 'tools' }),
   ...whenNative(NATIVE_WAREHOUSE_1C_ENABLED, { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: 'package-variant-closed', permission: 'warehouse_1c.read', group: 'tools' }),
+  ...whenNative(NATIVE_STATISTICS_ENABLED, { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: 'chart-bar', permission: 'statistics.read', group: 'tools' }),
 ];
 
 export const mobileMenuNavigationItem: MobileNavItem = {
@@ -66,6 +69,7 @@ export const mobileMenuNavigationItem: MobileNavItem = {
 };
 
 export const ADMIN_AREA_PERMISSIONS = [
+  'settings.ai.manage',
   'departments.manage',
   'settings.users.manage',
   'settings.sessions.manage',
@@ -137,12 +141,7 @@ export function resolveMobileNavigationItems({
 
 export function isNavigationItemActive(path: string, candidatePath = ''): boolean {
   const currentPath = String(candidatePath || '').trim() || '/';
-  if (path === '/chat') return currentPath === '/chat' || currentPath.startsWith('/chat/');
-  if (path === '/feed') return currentPath === '/feed' || currentPath.startsWith('/feed/');
-  if (path === '/mail') return currentPath === '/mail' || currentPath.startsWith('/mail/');
-  if (path === '/address-book') return currentPath === '/address-book' || currentPath.startsWith('/address-book/');
-  if (path === '/menu') return currentPath === '/menu' || currentPath.startsWith('/menu/');
-  return currentPath === path;
+  return currentPath === path || currentPath.startsWith(`${path}/`);
 }
 
 export function getNavigationBadgeCount(path: string, unreadCounts: Record<string, unknown> = {}): number {

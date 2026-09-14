@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import DesktopProtocolHandoff from './DesktopProtocolHandoff';
+import DesktopProtocolHandoff, { DesktopHandoffSlot } from './DesktopProtocolHandoff';
 
 const handoffMocks = vi.hoisted(() => ({
   canOffer: true,
@@ -56,6 +56,7 @@ describe('DesktopProtocolHandoff', () => {
     expect(handoffMocks.launch).toHaveBeenCalledTimes(1);
     expect(handoffMocks.launch).toHaveBeenCalledWith('hubit://open/tasks?task=7');
 
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
     fireEvent.click(screen.getByRole('button', { name: 'Остаться в браузере' }));
     expect(handoffMocks.skip).toHaveBeenCalledTimes(1);
     expect(handoffMocks.setPreference).not.toHaveBeenCalled();
@@ -67,5 +68,16 @@ describe('DesktopProtocolHandoff', () => {
     renderHandoff();
     expect(screen.queryByTestId('desktop-protocol-handoff')).not.toBeInTheDocument();
     expect(handoffMocks.launch).not.toHaveBeenCalled();
+  });
+
+  it('renders inside the shell slot without launching again when the slot changes', () => {
+    const tree = (key) => <ThemeProvider theme={createTheme()}><MemoryRouter>
+      <DesktopProtocolHandoff /><DesktopHandoffSlot key={key} />
+    </MemoryRouter></ThemeProvider>;
+    const { rerender } = render(tree('first'));
+    expect(screen.getByTestId('desktop-handoff-slot')).toContainElement(screen.getByTestId('desktop-protocol-handoff'));
+    rerender(tree('second'));
+    expect(screen.getByTestId('desktop-handoff-slot')).toContainElement(screen.getByTestId('desktop-protocol-handoff'));
+    expect(handoffMocks.launch).toHaveBeenCalledTimes(1);
   });
 });

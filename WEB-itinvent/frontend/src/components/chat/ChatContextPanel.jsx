@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -21,6 +21,8 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import useChatPanelHistory from './useChatPanelHistory';
+import useChatPanelMembers from './useChatPanelMembers';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import AudiotrackRoundedIcon from '@mui/icons-material/AudiotrackRounded';
@@ -455,7 +457,19 @@ function ConversationMediaThumb({ item, onOpen }) {
   const downloadUrl = buildAttachmentUrl(item.message_id || item.messageId, item.id);
   return (
     <Box
-      onClick={() => onOpen?.(item.message_id || item.messageId, item)}
+      role="button"
+      tabIndex={0}
+      aria-label={`Открыть ${item.file_name || 'медиа'}`}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpen?.(item.message_id || item.messageId, item);
+        }
+      }}
+      onClick={(event) => {
+        if (event.target.closest('button, a')) return;
+        onOpen?.(item.message_id || item.messageId, item);
+      }}
       sx={{
         position: 'relative',
         aspectRatio: '1',
@@ -1272,6 +1286,7 @@ export default function ChatContextPanel({
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
+  const [summaryRetry, setSummaryRetry] = useState(0);
   const [assetKind, setAssetKind] = useState('media');
   const [mediaSubKind, setMediaSubKind] = useState('image');
   const [attachments, setAttachments] = useState([]);
@@ -1282,6 +1297,7 @@ export default function ChatContextPanel({
   const [attachmentsCursor, setAttachmentsCursor] = useState('');
   const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_PAGE_SIZE);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
+  const [participantSearch, setParticipantSearch] = useState('');
   const [participantProfile, setParticipantProfile] = useState(null);
   const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState(null);
   const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
@@ -1296,14 +1312,16 @@ export default function ChatContextPanel({
   const taskId = String(activeConversation?.task_id || '').trim();
   const subject = isDirect ? (activeConversation?.direct_peer || activeConversation) : activeConversation;
   const panelVisible = Boolean(open);
+  const memberDetails = useChatPanelMembers(activeConversation, panelVisible);
+  const panelHistory = useChatPanelHistory(conversationId, panelVisible && (assetKind === 'task' || assetKind === 'link'), messages);
 
   const participantMembers = useMemo(() => {
     if (!activeConversation) return [];
     if (isDirect) {
       return subject ? [{ user: subject, member_role: 'member' }] : [];
     }
-    const source = Array.isArray(activeConversation.members)
-      ? activeConversation.members
+    const source = Array.isArray(memberDetails.members)
+      ? memberDetails.members
       : (Array.isArray(activeConversation.member_preview) ? activeConversation.member_preview : []);
     const normalized = source
       .map((member) => {
@@ -1318,12 +1336,12 @@ export default function ChatContextPanel({
       .filter(Boolean);
     const sortedUsers = sortByName(normalized.map((member) => member.user));
     const orderByUserId = new Map(sortedUsers.map((user, index) => [String(user?.id || ''), index]));
-    return [...normalized].sort((left, right) => {
+    return [...new Map(normalized.map((member) => [String(member.user.id), member])).values()].sort((left, right) => {
       const leftIndex = orderByUserId.get(String(left?.user?.id || '')) ?? 0;
       const rightIndex = orderByUserId.get(String(right?.user?.id || '')) ?? 0;
       return leftIndex - rightIndex;
     });
-  }, [activeConversation, isDirect, subject]);
+  }, [activeConversation, isDirect, subject, memberDetails.members]);
 
   const participants = useMemo(
     () => participantMembers.map((member) => member.user).filter(Boolean),
@@ -1351,15 +1369,17 @@ export default function ChatContextPanel({
   const participantsExpandable = !isDirect && !isNotes && participants.length > PARTICIPANTS_COLLAPSED_COUNT;
   const visibleParticipantMembers = useMemo(
     () => (
-      participantsExpanded || !participantsExpandable
+      !mobileScreen || participantSearch || participantsExpanded || !participantsExpandable
         ? participantMembers
         : participantMembers.slice(0, PARTICIPANTS_COLLAPSED_COUNT)
     ),
-    [participantMembers, participantsExpandable, participantsExpanded],
+    [participantMembers, participantsExpandable, participantsExpanded, mobileScreen, participantSearch],
   );
+  const filteredParticipantMembers = visibleParticipantMembers.filter(({ user }) => !participantSearch.trim()
+    || [user.full_name, user.username, user.department, user.job_title].join(' ').toLocaleLowerCase('ru').includes(participantSearch.trim().toLocaleLowerCase('ru')));
 
   const taskItems = useMemo(() => (
-    [...(Array.isArray(messages) ? messages : [])]
+    [...panelHistory.items]
       .filter((message) => message?.kind === 'task_share' && message?.task_preview?.id)
       .sort((left, right) => new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime())
       .map((message) => ({
@@ -1367,7 +1387,7 @@ export default function ChatContextPanel({
         createdAt: message.created_at,
         task: message.task_preview,
       }))
-  ), [messages]);
+  ), [panelHistory.items]);
 
   const visibleTaskItems = useMemo(
     () => taskItems.slice(0, taskVisibleCount),
@@ -1376,7 +1396,7 @@ export default function ChatContextPanel({
 
   const linkItems = useMemo(() => {
     const seen = new Set();
-    return [...(Array.isArray(messages) ? messages : [])]
+    return [...panelHistory.items]
       .sort((left, right) => new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime())
       .flatMap((message) => extractLinksFromText(message?.body).map((url, index) => ({
         id: `${message.id || 'message'}-${index}-${url}`,
@@ -1389,7 +1409,7 @@ export default function ChatContextPanel({
         seen.add(item.url);
         return true;
       });
-  }, [messages]);
+  }, [panelHistory.items]);
 
   const assetCounts = useMemo(() => ({
     image: Number(summary?.photos_count || 0),
@@ -1406,17 +1426,19 @@ export default function ChatContextPanel({
       ? [
           { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
+          { key: 'audio', label: 'Аудио', count: assetCounts.audio },
           { key: 'link', label: 'Ссылки', count: assetCounts.link },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
         ]
       : [
           { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
+          { key: 'audio', label: 'Аудио', count: assetCounts.audio },
           { key: 'link', label: 'Ссылки', count: assetCounts.link },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
           { key: 'member', label: 'Участники', count: assetCounts.member },
         ]
-  ), [assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
+  ), [assetCounts.audio, assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
 
   const attachmentItems = useMemo(() => {
     const items = Array.isArray(attachments) ? attachments : [];
@@ -1498,7 +1520,8 @@ export default function ChatContextPanel({
           setSummaryLoading(false);
         }
       });
-  }, [conversationId]);
+    return () => { summaryRequestSeqRef.current += 1; };
+  }, [conversationId, activeConversation?.last_message_at, summaryRetry]);
 
   useEffect(() => {
     if (!conversationId) {
@@ -1521,6 +1544,7 @@ export default function ChatContextPanel({
 
   useEffect(() => {
     setParticipantsExpanded(false);
+    setParticipantSearch('');
     setParticipantProfile(null);
   }, [conversationId]);
 
@@ -1651,6 +1675,7 @@ export default function ChatContextPanel({
       setAttachmentsLoadingMore(true);
     } else {
       setAttachmentsLoading(true);
+      setAttachments([]);
       setAttachmentsError('');
     }
 
@@ -1662,16 +1687,16 @@ export default function ChatContextPanel({
       });
       if (requestSeq !== attachmentRequestSeqRef.current) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
-      setAttachments((current) => (append ? [...current, ...items] : items));
-      setAttachmentsHasMore(Boolean(payload?.has_more));
+      setAttachments((current) => [...new Map((append ? [...current, ...items] : items).map((item) => [item.id, item])).values()]);
+      setAttachmentsHasMore(Boolean(payload?.has_more && payload?.next_before_attachment_id && payload.next_before_attachment_id !== beforeAttachmentId));
       setAttachmentsCursor(String(payload?.next_before_attachment_id || '').trim());
     } catch (error) {
       if (requestSeq !== attachmentRequestSeqRef.current) return;
       if (!append) {
         setAttachments([]);
+        setAttachmentsHasMore(false);
+        setAttachmentsCursor('');
       }
-      setAttachmentsHasMore(false);
-      setAttachmentsCursor('');
       setAttachmentsError(error?.message || 'Не удалось загрузить вложения.');
     } finally {
       if (requestSeq === attachmentRequestSeqRef.current) {
@@ -1704,6 +1729,7 @@ export default function ChatContextPanel({
 
     if (!panelVisible) return;
     void loadAttachments();
+    return () => { attachmentRequestSeqRef.current += 1; };
   }, [assetKind, conversationId, loadAttachments, panelVisible, activeConversation?.last_message_at]);
 
   if (!activeConversation) {
@@ -1748,6 +1774,33 @@ export default function ChatContextPanel({
   const showMutedBadge = Boolean(activeConversation?.is_muted);
   const showArchivedBadge = Boolean(activeConversation?.is_archived);
   const taskBrowserHasMore = taskItems.length > taskVisibleCount;
+  const assetControls = (
+    <Stack spacing={1} sx={{ px: 1, py: 1 }}>
+      {summaryError ? <Alert severity="error" action={<Button onClick={() => setSummaryRetry((value) => value + 1)}>Повторить</Button>}>{summaryError}</Alert> : null}
+      {['media', 'image', 'video', 'file', 'audio'].includes(assetKind) ? (
+        <>
+          {attachmentsLoading ? <Typography role="status">Загрузка вложений…</Typography> : null}
+          {attachmentsError ? <Alert severity="error" action={<Button onClick={() => loadAttachments({ append: attachments.length > 0, beforeAttachmentId: attachmentsCursor })}>Повторить</Button>}>{attachmentsError}</Alert> : null}
+          {attachmentsHasMore ? <Button disabled={attachmentsLoadingMore || attachmentsLoading} onClick={() => loadAttachments({ append: true, beforeAttachmentId: attachmentsCursor })}>{attachmentsLoadingMore ? 'Загрузка…' : 'Показать ещё вложения'}</Button> : null}
+        </>
+      ) : null}
+      {assetKind === 'task' && taskBrowserHasMore ? <Button onClick={() => setTaskVisibleCount((count) => count + TASK_PAGE_SIZE)}>Показать ещё задачи</Button> : null}
+      {assetKind === 'task' || assetKind === 'link' ? (
+        <>
+          {panelHistory.error ? <Alert severity="error" action={<Button onClick={panelHistory.retry}>Повторить</Button>}>{panelHistory.error}</Alert> : null}
+          {panelHistory.loading ? <Typography role="status">Загрузка истории…</Typography> : null}
+          {panelHistory.hasMore ? <Button disabled={panelHistory.loading} onClick={panelHistory.loadMore}>Искать в более ранних сообщениях</Button> : null}
+        </>
+      ) : null}
+      {assetKind === 'member' && memberDetails.loading ? <Typography role="status">Загрузка участников…</Typography> : null}
+      {assetKind === 'member' && memberDetails.error ? <Alert severity="error" action={<Button onClick={memberDetails.retry}>Повторить</Button>}>{memberDetails.error}</Alert> : null}
+      {assetKind === 'member' && participantSearch.trim() && filteredParticipantMembers.length === 0 ? <Typography>Участники не найдены</Typography> : null}
+    </Stack>
+  );
+  const participantSearchField = (
+    <InputBase fullWidth placeholder="Найти участника" value={participantSearch} onChange={(event) => setParticipantSearch(event.target.value)}
+      inputProps={{ 'aria-label': 'Найти участника' }} sx={{ px: 1.5, py: 1, mb: 1, borderRadius: 2, bgcolor: 'var(--chat-sheet-panel-card)' }} />
+  );
   const infoMenuOpen = Boolean(infoMenuAnchorEl);
   const memberActionMenuOpen = Boolean(memberActionAnchorEl && memberActionTarget?.user?.id);
   const memberActionUser = memberActionTarget?.user || null;
@@ -2108,13 +2161,14 @@ export default function ChatContextPanel({
               </>
             ) : null}
 
-            {!attachmentsLoading && assetKind === 'file' ? (
+            {!attachmentsLoading && (assetKind === 'file' || assetKind === 'audio') ? (
               attachmentItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
                   Нет файлов
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
+                  {participantSearchField}
                   {attachmentItems.map((item) => (
                     <Box
                       key={item.id}
@@ -2166,7 +2220,7 @@ export default function ChatContextPanel({
             {assetKind === 'link' ? (
               linkItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                  Нет ссылок
+                  {panelHistory.loading ? 'Загрузка ссылок…' : panelHistory.hasMore ? 'В загруженной части ссылок нет' : 'Нет ссылок'}
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
@@ -2203,7 +2257,7 @@ export default function ChatContextPanel({
             {assetKind === 'task' ? (
               visibleTaskItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                  Нет задач
+                  {panelHistory.loading ? 'Загрузка задач…' : panelHistory.hasMore ? 'В загруженной части задач нет' : 'Нет задач'}
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
@@ -2230,7 +2284,7 @@ export default function ChatContextPanel({
                     >
                       <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-icon)' }} />
                       <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
+                        <Typography sx={{ fontSize: '0.96rem', fontWeight: 600, overflowWrap: 'anywhere' }}>
                           {item.task.title}
                         </Typography>
                         <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }}>
@@ -2246,7 +2300,7 @@ export default function ChatContextPanel({
             {assetKind === 'member' ? (
               participants.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                  Нет участников
+                  {memberDetails.loading ? 'Загрузка участников…' : memberDetails.error ? 'Список участников недоступен' : 'Нет участников'}
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
@@ -2268,7 +2322,7 @@ export default function ChatContextPanel({
                       </Button>
                     </Box>
                   ) : null}
-                  {visibleParticipantMembers.map((member) => {
+                  {filteredParticipantMembers.map((member) => {
                     const person = member?.user || {};
                     const role = normalizeGroupRole(member?.member_role);
                     const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
@@ -2361,6 +2415,7 @@ export default function ChatContextPanel({
                 </Stack>
               )
             ) : null}
+            {assetControls}
           </Box>
         </Box>
 
@@ -2440,6 +2495,7 @@ export default function ChatContextPanel({
       />
 
       {/* Профиль */}
+      <Box data-testid="chat-info-scroll" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
       <Box
         component={isDirect ? ButtonBase : 'div'}
         type={isDirect ? 'button' : undefined}
@@ -2473,7 +2529,7 @@ export default function ChatContextPanel({
             ? 'Сохраняйте ссылки, файлы и напоминания для себя'
             : isTask
               ? 'Участники синхронизируются с карточкой задачи'
-              : (conversationHeaderSubtitle || 'был(а) недавно')}
+              : (conversationHeaderSubtitle || (isGroup ? `${assetCounts.member} участников` : 'был(а) недавно'))}
         </Typography>
         {isTask && taskId ? (
           <Button
@@ -2514,7 +2570,7 @@ export default function ChatContextPanel({
       </Box>
 
       {/* Контент */}
-      <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'var(--chat-sheet-panel-bg)' }}>
+      <Box sx={{ bgcolor: 'var(--chat-sheet-panel-bg)' }}>
         {/* Информация о пользователе */}
         {isDirect ? (
           <>
@@ -2599,10 +2655,11 @@ export default function ChatContextPanel({
         {/* Медиа и содержимое — табы как в Telegram */}
         <Box sx={{ borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
           {/* Табы */}
-          <Box sx={{ display: 'flex', borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)', overflowX: 'hidden' }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', position: 'sticky', top: 0, zIndex: 2, bgcolor: 'var(--chat-sheet-panel-bg)', borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
             {[
               { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
               { key: 'file', label: 'Файлы', count: assetCounts.file },
+              { key: 'audio', label: 'Аудио', count: assetCounts.audio },
               { key: 'link', label: 'Ссылки', count: linkItems.length },
               { key: 'task', label: 'Задачи', count: assetCounts.task },
               ...(!isDirect && !isNotes ? [{ key: 'member', label: 'Участники', count: assetCounts.member }] : []),
@@ -2678,7 +2735,7 @@ export default function ChatContextPanel({
                   </Box>
                 )}
               </>
-            ) : assetKind === 'file' ? (
+            ) : (assetKind === 'file' || assetKind === 'audio') ? (
               /* Список файлов */
               attachmentItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
@@ -2726,7 +2783,7 @@ export default function ChatContextPanel({
               /* Список ссылок */
               linkItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                  Нет ссылок
+                  {panelHistory.loading ? 'Загрузка ссылок…' : panelHistory.hasMore ? 'В загруженной части ссылок нет' : 'Нет ссылок'}
                 </Typography>
               ) : (
                 <Stack spacing={0.5}>
@@ -2763,13 +2820,14 @@ export default function ChatContextPanel({
               /* Список задач */
               visibleTaskItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                  Нет задач
+                  {panelHistory.loading ? 'Загрузка задач…' : panelHistory.hasMore ? 'В загруженной части задач нет' : 'Нет задач'}
                 </Typography>
               ) : (
                 <Stack spacing={0.5}>
                   {visibleTaskItems.map((item) => (
                     <Box
                       key={`${item.messageId}-${item.task.id}`}
+                      component={ButtonBase}
                       onClick={() => onOpenTask?.(item.task.id)}
                       sx={{
                         display: 'flex',
@@ -2785,7 +2843,7 @@ export default function ChatContextPanel({
                     >
                       <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-icon)', fontSize: 20 }} />
                       <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 600 }} noWrap>
+                        <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 600, overflowWrap: 'anywhere', textAlign: 'left' }}>
                           {item.task.title}
                         </Typography>
                         <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }}>
@@ -2799,10 +2857,11 @@ export default function ChatContextPanel({
             ) : assetKind === 'member' ? (
               participants.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                  Нет участников
+                  {memberDetails.loading ? 'Загрузка участников…' : memberDetails.error ? 'Список участников недоступен' : 'Нет участников'}
                 </Typography>
               ) : (
                 <Stack spacing={0.5}>
+                  {participantSearchField}
                   {canManageMembers ? (
                     <Button
                       fullWidth
@@ -2820,7 +2879,7 @@ export default function ChatContextPanel({
                       Добавить участника
                     </Button>
                   ) : null}
-                  {visibleParticipantMembers.map((member) => {
+                  {filteredParticipantMembers.map((member) => {
                     const person = member?.user || {};
                     const role = normalizeGroupRole(member?.member_role);
                     const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
@@ -2856,8 +2915,8 @@ export default function ChatContextPanel({
                         >
                           <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={40} />
                           <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
-                              <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700 }} noWrap>
+                            <Stack direction="row" alignItems="center" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ minWidth: 0 }}>
+                              <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700, overflowWrap: 'anywhere' }}>
                                 {person?.full_name || person?.username || 'Пользователь'}
                               </Typography>
                               {role !== 'member' ? (
@@ -2900,10 +2959,12 @@ export default function ChatContextPanel({
                 </Stack>
               )
             ) : null}
+            {assetControls}
           </Box>
         </Box>
       </Box>
 
+      </Box>
       {isGroup && currentMemberRole !== 'owner' ? (
         <Box sx={{ px: 1.5, py: 1.25, borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
           <Button

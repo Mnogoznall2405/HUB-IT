@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Interop;
@@ -91,11 +92,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private readonly DesktopTaskbarProgress _downloadTaskbarProgress = new();
     private readonly DesktopTaskbarPinningService _taskbarPinning = new();
     private readonly DesktopGlobalHotkey _globalHotkey = new();
+    private readonly DesktopAccessibilityService _accessibility;
     private readonly DesktopSettings _startupSettings;
+    private double _webviewZoom;
     private DesktopSettings _notificationSettings;
     private DesktopBridgeHost? _desktopBridge;
     private WebView2? _webView;
     private CoreWebView2MemoryUsageTargetLevel? _webViewMemoryUsageTargetLevel;
+    private CancellationTokenSource? _lowMemoryDebounce;
     private HwndSource? _windowSource;
     private string? _pendingInternalRoute;
     private bool _initializing;
@@ -113,13 +117,16 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private DateTimeOffset? _lastBridgeHandshakeUtc;
     private bool _diagnosticsOpening;
     private DesktopThemeMode _currentThemeMode = DesktopThemeMode.Dark;
+    private DesktopThemeMode _lastDecorativeThemeMode = DesktopThemeMode.Dark;
     private DesktopShellStatus _shellStatus = DesktopShellStatus.Empty;
     private bool _sessionLocked;
     private bool _sessionNotificationsRegistered;
     private string _presentedTaskbarBadgeText = string.Empty;
     private string? _lastPersistedSafeRoute;
     private bool _restoreMaximizedWhenShown;
+    private bool _needsVisibleWarmup;
     private bool _pendingCommandPalette;
+    private List<string> _pendingSharedFiles = new();
     private DateTimeOffset _nextMemorySampleAtUtc;
     private bool _memorySampleInFlight;
     private bool _taskbarPinSuggestionChecked;
@@ -150,8 +157,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             ?? throw new ArgumentNullException(nameof(webViewEnvironmentProvider));
         _downloads = downloads ?? throw new ArgumentNullException(nameof(downloads));
         _startHidden = startHidden;
+        _needsVisibleWarmup = DesktopWebViewStartupWarmup.ShouldWarmup(
+            startHidden,
+            alreadyWarmed: false);
         _startupSettings = _settingsStore.Load();
+        _webviewZoom = _startupSettings.WebViewZoom;
         _notificationSettings = _startupSettings;
+        _accessibility = new DesktopAccessibilityService(Dispatcher);
+        _accessibility.State.PropertyChanged += Accessibility_PropertyChanged;
         _lastPersistedSafeRoute = _startupSettings.LastSafeRoute;
         _pendingInternalRoute = _startupSettings.StartupPage == DesktopStartupPage.LastSafePage
             ? _startupSettings.LastSafeRoute
@@ -177,6 +190,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _downloadFailureTimer.Tick += DownloadFailureTimer_Tick;
         InitializeComponent();
         ContentRendered += MainWindow_ContentRendered;
+        DpiChanged += MainWindow_DpiChanged;
         if (_startupSettings.WindowPlacement is not null)
         {
             WindowStartupLocation = WindowStartupLocation.Manual;
@@ -376,6 +390,15 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     public void ShowAndActivate()
     {
+        if (_needsVisibleWarmup && _webView?.CoreWebView2 is null)
+        {
+            HideError();
+            ShowLoading();
+        }
+
+        // Ensure window is visible in taskbar when shown from tray
+        ShowInTaskbar = true;
+
         _windowController.ShowAndActivate();
         if (_restoreMaximizedWhenShown)
         {
@@ -383,6 +406,11 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             WindowState = WindowState.Maximized;
         }
         SendDesktopWindowForegroundState();
+        if (_needsVisibleWarmup)
+        {
+            _ = WarmupWebViewAfterBackgroundStartAsync();
+        }
+
         _ = PresentTaskbarPinSuggestionAsync();
         DesktopLog.Info("Main window activated");
     }
@@ -438,6 +466,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             return;
         }
 
+        if (request.HasSharedFiles)
+        {
+            _pendingSharedFiles.AddRange(request.SharedFiles);
+            TryPostPendingSharedFiles();
+            ShowAndActivate();
+            return;
+        }
+
         if (request.Route is not null)
         {
             ShowAndNavigate(request.Route);
@@ -445,6 +481,20 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         }
 
         ShowAndActivate();
+    }
+
+    private void TryPostPendingSharedFiles()
+    {
+        if (_pendingSharedFiles.Count == 0)
+        {
+            return;
+        }
+
+        if (_desktopBridge?.TryPostFileShared(_pendingSharedFiles) == true)
+        {
+            DesktopLog.Info($"Shared file request completed ({_pendingSharedFiles.Count} path(s))");
+            _pendingSharedFiles = new List<string>();
+        }
     }
 
     public void PrepareForShutdown()
@@ -513,77 +563,58 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
                 DesktopLog.Error("Conflicting desktop hotkey preference could not be cleared", exception);
             }
         }
+
+        if (_accessibility.State.HighContrast)
+        {
+            ApplyChromeTheme(DesktopThemeMode.HighContrast);
+            _desktopNotificationWindow.ApplyTheme(DesktopThemeMode.HighContrast);
+            _lastDecorativeThemeMode = _currentThemeMode;
+        }
     }
 
     private async void PerformanceTimer_Tick(object? sender, EventArgs e)
     {
-        var now = DateTimeOffset.UtcNow;
-        _performance.RecordUiPulse(now);
-        if (_memorySampleInFlight || now < _nextMemorySampleAtUtc)
-        {
-            return;
-        }
-
-        _nextMemorySampleAtUtc = now.AddSeconds(10);
-        var core = _webView?.CoreWebView2;
-        if (core is null)
-        {
-            return;
-        }
-
-        DesktopMemoryProcessDescriptor[] descriptors;
-        string route;
         try
         {
-            descriptors =
-            [
-                new DesktopMemoryProcessDescriptor(
-                    Environment.ProcessId,
-                    DesktopMemoryProcessKind.Host),
-                .. core.Environment.GetProcessInfos().Select(process =>
-                    new DesktopMemoryProcessDescriptor(
-                        process.ProcessId,
-                        MapMemoryProcessKind(process.Kind))),
-            ];
-            route = core.Source;
-        }
-        catch (Exception exception) when (
-            exception is InvalidOperationException
-            or System.Runtime.InteropServices.COMException)
-        {
-            return;
-        }
-
-        var background = !IsVisible || WindowState == WindowState.Minimized || !IsActive;
-        _memorySampleInFlight = true;
-        try
-        {
-            var sample = await Task.Run(() => _memorySampler.Capture(
-                now,
-                route,
-                background,
-                descriptors));
-            if (sample is not null)
+            var now = DateTimeOffset.UtcNow;
+            _performance.RecordUiPulse(now);
+            if (_initializing || _recoveryInProgress
+                || _memorySampleInFlight || now < _nextMemorySampleAtUtc)
             {
-                _memoryMetrics.Record(sample);
+                return;
+            }
+
+            _nextMemorySampleAtUtc = now.AddSeconds(10);
+            var snapshot = DesktopMemoryProcessSnapshot.TryCapture(_webView);
+            if (snapshot is null)
+            {
+                return;
+            }
+
+            var background = !IsVisible || WindowState == WindowState.Minimized || !IsActive;
+            _memorySampleInFlight = true;
+            try
+            {
+                var sample = await Task.Run(() => _memorySampler.Capture(
+                    now,
+                    snapshot.Route,
+                    background,
+                    snapshot.Processes));
+                if (sample is not null)
+                {
+                    _memoryMetrics.Record(sample);
+                }
+            }
+            finally
+            {
+                _memorySampleInFlight = false;
             }
         }
-        finally
+        catch (Exception exception)
         {
-            _memorySampleInFlight = false;
+            DesktopLog.Error("Memory performance timer tick failed", exception);
         }
     }
-
-    private static DesktopMemoryProcessKind MapMemoryProcessKind(
-        CoreWebView2ProcessKind kind) => kind switch
-    {
-        CoreWebView2ProcessKind.Browser => DesktopMemoryProcessKind.Browser,
-        CoreWebView2ProcessKind.Renderer => DesktopMemoryProcessKind.Renderer,
-        CoreWebView2ProcessKind.Gpu => DesktopMemoryProcessKind.Gpu,
-        CoreWebView2ProcessKind.Utility or CoreWebView2ProcessKind.SandboxHelper =>
-            DesktopMemoryProcessKind.Utility,
-        _ => DesktopMemoryProcessKind.Other,
-    };
 
     private static DateTimeOffset GetProcessStartedAt()
     {
@@ -596,6 +627,11 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             return DateTimeOffset.UtcNow;
         }
     }
+
+    private const int WM_NCHITTEST = 0x0084;
+    private const int WM_NCLBUTTONDOWN = 0x00A1;
+    private const int WM_NCLBUTTONUP = 0x00A2;
+    private const int HTMAXBUTTON = 9;
 
     private nint WindowMessageHook(
         nint windowHandle,
@@ -617,6 +653,25 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
                 ShowAndActivate();
             }
 
+            return nint.Zero;
+        }
+
+        if (message == WM_NCHITTEST && IsMaximizeButtonHit(longParameter))
+        {
+            handled = true;
+            return new nint(HTMAXBUTTON);
+        }
+
+        if (message == WM_NCLBUTTONDOWN && wordParameter == HTMAXBUTTON)
+        {
+            handled = true;
+            return nint.Zero;
+        }
+
+        if (message == WM_NCLBUTTONUP && wordParameter == HTMAXBUTTON)
+        {
+            handled = true;
+            Dispatcher.BeginInvoke(() => MaximizeRestoreButton_Click(this, new RoutedEventArgs()));
             return nint.Zero;
         }
 
@@ -643,21 +698,71 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         return nint.Zero;
     }
 
+    private bool IsMaximizeButtonHit(nint longParameter)
+    {
+        if (MaximizeRestoreButton is null
+            || PresentationSource.FromVisual(this) is null)
+        {
+            return false;
+        }
+
+        var x = (short)(longParameter.ToInt32() & 0xFFFF);
+        var y = (short)((longParameter.ToInt32() >> 16) & 0xFFFF);
+        var cursor = new System.Windows.Point(x, y);
+
+        var buttonTopLeft = MaximizeRestoreButton.PointToScreen(new System.Windows.Point(0, 0));
+        var buttonBottomRight = MaximizeRestoreButton.PointToScreen(
+            new System.Windows.Point(MaximizeRestoreButton.ActualWidth, MaximizeRestoreButton.ActualHeight));
+        var buttonRect = new System.Windows.Rect(buttonTopLeft, buttonBottomRight);
+        if (!buttonRect.Contains(cursor))
+        {
+            return false;
+        }
+
+        var chrome = WindowChrome.GetWindowChrome(this);
+        if (chrome is null)
+        {
+            return true;
+        }
+
+        var border = chrome.ResizeBorderThickness;
+        var innerTopLeft = this.PointToScreen(new System.Windows.Point(border.Left, border.Top));
+        var innerBottomRight = this.PointToScreen(
+            new System.Windows.Point(this.ActualWidth - border.Right, this.ActualHeight - border.Bottom));
+
+        if (cursor.X < innerTopLeft.X
+            || cursor.Y < innerTopLeft.Y
+            || cursor.X > innerBottomRight.X
+            || cursor.Y > innerBottomRight.Y)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= Window_Loaded;
         DesktopPerfBench.MarkOnce("window_loaded");
 
+        // When started hidden by autostart, keep window hidden and in tray.
+        // WebView will be created on first visible show to avoid blank screen.
         if (_startHidden)
         {
-            Hide();
-            WindowState = WindowState.Normal;
-            ShowInTaskbar = true;
-            DesktopLog.Info("Main window started hidden by autostart");
+            DesktopLog.Info("Main window started hidden by autostart - deferring WebView creation");
+        }
+
+        // Creating WebView2 while the window is still Hidden often leaves a blank
+        // compositor surface. Defer until the first tray/taskbar show instead.
+        if (DesktopWebViewStartupWarmup.ShouldDeferWebViewCreation(_startHidden))
+        {
+            DesktopLog.Info("Deferred WebView2 creation until the first visible show");
+            return;
         }
 
         await CreateWebViewAsync();
-        if (!_startHidden && !DesktopPerfBench.IsEnabled)
+        if (!DesktopPerfBench.IsEnabled)
         {
             await PresentTaskbarPinSuggestionAsync();
         }
@@ -1039,12 +1144,28 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         }
 
         _taskbarPinSuggestionChecked = true;
+        var installerRequestedPin = DesktopShellIntegrationService.ReadTaskbarPinOption();
         var availability = await _taskbarPinning.GetAvailabilityAsync();
         switch (availability)
         {
             case DesktopTaskbarPinAvailability.AlreadyPinned:
                 CompleteTaskbarPinPrompt();
                 return;
+            case DesktopTaskbarPinAvailability.Available when installerRequestedPin:
+                var pinResult = await _taskbarPinning.RequestPinAsync();
+                if (pinResult is DesktopTaskbarPinResult.Pinned)
+                {
+                    CompleteTaskbarPinPrompt();
+                    return;
+                }
+
+                _taskbarPinManualOnly = true;
+                TaskbarPinTitle.Text = "Закрепите HUB на панели задач";
+                TaskbarPinDetails.Text =
+                    "Windows не смогла закрепить приложение автоматически. Нажмите правой кнопкой на значок HUB в панели задач и выберите «Закрепить на панели задач».";
+                PinTaskbarButton.Content = "Понятно";
+                DismissTaskbarPinButton.Visibility = Visibility.Collapsed;
+                break;
             case DesktopTaskbarPinAvailability.Available:
                 _taskbarPinManualOnly = false;
                 TaskbarPinTitle.Text = "HUB всегда под рукой";
@@ -1148,19 +1269,24 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _initializing = true;
         _lastNavigationStatus = "Initializing";
         ShowLoading();
+        CancelNavigationTimeout();
 
         try
         {
             DisposeDesktopBridge();
+            // RecreateAsync disposes the old control before awaiting initialization.
+            // Timers and window callbacks must not retain that disposed control.
+            _webView = null;
+            _webViewMemoryUsageTargetLevel = null;
             var core = await _webViewHost.RecreateAsync(_recoveryShutdown.Token);
             _webView = _webViewHost.View;
-            _webViewMemoryUsageTargetLevel = null;
             ConfigureWebView(core);
 
             _requiresReset = false;
             _performance.RecordWebViewInitialized(DateTimeOffset.UtcNow);
             DesktopPerfBench.MarkOnce("webview_ready");
             DesktopLog.Info($"WebView2 initialized for {_navigationPolicy.TrustedOriginForLog}");
+            UpdateWebViewZoom();
             core.Navigate(_options.BaseUri.AbsoluteUri);
             return null;
         }
@@ -1214,7 +1340,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             _navigationPolicy,
             _notifications,
             Environment.UserName,
-            new DesktopVncHandlerProbe());
+            new DesktopVncHandlerProbe(),
+            _options.BaseUri);
         _desktopBridge.Ready += DesktopBridge_Ready;
         _desktopBridge.ThemeChanged += DesktopBridge_ThemeChanged;
         _desktopBridge.OpenDownloadedFileRequested += DesktopBridge_OpenDownloadedFileRequested;
@@ -1228,6 +1355,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.OpenFileDialogRequested += DesktopBridge_OpenFileDialogRequested;
         _windowManager.MailComposeSent += WindowManager_MailComposeSent;
         ApplyWebViewMemoryUsageTarget(core);
         if (DesktopPerfBench.IsEnabled)
@@ -1268,31 +1396,38 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         object? sender,
         CoreWebView2NavigationCompletedEventArgs e)
     {
-        CancelNavigationTimeout();
-        LoadingIndicator.Visibility = Visibility.Collapsed;
-
-        if (e.IsSuccess)
+        try
         {
-            _lastNavigationStatus = "Success";
-            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
-            DesktopPerfBench.MarkOnce("navigation_completed");
-            RecordBenchProcessSnapshot("navigation_completed_processes");
-            HideError();
-            SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
-            MaybeStartBenchFrontendProbe();
-            return;
-        }
+            CancelNavigationTimeout();
+            LoadingIndicator.Visibility = Visibility.Collapsed;
 
-        DesktopLog.Warning($"Navigation failed with status '{e.WebErrorStatus}'");
-        var status = e.WebErrorStatus.ToString();
-        _lastNavigationStatus = $"Failed:{status}";
-        _lastNavigationAtUtc = DateTimeOffset.UtcNow;
-        var failure = status.Contains("Certificate", StringComparison.OrdinalIgnoreCase)
-            ? WebViewFailureKind.Certificate
-            : status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
-                ? WebViewFailureKind.NavigationTimeout
-                : WebViewFailureKind.Network;
-        await RecoverWebViewAsync(failure);
+            if (e.IsSuccess)
+            {
+                _lastNavigationStatus = "Success";
+                _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+                DesktopPerfBench.MarkOnce("navigation_completed");
+                RecordBenchProcessSnapshot("navigation_completed_processes");
+                HideError();
+                SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
+                MaybeStartBenchFrontendProbe();
+                return;
+            }
+
+            DesktopLog.Warning($"Navigation failed with status '{e.WebErrorStatus}'");
+            var status = e.WebErrorStatus.ToString();
+            _lastNavigationStatus = $"Failed:{status}";
+            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+            var failure = status.Contains("Certificate", StringComparison.OrdinalIgnoreCase)
+                ? WebViewFailureKind.Certificate
+                : status.Equals("Timeout", StringComparison.OrdinalIgnoreCase)
+                    ? WebViewFailureKind.NavigationTimeout
+                    : WebViewFailureKind.Network;
+            await RecoverWebViewAsync(failure);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("WebView2 navigation completed handler failed", exception);
+        }
     }
 
     private void Core_HistoryChanged(object? sender, object e)
@@ -1345,21 +1480,28 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private async void Core_ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        CancelNavigationTimeout();
-        _performance.RecordWebViewProcessFailure();
-        _lastNavigationStatus = $"ProcessFailed:{e.ProcessFailedKind}";
-        _lastNavigationAtUtc = DateTimeOffset.UtcNow;
-        DesktopLog.Warning($"WebView2 process failed: {e.ProcessFailedKind}");
-        var failure = e.ProcessFailedKind switch
+        try
         {
-            CoreWebView2ProcessFailedKind.RenderProcessExited
-                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
-                WebViewFailureKind.RendererProcessExited,
-            CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
-                WebViewFailureKind.FrameProcessExited,
-            _ => WebViewFailureKind.BrowserProcessExited,
-        };
-        await RecoverWebViewAsync(failure);
+            CancelNavigationTimeout();
+            _performance.RecordWebViewProcessFailure();
+            _lastNavigationStatus = $"ProcessFailed:{e.ProcessFailedKind}";
+            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+            DesktopLog.Warning($"WebView2 process failed: {e.ProcessFailedKind}");
+            var failure = e.ProcessFailedKind switch
+            {
+                CoreWebView2ProcessFailedKind.RenderProcessExited
+                    or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive =>
+                    WebViewFailureKind.RendererProcessExited,
+                CoreWebView2ProcessFailedKind.FrameRenderProcessExited =>
+                    WebViewFailureKind.FrameProcessExited,
+                _ => WebViewFailureKind.BrowserProcessExited,
+            };
+            await RecoverWebViewAsync(failure);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("WebView2 process failed handler failed", exception);
+        }
     }
 
     private void OpenExternalUri(string rawUri)
@@ -1392,6 +1534,23 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             MessageBoxImage.Warning);
     }
 
+    private void MainWindow_DpiChanged(object sender, System.Windows.DpiChangedEventArgs e)
+    {
+        // WebView2 handles monitor scale itself via rasterization scale.
+        // ZoomFactor is a browser-style zoom on top of it; applying DPI here
+        // would double-scale the UI (e.g. 1.25 * 1.25 on a 125% display).
+        var scale = e.NewDpi.DpiScaleX;
+        if (scale > 0)
+        {
+            DesktopLog.Info($"Window DPI changed; scale={scale:F2}");
+        }
+    }
+
+    private void UpdateWebViewZoom()
+    {
+        _webViewHost.SetZoomFactor(_webviewZoom);
+    }
+
     private void DesktopBridge_Ready(object? sender, EventArgs e)
     {
         _lastBridgeHandshakeUtc = DateTimeOffset.UtcNow;
@@ -1399,6 +1558,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         DesktopPerfBench.MarkOnce("bridge_ready");
         SendDesktopWindowForegroundState();
         _windowManager.NotifyBridgeReady(this);
+        PostAccessibilityState();
 
         if (_pendingCommandPalette && _desktopBridge?.TryOpenCommandPalette() == true)
         {
@@ -1408,16 +1568,42 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         if (!DesktopBridgeProtocol.IsValidInternalRoute(_pendingInternalRoute)
             || _desktopBridge?.TryOpenInternalRoute(_pendingInternalRoute) != true)
         {
-            return;
+            _pendingInternalRoute = null;
         }
 
-        _pendingInternalRoute = null;
+        TryPostPendingSharedFiles();
     }
 
     private void DesktopBridge_ThemeChanged(object? sender, DesktopThemeChangedEventArgs e)
     {
-        ApplyChromeTheme(e.Mode);
-        _desktopNotificationWindow.ApplyTheme(e.Mode);
+        if (e.Mode != DesktopThemeMode.HighContrast)
+        {
+            _lastDecorativeThemeMode = e.Mode;
+        }
+
+        var effectiveMode = _accessibility.State.HighContrast
+            ? DesktopThemeMode.HighContrast
+            : _lastDecorativeThemeMode;
+        ApplyChromeTheme(effectiveMode);
+        _desktopNotificationWindow.ApplyTheme(effectiveMode);
+    }
+
+    private void Accessibility_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        var effectiveMode = _accessibility.State.HighContrast
+            ? DesktopThemeMode.HighContrast
+            : _lastDecorativeThemeMode;
+        ApplyChromeTheme(effectiveMode);
+        _desktopNotificationWindow.ApplyTheme(effectiveMode);
+        PostAccessibilityState();
+    }
+
+    private void PostAccessibilityState()
+    {
+        _desktopBridge?.TryPostAccessibility(
+            _accessibility.State.HighContrast,
+            _accessibility.State.ReducedMotion,
+            _accessibility.State.HighContrastScheme);
     }
 
     private void DesktopBridge_OpenDownloadedFileRequested(
@@ -1483,6 +1669,50 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             DesktopMailComposeWindowOpenResult.Busy => "busy",
             _ => "failed",
         };
+    }
+
+    private void DesktopBridge_OpenFileDialogRequested(
+        object? sender,
+        DesktopOpenFileDialogRequestedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = string.IsNullOrWhiteSpace(e.Title) ? "Выберите файл" : e.Title,
+            Multiselect = e.Multiple,
+        };
+
+        if (e.Accept.Count > 0)
+        {
+            dialog.Filter = BuildOpenFileDialogFilter(e.Accept);
+        }
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            e.Paths = Array.Empty<string>();
+            return;
+        }
+
+        e.Paths = e.Multiple
+            ? (IReadOnlyList<string>)dialog.FileNames
+            : new[] { dialog.FileName };
+    }
+
+    private static string BuildOpenFileDialogFilter(IReadOnlyList<string> accept)
+    {
+        var extensions = accept
+            .SelectMany(mime => mime.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries))
+            .Select(part => part.Trim().TrimStart('.'))
+            .Where(part => part.Length > 0 && !part.Contains('*') && !part.Contains('/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (extensions.Count == 0)
+        {
+            return "Все файлы|*.*";
+        }
+
+        var filter = string.Join(";", extensions.Select(ext => $"*.{ext}"));
+        return $"Поддерживаемые файлы|{filter}";
     }
 
     private void WindowManager_MailComposeSent(object? sender, EventArgs e)
@@ -1581,6 +1811,24 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _currentThemeMode = mode;
         _trayMenu.ApplyTheme(mode);
         _downloadsWindow?.ApplyTheme(mode);
+        if (mode == DesktopThemeMode.HighContrast)
+        {
+            SetColorResource("AppBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("TitleBarBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("TitleBarForegroundBrush", System.Windows.SystemColors.WindowTextColor.ToString());
+            SetColorResource("TitleBarBorderBrush", System.Windows.SystemColors.ActiveBorderColor.ToString());
+            SetColorResource("SecondaryTextBrush", System.Windows.SystemColors.GrayTextColor.ToString());
+            SetColorResource("TitleButtonHoverBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("TitleButtonPressedBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("UpdateBannerBackgroundBrush", System.Windows.SystemColors.WindowColor.ToString());
+            SetColorResource("UpdateBannerBorderBrush", System.Windows.SystemColors.ActiveBorderColor.ToString());
+            SetColorResource("UpdateBannerAccentBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("UpdateButtonBackgroundBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("UpdateButtonHoverBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            SetColorResource("UpdateButtonPressedBrush", System.Windows.SystemColors.HighlightColor.ToString());
+            return;
+        }
+
         var isDark = mode == DesktopThemeMode.Dark;
         SetColorResource("AppBackgroundBrush", isDark ? "#0F1115" : "#F3F2F1");
         SetColorResource("TitleBarBackgroundBrush", isDark ? "#11151B" : "#FAF9F8");
@@ -1731,8 +1979,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void ApplyWebViewMemoryUsageTarget(CoreWebView2? core = null)
     {
-        core ??= _webView?.CoreWebView2;
-        if (core is null)
+        var resolved = _webView?.CoreWebView2 ?? core;
+        if (resolved is null)
         {
             return;
         }
@@ -1741,6 +1989,58 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             IsVisible,
             WindowState == WindowState.Minimized,
             IsActive);
+        if (targetLevel == CoreWebView2MemoryUsageTargetLevel.Normal)
+        {
+            _lowMemoryDebounce?.Cancel();
+            SetWebViewMemoryUsageTarget(resolved, targetLevel);
+            return;
+        }
+
+        // Debounce the Low transition: focus flicker during restore/minimize
+        // should not churn renderer GC state.
+        _lowMemoryDebounce?.Cancel();
+        _lowMemoryDebounce = new CancellationTokenSource();
+        var token = _lowMemoryDebounce.Token;
+        _ = Task.Delay(TimeSpan.FromSeconds(8), token).ContinueWith(
+            _ =>
+            {
+                try
+                {
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
+                        var current = _webView?.CoreWebView2;
+                        if (current is null)
+                        {
+                            return;
+                        }
+
+                        var stillLow = DesktopWebViewMemoryPolicy.ResolveTargetLevel(
+                            IsVisible,
+                            WindowState == WindowState.Minimized,
+                            IsActive);
+                        if (stillLow == CoreWebView2MemoryUsageTargetLevel.Low)
+                        {
+                            SetWebViewMemoryUsageTarget(current, stillLow);
+                        }
+                    });
+                }
+                catch (Exception)
+                {
+                    // Dispatcher may already be shut down during window teardown.
+                }
+            },
+            TaskScheduler.Default);
+    }
+
+    private void SetWebViewMemoryUsageTarget(
+        CoreWebView2 core,
+        CoreWebView2MemoryUsageTargetLevel targetLevel)
+    {
         if (_webViewMemoryUsageTargetLevel == targetLevel)
         {
             return;
@@ -1759,6 +2059,66 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             DesktopLog.Warning(
                 $"WebView2 memory usage target is unavailable; " +
                 $"exception={exception.GetType().Name}");
+        }
+    }
+
+    private async Task WarmupWebViewAfterBackgroundStartAsync()
+    {
+        if (!_needsVisibleWarmup
+            || _recoveryInProgress
+            || _initializing
+            || _hardReloadInProgress)
+        {
+            return;
+        }
+
+        _needsVisibleWarmup = false;
+        DesktopLog.Info("Warming up WebView2 after background start");
+        HideError();
+        ShowLoading();
+
+        // Preferred path: create the WebView only now, while the window is visible.
+        if (_webView?.CoreWebView2 is null)
+        {
+            await CreateWebViewAsync();
+            return;
+        }
+
+        // Legacy fallback for builds that already created WebView while hidden.
+        TryKickWebViewVisibility();
+        await Dispatcher.InvokeAsync(
+            TryKickWebViewVisibility,
+            DispatcherPriority.Loaded);
+
+        var currentUri = _webView.Source;
+        var target = currentUri is not null && _navigationPolicy.IsTrustedOrigin(currentUri)
+            ? currentUri
+            : _options.BaseUri;
+        DesktopLog.Info(
+            "Reloading HUB after background start to restore the first visible frame");
+        _webView.CoreWebView2.Navigate(target.AbsoluteUri);
+    }
+
+    private void TryKickWebViewVisibility()
+    {
+        if (_webView is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _webView.UpdateWindowPos();
+            _webView.Visibility = Visibility.Hidden;
+            _webView.Visibility = Visibility.Visible;
+            _webView.UpdateWindowPos();
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or System.Runtime.InteropServices.COMException)
+        {
+            DesktopLog.Warning(
+                $"WebView2 visibility kick failed; exception={exception.GetType().Name}");
         }
     }
 
@@ -1864,6 +2224,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.OpenFileDialogRequested -= DesktopBridge_OpenFileDialogRequested;
         _windowManager.MailComposeSent -= WindowManager_MailComposeSent;
         _desktopBridge.Dispose();
         _desktopBridge = null;
@@ -2057,7 +2418,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         CancelNavigationTimeout();
         var timeout = CancellationTokenSource.CreateLinkedTokenSource(
             _recoveryShutdown.Token);
-        _navigationTimeout = timeout;
+        Interlocked.Exchange(ref _navigationTimeout, timeout);
         _ = MonitorNavigationTimeoutAsync(timeout);
     }
 
@@ -2066,7 +2427,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(45), timeout.Token);
-            if (!ReferenceEquals(_navigationTimeout, timeout))
+            if (!ReferenceEquals(Interlocked.CompareExchange(ref _navigationTimeout, null, timeout), timeout))
             {
                 return;
             }
@@ -2083,8 +2444,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void CancelNavigationTimeout()
     {
-        var timeout = _navigationTimeout;
-        _navigationTimeout = null;
+        var timeout = Interlocked.Exchange(ref _navigationTimeout, null);
         if (timeout is null)
         {
             return;
@@ -2567,13 +2927,12 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(() => ShowPersistentNotification(request));
-            return true;
+            return (bool)Dispatcher.Invoke(() => ShowPersistentNotification(request));
         }
 
         try
         {
-            _desktopNotificationWindow.ShowNotification(request);
+            _desktopNotificationWindow.ShowNotification(request, _accessibility.State.ReducedMotion);
             DesktopLog.Info("Persistent desktop notification shown");
             return true;
         }
@@ -2596,14 +2955,46 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         Application.Current.Shutdown();
     }
 
+    private void Window_PreviewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            e.Effects = System.Windows.DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
+    private void Window_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            return;
+        }
+
+        var paths = e.Data.GetData(System.Windows.DataFormats.FileDrop) as string[];
+        if (paths is null || paths.Length == 0)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _desktopBridge?.TryPostFileDropped(paths);
+        DesktopLog.Info($"Files dropped on window; count={paths.Length}");
+    }
+
     private void Window_Closed(object? sender, EventArgs e)
     {
         _performanceTimer.Stop();
         _performanceTimer.Tick -= PerformanceTimer_Tick;
         _downloadFailureTimer.Stop();
         _downloadFailureTimer.Tick -= DownloadFailureTimer_Tick;
+        _accessibility.State.PropertyChanged -= Accessibility_PropertyChanged;
+        _accessibility.Dispose();
+        DpiChanged -= MainWindow_DpiChanged;
         _downloads.Changed -= Downloads_Changed;
         CancelNavigationTimeout();
+        _lowMemoryDebounce?.Cancel();
+        _lowMemoryDebounce?.Dispose();
         _recoveryShutdown.Cancel();
         _windowSource?.RemoveHook(WindowMessageHook);
         _globalHotkey.Dispose();
@@ -2637,8 +3028,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _downloadsWindow = null;
         _desktopNotificationWindow.Close();
         DisposeDesktopBridge();
-        _webViewHost.Dispose();
         _webView = null;
+        _webViewHost.Dispose();
         _recoveryShutdown.Dispose();
     }
 
@@ -2758,6 +3149,13 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         {
             _settingsStore.Save(candidate);
             _notificationSettings = candidate;
+            if (Math.Abs(candidate.WebViewZoom - _webviewZoom) > 0.001)
+            {
+                _webviewZoom = candidate.WebViewZoom;
+                UpdateWebViewZoom();
+                DesktopLog.Info($"WebView zoom changed to {_webviewZoom:F2}");
+            }
+
             if (!candidate.GlobalHotkeyEnabled)
             {
                 _globalHotkey.Unregister();

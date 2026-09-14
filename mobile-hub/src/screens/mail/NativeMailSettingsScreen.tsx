@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -46,6 +46,7 @@ export function NativeMailSettingsScreen() {
   const [mailboxId, setMailboxId] = useState(first(params.mailboxId));
   const [mailboxes, setMailboxes] = useState<MailMailbox[]>([]);
   const [config, setConfig] = useState<NativeMailConfig | null>(null);
+  const requestRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState('');
@@ -67,9 +68,11 @@ export function NativeMailSettingsScreen() {
   const [viewSettingsDraft, setViewSettingsDraft] = useState<NativeMailPreferences>(DEFAULT_NATIVE_MAIL_PREFERENCES);
   const [viewSettingsError, setViewSettingsError] = useState('');
   const credentialsUsePrimaryAccount = String(config?.auth_mode || '').trim().toLowerCase() === 'primary_credentials';
-  const credentialsEditable = Boolean(config) && !credentialsUsePrimaryAccount && !offlineMode;
+  const configReady = Boolean(config && (!mailboxId || String(config.mailbox_id || '') === mailboxId));
+  const credentialsEditable = configReady && !credentialsUsePrimaryAccount && !offlineMode;
 
   const load = useCallback(async () => {
+    const request = ++requestRef.current;
     if (!allowed) {
       setLoading(false);
       return;
@@ -84,6 +87,10 @@ export function NativeMailSettingsScreen() {
           .then((value) => ({ value, cause: null }))
           .catch((cause: unknown) => ({ value: null, cause })),
       ]);
+      if (request !== requestRef.current) return;
+      if (mailboxId && String(selectedConfig.mailbox_id || '') !== mailboxId) {
+        throw new Error('Настройки не соответствуют выбранному почтовому ящику. Повторите загрузку.');
+      }
       const active = items.filter((item) => item.is_active !== false);
       setMailboxes(active);
       setConfig(selectedConfig);
@@ -100,13 +107,16 @@ export function NativeMailSettingsScreen() {
         if (selected) setMailboxId(selected);
       }
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось загрузить настройки почты.'));
+      if (request === requestRef.current) setError(formatApiError(cause, 'Не удалось загрузить настройки почты.'));
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }, [allowed, mailboxId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -123,16 +133,16 @@ export function NativeMailSettingsScreen() {
   }, [credentialsSaving]);
 
   const openCredentials = useCallback(() => {
-    if (!config || String(config.auth_mode || '').trim().toLowerCase() === 'primary_credentials') return;
+    if (!configReady || !config || offlineMode || String(config.auth_mode || '').trim().toLowerCase() === 'primary_credentials') return;
     setCredentialsLogin(String(config.mailbox_login || config.effective_mailbox_login || '').trim());
     setCredentialsEmail(String(config.mailbox_email || '').trim());
     setCredentialsPassword('');
     setCredentialsError('');
     setCredentialsOpen(true);
-  }, [config]);
+  }, [config, configReady, offlineMode]);
 
   const persistCredentials = useCallback(async () => {
-    if (credentialsSaving || offlineMode) return;
+    if (credentialsSaving || offlineMode || !configReady) return;
     if (!credentialsPassword.trim()) {
       setCredentialsError('Введите пароль от корпоративного компьютера.');
       return;
@@ -158,13 +168,14 @@ export function NativeMailSettingsScreen() {
       setCredentialsPassword('');
       setCredentialsSaving(false);
     }
-  }, [credentialsEmail, credentialsLogin, credentialsPassword, credentialsSaving, mailboxId, offlineMode]);
+  }, [configReady, credentialsEmail, credentialsLogin, credentialsPassword, credentialsSaving, mailboxId, offlineMode]);
 
   const openSignature = useCallback(() => {
+    if (!configReady || offlineMode) return;
     setSignatureHtml(String(config?.mail_signature_html || ''));
     setSignatureError('');
     setSignatureOpen(true);
-  }, [config?.mail_signature_html]);
+  }, [config?.mail_signature_html, configReady, offlineMode]);
 
   const closeSignature = useCallback(() => {
     if (signatureSaving) return;
@@ -173,7 +184,7 @@ export function NativeMailSettingsScreen() {
   }, [signatureSaving]);
 
   const persistSignature = useCallback(async () => {
-    if (signatureSaving || offlineMode) return;
+    if (signatureSaving || offlineMode || !configReady) return;
     setSignatureSaving(true);
     setSignatureError('');
     try {
@@ -188,7 +199,7 @@ export function NativeMailSettingsScreen() {
     } finally {
       setSignatureSaving(false);
     }
-  }, [mailboxId, offlineMode, signatureHtml, signatureSaving]);
+  }, [configReady, mailboxId, offlineMode, signatureHtml, signatureSaving]);
 
   const testConnection = useCallback(async () => {
     if (testing || offlineMode) return;
@@ -253,7 +264,18 @@ export function NativeMailSettingsScreen() {
               testID={`native-mail-settings-mailbox-${mailbox.id}`}
               accessibilityRole="button"
               accessibilityState={{ selected: mailboxId === String(mailbox.id) }}
-              onPress={() => { setConfig(null); setMailboxId(String(mailbox.id)); setStatus(''); }}
+              disabled={credentialsSaving || signatureSaving || testing}
+              onPress={() => {
+                if (credentialsSaving || signatureSaving || testing || mailboxId === String(mailbox.id)) return;
+                requestRef.current += 1;
+                setConfig(null);
+                setCredentialsOpen(false);
+                setCredentialsPassword('');
+                setSignatureOpen(false);
+                setSignatureHtml('');
+                setMailboxId(String(mailbox.id));
+                setStatus('');
+              }}
               style={({ pressed }) => [styles.mailboxChip, {
                 backgroundColor: mailboxId === String(mailbox.id) ? tokens.selected : tokens.panelSolid,
                 borderColor: mailboxId === String(mailbox.id) ? tokens.selectedBorder : tokens.borderSoft,
@@ -314,7 +336,7 @@ export function NativeMailSettingsScreen() {
         accessibilityRole="button"
         accessibilityLabel="Изменить HTML подпись почты"
         accessibilityState={{ disabled: !config || offlineMode }}
-        disabled={!config || offlineMode}
+        disabled={!configReady || offlineMode}
         onPress={openSignature}
         style={[styles.secondaryAction, { borderColor: tokens.borderSoft, backgroundColor: tokens.panelSolid, opacity: !config || offlineMode ? 0.5 : 1 }]}
       >

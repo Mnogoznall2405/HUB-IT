@@ -54,6 +54,7 @@ import {
 import { shareNativeText } from '../share/nativeOutgoingShare';
 import { openAndroidBackgroundSettings } from '../system/androidBackgroundSettings';
 import { clearNativeTaskFileCache, getNativeTaskFileCacheSize } from '../tasks/nativeTaskFiles';
+import { clearNativeImageCache } from '../files/nativeImageCache';
 import type { MobileUpdateFeed } from '../updates/mobileUpdate';
 import type { MobileUpdaterState } from '../updates/useMobileUpdater';
 import type { NativeCommandName } from './nativeCommandContract';
@@ -237,6 +238,7 @@ export async function executeNativeCommand(
       ]);
       return getOfflineState(user);
     case 'offline.clearFileCache':
+      await clearNativeImageCache();
       clearAttachmentCache();
       clearNativeMailCache();
       clearNativeTaskFileCache();

@@ -62,6 +62,9 @@ def test_enrich_equipment_current_acts_maps_latest_downloadable_act_in_one_batch
     assert "as matches_current_act" not in normalized_sql
     assert "convert(nvarchar(32), d.doc_no)" in normalized_sql
     assert "n'[^0-9]%'" in normalized_sql
+    assert "n'%[^0-9]' + convert(nvarchar(32), d.doc_no)" in normalized_sql
+    assert "like n'акт%'" in normalized_sql
+    assert "lower(coalesce(d.addinfo, n'')) + n' ' like n'%[^0-9]'" in normalized_sql
     assert "d.empl_no is null" in normalized_sql
     assert "dateadd(" in normalized_sql
     assert "minute, -10, current_owner.current_owner_since" in normalized_sql

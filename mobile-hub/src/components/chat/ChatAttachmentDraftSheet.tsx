@@ -1,4 +1,7 @@
+import { useContext } from 'react';
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
@@ -18,6 +21,7 @@ export function ChatAttachmentDraftSheet({
   error,
   onChangeCaption,
   onRemove,
+  onEdit,
   onCancel,
   onSend,
 }: {
@@ -29,11 +33,13 @@ export function ChatAttachmentDraftSheet({
   error?: string;
   onChangeCaption: (value: string) => void;
   onRemove: (index: number) => void;
+  onEdit?: (index: number) => void;
   onCancel: () => void;
   onSend: () => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  const insets = useContext(SafeAreaInsetsContext);
   const progressText = progress == null ? '' : ` ${Math.round(progress * 100)}%`;
 
   return (
@@ -43,14 +49,14 @@ export function ChatAttachmentDraftSheet({
       animationType={reduceMotion ? 'none' : 'slide'}
       onRequestClose={busy ? undefined : onCancel}
     >
-      <View style={styles.backdrop}>
+      <ChatKeyboardAvoidingHost style={styles.backdrop}>
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={busy ? undefined : onCancel}
           accessibilityRole="button"
           accessibilityLabel="Закрыть предпросмотр вложений"
         />
-        <View style={styles.sheet} accessibilityViewIsModal>
+        <View style={[styles.sheet, { paddingBottom: Math.max(20, (insets?.bottom || 0) + 12) }]} accessibilityViewIsModal>
           <View style={styles.header}>
             <Text style={styles.title}>{files.length > 1 ? `Выбрано файлов: ${files.length}` : 'Вложение'}</Text>
             <Pressable
@@ -64,7 +70,7 @@ export function ChatAttachmentDraftSheet({
             </Pressable>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.files}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={styles.files}>
             {files.map((file, index) => (
               <View key={`${file.uri}:${index}`} style={styles.fileCard}>
                 {file.mimeType.startsWith('image/') ? (
@@ -74,6 +80,11 @@ export function ChatAttachmentDraftSheet({
                 )}
                 <Text numberOfLines={1} style={styles.fileName}>{file.name}</Text>
                 <Text style={styles.fileSize}>{fileSizeLabel(file.size)}</Text>
+                {onEdit && file.mimeType.startsWith('image/') ? <Pressable disabled={busy}
+                  onPress={() => onEdit(index)} style={styles.edit}
+                  accessibilityRole="button" accessibilityLabel={`Редактировать ${file.name}`}>
+                  <Text style={styles.cancelText}>Редактировать</Text>
+                </Pressable> : null}
                 <Pressable
                   disabled={busy}
                   onPress={() => onRemove(index)}
@@ -88,6 +99,7 @@ export function ChatAttachmentDraftSheet({
             ))}
           </ScrollView>
 
+          <Text style={styles.captionLabel}>Подпись к вложениям</Text>
           <TextInput
             value={caption}
             onChangeText={onChangeCaption}
@@ -110,7 +122,7 @@ export function ChatAttachmentDraftSheet({
             <Text style={styles.sendText}>{busy ? `Отправляем${progressText}` : error ? 'Повторить' : 'Отправить'}</Text>
           </Pressable>
         </View>
-      </View>
+      </ChatKeyboardAvoidingHost>
     </Modal>
   );
 }
@@ -131,6 +143,8 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   headerButton: { minWidth: 48, minHeight: 44, alignItems: 'flex-end', justifyContent: 'center' },
   cancelText: { color: chatTokens.accentText, fontSize: 15, fontWeight: '600' },
   files: { gap: 10, paddingVertical: 10 },
+  edit: { minHeight: 44, justifyContent: 'center' },
+  captionLabel: { color: chatTokens.textSecondary, fontSize: 13, marginTop: 4 },
   fileCard: { width: 126, position: 'relative' },
   preview: { width: 126, height: 126, borderRadius: 12, backgroundColor: chatTokens.sidebarSearchBg },
   fileIcon: { width: 126, height: 126, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: chatTokens.sidebarSearchBg },

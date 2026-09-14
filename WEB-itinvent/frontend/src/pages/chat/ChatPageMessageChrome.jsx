@@ -3,6 +3,7 @@ import { Alert } from '@mui/material';
 import { CHAT_FILE_ACCEPT } from '../../components/chat/chatHelpers';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import AiMailActionEditDialog from './AiMailActionEditDialog';
+import OpenCodeMyFilesPicker from '../../components/chat/OpenCodeMyFilesPicker';
 
 export default function ChatPageMessageChrome({
   isPhone = false,
@@ -15,11 +16,14 @@ export default function ChatPageMessageChrome({
   onSubmitMailActionEdit,
   healthError = '',
   activeAiLiveDataNotice = null,
+  sandboxScope = '',
+  filesBusy = false,
 }) {
   const alertSx = { borderRadius: isPhone ? 0 : 3, py: isPhone ? 0.15 : undefined };
 
   return (
     <>
+      {sandboxScope ? <OpenCodeMyFilesPicker key={sandboxScope} onSelectFiles={onSelectFiles} disabled={filesBusy} /> : null}
       <input
         ref={fileInputRef}
         data-testid="chat-file-input"

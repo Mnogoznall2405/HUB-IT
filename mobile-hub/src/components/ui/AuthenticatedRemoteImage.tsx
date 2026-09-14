@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type ComponentProps } from 'react';
+import { Image, type ImageSource } from 'expo-image';
 import {
-  Image,
   StyleSheet,
   View,
   type ImageResizeMode,
@@ -8,9 +8,15 @@ import {
   type StyleProp,
 } from 'react-native';
 import { getAuthenticatedRequestHeaders } from '../../files/authenticatedRequestHeaders';
-import { subscribeAccessTokenChanges } from '../../auth/tokenStore';
+import { getSessionGeneration, getSessionUserId, subscribeAccessTokenChanges } from '../../auth/tokenStore';
+import { nativeImageCacheKey, removeNativeImageCacheEntry } from '../../files/nativeImageCache';
+import { resolveAttachmentUrl } from '../../utils/attachmentUrl';
 
-export function AuthenticatedRemoteImage({
+export function AuthenticatedRemoteImage(props: ComponentProps<typeof ProtectedImage>) {
+  return <ProtectedImage key={props.uri} {...props} />;
+}
+
+function ProtectedImage({
   uri,
   style,
   accessibilityLabel,
@@ -23,7 +29,7 @@ export function AuthenticatedRemoteImage({
   resizeMode?: ImageResizeMode;
   fallback?: ReactNode;
 }) {
-  const [headers, setHeaders] = useState<Record<string, string> | null>(null);
+  const [source, setSource] = useState<ImageSource | null>(null);
   const [failed, setFailed] = useState(false);
   const [requestVersion, setRequestVersion] = useState(0);
   const mountedRef = useRef(false);
@@ -40,24 +46,46 @@ export function AuthenticatedRemoteImage({
 
   const loadHeaders = useCallback(async (forceRefresh = false) => {
     const requestId = ++requestIdRef.current;
+    const generation = getSessionGeneration();
+    const current = () => mountedRef.current && requestId === requestIdRef.current
+      && generation === getSessionGeneration();
     try {
+      const trustedUri = resolveAttachmentUrl(uri);
+      if (!trustedUri) throw new Error('Недопустимый адрес изображения');
+      const userId = Number(await getSessionUserId());
+      const cacheKey = nativeImageCacheKey(userId, trustedUri);
+      if (!current()) return;
+      if (forceRefresh) {
+        await removeNativeImageCacheEntry(cacheKey);
+        if (!current()) return;
+      }
+      if (!forceRefresh) {
+        // Read cached files before requesting fresh credentials, including offline cold starts.
+        const cached = await Image.getCachePathAsync(cacheKey).catch(() => null);
+        if (!current()) return;
+        if (cached) {
+          setSource({ uri: cached.startsWith('file:') ? cached : `file://${cached}`, cacheKey });
+          setFailed(false);
+          return;
+        }
+      }
       const next = await getAuthenticatedRequestHeaders({
         forceRefresh,
         preserveSessionOnRefreshFailure: forceRefresh,
       });
-      if (!mountedRef.current || requestId !== requestIdRef.current) return;
-      setHeaders(next);
+      if (!current()) return;
+      setSource({ uri: trustedUri, headers: next, cacheKey });
       setFailed(false);
       if (forceRefresh) setRequestVersion((value) => value + 1);
     } catch {
-      if (mountedRef.current && requestId === requestIdRef.current) setFailed(true);
+      if (current()) setFailed(true);
     }
-  }, []);
+  }, [uri]);
 
   useEffect(() => {
     refreshAttemptedRef.current = false;
     setFailed(false);
-    setHeaders(null);
+    setSource(null);
     setRequestVersion(0);
     void loadHeaders();
     return () => {
@@ -66,7 +94,12 @@ export function AuthenticatedRemoteImage({
   }, [loadHeaders, uri]);
 
   useEffect(() => subscribeAccessTokenChanges((accessToken) => {
-    if (!accessToken) return;
+    if (!accessToken) {
+      requestIdRef.current += 1;
+      setSource(null);
+      setFailed(true);
+      return;
+    }
     void loadHeaders();
   }), [loadHeaders]);
 
@@ -79,16 +112,19 @@ export function AuthenticatedRemoteImage({
     void loadHeaders(true);
   };
 
-  if (failed || !headers?.Authorization) {
+  if (failed || !source) {
     return fallback ?? <View style={[styles.placeholder, style]} />;
   }
 
   return (
     <Image
       key={`${uri}:${requestVersion}`}
-      source={{ uri, headers }}
+      source={source}
       style={style}
-      resizeMode={resizeMode}
+      contentFit={resizeMode === 'stretch' ? 'fill' : resizeMode === 'center' ? 'none' : resizeMode === 'repeat' ? 'cover' : resizeMode}
+      cachePolicy={requestVersion > 0 ? 'disk' : source.uri?.startsWith('file:') ? 'memory' : 'memory-disk'}
+      recyclingKey={`${source.cacheKey}:${requestVersion}`}
+      accessible={Boolean(accessibilityLabel)}
       accessibilityLabel={accessibilityLabel}
       onError={handleError}
     />

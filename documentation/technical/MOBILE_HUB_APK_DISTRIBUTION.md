@@ -145,3 +145,27 @@ node scripts/mobile/verify-published-apk.mjs
 
 
 Эмуляторный APK 1.1.27 (29) также собран и выложен отдельным файлом: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.27/HUB-IT-Mobile-Emulator-x86_64-1.1.27.apk . Только ABI x86_64, 49175320 байт, SHA-256 01ffe1c1ca54ac2bf7ac706f13734d257bec9294d3ad7b6125046f74e60f068d, прежняя подпись. Внешнее скачивание HTTP200, размер и SHA-256 совпали. Телефонный latest не изменён этим дополнительным файлом. Встроенные assets/index.android.bundle обеих сборок идентичны: SHA-256 36d0645315526120dd39c5b1b349411b273d19bfd1e90437f256cb7d2f60abe3. Локально mobile-hub/dist/hubit-mobile-emulator-x86_64.apk и audit.json. Эмулятор не устанавливался и APK на Android не запускался.
+
+### 08.09 — офлайн-чат, preview 1.1.28 (30)
+
+Из отдельной ветки `fix/chat-offline-history-safety-2026-09-07` перенесены история, очередь и навигация нативного чата. Дополнительно восстановлены повтор/отмена файлов в карточке и отправка ответа без недоступной цитаты; ручной повтор защищён от устаревшего экрана после смены прав. Экранные тесты учитывают асинхронную очередь и FIFO.
+
+Проверки: TypeScript PASS; 26/26 Node regression; 110/110 экранных тестов; полный Jest 271/271 наборов, 1681/1681 тестов PASS с блокировкой удалённых соединений. Expo Doctor 20/21: девять Expo-пакетов отстают на patch-версию; зависимости не обновлялись. ADB: устройств нет.
+
+Штатная локальная preview-сборка с `-SkipPrebuild -AllowDebugSigning` завершилась за 18m06s: 681 задача, 95 выполнено. Android Gradle версия синхронизирована с package/release notes. APK ARM64/ARMv7, 65365444 байта (62.34 MiB), SHA-256 `f33b04b3daf0dade7bdff2f36adbe22002bc3e2186049d3dd11358087979bb8a`. Подпись v2 проверена, прежний signer `fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c`, режим `debug-preview` для совместимого внутреннего обновления.
+
+`appcmd` подтвердил IIS `hubit/desktop-updates/` → `C:\inetpub\wwwroot\hub-desktop-updates`; выполнен ValidateOnly. После разрешённой публикации `verify-published-apk.mjs` независимо скачал manifest/APK: HTTP200, MIME корректен, версия 1.1.28/30, размер/hash совпали, verified=true. Range 0–1023: HTTP206, 1024 байта. Серверные процессы и IIS-конфигурация не изменялись.
+
+APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.28/HUB-IT-Mobile-Preview-1.1.28.apk
+Локально: `mobile-hub/dist/hubit-mobile-preview.apk`, соседний audit JSON. Исходники остались в рабочем дереве без коммита/push. Результаты проверок: `artifacts/mobile/offline-*`.
+
+Не проверены установка и реальное поведение на Android: airplane-mode/reconnect, смена приложения, биометрическая блокировка и доставка вложений. Новый x86_64 APK не выпускался.
+Rollback: scripts/mobile/manage-apk-feed.ps1 -IisUpdateRoot 'C:\inetpub\wwwroot\hub-desktop-updates' -Action RestoreManifest -HistoryManifestPath 'C:\inetpub\wwwroot\hub-desktop-updates\mobile\preview\.manifest-history\latest-20260908-041710-60835522dec24fc3bc72cb5dd003ee09.json'. Сохранённый manifest проверен: версия 1.1.27 (29); прежний каталог APK оставлен.
+
+### 08.09 — публикация preview 1.1.31 (33)
+
+По отдельному разрешению опубликован собранный APK 1.1.31 с исправлениями офлайн-переходов, кэша и очередей. Предварительно прошли 275 наборов / 1718 тестов, TypeScript, сборка и validate-only. Подпись прежняя debug-preview; минимальная поддерживаемая версия сохранена: 1.
+
+Публичный post-check: manifest и APK — HTTP 200, корректные MIME, 65 429 712 байт, SHA256 `ae4e43a4b53fb9b819034b5ed3fa56d0a66cb4a763c0ed07b930f723290973db`; Range — 206 / 1024 байта. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.31/HUB-IT-Mobile-Preview-1.1.31.apk .
+
+Предыдущий manifest 1.1.28 сохранён в `.manifest-history/latest-20260908-060457-edc7ae39402645cea1be60f3e51ca072.json` и локально в `artifacts/mobile/publish-1.1.31/latest-before.json`. Результаты публикации и внешних проверок находятся в `artifacts/mobile/publish-1.1.31/`. Настройки IIS и процессы не изменялись. Установка/автообновление на физическом устройстве не проверены.
