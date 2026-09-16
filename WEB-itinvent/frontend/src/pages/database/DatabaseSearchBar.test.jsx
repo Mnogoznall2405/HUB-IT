@@ -28,6 +28,23 @@ describe('DatabaseSearchBar', () => {
     expect(screen.queryByRole('button', { name: 'Оборудование' })).not.toBeInTheDocument();
   });
 
+  it('uses 44px touch targets in compact mode', () => {
+    render(
+      <DatabaseSearchBar
+        compact
+        value=""
+        theme={theme}
+        onSearchScopeChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Карточки' })).toHaveStyle({ minHeight: '44px' });
+    expect(screen.getByRole('button', { name: 'Акты' })).toHaveStyle({ minHeight: '44px' });
+    expect(
+      screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...').closest('.MuiOutlinedInput-root')
+    ).toHaveStyle({ height: '44px' });
+  });
+
   it('uses the consumables placeholder in consumables mode', () => {
     render(<DatabaseSearchBar isConsumablesMode value="" theme={theme} />);
 

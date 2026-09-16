@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,6 +35,10 @@ const mockApi = vi.hoisted(() => ({
     searchByEmployee: vi.fn(),
     getEmployeeEquipment: vi.fn(),
   },
+  warehouse1cAPI: {
+    getEmployeeCompareSummary: vi.fn(),
+  },
+  grantedPermissions: new Set(['database.read', 'database.write']),
 }));
 
 vi.mock('../api/client', () => ({
@@ -59,9 +63,20 @@ vi.mock('../api/json_client', () => ({
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, role: 'admin', username: 'admin' },
-    hasPermission: (permission) => permission === 'database.read' || permission === 'database.write',
+    hasPermission: (permission) => mockApi.grantedPermissions.has(permission),
   }),
 }));
+
+vi.mock('../api/warehouse1c', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    warehouse1cAPI: {
+      ...actual.warehouse1cAPI,
+      getEmployeeCompareSummary: mockApi.warehouse1cAPI.getEmployeeCompareSummary,
+    },
+  };
+});
 
 vi.mock('../contexts/NotificationContext', () => ({
   useNotification: () => ({
@@ -162,6 +177,13 @@ function installIntersectionObserverMock() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockApi.grantedPermissions.clear();
+  mockApi.grantedPermissions.add('database.read');
+  mockApi.grantedPermissions.add('database.write');
+  mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+    meta: { status: 'ok' },
+    items: [],
+  });
   clearSWRCache();
   installMatchMedia({ mobile: false });
   installIntersectionObserverMock();
@@ -386,6 +408,8 @@ describe('Database equipment row helpers', () => {
     expect(await screen.findByTestId('database-mobile-control-strip')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'QR' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Ещё' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Оборудование' })).toHaveStyle({ minHeight: '44px' });
+    expect(screen.getByRole('tab', { name: 'Расходники' })).toHaveStyle({ minHeight: '44px' });
     expect(screen.queryByRole('button', { name: 'Open actions' })).not.toBeInTheDocument();
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'hidden');
   });
@@ -401,6 +425,46 @@ describe('Database equipment row helpers', () => {
     fireEvent.click(screen.getByText('HQ'));
 
     expect(await screen.findByRole('button', { name: 'Свернуть разделы' })).toBeInTheDocument();
+  });
+
+  it('keeps pagination alive while a search misses already loaded pages', async () => {
+    let intersectionCallback = null;
+    class CapturingIntersectionObserver {
+      constructor(callback) {
+        intersectionCallback = callback;
+      }
+
+      observe() {}
+
+      disconnect() {}
+    }
+    window.IntersectionObserver = CapturingIntersectionObserver;
+
+    renderDatabase();
+
+    // Страница 1 + prefetch страницы 2; страница 3 ещё не загружена.
+    await waitFor(() => expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 2 }),
+    ));
+    expect(await screen.findByText('HQ')).toBeInTheDocument();
+
+    const searchInput = screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...');
+    fireEvent.change(searchInput, { target: { value: 'Latitude' } });
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    // Активный поиск не прячет sentinel и не запускает 1С fallback,
+    // пока не загружены все страницы Хаба.
+    expect(await screen.findByTestId('equipment-load-more-sentinel')).toBeInTheDocument();
+    expect(mockApi.equipmentSearchAPI.searchByEmployee).not.toHaveBeenCalled();
+
+    await act(async () => {
+      intersectionCallback?.([{ isIntersecting: true }]);
+    });
+
+    await waitFor(() => expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 3 }),
+    ));
+    expect(await screen.findByText('Latitude')).toBeInTheDocument();
   });
 
   it('shows equipment part number in the desktop table', async () => {
@@ -1099,5 +1163,64 @@ describe('Database equipment row helpers', () => {
         isModalOpen: true,
       }).action
     ).toBe('idle');
+  });
+
+  it('waits for database readiness before any cold data requests', async () => {
+    mockApi.grantedPermissions.add('warehouse_1c.read');
+    let resolveCurrentDb;
+    let resolveFirstPage;
+    mockApi.databaseAPI.getCurrentDatabase.mockImplementation(
+      () => new Promise((resolve) => { resolveCurrentDb = resolve; }),
+    );
+    mockApi.equipmentAPI.getAllEquipmentGrouped.mockImplementation(
+      () => new Promise((resolve) => { resolveFirstPage = resolve; }),
+    );
+
+    renderDatabase();
+
+    await waitFor(() => {
+      expect(mockApi.databaseAPI.getCurrentDatabase).toHaveBeenCalled();
+    });
+    expect(mockApi.equipmentAPI.getAllEquipmentGrouped).not.toHaveBeenCalled();
+    expect(mockApi.equipmentAPI.getRecentCards).not.toHaveBeenCalled();
+    expect(mockApi.equipmentAPI.getRecentActs).not.toHaveBeenCalled();
+    expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveCurrentDb({ id: 'main', name: 'Основная база' });
+    });
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledTimes(1);
+      expect(mockApi.equipmentAPI.getRecentCards).toHaveBeenCalledTimes(1);
+      expect(mockApi.equipmentAPI.getRecentActs).toHaveBeenCalledTimes(1);
+    });
+    expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveFirstPage({
+        grouped: {
+          HQ: {
+            Office: [
+              {
+                ID: 1,
+                INV_NO: '1001',
+                MODEL_NAME: 'OptiPlex',
+                OWNER_DISPLAY_NAME: 'Иванов И.И.',
+                BRANCH_NAME: 'HQ',
+                LOCATION_NAME: 'Office',
+              },
+            ],
+          },
+        },
+        total: 1,
+        pages: 1,
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalledTimes(1);
+    });
+    expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledTimes(1);
   });
 });

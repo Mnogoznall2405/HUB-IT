@@ -100,6 +100,30 @@ def isolate_chat_db_engines():
     _reset_local_store_test_singleton()
 
 
+@pytest.fixture(autouse=True)
+def isolate_equipment_payload_cache():
+    """In-process equipment/dict/schema caches must not leak between tests."""
+    modules = (
+        sys.modules.get("backend.database.equipment_db"),
+        sys.modules.get("backend.database.queries"),
+        sys.modules.get("backend.database.equipment_directory_reads"),
+    )
+    caches = [
+        getattr(module, attr)
+        for module, attr in (
+            (modules[0], "_equipment_payload_cache"),
+            (modules[1], "_table_columns_cache"),
+            (modules[2], "_locations_branch_column_cache"),
+        )
+        if module is not None and isinstance(getattr(module, attr, None), dict)
+    ]
+    for cache in caches:
+        cache.clear()
+    yield
+    for cache in caches:
+        cache.clear()
+
+
 @pytest.fixture
 def mock_update():
     """Mock Telegram Update"""

@@ -26,13 +26,14 @@ import { readQty } from './databaseRecordModel';
 import { toItemId } from './detailModel';
 import { sortEquipmentItems } from './databaseListModel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
+import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
 
-const TABLE_VIRTUALIZE_THRESHOLD = 120;
+const TABLE_VIRTUALIZE_THRESHOLD = 40;
 const TABLE_MAX_HEIGHT = 520;
 const TABLE_WIDTHS = {
   consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 96 },
-  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, act: 56, status: 110, actions: 56 },
-  equipmentMobile: { inv: 130, employee: 210, act: 56, status: 110, actions: 56 },
+  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, compare: 64, act: 56, status: 110, actions: 56 },
+  equipmentMobile: { inv: 130, employee: 210, compare: 56, act: 56, status: 110, actions: 56 },
 };
 
 const EquipmentRow = memo(function EquipmentRow({
@@ -58,6 +59,7 @@ const EquipmentRow = memo(function EquipmentRow({
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
   const employeeName = String(item.OWNER_DISPLAY_NAME || item.employee_name || '-');
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
+  const compareSummary = useEmployeeCompare(employeeOwnerNo);
   const employeeDept = String(item.OWNER_DEPT || item.employee_dept || '').trim();
   const modelName = String(item.MODEL_NAME || item.model_name || '-');
   const typeName = String(item.TYPE_NAME || item.type_name || '-');
@@ -206,6 +208,15 @@ const EquipmentRow = memo(function EquipmentRow({
       </TableCell>
       <TableCell
         align="center"
+        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
+      >
+        <EmployeeCompareBadge
+          summary={compareSummary}
+          partNo={item.PART_NO || item.part_no || ''}
+        />
+      </TableCell>
+      <TableCell
+        align="center"
         sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
       >
         <EquipmentCurrentActIndicator
@@ -283,7 +294,7 @@ const EquipmentTable = memo(function EquipmentTable({
   const visibleItems = useVirtualization ? sortedItems.slice(startIndex, endIndex) : sortedItems;
   const topSpacerHeight = useVirtualization ? startIndex * rowHeight : 0;
   const bottomSpacerHeight = useVirtualization ? Math.max(0, (sortedItems.length - endIndex) * rowHeight) : 0;
-  const colSpan = isConsumablesMode ? 5 : (isMobile ? 5 : (allowSelection ? 9 : 8));
+  const colSpan = isConsumablesMode ? 5 : (isMobile ? 6 : (allowSelection ? 10 : 9));
   const tableMinWidth = isConsumablesMode
     ? (TABLE_WIDTHS.consumables.inv
       + TABLE_WIDTHS.consumables.type
@@ -293,6 +304,7 @@ const EquipmentTable = memo(function EquipmentTable({
     : isMobile
       ? (TABLE_WIDTHS.equipmentMobile.inv
         + TABLE_WIDTHS.equipmentMobile.employee
+        + TABLE_WIDTHS.equipmentMobile.compare
         + TABLE_WIDTHS.equipmentMobile.act
         + TABLE_WIDTHS.equipmentMobile.status
         + TABLE_WIDTHS.equipmentMobile.actions)
@@ -303,6 +315,7 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipment.type
         + TABLE_WIDTHS.equipment.model
         + TABLE_WIDTHS.equipment.employee
+        + TABLE_WIDTHS.equipment.compare
         + TABLE_WIDTHS.equipment.act
         + TABLE_WIDTHS.equipment.status
         + TABLE_WIDTHS.equipment.actions);
@@ -446,6 +459,12 @@ const EquipmentTable = memo(function EquipmentTable({
                   >
                     Сотрудник
                   </TableSortLabel>
+                </TableCell>
+                <TableCell
+                  align="center"
+                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
+                >
+                  1С
                 </TableCell>
                 <TableCell
                   align="center"

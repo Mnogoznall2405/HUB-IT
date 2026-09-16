@@ -9,9 +9,14 @@ from typing import List, Dict, Optional
 import logging
 import os
 
-from backend.api.deps import get_current_active_user
+from backend.api.deps import get_current_active_user, require_any_permission
 from backend.database.connection import get_database_config, set_user_database, get_user_database
 from backend.models.auth import User
+from backend.services.authorization_service import (
+    PERM_DATABASE_DELETE,
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+)
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
 from backend.config import config
@@ -19,7 +24,15 @@ from backend.config import config
 logger = logging.getLogger(__name__)
 
 
-router = APIRouter()
+_DATABASE_ACCESS_PERMISSIONS = (
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+    PERM_DATABASE_DELETE,
+)
+
+router = APIRouter(
+    dependencies=[Depends(require_any_permission(_DATABASE_ACCESS_PERMISSIONS))]
+)
 
 
 _DB_CATALOG: List[dict] = [
@@ -208,7 +221,6 @@ async def get_current_database(
         return {
             "id": active_db or config.database.database,
             "name": db_config["database"],
-            "host": db_config["host"],
             "source": source,
             "locked": "true" if source == "assigned" else "false",
         }

@@ -88,6 +88,41 @@ describe('useDatabaseEquipmentData', () => {
     );
   });
 
+  it('starts the grouped page fetch without waiting for dictionaries', async () => {
+    let resolveTypes;
+    equipmentAPI.getTypes.mockImplementation(() => new Promise((resolve) => {
+      resolveTypes = resolve;
+    }));
+
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+
+    await waitFor(() => expect(equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledWith({ page: 1, limit: 2 }));
+    await waitFor(() => expect(result.current.initialLoadDone).toBe(true));
+    expect(result.current.initialLoading).toBe(true);
+
+    await act(async () => { resolveTypes([{ type_no: 1 }]); });
+    await waitFor(() => expect(result.current.initialLoading).toBe(false));
+  });
+
+  it('does not start the initial load until enabled', async () => {
+    const { result, rerender } = renderHook(
+      (props) => useDatabaseEquipmentData(props),
+      { initialProps: createProps({ enabled: false, prefetchPages: 0 }) },
+    );
+
+    expect(equipmentAPI.getTypes).not.toHaveBeenCalled();
+    expect(equipmentAPI.getStatuses).not.toHaveBeenCalled();
+    expect(equipmentAPI.getBranchesList).not.toHaveBeenCalled();
+    expect(equipmentAPI.getAllEquipmentGrouped).not.toHaveBeenCalled();
+    expect(result.current.initialLoading).toBe(true);
+
+    rerender(createProps({ enabled: true, prefetchPages: 0 }));
+
+    await waitFor(() => expect(equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.initialLoading).toBe(false));
+    expect(equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledWith({ page: 1, limit: 2 });
+  });
+
   it('ignores pending equipment prefetch after switching to consumables', async () => {
     let finish;
     equipmentAPI.getAllEquipmentGrouped.mockImplementation(({ page }) => page === 1

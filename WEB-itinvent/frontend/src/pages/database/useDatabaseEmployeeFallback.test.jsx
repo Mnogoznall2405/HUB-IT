@@ -81,39 +81,41 @@ describe('useDatabaseEmployeeFallback', () => {
     expect(getEmployeeWarehouse).toHaveBeenCalledWith({
       employeeName: 'Иванов Иван Иванович',
       warehouseRef: '',
-      loadBalances: true,
+      loadBalances: false,
       signal: expect.any(AbortSignal),
     });
     expect(result.current.employees).toEqual([employee]);
     expect(result.current.warehouse).toEqual({ ref: 'wh-1', name: 'Иванов И.И.' });
-    expect(result.current.warehouseQuantity).toBe(3);
+    expect(result.current.warehouseQuantity).toBeNull();
   });
 
-  it('shows 1C quantities for multiple Hub employees before the user chooses one', async () => {
-    searchByEmployee.mockResolvedValue({
-      employees: [
-        { owner_no: 1, name: 'Иванов Иван', equipment_count: 0 },
-        { owner_no: 2, name: 'Иванов Пётр', equipment_count: 3 },
-      ],
-    });
+  it('matches 1C warehouses for multiple Hub employees without loading balances', async () => {
+    const employees = Array.from({ length: 10 }, (_, index) => ({
+      owner_no: index + 1,
+      name: `Иванов Сотрудник ${index + 1}`,
+      equipment_count: 0,
+    }));
+    searchByEmployee.mockResolvedValue({ employees });
     getEmployeeWarehouse.mockImplementation(({ employeeName }) => Promise.resolve({
       status: 'matched',
-      warehouse: { ref: employeeName.includes('Пётр') ? 'wh-2' : 'wh-1', name: employeeName },
+      warehouse: { ref: 'wh-1', name: employeeName },
       candidates: [],
-      balances: [{ qty_balance: employeeName.includes('Пётр') ? 5 : 2 }],
     }));
 
     const { result } = renderHook(() => useDatabaseEmployeeFallback(baseProps));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.employees).toHaveLength(2);
-    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2);
-    expect(getEmployeeWarehouse).toHaveBeenCalledWith(expect.objectContaining({
-      employeeName: 'Иванов Иван',
-      loadBalances: true,
-    }));
-    expect(result.current.employeeWarehouseResults['1'].quantity).toBe(2);
-    expect(result.current.employeeWarehouseResults['2'].quantity).toBe(5);
+    expect(result.current.employees).toHaveLength(10);
+    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(10);
+    for (const call of getEmployeeWarehouse.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ loadBalances: false }));
+    }
+    expect(getEmployeeWarehouse).not.toHaveBeenCalledWith(
+      expect.objectContaining({ loadBalances: true }),
+    );
+    for (const entry of Object.values(result.current.employeeWarehouseResults)) {
+      expect(entry.quantity).toBeNull();
+    }
   });
 
   it('searches 1C by the raw query when the employee is absent from Hub', async () => {
@@ -131,7 +133,7 @@ describe('useDatabaseEmployeeFallback', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(getEmployeeWarehouse).toHaveBeenCalledWith(expect.objectContaining({
       employeeName: 'Иванов',
-      loadBalances: true,
+      loadBalances: false,
     }));
     expect(result.current.warehouseStatus).toBe('ambiguous');
     expect(result.current.warehouseCandidates).toHaveLength(2);

@@ -7,6 +7,7 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
   const [dbName, setDbName] = useState('');
   const [databases, setDatabases] = useState([]);
   const [currentDb, setCurrentDb] = useState(null);
+  const [databaseReady, setDatabaseReady] = useState(false);
 
   const loadDbName = useCallback(async ({ isMounted = () => true } = {}) => {
     let dbId = normalizeDbId(localStorage.getItem('selected_database'));
@@ -32,6 +33,7 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
 
     if (isMounted()) {
       setDbName(dbId);
+      setDatabaseReady(true);
     }
   }, []);
 
@@ -101,6 +103,7 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
     dbName,
     databases,
     currentDb,
+    databaseReady,
     selectedDatabaseName,
     handleDatabaseSelectChange,
   };

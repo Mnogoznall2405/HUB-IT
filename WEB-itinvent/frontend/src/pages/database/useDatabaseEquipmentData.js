@@ -5,6 +5,7 @@ import { buildCacheKey, getOrFetchSWR } from '../../lib/swrCache';
 import {
   DATA_MODE_CONSUMABLES,
   DATA_MODE_EQUIPMENT,
+  mergeCurrentActsIntoGrouped,
 } from './equipmentModel';
 import {
   countGroupedItems,
@@ -49,9 +50,11 @@ const buildModeSnapshot = ({
 });
 
 export function useDatabaseEquipmentData({
+  enabled = true,
   dataMode,
   selectedBranch,
   getDbCacheScope,
+  setFilteredData,
   staleTimeMs = DATABASE_SWR_STALE_TIME_MS,
   pageLimit = DATABASE_EQUIPMENT_PAGE_LIMIT,
   prefetchPages = DATABASE_EQUIPMENT_PREFETCH_PAGES,
@@ -66,6 +69,8 @@ export function useDatabaseEquipmentData({
     [DATA_MODE_EQUIPMENT]: null,
     [DATA_MODE_CONSUMABLES]: null,
   });
+  // ITEMS.ID set already sent to /equipment/current-acts (lazy act column).
+  const currentActsFetchedRef = useRef(new Set());
 
   const [initialLoading, setInitialLoading] = useState(true);
   const [modeLoading, setModeLoading] = useState(false);
@@ -211,6 +216,44 @@ export function useDatabaseEquipmentData({
     };
   }, [getDbCacheScope, pageLimit, staleTimeMs]);
 
+  // Lazy batch for the "current act" column: the list endpoint no longer runs
+  // the heavy enrich CTE; visible rows fetch acts in one call and merge in.
+  const loadCurrentActsForGrouped = useCallback((groupedData, isCurrent) => {
+    if (!groupedData || typeof equipmentAPI.getCurrentActs !== 'function') return;
+
+    const freshIds = [];
+    Object.values(groupedData).forEach((locations) => {
+      Object.values(locations || {}).forEach((items) => {
+        (items || []).forEach((item) => {
+          const id = Number(item?.ID ?? item?.id);
+          if (Number.isFinite(id) && !currentActsFetchedRef.current.has(id)) {
+            currentActsFetchedRef.current.add(id);
+            freshIds.push(id);
+          }
+        });
+      });
+    });
+    if (!freshIds.length) return;
+
+    (async () => {
+      try {
+        const response = await equipmentAPI.getCurrentActs(freshIds);
+        const actsByItemId = {};
+        (response?.items || []).forEach((entry) => {
+          if (entry && entry.item_id != null) actsByItemId[entry.item_id] = entry;
+        });
+        if (typeof isCurrent === 'function' && !isCurrent()) return;
+        const merge = (prev) => mergeCurrentActsIntoGrouped(prev, actsByItemId);
+        setAllEquipment((prev) => merge(prev));
+        setFilteredData?.((prev) => (prev == null ? prev : merge(prev)));
+        // equipment is derived from allEquipment by the selectedBranch effect.
+      } catch (error) {
+        freshIds.forEach((id) => currentActsFetchedRef.current.delete(id));
+        console.error('Error fetching current acts:', error);
+      }
+    })();
+  }, [setFilteredData]);
+
   const loadMoreEquipmentPages = useCallback(({
     startPage = null,
     maxPages = 1,
@@ -250,6 +293,9 @@ export function useDatabaseEquipmentData({
           setLoadedCount(countGroupedItems(nextGrouped));
           return nextGrouped;
         });
+        if (mode === DATA_MODE_EQUIPMENT) {
+          loadCurrentActsForGrouped(mergedChunk, isCurrent);
+        }
       }
 
       setServerTotal(latestServerTotal || 0);
@@ -266,6 +312,7 @@ export function useDatabaseEquipmentData({
     getDbCacheScope,
     serverTotal,
     fetchEquipmentGroupedPage,
+    loadCurrentActsForGrouped,
   ]);
 
   const fetchAllEquipment = useCallback(async ({
@@ -300,6 +347,9 @@ export function useDatabaseEquipmentData({
       setEquipmentPagesTotal(pagesFromServer);
       setNextEquipmentPage(pagesFromServer > 1 ? 2 : null);
       setInitialLoadDone(true);
+      if (mode === DATA_MODE_EQUIPMENT) {
+        loadCurrentActsForGrouped(firstGrouped, isCurrent);
+      }
 
       modeSnapshotsRef.current[mode] = buildModeSnapshot({
         allEquipment: firstGrouped,
@@ -327,6 +377,7 @@ export function useDatabaseEquipmentData({
   }, [
     fetchEquipmentGroupedPage,
     loadMoreEquipmentPages,
+    loadCurrentActsForGrouped,
     pageLimit,
     prefetchPages,
     selectedBranch,
@@ -349,6 +400,7 @@ export function useDatabaseEquipmentData({
   const resetEquipmentData = useCallback(() => {
     generationRef.current += 1;
     loadingMoreRef.current = null;
+    currentActsFetchedRef.current.clear();
     setInitialLoadDone(false);
     setEquipment({});
     setAllEquipment({});
@@ -427,7 +479,7 @@ export function useDatabaseEquipmentData({
   ]);
 
   useEffect(() => {
-    if (initialLoadStartedRef.current) return;
+    if (!enabled || initialLoadStartedRef.current) return;
     initialLoadStartedRef.current = true;
     void (async () => {
       setInitialLoading(true);
@@ -436,13 +488,13 @@ export function useDatabaseEquipmentData({
           fetchEquipmentTypes(),
           fetchStatuses(),
           fetchBranches(),
+          fetchAllEquipment({ force: false, mode: dataModeRef.current }),
         ]);
-        await fetchAllEquipment({ force: false, mode: dataModeRef.current });
       } finally {
         setInitialLoading(false);
       }
     })();
-  }, [fetchEquipmentTypes, fetchStatuses, fetchBranches, fetchAllEquipment]);
+  }, [enabled, fetchEquipmentTypes, fetchStatuses, fetchBranches, fetchAllEquipment]);
 
   return {
     initialLoading,

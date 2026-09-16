@@ -9,6 +9,7 @@ import {
   TRANSFER_OPERATION_ACT_ONLY,
   TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
+  upsertItemInGrouped,
 } from './equipmentModel';
 import {
   buildTransferActOnlyPayload,
@@ -78,6 +79,8 @@ export function useDatabaseTransferAction({
   getOwnerDepartmentsCached,
   getLocationsCached,
   fetchAllEquipment,
+  setAllEquipment,
+  setFilteredData,
   setActionError,
   setSelectedItems,
   detailInvNo = '',
@@ -115,6 +118,29 @@ export function useDatabaseTransferAction({
   const [transferEmailLoading, setTransferEmailLoading] = useState(false);
   const [transferEmailStatus, setTransferEmailStatus] = useState('');
   const [transferEmailError, setTransferEmailError] = useState('');
+
+  // Point refresh: re-fetch only the transferred rows and upsert them into the
+  // grouped cache; falls back to a full refetch if the batch read fails.
+  const refreshTransferredItems = useCallback(async (invNos) => {
+    const list = (Array.isArray(invNos) ? invNos : []).map((v) => String(v || '').trim()).filter(Boolean);
+    if (!list.length || typeof setAllEquipment !== 'function') {
+      await fetchAllEquipment?.({ force: true });
+      return;
+    }
+    try {
+      const fresh = await equipmentAPI.getByInvNos(list);
+      const items = Array.isArray(fresh?.equipment) ? fresh.equipment : [];
+      if (!items.length) {
+        await fetchAllEquipment?.({ force: true });
+        return;
+      }
+      const upsertAll = (prev) => items.reduce(upsertItemInGrouped, prev);
+      setAllEquipment(upsertAll);
+      setFilteredData?.((prev) => (prev == null ? prev : upsertAll(prev)));
+    } catch {
+      await fetchAllEquipment?.({ force: true });
+    }
+  }, [fetchAllEquipment, setAllEquipment, setFilteredData]);
 
   const withTransferOperationId = useCallback((payload, forceNew = false) => {
     const fingerprint = JSON.stringify(payload || {});
@@ -473,7 +499,7 @@ export function useDatabaseTransferAction({
             ) {
               resetDetailHistory?.();
             }
-            await fetchAllEquipment?.({ force: true });
+            await refreshTransferredItems(targetInvNos);
           }
           if (status === 'done') {
             await Promise.resolve(onTransferJobDone?.({
@@ -504,6 +530,7 @@ export function useDatabaseTransferAction({
     fetchAllEquipment,
     onTransferJobDone,
     pollingMaxAttempts,
+    refreshTransferredItems,
     resetDetailHistory,
     setActionError,
     transferOperationMode,
@@ -630,7 +657,7 @@ export function useDatabaseTransferAction({
       ) {
         resetDetailHistory?.();
       }
-      await fetchAllEquipment?.({ force: true });
+      await refreshTransferredItems(targetInvNos);
       setActionError?.(getTransferResultActionError(response, 'Перемещено'));
       return response;
     }
@@ -673,7 +700,7 @@ export function useDatabaseTransferAction({
     ) {
       resetDetailHistory?.();
     }
-    await fetchAllEquipment?.({ force: true });
+    await refreshTransferredItems(targetInvNos);
     setActionError?.(getTransferResultActionError(response, '\u041f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043e'));
     return response;
   }, [
@@ -684,6 +711,7 @@ export function useDatabaseTransferAction({
     newEmployee,
     newEmployeeNo,
     pollTransferActJob,
+    refreshTransferredItems,
     resetDetailHistory,
     selectedItems,
     setActionError,

@@ -36,8 +36,8 @@ function DatabaseMobileControlStrip({
   const actionHover = ui?.actionHover || 'action.selected';
 
   const iconButtonSx = {
-    width: 34,
-    height: 34,
+    width: 44,
+    height: 44,
     borderRadius: '4px',
     border: 'none',
     bgcolor: actionBg,
@@ -70,7 +70,7 @@ function DatabaseMobileControlStrip({
             renderValue={() => branchLabel}
             inputProps={{ 'aria-label': 'Филиал' }}
             sx={{
-              height: 34,
+              height: 44,
               borderRadius: '4px',
               fontSize: '0.78rem',
               bgcolor: actionBg,
@@ -78,7 +78,11 @@ function DatabaseMobileControlStrip({
                 borderColor: borderSoft,
               },
               '& .MuiSelect-select': {
-                py: 0.65,
+                minHeight: '44px !important',
+                boxSizing: 'border-box',
+                display: 'flex',
+                alignItems: 'center',
+                py: '0 !important',
                 pr: '28px !important',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',

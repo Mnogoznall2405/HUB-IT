@@ -114,10 +114,19 @@ class _PyodbcConnectionPool:
         except queue.Empty:
             pass
 
+        should_create = False
         with self._lock:
             if self._created < self._pool_size:
                 self._created += 1
+                should_create = True
+
+        if should_create:
+            try:
                 return self._create_connection()
+            except Exception:
+                with self._lock:
+                    self._created = max(0, self._created - 1)
+                raise
 
         return self._pool.get(timeout=30)
 

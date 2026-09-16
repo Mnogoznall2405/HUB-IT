@@ -42,18 +42,6 @@ const employeeResultKey = (employee) => String(
   employee?.owner_no ?? employee?.name ?? '',
 ).trim();
 
-const sumWarehouseBalances = (balances) => (Array.isArray(balances) ? balances : [])
-  .reduce((total, row) => {
-    const value = Number(
-      row?.qty_balance
-      ?? row?.quantity
-      ?? row?.qty
-      ?? row?.balance
-      ?? 0,
-    );
-    return total + (Number.isFinite(value) ? value : 0);
-  }, 0);
-
 export function useDatabaseEmployeeFallback({
   enabled = false,
   searchQuery = '',
@@ -129,16 +117,14 @@ export function useDatabaseEmployeeFallback({
             const payload = await warehouse1cAPI.getEmployeeWarehouse({
               employeeName: String(employee?.name || '').trim(),
               warehouseRef: '',
-              loadBalances: true,
+              loadBalances: false,
               signal: controller.signal,
             });
             return [employeeResultKey(employee), {
               status: String(payload?.status || ''),
               warehouse: payload?.warehouse || null,
               candidates: Array.isArray(payload?.candidates) ? payload.candidates : [],
-              quantity: payload?.status === 'matched'
-                ? sumWarehouseBalances(payload?.balances)
-                : null,
+              quantity: null,
               error: '',
             }];
           } catch (error) {
@@ -187,7 +173,7 @@ export function useDatabaseEmployeeFallback({
         warehousePayload = await warehouse1cAPI.getEmployeeWarehouse({
           employeeName: warehouseQuery,
           warehouseRef: '',
-          loadBalances: true,
+          loadBalances: false,
           signal: controller.signal,
         });
       } catch (error) {
@@ -212,9 +198,7 @@ export function useDatabaseEmployeeFallback({
         warehouseCandidates: Array.isArray(warehousePayload?.candidates)
           ? warehousePayload.candidates
           : [],
-        warehouseQuantity: warehousePayload?.status === 'matched'
-          ? sumWarehouseBalances(warehousePayload?.balances)
-          : null,
+        warehouseQuantity: null,
         employeeWarehouseResults: {},
       });
     };

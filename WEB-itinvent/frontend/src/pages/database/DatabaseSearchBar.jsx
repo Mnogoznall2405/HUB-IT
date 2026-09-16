@@ -35,7 +35,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   const actionHover = ui?.actionHover || alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.06);
   const textSecondary = ui?.textSecondary || theme.palette.text.secondary;
   const textPrimary = ui?.textPrimary || theme.palette.text.primary;
-  const scopeHeight = compact ? 30 : 40;
+  const scopeHeight = compact ? 44 : 40;
 
   return (
     <Box
@@ -63,7 +63,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
             border: '1px solid',
             borderColor: borderSoft,
             borderRadius: '4px',
-            p: compact ? 0.1 : 0.15,
+            p: compact ? 0 : 0.15,
             height: scopeHeight,
             '& .MuiToggleButtonGroup-grouped': {
               border: 0,
@@ -72,7 +72,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
               px: compact ? 0.55 : 1.25,
               py: 0,
               minWidth: compact ? 48 : 88,
-              minHeight: compact ? 26 : 36,
+              minHeight: compact ? 44 : 36,
               textTransform: 'none',
               fontSize: compact ? '0.68rem' : '0.8125rem',
               fontWeight: 500,

@@ -16,7 +16,7 @@ export function useDatabaseSearch({
   filteredData,
   setFilteredData,
   equipmentSearchEnabled = true,
-  debounceMs = 1200,
+  debounceMs = 300,
 }) {
   const debounceTimerRef = useRef(null);
   const searchQueryRef = useRef(searchQuery);

@@ -41,6 +41,24 @@ describe('useDatabaseSelection', () => {
     expect(localStorage.getItem('selected_database')).toBe('main');
   });
 
+  it('reports databaseReady only after the current database resolves', async () => {
+    let resolveCurrent;
+    databaseAPI.getCurrentDatabase.mockImplementation(
+      () => new Promise((resolve) => { resolveCurrent = resolve; }),
+    );
+
+    const { result } = renderHook(() => useDatabaseSelection());
+
+    expect(result.current.databaseReady).toBe(false);
+
+    await act(async () => {
+      resolveCurrent({ id: 'main', name: 'Основная база' });
+    });
+
+    await waitFor(() => expect(result.current.databaseReady).toBe(true));
+    expect(result.current.dbName).toBe('main');
+  });
+
   it('switches database through the server and dispatches database-changed', async () => {
     const listener = vi.fn();
     window.addEventListener('database-changed', listener);

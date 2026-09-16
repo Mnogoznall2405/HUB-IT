@@ -447,6 +447,10 @@ app.state.limiter = limiter
 if internal_ip_bypass_middleware is not None:
     app.add_middleware(internal_ip_bypass_middleware)
 
+# JSON-only gzip: starlette's GZipMiddleware buffers streams and would break SSE/file downloads.
+from backend.services.json_gzip_middleware import JsonGzipMiddleware
+app.add_middleware(JsonGzipMiddleware, minimum_size=1024)
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,

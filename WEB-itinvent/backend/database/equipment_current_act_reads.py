@@ -32,38 +32,36 @@ def _chunks(values: list[int], size: int) -> Iterable[list[int]]:
         yield values[offset : offset + size]
 
 
-def enrich_equipment_current_acts(
-    equipment_rows: list[dict] | None,
+def lookup_current_acts(
+    item_ids: Iterable[int],
     db_id: Optional[str] = None,
     *,
     get_db_fn: Callable[[Optional[str]], Any],
-) -> list[dict]:
-    """Attach the newest non-annulled act with a file for the current owner.
+) -> Optional[dict[int, dict]]:
+    """Return ``{item_id: act_row}`` for the newest non-annulled act per item.
 
-    One set-based query is used per SQL Server parameter chunk. A lookup
-    failure is represented by ``current_act_available=None`` so the UI never
-    mistakes an unavailable lookup for a confirmed missing act.
+    Set-based lookup, chunked per SQL Server parameter limit. Returns ``None``
+    on lookup failure so callers can represent "unknown" explicitly instead of
+    reporting confirmed missing acts.
     """
-    enriched = []
-    item_ids: list[int] = []
-    for source in equipment_rows or []:
-        row = dict(source or {})
-        row["current_act_available"] = None
-        row["current_act_doc_no"] = None
-        row["current_act_doc_number"] = None
-        row["current_act_doc_date"] = None
-        enriched.append(row)
-        item_id = _item_id(row)
-        if item_id is not None and item_id not in item_ids:
-            item_ids.append(item_id)
+    normalized_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw in item_ids or []:
+        try:
+            item_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if item_id not in seen_ids:
+            seen_ids.add(item_id)
+            normalized_ids.append(item_id)
 
-    if not item_ids:
-        return enriched
+    if not normalized_ids:
+        return {}
 
     acts_by_item_id: dict[int, dict] = {}
     try:
         db = get_db_fn(db_id)
-        for item_id_chunk in _chunks(item_ids, _MAX_ITEM_IDS_PER_QUERY):
+        for item_id_chunk in _chunks(normalized_ids, _MAX_ITEM_IDS_PER_QUERY):
             placeholders = ", ".join("?" for _ in item_id_chunk)
             rows = db.execute_query(
                 f"""
@@ -250,9 +248,40 @@ def enrich_equipment_current_acts(
         logger.warning(
             "Current equipment act lookup failed for db_id=%s item_count=%s",
             db_id,
-            len(item_ids),
+            len(normalized_ids),
             exc_info=True,
         )
+        return None
+
+    return acts_by_item_id
+
+
+def enrich_equipment_current_acts(
+    equipment_rows: list[dict] | None,
+    db_id: Optional[str] = None,
+    *,
+    get_db_fn: Callable[[Optional[str]], Any],
+) -> list[dict]:
+    """Attach the newest non-annulled act with a file for the current owner.
+
+    A lookup failure is represented by ``current_act_available=None`` so the UI
+    never mistakes an unavailable lookup for a confirmed missing act.
+    """
+    enriched = []
+    item_ids: list[int] = []
+    for source in equipment_rows or []:
+        row = dict(source or {})
+        row["current_act_available"] = None
+        row["current_act_doc_no"] = None
+        row["current_act_doc_number"] = None
+        row["current_act_doc_date"] = None
+        enriched.append(row)
+        item_id = _item_id(row)
+        if item_id is not None:
+            item_ids.append(item_id)
+
+    acts_by_item_id = lookup_current_acts(item_ids, db_id, get_db_fn=get_db_fn)
+    if acts_by_item_id is None:
         return enriched
 
     for row in enriched:

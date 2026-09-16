@@ -1,12 +1,34 @@
 """
 Read-only equipment act and transfer history queries for SQL Server inventory data.
 """
+import time
 from typing import Any, Callable, List, Optional
 
 from backend.database.connection import get_db as _default_get_db
 
 
 EquipmentLookup = Callable[[str, Optional[str]], Optional[dict]]
+
+# Doc-type dictionary rows change rarely; the INFORMATION_SCHEMA discovery behind
+# _resolve_doc_type_names costs 2-3 catalog queries per call, so memoize briefly.
+_DOC_TYPE_MAP_CACHE_TTL_SEC = 300
+_doc_type_map_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _doc_type_map_cache_get(key: tuple) -> Optional[dict]:
+    entry = _doc_type_map_cache.get(key)
+    if not entry:
+        return None
+    expires_at, mapping = entry
+    if expires_at <= time.monotonic():
+        _doc_type_map_cache.pop(key, None)
+        return None
+    return mapping
+
+
+def _doc_type_map_cache_set(key: tuple, mapping: dict) -> dict:
+    _doc_type_map_cache[key] = (time.monotonic() + _DOC_TYPE_MAP_CACHE_TTL_SEC, mapping)
+    return mapping
 
 
 def _quote_sqlserver_identifier(identifier: Any) -> str:
@@ -57,6 +79,13 @@ def _resolve_doc_type_names(
 
     if not normalized_type_nos:
         return {}
+
+    # Injected db handles (tests, alternate sessions) bypass the process cache.
+    cache_key = None if get_db_fn is not None else (db_id or "", tuple(normalized_type_nos))
+    if cache_key is not None:
+        cached = _doc_type_map_cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     db = _get_db(db_id, get_db_fn)
     mapping: dict[int, str] = {}
@@ -182,6 +211,8 @@ def _resolve_doc_type_names(
 
     # FK source is authoritative for document types.
     if best_fk_mapping:
+        if cache_key is not None:
+            return _doc_type_map_cache_set(cache_key, best_fk_mapping)
         return best_fk_mapping
 
     # 2) Fallback source: only DOC* tables with TYPE_NO + TYPE_NAME/DESCR.
@@ -238,6 +269,8 @@ def _resolve_doc_type_names(
             best_score = score
             best_mapping = candidate_mapping
 
+    if cache_key is not None:
+        return _doc_type_map_cache_set(cache_key, best_mapping)
     return best_mapping
 
 

@@ -1,5 +1,3 @@
-import QRCode from 'qrcode';
-
 const readFirst = (data, keys, fallback = '') => {
   for (const key of keys) {
     const value = data?.[key];
@@ -114,6 +112,7 @@ export const buildEquipmentQrDataUrl = async (payload) => {
   const text = String(payload || '').trim();
   if (!text) return '';
 
+  const { default: QRCode } = await import('qrcode');
   return QRCode.toDataURL(text, {
     width: 360,
     margin: 2,

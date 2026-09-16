@@ -1,4 +1,5 @@
 import { Box, Typography } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 
 export const UNBOUNDED_MOVEMENT_PERIOD = Object.freeze({
   dateFrom: '',
@@ -94,6 +95,27 @@ export function filterBalancesByText(rows = [], query = '') {
       .join(' ');
     return haystack.includes(needle);
   });
+}
+
+const COMPARE_STATUS_PALETTE = {
+  match: 'success',
+  diff: 'warning',
+  only_hub: 'error',
+  only_1c: 'info',
+};
+
+/** Highlight a Hub ↔ 1C row by its compare status (match/diff/only_hub/only_1c). */
+export function statusRowSx(theme, status) {
+  const paletteKey = COMPARE_STATUS_PALETTE[status];
+  const base = paletteKey ? theme.palette[paletteKey]?.main : null;
+  if (!base) return {};
+  return {
+    bgcolor: alpha(base, 0.3),
+    boxShadow: `inset 4px 0 0 ${base}`,
+    '&.MuiTableRow-hover:hover, &:hover': {
+      bgcolor: alpha(base, 0.42),
+    },
+  };
 }
 
 export const HUB_PART_NO_NOT_IN_1C = 'нет в 1С';

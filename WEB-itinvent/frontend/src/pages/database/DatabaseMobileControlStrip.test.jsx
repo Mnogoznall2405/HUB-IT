@@ -41,6 +41,12 @@ describe('DatabaseMobileControlStrip', () => {
     expect(screen.getByRole('button', { name: 'Добавить' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Акт' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Ещё' })).toBeInTheDocument();
+
+    const branchSelect = screen.getByRole('combobox', { name: /Филиал/ });
+    expect(branchSelect.closest('.MuiInputBase-root')).toHaveStyle({ height: '44px' });
+    ['QR', 'Добавить', 'Акт', 'Ещё'].forEach((name) => {
+      expect(screen.getByRole('button', { name })).toHaveStyle({ width: '44px', height: '44px' });
+    });
   });
 
   it('shows consumable add action in consumables mode', () => {

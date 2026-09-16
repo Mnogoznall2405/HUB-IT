@@ -34,6 +34,7 @@ import {
   PC_COMPONENT_OPTIONS,
   PRINTER_COMPONENT_OPTIONS,
 } from './equipmentModel';
+import { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './databaseMobileLayout';
 
 const noop = () => {};
 
@@ -43,9 +44,6 @@ const defaultCapabilities = {
   canComponent: false,
   componentKind: null,
 };
-
-const MOBILE_BAR_HEIGHT = 50;
-const MOBILE_BAR_GAP = 8;
 
 function DatabaseBulkMobileActionButton({
   icon,

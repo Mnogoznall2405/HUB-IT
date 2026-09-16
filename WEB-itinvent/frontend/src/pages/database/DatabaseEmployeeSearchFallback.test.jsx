@@ -46,6 +46,17 @@ describe('DatabaseEmployeeSearchFallback', () => {
     expect(screen.getByText(/В 1С: 4 единицы/i)).toBeInTheDocument();
   });
 
+  it('labels a matched 1C warehouse without a numeric quantity', () => {
+    renderPanel({
+      warehouseStatus: 'matched',
+      warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+      warehouseQuantity: null,
+    });
+
+    expect(screen.getByText(/Склад 1С найден/i)).toBeInTheDocument();
+    expect(screen.queryByText(/В 1С: 0 единиц/i)).not.toBeInTheDocument();
+  });
+
   it('shows multiple Hub employees as keyboard-operable choices', () => {
     const { onOpenEmployee } = renderPanel({
       employees: [

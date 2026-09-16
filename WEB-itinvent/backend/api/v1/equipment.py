@@ -3,7 +3,8 @@ Equipment API endpoints - search, retrieve and update equipment information.
 """
 from typing import Optional, Any, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Response, status, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import os
@@ -15,13 +16,18 @@ from backend.api.deps import (
     get_current_admin_user,
     get_current_database_id,
     get_request_scoped_database_id,
+    require_any_permission,
     require_permission,
 )
 from backend.database import queries
 from backend.database.connection import get_db
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_DATABASE_DELETE, PERM_DATABASE_WRITE
+from backend.services.authorization_service import (
+    PERM_DATABASE_DELETE,
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+)
 from backend.models.equipment import (
     EquipmentSearchResponse,
     EmployeeSearchResponse,
@@ -53,6 +59,10 @@ from backend.models.equipment import (
     UploadedActEmailSendResponse,
     TransferActReminderResponse,
     EquipmentActSearchResponse,
+    EquipmentGroupedListResponse,
+    EquipmentCurrentActsRequest,
+    EquipmentCurrentActsResponse,
+    EquipmentCurrentActItem,
 )
 from backend.services.transfer_service import (
     get_act_records,
@@ -82,8 +92,26 @@ import urllib.parse
 import logging
 
 
-router = APIRouter()
+_DATABASE_ACCESS_PERMISSIONS = (
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+    PERM_DATABASE_DELETE,
+)
+
+router = APIRouter(
+    dependencies=[Depends(require_any_permission(_DATABASE_ACCESS_PERMISSIONS))]
+)
 logger = logging.getLogger(__name__)
+
+
+def _set_dict_cache_headers(response: Response) -> None:
+    """Short-lived private HTTP cache for rarely-changing directory payloads.
+
+    Vary on X-Database-ID is required: the database is selected by header, so
+    the same URL serves different data per database.
+    """
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["Vary"] = "X-Database-ID"
 
 
 def _current_user_id(current_user: Any) -> int:
@@ -817,7 +845,7 @@ async def search_by_serial(
     if not q or len(q.strip()) == 0:
         return EquipmentSearchResponse(found=False, equipment=[])
 
-    results = queries.search_equipment_by_serial(q, db_id)
+    results = await run_in_threadpool(queries.search_equipment_by_serial, q, db_id)
 
     return EquipmentSearchResponse(
         found=len(results) > 0,
@@ -847,7 +875,7 @@ async def search_universal(
     if not q or len(q.strip()) == 0:
         return {"equipment": [], "total": 0, "page": 1, "pages": 0}
 
-    return queries.search_equipment_universal(q, page, limit, db_id)
+    return await run_in_threadpool(queries.search_equipment_universal, q, page, limit, db_id)
 
 
 @router.get("/search/employee", response_model=EmployeeSearchResponse)
@@ -872,7 +900,7 @@ async def search_by_employee(
     if not q or len(q.strip()) == 0:
         return EmployeeSearchResponse(employees=[], total=0, page=page, pages=0)
 
-    results = queries.search_employees(q, page, limit, db_id)
+    results = await run_in_threadpool(queries.search_employees, q, page, limit, db_id)
 
     return EmployeeSearchResponse(**results)
 
@@ -902,14 +930,19 @@ async def get_employee_equipment(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cross-DB equipment lookup is available to administrators only",
             )
-        equipment = queries.get_equipment_by_owner_all_databases(
+        equipment = await run_in_threadpool(
+            queries.get_equipment_by_owner_all_databases,
             owner_no,
             employee_name=employee_name,
             current_db_id=db_id,
             include_current_acts=True,
         )
     else:
-        equipment = queries.get_equipment_by_owner_with_current_acts(owner_no, db_id)
+        equipment = await run_in_threadpool(
+            queries.get_equipment_by_owner_with_current_acts,
+            owner_no,
+            db_id,
+        )
 
     return EquipmentSearchResponse(
         found=len(equipment) > 0,
@@ -934,7 +967,7 @@ async def get_all_equipment(
     Returns:
         EquipmentListResponse with paginated equipment list
     """
-    result = queries.get_all_equipment(page, limit, db_id)
+    result = await run_in_threadpool(queries.get_all_equipment, page, limit, db_id)
 
     return EquipmentListResponse(**result)
 
@@ -958,20 +991,84 @@ async def get_equipment_by_inv_nos(
     if not normalized_inv_nos:
         return {"equipment": [], "not_found": [], "requested": 0}
 
-    equipment: List[dict] = []
-    not_found: List[str] = []
+    rows = await run_in_threadpool(
+        queries.get_equipment_items_by_inv_nos,
+        normalized_inv_nos,
+        db_id,
+    )
+
+    def _match_key(value: object) -> str:
+        token = queries._normalize_inv_no_token(value)
+        return token.casefold() if token else ""
+
+    row_by_token: dict[str, dict] = {}
+    for row in rows or []:
+        token = _match_key(row.get("inv_no") or row.get("INV_NO"))
+        if token:
+            row_by_token.setdefault(token, row)
+
+    equipment: list[dict] = []
+    not_found: list[str] = []
     for inv_no in normalized_inv_nos:
-        row = queries.get_equipment_by_inv(inv_no, db_id)
-        if row:
-            equipment.append(row)
-        else:
+        row = row_by_token.get(_match_key(inv_no))
+        if row is None:
             not_found.append(inv_no)
+        else:
+            equipment.append(row)
 
     return {
         "equipment": equipment,
         "not_found": not_found,
         "requested": len(normalized_inv_nos),
     }
+
+
+@router.post("/current-acts", response_model=EquipmentCurrentActsResponse)
+async def get_equipment_current_acts(
+    payload: EquipmentCurrentActsRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """Lazy batch lookup of the current downloadable act for visible list rows.
+
+    Kept off the list-page hot path: the grouped list returns rows without
+    act enrich, and the UI calls this once per loaded batch.
+    """
+    item_ids = list(payload.item_ids or [])
+    if not item_ids:
+        return EquipmentCurrentActsResponse(items=[])
+
+    from backend.database.equipment_current_act_reads import lookup_current_acts
+
+    acts_by_item_id = await run_in_threadpool(
+        lookup_current_acts,
+        item_ids,
+        db_id,
+        get_db_fn=queries.get_db,
+    )
+
+    if acts_by_item_id is None:
+        # Lookup failed — mark everything as unknown, never as "missing".
+        return EquipmentCurrentActsResponse(
+            items=[
+                EquipmentCurrentActItem(item_id=item_id, available=None)
+                for item_id in item_ids
+            ]
+        )
+
+    items = []
+    for item_id in item_ids:
+        act = acts_by_item_id.get(item_id)
+        items.append(
+            EquipmentCurrentActItem(
+                item_id=item_id,
+                available=act is not None,
+                doc_no=act.get("doc_no") if act else None,
+                doc_number=act.get("doc_number") if act else None,
+                doc_date=act.get("doc_date") if act else None,
+            )
+        )
+    return EquipmentCurrentActsResponse(items=items)
 
 
 @router.get("/recent-cards", response_model=EquipmentRecentCardsListResponse)
@@ -981,7 +1078,8 @@ async def get_recent_equipment_cards(
     current_user: User = Depends(get_current_active_user),
 ):
     """Get the current user's recent equipment cards for the selected ITINVENT database."""
-    items = equipment_recent_cards_service.list_recent(
+    items = await run_in_threadpool(
+        equipment_recent_cards_service.list_recent,
         user_id=current_user.id,
         db_id=db_id,
         limit=limit,
@@ -997,7 +1095,8 @@ async def touch_recent_equipment_card(
 ):
     """Upsert a current-user recent equipment card event."""
     try:
-        item = equipment_recent_cards_service.touch(
+        item = await run_in_threadpool(
+            equipment_recent_cards_service.touch,
             user_id=current_user.id,
             db_id=db_id,
             inv_no=payload.inv_no,
@@ -1016,7 +1115,8 @@ async def remove_recent_equipment_card(
     current_user: User = Depends(get_current_active_user),
 ):
     """Remove one recent equipment card from the current user's selected database scope."""
-    return equipment_recent_cards_service.remove(
+    return await run_in_threadpool(
+        equipment_recent_cards_service.remove,
         user_id=current_user.id,
         db_id=db_id,
         inv_no=inv_no,
@@ -1029,7 +1129,11 @@ async def clear_recent_equipment_cards(
     current_user: User = Depends(get_current_active_user),
 ):
     """Clear all current-user recent equipment cards for the selected database."""
-    return equipment_recent_cards_service.clear(user_id=current_user.id, db_id=db_id)
+    return await run_in_threadpool(
+        equipment_recent_cards_service.clear,
+        user_id=current_user.id,
+        db_id=db_id,
+    )
 
 
 @router.get("/acts/recent", response_model=EquipmentRecentActsListResponse)
@@ -1039,7 +1143,8 @@ async def get_recent_equipment_acts(
     current_user: User = Depends(get_current_active_user),
 ):
     """Get the current user's recent act documents for the selected ITINVENT database."""
-    items = equipment_recent_acts_service.list_recent(
+    items = await run_in_threadpool(
+        equipment_recent_acts_service.list_recent,
         user_id=current_user.id,
         db_id=db_id,
         limit=limit,
@@ -1055,7 +1160,8 @@ async def touch_recent_equipment_act(
 ):
     """Upsert a current-user recent act document event."""
     try:
-        item = equipment_recent_acts_service.touch(
+        item = await run_in_threadpool(
+            equipment_recent_acts_service.touch,
             user_id=current_user.id,
             db_id=db_id,
             doc_no=payload.doc_no,
@@ -1075,7 +1181,8 @@ async def remove_recent_equipment_act(
     current_user: User = Depends(get_current_active_user),
 ):
     """Remove one recent act from the current user's selected database scope."""
-    return equipment_recent_acts_service.remove(
+    return await run_in_threadpool(
+        equipment_recent_acts_service.remove,
         user_id=current_user.id,
         db_id=db_id,
         doc_no=doc_no,
@@ -1088,11 +1195,16 @@ async def clear_recent_equipment_acts(
     current_user: User = Depends(get_current_active_user),
 ):
     """Clear all current-user recent acts for the selected database."""
-    return equipment_recent_acts_service.clear(user_id=current_user.id, db_id=db_id)
+    return await run_in_threadpool(
+        equipment_recent_acts_service.clear,
+        user_id=current_user.id,
+        db_id=db_id,
+    )
 
 
 @router.get("/branches", response_model=list[Branch])
 async def get_branches(
+    response: Response,
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -1102,11 +1214,14 @@ async def get_branches(
     Returns:
         List of branches
     """
-    return queries.get_all_branches(db_id)
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_branches_cached
+    return await run_in_threadpool(get_all_branches_cached, db_id)
 
 
 @router.get("/locations", response_model=list[Location])
 async def get_all_locations(
+    response: Response,
     branch_no: Optional[str] = Query(None, description="Optional branch number to prioritize used locations"),
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
@@ -1117,12 +1232,15 @@ async def get_all_locations(
     Returns:
         List of all locations
     """
-    return queries.get_all_locations(db_id, branch_no=branch_no)
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_locations_cached
+    return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_no)
 
 
 @router.get("/locations/{branch_id}", response_model=list[Location])
 async def get_locations(
     branch_id: str,
+    response: Response,
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -1135,11 +1253,14 @@ async def get_locations(
     Returns:
         List of all locations
     """
-    return queries.get_all_locations(db_id, branch_no=branch_id)
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_locations_cached
+    return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_id)
 
 
 @router.get("/types")
 async def get_equipment_types(
+    response: Response,
     ci_type: Optional[int] = Query(None, ge=1, le=20, description="Filter by CI_TYPE"),
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
@@ -1150,8 +1271,9 @@ async def get_equipment_types(
     Returns:
         List of equipment types
     """
+    _set_dict_cache_headers(response)
     from backend.database.equipment_db import get_all_equipment_types
-    types = get_all_equipment_types(db_id)
+    types = await run_in_threadpool(get_all_equipment_types, db_id)
     if ci_type is not None:
         filtered = []
         for entry in types or []:
@@ -1166,6 +1288,7 @@ async def get_equipment_types(
 
 @router.get("/models")
 async def get_models_by_type(
+    response: Response,
     type_no: int = Query(..., ge=1, description="Equipment TYPE_NO"),
     ci_type: int = Query(1, ge=1, le=20, description="CI_TYPE category"),
     db_id: Optional[str] = Depends(get_current_database_id),
@@ -1174,7 +1297,9 @@ async def get_models_by_type(
     """
     Get equipment models for a selected type.
     """
-    return {"models": queries.get_models_by_type(type_no, db_id, ci_type=ci_type)}
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_models_by_type_cached
+    return {"models": await run_in_threadpool(get_models_by_type_cached, type_no, db_id, ci_type=ci_type)}
 
 
 @router.get("/types-raw")
@@ -1205,7 +1330,7 @@ async def get_equipment_types_raw(
     """
 
     try:
-        results = db.execute_query(query, ())
+        results = await run_in_threadpool(db.execute_query, query, ())
         return {
             "success": True,
             "query": query.strip(),
@@ -1224,6 +1349,7 @@ async def get_equipment_types_raw(
 
 @router.get("/statuses", response_model=list[EquipmentStatus])
 async def get_statuses(
+    response: Response,
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -1233,7 +1359,9 @@ async def get_statuses(
     Returns:
         List of equipment statuses
     """
-    return queries.get_all_statuses(db_id)
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_statuses_cached
+    return await run_in_threadpool(get_all_statuses_cached, db_id)
 
 
 @router.get("/owners/search")
@@ -1249,7 +1377,7 @@ async def search_owners(
     term = (q or "").strip()
     if not term:
         return {"owners": []}
-    return {"owners": queries.search_owners(term, limit, db_id)}
+    return {"owners": await run_in_threadpool(queries.search_owners, term, limit, db_id)}
 
 
 @router.get("/owners/departments")
@@ -1261,10 +1389,10 @@ async def get_owner_departments(
     """
     Get distinct owner departments for dropdown controls.
     """
-    return {"departments": queries.get_owner_departments(limit, db_id)}
+    return {"departments": await run_in_threadpool(queries.get_owner_departments, limit, db_id)}
 
 
-@router.get("/all-grouped")
+@router.get("/all-grouped", response_model=EquipmentGroupedListResponse)
 async def get_all_equipment_grouped(
     page: int = Query(1, ge=1),
     limit: int = Query(1000, ge=1, le=10000),
@@ -1292,7 +1420,7 @@ async def get_all_equipment_grouped(
     try:
         if branch:
             logger.debug("Fetching equipment for branch=%s", branch)
-            result = get_equipment_by_branch(branch, page, limit, db_id)
+            result = await run_in_threadpool(get_equipment_by_branch, branch, page, limit, db_id)
             grouped_by_location = {}
             for item in result['equipment']:
                 location = item.get('location') or 'Не указано'
@@ -1308,11 +1436,12 @@ async def get_all_equipment_grouped(
                 'grouped': grouped,
                 'total': result['total'],
                 'page': result['page'],
+                'limit': result['limit'],
                 'pages': result['pages']
             }
 
         logger.debug("Fetching all equipment grouped")
-        return get_equipment_grouped(page, limit, db_id)
+        return await run_in_threadpool(get_equipment_grouped, page, limit, db_id)
     except Exception as e:
         logger.error(f"Error in get_all_equipment_grouped: {e}", exc_info=True)
         raise
@@ -1335,7 +1464,7 @@ async def get_all_consumables_grouped(
     from backend.database.equipment_db import get_consumables_grouped
 
     try:
-        return get_consumables_grouped(page, limit, db_id)
+        return await run_in_threadpool(get_consumables_grouped, page, limit, db_id)
     except Exception as e:
         logger.error(f"Error in get_all_consumables_grouped: {e}", exc_info=True)
         raise
@@ -1429,7 +1558,8 @@ async def get_consumables_lookup(
 
     rows: List[dict] = []
     try:
-        lookup_rows = queries.get_consumables_lookup(
+        lookup_rows = await run_in_threadpool(
+            queries.get_consumables_lookup,
             db_id=db_id,
             type_no=type_no,
             model_name=(model_name or "").strip() or None,
@@ -1449,7 +1579,7 @@ async def get_consumables_lookup(
     try:
         from backend.database.equipment_db import get_consumables_grouped
 
-        grouped_payload = get_consumables_grouped(page=1, limit=1000, db_id=db_id)
+        grouped_payload = await run_in_threadpool(get_consumables_grouped, page=1, limit=1000, db_id=db_id)
         grouped = grouped_payload.get("grouped") if isinstance(grouped_payload, dict) else {}
         flat_rows: List[dict] = []
         if isinstance(grouped, dict):
@@ -1487,25 +1617,25 @@ async def create_consumable(
     if model_no is None and not model_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
 
-    branch_row = queries.get_branch_by_no(branch_no, db_id)
+    branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
     if not branch_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
 
-    location_row = queries.get_location_by_no(loc_no, db_id)
+    location_row = await run_in_threadpool(queries.get_location_by_no, loc_no, db_id)
     if not location_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
 
-    type_row = queries.get_type_by_no(type_no, db_id, ci_type=4)
+    type_row = await run_in_threadpool(queries.get_type_by_no, type_no, db_id, ci_type=4)
     if not type_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no for consumables")
 
     if status_no is not None:
-        status_row = queries.get_status_by_no(status_no, db_id)
+        status_row = await run_in_threadpool(queries.get_status_by_no, status_no, db_id)
         if not status_row:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status_no")
 
     if model_no is not None:
-        model_row = queries.get_model_by_no(model_no, db_id, ci_type=4)
+        model_row = await run_in_threadpool(queries.get_model_by_no, model_no, db_id, ci_type=4)
         if not model_row:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model_no")
         model_type_no = _to_int(model_row.get("TYPE_NO") or model_row.get("type_no"))
@@ -1513,7 +1643,8 @@ async def create_consumable(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_no does not belong to selected type_no")
 
     changed_by = current_user.username if current_user else "IT-WEB"
-    result = queries.create_consumable_item(
+    result = await run_in_threadpool(
+        queries.create_consumable_item,
         branch_no=branch_no,
         loc_no=loc_no,
         type_no=type_no,
@@ -1548,7 +1679,8 @@ async def consume_consumable(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
 
     changed_by = current_user.username if current_user else "IT-WEB"
-    result = queries.consume_consumable_stock(
+    result = await run_in_threadpool(
+        queries.consume_consumable_stock,
         db_id=db_id,
         item_id=item_id,
         inv_no=inv_no or None,
@@ -1583,7 +1715,8 @@ async def update_consumable_qty(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
 
     changed_by = current_user.username if current_user else "IT-WEB"
-    result = queries.set_consumable_stock_qty(
+    result = await run_in_threadpool(
+        queries.set_consumable_stock_qty,
         db_id=db_id,
         item_id=item_id,
         inv_no=inv_no or None,
@@ -1608,7 +1741,7 @@ async def delete_consumable(
 ):
     """Hard-delete one consumable card from ITEMS (CI_TYPE=4)."""
     del current_user
-    result = queries.delete_consumable_by_id(item_id, db_id=db_id)
+    result = await run_in_threadpool(queries.delete_consumable_by_id, item_id, db_id=db_id)
     if result.get("success"):
         invalidate_equipment_cache(db_id)
         return ConsumableDeleteResponse(**result)
@@ -1626,6 +1759,7 @@ async def delete_consumable(
 
 @router.get("/branches-list")
 async def get_branches_list(
+    response: Response,
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -1635,11 +1769,12 @@ async def get_branches_list(
     Returns:
         List of branches with BRANCH_NO and BRANCH_NAME
     """
+    _set_dict_cache_headers(response)
     import logging
     logger = logging.getLogger(__name__)
     logger.debug("Fetching branches for db_id=%s", db_id)
     from backend.database.equipment_db import get_all_branches
-    branches = get_all_branches(db_id)
+    branches = await run_in_threadpool(get_all_branches, db_id)
     logger.debug("Found %s branches", len(branches))
     return branches
 
@@ -1674,24 +1809,24 @@ async def create_equipment(
     if model_no is None and not model_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
 
-    branch_row = queries.get_branch_by_no(branch_no, db_id)
+    branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
     if not branch_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
 
-    location_row = queries.get_location_by_no(loc_no, db_id)
+    location_row = await run_in_threadpool(queries.get_location_by_no, loc_no, db_id)
     if not location_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
 
-    type_row = queries.get_type_by_no(type_no, db_id)
+    type_row = await run_in_threadpool(queries.get_type_by_no, type_no, db_id)
     if not type_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no")
 
-    status_row = queries.get_status_by_no(status_no, db_id)
+    status_row = await run_in_threadpool(queries.get_status_by_no, status_no, db_id)
     if not status_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status_no")
 
     if model_no is not None:
-        model_row = queries.get_model_by_no(model_no, db_id)
+        model_row = await run_in_threadpool(queries.get_model_by_no, model_no, db_id)
         if not model_row:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model_no")
         model_type_no = _to_int(model_row.get("TYPE_NO") or model_row.get("type_no"))
@@ -1699,12 +1834,13 @@ async def create_equipment(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_no does not belong to selected type_no")
 
     if employee_no is not None:
-        owner_row = queries.get_owner_by_no(employee_no, db_id)
+        owner_row = await run_in_threadpool(queries.get_owner_by_no, employee_no, db_id)
         if not owner_row:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid employee_no")
 
     changed_by = current_user.username if current_user else "IT-WEB"
-    result = queries.create_equipment_item(
+    result = await run_in_threadpool(
+        queries.create_equipment_item,
         serial_no=serial_no,
         employee_name=employee_name,
         branch_no=branch_no,
@@ -1751,7 +1887,7 @@ async def update_equipment_by_inv(
             detail="No fields provided for update",
         )
 
-    equipment = queries.get_equipment_by_inv(inv_no, db_id)
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1760,7 +1896,7 @@ async def update_equipment_by_inv(
 
     # Validate status
     if "status_no" in updates and updates["status_no"] is not None:
-        status_row = queries.get_status_by_no(int(updates["status_no"]), db_id)
+        status_row = await run_in_threadpool(queries.get_status_by_no, int(updates["status_no"]), db_id)
         if not status_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1769,7 +1905,7 @@ async def update_equipment_by_inv(
 
     # Validate type
     if "type_no" in updates and updates["type_no"] is not None:
-        type_row = queries.get_type_by_no(int(updates["type_no"]), db_id)
+        type_row = await run_in_threadpool(queries.get_type_by_no, int(updates["type_no"]), db_id)
         if not type_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1778,7 +1914,7 @@ async def update_equipment_by_inv(
 
     # Validate owner
     if "empl_no" in updates and updates["empl_no"] is not None:
-        owner_row = queries.get_owner_by_no(int(updates["empl_no"]), db_id)
+        owner_row = await run_in_threadpool(queries.get_owner_by_no, int(updates["empl_no"]), db_id)
         if not owner_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1787,7 +1923,7 @@ async def update_equipment_by_inv(
 
     # Validate branch
     if "branch_no" in updates and updates["branch_no"] is not None:
-        branch_row = queries.get_branch_by_no(updates["branch_no"], db_id)
+        branch_row = await run_in_threadpool(queries.get_branch_by_no, updates["branch_no"], db_id)
         if not branch_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1796,7 +1932,7 @@ async def update_equipment_by_inv(
 
     # Validate location
     if "loc_no" in updates and updates["loc_no"] is not None:
-        location_row = queries.get_location_by_no(updates["loc_no"], db_id)
+        location_row = await run_in_threadpool(queries.get_location_by_no, updates["loc_no"], db_id)
         if not location_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1805,7 +1941,7 @@ async def update_equipment_by_inv(
 
     # Validate model and type-model pair
     if "model_no" in updates and updates["model_no"] is not None:
-        model_row = queries.get_model_by_no(int(updates["model_no"]), db_id)
+        model_row = await run_in_threadpool(queries.get_model_by_no, int(updates["model_no"]), db_id)
         if not model_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1828,7 +1964,7 @@ async def update_equipment_by_inv(
         current_model_no = _to_int(equipment.get("model_no"))
         target_type = _to_int(updates.get("type_no"))
         if current_model_no is not None and target_type is not None:
-            current_model_row = queries.get_model_by_no(current_model_no, db_id)
+            current_model_row = await run_in_threadpool(queries.get_model_by_no, current_model_no, db_id)
             current_model_type_no = _to_int(
                 (current_model_row or {}).get("TYPE_NO") or (current_model_row or {}).get("type_no")
             )
@@ -1836,21 +1972,28 @@ async def update_equipment_by_inv(
                 updates["model_no"] = None
 
     changed_by = current_user.username if current_user else "IT-WEB"
-    updated = queries.update_equipment_fields(inv_no, updates, changed_by=changed_by, db_id=db_id)
+    updated = await run_in_threadpool(
+        queries.update_equipment_fields,
+        inv_no,
+        updates,
+        changed_by=changed_by,
+        db_id=db_id,
+    )
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update equipment",
         )
 
-    equipment_after = queries.get_equipment_by_inv(inv_no, db_id)
+    equipment_after = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
     if not equipment_after:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Equipment updated but failed to read updated data",
         )
 
-    _touch_recent_card_safely(
+    await run_in_threadpool(
+        _touch_recent_card_safely,
         current_user=current_user,
         db_id=db_id,
         inv_no=inv_no,
@@ -1868,9 +2011,13 @@ async def delete_equipment_by_inv(
     current_user: User = Depends(get_current_admin_user),
 ):
     """Hard-delete one equipment card from ITEMS for admin users only."""
-    result = queries.delete_equipment_by_inv(inv_no, db_id=db_id)
+    result = await run_in_threadpool(queries.delete_equipment_by_inv, inv_no, db_id=db_id)
     if result.get("success"):
-        _remove_recent_card_for_equipment_safely(db_id=db_id, inv_no=result.get("inv_no") or inv_no)
+        await run_in_threadpool(
+            _remove_recent_card_for_equipment_safely,
+            db_id=db_id,
+            inv_no=result.get("inv_no") or inv_no,
+        )
         invalidate_equipment_cache(db_id)
         return result
 
@@ -1900,7 +2047,8 @@ async def transfer_equipment(
     if not inv_nos:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
 
-    job = _create_transfer_job_or_raise(
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
         operation="transfer",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
@@ -1939,19 +2087,20 @@ async def transfer_equipment_location(
     branch_no = payload.branch_no
     loc_no = payload.loc_no
 
-    if not queries.get_branch_by_no(branch_no, db_id):
+    if not await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
 
-    if not queries.get_location_by_no(loc_no, db_id):
+    if not await run_in_threadpool(queries.get_location_by_no, loc_no, db_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
 
-    if not queries.is_location_in_branch(loc_no, branch_no, db_id):
+    if not await run_in_threadpool(queries.is_location_in_branch, loc_no, branch_no, db_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="loc_no does not belong to branch_no",
         )
 
-    job = _create_transfer_job_or_raise(
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
         operation="location_transfer",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
@@ -1990,7 +2139,8 @@ async def create_transfer_act_without_move(
             detail="No inventory numbers provided",
         )
 
-    job = _create_transfer_job_or_raise(
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
         operation="act_only",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
@@ -2015,10 +2165,10 @@ async def get_transfer_act_job(
     db_id: Optional[str] = Depends(get_current_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
-    job = transfer_act_job_service.get_job(job_id)
+    job = await run_in_threadpool(transfer_act_job_service.get_job, job_id)
     if job is None or not _can_read_transfer_job(job=job, current_user=current_user, db_id=db_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
-    payload = transfer_act_job_service.response_payload(job_id)
+    payload = await run_in_threadpool(transfer_act_job_service.response_payload, job_id)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
     return TransferExecuteResponse(**payload)
@@ -2041,7 +2191,7 @@ async def send_transfer_acts(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="owner_no is required for employee mode",
             )
-        employee_email = queries.get_owner_email_by_no(owner_no, db_id)
+        employee_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
         if not employee_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2062,7 +2212,10 @@ async def get_transfer_act_reminder(
     reminder_id: str,
     _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
-    payload = transfer_act_reminder_service.get_reminder(reminder_id=reminder_id)
+    payload = await run_in_threadpool(
+        transfer_act_reminder_service.get_reminder,
+        reminder_id=reminder_id,
+    )
     if not payload:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
     return TransferActReminderResponse(**payload)
@@ -2111,7 +2264,8 @@ async def parse_uploaded_act(
         )
 
     created_by = current_user.username if current_user else "IT-WEB"
-    payload = create_uploaded_act_draft(
+    payload = await run_in_threadpool(
+        create_uploaded_act_draft,
         file_bytes=file_bytes,
         file_name=file_name,
         db_id=db_id,
@@ -2131,7 +2285,11 @@ async def get_uploaded_act_parse_draft(
     Get current parse draft payload.
     """
     try:
-        payload = get_uploaded_act_draft(draft_id=draft_id, db_id=db_id)
+        payload = await run_in_threadpool(
+            get_uploaded_act_draft,
+            draft_id=draft_id,
+            db_id=db_id,
+        )
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DraftValidationError as exc:
@@ -2154,7 +2312,8 @@ async def commit_uploaded_act(
     else:
         payload_data = payload.dict()
     try:
-        result = commit_uploaded_act_draft(
+        result = await run_in_threadpool(
+            commit_uploaded_act_draft,
             draft_id=payload.draft_id,
             payload=payload_data,
             db_id=db_id,
@@ -2171,7 +2330,8 @@ async def commit_uploaded_act(
 
     invalidate_equipment_cache(db_id)
 
-    reminder_result = transfer_act_reminder_service.complete_for_uploaded_act(
+    reminder_result = await run_in_threadpool(
+        transfer_act_reminder_service.complete_for_uploaded_act,
         reminder_id=payload.reminder_id,
         source_task_id=payload.source_task_id,
         db_id=db_id,
@@ -2198,14 +2358,17 @@ async def commit_uploaded_act(
         "reminder_warning": reminder_result.get("warning"),
     }
     for linked_inv_no in response_payload["linked_inv_nos"]:
-        _touch_recent_card_safely(
+        snapshot = await run_in_threadpool(queries.get_equipment_by_inv, linked_inv_no, db_id)
+        await run_in_threadpool(
+            _touch_recent_card_safely,
             current_user=current_user,
             db_id=db_id,
             inv_no=linked_inv_no,
             action_type="act",
-            snapshot=queries.get_equipment_by_inv(linked_inv_no, db_id) or {"inv_no": linked_inv_no},
+            snapshot=snapshot or {"inv_no": linked_inv_no},
         )
-    _touch_recent_act_safely(
+    await run_in_threadpool(
+        _touch_recent_act_safely,
         current_user=current_user,
         db_id=db_id,
         doc_no=response_payload["doc_no"],
@@ -2239,7 +2402,11 @@ async def send_uploaded_act_email(
       - selected: recipients resolved by owner_nos list
     """
     doc_no = int(payload.doc_no)
-    act_file_payload = queries.get_equipment_act_file(doc_no=doc_no, db_id=db_id)
+    act_file_payload = await run_in_threadpool(
+        queries.get_equipment_act_file,
+        doc_no=doc_no,
+        db_id=db_id,
+    )
     if not act_file_payload:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2251,8 +2418,11 @@ async def send_uploaded_act_email(
     if not file_bytes:
         file_path = str(act_file_payload.get("file_path") or "").strip()
         if file_path and os.path.exists(file_path):
-            with open(file_path, "rb") as stream:
-                file_bytes = stream.read()
+            def _read_act_file() -> bytes:
+                with open(file_path, "rb") as stream:
+                    return stream.read()
+
+            file_bytes = await run_in_threadpool(_read_act_file)
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2283,7 +2453,7 @@ async def send_uploaded_act_email(
             )
 
         for name in employee_names:
-            owner_no = _resolve_owner_no_by_name(name, db_id)
+            owner_no = await run_in_threadpool(_resolve_owner_no_by_name, name, db_id)
             if owner_no is None:
                 statuses.append(
                     {
@@ -2295,7 +2465,7 @@ async def send_uploaded_act_email(
                     }
                 )
                 continue
-            owner_payload = queries.get_owner_by_no(owner_no, db_id) or {}
+            owner_payload = await run_in_threadpool(queries.get_owner_by_no, owner_no, db_id) or {}
             owner_name = str(
                 owner_payload.get("OWNER_DISPLAY_NAME")
                 or owner_payload.get("owner_display_name")
@@ -2318,7 +2488,7 @@ async def send_uploaded_act_email(
             )
 
         for owner_no in normalized_owner_nos:
-            owner_payload = queries.get_owner_by_no(owner_no, db_id)
+            owner_payload = await run_in_threadpool(queries.get_owner_by_no, owner_no, db_id)
             if not owner_payload:
                 statuses.append(
                     {
@@ -2343,7 +2513,7 @@ async def send_uploaded_act_email(
             continue
         sent_owner_nos.add(owner_no)
 
-        owner_email = queries.get_owner_email_by_no(owner_no, db_id)
+        owner_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
         if not owner_email:
             statuses.append(
                 {
@@ -2403,7 +2573,7 @@ async def list_latest_equipment_acts(
     _: User = Depends(get_current_active_user),
 ):
     """List newest act/transfer documents for the inventory Acts tab feed."""
-    payload = queries.list_latest_equipment_acts(limit=limit, db_id=db_id)
+    payload = await run_in_threadpool(queries.list_latest_equipment_acts, limit=limit, db_id=db_id)
     return EquipmentActSearchResponse(**payload)
 
 
@@ -2418,7 +2588,7 @@ async def search_equipment_acts(
     Search act/transfer documents linked to equipment items.
     Empty/short query returns the latest-act feed.
     """
-    payload = queries.search_equipment_acts(q, limit=limit, db_id=db_id)
+    payload = await run_in_threadpool(queries.search_equipment_acts, q, limit=limit, db_id=db_id)
     return EquipmentActSearchResponse(**payload)
 
 
@@ -2438,7 +2608,8 @@ async def download_equipment_act_file(
     if current_user.role == "admin" and db_override and db_override.strip():
         effective_db_id = db_override.strip()
 
-    payload = queries.get_equipment_act_file(
+    payload = await run_in_threadpool(
+        queries.get_equipment_act_file,
         doc_no=doc_no,
         item_id=item_id,
         inv_no=inv_no,
@@ -2505,7 +2676,8 @@ async def inspect_equipment_act_file(
     """
     Debug endpoint: inspect FILES/DOCS storage for act/document.
     """
-    return queries.inspect_equipment_act_storage(
+    return await run_in_threadpool(
+        queries.inspect_equipment_act_storage,
         doc_no=doc_no,
         item_id=item_id,
         inv_no=inv_no,
@@ -2522,14 +2694,14 @@ async def get_equipment_acts(
     """
     Get acts/documents linked to an equipment item by inventory number.
     """
-    equipment = queries.get_equipment_by_inv(inv_no, db_id)
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Equipment with inventory number {inv_no} not found",
         )
 
-    acts_payload = queries.get_equipment_acts_by_inv(inv_no, db_id)
+    acts_payload = await run_in_threadpool(queries.get_equipment_acts_by_inv, inv_no, db_id)
     acts = acts_payload.get("acts") or []
     return {
         "inv_no": str(inv_no),
@@ -2547,14 +2719,14 @@ async def get_equipment_history(
     _: User = Depends(get_current_active_user),
 ):
     """Get transfer history linked to an equipment item by inventory number."""
-    equipment = queries.get_equipment_by_inv(inv_no, db_id)
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Equipment with inventory number {inv_no} not found",
         )
 
-    history_payload = queries.get_equipment_history_by_inv(inv_no, db_id)
+    history_payload = await run_in_threadpool(queries.get_equipment_history_by_inv, inv_no, db_id)
     history = history_payload.get("history") or []
     return {
         "inv_no": str(inv_no),
@@ -2621,7 +2793,7 @@ async def get_equipment_by_inv(
     Raises:
         HTTPException 404 if equipment not found
     """
-    equipment = queries.get_equipment_by_inv(inv_no, db_id)
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
 
     if not equipment:
         raise HTTPException(

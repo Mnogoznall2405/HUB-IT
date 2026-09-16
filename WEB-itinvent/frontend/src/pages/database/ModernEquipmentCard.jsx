@@ -19,6 +19,7 @@ import { DATA_MODE_EQUIPMENT, getEquipmentRowActions, toInvNo } from './equipmen
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
+import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -110,6 +111,10 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const serial = readFirst(item, ['SERIAL_NO', 'serial_no'], '');
   const employee = readFirst(item, ['OWNER_DISPLAY_NAME', 'employee_name', 'OWNER_FULLNAME'], '—');
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
+  const compareSummary = useEmployeeCompare(employeeOwnerNo);
+  const compareBadge = compareSummary ? (
+    <EmployeeCompareBadge summary={compareSummary} partNo={readFirst(item, ['PART_NO', 'part_no'], '')} />
+  ) : null;
   const dept = readFirst(item, ['OWNER_DEPT', 'employee_dept'], '');
   const status = readFirst(item, ['STATUS_DESCR', 'status_descr', 'DESCR'], '—');
   const location = readFirst(item, ['LOCATION', 'location', 'PLACE'], '');
@@ -174,6 +179,10 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
         cursor: 'pointer',
         transition: 'background-color 0.15s ease',
         transform: isPressed ? 'scale(0.99)' : 'none',
+        // Let the browser skip off-screen card rendering while keeping the
+        // element mounted (expanded state survives scrolling).
+        contentVisibility: 'auto',
+        containIntrinsicSize: 'auto 72px',
       }}
     >
       <Box
@@ -273,6 +282,11 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
                 >
                   {metaLine}
                 </Typography>
+              ) : null}
+              {compareBadge ? (
+                <Box sx={{ mt: 0.3 }}>
+                  {compareBadge}
+                </Box>
               ) : null}
             </Box>
           ) : null}

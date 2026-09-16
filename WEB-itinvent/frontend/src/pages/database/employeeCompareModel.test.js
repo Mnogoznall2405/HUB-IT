@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   aggregateEmployeeBalances,
-  buildEmployeeCompare,
-  EMPLOYEE_COMPARE_STATUS,
-  filterEmployeeCompareRows,
+  buildCompareMaps,
   groupHubItemsByPartNo,
   isBalancesMetaIncomplete,
+  isEmployeeCompareSummaryComplete,
   normalizeCompareKey,
+  resolve1cRowStatus,
+  resolveHubRowStatus,
+  typeNameNeedles,
+  ROW_MATCH_STATUS,
 } from './employeeCompareModel';
 
 const hubItem = (overrides = {}) => ({
@@ -73,77 +76,56 @@ describe('groupHubItemsByPartNo', () => {
   });
 });
 
-describe('buildEmployeeCompare', () => {
-  it('joins balances and hub items by part number', () => {
-    const { rows, summary } = buildEmployeeCompare({
+describe('buildCompareMaps', () => {
+  it('exposes per-key quantities on both sides', () => {
+    const { qty1cByCode, countByPartNo } = buildCompareMaps({
       hubItems: [
-        hubItem({ inv_no: 'H1', part_no: 'БУ-001' }),
-        hubItem({ inv_no: 'H2', part_no: 'БУ-001' }),
-        hubItem({ inv_no: 'H3', part_no: 'БУ-777', model_name: 'Сканер' }),
-        hubItem({ inv_no: 'H4', part_no: '' }),
-        hubItem({ inv_no: 'H5', part_no: 'БУ-003', model_name: 'Клавиатура' }),
+        hubItem({ part_no: 'БУ-001' }),
+        hubItem({ inv_no: 'INV-2', part_no: 'нет в 1С' }),
+        hubItem({ inv_no: 'INV-3', part_no: '' }),
       ],
       balances: [
-        balanceRow({ qty_balance: 2 }),
-        balanceRow({ nomenclature_code: 'БУ-002', nomenclature_name: 'Мышь', qty_balance: 1 }),
-        balanceRow({ nomenclature_code: 'БУ-003', nomenclature_name: 'Клавиатура', qty_balance: 3 }),
+        balanceRow({ nomenclature_code: 'БУ-001' }),
+        balanceRow({ nomenclature_code: 'БУ-002', qty_balance: 3 }),
+        balanceRow({ nomenclature_code: '', nomenclature_name: 'Без кода' }),
       ],
     });
 
-    const byCode = Object.fromEntries(rows.map((row) => [row.code, row]));
-
-    expect(byCode['БУ-001'].status).toBe(EMPLOYEE_COMPARE_STATUS.MATCH);
-    expect(byCode['БУ-001'].hubCount).toBe(2);
-    expect(byCode['БУ-002'].status).toBe(EMPLOYEE_COMPARE_STATUS.ONLY_1C);
-    expect(byCode['БУ-003'].status).toBe(EMPLOYEE_COMPARE_STATUS.DIFF);
-    expect(byCode['БУ-003'].hubCount).toBe(1);
-    expect(byCode['БУ-003'].delta).toBe(2);
-    expect(byCode['БУ-777'].status).toBe(EMPLOYEE_COMPARE_STATUS.ONLY_HUB);
-    expect(byCode['БУ-777'].name).toBe('Сканер');
-
-    expect(summary).toMatchObject({
-      match: 1,
-      diff: 1,
-      only1c: 1,
-      onlyHub: 1,
-      noPartNo: 1,
-    });
-  });
-
-  it('marks everything hub-side as only_hub when balances are empty', () => {
-    const { rows, summary } = buildEmployeeCompare({
-      hubItems: [hubItem({ part_no: 'БУ-001' })],
-      balances: [],
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe(EMPLOYEE_COMPARE_STATUS.ONLY_HUB);
-    expect(summary.onlyHub).toBe(1);
-  });
-
-  it('orders mismatching rows before matched ones', () => {
-    const { rows } = buildEmployeeCompare({
-      hubItems: [hubItem({ part_no: 'БУ-001' })],
-      balances: [
-        balanceRow({ qty_balance: 1 }),
-        balanceRow({ nomenclature_code: 'БУ-002', qty_balance: 5 }),
-      ],
-    });
-    expect(rows[0].status).toBe(EMPLOYEE_COMPARE_STATUS.ONLY_1C);
-    expect(rows[1].status).toBe(EMPLOYEE_COMPARE_STATUS.MATCH);
+    expect(countByPartNo.get(normalizeCompareKey('БУ-001'))).toBe(1);
+    expect(countByPartNo.size).toBe(1);
+    expect(qty1cByCode.get(normalizeCompareKey('БУ-001'))).toBe(1);
+    expect(qty1cByCode.get(normalizeCompareKey('БУ-002'))).toBe(3);
+    expect(qty1cByCode.size).toBe(2);
   });
 });
 
-describe('filterEmployeeCompareRows', () => {
-  it('matches by code, name and hub inventory number', () => {
-    const { rows } = buildEmployeeCompare({
-      hubItems: [hubItem({ inv_no: 'INV-42', part_no: 'БУ-001' })],
-      balances: [balanceRow({ nomenclature_name: 'Ноутбук Lenovo' })],
-    });
+describe('row match statuses', () => {
+  const maps = buildCompareMaps({
+    hubItems: [
+      hubItem({ inv_no: 'A', part_no: 'БУ-001' }),
+      hubItem({ inv_no: 'B', part_no: 'БУ-002' }),
+      hubItem({ inv_no: 'C', part_no: 'БУ-777' }),
+    ],
+    balances: [
+      balanceRow({ nomenclature_code: 'БУ-001', qty_balance: 1 }),
+      balanceRow({ nomenclature_code: 'БУ-002', qty_balance: 5 }),
+      balanceRow({ nomenclature_code: 'БУ-900' }),
+    ],
+  });
 
-    expect(filterEmployeeCompareRows(rows, 'бу-001')).toHaveLength(1);
-    expect(filterEmployeeCompareRows(rows, 'lenovo')).toHaveLength(1);
-    expect(filterEmployeeCompareRows(rows, 'inv-42')).toHaveLength(1);
-    expect(filterEmployeeCompareRows(rows, 'другое')).toHaveLength(0);
+  it('resolves hub-side statuses', () => {
+    expect(resolveHubRowStatus('БУ-001', maps)).toBe(ROW_MATCH_STATUS.MATCH);
+    expect(resolveHubRowStatus('БУ-002', maps)).toBe(ROW_MATCH_STATUS.DIFF);
+    expect(resolveHubRowStatus('БУ-777', maps)).toBe(ROW_MATCH_STATUS.ONLY_HUB);
+    expect(resolveHubRowStatus('', maps)).toBeNull();
+    expect(resolveHubRowStatus('нет в 1С', maps)).toBeNull();
+  });
+
+  it('resolves 1C-side statuses', () => {
+    expect(resolve1cRowStatus('БУ-001', maps)).toBe(ROW_MATCH_STATUS.MATCH);
+    expect(resolve1cRowStatus('БУ-002', maps)).toBe(ROW_MATCH_STATUS.DIFF);
+    expect(resolve1cRowStatus('БУ-900', maps)).toBe(ROW_MATCH_STATUS.ONLY_1C);
+    expect(resolve1cRowStatus('', maps)).toBeNull();
   });
 });
 
@@ -157,5 +139,41 @@ describe('isBalancesMetaIncomplete', () => {
     expect(isBalancesMetaIncomplete({ status: 'incomplete' })).toBe(true);
     expect(isBalancesMetaIncomplete({ status: 'ok', has_more: true })).toBe(true);
     expect(isBalancesMetaIncomplete({ status: 'ok', truncated: true })).toBe(true);
+  });
+});
+
+describe('isEmployeeCompareSummaryComplete', () => {
+  it('is true only for a complete ok summary', () => {
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok' })).toBe(true);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', truncated: false, has_more: false })).toBe(true);
+  });
+
+  it('is false for missing, unknown or incomplete snapshots', () => {
+    expect(isEmployeeCompareSummaryComplete(null)).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'unknown' })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'incomplete' })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', truncated: true })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', has_more: true })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', hasMore: true })).toBe(false);
+  });
+});
+
+describe('typeNameNeedles', () => {
+  it('always includes the type name itself', () => {
+    expect(typeNameNeedles('Сканер')).toEqual(['сканер']);
+    expect(typeNameNeedles('')).toEqual([]);
+  });
+
+  it('adds synonyms for system unit', () => {
+    const needles = typeNameNeedles('Системный блок');
+    expect(needles).toContain('системный блок');
+    expect(needles).toContain('компьютер');
+    expect(needles).toContain('пк');
+  });
+
+  it('matches variant type names containing a known alias key', () => {
+    expect(typeNameNeedles('Системный блок ATX')).toContain('компьютер');
+    expect(typeNameNeedles('Монитор 24"')).toContain('дисплей');
+    expect(typeNameNeedles('МФУ')).toContain('принтер');
   });
 });

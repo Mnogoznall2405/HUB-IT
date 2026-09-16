@@ -50,7 +50,10 @@ from backend.database.equipment_reference_reads import (
 )
 from backend.database.equipment_search_reads import (
     QUERY_SEARCH_BY_SERIAL,
+    QUERY_COUNT_UNIVERSAL,
+    QUERY_COUNT_UNIVERSAL_BY_INV_NO,
     QUERY_SEARCH_UNIVERSAL,
+    QUERY_SEARCH_UNIVERSAL_BY_INV_NO,
     search_equipment_by_serial as _search_equipment_by_serial,
     search_equipment_universal as _search_equipment_universal,
 )
@@ -120,34 +123,6 @@ def _legacy_items_descr_value(value: Any) -> Optional[str]:
 
 
 # SQL Queries
-QUERY_COUNT_UNIVERSAL = """
-    SELECT COUNT(DISTINCT i.INV_NO, i.SERIAL_NO, i.HW_SERIAL_NO) as total
-    FROM ITEMS i
-    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
-    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-    LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
-    WHERE i.CI_TYPE = 1 AND (i.SERIAL_NO LIKE ?
-       OR i.HW_SERIAL_NO LIKE ?
-       OR CAST(i.INV_NO AS VARCHAR(50)) LIKE ?
-       OR i.PART_NO LIKE ?
-       OR m.MODEL_NAME LIKE ?
-       OR v.VENDOR_NAME LIKE ?
-       OR o.OWNER_DISPLAY_NAME LIKE ?
-       OR o.OWNER_DEPT LIKE ?
-       OR b.BRANCH_NAME LIKE ?
-       OR l.DESCR LIKE ?
-       OR t.TYPE_NAME LIKE ?
-       OR s.DESCR LIKE ?
-       OR i.IP_ADDRESS LIKE ?
-       OR i.MAC_ADDRESS LIKE ?
-       OR i.NETBIOS_NAME LIKE ?
-       OR i.DOMAIN_NAME LIKE ?)
-"""
-
 QUERY_SEARCH_BY_EMPLOYEE = """
     SELECT DISTINCT
         o.OWNER_NO,
@@ -762,7 +737,7 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
     if not normalized_tokens:
         return []
 
-    text_tokens = list(normalized_tokens)
+    text_tokens = [token for token in normalized_tokens if not re.fullmatch(r"\d+", token)]
     numeric_tokens: List[int] = []
     for token in normalized_tokens:
         if re.fullmatch(r"\d+", token):
@@ -780,7 +755,7 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
 
     if numeric_tokens:
         placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"TRY_CONVERT(BIGINT, i.INV_NO) IN ({placeholders})")
+        where_parts.append(f"i.INV_NO IN ({placeholders})")
         params.extend(numeric_tokens)
 
     if not where_parts:
@@ -789,14 +764,38 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
     query = f"""
         SELECT
             i.ID AS item_id,
+            i.ID AS id,
             CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
             i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            i.PART_NO AS part_no,
+            i.CI_TYPE AS ci_type,
+            i.TYPE_NO AS type_no,
+            i.MODEL_NO AS model_no,
+            i.STATUS_NO AS status_no,
+            i.EMPL_NO AS empl_no,
+            i.BRANCH_NO AS branch_no,
+            i.LOC_NO AS loc_no,
+            t.TYPE_NAME AS type_name,
             m.MODEL_NAME AS model_name,
+            v.VENDOR_NAME AS vendor_name,
+            s.DESCR AS status,
             o.OWNER_DISPLAY_NAME AS employee_name,
+            o.OWNER_DEPT AS employee_dept,
+            o.OWNER_EMAIL AS employee_email,
             b.BRANCH_NAME AS branch_name,
-            l.DESCR AS location_name
+            l.DESCR AS location,
+            l.DESCR AS location_name,
+            i.DESCR AS DESCRIPTION,
+            i.IP_ADDRESS AS ip_address,
+            i.MAC_ADDRESS AS mac_address,
+            i.NETBIOS_NAME AS network_name,
+            i.DOMAIN_NAME AS domain_name
         FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
         LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
         LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
         LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
         LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
@@ -824,6 +823,7 @@ def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] =
     if not normalized_tokens:
         return []
 
+    text_tokens = [token for token in normalized_tokens if not re.fullmatch(r"\d+", token)]
     numeric_tokens: List[int] = []
     for token in normalized_tokens:
         if re.fullmatch(r"\d+", token):
@@ -834,14 +834,18 @@ def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] =
     where_parts: List[str] = []
     params: List[Any] = []
 
-    placeholders = ", ".join(["?"] * len(normalized_tokens))
-    where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
-    params.extend([token.upper() for token in normalized_tokens])
+    if text_tokens:
+        placeholders = ", ".join(["?"] * len(text_tokens))
+        where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+        params.extend([token.upper() for token in text_tokens])
 
     if numeric_tokens:
         placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"TRY_CONVERT(BIGINT, i.INV_NO) IN ({placeholders})")
+        where_parts.append(f"i.INV_NO IN ({placeholders})")
         params.extend(numeric_tokens)
+
+    if not where_parts:
+        return []
 
     query = f"""
         SELECT
@@ -1575,8 +1579,18 @@ def update_uploaded_transfer_act_file_by_doc_no(
         return file_no
 
 
+_table_columns_cache: dict = {}
+
+
 def _get_table_columns(table_name: str, db_id: Optional[str] = None) -> List[dict]:
-    """Read table columns metadata from INFORMATION_SCHEMA.COLUMNS."""
+    """Read table columns metadata from INFORMATION_SCHEMA.COLUMNS.
+
+    Schema facts don't change without a deploy/restart — memoized per (db, table).
+    """
+    cache_key = (str(db_id or "").strip(), table_name)
+    cached = _table_columns_cache.get(cache_key)
+    if cached is not None:
+        return cached
     db = get_db(db_id)
     query = """
         SELECT
@@ -1586,7 +1600,9 @@ def _get_table_columns(table_name: str, db_id: Optional[str] = None) -> List[dic
         WHERE TABLE_NAME = ?
         ORDER BY ORDINAL_POSITION
     """
-    return db.execute_query(query, (table_name,))
+    rows = db.execute_query(query, (table_name,))
+    _table_columns_cache[cache_key] = rows
+    return rows
 
 
 def _guess_content_type_from_name(file_name: str) -> str:
@@ -2462,6 +2478,23 @@ def list_owners_compact(db_id: Optional[str] = None, limit: int = 20000) -> List
         ORDER BY o.OWNER_DISPLAY_NAME
     """
     return db.execute_query(query, ())
+
+
+def get_owner_part_no_counts(db_id: Optional[str] = None) -> List[dict]:
+    """Per-owner PART_NO buckets for the employee↔1C compare summary."""
+    db = get_db(db_id)
+    sql = """
+        SELECT
+            i.EMPL_NO AS owner_no,
+            i.PART_NO AS part_no,
+            COUNT(1) AS item_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IS NOT NULL
+          AND i.EMPL_NO > 0
+        GROUP BY i.EMPL_NO, i.PART_NO
+    """
+    return db.execute_query(sql, ())
 
 
 # Canonical sentinel: equipment checked and intentionally not linked to 1C.

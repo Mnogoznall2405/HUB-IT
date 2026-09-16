@@ -63,7 +63,9 @@ function EmployeeSummary({ employee, warehouse, warehouseStatus, warehouseQuanti
             {employeeName || 'Сотрудник Хаба'}
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-            {[department, matchedWarehouse ? `В 1С: ${formatUnitCount(warehouseQuantity)}` : '']
+            {[department, matchedWarehouse
+              ? (warehouseQuantity != null ? `В 1С: ${formatUnitCount(warehouseQuantity)}` : 'Склад 1С найден')
+              : '']
               .filter(Boolean)
               .join(' · ')}
           </Typography>
@@ -233,7 +235,9 @@ const DatabaseEmployeeSearchFallback = memo(function DatabaseEmployeeSearchFallb
                   String(employee?.owner_no ?? employee?.name ?? '').trim()
                 ] || null;
                 const warehouseCaption = employeeWarehouse?.status === 'matched'
-                  ? `В 1С: ${formatUnitCount(employeeWarehouse.quantity)}`
+                  ? (employeeWarehouse.quantity != null
+                    ? `В 1С: ${formatUnitCount(employeeWarehouse.quantity)}`
+                    : 'Склад 1С найден')
                   : (employeeWarehouse?.status === 'ambiguous'
                     ? 'В 1С: нужно выбрать склад'
                     : (employeeWarehouse?.status === 'not_found'
@@ -305,7 +309,9 @@ const DatabaseEmployeeSearchFallback = memo(function DatabaseEmployeeSearchFallb
                     {warehouse.name}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Сотрудник отсутствует в справочнике Хаба · В 1С: {formatUnitCount(warehouseQuantity)}.
+                    {warehouseQuantity != null
+                      ? `Сотрудник отсутствует в справочнике Хаба · В 1С: ${formatUnitCount(warehouseQuantity)}.`
+                      : 'Сотрудник отсутствует в справочнике Хаба · Склад 1С найден.'}
                   </Typography>
                 </Box>
               </Stack>

@@ -8,12 +8,12 @@ import time
 from threading import RLock
 
 from backend.database.connection import get_db
-from backend.database.equipment_current_act_reads import enrich_equipment_current_acts
 
 logger = logging.getLogger(__name__)
 _equipment_payload_cache: Dict[str, Dict[str, Any]] = {}
 _equipment_payload_cache_lock = RLock()
 _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC = max(10, int(os.getenv("EQUIPMENT_PAYLOAD_CACHE_TTL_SEC", "30")))
+_EQUIPMENT_DICT_CACHE_TTL_SEC = max(60, int(os.getenv("EQUIPMENT_DICT_CACHE_TTL_SEC", "300")))
 
 
 def _build_equipment_cache_key(kind: str, db_id: Optional[str], *parts: Any) -> str:
@@ -22,12 +22,13 @@ def _build_equipment_cache_key(kind: str, db_id: Optional[str], *parts: Any) -> 
     return "|".join(normalized_parts)
 
 
-def _get_cached_equipment_payload(cache_key: str) -> Optional[Any]:
+def _get_cached_equipment_payload(cache_key: str, ttl_sec: Optional[float] = None) -> Optional[Any]:
+    ttl = _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC if ttl_sec is None else ttl_sec
     with _equipment_payload_cache_lock:
         cached = _equipment_payload_cache.get(cache_key)
         if not cached:
             return None
-        if (time.monotonic() - float(cached.get("ts") or 0)) >= _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC:
+        if (time.monotonic() - float(cached.get("ts") or 0)) >= ttl:
             _equipment_payload_cache.pop(cache_key, None)
             return None
         return cached.get("data")
@@ -43,14 +44,61 @@ def _set_cached_equipment_payload(cache_key: str, payload: Any) -> Any:
 
 
 def invalidate_equipment_cache(db_id: Optional[str] = None) -> None:
-    prefix = f"|{str(db_id or '').strip()}|"
+    needle = f"|{str(db_id or '').strip()}"
     with _equipment_payload_cache_lock:
         if db_id is None:
             _equipment_payload_cache.clear()
             return
         for cache_key in list(_equipment_payload_cache.keys()):
-            if prefix in cache_key:
+            if f"{needle}|" in cache_key or cache_key.endswith(needle):
                 _equipment_payload_cache.pop(cache_key, None)
+
+
+def _get_cached_equipment_total(
+    kind: str,
+    db_id: Optional[str],
+    query: str,
+    params: tuple = (),
+) -> int:
+    cache_key = _build_equipment_cache_key(f"{kind}_total", db_id, "count", *params)
+    cached_total = _get_cached_equipment_payload(cache_key)
+    if cached_total is not None:
+        return int(cached_total)
+    rows = get_db(db_id).execute_query(query, params)
+    total = int(rows[0].get("total") or 0) if rows else 0
+    _set_cached_equipment_payload(cache_key, total)
+    return total
+
+
+def _cached_dict_query(kind: str, db_id: Optional[str], fetcher: Any, *parts: Any) -> Any:
+    """Cache directory/reference payloads with a longer TTL — they change rarely."""
+    cache_key = _build_equipment_cache_key(f"dict_{kind}", db_id, *parts)
+    cached = _get_cached_equipment_payload(cache_key, ttl_sec=_EQUIPMENT_DICT_CACHE_TTL_SEC)
+    if cached is not None:
+        return cached
+    return _set_cached_equipment_payload(cache_key, fetcher())
+
+
+def get_all_branches_cached(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    from backend.database import queries
+    return _cached_dict_query("branches", db_id, lambda: queries.get_all_branches(db_id))
+
+
+def get_all_statuses_cached(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    from backend.database import queries
+    return _cached_dict_query("statuses", db_id, lambda: queries.get_all_statuses(db_id))
+
+
+def get_all_locations_cached(db_id: Optional[str] = None, branch_no: Any = None) -> List[Dict[str, Any]]:
+    from backend.database import queries
+    return _cached_dict_query("locations", db_id, lambda: queries.get_all_locations(db_id, branch_no=branch_no), branch_no)
+
+
+def get_models_by_type_cached(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> List[Dict[str, Any]]:
+    from backend.database import queries
+    return _cached_dict_query(
+        "models_by_type", db_id, lambda: queries.get_models_by_type(type_no, db_id, ci_type=ci_type), type_no, ci_type
+    )
 
 
 def _group_rows_by_branch_location(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
@@ -77,8 +125,7 @@ def get_all_equipment(page: int = 1, limit: int = 50, db_id: Optional[str] = Non
 
     from backend.database.queries_new import QUERY_COUNT_ALL_EQUIPMENT
 
-    count_result = db.execute_query(QUERY_COUNT_ALL_EQUIPMENT, ())
-    total = count_result[0]['total'] if count_result else 0
+    total = _get_cached_equipment_total("equipment_all", db_id, QUERY_COUNT_ALL_EQUIPMENT)
 
     from backend.database.queries_new import QUERY_GET_ALL_EQUIPMENT
     equipment = db.execute_query(
@@ -105,14 +152,12 @@ def get_equipment_by_branch(branch_name: str, page: int = 1, limit: int = 10000,
 
         from backend.database.queries_new import QUERY_COUNT_BY_BRANCH, QUERY_GET_EQUIPMENT_BY_BRANCH
 
-        count_result = db.execute_query(QUERY_COUNT_BY_BRANCH, (branch_name,))
-        total = count_result[0]['total'] if count_result else 0
+        total = _get_cached_equipment_total("equipment_by_branch", db_id, QUERY_COUNT_BY_BRANCH, (branch_name,))
 
         equipment = db.execute_query(
             QUERY_GET_EQUIPMENT_BY_BRANCH,
             (branch_name, offset, limit)
         )
-        equipment = enrich_equipment_current_acts(equipment, db_id=db_id, get_db_fn=get_db)
 
         logger.info(f"Found {total} equipment items for branch {branch_name}")
 
@@ -131,9 +176,13 @@ def get_equipment_by_branch(branch_name: str, page: int = 1, limit: int = 10000,
 
 def get_all_branches(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get all branches."""
+    cache_key = _build_equipment_cache_key("dict_branches_list", db_id)
+    cached = _get_cached_equipment_payload(cache_key, ttl_sec=_EQUIPMENT_DICT_CACHE_TTL_SEC)
+    if cached is not None:
+        return cached
     db = get_db(db_id)
     from backend.database.queries_new import QUERY_GET_ALL_BRANCHES
-    return db.execute_query(QUERY_GET_ALL_BRANCHES, ())
+    return _set_cached_equipment_payload(cache_key, db.execute_query(QUERY_GET_ALL_BRANCHES, ()))
 
 
 def get_locations_by_branch(branch_no: int, db_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -144,9 +193,13 @@ def get_locations_by_branch(branch_no: int, db_id: Optional[str] = None) -> List
 
 def get_all_equipment_types(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get all equipment types."""
+    cache_key = _build_equipment_cache_key("dict_equipment_types", db_id)
+    cached = _get_cached_equipment_payload(cache_key, ttl_sec=_EQUIPMENT_DICT_CACHE_TTL_SEC)
+    if cached is not None:
+        return cached
     db = get_db(db_id)
     from backend.database.queries_new import QUERY_GET_ALL_EQUIPMENT_TYPES
-    return db.execute_query(QUERY_GET_ALL_EQUIPMENT_TYPES, ())
+    return _set_cached_equipment_payload(cache_key, db.execute_query(QUERY_GET_ALL_EQUIPMENT_TYPES, ()))
 
 
 def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] = None) -> Dict[str, Any]:
@@ -161,14 +214,12 @@ def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] 
 
     from backend.database.queries_new import QUERY_GET_EQUIPMENT_GROUPED, QUERY_COUNT_ALL_EQUIPMENT
 
-    count_result = db.execute_query(QUERY_COUNT_ALL_EQUIPMENT, ())
-    total = count_result[0]['total'] if count_result else 0
+    total = _get_cached_equipment_total("equipment", db_id, QUERY_COUNT_ALL_EQUIPMENT)
 
     equipment = db.execute_query(
         QUERY_GET_EQUIPMENT_GROUPED,
         (offset, limit)
     )
-    equipment = enrich_equipment_current_acts(equipment, db_id=db_id, get_db_fn=get_db)
 
     grouped = _group_rows_by_branch_location(equipment)
 
@@ -194,8 +245,8 @@ def get_all_equipment_flat(db_id: Optional[str] = None, limit: int = 10000) -> L
 
     db = get_db(db_id)
     from backend.database.queries_new import QUERY_GET_EQUIPMENT_GROUPED_ALL
-    rows = db.execute_query(QUERY_GET_EQUIPMENT_GROUPED_ALL, ())
-    return _set_cached_equipment_payload(cache_key, (rows or [])[:limit])
+    rows = db.execute_query(QUERY_GET_EQUIPMENT_GROUPED_ALL.format(limit=int(limit)), ())
+    return _set_cached_equipment_payload(cache_key, rows or [])
 
 
 def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] = None) -> Dict[str, Any]:
@@ -210,8 +261,7 @@ def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str
 
     from backend.database.queries_new import QUERY_GET_CONSUMABLES_GROUPED, QUERY_COUNT_ALL_CONSUMABLES
 
-    count_result = db.execute_query(QUERY_COUNT_ALL_CONSUMABLES, ())
-    total = count_result[0]['total'] if count_result else 0
+    total = _get_cached_equipment_total("consumables", db_id, QUERY_COUNT_ALL_CONSUMABLES)
 
     consumables = db.execute_query(
         QUERY_GET_CONSUMABLES_GROUPED,

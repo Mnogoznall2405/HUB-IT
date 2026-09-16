@@ -78,6 +78,39 @@ async def test_current_database_prefers_server_selection_over_client_hints(monke
     assert result["id"] == "ITINVENT"
     assert result["source"] == "user_selection"
     assert result["locked"] == "false"
+    assert "host" not in result
+    assert "username" not in result
+    assert "password" not in result
+
+
+def _make_viewer_without_database_permissions():
+    from backend.models.auth import User
+
+    return User(
+        id=78,
+        username="viewer-no-db",
+        role="viewer",
+        is_active=True,
+        permissions=[],
+        use_custom_permissions=True,
+        custom_permissions=[],
+    )
+
+
+def test_database_list_rejects_user_without_database_permissions(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    database_module = _patch_database_catalog(monkeypatch)
+    deps = pytest.importorskip("backend.api.deps")
+
+    app = FastAPI()
+    app.include_router(database_module.router, prefix="/database")
+    app.dependency_overrides[deps.get_current_active_user] = _make_viewer_without_database_permissions
+
+    response = TestClient(app).get("/database/list")
+
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio

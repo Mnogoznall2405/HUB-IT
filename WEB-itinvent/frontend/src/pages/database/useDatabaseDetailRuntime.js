@@ -47,7 +47,8 @@ const hasFullDetailFields = (item) => {
     hasOwn(item, 'DOMAIN_NAME') ||
     hasOwn(item, 'domain_name');
 
-  return Boolean(item?.ID !== undefined && item?.ID !== null)
+  const itemId = item?.ID ?? item?.id ?? item?.item_id;
+  return Boolean(itemId !== undefined && itemId !== null)
     && hasPartNoField
     && hasEmployeeDeptField
     && hasVendorField
@@ -430,7 +431,7 @@ export function useDatabaseDetailRuntime({
   useEffect(() => {
     let canceled = false;
     const generateQr = async () => {
-      const text = String(detailQrText || '').trim();
+      const text = detailQrOpen ? String(detailQrText || '').trim() : '';
       setDetailQrUrl('');
       if (!text) {
         setDetailQrUrlLoading(false);
@@ -459,7 +460,7 @@ export function useDatabaseDetailRuntime({
     return () => {
       canceled = true;
     };
-  }, [detailQrText]);
+  }, [detailQrText, detailQrOpen]);
 
   const detailQrFileName = useMemo(
     () => buildDetailQrFileName(detailModal?.data),

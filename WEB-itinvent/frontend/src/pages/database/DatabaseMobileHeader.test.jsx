@@ -36,6 +36,8 @@ describe('DatabaseMobileHeader', () => {
     expect(screen.getByTestId('mobile-shell-page-header')).toBeInTheDocument();
     expect(screen.getByText('HUB-IT')).toBeInTheDocument();
     expect(screen.getByText('Основная база')).toBeInTheDocument();
+    const databaseSelect = screen.getByRole('combobox');
+    expect(databaseSelect.closest('.MuiInputBase-root')).toHaveStyle({ height: '44px' });
   });
 
   it('renders current database marker in the selector menu', () => {

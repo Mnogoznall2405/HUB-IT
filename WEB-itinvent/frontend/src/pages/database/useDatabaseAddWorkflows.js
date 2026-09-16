@@ -21,6 +21,7 @@ import {
   usesManualModel,
   usesManualOwner,
 } from './databaseOptionModel';
+import { upsertItemInGrouped } from './equipmentModel';
 
 export function useDatabaseAddWorkflows({
   canDatabaseWrite = false,
@@ -31,8 +32,33 @@ export function useDatabaseAddWorkflows({
   getLocationsCached,
   getModelsCached,
   fetchAllEquipment,
+  setAllEquipment,
+  setFilteredData,
   notifyDatabaseSuccess,
 } = {}) {
+
+  // Point refresh for newly created equipment: fetch the created row and
+  // upsert it into the grouped cache instead of a full refetch.
+  const refreshCreatedEquipment = useCallback(async (invNo) => {
+    const inv = String(invNo || '').trim();
+    if (!inv || typeof setAllEquipment !== 'function') {
+      await fetchAllEquipment?.({ force: true });
+      return;
+    }
+    try {
+      const fresh = await equipmentAPI.getByInvNos([inv]);
+      const items = Array.isArray(fresh?.equipment) ? fresh.equipment : [];
+      if (!items.length) {
+        await fetchAllEquipment?.({ force: true });
+        return;
+      }
+      const upsertAll = (prev) => items.reduce(upsertItemInGrouped, prev);
+      setAllEquipment(upsertAll);
+      setFilteredData?.((prev) => (prev == null ? prev : upsertAll(prev)));
+    } catch {
+      await fetchAllEquipment?.({ force: true });
+    }
+  }, [fetchAllEquipment, setAllEquipment, setFilteredData]);
   const [addEquipmentModalOpen, setAddEquipmentModalOpen] = useState(false);
   const [addEquipmentForm, setAddEquipmentForm] = useState(() => createAddEquipmentInitialForm());
   const [addEquipmentLoading, setAddEquipmentLoading] = useState(false);
@@ -387,14 +413,14 @@ export function useDatabaseAddWorkflows({
       setAddEmployeeInput('');
       setAddEmployeeOptions([]);
       setAddModels([]);
-      await fetchAllEquipment?.({ force: true });
+      await refreshCreatedEquipment(response?.inv_no);
     } catch (error) {
       const apiDetail = error?.response?.data?.detail;
       setAddEquipmentError(typeof apiDetail === 'string' ? apiDetail : 'Не удалось добавить оборудование.');
     } finally {
       setAddEquipmentLoading(false);
     }
-  }, [addEquipmentForm, canDatabaseWrite, fetchAllEquipment, getAddEquipmentDefaults, notifyDatabaseSuccess]);
+  }, [addEquipmentForm, canDatabaseWrite, fetchAllEquipment, getAddEquipmentDefaults, notifyDatabaseSuccess, refreshCreatedEquipment]);
 
   const handleAddConsumableSubmit = useCallback(async () => {
     if (!canDatabaseWrite) {

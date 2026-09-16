@@ -1474,6 +1474,10 @@ export const equipmentAPI = {
     return equipmentRecordsAPI.getByInvNos;
   },
 
+  get getCurrentActs() {
+    return equipmentRecordsAPI.getCurrentActs;
+  },
+
   get getRecentCards() {
     return equipmentRecentCardsAPI.getRecentCards;
   },

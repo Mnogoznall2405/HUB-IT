@@ -26,17 +26,14 @@ QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY = """
         l.LOC_NO as LOC_NO,
         l.DESCR as LOC_NAME
     FROM LOCATIONS l
+    LEFT JOIN (
+        SELECT DISTINCT LOC_NO
+        FROM ITEMS
+        WHERE BRANCH_NO = ?
+    ) used ON used.LOC_NO = l.LOC_NO
     WHERE l.LOC_NO IS NOT NULL
     ORDER BY
-        CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM ITEMS i
-                WHERE i.BRANCH_NO = ?
-                  AND i.LOC_NO = l.LOC_NO
-            ) THEN 0
-            ELSE 1
-        END,
+        CASE WHEN used.LOC_NO IS NULL THEN 1 ELSE 0 END,
         l.DESCR,
         l.LOC_NO
 """
@@ -64,17 +61,37 @@ def _get_db(db_id: Optional[str], get_db_fn: Optional[Callable[[Optional[str]], 
     return (get_db_fn or _default_get_db)(db_id)
 
 
+_locations_branch_column_cache: dict = {}
+
+
 def locations_has_branch_column(
     db_id: Optional[str] = None,
     *,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> bool:
-    """Return whether LOCATIONS has an explicit BRANCH_NO relation column."""
+    """Return whether LOCATIONS has an explicit BRANCH_NO relation column.
+
+    Memoized per database — schema facts don't change without a deploy/restart.
+    """
+    # A non-default get_db_fn is a test seam — don't memoize across fakes.
+    use_cache = get_db_fn is None or get_db_fn is _default_get_db
+    if not use_cache:
+        db = _get_db(db_id, get_db_fn)
+        try:
+            return bool(db.execute_query(QUERY_LOCATIONS_HAS_BRANCH_COLUMN))
+        except Exception:
+            return False
+    cache_key = str(db_id or "").strip()
+    cached = _locations_branch_column_cache.get(cache_key)
+    if cached is not None:
+        return cached
     db = _get_db(db_id, get_db_fn)
     try:
-        return bool(db.execute_query(QUERY_LOCATIONS_HAS_BRANCH_COLUMN))
+        result = bool(db.execute_query(QUERY_LOCATIONS_HAS_BRANCH_COLUMN))
     except Exception:
         return False
+    _locations_branch_column_cache[cache_key] = result
+    return result
 
 
 def get_all_branches(

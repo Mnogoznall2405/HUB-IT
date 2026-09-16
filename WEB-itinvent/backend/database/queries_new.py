@@ -33,7 +33,7 @@ QUERY_GET_ALL_EQUIPMENT = """
     LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
     LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
     WHERE i.CI_TYPE = 1
-    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO
+    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO, i.ID
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 """
 
@@ -67,7 +67,8 @@ QUERY_GET_ALL_LOCATIONS = """
     ORDER BY l.DESCR, l.LOC_NO
 """
 
-# Get equipment grouped by branch and location
+# Get equipment grouped by branch and location (slim EquipmentListRow contract:
+# no DESCR nvarchar(max), no vendor — heavy fields live in detail/by-inv-nos)
 QUERY_GET_EQUIPMENT_GROUPED = """
     SELECT
         i.ID,
@@ -88,29 +89,26 @@ QUERY_GET_EQUIPMENT_GROUPED = """
         i.MAC_ADDRESS as mac_address,
         i.NETBIOS_NAME as network_name,
         i.DOMAIN_NAME as domain_name,
-        i.DESCR as DESCRIPTION,
         t.TYPE_NAME as type_name,
         m.MODEL_NAME as model_name,
-        v.VENDOR_NAME as manufacturer,
         o.OWNER_DISPLAY_NAME as employee_name,
         o.OWNER_DEPT as employee_dept,
         s.DESCR as status
     FROM ITEMS i
     LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
     LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
     LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
     LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
     LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
     LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
     WHERE i.CI_TYPE = 1
-    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO
+    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO, i.ID
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 """
 
 # Same query without pagination — use when you need ALL equipment in one shot
 QUERY_GET_EQUIPMENT_GROUPED_ALL = """
-    SELECT
+    SELECT TOP {limit}
         i.ID,
         i.TYPE_NO as type_no,
         i.MODEL_NO as model_no,
@@ -145,8 +143,8 @@ QUERY_GET_EQUIPMENT_GROUPED_ALL = """
     LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
     LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
     WHERE i.CI_TYPE = 1
-    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO
-"""
+    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO, i.ID
+""".format(limit="{limit}")
 
 # Get consumables grouped by branch and location (CI_TYPE = 4)
 QUERY_GET_CONSUMABLES_GROUPED = """
@@ -185,19 +183,28 @@ QUERY_GET_CONSUMABLES_GROUPED = """
     LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
     LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
     WHERE i.CI_TYPE = 4
-    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO
+    ORDER BY b.BRANCH_NAME, l.DESCR, i.INV_NO, i.ID
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 """
 
+# By-branch variant keeps description/vendor_name for the AI-tool direct caller;
+# the /all-grouped response_model (EquipmentListRow) strips them from the wire.
 QUERY_GET_EQUIPMENT_BY_BRANCH = """
     SELECT
         i.ID,
         i.INV_NO,
         i.SERIAL_NO,
         i.HW_SERIAL_NO,
-        i.PART_NO,
+        i.PART_NO as part_no,
         i.DESCR as description,
-        i.IP_ADDRESS,
+        i.QTY as qty,
+        i.IP_ADDRESS as ip_address,
+        i.MAC_ADDRESS as mac_address,
+        i.NETBIOS_NAME as network_name,
+        i.DOMAIN_NAME as domain_name,
+        i.TYPE_NO as type_no,
+        i.MODEL_NO as model_no,
+        i.STATUS_NO as status_no,
         t.TYPE_NAME as type_name,
         m.MODEL_NAME as model_name,
         v.VENDOR_NAME as vendor_name,
@@ -218,7 +225,7 @@ QUERY_GET_EQUIPMENT_BY_BRANCH = """
     LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
     LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
     WHERE i.CI_TYPE = 1 AND b.BRANCH_NAME = ?
-    ORDER BY l.DESCR, i.INV_NO
+    ORDER BY l.DESCR, i.INV_NO, i.ID
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 """
 

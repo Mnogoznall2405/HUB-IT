@@ -2,8 +2,8 @@
 Equipment models for API requests and responses.
 """
 from datetime import datetime
-from typing import List, Optional, Literal
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Literal
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EquipmentBase(BaseModel):
@@ -74,6 +74,71 @@ class EquipmentListResponse(BaseModel):
     total: int = Field(..., description="Total number of equipment")
     page: int = Field(..., description="Current page number")
     pages: int = Field(..., description="Total number of pages")
+
+
+class EquipmentListRow(BaseModel):
+    """Slim equipment row for grouped list pages.
+
+    Whitelist of the fields the list UI and the client search index actually
+    consume. Heavy fields (DESCR nvarchar(max), vendor, current-act enrich)
+    are only served by the detail/by-inv-nos endpoints.
+    Values pass through without coercion so the wire format stays identical
+    (e.g. INV_NO is a float column in the legacy schema).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ID: Optional[Any] = None
+    INV_NO: Optional[Any] = None
+    SERIAL_NO: Optional[Any] = None
+    HW_SERIAL_NO: Optional[Any] = None
+    part_no: Optional[Any] = None
+    type_no: Optional[Any] = None
+    type_name: Optional[Any] = None
+    model_no: Optional[Any] = None
+    model_name: Optional[Any] = None
+    empl_no: Optional[Any] = None
+    employee_name: Optional[Any] = None
+    employee_dept: Optional[Any] = None
+    branch_no: Optional[Any] = None
+    branch_name: Optional[Any] = None
+    loc_no: Optional[Any] = None
+    location: Optional[Any] = None
+    status_no: Optional[Any] = None
+    status: Optional[Any] = None
+    qty: Optional[Any] = None
+    ip_address: Optional[Any] = None
+    mac_address: Optional[Any] = None
+    network_name: Optional[Any] = None
+    domain_name: Optional[Any] = None
+
+
+class EquipmentGroupedListResponse(BaseModel):
+    """Response model for GET /equipment/all-grouped."""
+    grouped: Dict[str, Dict[str, List[EquipmentListRow]]] = Field(default_factory=dict)
+    total: int = Field(0, description="Total number of equipment rows")
+    page: int = Field(1, description="Current page number")
+    limit: int = Field(1000, description="Page size")
+    pages: int = Field(0, description="Total number of pages")
+
+
+class EquipmentCurrentActsRequest(BaseModel):
+    """Batch lookup of current acts by ITEMS.ID for visible list rows."""
+    item_ids: List[int] = Field(default_factory=list, max_length=2000)
+
+
+class EquipmentCurrentActItem(BaseModel):
+    item_id: int
+    available: Optional[bool] = Field(
+        None, description="None when the act lookup itself failed (unknown)"
+    )
+    doc_no: Optional[Any] = None
+    doc_number: Optional[Any] = None
+    doc_date: Optional[Any] = None
+
+
+class EquipmentCurrentActsResponse(BaseModel):
+    items: List[EquipmentCurrentActItem] = Field(default_factory=list)
 
 
 class Branch(BaseModel):

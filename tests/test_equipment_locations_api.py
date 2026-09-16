@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pydantic import ValidationError
 
 
@@ -650,9 +650,9 @@ async def test_locations_endpoints_use_global_directory(monkeypatch):
 
     monkeypatch.setattr(equipment_api.queries, "get_all_locations", fake_get_all_locations)
 
-    assert await equipment_api.get_all_locations(db_id="main", branch_no=None, _=_user()) == sample_locations
-    assert await equipment_api.get_all_locations(db_id="main", branch_no="17", _=_user()) == sample_locations
-    assert await equipment_api.get_locations(branch_id="123", db_id="main", _=_user()) == sample_locations
+    assert await equipment_api.get_all_locations(response=Response(), db_id="main", branch_no=None, _=_user()) == sample_locations
+    assert await equipment_api.get_all_locations(response=Response(), db_id="main", branch_no="17", _=_user()) == sample_locations
+    assert await equipment_api.get_locations(branch_id="123", response=Response(), db_id="main", _=_user()) == sample_locations
     assert calls == [("main", None), ("main", "17"), ("main", "123")]
 
 
@@ -1027,3 +1027,55 @@ async def test_transfer_act_only_uses_current_owner_without_updating_inventory(m
     assert captured["issuer_name"] == "Issuer User"
     assert captured["issuer_email"] == "issuer@example.test"
     assert captured["items"][0]["employee_name"] == "Current Holder"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_create_equipment_does_not_serialize_sync_stages(monkeypatch):
+    import asyncio
+    import time
+
+    def _sleeping(result):
+        def fake(*_args, **_kwargs):
+            time.sleep(0.04)
+            return result
+        return fake
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", _sleeping({"BRANCH_NO": 1}))
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", _sleeping({"LOC_NO": 999}))
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", _sleeping({"TYPE_NO": 10}))
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", _sleeping({"STATUS_NO": 1}))
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "create_equipment_item",
+        _sleeping({
+            "success": True,
+            "item_id": 101,
+            "inv_no": "1001",
+            "created_owner": False,
+            "created_model": False,
+            "message": "ok",
+        }),
+    )
+    monkeypatch.setattr(equipment_api, "invalidate_equipment_cache", lambda db_id=None: None)
+
+    def _payload(serial_no):
+        return equipment_api.EquipmentCreateRequest(
+            serial_no=serial_no,
+            employee_name="Иванов И.И.",
+            branch_no=1,
+            loc_no=999,
+            type_no=10,
+            status_no=1,
+            model_name="Dell OptiPlex",
+        )
+
+    started = time.monotonic()
+    first, second = await asyncio.gather(
+        equipment_api.create_equipment(_payload("SN-1"), db_id="main", current_user=_user()),
+        equipment_api.create_equipment(_payload("SN-2"), db_id="main", current_user=_user()),
+    )
+    elapsed = time.monotonic() - started
+
+    assert first.success is True
+    assert second.success is True
+    assert elapsed < 0.30

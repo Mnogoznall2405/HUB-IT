@@ -32,6 +32,16 @@ export const equipmentRecordsAPI = {
     return response.data;
   },
 
+  // Lazy batch for the "current act" column — kept off the list hot path.
+  getCurrentActs: async (itemIds = []) => {
+    const response = await apiClient.post('/equipment/current-acts', {
+      item_ids: (Array.isArray(itemIds) ? itemIds : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id)),
+    });
+    return response.data;
+  },
+
   updateByInvNo: async (invNo, payload) => {
     const response = await apiClient.patch(`/equipment/${invNo}`, payload);
     return response.data;

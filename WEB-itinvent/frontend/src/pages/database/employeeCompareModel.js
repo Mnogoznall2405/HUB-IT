@@ -1,25 +1,55 @@
 import { readFirst } from './databaseRecordModel';
-import { compareRuText, isNotIn1cPartNo, isUsableHubPartNo } from './warehouse1cShared';
-
-export const EMPLOYEE_COMPARE_STATUS = Object.freeze({
-  MATCH: 'match',
-  DIFF: 'diff',
-  ONLY_1C: 'only_1c',
-  ONLY_HUB: 'only_hub',
-});
-
-const STATUS_PRIORITY = {
-  [EMPLOYEE_COMPARE_STATUS.DIFF]: 0,
-  [EMPLOYEE_COMPARE_STATUS.ONLY_1C]: 1,
-  [EMPLOYEE_COMPARE_STATUS.ONLY_HUB]: 2,
-  [EMPLOYEE_COMPARE_STATUS.MATCH]: 3,
-};
-
-const QTY_EPSILON = 1e-6;
+import { isNotIn1cPartNo, isUsableHubPartNo } from './warehouse1cShared';
 
 /** Same normalization as backend `_normalize_hub_part_no_text`. */
 export function normalizeCompareKey(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Synonyms for equipment type names — a 1C nomenclature row matches the
+ * type filter when its name contains any of these needles, not only the
+ * literal type name («Системный блок» should also find «Компьютер …»).
+ */
+const TYPE_NAME_ALIASES = {
+  'системный блок': ['компьютер', 'системник', 'пк'],
+  'компьютер': ['системный блок', 'системник', 'пк'],
+  'монитор': ['дисплей', 'экран'],
+  'ноутбук': ['нетбук', 'laptop'],
+  'принтер': ['мфу', 'печатающее устройство'],
+  'мфу': ['принтер', 'печатающее устройство'],
+  'планшет': ['tablet'],
+  'телефон': ['смартфон', 'мобильный'],
+  'смартфон': ['телефон'],
+  'коммутатор': ['свитч', 'switch'],
+  'свитч': ['коммутатор', 'switch'],
+  'маршрутизатор': ['роутер'],
+  'роутер': ['маршрутизатор'],
+  'источник бесперебойного питания': ['ибп', 'ups'],
+  'ибп': ['источник бесперебойного питания', 'ups'],
+  'телевизор': ['тв', 'панель'],
+  'тв': ['телевизор'],
+  'веб-камера': ['вебкамера', 'камера'],
+  'камера': ['веб-камера', 'вебкамера'],
+  'гарнитура': ['наушники'],
+  'наушники': ['гарнитура'],
+  'сканер штрих': ['сканер'],
+};
+
+/** Normalized needles a 1C nomenclature name may contain for this type. */
+export function typeNameNeedles(typeName) {
+  const base = normalizeCompareKey(typeName);
+  if (!base) return [];
+  const needles = new Set([base]);
+  for (const [key, aliases] of Object.entries(TYPE_NAME_ALIASES)) {
+    if (base === key || base.includes(key) || (base.length >= 2 && key.includes(base))) {
+      for (const alias of aliases) {
+        const normalized = normalizeCompareKey(alias);
+        if (normalized) needles.add(normalized);
+      }
+    }
+  }
+  return [...needles];
 }
 
 function toQty(value) {
@@ -110,165 +140,99 @@ export function groupHubItemsByPartNo(hubItems = []) {
   return { byPartNo, noPartNoItems, notIn1cItems };
 }
 
-function hubItemDisplayName(item) {
-  return String(
-    readFirst(item, ['MODEL_NAME', 'model_name'], '')
-    || readFirst(item, ['TYPE_NAME', 'type_name'], '')
-    || '',
-  ).trim();
-}
+export const ROW_MATCH_STATUS = Object.freeze({
+  MATCH: 'match',
+  DIFF: 'diff',
+  ONLY_HUB: 'only_hub',
+  ONLY_1C: 'only_1c',
+});
 
-function hubGroupDisplayName(items = []) {
-  const names = [];
-  const seen = new Set();
-  for (const item of items) {
-    const name = hubItemDisplayName(item);
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    names.push(name);
-  }
-  if (!names.length) return '';
-  if (names.length <= 2) return names.join(', ');
-  return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
-}
+export const COMPARE_STATUS_LABEL = Object.freeze({
+  [ROW_MATCH_STATUS.MATCH]: 'Совпадает',
+  [ROW_MATCH_STATUS.DIFF]: 'Кол-во ≠',
+  [ROW_MATCH_STATUS.ONLY_HUB]: 'Только в Хабе',
+  [ROW_MATCH_STATUS.ONLY_1C]: 'Только в 1С',
+});
 
-function buildRow({ bucket, hubGroup, status }) {
-  const hubItems = hubGroup?.items || [];
-  const hubCount = hubItems.length;
-  const qty1c = bucket ? bucket.qty1c : 0;
-  return {
-    key: bucket?.key || hubGroup?.key || '',
-    code: bucket?.code || hubGroup?.partNo || '',
-    nomenclatureRef: bucket?.nomenclatureRef || '',
-    name: bucket?.nomenclatureName || hubGroupDisplayName(hubItems) || '-',
-    qty1c,
-    hubCount,
-    delta: qty1c - hubCount,
-    hubItems,
-    details1c: bucket?.details || [],
-    status,
-  };
-}
-
-function sortCompareRows(rows) {
-  return [...rows].sort((left, right) => {
-    const byStatus = (STATUS_PRIORITY[left.status] ?? 9) - (STATUS_PRIORITY[right.status] ?? 9);
-    if (byStatus !== 0) return byStatus;
-    const byName = compareRuText(left.name, right.name);
-    if (byName !== 0) return byName;
-    return compareRuText(left.code, right.code);
-  });
-}
+const QTY_EPSILON = 1e-6;
 
 /**
- * Full outer join: what the employee holds in 1C (aggregated balances of the
- * matched warehouse) vs in the Hub (items with usable PART_NO), joined by
- * normalized PART_NO ↔ nomenclature code.
+ * Per-key quantities on both sides of the join:
+ * `qty1cByCode` — total 1C qty per normalized nomenclature code;
+ * `countByPartNo` — Hub item count per normalized usable PART_NO.
  */
-export function buildEmployeeCompare({ hubItems = [], balances = [] } = {}) {
-  const { byCode, unjoinable } = aggregateEmployeeBalances(balances);
-  const { byPartNo, noPartNoItems, notIn1cItems } = groupHubItemsByPartNo(hubItems);
-
-  const rows = [];
-  for (const bucket of byCode.values()) {
-    const hubGroup = byPartNo.get(bucket.key);
-    const hubCount = hubGroup?.items.length || 0;
-    let status = EMPLOYEE_COMPARE_STATUS.ONLY_1C;
-    if (hubCount > 0) {
-      status = Math.abs(bucket.qty1c - hubCount) <= QTY_EPSILON
-        ? EMPLOYEE_COMPARE_STATUS.MATCH
-        : EMPLOYEE_COMPARE_STATUS.DIFF;
-    }
-    rows.push(buildRow({ bucket, hubGroup, status }));
+export function buildCompareMaps({ hubItems = [], balances = [] } = {}) {
+  const { byCode } = aggregateEmployeeBalances(balances);
+  const { byPartNo } = groupHubItemsByPartNo(hubItems);
+  const qty1cByCode = new Map();
+  for (const [key, bucket] of byCode.entries()) {
+    qty1cByCode.set(key, bucket.qty1c);
   }
-
-  for (const group of byPartNo.values()) {
-    if (byCode.has(group.key)) continue;
-    rows.push(buildRow({
-      bucket: null,
-      hubGroup: group,
-      status: EMPLOYEE_COMPARE_STATUS.ONLY_HUB,
-    }));
+  const countByPartNo = new Map();
+  for (const [key, group] of byPartNo.entries()) {
+    countByPartNo.set(key, group.items.length);
   }
-
-  for (const bucket of unjoinable) {
-    rows.push(buildRow({
-      bucket,
-      hubGroup: null,
-      status: EMPLOYEE_COMPARE_STATUS.ONLY_1C,
-    }));
-  }
-
-  const sorted = sortCompareRows(rows);
-  const summary = {
-    total: sorted.length,
-    match: 0,
-    diff: 0,
-    only1c: 0,
-    onlyHub: 0,
-    noPartNo: noPartNoItems.length,
-    notIn1c: notIn1cItems.length,
-  };
-  for (const row of sorted) {
-    if (row.status === EMPLOYEE_COMPARE_STATUS.MATCH) summary.match += 1;
-    else if (row.status === EMPLOYEE_COMPARE_STATUS.DIFF) summary.diff += 1;
-    else if (row.status === EMPLOYEE_COMPARE_STATUS.ONLY_1C) summary.only1c += 1;
-    else if (row.status === EMPLOYEE_COMPARE_STATUS.ONLY_HUB) summary.onlyHub += 1;
-  }
-
-  return { rows: sorted, noPartNoItems, notIn1cItems, summary };
+  return { qty1cByCode, countByPartNo };
 }
 
-function foldCompareText(value) {
-  return String(value || '').toLowerCase().replace(/ё/g, 'е');
-}
-
-function compareRowHaystack(row) {
-  const parts = [row.code, row.name, row.nomenclatureRef];
-  for (const item of row.hubItems || []) {
-    parts.push(
-      readFirst(item, ['INV_NO', 'inv_no'], ''),
-      readFirst(item, ['MODEL_NAME', 'model_name'], ''),
-      readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], ''),
-      readFirst(item, ['PART_NO', 'part_no'], ''),
-    );
+function resolveCompareStatus(key, qty1cByCode, countByPartNo) {
+  const in1c = qty1cByCode?.has(key);
+  const inHub = countByPartNo?.has(key);
+  if (in1c && inHub) {
+    const qty1c = qty1cByCode.get(key);
+    const hubCount = countByPartNo.get(key);
+    return Math.abs(qty1c - hubCount) <= QTY_EPSILON
+      ? ROW_MATCH_STATUS.MATCH
+      : ROW_MATCH_STATUS.DIFF;
   }
-  for (const detail of row.details1c || []) {
-    parts.push(detail.series_name, detail.series_number, detail.characteristic_name);
-  }
-  return parts.map(foldCompareText).join(' ');
+  if (in1c) return ROW_MATCH_STATUS.ONLY_1C;
+  if (inHub) return ROW_MATCH_STATUS.ONLY_HUB;
+  return null;
 }
 
-export function filterEmployeeCompareRows(rows = [], query = '') {
-  const needle = foldCompareText(String(query || '').trim());
-  if (!needle) return Array.isArray(rows) ? rows : [];
-  return (Array.isArray(rows) ? rows : []).filter((row) => (
-    compareRowHaystack(row).includes(needle)
-  ));
+/** Row status for a Hub item by its PART_NO: match / diff / only_hub / null. */
+export function resolveHubRowStatus(partNo, maps) {
+  if (!maps || !isUsableHubPartNo(partNo)) return null;
+  const key = normalizeCompareKey(partNo);
+  if (!key) return null;
+  return resolveCompareStatus(key, maps.qty1cByCode, maps.countByPartNo);
 }
 
-export function filterCompareItemsByText(items = [], query = '') {
-  const needle = foldCompareText(String(query || '').trim());
-  if (!needle) return Array.isArray(items) ? items : [];
-  return (Array.isArray(items) ? items : []).filter((item) => {
-    const haystack = [
-      readFirst(item, ['INV_NO', 'inv_no'], ''),
-      readFirst(item, ['MODEL_NAME', 'model_name'], ''),
-      readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], ''),
-      readFirst(item, ['PART_NO', 'part_no'], ''),
-    ].map(foldCompareText).join(' ');
-    return haystack.includes(needle);
-  });
+/** Row status for a 1C balance row by its nomenclature code: match / diff / only_1c / null. */
+export function resolve1cRowStatus(nomenclatureCode, maps) {
+  if (!maps) return null;
+  const key = normalizeCompareKey(nomenclatureCode);
+  if (!key) return null;
+  return resolveCompareStatus(key, maps.qty1cByCode, maps.countByPartNo);
+}
+
+/** Both-side quantities for a raw PART_NO / nomenclature code: {hubCount, qty1c} or null. */
+export function compareQtyBreakdown(rawKey, maps) {
+  if (!maps) return null;
+  const key = normalizeCompareKey(rawKey);
+  if (!key) return null;
+  const hubCount = maps.countByPartNo?.get(key);
+  const qty1c = maps.qty1cByCode?.get(key);
+  if (hubCount === undefined && qty1c === undefined) return null;
+  return { hubCount: hubCount ?? 0, qty1c: qty1c ?? 0 };
 }
 
 /**
  * Per the 1C contract an incomplete/unknown balance snapshot must not be
- * presented as a smaller warehouse — comparison output gets a warning then.
+ * treated as a smaller warehouse — matching output gets a warning then.
  */
 export function isBalancesMetaIncomplete(meta = null) {
   if (!meta || typeof meta !== 'object') return true;
   const status = String(meta.status || '').trim().toLowerCase();
   if (status && status !== 'ok') return true;
   return Boolean(meta.truncated || meta.has_more || meta.hasMore);
+}
+
+/** Summary payload is trustworthy only when the 1C snapshot is complete. */
+export function isEmployeeCompareSummaryComplete(meta = null) {
+  if (!meta || typeof meta !== 'object') return false;
+  return String(meta.status || '').trim().toLowerCase() === 'ok'
+    && !meta.truncated
+    && !meta.has_more
+    && !meta.hasMore;
 }

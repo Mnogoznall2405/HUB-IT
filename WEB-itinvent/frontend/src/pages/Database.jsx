@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import {
   Box,
   Typography,
@@ -36,23 +36,12 @@ import {
   getItemCapabilityFlags,
   toInvNo,
 } from './database/equipmentModel';
-import UploadActDialog from './database/UploadActDialog';
-import ActionDialog from './database/ActionDialog';
+import { warehouse1cAPI } from '../api/warehouse1c';
 import DatabaseDataSections from './database/DatabaseDataSections';
-import DetailQrDialog from './database/DetailQrDialog';
-import EquipmentQrPrintFeedback from './database/EquipmentQrPrintFeedback';
+import { EmployeeCompareProvider } from './database/employeeCompareContext';
 import EquipmentQrPrintPortal from './database/EquipmentQrPrintPortal';
 import { parseEquipmentQrLink } from './database/qrModel';
-import DeleteEquipmentDialog from './database/DeleteEquipmentDialog';
-import DeleteConsumableDialog from './database/DeleteConsumableDialog';
-import EditConsumableQtyDialog from './database/EditConsumableQtyDialog';
-import QrScannerDialog from './database/QrScannerDialog';
-import EquipmentActFieldsDialog from './database/EquipmentActFieldsDialog';
-import AddConsumableDialog from './database/AddConsumableDialog';
-import AddEquipmentDialog from './database/AddEquipmentDialog';
 import DatabaseRecentCards from './database/DatabaseRecentCards';
-import EquipmentDetailDialog from './database/EquipmentDetailDialog';
-import EmployeeEquipmentDialog from './database/EmployeeEquipmentDialog';
 import {
   normalizeDbId,
 } from './database/databaseRecordModel';
@@ -101,6 +90,8 @@ import {
   useDatabaseEquipmentData,
 } from './database/useDatabaseEquipmentData';
 import { useDatabaseEquipmentInfiniteScroll } from './database/useDatabaseEquipmentInfiniteScroll';
+import { isEmployeeCompareSummaryComplete } from './database/employeeCompareModel';
+import { buildCacheKey, getOrFetchSWR } from '../lib/swrCache';
 import {
   flushPersistBranchFilters,
   getBranchForDatabase,
@@ -113,22 +104,37 @@ import DatabaseSearchBar, {
   SEARCH_SCOPE_ACTS,
   SEARCH_SCOPE_EQUIPMENT,
 } from './database/DatabaseSearchBar';
-import DatabaseActSearchResults from './database/DatabaseActSearchResults';
-import DatabaseEmployeeSearchFallback from './database/DatabaseEmployeeSearchFallback';
-import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import DatabaseDesktopToolbar from './database/DatabaseDesktopToolbar';
 import DatabaseMobileHeader from './database/DatabaseMobileHeader';
 import DatabaseMobileControlStrip from './database/DatabaseMobileControlStrip';
-import DatabaseMobileActionSheet from './database/DatabaseMobileActionSheet';
-import DatabaseBulkActionBar, { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './database/DatabaseBulkActionBar';
+import { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './database/databaseMobileLayout';
 import DatabaseRecentCardsStrip from './database/DatabaseRecentCardsStrip';
 import DatabaseRecentActs from './database/DatabaseRecentActs';
 import DatabaseRecentActsStrip from './database/DatabaseRecentActsStrip';
-import DatabaseSelectionBar from './database/DatabaseSelectionBar';
 import { useDatabaseMaintenanceData } from './database/useDatabaseMaintenanceData';
 import {
   resolveSingleActionTarget as resolveActionTarget,
 } from './database/actionModel';
+
+const UploadActDialog = lazy(() => import('./database/UploadActDialog'));
+const ActionDialog = lazy(() => import('./database/ActionDialog'));
+const DetailQrDialog = lazy(() => import('./database/DetailQrDialog'));
+const EquipmentQrPrintFeedback = lazy(() => import('./database/EquipmentQrPrintFeedback'));
+const DeleteEquipmentDialog = lazy(() => import('./database/DeleteEquipmentDialog'));
+const DeleteConsumableDialog = lazy(() => import('./database/DeleteConsumableDialog'));
+const EditConsumableQtyDialog = lazy(() => import('./database/EditConsumableQtyDialog'));
+const QrScannerDialog = lazy(() => import('./database/QrScannerDialog'));
+const EquipmentActFieldsDialog = lazy(() => import('./database/EquipmentActFieldsDialog'));
+const AddConsumableDialog = lazy(() => import('./database/AddConsumableDialog'));
+const AddEquipmentDialog = lazy(() => import('./database/AddEquipmentDialog'));
+const EquipmentDetailDialog = lazy(() => import('./database/EquipmentDetailDialog'));
+const EmployeeEquipmentDialog = lazy(() => import('./database/EmployeeEquipmentDialog'));
+const DatabaseActSearchResults = lazy(() => import('./database/DatabaseActSearchResults'));
+const DatabaseEmployeeSearchFallback = lazy(() => import('./database/DatabaseEmployeeSearchFallback'));
+const DocumentPreviewDialog = lazy(() => import('../components/documentPreview/DocumentPreviewDialog'));
+const DatabaseMobileActionSheet = lazy(() => import('./database/DatabaseMobileActionSheet'));
+const DatabaseBulkActionBar = lazy(() => import('./database/DatabaseBulkActionBar'));
+const DatabaseSelectionBar = lazy(() => import('./database/DatabaseSelectionBar'));
 
 export {
   UPLOAD_ACT_MAX_SIZE_MB,
@@ -251,6 +257,7 @@ function Database() {
     dbName: db_name,
     databases,
     currentDb,
+    databaseReady,
     selectedDatabaseName,
     handleDatabaseSelectChange,
   } = useDatabaseSelection({ notifyDatabaseError });
@@ -356,12 +363,32 @@ function Database() {
     resetAllModeData,
     switchDataMode,
   } = useDatabaseEquipmentData({
+    enabled: databaseReady,
     dataMode,
     selectedBranch,
     getDbCacheScope,
+    setFilteredData,
     staleTimeMs: DATABASE_SWR_STALE_TIME_MS,
   });
   const refreshedCurrentActDocNoRef = useRef('');
+
+  // Prefetch the heaviest lazy chunks once first data renders — Vite dedupes
+  // the import, so opening the dialogs later doesn't wait for the chunk.
+  const didPrefetchDialogsRef = useRef(false);
+  useEffect(() => {
+    if (didPrefetchDialogsRef.current || !allEquipment?.length) return;
+    didPrefetchDialogsRef.current = true;
+    const prefetch = () => {
+      void import('./database/EquipmentDetailDialog');
+      void import('./database/EmployeeEquipmentDialog');
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(prefetch, { timeout: 4000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const timer = setTimeout(prefetch, 2000);
+    return () => clearTimeout(timer);
+  }, [allEquipment]);
 
   useEffect(() => {
     const docNo = String(uploadActCommitResult?.doc_no || '').trim();
@@ -529,13 +556,15 @@ function Database() {
       canViewWarehouse1C
       && !isConsumablesMode
       && searchScope === SEARCH_SCOPE_EQUIPMENT
-      && !modeLoading,
+      && !modeLoading
+      && !loadingMoreEquipment
+      && !nextEquipmentPage,
     ),
     searchQuery,
     appliedSearchQuery,
     hubSearchEmpty,
   });
-  const canAutoLoadMoreEquipment = filteredData === null && Boolean(nextEquipmentPage) && !modeLoading;
+  const canAutoLoadMoreEquipment = Boolean(nextEquipmentPage) && !modeLoading;
   const equipmentLoadMoreSentinelRef = useDatabaseEquipmentInfiniteScroll({
     enabled: canAutoLoadMoreEquipment,
     hasMore: Boolean(nextEquipmentPage),
@@ -563,7 +592,7 @@ function Database() {
     clearRecentCards,
   } = useDatabaseRecentCards({
     // Prefetch with inventory page so scope switches stay instant.
-    enabled: !isConsumablesMode,
+    enabled: databaseReady && !isConsumablesMode,
     dbName: db_name,
   });
   const isActsScopeEnabled = !isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS;
@@ -576,7 +605,7 @@ function Database() {
     clearRecentActs,
   } = useDatabaseRecentActs({
     // Prefetch acts history while still on equipment scope.
-    enabled: !isConsumablesMode,
+    enabled: databaseReady && !isConsumablesMode,
     dbName: db_name,
   });
   const [seededAct, setSeededAct] = useState(null);
@@ -945,6 +974,8 @@ function Database() {
     getOwnerDepartmentsCached,
     getLocationsCached,
     fetchAllEquipment,
+    setAllEquipment,
+    setFilteredData,
     setActionError,
     setSelectedItems,
     detailInvNo: detailModal?.invNo,
@@ -1001,6 +1032,8 @@ function Database() {
     getLocationsCached,
     getModelsCached,
     fetchAllEquipment,
+    setAllEquipment,
+    setFilteredData,
     notifyDatabaseSuccess,
   });
   const {
@@ -1299,6 +1332,34 @@ function Database() {
     stackAboveParent: false,
   });
   const [detailOpenedFromEmployee, setDetailOpenedFromEmployee] = useState(false);
+  const [employeeCompareSummaries, setEmployeeCompareSummaries] = useState([]);
+
+  // One batched 1C call — badges next to employee names in the list.
+  useEffect(() => {
+    if (!canViewWarehouse1C || initialLoading || !db_name) {
+      setEmployeeCompareSummaries([]);
+      return undefined;
+    }
+    setEmployeeCompareSummaries([]);
+    let cancelled = false;
+    getOrFetchSWR(
+      buildCacheKey('warehouse-1c', 'employee-compare-summary', currentDb?.id || db_name || ''),
+      () => warehouse1cAPI.getEmployeeCompareSummary(),
+      { staleTimeMs: 120_000 },
+    )
+      .then(({ data }) => {
+        if (cancelled) return;
+        setEmployeeCompareSummaries(
+          isEmployeeCompareSummaryComplete(data?.meta) && Array.isArray(data?.items)
+            ? data.items
+            : [],
+        );
+      })
+      .catch((err) => {
+        console.warn('Failed to load employee compare summary:', err);
+      });
+    return () => { cancelled = true; };
+  }, [canViewWarehouse1C, initialLoading, db_name, currentDb?.id]);
 
   const handleOpenEmployee = useCallback(({ ownerNo, employeeName, warehouseRef = '' }) => {
     const normalizedEmployeeName = String(employeeName || '').trim();
@@ -1603,9 +1664,9 @@ function Database() {
             onChange={handleDataModeChange}
             variant="fullWidth"
             sx={{
-              minHeight: isMobile ? 34 : 40,
+              minHeight: isMobile ? 44 : 40,
               '& .MuiTab-root': {
-                minHeight: isMobile ? 34 : 40,
+                minHeight: isMobile ? 44 : 40,
                 py: 0.35,
                 fontSize: isMobile ? '0.78rem' : '0.875rem',
                 textTransform: 'none',
@@ -1635,13 +1696,19 @@ function Database() {
           onClear={clearSearch}
         />
 
-        <DatabaseEmployeeSearchFallback
-          {...employeeFallback}
-          theme={theme}
-          ui={ui}
-          onOpenEmployee={handleOpenEmployee}
-          onRetry={employeeFallback.retry}
-        />
+        <EmployeeCompareProvider summaries={employeeCompareSummaries}>
+          {employeeFallback.active && (
+            <Suspense fallback={null}>
+              <DatabaseEmployeeSearchFallback
+                {...employeeFallback}
+                theme={theme}
+                ui={ui}
+                onOpenEmployee={handleOpenEmployee}
+                onRetry={employeeFallback.retry}
+              />
+            </Suspense>
+          )}
+        </EmployeeCompareProvider>
 
         {isMobile && !isActsScope && (
           <DatabaseMobileControlStrip
@@ -1686,6 +1753,7 @@ function Database() {
                 />
               </Box>
             )}
+            <Suspense fallback={null}>
             <DatabaseActSearchResults
               theme={theme}
               ui={ui}
@@ -1703,6 +1771,7 @@ function Database() {
               onOpenActFile={handleActSearchOpenFile}
               onErrorClose={clearActSearchError}
             />
+            </Suspense>
           </>
         ) : (
           <>
@@ -1756,7 +1825,8 @@ function Database() {
           />
         )}
 
-        {isMobile && (
+        {isMobile && fabSheetOpen && (
+          <Suspense fallback={null}>
           <DatabaseMobileActionSheet
             theme={theme}
             open={fabSheetOpen}
@@ -1768,9 +1838,11 @@ function Database() {
             onCollapseAll={handleCollapseAll}
             onEnterSelectionMode={() => setMobileSelectionMode(true)}
           />
+          </Suspense>
         )}
 
         {isMobile && !isConsumablesMode && selectedItems.length > 0 && (
+          <Suspense fallback={null}>
           <DatabaseBulkActionBar
             theme={theme}
             ui={ui}
@@ -1792,9 +1864,11 @@ function Database() {
             onOpenBattery={handleOpenBatteryForSelection}
             onOpenComponent={handleOpenComponentForSelection}
           />
+          </Suspense>
         )}
 
         {!isMobile && !isConsumablesMode && selectedItems.length > 0 && (
+          <Suspense fallback={null}>
           <DatabaseSelectionBar
             theme={theme}
             ui={ui}
@@ -1815,6 +1889,7 @@ function Database() {
             onOpenBattery={handleOpenBatteryForSelection}
             onOpenComponent={handleOpenComponentForSelection}
           />
+          </Suspense>
         )}
 
         <Fade key={dataMode} in timeout={{ enter: 320, exit: 160 }}>
@@ -1833,6 +1908,7 @@ function Database() {
               </Box>
             ) : (
               <>
+            <EmployeeCompareProvider summaries={employeeCompareSummaries}>
             {dataSections || (
               employeeFallback.active ? null :
               !selectedBranch ? (
@@ -1845,6 +1921,7 @@ function Database() {
                 </Box>
               )
             )}
+            </EmployeeCompareProvider>
             {canAutoLoadMoreEquipment && (
               <Box
                 ref={equipmentLoadMoreSentinelRef}
@@ -1878,6 +1955,8 @@ function Database() {
           </>
         )}
 
+        {uploadActModalOpen && (
+        <Suspense fallback={null}>
         <UploadActDialog
           open={uploadActModalOpen}
           onClose={closeUploadActModal}
@@ -1934,7 +2013,11 @@ function Database() {
           onDownloadErrorClear={() => setUploadActDownloadError('')}
           onDownload={handleUploadActDownload}
         />
+        </Suspense>
+        )}
 
+        {addEquipmentModalOpen && (
+        <Suspense fallback={null}>
         <AddEquipmentDialog
           open={addEquipmentModalOpen}
           onClose={closeAddEquipmentModal}
@@ -1964,7 +2047,11 @@ function Database() {
           onModelsReset={resetAddEquipmentModels}
           onSubmit={handleAddEquipmentSubmit}
         />
+        </Suspense>
+        )}
 
+        {addConsumableModalOpen && (
+        <Suspense fallback={null}>
         <AddConsumableDialog
           open={addConsumableModalOpen}
           onClose={closeAddConsumableModal}
@@ -1984,7 +2071,11 @@ function Database() {
           onModelsReset={resetAddConsumableModels}
           onSubmit={handleAddConsumableSubmit}
         />
+        </Suspense>
+        )}
 
+        {editConsumableQtyModal.open && (
+        <Suspense fallback={null}>
         <EditConsumableQtyDialog
           open={editConsumableQtyModal.open}
           item={editConsumableQtyModal.item}
@@ -1996,7 +2087,11 @@ function Database() {
           onValueChange={setEditConsumableQtyInput}
           onSubmit={handleEditConsumableQtySubmit}
         />
+        </Suspense>
+        )}
 
+        {detailModal.open && (
+        <Suspense fallback={null}>
         <EquipmentDetailDialog
           open={detailModal.open}
           loading={detailModal.loading}
@@ -2055,7 +2150,11 @@ function Database() {
           disableEnforceFocus={employeeEquipmentDialog.open && !detailOpenedFromEmployee}
           stackAboveParent={detailOpenedFromEmployee}
         />
+        </Suspense>
+        )}
 
+        {employeeEquipmentDialog.open && (
+        <Suspense fallback={null}>
         <EmployeeEquipmentDialog
           open={employeeEquipmentDialog.open}
           ownerNo={employeeEquipmentDialog.ownerNo}
@@ -2069,7 +2168,11 @@ function Database() {
           onOpenInvNo={handleOpenEquipmentFromEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}
         />
+        </Suspense>
+        )}
 
+        {detailActFieldsOpen && (
+        <Suspense fallback={null}>
         <EquipmentActFieldsDialog
           open={detailActFieldsOpen}
           onClose={handleCloseActFields}
@@ -2080,7 +2183,11 @@ function Database() {
           onOpenFile={handleOpenEquipmentActFile}
           formatDate={formatDate}
         />
+        </Suspense>
+        )}
 
+        {Boolean(actFilePreview?.open) && (
+        <Suspense fallback={null}>
         <DocumentPreviewDialog
           open={Boolean(actFilePreview?.open)}
           title={actFilePreview?.title || 'Акт'}
@@ -2098,8 +2205,12 @@ function Database() {
           } : undefined}
           canDownloadOriginal={Boolean(actFilePreview?.previewBlob)}
         />
+        </Suspense>
+        )}
 
         {/* QR Scanner Dialog */}
+        {qrScannerOpen && (
+        <Suspense fallback={null}>
         <QrScannerDialog
           open={qrScannerOpen}
           onClose={handleQrScannerClose}
@@ -2110,7 +2221,11 @@ function Database() {
           result={qrScannerResult}
           overlayBgcolor={alpha(theme.palette.background.paper, 0.82)}
         />
+        </Suspense>
+        )}
 
+        {detailQrOpen && (
+        <Suspense fallback={null}>
         <DetailQrDialog
           open={detailQrOpen}
           onClose={() => setDetailQrOpen(false)}
@@ -2121,15 +2236,23 @@ function Database() {
           fileName={detailQrFileName}
           equipment={detailModal.data}
         />
+        </Suspense>
+        )}
 
         <EquipmentQrPrintPortal labels={qrBatchPrint.labels} />
+        {qrBatchPrint.feedback && (
+        <Suspense fallback={null}>
         <EquipmentQrPrintFeedback
           feedback={qrBatchPrint.feedback}
           repeating={qrBatchPrint.printing}
           onClose={qrBatchPrint.dismissFeedback}
           onRepeat={qrBatchPrint.repeatLastPrint}
         />
+        </Suspense>
+        )}
 
+        {deleteTarget && (
+        <Suspense fallback={null}>
         <DeleteEquipmentDialog
           target={deleteTarget}
           error={deleteError}
@@ -2137,7 +2260,11 @@ function Database() {
           onClose={closeDeleteEquipmentDialog}
           onConfirm={() => void confirmDeleteEquipment()}
         />
+        </Suspense>
+        )}
 
+        {deleteConsumableTarget && (
+        <Suspense fallback={null}>
         <DeleteConsumableDialog
           target={deleteConsumableTarget}
           error={deleteConsumableError}
@@ -2145,7 +2272,11 @@ function Database() {
           onClose={closeDeleteConsumableModal}
           onConfirm={() => void confirmDeleteConsumable()}
         />
+        </Suspense>
+        )}
 
+        {actionModal.open && (
+        <Suspense fallback={null}>
         <ActionDialog
           open={actionModal.open}
           actionModal={actionModal}
@@ -2215,6 +2346,8 @@ function Database() {
           }}
           onConfirm={() => void handleActionConfirm()}
         />
+        </Suspense>
+        )}
       </PageShell>
     </MainLayout>
   );

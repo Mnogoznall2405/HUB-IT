@@ -612,6 +612,7 @@ describe('equipmentRecordsAPI contract', () => {
     'getAllEquipment',
     'getAllEquipmentGrouped',
     'getByInvNos',
+    'getCurrentActs',
     'createEquipment',
     'updateByInvNo',
     'deleteByInvNo',

@@ -163,6 +163,36 @@ export const upsertItemInGrouped = (groupedData, nextItem) => {
   return nextGrouped;
 };
 
+// Merge lazy current-act results ({item_id -> {available, doc_no, ...}}) into
+// grouped rows in place-by-copy: rows without an act entry keep their refs.
+export const mergeCurrentActsIntoGrouped = (groupedData, actsByItemId) => {
+  if (!actsByItemId || typeof actsByItemId !== 'object') return groupedData || {};
+
+  const nextGrouped = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      let changed = false;
+      const nextItems = (items || []).map((item) => {
+        const itemId = item?.ID ?? item?.id;
+        const act = itemId == null ? undefined : actsByItemId[itemId] ?? actsByItemId[String(itemId)];
+        if (!act) return item;
+        changed = true;
+        return {
+          ...item,
+          current_act_available: act.available,
+          current_act_doc_no: act.doc_no ?? null,
+          current_act_doc_number: act.doc_number ?? null,
+          current_act_doc_date: act.doc_date ?? null,
+        };
+      });
+      nextLocations[locationName] = changed ? nextItems : items;
+    });
+    nextGrouped[branchName] = nextLocations;
+  });
+  return nextGrouped;
+};
+
 export const removeItemFromGrouped = (groupedData, targetInvNo) => {
   const normalizedInvNo = String(targetInvNo || '').trim();
   if (!normalizedInvNo) return groupedData || {};
