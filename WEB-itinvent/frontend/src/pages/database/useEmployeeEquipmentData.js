@@ -20,6 +20,7 @@ export default function useEmployeeEquipmentData({
   const [hubItems, setHubItems] = useState([]);
   const [hubLoading, setHubLoading] = useState(false);
   const [hubError, setHubError] = useState('');
+  const [hubWarning, setHubWarning] = useState('');
 
   const [warehouseLoading, setWarehouseLoading] = useState(false);
   const [warehouseBalancesLoading, setWarehouseBalancesLoading] = useState(false);
@@ -69,6 +70,7 @@ export default function useEmployeeEquipmentData({
     if (!open || (!canLoadHub && !canLoadWarehouse)) {
       setHubItems([]);
       setHubError('');
+      setHubWarning('');
       setHubLoading(false);
       resetView?.();
       resetWarehouseState();
@@ -78,6 +80,7 @@ export default function useEmployeeEquipmentData({
     let cancelled = false;
     setHubLoading(canLoadHub);
     setHubError('');
+    setHubWarning('');
     if (!canLoadHub) setHubItems([]);
     resetView?.();
     resetWarehouseState();
@@ -93,6 +96,12 @@ export default function useEmployeeEquipmentData({
               ? data
               : (Array.isArray(data?.equipment) ? data.equipment : []);
             setHubItems(items);
+            // Cross-DB lookups report per-DB failures — surface them so a
+            // partial list isn't mistaken for the complete picture.
+            const dbErrors = Array.isArray(data?.db_errors) ? data.db_errors : [];
+            setHubWarning(dbErrors.length
+              ? `Не удалось получить данные из баз: ${dbErrors.join(', ')} — список может быть неполным.`
+              : '');
           })
           .catch((err) => {
             if (cancelled) return;
@@ -280,6 +289,7 @@ export default function useEmployeeEquipmentData({
     hubItems,
     hubLoading,
     hubError,
+    hubWarning,
     warehouseLoading,
     warehouseBalancesLoading,
     warehouseError,

@@ -6,6 +6,7 @@ data/user_db_selection.json
 """
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ class UserDBSelectionService:
         self._database_url = str(database_url or "").strip() or None
         self._use_app_database = bool(self._database_url) or is_app_database_configured()
         self._assigned_cache: dict[str, tuple[float, Optional[str]]] = {}
+        self._write_lock = threading.Lock()
         self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
         if self._use_app_database:
             initialize_app_schema(self._database_url)
@@ -101,17 +103,35 @@ class UserDBSelectionService:
         return value
 
     def set_assigned_database(self, telegram_id: Optional[int], database_id: Optional[str]) -> None:
-        """Upsert or remove assigned DB for Telegram user."""
+        """Upsert or remove assigned DB for Telegram user.
+
+        App-DB path touches only the target row — the previous read-modify-
+        write of the whole table lost concurrent writers' rows.
+        """
         if telegram_id in (None, 0):
             return
         key = str(int(telegram_id))
-        mapping = self._read_mapping()
         normalized_db = str(database_id or "").strip()
-        if normalized_db:
-            mapping[key] = normalized_db
-        else:
-            mapping.pop(key, None)
-        self._write_mapping(mapping)
+        with self._write_lock:
+            self._assigned_cache.pop(key, None)
+            if self._use_app_database:
+                with app_session(self._database_url) as session:
+                    row = session.get(AppUserDatabaseSelection, int(telegram_id))
+                    if normalized_db:
+                        if row is None:
+                            row = AppUserDatabaseSelection(telegram_id=int(telegram_id))
+                            session.add(row)
+                        row.database_id = normalized_db
+                        row.updated_at = datetime.now(timezone.utc)
+                    elif row is not None:
+                        session.delete(row)
+                return
+            mapping = self._read_mapping()
+            if normalized_db:
+                mapping[key] = normalized_db
+            else:
+                mapping.pop(key, None)
+            self._write_mapping(mapping)
 
 
 user_db_selection_service = UserDBSelectionService()

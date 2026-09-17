@@ -175,6 +175,55 @@ describe('useDatabaseTransferAction', () => {
     expect(props.setActionError).toHaveBeenLastCalledWith('');
   });
 
+  it('survives transient polling errors until the job completes', async () => {
+    equipmentAPI.getTransferActJob
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValue({
+        job_status: 'done',
+        success_count: 1,
+        failed_count: 0,
+        acts: [{ act_id: 5 }],
+      });
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    let jobResult;
+    await act(async () => {
+      jobResult = await result.current.pollTransferActJob('job-2', {
+        pollDelayMs: 0,
+        maxAttempts: 5,
+      });
+    });
+
+    expect(equipmentAPI.getTransferActJob).toHaveBeenCalledTimes(3);
+    expect(jobResult).toMatchObject({ job_status: 'done' });
+    expect(result.current.transferJobPolling).toBe(false);
+    // Transient failures must not surface a user-facing error.
+    expect(props.setActionError).toHaveBeenLastCalledWith('');
+  });
+
+  it('gives up polling after three consecutive failures', async () => {
+    equipmentAPI.getTransferActJob.mockRejectedValue(new Error('network down'));
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    let jobResult;
+    await act(async () => {
+      jobResult = await result.current.pollTransferActJob('job-3', {
+        pollDelayMs: 0,
+        maxAttempts: 10,
+      });
+    });
+
+    expect(equipmentAPI.getTransferActJob).toHaveBeenCalledTimes(3);
+    expect(jobResult).toBeNull();
+    expect(result.current.transferJobPolling).toBe(false);
+    expect(props.setActionError).toHaveBeenLastCalledWith(
+      'Не удалось обновить статус создания актов.',
+    );
+  });
+
   it('submits location-only transfers without creating acts or changing employee', async () => {
     equipmentAPI.transferLocation.mockResolvedValue({
       success_count: 1,

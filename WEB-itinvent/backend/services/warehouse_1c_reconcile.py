@@ -441,6 +441,7 @@ async def list_owner_mismatches(
             "incomplete" if balance_status == "ok" else balance_status
         )
     candidate_mismatches: list[dict[str, Any]] = []
+    hub_count_failures = 0
     if warehouse and balances and not balances_incomplete:
         # 1C gives batch/series rows; compare only the deliberate aggregate
         # unit.  This removes the prior N+1 COM calls and the erroneous
@@ -494,6 +495,7 @@ async def list_owner_mismatches(
                 )
             except Exception as exc:
                 logger.warning("Batch HUB count failed for warehouse=%s db=%s: %s", warehouse_name_value, one_db_id, exc)
+                hub_count_failures += 1
                 continue
 
             for aggregate in aggregates:
@@ -538,6 +540,10 @@ async def list_owner_mismatches(
         result_status = "ok"
     else:
         result_status = "error" if warehouse_result_status == "error" else "unknown"
+    if hub_count_failures and result_status == "ok":
+        # A failed HUB count silently dropped warehouses from the comparison —
+        # downgrade so the UI can flag the reconciliation as partial.
+        result_status = "incomplete"
 
     return {
         "warehouse": warehouse or None,
@@ -552,6 +558,7 @@ async def list_owner_mismatches(
         "only_in_hub": [],
         "mismatched": mismatches,
         "candidate_mismatches": candidate_mismatches,
+        "hub_count_failures": hub_count_failures,
         "status": result_status,
     }
 

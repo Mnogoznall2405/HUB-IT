@@ -159,6 +159,9 @@ export function useTransferActJob({
     setActionError?.('');
 
     const maxAttempts = Number(options.maxAttempts || pollingMaxAttempts);
+    // Transient network blips must not kill polling — the server-side job
+    // keeps running either way. Give up only after repeated failures.
+    let consecutiveErrors = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const defaultDelay = attempt < 4 ? 1200 : 2500;
       await waitForPoll(options.pollDelayMs ?? defaultDelay);
@@ -167,6 +170,7 @@ export function useTransferActJob({
       try {
         const result = await equipmentAPI.getTransferActJob(normalizedJobId);
         if (transferJobPollSeqRef.current !== pollSeq) return null;
+        consecutiveErrors = 0;
 
         setTransferResult(result);
         const status = String(result?.job_status || '').toLowerCase();
@@ -202,7 +206,12 @@ export function useTransferActJob({
         }
       } catch (error) {
         if (transferJobPollSeqRef.current !== pollSeq) return null;
+        consecutiveErrors += 1;
         console.error('Transfer act job polling error:', error);
+        if (consecutiveErrors < 3) {
+          // Keep polling — the job may still be running server-side.
+          continue;
+        }
         setTransferJobPolling(false);
         const apiDetail = error?.response?.data?.detail;
         setActionError?.(typeof apiDetail === 'string' ? apiDetail : JOB_POLL_ERROR);

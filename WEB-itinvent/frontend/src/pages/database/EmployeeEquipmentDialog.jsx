@@ -109,6 +109,7 @@ export default function EmployeeEquipmentDialog({
     hubItems,
     hubLoading,
     hubError,
+    hubWarning,
     warehouseLoading,
     warehouseBalancesLoading,
     warehouseError,
@@ -444,6 +445,9 @@ export default function EmployeeEquipmentDialog({
                 ) : null}
               </Typography>
             </Stack>
+            {hubWarning ? (
+              <Alert severity="warning" sx={{ mb: 1 }}>{hubWarning}</Alert>
+            ) : null}
             <HubEquipmentTable
               items={visibleHubItems}
               loading={hubLoading}

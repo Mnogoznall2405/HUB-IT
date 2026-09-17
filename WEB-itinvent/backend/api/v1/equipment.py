@@ -928,19 +928,22 @@ async def get_employee_equipment(
     Returns:
         EquipmentSearchResponse with employee's equipment
     """
+    db_errors: list[str] = []
     if all_databases:
         if str(current_user.role or "").strip().lower() != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cross-DB equipment lookup is available to administrators only",
             )
-        equipment = await run_in_threadpool(
+        cross_db_payload = await run_in_threadpool(
             queries.get_equipment_by_owner_all_databases,
             owner_no,
             employee_name=employee_name,
             current_db_id=db_id,
             include_current_acts=True,
         )
+        equipment = cross_db_payload.get("equipment") or []
+        db_errors = cross_db_payload.get("failed_dbs") or []
     else:
         equipment = await run_in_threadpool(
             queries.get_equipment_by_owner_with_current_acts,
@@ -950,7 +953,8 @@ async def get_employee_equipment(
 
     return EquipmentSearchResponse(
         found=len(equipment) > 0,
-        equipment=equipment
+        equipment=equipment,
+        db_errors=db_errors,
     )
 
 
@@ -1442,7 +1446,8 @@ async def get_all_equipment_grouped(
                 'total': result['total'],
                 'page': result['page'],
                 'limit': result['limit'],
-                'pages': result['pages']
+                'pages': result['pages'],
+                'data_version': result.get('data_version', 0),
             }
 
         logger.debug("Fetching all equipment grouped")

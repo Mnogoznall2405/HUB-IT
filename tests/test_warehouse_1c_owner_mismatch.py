@@ -109,3 +109,45 @@ def test_owner_mismatch_never_emits_final_delta_for_truncated_1c_balances(monkey
     assert payload["mismatched"] == []
     assert payload["only_in_1c"] == []
     assert payload["balances_meta"]["comparison_status"] == "incomplete"
+
+
+def test_owner_mismatch_flags_incomplete_when_hub_count_fails(monkeypatch):
+    monkeypatch.setattr(
+        reconcile,
+        "list_reconcile_queue",
+        lambda **kwargs: {"items": [], "total": 0},
+    )
+
+    async def fake_employee_warehouse(**kwargs):
+        return {
+            "status": "matched",
+            "warehouse": {"ref": "warehouse-1", "name": "Main"},
+            "balances": [_balance("s1")],
+            "balances_meta": {"status": "ok", "truncated": False},
+            "candidates": [],
+        }
+
+    monkeypatch.setattr(reconcile.warehouse_1c_service, "get_employee_warehouse", fake_employee_warehouse)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+    monkeypatch.setattr(
+        one_c_reconcile_registry_service,
+        "get_active_owner_links",
+        lambda **kwargs: {"warehouse-1": [7]},
+    )
+
+    def failing_count(*args, **kwargs):
+        raise RuntimeError("hub db unavailable")
+
+    monkeypatch.setattr(db_queries, "count_equipment_by_owners_and_part_nos", failing_count)
+
+    payload = asyncio.run(
+        reconcile.list_owner_mismatches(employee_name="Main", db_id="ITINVENT")
+    )
+
+    # A failed HUB count silently drops the warehouse from comparison —
+    # the status must not read as a clean "ok".
+    assert payload["status"] == "incomplete"
+    assert payload["hub_count_failures"] == 1

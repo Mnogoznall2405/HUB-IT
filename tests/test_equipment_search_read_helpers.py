@@ -113,17 +113,15 @@ def test_equipment_list_normalizes_legacy_odbc_column_names(monkeypatch):
     ]
 
 
-def test_universal_equipment_search_preserves_error_fallback(monkeypatch):
+def test_universal_equipment_search_propagates_db_error(monkeypatch):
     fake_db = FakeDB(exc=RuntimeError("sql down"))
 
     monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: fake_db)
 
-    assert db_queries.search_equipment_universal("monitor", page=9, limit=4, db_id="main") == {
-        "equipment": [],
-        "total": 0,
-        "page": 9,
-        "pages": 0,
-    }
+    # DB failures must surface so the frontend can flag degraded mode —
+    # a silent empty page would read as "no matching equipment".
+    with pytest.raises(RuntimeError, match="sql down"):
+        db_queries.search_equipment_universal("monitor", page=9, limit=4, db_id="main")
     assert fake_db.calls == [
         (db_queries.QUERY_COUNT_UNIVERSAL, ("%monitor%",) * 16),
     ]
@@ -206,6 +204,10 @@ def test_equipment_grouped_caches_total_count_across_pages(monkeypatch):
     from backend.database import equipment_db
     from backend.database import queries_new
 
+    # The test asserts cache/paging behavior only — stub the data-version bump
+    # so it doesn't hit the conftest sqlite app DB (which has no schema).
+    monkeypatch.setattr(equipment_db, "bump_equipment_data_version", lambda db_id=None: 0)
+    monkeypatch.setattr(equipment_db, "get_equipment_data_version", lambda db_id=None: 0)
     equipment_db.invalidate_equipment_cache()
     recorded = []
 
@@ -311,3 +313,54 @@ def test_pyodbc_pool_failed_create_does_not_leak_created_slots(monkeypatch):
         pool.acquire()
     assert pool._created == 0
     assert len(attempts) == 2
+
+
+def test_get_equipment_items_by_ids_chunks_in_clause_under_param_limit(monkeypatch):
+    fake_db = FakeDB(
+        [
+            [{"item_id": 1, "inv_no": "1"}],
+            [{"item_id": 1, "inv_no": "1"}, {"item_id": 2, "inv_no": "2"}],
+            [{"item_id": 3, "inv_no": "3"}],
+        ]
+    )
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: fake_db)
+
+    chunk = db_queries._IN_CLAUSE_CHUNK_SIZE
+    item_ids = list(range(1, chunk * 2 + 101))
+    rows = db_queries.get_equipment_items_by_ids(item_ids, db_id="main")
+
+    assert len(fake_db.calls) == 3
+    assert len(fake_db.calls[0][1]) == chunk
+    assert len(fake_db.calls[1][1]) == chunk
+    assert len(fake_db.calls[2][1]) == 100
+    for query, _ in fake_db.calls:
+        assert "i.ID IN (" in query
+    # Duplicate rows returned by overlapping chunks are merged once.
+    assert [row["item_id"] for row in rows] == [1, 2, 3]
+
+
+def test_create_uploaded_transfer_act_rejects_oversized_item_list():
+    with pytest.raises(ValueError, match="Too many equipment items"):
+        db_queries.create_uploaded_transfer_act(
+            from_employee="From",
+            to_employee="To",
+            doc_date=None,
+            equipment_item_ids=list(range(1, db_queries._IN_CLAUSE_CHUNK_SIZE + 2)),
+            file_name="act.pdf",
+            file_bytes=b"pdf-bytes",
+        )
+
+
+def test_equipment_payload_cache_evicts_oldest_beyond_cap(monkeypatch):
+    from backend.database import equipment_db
+
+    monkeypatch.setattr(equipment_db, "_EQUIPMENT_PAYLOAD_CACHE_MAX_ENTRIES", 3)
+    for idx in range(5):
+        equipment_db._set_cached_equipment_payload(f"key-{idx}", {"v": idx})
+
+    assert list(equipment_db._equipment_payload_cache.keys()) == ["key-2", "key-3", "key-4"]
+
+    # A hit promotes key-2 to newest — the next insert evicts key-3 instead.
+    assert equipment_db._get_cached_equipment_payload("key-2") == {"v": 2}
+    equipment_db._set_cached_equipment_payload("key-5", {"v": 5})
+    assert list(equipment_db._equipment_payload_cache.keys()) == ["key-4", "key-2", "key-5"]

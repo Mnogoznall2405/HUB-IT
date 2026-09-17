@@ -222,6 +222,9 @@ def search_equipment_universal(
         select_query = QUERY_SEARCH_UNIVERSAL
         select_params = (pattern,) * 16 + (offset, limit)
 
+    # Errors must propagate: a swallowed failure returned HTTP 200 with an
+    # empty list, which the UI rendered as "nothing found" instead of the
+    # degraded CloudOff signal. The frontend falls back on a real error.
     try:
         # A non-default get_db_fn is a test seam — skip the shared cache there.
         if get_db_fn is None or get_db_fn is _default_get_db:
@@ -239,8 +242,7 @@ def search_equipment_universal(
         )
     except Exception as e:
         logger.error(f"Search error: {e}")
-        equipment = []
-        total = 0
+        raise
 
     return {
         "equipment": equipment,

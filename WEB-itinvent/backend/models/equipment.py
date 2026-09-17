@@ -58,6 +58,10 @@ class EquipmentSearchResponse(BaseModel):
     """Response model for equipment search."""
     found: bool = Field(..., description="Whether equipment was found")
     equipment: List[EquipmentBase] = Field(default_factory=list, description="List of equipment")
+    db_errors: List[str] = Field(
+        default_factory=list,
+        description="Hub database names that failed during a cross-database lookup",
+    )
 
 
 class EmployeeSearchResponse(BaseModel):
@@ -349,7 +353,7 @@ class TransferExecuteRequest(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description="Client-generated idempotency key for this inventory transfer",
     )
-    inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
     new_employee: str = Field(..., min_length=2, description="Target employee full name")
     new_employee_no: Optional[int] = Field(None, description="Optional target employee OWNER_NO")
     new_employee_dept: Optional[str] = Field(None, description="Optional target employee department when creating new owner")
@@ -367,7 +371,7 @@ class TransferActOnlyRequest(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description="Client-generated idempotency key for this document-only operation",
     )
-    inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
     issuer_employee: str = Field(..., min_length=1, description="Employee/person who issued equipment")
     issuer_owner_no: Optional[int] = Field(None, description="Optional OWNER_NO for issuer")
     comment: Optional[str] = Field(None, description="Optional act comment")
@@ -382,7 +386,7 @@ class TransferLocationRequest(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description="Client-generated idempotency key for this location-only transfer",
     )
-    inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
     branch_no: int | str = Field(..., description="Target BRANCH_NO")
     loc_no: int | str = Field(..., description="Target LOC_NO")
     comment: Optional[str] = Field(None, description="Optional transfer comment")
@@ -467,7 +471,7 @@ class UploadedActCommitRequest(BaseModel):
     from_employee: Optional[str] = Field(None, description="Old employee")
     to_employee: Optional[str] = Field(None, description="New employee")
     doc_date: Optional[str] = Field(None, description="Upload datetime YYYY-MM-DD HH:MM:SS")
-    equipment_inv_nos: Optional[List[str]] = Field(None, description="Final inventory numbers list")
+    equipment_inv_nos: Optional[List[str]] = Field(None, max_length=1800, description="Final inventory numbers list")
     source_task_id: Optional[str] = Field(None, description="Optional hub task id for reminder binding")
     reminder_id: Optional[str] = Field(None, description="Optional reminder id for explicit binding")
 

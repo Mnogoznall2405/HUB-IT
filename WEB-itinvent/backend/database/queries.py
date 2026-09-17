@@ -1,4 +1,4 @@
-﻿"""
+"""
 SQL queries for ITINVENT database.
 All queries use parameterized statements to prevent SQL injection.
 Based on universal_database.py schema
@@ -462,6 +462,7 @@ def get_equipment_by_owner_all_databases(
 
     label = str(employee_name or "").strip()
     merged: List[dict] = []
+    failed_dbs: List[str] = []
     for cfg in db_configs:
         one_db_id = str(cfg.get("id") or "").strip() or None
         one_db_name = str(cfg.get("name") or one_db_id or "Hub").strip() or "Hub"
@@ -477,6 +478,7 @@ def get_equipment_by_owner_all_databases(
             )
         except Exception:
             logger.exception("owner resolution failed for db=%s", one_db_id)
+            failed_dbs.append(one_db_name)
             continue
         if not resolved:
             continue
@@ -488,6 +490,7 @@ def get_equipment_by_owner_all_databases(
             )
         except Exception:
             logger.exception("get_equipment_by_owner failed for db=%s owner=%s", one_db_id, resolved)
+            failed_dbs.append(one_db_name)
             continue
         for row in rows or []:
             payload = dict(row)
@@ -504,7 +507,7 @@ def get_equipment_by_owner_all_databases(
             str(row.get("inv_no") or row.get("INV_NO") or ""),
         )
     )
-    return merged
+    return {"equipment": merged, "failed_dbs": failed_dbs}
 
 
 def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[dict]:
@@ -680,8 +683,7 @@ def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None)
     if not normalized_ids:
         return []
 
-    placeholders = ", ".join(["?"] * len(normalized_ids))
-    query = f"""
+    query = """
         SELECT
             i.ID AS item_id,
             CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
@@ -696,11 +698,25 @@ def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None)
         LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
         LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
         WHERE i.CI_TYPE = 1
-          AND i.ID IN ({placeholders})
+          AND i.ID IN ({ID_PLACEHOLDERS})
         ORDER BY i.ID
     """
     db = get_db(db_id)
-    return db.execute_query(query, tuple(normalized_ids))
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for id_chunk in _in_clause_chunks(normalized_ids):
+        placeholders = ", ".join(["?"] * len(id_chunk))
+        rows = db.execute_query(
+            query.replace("{ID_PLACEHOLDERS}", placeholders),
+            tuple(id_chunk),
+        )
+        for row in rows or []:
+            key = row.get("item_id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+    return merged_rows
 
 
 def _normalize_inv_no_token(raw: Any) -> Optional[str]:
@@ -710,6 +726,30 @@ def _normalize_inv_no_token(raw: Any) -> Optional[str]:
     behind ``strict_digits=True`` in the shared helper (act upload semantics).
     """
     return normalize_inv_no_token(raw)
+
+
+# SQL Server rejects statements with more than 2100 parameters. IN-clause
+# lookups chunk at 1800, same bound as equipment_current_act_reads.
+_IN_CLAUSE_CHUNK_SIZE = 1800
+
+
+def _in_clause_chunks(values: list):
+    for idx in range(0, len(values), _IN_CLAUSE_CHUNK_SIZE):
+        yield values[idx:idx + _IN_CLAUSE_CHUNK_SIZE]
+
+
+def _inv_no_sort_key(row: dict) -> tuple:
+    """Replicate ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID after merge."""
+    try:
+        inv_bigint = int(str(row.get("inv_no") or row.get("INV_NO") or "").strip())
+        numeric_rank = (1, inv_bigint)
+    except (TypeError, ValueError):
+        numeric_rank = (0, 0)  # TRY_CONVERT -> NULL sorts first in T-SQL
+    try:
+        item_id = int(row.get("id") or row.get("ID") or row.get("item_id") or 0)
+    except (TypeError, ValueError):
+        item_id = 0
+    return (*numeric_rank, item_id)
 
 
 def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
@@ -725,30 +765,6 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
             normalized_tokens.append(token)
 
     if not normalized_tokens:
-        return []
-
-    text_tokens = [token for token in normalized_tokens if not re.fullmatch(r"\d+", token)]
-    numeric_tokens: List[int] = []
-    for token in normalized_tokens:
-        if re.fullmatch(r"\d+", token):
-            numeric = int(token)
-            if numeric not in numeric_tokens:
-                numeric_tokens.append(numeric)
-
-    where_parts: List[str] = []
-    params: List[Any] = []
-
-    if text_tokens:
-        placeholders = ", ".join(["?"] * len(text_tokens))
-        where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
-        params.extend([token.upper() for token in text_tokens])
-
-    if numeric_tokens:
-        placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"i.INV_NO IN ({placeholders})")
-        params.extend(numeric_tokens)
-
-    if not where_parts:
         return []
 
     query = f"""
@@ -790,11 +806,45 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
         LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
         LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
         WHERE i.CI_TYPE = 1
-          AND ({' OR '.join(where_parts)})
+          AND ({{WHERE_PARTS}})
         ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
     """
+
     db = get_db(db_id)
-    return db.execute_query(query, tuple(params))
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        text_tokens = [token for token in token_chunk if not re.fullmatch(r"\d+", token)]
+        numeric_tokens = [
+            int(token) for token in token_chunk if re.fullmatch(r"\d+", token)
+        ]
+
+        where_parts: List[str] = []
+        params: List[Any] = []
+        if text_tokens:
+            placeholders = ", ".join(["?"] * len(text_tokens))
+            where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+            params.extend([token.upper() for token in text_tokens])
+        if numeric_tokens:
+            placeholders = ", ".join(["?"] * len(numeric_tokens))
+            where_parts.append(f"i.INV_NO IN ({placeholders})")
+            params.extend(numeric_tokens)
+        if not where_parts:
+            continue
+
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", " OR ".join(where_parts)),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("item_id") or row.get("id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
+    merged_rows.sort(key=_inv_no_sort_key)
+    return merged_rows
 
 
 def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
@@ -813,31 +863,7 @@ def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] =
     if not normalized_tokens:
         return []
 
-    text_tokens = [token for token in normalized_tokens if not re.fullmatch(r"\d+", token)]
-    numeric_tokens: List[int] = []
-    for token in normalized_tokens:
-        if re.fullmatch(r"\d+", token):
-            numeric = int(token)
-            if numeric not in numeric_tokens:
-                numeric_tokens.append(numeric)
-
-    where_parts: List[str] = []
-    params: List[Any] = []
-
-    if text_tokens:
-        placeholders = ", ".join(["?"] * len(text_tokens))
-        where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
-        params.extend([token.upper() for token in text_tokens])
-
-    if numeric_tokens:
-        placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"i.INV_NO IN ({placeholders})")
-        params.extend(numeric_tokens)
-
-    if not where_parts:
-        return []
-
-    query = f"""
+    query = """
         SELECT
             i.ID AS id,
             CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
@@ -870,11 +896,45 @@ def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] =
         LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
         LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
         WHERE i.CI_TYPE = 1
-          AND ({' OR '.join(where_parts)})
+          AND ({WHERE_PARTS})
         ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
     """
+
     db = get_db(db_id)
-    return db.execute_query(query, tuple(params))
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        text_tokens = [token for token in token_chunk if not re.fullmatch(r"\d+", token)]
+        numeric_tokens = [
+            int(token) for token in token_chunk if re.fullmatch(r"\d+", token)
+        ]
+
+        where_parts: List[str] = []
+        params: List[Any] = []
+        if text_tokens:
+            placeholders = ", ".join(["?"] * len(text_tokens))
+            where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+            params.extend([token.upper() for token in text_tokens])
+        if numeric_tokens:
+            placeholders = ", ".join(["?"] * len(numeric_tokens))
+            where_parts.append(f"i.INV_NO IN ({placeholders})")
+            params.extend(numeric_tokens)
+        if not where_parts:
+            continue
+
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", " OR ".join(where_parts)),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
+    merged_rows.sort(key=_inv_no_sort_key)
+    return merged_rows
 
 
 def _build_uploaded_act_addinfo(
@@ -1003,6 +1063,14 @@ def create_uploaded_transfer_act(
             normalized_ids.append(value)
     if not normalized_ids:
         raise ValueError("equipment_item_ids is empty")
+    if len(normalized_ids) > _IN_CLAUSE_CHUNK_SIZE:
+        # The act links every item through several IN(...) lookups inside one
+        # transaction — beyond the SQL Server parameter budget it cannot
+        # complete anyway, so fail explicitly instead of mid-transaction.
+        raise ValueError(
+            f"Too many equipment items for one act: {len(normalized_ids)} "
+            f"(max {_IN_CLAUSE_CHUNK_SIZE})"
+        )
 
     created_by_value = (
         _legacy_sqlserver_text(created_by or "IT-WEB", max_len=128).strip()
@@ -1174,8 +1242,9 @@ def create_uploaded_transfer_act(
         # current-act lookup can still correlate it via equipment history.
         empl_no_value = owner_no
 
-        # 3) DOCS insert.
-        cursor.execute("SELECT ISNULL(MAX(DOC_NO), 0) + 1 FROM DOCS")
+        # 3) DOCS insert. TABLOCKX+HOLDLOCK like CI_HISTORY: serializes the
+        # MAX+1 read so a concurrent act cannot claim the same DOC_NO.
+        cursor.execute("SELECT ISNULL(MAX(DOC_NO), 0) + 1 FROM DOCS WITH (TABLOCKX, HOLDLOCK)")
         doc_no = int(cursor.fetchone()[0])
         doc_number_value = _legacy_sqlserver_text(str(doc_no), max_len=250)
         file_descr = doc_number_value
@@ -1447,8 +1516,10 @@ def create_uploaded_transfer_act(
                         if int(prev_doc_no) not in annulled_doc_nos:
                             annulled_doc_nos.append(int(prev_doc_no))
 
-        # 7) FILES insert (store binary PDF in FILE_DATA).
-        cursor.execute("SELECT ISNULL(MAX(FILE_NO), 0) + 1 FROM FILES")
+        # 7) FILES insert (store binary PDF in FILE_DATA). Locked MAX+1 —
+        # same DOCS transaction already serializes, keep the FILES counter
+        # consistent under concurrency too.
+        cursor.execute("SELECT ISNULL(MAX(FILE_NO), 0) + 1 FROM FILES WITH (TABLOCKX, HOLDLOCK)")
         file_no = int(cursor.fetchone()[0])
 
         cursor.execute(
@@ -2939,26 +3010,38 @@ def count_equipment_by_owners_and_part_nos(
     if not owners or not codes:
         return {}
 
-    owner_placeholders = ", ".join(["?"] * len(owners))
-    code_placeholders = ", ".join(["?"] * len(codes))
-    rows = get_db(db_id).execute_query(
-        f"""
+    query = """
         SELECT
             i.EMPL_NO AS owner_no,
             LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) AS part_no_key,
             COUNT(*) AS hub_count
         FROM ITEMS i
         WHERE i.CI_TYPE = 1
-          AND i.EMPL_NO IN ({owner_placeholders})
-          AND LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({code_placeholders})
+          AND i.EMPL_NO IN ({OWNER_PLACEHOLDERS})
+          AND LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({CODE_PLACEHOLDERS})
         GROUP BY
             i.EMPL_NO,
             LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, ''))))
-        """,
-        tuple([*owners, *(code.casefold() for code in codes)]),
-    )
+    """
+    owner_placeholders = ", ".join(["?"] * len(owners))
+    db = get_db(db_id)
+    rows: List[dict] = []
+    # owners + codes share the 2100-param budget; chunk codes so each
+    # statement stays under the SQL Server limit.
+    codes_per_chunk = max(1, _IN_CLAUSE_CHUNK_SIZE - len(owners))
+    for code_idx in range(0, len(codes), codes_per_chunk):
+        code_chunk = codes[code_idx:code_idx + codes_per_chunk]
+        code_placeholders = ", ".join(["?"] * len(code_chunk))
+        rows.extend(
+            db.execute_query(
+                query.replace("{OWNER_PLACEHOLDERS}", owner_placeholders)
+                     .replace("{CODE_PLACEHOLDERS}", code_placeholders),
+                tuple([*owners, *(code.casefold() for code in code_chunk)]),
+            )
+            or []
+        )
     result: dict[tuple[int, str], int] = {}
-    for row in rows or []:
+    for row in rows:
         try:
             owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
             count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
@@ -3409,7 +3492,7 @@ def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optiona
         if existing and existing[0] is not None:
             return int(existing[0])
 
-        cursor.execute("SELECT ISNULL(MAX(MODEL_NO), 0) + 1 FROM CI_MODELS")
+        cursor.execute("SELECT ISNULL(MAX(MODEL_NO), 0) + 1 FROM CI_MODELS WITH (TABLOCKX, HOLDLOCK)")
         next_model_no = cursor.fetchone()[0]
         cursor.execute(
             """
@@ -3798,7 +3881,7 @@ def create_owner(employee_name: str, department: Optional[str] = None, db_id: Op
     lname, fname, mname = _parse_fio(employee_name)
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT ISNULL(MAX(OWNER_NO), 0) + 1 FROM OWNERS")
+        cursor.execute("SELECT ISNULL(MAX(OWNER_NO), 0) + 1 FROM OWNERS WITH (TABLOCKX, HOLDLOCK)")
         next_owner_no = cursor.fetchone()[0]
         cursor.execute(
             """
@@ -3916,7 +3999,7 @@ def create_equipment_item(
             result["message"] = f"Equipment with serial {normalized_serial} already exists"
             return result
 
-        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS")
+        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS WITH (TABLOCKX, HOLDLOCK)")
         next_id = cursor.fetchone()[0]
 
         cursor.execute(
@@ -4030,7 +4113,7 @@ def create_consumable_item(
     with db.get_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS")
+        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS WITH (TABLOCKX, HOLDLOCK)")
         next_id = cursor.fetchone()[0]
 
         cursor.execute(

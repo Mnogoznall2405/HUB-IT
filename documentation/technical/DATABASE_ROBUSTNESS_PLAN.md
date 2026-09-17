@@ -489,6 +489,28 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 После F1–F3 страницу считать закрытой; план заморозить рядом с `DATABASE_OPTIMIZATION.md`.
 Не делать: новые фичи на странице до заморозки; редизайн; SW-кэш `/api`.
 
+## Верификация контролёра — доисследование D/A/R в коммитах 2026-09-18 (код не менялся)
+
+Проверены `aab64419` (D1–D3, A1, R1) и `f06ca535` (дедлайны LLM-парсинга). Всё подтверждено:
+- D1: `backend/utils/inv_no.py` общий; остатки в `queries.py:706` и `act_upload_service.py:329` —
+  тонкие документированные обёртки (`strict_digits=True` у актов с комментарием про семантику).
+  Расхождения больше нет.
+- D2: общий `_stamp_pdf_overlay` + `_register_stamp_cyrillic_font` (чтением diff).
+- D3: `act_upload_service.py:23` — прямой `from shared.llm import ...`; старого пути не осталось.
+- A1: `transfer_service.py:637-649` — `gather` + `wait_for` (`TRANSFER_EMAIL_TIMEOUT_SEC`, 60с),
+  per-recipient статусы сохранены.
+- R1: `EquipmentTable.jsx:331,338` — rAF-throttle + cancel на unmount.
+- LLM-дедлайны: `ACT_PARSE_LLM_TIMEOUT_SEC` (45с) + `ACT_PARSE_LLM_TOTAL_TIMEOUT_SEC` (150с),
+  остаток бюджета в `complete_json(timeout=...)`, warning в драфт; тест на фейковых часах.
+
+Проверки мои (шире заявленных): pytest 57 (inv-parsing, contract, data-version, page-budget,
+search-helpers, transfer-integrity) + 29 (upload-act-email, transfer-act-layout, reminder ×2) —
+всё зелёное; vitest EquipmentTable+Database+search 54/54; `import backend.main` ок, routes 702.
+Заявленные 53/53 и 45/45 — подмножества, сходятся.
+
+Доисследование закрыто полностью. По коду страница закрыта: этапы 0–8, 9.x, S1–S4, D/A/R.
+Открыт только ручной хвост (390px, WebView2 smoke, staging) + наблюдение за флаком.
+
 ## Доисследование 2026-09-18: рендер, дубли, контур актов (контролёр, код не менялся)
 
 Проверено чтением кода + замерами прошлых сессий. Рантайм-узких мест не найдено;
@@ -570,7 +592,35 @@ upload-act email = **53/53**; vitest `EquipmentTable`+`Database` = 45/45; `impor
 → S4, `useDatabaseUploadActWorkflow` 675, `useDatabaseDetailRuntime` 688, `EquipmentDetail*` 618/679,
 `DatabaseBulkActionBar` 663) задокументирован кандидатами на следующую итерацию.
 
-## Верификация контролёра — S1/S2/S3/S4 в коммитах 2026-09-18 (код не менялся)
+## Верификация контролёра — глубокая проверка 2026-09-18 (build; один фикс внесён)
+
+1. **Найден и исправлен разрыв data_version (не закоммичено):** `GET /all-grouped?branch=` собирал
+   ответ вручную без `data_version` (`equipment.py:1440-1446`) — поле падало в дефолт 0 модели,
+   свидетель staleness для branch-скоупа врал бы всегда. Фронт `branch` не передаёт (латентно),
+   но контракт модели обещает поле. Исправление: `'data_version': result.get('data_version', 0)`
+   + assert в `test_all_grouped_branch_path_keeps_limit_in_response`. Остальные 4 пути
+   (`all-grouped`, `consumables`, `by-inv-nos`, `universal`) версию отдают — проверено чтением.
+   Invalidate вызывается на всех путях мутаций (transfer ×2, consumables ×4, equipment add/update/
+   delete, act-commit, ai_chat action-cards) — bump покрывает всё.
+2. **Гигиена diff с `5da816b8`:** секретов/токенов/`console.log` — нет; SQL-конкатенации
+   пользовательских значений — нет (только int-интерполяция лимитов после clamp).
+3. **Полный backend-сюит** — не влез в 30 мин таймаут на этой машине; вместо него широкий
+   DB-скоп: **115/115** (contract, search-helpers, history, hot-paths, selection, data-version,
+   page-budget, inv-parsing, upload-act-email, transfer-layout, reminder ×2, delete, locations, scope).
+4. **Полный фронт-сюит (594 файла): два прогона — 6 и 4 падения, состав плавает.**
+   Разбор: `requestOrdering`, `Settings AiBots`, `ChatThread font` — предсуществующие (доказаны на
+   чистом HEAD ранее); `CompanyStructure`, второй `ChatThread`, два РАЗНЫХ `Database.test`
+   (QR deep-link, возврат из карточки) — появляются/исчезают между прогонами. В изоляции и в
+   диалоговом соседстве (62/62) все зелёные; везде симптом один — «диалог не открылся»
+   (findBy 1с не дождался lazy-чанка+цепочки эффектов). Вывод: не регрессия кода, а флакинес
+   тяжёлых async-тестов под нагрузкой (594 файла параллельно + 14 PM2-процессов + scan-worker
+   ~1 ГБ на ТОЙ ЖЕ прод-машине). Действие: полный сюит гонять на CI/стенде или с ограниченными
+   воркерами; для двух самых медленных dialog-тестов рассмотреть `findBy` с явным таймаутом.
+   Отдельно: в `frontend/` лежат чужие старые `vitest-full.log`/`vitest-run.log` (июнь) — мусор,
+   не мой, не трогал.
+5. **PM2:** все 14 online; `itinvent-backend` после рестарта стартовал ~минуту (инициализация:
+   backfill сессий и т.д.) — `/health` → 200. Попутное наблюдение (вне скоупа, не чиню):
+   в error-логе живого трафика регулярные `http.slow ~3с` на `warehouse-1c/it-requests`.
 
 Проверены `0b571582` (S1/S3/S2) и `20a1620a` (S4, Devin). Все файлы каталога <600 строк
 (максимум refactored — 575; `Warehouse1CReconcilePanel.jsx` 907 — предсуществующий, вне скоупа).
@@ -741,3 +791,45 @@ multi-worker, live smoke gzip/Vary), красные перф-бюджеты эт
   список/поиск, 1 SQL на ≤1800 id актов); контракт universal честный
   (COUNT+OFFSET/FETCH). Сравнение с live-базлайном этапа 0 — за исполнителем
   на реальном контуре.
+
+## Аудит контура Database 2026-09-18 — баги и оптимизации (исполнитель)
+
+Полный обход контура: SQL-слой, эндпоинты, сервисы, фронт-хуки, 1С-стики.
+Найдено и исправлено:
+
+| ID | Находка | Риск | Фикс |
+|---|---|---|---|
+| B1 | `MAX(...)+1` без лока в 6 местах: `DOCS.DOC_NO` (акт загрузки), `FILES.FILE_NO`, `CI_MODELS`, `OWNERS`, `ITEMS` ×2 — гонка PK при конкурентных актах/созданиях | HIGH — PK-конфликт → откат транзакции | `WITH (TABLOCKX, HOLDLOCK)` на всех MAX-чтениях — тот же паттерн, что уже применён в `CI_HISTORY` |
+| B2 | «Пустой результат» вместо ошибки: `search_equipment_universal` глотал исключение → HTTP 200 `total:0`; cross-DB lookup молча пропускал упавшие БД; reconcile молча пропускал склад при падении count | MEDIUM — обман пользователя | Проброс ошибки в universal-поиске (фронт показывает CloudOff); `failed_dbs` в ответе cross-DB + warning-Alert в диалоге сотрудника; `hub_count_failures` → status `incomplete` в reconcile |
+| B3 | Неограниченные `IN (...)` против лимита ~2100 параметров SQL Server: `get_equipment_items_by_ids`, `get_equipment_items_by_inv_nos`, `get_transfer_act_items_by_inv_nos`, `count_equipment_by_owners_and_part_nos`, write-путь `create_uploaded_transfer_act` | MEDIUM — pyodbc-ошибка → 500 | `_in_clause_chunks(1800)` — тот же bound, что в `equipment_current_act_reads`; дедуп при мерже; сортировка `TRY_CONVERT` воспроизведена на Python; капы `max_length` в Pydantic (`inv_nos` ≤2000, `equipment_inv_nos` ≤1800); явный `ValueError` на oversized акте |
+| B4 | `set_assigned_database` — read-modify-write всей таблицы → lost update при конкурентной записи | MEDIUM-LOW | Per-key upsert/delete в app-БД (без полного RMW) + `threading.Lock` для JSON-fallback; инвалидация `_assigned_cache` на записи |
+| B5 | `useTransferActJob` — одна сетевая ошибка убивала пуллинг живого job; `useDiscrepanciesCopy` — `setTimeout` без cleanup на unmount | LOW | До 3 consecutive transient-ошибок переживаются; таймер очищается в `useEffect`-cleanup |
+| O2 | `_equipment_payload_cache` — dict без max-size; ключи включают параметры поиска → бесконечный рост | MEDIUM — утечка памяти на long-running worker | LRU-cap `EQUIPMENT_PAYLOAD_CACHE_MAX_ENTRIES` (деф. 2000): hit → промоция в конец, переполнение → вытеснение старейших |
+
+### Новые тесты раунда
+
+- `test_universal_equipment_search_propagates_db_error` — новый контракт ошибок (заменил старый empty-fallback).
+- `test_equipment_by_owner_all_databases_*` — распаковка `{equipment, failed_dbs}`; `failed_dbs == ["MSK"]` при падении.
+- `test_owner_mismatch_flags_incomplete_when_hub_count_fails` — status `incomplete` + `hub_count_failures`.
+- `test_get_equipment_items_by_ids_chunks_in_clause_under_param_limit` — 3700 id → 3 запроса, дедуп.
+- `test_create_uploaded_transfer_act_rejects_oversized_item_list` — явный `ValueError`.
+- `test_equipment_payload_cache_evicts_oldest_beyond_cap` — LRU-вытеснение + промоция.
+- Vitest: polling переживает 2 transient-ошибки → `done`; даёт up после 3 подряд.
+
+### Проверки раунда
+
+- Backend focused: 43/43 (search-helpers, cross-DB, contract, budget, inv-parsing) +
+  reconcile 31/31 + owner-mismatch 3/3 + selection-contract 7/7.
+- Vitest database-скоп: **468/468** (84 файла, +2 новых polling-теста).
+- `import backend.main` — ок, 702 route; `npm run build` — ок, Database-чанк 262.0 КБ / gzip 77.6 (бюджет 280).
+- Один env-флак устранён: `test_equipment_grouped_caches_total_count_across_pages` падал на
+  свежем conftest-sqlite без схемы `app_settings` — bump `data_version` замокан в тесте.
+
+### Открытые находки аудита (не исправлены — зафиксированы)
+
+- O1: последовательный fan-out `get_equipment_by_owner_all_databases` (N БД × 2 запроса) —
+  кандидат на `ThreadPoolExecutor` при росте числа БД.
+- O3: `_get_cached_equipment_total` не привязан к `data_version` — count дрейфует до TTL
+  при частых мутациях.
+- O4: `get_all_equipment` (queries.py) не возвращает `data_version` — если `/all` ещё жив,
+  baseline по версии там не работает.

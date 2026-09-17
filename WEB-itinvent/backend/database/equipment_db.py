@@ -15,6 +15,11 @@ _equipment_payload_cache: Dict[str, Dict[str, Any]] = {}
 _equipment_payload_cache_lock = RLock()
 _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC = max(10, int(os.getenv("EQUIPMENT_PAYLOAD_CACHE_TTL_SEC", "30")))
 _EQUIPMENT_DICT_CACHE_TTL_SEC = max(60, int(os.getenv("EQUIPMENT_DICT_CACHE_TTL_SEC", "300")))
+# Cache keys embed query params (e.g. per-search-term totals) — without a cap
+# the dict grows forever on long-running workers. LRU eviction bounds it.
+_EQUIPMENT_PAYLOAD_CACHE_MAX_ENTRIES = max(
+    100, int(os.getenv("EQUIPMENT_PAYLOAD_CACHE_MAX_ENTRIES", "2000"))
+)
 
 
 def _build_equipment_cache_key(kind: str, db_id: Optional[str], *parts: Any) -> str:
@@ -26,12 +31,13 @@ def _build_equipment_cache_key(kind: str, db_id: Optional[str], *parts: Any) -> 
 def _get_cached_equipment_payload(cache_key: str, ttl_sec: Optional[float] = None) -> Optional[Any]:
     ttl = _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC if ttl_sec is None else ttl_sec
     with _equipment_payload_cache_lock:
-        cached = _equipment_payload_cache.get(cache_key)
+        cached = _equipment_payload_cache.pop(cache_key, None)
         if not cached:
             return None
         if (time.monotonic() - float(cached.get("ts") or 0)) >= ttl:
-            _equipment_payload_cache.pop(cache_key, None)
             return None
+        # Re-insert at the end so eviction order tracks recency (LRU).
+        _equipment_payload_cache[cache_key] = cached
         return cached.get("data")
 
 
@@ -41,6 +47,10 @@ def _set_cached_equipment_payload(cache_key: str, payload: Any) -> Any:
             "ts": time.monotonic(),
             "data": payload,
         }
+        overflow = len(_equipment_payload_cache) - _EQUIPMENT_PAYLOAD_CACHE_MAX_ENTRIES
+        if overflow > 0:
+            for stale_key in list(_equipment_payload_cache.keys())[:overflow]:
+                _equipment_payload_cache.pop(stale_key, None)
     return payload
 
 

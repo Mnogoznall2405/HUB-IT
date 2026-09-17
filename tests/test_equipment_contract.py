@@ -169,6 +169,7 @@ def test_all_grouped_branch_path_keeps_limit_in_response(monkeypatch):
             "limit": limit,
             "pages": 1,
             "branch": branch_name,
+            "data_version": 7,
         },
     )
     app, _equipment_api = _equipment_app(monkeypatch)
@@ -180,6 +181,7 @@ def test_all_grouped_branch_path_keeps_limit_in_response(monkeypatch):
     assert payload["pages"] == 1
     assert payload["total"] == 1
     assert payload["grouped"]["HQ"]["Каб 1"][0]["INV_NO"] == 5
+    assert payload["data_version"] == 7
 
 
 def test_grouped_queries_have_stable_order_tiebreaker():

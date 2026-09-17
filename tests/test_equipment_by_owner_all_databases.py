@@ -44,12 +44,14 @@ def test_get_equipment_by_owner_all_databases_merges_and_tags(monkeypatch):
         lambda owner_name, label: 100 if "Фомин" in owner_name and "Фомин" in label else 0,
     )
 
-    rows = db_queries.get_equipment_by_owner_all_databases(
+    result = db_queries.get_equipment_by_owner_all_databases(
         10,
         employee_name="Фомин Максим Николаевич",
         current_db_id="ITINVENT",
     )
+    rows = result["equipment"]
 
+    assert result["failed_dbs"] == []
     assert [row["inv_no"] for row in rows] == ["100", "200"]
     assert rows[0]["hub_db_id"] == "ITINVENT"
     assert rows[0]["is_current_db"] is True
@@ -75,12 +77,14 @@ def test_get_equipment_by_owner_all_databases_skips_unresolved_db(monkeypatch):
     monkeypatch.setattr(db_queries, "get_equipment_by_owner", fake_get_equipment_by_owner)
     monkeypatch.setattr(db_queries, "list_owners_compact", lambda db_id=None: [])
 
-    rows = db_queries.get_equipment_by_owner_all_databases(
+    result = db_queries.get_equipment_by_owner_all_databases(
         42,
         employee_name="",
         current_db_id="ITINVENT",
     )
+    rows = result["equipment"]
 
+    assert result["failed_dbs"] == []
     assert calls == [(42, "ITINVENT")]
     assert len(rows) == 1
     assert rows[0]["hub_db_id"] == "ITINVENT"
@@ -109,11 +113,14 @@ def test_get_equipment_by_owner_all_databases_skips_db_when_owner_resolution_fai
     monkeypatch.setattr(db_queries, "list_owners_compact", fake_list_owners_compact)
     monkeypatch.setattr(db_queries, "get_equipment_by_owner", fake_get_equipment_by_owner)
 
-    rows = db_queries.get_equipment_by_owner_all_databases(
+    result = db_queries.get_equipment_by_owner_all_databases(
         42,
         employee_name="Ivanova Ekaterina",
         current_db_id="ITINVENT",
     )
+    rows = result["equipment"]
 
+    # The failed secondary DB must be reported, not silently dropped.
+    assert result["failed_dbs"] == ["MSK"]
     assert calls == [(42, "ITINVENT")]
     assert [row["inv_no"] for row in rows] == ["100"]

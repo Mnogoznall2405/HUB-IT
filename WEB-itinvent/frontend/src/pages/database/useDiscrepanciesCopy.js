@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { buildDiscrepanciesText } from './employeeCompareFormat';
 
@@ -11,6 +11,11 @@ export default function useDiscrepanciesCopy({
   compareMaps,
 }) {
   const [copiedDiscrepancies, setCopiedDiscrepancies] = useState(false);
+  const copiedTimerRef = useRef(null);
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
 
   const discrepanciesText = useMemo(
     () => buildDiscrepanciesText({
@@ -36,7 +41,11 @@ export default function useDiscrepanciesCopy({
       textarea.remove();
     }
     setCopiedDiscrepancies(true);
-    window.setTimeout(() => setCopiedDiscrepancies(false), 2000);
+    if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = window.setTimeout(() => {
+      copiedTimerRef.current = null;
+      setCopiedDiscrepancies(false);
+    }, 2000);
   }, [discrepanciesText]);
 
   return { copiedDiscrepancies, discrepanciesText, handleCopyDiscrepancies };
