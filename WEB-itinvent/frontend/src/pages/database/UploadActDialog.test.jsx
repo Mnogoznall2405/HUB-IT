@@ -10,20 +10,21 @@ const ui = {
   shellShadow: 'none',
 };
 
-const form = {
-  from_employee: '',
-  to_employee: '',
-  doc_date: '',
-  equipment_inv_nos_text: '',
-};
-
-const invVerification = {
-  recognizedInvNos: ['1001'],
-  finalInvNos: ['1001'],
-  onlyRecognizedInvNos: [],
-  onlyFinalInvNos: [],
-  severity: 'info',
-  headline: 'Все номера совпадают.',
+const details = {
+  form: {
+    from_employee: '',
+    to_employee: '',
+    doc_date: '',
+    equipment_inv_nos_text: '',
+  },
+  invVerification: {
+    recognizedInvNos: ['1001'],
+    finalInvNos: ['1001'],
+    onlyRecognizedInvNos: [],
+    onlyFinalInvNos: [],
+    severity: 'info',
+    headline: 'Все номера совпадают.',
+  },
 };
 
 describe('UploadActDialog', () => {
@@ -35,11 +36,9 @@ describe('UploadActDialog', () => {
       <UploadActDialog
         open
         ui={ui}
-        form={form}
-        invVerification={invVerification}
+        details={details}
         onClose={onClose}
-        onCommit={onCommit}
-        commitDisabled={false}
+        commit={{ disabled: false, onCommit }}
       />
     );
 
@@ -62,15 +61,16 @@ describe('UploadActDialog', () => {
       <UploadActDialog
         open
         ui={ui}
-        form={form}
-        invVerification={invVerification}
+        details={{
+          ...details,
+          onFieldChange,
+          onInvNosChange,
+          onInvVerifiedChange,
+        }}
         draft={{
           warnings: ['Проверьте дату'],
           resolved_items: [{ inv_no: '1001', model_name: 'Notebook' }],
         }}
-        onFieldChange={onFieldChange}
-        onInvNosChange={onInvNosChange}
-        onInvVerifiedChange={onInvVerifiedChange}
       />
     );
 
@@ -101,26 +101,27 @@ describe('UploadActDialog', () => {
       <UploadActDialog
         open
         ui={ui}
-        form={form}
-        invVerification={invVerification}
-        commitResult={{ doc_no: 12, file_no: 34 }}
-        emailSubject="Акт №12"
-        emailBody="Во вложении акт."
-        emailRecipientOptions={[
-          { owner_no: 7, owner_display_name: 'Иванов И.И.', owner_dept: 'ИТ' },
-        ]}
-        emailRecipients={[]}
-        emailRecipientsInput=""
-        emailStatus="Отправлено"
-        emailError="Один получатель без email"
-        emailLastRecipients={[
-          { owner_no: 7, employee_name: 'Иванов И.И.', email: 'ivanov@example.test', status: 'sent' },
-        ]}
+        details={details}
         onClose={onClose}
-        onEmailSend={onEmailSend}
-        onEmailRecipientsChange={onEmailRecipientsChange}
-        onEmailErrorClear={onEmailErrorClear}
-        onDownload={onDownload}
+        commit={{ result: { doc_no: 12, file_no: 34 } }}
+        email={{
+          subject: 'Акт №12',
+          body: 'Во вложении акт.',
+          recipientOptions: [
+            { owner_no: 7, owner_display_name: 'Иванов И.И.', owner_dept: 'ИТ' },
+          ],
+          recipients: [],
+          recipientsInput: '',
+          status: 'Отправлено',
+          error: 'Один получатель без email',
+          lastRecipients: [
+            { owner_no: 7, employee_name: 'Иванов И.И.', email: 'ivanov@example.test', status: 'sent' },
+          ],
+          onSend: onEmailSend,
+          onRecipientsChange: onEmailRecipientsChange,
+          onErrorClear: onEmailErrorClear,
+        }}
+        download={{ onDownload }}
       />
     );
 

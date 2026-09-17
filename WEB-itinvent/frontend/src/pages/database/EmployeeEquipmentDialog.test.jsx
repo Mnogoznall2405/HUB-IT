@@ -53,6 +53,22 @@ vi.mock('./HubNomenclatureMatchDialog', () => ({
   default: () => null,
 }));
 
+const setMatchMedia = (matches = false) => {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation((query) => ({
+      matches: typeof matches === 'function' ? matches(query) : matches,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+};
+
 const renderDialog = (allowCrossDatabase, canViewWarehouse1C = false) => render(
   <MemoryRouter>
     <EmployeeEquipmentDialog
@@ -80,6 +96,7 @@ describe('EmployeeEquipmentDialog', () => {
     });
     exportEmployeeEquipmentWorkbook.mockReset();
     exportEmployeeEquipmentWorkbook.mockResolvedValue('оборудование.xlsx');
+    setMatchMedia(false);
   });
 
   it('keeps a non-admin lookup within the current Hub database', async () => {
@@ -482,5 +499,43 @@ describe('EmployeeEquipmentDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Показать позиции' }));
     expect(await screen.findByText(/Ноутбук/)).toBeInTheDocument();
     expect(screen.getByText(/Кабель/)).toBeInTheDocument();
+  });
+
+  it('on mobile shows one panel behind Hub/1C tabs and collapsible filters', async () => {
+    setMatchMedia((query) => query.includes('max-width'));
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [
+          { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+        ],
+        balances_meta: { status: 'ok' },
+      });
+
+    renderDialog(false, true);
+
+    // Фильтры свёрнуты: поле поиска недоступно до раскрытия.
+    expect(screen.queryByLabelText('Поиск')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    expect(await screen.findByLabelText('Поиск')).toBeInTheDocument();
+
+    // По умолчанию видна панель Хаба, склад 1С за табом.
+    expect(await screen.findByText('INV-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('employee-warehouse-name')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Склад 1С' }));
+
+    expect(await screen.findByTestId('employee-warehouse-name')).toBeInTheDocument();
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(screen.queryByText('INV-1')).not.toBeInTheDocument();
   });
 });

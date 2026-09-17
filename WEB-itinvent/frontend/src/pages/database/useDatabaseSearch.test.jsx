@@ -8,6 +8,7 @@ import { useDatabaseSearch } from './useDatabaseSearch';
 vi.mock('../../api/client', () => ({
   equipmentAPI: {
     searchUniversal: vi.fn(),
+    getCurrentActs: vi.fn(),
   },
 }));
 
@@ -95,6 +96,7 @@ describe('useDatabaseSearch (server-primary)', () => {
       page: 1,
       pages: 1,
     });
+    equipmentAPI.getCurrentActs.mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -294,6 +296,36 @@ describe('useDatabaseSearch (server-primary)', () => {
     const lastUpdater = setExpandedBranches.mock.calls.at(-1)[0];
     const merged = typeof lastUpdater === 'function' ? lastUpdater(new Set(['HQ'])) : lastUpdater;
     expect(merged).toEqual(new Set(['HQ', 'Remote']));
+  });
+
+  it('merges lazy act badges into server search rows', async () => {
+    equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [{ item_id: 11, available: true, doc_no: 5, doc_number: 'A-5', doc_date: '2026-01-05' }],
+    });
+    const { result } = renderSearchHook();
+
+    act(() => {
+      result.current.handleSearchChange({ target: { value: 'laser' } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(equipmentAPI.getCurrentActs).toHaveBeenCalledWith([11]);
+    expect(result.current.filteredData).toEqual({
+      HQ: {
+        Office: [{
+          ...serverPrinterRow,
+          current_act_available: true,
+          current_act_doc_no: 5,
+          current_act_doc_number: 'A-5',
+          current_act_doc_date: '2026-01-05',
+        }],
+      },
+    });
   });
 
   it('cancels pending debounced search on clearSearch and unmount', async () => {

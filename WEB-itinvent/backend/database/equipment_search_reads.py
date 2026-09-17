@@ -60,13 +60,20 @@ QUERY_SEARCH_UNIVERSAL = """
         i.MAC_ADDRESS as mac_address,
         i.NETBIOS_NAME as network_name,
         i.DOMAIN_NAME as domain_name,
+        t.TYPE_NO as type_no,
         t.TYPE_NAME as type_name,
+        m.MODEL_NO as model_no,
         m.MODEL_NAME as model_name,
+        m.VENDOR_NO as vendor_no,
         v.VENDOR_NAME as vendor_name,
+        s.STATUS_NO as status_no,
         s.DESCR as status_name,
+        o.OWNER_NO as empl_no,
         o.OWNER_DISPLAY_NAME as employee_name,
         o.OWNER_DEPT as employee_dept,
+        b.BRANCH_NO as branch_no,
         b.BRANCH_NAME as branch_name,
+        l.LOC_NO as loc_no,
         l.DESCR as location_name
     FROM ITEMS i
     LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO

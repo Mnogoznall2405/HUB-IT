@@ -248,9 +248,13 @@ def test_universal_search_covers_client_index_fields():
         "i.IP_ADDRESS", "i.MAC_ADDRESS", "i.NETBIOS_NAME", "i.DOMAIN_NAME",
     ):
         assert column in where, f"universal search lost coverage of {column}"
-    # Result rows carry id + grouping keys for the list/act-badge machinery.
+    # Result rows carry id + grouping keys for the list/act-badge machinery,
+    # plus owner/scope identifiers so row actions (employee link, 1C badge)
+    # keep working on search results, not only on loaded list pages.
     select = equipment_search_reads.QUERY_SEARCH_UNIVERSAL.split("FROM")[0]
-    for alias in ("id", "inv_no", "branch_name", "location_name"):
+    for alias in ("id", "inv_no", "branch_name", "location_name",
+                  "empl_no", "branch_no", "loc_no",
+                  "status_no", "type_no", "model_no", "vendor_no"):
         assert f"as {alias}" in select, f"missing alias {alias}"
 
 

@@ -8,6 +8,7 @@ import {
   getVisibleLocationKeys,
   mergeGroupedEquipment,
 } from './databaseListModel';
+import { mergeCurrentActsIntoGrouped } from './equipmentModel';
 import { normalizeGroupedDatabaseData } from './textEncoding';
 
 export const DATABASE_SEARCH_PAGE_LIMIT = 200;
@@ -53,6 +54,9 @@ export function useDatabaseSearch({
   // load-more never retriggers an active search or resets expansion state.
   const allEquipmentRef = useRef(allEquipment);
   const selectedBranchRef = useRef(selectedBranch);
+  // ITEMS.ID already sent to /equipment/current-acts for search rows — the list
+  // loader covers only loaded list pages, so search results fetch their own badges.
+  const searchActsFetchedRef = useRef(new Set());
   const [appliedSearchQuery, setAppliedSearchQuery] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchLoadingMore, setSearchLoadingMore] = useState(false);
@@ -97,6 +101,36 @@ export function useDatabaseSearch({
     [setExpandedBranches, setExpandedLocations, setFilteredData]
   );
 
+  // Lazy act badges for search rows: same batch endpoint the list uses, merged
+  // into filteredData. Silent on failure — badges stay "?" instead of blocking.
+  const loadActsForSearchGrouped = useCallback((grouped, seq) => {
+    if (!grouped || typeof equipmentAPI.getCurrentActs !== 'function') return;
+    const freshIds = [];
+    Object.values(grouped).forEach((locations) => {
+      Object.values(locations || {}).forEach((items) => {
+        (items || []).forEach((item) => {
+          const id = Number(item?.ID ?? item?.id);
+          if (Number.isFinite(id) && id > 0 && !searchActsFetchedRef.current.has(id)) {
+            searchActsFetchedRef.current.add(id);
+            freshIds.push(id);
+          }
+        });
+      });
+    });
+    if (!freshIds.length) return;
+    equipmentAPI.getCurrentActs(freshIds).then((response) => {
+      if (seq !== searchSeqRef.current) return;
+      const actsByItemId = {};
+      (response?.items || []).forEach((entry) => {
+        if (entry && entry.item_id != null) actsByItemId[entry.item_id] = entry;
+      });
+      if (!Object.keys(actsByItemId).length) return;
+      setFilteredData((prev) => (prev == null ? prev : mergeCurrentActsIntoGrouped(prev, actsByItemId)));
+    }).catch(() => {
+      freshIds.forEach((id) => searchActsFetchedRef.current.delete(id));
+    });
+  }, [setFilteredData]);
+
   const runSearchNow = useCallback(
     (query) => {
       const normalized = String(query || '').trim();
@@ -113,6 +147,7 @@ export function useDatabaseSearch({
 
       setAppliedSearchQuery(normalized);
       searchNextPageRef.current = null;
+      searchActsFetchedRef.current.clear();
       setSearchHasMore(false);
       setSearchTotal(null);
 
@@ -135,6 +170,7 @@ export function useDatabaseSearch({
           );
           setFilteredData(grouped);
           expandGrouped(grouped);
+          loadActsForSearchGrouped(grouped, seq);
           const page = Number(response?.page) || 1;
           const pages = Number(response?.pages) || 1;
           searchNextPageRef.current = page < pages ? page + 1 : null;
@@ -151,7 +187,7 @@ export function useDatabaseSearch({
           if (seq === searchSeqRef.current) setSearchLoading(false);
         });
     },
-    [equipmentSearchEnabled, serverSearchEnabled, searchPageLimit, expandGrouped, resetSearchPagination, runClientFallbackSearch, setFilteredData]
+    [equipmentSearchEnabled, serverSearchEnabled, searchPageLimit, expandGrouped, loadActsForSearchGrouped, resetSearchPagination, runClientFallbackSearch, setFilteredData]
   );
 
   const loadMoreSearchResults = useCallback(() => {
@@ -172,6 +208,7 @@ export function useDatabaseSearch({
           selectedBranchRef.current
         );
         setFilteredData((prev) => mergeGroupedEquipment(prev || {}, grouped));
+        loadActsForSearchGrouped(grouped, seq);
         // Expand newly matched branches/locations without collapsing existing.
         setExpandedBranches((prev) => new Set([...(prev || []), ...Object.keys(grouped)]));
         setExpandedLocations((prev) => new Set([...(prev || []), ...getVisibleLocationKeys(grouped)]));
@@ -187,7 +224,7 @@ export function useDatabaseSearch({
         searchLoadingMoreRef.current = false;
         if (seq === searchSeqRef.current) setSearchLoadingMore(false);
       });
-  }, [searchPageLimit, setExpandedBranches, setExpandedLocations, setFilteredData]);
+  }, [searchPageLimit, loadActsForSearchGrouped, setExpandedBranches, setExpandedLocations, setFilteredData]);
 
   const applySearchDebounced = useCallback(
     (query) => {
@@ -274,6 +311,7 @@ export function useDatabaseSearch({
   const clearSearch = useCallback(() => {
     cancelSearchDebounce();
     searchSeqRef.current += 1;
+    searchActsFetchedRef.current.clear();
     searchQueryRef.current = '';
     setSearchQuery('');
     setAppliedSearchQuery('');

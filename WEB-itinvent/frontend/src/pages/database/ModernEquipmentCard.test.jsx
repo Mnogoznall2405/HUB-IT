@@ -72,6 +72,48 @@ describe('ModernEquipmentCard', () => {
     expect(onToggleSelect).toHaveBeenNthCalledWith(2, '1001');
   });
 
+  it('keeps expanded state in the feature store across unmount/remount', () => {
+    function Harness() {
+      const [expandedSet, setExpandedSet] = React.useState(() => new Set());
+      const [mounted, setMounted] = React.useState(true);
+      const toggleExpand = (invNo) => setExpandedSet((prev) => {
+        const next = new Set(prev);
+        if (next.has(invNo)) next.delete(invNo); else next.add(invNo);
+        return next;
+      });
+      return (
+        <>
+          <button type="button" onClick={() => setMounted((v) => !v)}>mount-toggle</button>
+          {mounted ? (
+            <ModernEquipmentCard
+              item={item}
+              theme={theme}
+              onAction={() => {}}
+              dataMode={DATA_MODE_EQUIPMENT}
+              canWrite
+              isAdmin
+              expanded={expandedSet.has('1001')}
+              onToggleExpand={toggleExpand}
+            />
+          ) : null}
+        </>
+      );
+    }
+
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть' }));
+    expect(screen.getByText(/S\/N:/)).toBeInTheDocument();
+
+    // Card unmounts (scroll/virtualization/section collapse) and remounts —
+    // the controlled expanded state must survive.
+    fireEvent.click(screen.getByRole('button', { name: 'mount-toggle' }));
+    expect(screen.queryByText(/S\/N:/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'mount-toggle' }));
+    expect(screen.getByText(/S\/N:/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Свернуть' })).toBeInTheDocument();
+  });
+
   it('opens the current act from the compact mobile status', () => {
     const onOpenCurrentAct = vi.fn();
     renderCard({

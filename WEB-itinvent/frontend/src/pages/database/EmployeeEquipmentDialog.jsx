@@ -6,6 +6,7 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -1289,6 +1290,8 @@ export default function EmployeeEquipmentDialog({
   const [warehouseBalances, setWarehouseBalances] = useState([]);
   const [warehouseBalancesMeta, setWarehouseBalancesMeta] = useState(null);
   const [warehouseTab, setWarehouseTab] = useState('balances');
+  const [mobilePanel, setMobilePanel] = useState('hub');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [warehouseMovements, setWarehouseMovements] = useState([]);
   const [warehouseMovementsMeta, setWarehouseMovementsMeta] = useState(null);
   const [movementsLoading, setMovementsLoading] = useState(false);
@@ -1906,12 +1909,33 @@ export default function EmployeeEquipmentDialog({
           <EmployeeNameLink name={employeeName} />
         </Typography>
 
+        {isMobile ? (
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => setFiltersOpen((prev) => !prev)}
+            endIcon={filtersOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            aria-expanded={filtersOpen}
+            sx={{
+              alignSelf: 'flex-start',
+              minHeight: 40,
+              mb: 1,
+              textTransform: 'none',
+              flexShrink: 0,
+            }}
+          >
+            Фильтры{sharedFilter || typeFilter || statusFilter ? ' •' : ''}
+          </Button>
+        ) : null}
+
+        <Collapse in={!isMobile || filtersOpen} unmountOnExit sx={{ flexShrink: 0 }}>
+        <Box>
         <Stack
           direction="row"
           spacing={1}
           useFlexGap
           flexWrap="wrap"
-          sx={{ mb: 1.5, flexShrink: 0 }}
+          sx={{ mb: 1.5 }}
         >
           <TextField
             size="small"
@@ -2001,6 +2025,25 @@ export default function EmployeeEquipmentDialog({
             ) : null}
           </Stack>
         ) : null}
+        </Box>
+        </Collapse>
+
+        {isMobile && canViewWarehouse1C ? (
+          <Tabs
+            value={mobilePanel}
+            onChange={(_event, value) => setMobilePanel(value)}
+            variant="fullWidth"
+            sx={{
+              flexShrink: 0,
+              minHeight: 44,
+              mb: 1,
+              '& .MuiTab-root': { minHeight: 44, textTransform: 'none', fontWeight: 600 },
+            }}
+          >
+            <Tab value="hub" label="В Хабе" />
+            <Tab value="warehouse" label="Склад 1С" />
+          </Tabs>
+        ) : null}
 
         <Stack
           direction={{ xs: 'column', md: 'row' }}
@@ -2009,6 +2052,7 @@ export default function EmployeeEquipmentDialog({
           divider={canViewWarehouse1C && !isMobile ? <Divider flexItem orientation="vertical" /> : null}
           sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
         >
+          {isMobile && mobilePanel !== 'hub' ? null : (
           <Box
             sx={{
               flex: 1,
@@ -2051,8 +2095,9 @@ export default function EmployeeEquipmentDialog({
               groupByType={groupByType}
             />
           </Box>
+          )}
 
-          {canViewWarehouse1C ? (
+          {canViewWarehouse1C && (!isMobile || mobilePanel === 'warehouse') ? (
             <Box
               sx={{
                 flex: 1,
@@ -2063,7 +2108,6 @@ export default function EmployeeEquipmentDialog({
                 overflow: 'hidden',
               }}
             >
-              {isMobile ? <Divider sx={{ my: 0.5, flexShrink: 0 }} /> : null}
               <Warehouse1CBalancesPanel
                 visible
                 loading={warehouseLoading}

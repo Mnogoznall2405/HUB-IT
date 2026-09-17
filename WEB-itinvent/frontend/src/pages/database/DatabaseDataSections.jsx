@@ -15,6 +15,8 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   displayData,
   expandedBranches,
   expandedLocations,
+  expandedCards,
+  onToggleCardExpand,
   isMobile,
   theme,
   selectedItemsSet,
@@ -69,6 +71,8 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                 selectionMode={mobileSelectionMode || selectedItemsSet.has(invNo)}
                 isSelected={selectedItemsSet.has(invNo)}
                 onToggleSelect={() => onMobileCardSelect(invNo)}
+                expanded={expandedCards ? expandedCards.has(invNo) : undefined}
+                onToggleExpand={onToggleCardExpand}
               />
             );
           })}
@@ -105,12 +109,14 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     canWrite,
     canDelete,
     dataMode,
+    expandedCards,
     isAdmin,
     isAllSelected,
     isConsumablesMode,
     isMobile,
     isSomeSelected,
     mobileSelectionMode,
+    onToggleCardExpand,
     onAction,
     onOpenEmployee,
     onOpenCurrentAct,

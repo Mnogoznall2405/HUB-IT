@@ -101,8 +101,13 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   selectionMode = false,
   isSelected = false,
   onToggleSelect,
+  expanded: expandedProp,
+  onToggleExpand,
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // expanded is controlled when onToggleExpand is provided: the feature store
+  // owns it keyed by invNo so virtualization/unmount never loses the state.
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = onToggleExpand ? Boolean(expandedProp) : internalExpanded;
   const [isPressed, setIsPressed] = useState(false);
   const longPressTimerRef = useRef(null);
 
@@ -132,8 +137,12 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
 
   const handleExpandToggle = useCallback((e) => {
     e.stopPropagation();
-    setExpanded((prev) => !prev);
-  }, []);
+    if (onToggleExpand) {
+      onToggleExpand(invNo);
+    } else {
+      setInternalExpanded((prev) => !prev);
+    }
+  }, [invNo, onToggleExpand]);
 
   const handleTouchStart = useCallback(() => {
     if (!onToggleSelect) return;
@@ -160,10 +169,12 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
 
     if (selectionMode && onToggleSelect) {
       onToggleSelect(invNo);
+    } else if (onToggleExpand) {
+      onToggleExpand(invNo);
     } else {
-      setExpanded((prev) => !prev);
+      setInternalExpanded((prev) => !prev);
     }
-  }, [selectionMode, invNo, onToggleSelect]);
+  }, [selectionMode, invNo, onToggleSelect, onToggleExpand]);
 
   return (
     <Box

@@ -127,7 +127,15 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
               {loading ? <CircularProgress size={18} sx={{ color: textSecondary, mr: 0.5 }} /> : null}
               {degraded ? (
                 <Tooltip title="Сервер поиска недоступен — показаны совпадения только по загруженным данным">
-                  <CloudOffIcon fontSize="small" sx={{ color: theme.palette.warning.main, mr: 0.5 }} />
+                  <IconButton
+                    size="small"
+                    tabIndex={0}
+                    aria-label="Сервер поиска недоступен — показаны совпадения только по загруженным данным"
+                    disableRipple
+                    sx={{ color: theme.palette.warning.main, mr: 0.5, cursor: 'help', p: 0.25 }}
+                  >
+                    <CloudOffIcon fontSize="small" />
+                  </IconButton>
                 </Tooltip>
               ) : null}
               {value ? (

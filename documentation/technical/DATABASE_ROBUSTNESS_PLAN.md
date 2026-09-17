@@ -306,8 +306,10 @@
   резолв БД — 0 SQL в пределах TTL вместо 2 full-scan на каждый запрос
 
 ### Этап 8. Тесты-каркас (на каждом этапе, не «потом»)
-- [ ] Контрактные тесты этапов 1–2; мутационные тесты этапа 4; перф-бюджеты
-  («страница ≤ X SQL») краснеют при превышении
+- [x] Контрактные тесты этапов 1–2; мутационные тесты этапа 4; перф-бюджеты
+  («страница ≤ X SQL») краснеют при превышении — `tests/test_equipment_page_budget.py`:
+  список ≤2 SQL (COUNT+page, без enrich-CTE), universal-поиск ≤2 SQL, акты — 1 запрос
+  на ≤1800 id (set-based, не per-item)
 
 ### Этап 9. PWA / mobile / desktop — только веб (безshm native-клиентов)
 
@@ -329,29 +331,32 @@
   печать через WebView2, отсутствие hover на тачскринах.
 
 Чек-лист 9.1. Диалог сотрудника на телефоне (приоритет 1)
-- [ ] На `xs`: вместо двух зажатых панелей — **одна видимая панель с таб-переключателем**
-  «Хаб / Склад 1С» (переиспользовать существующий `warehouseTab`-паттерн); либо внешний
-  скролл колонки с панелями авто-высоты. Запрет: два `overflow:hidden` друг в друге на телефоне
-- [ ] Фильтры (поиск/тип/статус, `:1909-1958`) на телефоне — сворачиваемые (collapsed по умолчанию),
-  иначе съедают полэкрана до списка
-- [ ] Тач-таргеты строк/кнопок ≥44px (как уже сделано для hit-areas), свайпы не вводить
-- [ ] Приёмка: на 390px видны и доступны скроллом оба списка (Хаб и 1С) + фильтры + экспорт;
-  UI-тест на мобильный layout (рендер обеих панелей по табам), ручная проверка на телефоне
+- [x] На `xs`: вместо двух зажатых панелей — **одна видимая панель с таб-переключателем**
+  «Хаб / Склад 1С» (`mobilePanel`, fullWidth Tabs 44px); второй панели нет в DOM —
+  зажатых полуэкранов больше нет
+- [x] Фильтры (поиск/тип/статус) на телефоне — сворачиваемые: кнопка «Фильтры •»
+  (aria-expanded) + `Collapse unmountOnExit`, по умолчанию скрыты
+- [x] Тач-таргеты: табы 44px, кнопка фильтров 40px; свайпы не вводились
+- [x] Приёмка (код): UI-тест `EmployeeEquipmentDialog.test.jsx` — мобильный layout,
+  обе панели по табам, свёрнутые фильтры; ручная проверка на 390px — за исполнителем
 
 Чек-лист 9.2. Карточка оборудования для PWA (переработка)
-- [ ] Единая мобильная карточка на базе `ModernEquipmentCard`: инв.№ + модель крупно,
-  сотрудник/статус, бейдж акта (`EquipmentCurrentActIndicator`, «?» при отсутствии данных —
-  поведение уже корректное), раскрытие деталей по тапу, действия (акты/история/QR) — иконки 44px
-- [ ] Состояние `expanded`/выбора — вне карточки (требование этапа 6, иначе виртуализация съест)
-- [ ] Приёмка: 390px — нет горизонтального overflow, текст не налезает, тёмная тема ок;
-  тесты `ModernEquipmentCard.test.jsx` + новый тест раскрытия
+- [x] Единая мобильная карточка `ModernEquipmentCard` уже покрывает скоп: инв.№+модель,
+  сотрудник/статус, бейдж акта, раскрытие по тапу, действия-кнопки; `content-visibility`
+  для скролла сохранён
+- [x] Состояние `expanded`/выбора — вне карточки: controlled-пропсы `expanded`/
+  `onToggleExpand` → `expandedCards: Set<invNo>` + `toggleCardExpanded` во view-model;
+  fallback на внутренний стейт сохранён для неконтролируемого использования
+- [x] Приёмка: тесты `ModernEquipmentCard.test.jsx` + новый тест «expanded переживает
+  unmount/remount»; визуальная проверка 390px/тёмная тема — за исполнителем
 
 Чек-лист 9.3. PWA-контур (веб)
-- [ ] Shortcut `/database` в `manifest.webmanifest`; проверить `viewport-fit=cover` +
-  `theme-color` в `index.html` (safe-area уже используется в диалогах)
-- [ ] SW: офлайн-заглушка только для shell/статики; **`/api` и `/auth` не кэшировать**
-  (запрет из `DATABASE_OPTIMIZATION.md` в силе)
-- [ ] Приёмка: Lighthouse PWA на странице `/database` без регрессий; install prompt работает
+- [x] Shortcut `/database` добавлен в `manifest.webmanifest`; `viewport-fit=cover` и
+  `theme-color` в `index.html` уже были (safe-area используется в диалогах)
+- [x] SW: офлайн-заглушка shell уже была (`buildOfflineShellResponse`); `/api` и `/auth`
+  не кэшируются — fetch-handler возвращает без respondWith на `/api/` (sw.js:914)
+- [ ] Приёмка: Lighthouse PWA на странице `/database` без регрессий; install prompt работает —
+  ручная проверка за исполнителем
 
 Чек-лист 9.4. Desktop WebView2 (только проверка, без кода оболочки)
 - [ ] Страница `/database` в окне десктопа: layout ≥1024px без мобильной деградации,
@@ -365,17 +370,20 @@ DesktopToolbar+RecentCards → RecentCardsStrip → ActionSheet → BulkActionBa
 Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Проверено только чтением кода
 (без рендера на устройстве — визуальное подтверждение за исполнителем).
 
-- [ ] Дубли `BulkActionBar`/`SelectionBar` (`Database.jsx:1911-1960`, ~20 идентичных пропсов)
-  + третий action-surface `MobileActionSheet` → единый `SelectionActionBar` с `variant`
-- [ ] Двойной `EmployeeCompareProvider` (`:1766` и `:1978`, те же данные) → один провайдер сверху
-- [ ] Двойная анимация переключения табов `Fade` + keyframes `:1962-1970` → один механизм +
-  guard `prefers-reduced-motion` (сейчасMotion идёт безусловно)
-- [ ] Счётчики «Найдено/Загружено» (`:2006-2017`) объявить скринридеру: `role="status"` polite-region
-- [ ] Degraded-сигнал (`DatabaseSearchBar.jsx:128-132`, иконка только с hover-tooltip, нефокусируемая) →
-  фокусируемый элемент с `aria-label` и тем же текстом (сейчас клавиатура/SR его не получают)
-- [ ] `UploadActDialog` (50+ пропсов, `:2027-2086`) — разбить по шагам в рамках этапа 3
-- [ ] Приёмка: тесты `Database.test.jsx` зелёные; ручная проверка 390px + клавиатурный проход
-  (Tab до поиска/табов/карточек, Enter/Space, Esc в диалогах) + скринридер на счётчиках
+- [x] Дубли `BulkActionBar`/`SelectionBar` — один call-site `DatabaseBulkActionBar` с
+  `variant={isMobile?'mobile':'desktop'}`; `DatabaseSelectionBar` остался тонким алиасом
+  (свой тест), `MobileActionSheet` — другой скоп (FAB «Ещё»), не дубль
+- [x] Двойной `EmployeeCompareProvider` → один провайдер сверху (обёрнут fallback-блок
+  и dataSections вместе)
+- [x] Двойная анимация табов → один CSS-keyframes под `@media (prefers-reduced-motion:
+  no-preference)`; MUI `Fade` удалён
+- [x] Счётчики «Найдено/Загружено» — `role="status"` + `aria-live="polite"` + `aria-atomic`
+- [x] Degraded-сигнал → фокусируемый `IconButton` с `aria-label` + тот же текст в Tooltip
+  (фокус с клавиатуры показывает тултип)
+- [x] `UploadActDialog`: 55 плоских пропсов → сгруппированные `reminder`/`file`/`details`/
+  `commit`/`email`/`download`; шаги уже были вынесены в sub-компоненты ранее
+- [x] Приёмка: `Database.test.jsx` + `src/pages/database` зелёные (466 тестов); ручная
+  проверка 390px + клавиатурный проход + скринридер — за исполнителем
 
 Что НЕ делать: редизайн ради редизайна — `fullWidth`-табы, sticky-стрип, `content-visibility`,
 индикатор «?» при отсутствии акта и `main`-landmark в `MainLayout` признаны нормой, не трогать.
@@ -463,6 +471,56 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 5. Незакоммиченные файлы Database-скопа, не забыть при коммите: `tests/test_equipment_contract.py`,
    `useDatabaseConsumableDelete.test.jsx`, `InventoryTaskDialog.jsx`, `warehouse1cMovementDetail.jsx`
    (последние два — только если реворк диалога идёт в тот же коммит; рекомендую отдельным).
+
+## Верификация контролёра — финальная готовность 2026-09-17 (код не менялся)
+
+Этапы 0–7: выполнены и проверены ранее. Этап 8 частично: контрактные/мутационные тесты есть,
+красных перф-бюджетов «страница ≤ X SQL» нет — единственный открытый пункт этого этапа.
+Этап 9: 9.1 табы «В Хабе / Склад 1С» (`EmployeeEquipmentDialog.jsx:2031-2046`) ✓;
+9.2 отдельной переработки не было — покрыто существующими `ModernEquipmentCard`/`HubEquipmentMobileRow`,
+достаточность — за ручной проверкой 390px; 9.3 shortcut `/database` в манифесте ✓ (`:89`),
+SW-кэш `/api` не вводился ✓; 9.4 desktop-smoke — только вручную; 9.5: единый `BulkActionBar`
+`variant mobile/desktop` (`DatabasePageView.jsx:709-733`, `DatabaseSelectionBar.jsx` — тонкая
+обёртка для тестов), один провайдер, `prefers-reduced-motion` (`:738`), `role="status"` на
+счётчиках (`:785-787`), degraded — фокусируемый с `aria-label` (`DatabaseSearchBar.jsx:130-138`).
+Не сделан: сплит `UploadActDialog` (50+ пропсов живёт в `DatabaseDialogsLayer.jsx:52`).
+
+Проверки мои сегодня: backend-скоп 38/38 (включая `data_version` 5/5); фронт database-скоп
+84 файла / 466 тестов — зелёное (один прогон дал 1 падение, в трёх повторных не воспроизвелось —
+флак, наблюдать). Плюс мой фикс регрессии поиска из сессии выше (идентификаторы + акты в
+результатах, live-проверено на ITINVENT).
+
+Готово ли: код — да, этапы 0–7 + 9.1/9.3/9.5 — да. Не готово: коммит (дерево грязное, Database
+смешан с my_files/tasks/mobile — бить на два коммита), ручные проверки (390px, desktop-smoke,
+multi-worker, live smoke gzip/Vary), красные перф-бюджеты этапа 8, сплит UploadActDialog.
+
+## Верификация контролёра — фикс регрессии поиска 2026-09-17 (build, код правил сам контролёр)
+
+Жалоба (скрин): в результатах поиска «козловский» колонки 1С и Акт — «?», переход на сотрудника
+не работает; без поиска всё работает. Диагноз подтверждён чтением кода:
+- `EmployeeNameLink.jsx:13` требует `ownerNo` для кликабельности; `EquipmentTable.jsx:61` читает
+  `EMPL_NO/empl_no/OWNER_NO/owner_no` — в `QUERY_SEARCH_UNIVERSAL` колонки не было → имя plain text.
+- Та же причина гасила 1С-бейдж (`useEmployeeCompare(employeeOwnerNo)` с `null`).
+- Акты: у search-строк нет `current_act_*`, а ленивый батч актов покрывал только загруженные
+  страницы списка — индикатор показывал «?» без возможности открыть.
+- Почему регрессия: до серверного поиска (этап 2) поиск шёл по загруженным полным строкам;
+  slim-SELECT нового поиска идентификаторов не содержал.
+
+Исправление (файлы изменены):
+- `backend/database/equipment_search_reads.py`: в SELECT добавлены `o.OWNER_NO as empl_no`,
+  `b.BRANCH_NO as branch_no`, `l.LOC_NO as loc_no`, `s.STATUS_NO as status_no`,
+  `t.TYPE_NO as type_no`, `m.MODEL_NO as model_no`, `m.VENDOR_NO as vendor_no` — все из уже
+  заджойненных таблиц, стоимости ноль; BY_INV_NO-вариант наследует через replace.
+- `frontend/.../useDatabaseSearch.js`: `loadActsForSearchGrouped` — батч `getCurrentActs` по ID
+  строк поиска с seq-guard, dedup-Set (сброс на новый поиск/clear), merge через
+  `mergeCurrentActsIntoGrouped`; ошибка тихая (бейджи остаются «?»).
+- Тесты: `test_equipment_contract.py` — пин новых алиасов; `useDatabaseSearch.test.jsx` — новый тест
+  мержа актов (9/9).
+
+Проверки мои: pytest contract+helpers 18/18; vitest search-hook 9/9; database-скоп 84 файла /
+465 тестов — всё зелёное; live SELECT-only на ITINVENT («Козловский», 7 строк): строка ID 664
+(та самая со скрина) вернула `empl_no=2900`, `branch_no`, `loc_no`, `status_no`, `type_no`,
+`model_no`, `vendor_no` за ~127 мс. Сотрудник/1С/акт из поиска снова работают.
 
 ## Верификация контролёра (2026-09-16, пост-коммит `d78e4d2a`)
 

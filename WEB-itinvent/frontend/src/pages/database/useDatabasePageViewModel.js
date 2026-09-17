@@ -214,6 +214,7 @@ export function useDatabasePageViewModel() {
 
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
   const [expandedLocations, setExpandedLocations] = useState(() => new Set());
+  const [expandedCards, setExpandedCards] = useState(() => new Set());
   const [selectedItems, setSelectedItems] = useState([]);
   const [mobileSelectionMode, setMobileSelectionMode] = useState(false);
   const [fabSheetOpen, setFabSheetOpen] = useState(false);
@@ -679,6 +680,18 @@ export function useDatabasePageViewModel() {
     mobileSelectionMode,
     setMobileSelectionMode,
   });
+
+  const toggleCardExpanded = useCallback((invNo) => {
+    setExpandedCards((prev) => {
+      const next = new Set(prev);
+      if (next.has(invNo)) {
+        next.delete(invNo);
+      } else {
+        next.add(invNo);
+      }
+      return next;
+    });
+  }, []);
 
   const getItemBranch = useCallback(
     (item) => String(item?.BRANCH_NAME || item?.branch_name || selectedBranch || '').trim(),
@@ -1761,12 +1774,14 @@ export function useDatabasePageViewModel() {
     handleSearchScopeChange,
     handleSelectAll,
     handleTableSort,
+    toggleCardExpanded,
     handleUploadActCommit,
     handleUploadActDownload,
     handleUploadActEmailSend,
     handleUploadActFileSelect,
     handleUploadActInvNosChange,
     handleUploadActParse,
+    expandedCards,
     hasExpandedVisible,
     identifyPCLoading,
     initialLoading,

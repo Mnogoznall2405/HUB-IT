@@ -7,7 +7,6 @@ import {
   Paper,
   Tabs,
   Tab,
-  Fade,
   CircularProgress,
   useTheme,
   useMediaQuery,
@@ -61,7 +60,6 @@ const DatabaseActSearchResults = lazy(() => import('./DatabaseActSearchResults')
 const DatabaseEmployeeSearchFallback = lazy(() => import('./DatabaseEmployeeSearchFallback'));
 const DatabaseMobileActionSheet = lazy(() => import('./DatabaseMobileActionSheet'));
 const DatabaseBulkActionBar = lazy(() => import('./DatabaseBulkActionBar'));
-const DatabaseSelectionBar = lazy(() => import('./DatabaseSelectionBar'));
 
 
 
@@ -202,6 +200,7 @@ export default function DatabasePageView({ vm }) {
     equipmentPagesTotal,
     equipmentTypeOptions,
     expandedBranches,
+    expandedCards,
     expandedLocations,
     fabSheetOpen,
     getUploadActEmailStatusItemSx,
@@ -344,6 +343,7 @@ export default function DatabasePageView({ vm }) {
     tableSort,
     theme,
     toggleBranch,
+    toggleCardExpanded,
     toggleLocation,
     transferActionHandlers,
     transferBranchNo,
@@ -416,6 +416,8 @@ export default function DatabasePageView({ vm }) {
         displayData={displayData}
         expandedBranches={expandedBranches}
         expandedLocations={expandedLocations}
+        expandedCards={expandedCards}
+        onToggleCardExpand={toggleCardExpanded}
         isMobile={isMobile}
         theme={theme}
         selectedItemsSet={selectedItemsSet}
@@ -445,6 +447,7 @@ export default function DatabasePageView({ vm }) {
     dataMode,
     displayData,
     expandedBranches,
+    expandedCards,
     expandedLocations,
     handleAction,
     handleOpenEquipmentActFile,
@@ -463,6 +466,7 @@ export default function DatabasePageView({ vm }) {
     tableSort,
     theme,
     toggleBranch,
+    toggleCardExpanded,
     toggleLocation,
   ]);
 
@@ -570,7 +574,6 @@ export default function DatabasePageView({ vm }) {
               />
             </Suspense>
           )}
-        </EmployeeCompareProvider>
 
         {isMobile && !isActsScope && (
           <DatabaseMobileControlStrip
@@ -703,12 +706,12 @@ export default function DatabasePageView({ vm }) {
           </Suspense>
         )}
 
-        {isMobile && !isConsumablesMode && selectedItems.length > 0 && (
+        {!isConsumablesMode && selectedItems.length > 0 && (
           <Suspense fallback={null}>
           <DatabaseBulkActionBar
             theme={theme}
             ui={ui}
-            variant="mobile"
+            variant={isMobile ? 'mobile' : 'desktop'}
             selectedItemsCount={selectedItems.length}
             selectedVisibleCount={selectedVisibleCount}
             selectedHiddenCount={selectedHiddenCount}
@@ -729,48 +732,24 @@ export default function DatabasePageView({ vm }) {
           </Suspense>
         )}
 
-        {!isMobile && !isConsumablesMode && selectedItems.length > 0 && (
-          <Suspense fallback={null}>
-          <DatabaseSelectionBar
-            theme={theme}
-            ui={ui}
-            selectedItemsCount={selectedItems.length}
-            selectedVisibleCount={selectedVisibleCount}
-            selectedHiddenCount={selectedHiddenCount}
-            selectedItemsCapabilities={selectedItemsCapabilities}
-            canWrite={canDatabaseWrite}
-            desktopQuickPrintAvailable={qrBatchPrint.desktopQuickPrintAvailable}
-            printing={qrBatchPrint.printing}
-            onClearSelection={handleClearSelection}
-            onQuickPrint={qrBatchPrint.printQuick}
-            onPrintWithDialog={qrBatchPrint.printWithDialog}
-            onOpenLocationTransfer={handleOpenLocationTransferForSelection}
-            onOpenTransfer={handleOpenTransferForSelection}
-            onOpenTransferAct={handleOpenTransferActForSelection}
-            onOpenCartridge={handleOpenCartridgeForSelection}
-            onOpenBattery={handleOpenBatteryForSelection}
-            onOpenComponent={handleOpenComponentForSelection}
-          />
-          </Suspense>
-        )}
-
-        <Fade key={dataMode} in timeout={{ enter: 320, exit: 160 }}>
-          <Box
-            sx={{
+        <Box
+          key={dataMode}
+          sx={{
+            '@media (prefers-reduced-motion: no-preference)': {
               animation: 'database-tab-slide 320ms ease',
               '@keyframes database-tab-slide': {
                 from: { opacity: 0, transform: 'translateY(8px)' },
                 to: { opacity: 1, transform: 'translateY(0)' },
               },
-            }}
-          >
+            },
+          }}
+        >
             {modeLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240, py: 6 }}>
                 <CircularProgress />
               </Box>
             ) : (
               <>
-            <EmployeeCompareProvider summaries={employeeCompareSummaries}>
             {dataSections || (
               employeeFallback.active ? null :
               !selectedBranch ? (
@@ -783,7 +762,6 @@ export default function DatabasePageView({ vm }) {
                 </Box>
               )
             )}
-            </EmployeeCompareProvider>
             {canAutoLoadMoreEquipment && (
               <Box
                 ref={equipmentLoadMoreSentinelRef}
@@ -801,7 +779,13 @@ export default function DatabasePageView({ vm }) {
                 {(isServerSearchActive ? searchLoadingMore : loadingMoreEquipment) ? (
                   <CircularProgress size={24} />
                 ) : (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
                     {isServerSearchActive
                       ? `Найдено ${countGroupedItems(displayData)} из ${searchTotal ?? countGroupedItems(displayData)}`
                       : `Загружено ${loadedCount} из ${serverTotal || loadedCount}`}
@@ -815,9 +799,9 @@ export default function DatabasePageView({ vm }) {
               </>
             )}
           </Box>
-        </Fade>
           </>
         )}
+        </EmployeeCompareProvider>
 
         <DatabaseDialogsLayer
           isMobile={isMobile}
@@ -834,55 +818,67 @@ export default function DatabasePageView({ vm }) {
             onClose: closeUploadActModal,
             props: {
               step: uploadActStep,
-              reminderBinding: uploadActReminderBinding,
-              reminderLoading: uploadActReminderLoading,
-              reminderError: uploadActReminderError,
-              onOpenReminderTask: openUploadActReminderTask,
-              onRefreshReminder: refreshUploadActReminderStatus,
-              file: uploadActFile,
-              previewUrl: uploadActPreviewUrl,
-              previewError: uploadActPreviewError,
-              onOpenPreview: openUploadActPreviewInNewTab,
-              parsing: uploadActParsing,
-              committing: uploadActCommitting,
-              onFileSelect: handleUploadActFileSelect,
-              onParse: handleUploadActParse,
+              reminder: {
+                binding: uploadActReminderBinding,
+                loading: uploadActReminderLoading,
+                error: uploadActReminderError,
+                onOpenTask: openUploadActReminderTask,
+                onRefreshReminder: refreshUploadActReminderStatus,
+              },
+              file: {
+                file: uploadActFile,
+                previewUrl: uploadActPreviewUrl,
+                previewError: uploadActPreviewError,
+                onOpenPreview: openUploadActPreviewInNewTab,
+                parsing: uploadActParsing,
+                onFileSelect: handleUploadActFileSelect,
+                onParse: handleUploadActParse,
+              },
               error: uploadActError,
               onErrorClear: () => setUploadActError(''),
               draft: uploadActDraft,
-              form: uploadActForm,
-              autoEmail: uploadActAutoEmail,
-              invVerification: uploadActInvVerification,
-              invVerified: uploadActInvVerified,
-              onFieldChange: updateUploadActFormField,
-              onInvNosChange: handleUploadActInvNosChange,
-              onAutoEmailChange: setUploadActAutoEmail,
-              onInvVerifiedChange: setUploadActInvVerified,
-              commitResult: uploadActCommitResult,
-              commitDisabled: uploadActCommitDisabled,
-              onCommit: handleUploadActCommit,
-              emailSubject: uploadActEmailSubject,
-              emailBody: uploadActEmailBody,
-              emailRecipientOptions: uploadActEmailRecipientOptions,
-              emailRecipients: uploadActEmailRecipients,
-              emailRecipientsInput: uploadActEmailRecipientsInput,
-              emailRecipientsLoading: uploadActEmailRecipientsLoading,
-              emailLoading: uploadActEmailLoading,
-              emailStatus: uploadActEmailStatus,
-              emailError: uploadActEmailError,
-              emailLastRecipients: uploadActEmailLastRecipients,
-              emailSummary: uploadActEmailSummary,
-              onEmailSubjectChange: setUploadActEmailSubject,
-              onEmailBodyChange: setUploadActEmailBody,
-              onEmailRecipientsInputChange: setUploadActEmailRecipientsInput,
-              onEmailRecipientsChange: setUploadActEmailRecipients,
-              onEmailErrorClear: () => setUploadActEmailError(''),
-              onEmailSend: handleUploadActEmailSend,
-              getEmailStatusItemSx: getUploadActEmailStatusItemSx,
-              downloading: uploadActDownloading,
-              downloadError: uploadActDownloadError,
-              onDownloadErrorClear: () => setUploadActDownloadError(''),
-              onDownload: handleUploadActDownload,
+              details: {
+                form: uploadActForm,
+                autoEmail: uploadActAutoEmail,
+                invVerification: uploadActInvVerification,
+                invVerified: uploadActInvVerified,
+                onFieldChange: updateUploadActFormField,
+                onInvNosChange: handleUploadActInvNosChange,
+                onAutoEmailChange: setUploadActAutoEmail,
+                onInvVerifiedChange: setUploadActInvVerified,
+              },
+              commit: {
+                result: uploadActCommitResult,
+                disabled: uploadActCommitDisabled,
+                committing: uploadActCommitting,
+                onCommit: handleUploadActCommit,
+              },
+              email: {
+                subject: uploadActEmailSubject,
+                body: uploadActEmailBody,
+                recipientOptions: uploadActEmailRecipientOptions,
+                recipients: uploadActEmailRecipients,
+                recipientsInput: uploadActEmailRecipientsInput,
+                recipientsLoading: uploadActEmailRecipientsLoading,
+                loading: uploadActEmailLoading,
+                status: uploadActEmailStatus,
+                error: uploadActEmailError,
+                lastRecipients: uploadActEmailLastRecipients,
+                summary: uploadActEmailSummary,
+                onSubjectChange: setUploadActEmailSubject,
+                onBodyChange: setUploadActEmailBody,
+                onRecipientsInputChange: setUploadActEmailRecipientsInput,
+                onRecipientsChange: setUploadActEmailRecipients,
+                onErrorClear: () => setUploadActEmailError(''),
+                onSend: handleUploadActEmailSend,
+                getStatusItemSx: getUploadActEmailStatusItemSx,
+              },
+              download: {
+                downloading: uploadActDownloading,
+                error: uploadActDownloadError,
+                onErrorClear: () => setUploadActDownloadError(''),
+                onDownload: handleUploadActDownload,
+              },
             },
           }}
           addEquipment={{

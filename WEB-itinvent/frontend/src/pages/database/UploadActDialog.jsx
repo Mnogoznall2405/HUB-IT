@@ -31,56 +31,74 @@ function UploadActDialog({
   isMobile = false,
   ui,
   step = 1,
-  reminderBinding = null,
-  reminderLoading = false,
-  reminderError = '',
-  onOpenReminderTask,
-  onRefreshReminder,
-  file = null,
-  previewUrl = '',
-  previewError = '',
-  onOpenPreview,
-  parsing = false,
-  committing = false,
-  onFileSelect,
-  onParse,
+  reminder = {},
+  file = {},
   error = '',
   onErrorClear,
   draft = null,
-  form,
-  autoEmail = true,
-  invVerification,
-  invVerified = false,
-  onFieldChange,
-  onInvNosChange,
-  onAutoEmailChange,
-  onInvVerifiedChange,
-  commitResult = null,
-  commitDisabled = true,
-  onCommit,
-  emailSubject = '',
-  emailBody = '',
-  emailRecipientOptions = [],
-  emailRecipients = [],
-  emailRecipientsInput = '',
-  emailRecipientsLoading = false,
-  emailLoading = false,
-  emailStatus = '',
-  emailError = '',
-  emailLastRecipients = [],
-  emailSummary,
-  onEmailSubjectChange,
-  onEmailBodyChange,
-  onEmailRecipientsInputChange,
-  onEmailRecipientsChange,
-  onEmailErrorClear,
-  onEmailSend,
-  getEmailStatusItemSx,
-  downloading = false,
-  downloadError = '',
-  onDownloadErrorClear,
-  onDownload,
+  details = {},
+  commit = {},
+  email = {},
+  download = {},
 }) {
+  const {
+    binding: reminderBinding = null,
+    loading: reminderLoading = false,
+    error: reminderError = '',
+    onOpenTask: onOpenReminderTask,
+    onRefreshReminder,
+  } = reminder;
+  const {
+    file: actFile = null,
+    previewUrl = '',
+    previewError = '',
+    onOpenPreview,
+    parsing = false,
+    onFileSelect,
+    onParse,
+  } = file;
+  const {
+    form,
+    autoEmail = true,
+    invVerification,
+    invVerified = false,
+    onFieldChange,
+    onInvNosChange,
+    onAutoEmailChange,
+    onInvVerifiedChange,
+  } = details;
+  const {
+    result: commitResult = null,
+    disabled: commitDisabled = true,
+    committing = false,
+    onCommit,
+  } = commit;
+  const {
+    subject: emailSubject = '',
+    body: emailBody = '',
+    recipientOptions: emailRecipientOptions = [],
+    recipients: emailRecipients = [],
+    recipientsInput: emailRecipientsInput = '',
+    recipientsLoading: emailRecipientsLoading = false,
+    loading: emailLoading = false,
+    status: emailStatus = '',
+    error: emailError = '',
+    lastRecipients: emailLastRecipients = [],
+    summary: emailSummary,
+    onSubjectChange: onEmailSubjectChange,
+    onBodyChange: onEmailBodyChange,
+    onRecipientsInputChange: onEmailRecipientsInputChange,
+    onRecipientsChange: onEmailRecipientsChange,
+    onErrorClear: onEmailErrorClear,
+    onSend: onEmailSend,
+    getStatusItemSx: getEmailStatusItemSx,
+  } = email;
+  const {
+    downloading = false,
+    error: downloadError = '',
+    onErrorClear: onDownloadErrorClear,
+    onDownload,
+  } = download;
   const hasCommitResult = Boolean(commitResult);
 
   return (
@@ -130,7 +148,7 @@ function UploadActDialog({
                 }}
               >
                 <UploadActPdfPreviewPanel
-                  file={file}
+                  file={actFile}
                   previewUrl={previewUrl}
                   previewError={previewError}
                   onOpenPreview={onOpenPreview}
@@ -138,7 +156,7 @@ function UploadActDialog({
 
                 <Box sx={{ display: 'grid', gap: 2 }}>
                   <UploadActPdfParsePanel
-                    file={file}
+                    file={actFile}
                     parsing={parsing}
                     committing={committing}
                     onFileSelect={onFileSelect}
