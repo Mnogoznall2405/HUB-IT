@@ -42,6 +42,7 @@ function mapTaskToEditData(task) {
 export default function useTaskEditForm({
   setError,
   refreshTasksAndDetails,
+  applyTaskUpdate,
   controllers,
   departments,
   activeTaskObjects,
@@ -233,7 +234,7 @@ export default function useTaskEditForm({
     setEditSaving(true);
     try {
       const dueAtValue = String(editData.due_at || '').trim() || null;
-      await hubTasksAPI.updateTask(taskId, {
+      const updatedTask = await hubTasksAPI.updateTask(taskId, {
         title: String(editData.title || '').trim(),
         description: String(editDescriptionRef.current || editData.description || '').trim(),
         due_at: dueAtValue,
@@ -259,7 +260,11 @@ export default function useTaskEditForm({
       });
       setEditOpen(false);
       resetTaskUserSearchInputs();
-      await refreshTasksAndDetails(taskId);
+      if (typeof applyTaskUpdate === 'function') {
+        applyTaskUpdate(taskId, updatedTask || { id: taskId });
+      } else {
+        await refreshTasksAndDetails(taskId);
+      }
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка сохранения задачи');

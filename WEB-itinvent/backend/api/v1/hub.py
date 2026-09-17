@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
@@ -1311,6 +1311,7 @@ async def get_controller_users(
 
 @router.get("/task-projects")
 async def get_task_projects(
+    response: Response,
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
@@ -1318,6 +1319,7 @@ async def get_task_projects(
         hub_service.list_task_projects,
         include_inactive=bool(include_inactive),
     )
+    response.headers["Cache-Control"] = "private, max-age=300"
     return {"items": items}
 
 
@@ -1354,6 +1356,7 @@ async def patch_task_project(
 
 @router.get("/task-objects")
 async def get_task_objects(
+    response: Response,
     project_id: list[str] = Query(default=[]),
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
@@ -1363,6 +1366,7 @@ async def get_task_objects(
         project_ids=project_id,
         include_inactive=bool(include_inactive),
     )
+    response.headers["Cache-Control"] = "private, max-age=300"
     return {"items": items}
 
 

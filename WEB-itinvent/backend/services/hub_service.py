@@ -398,12 +398,11 @@ _HUB_REQUIRED_COLUMNS = {
 _TASK_LIST_SELECT_COLUMNS = (
     "id",
     "title",
-    "SUBSTR(description, 1, 500) AS description_preview",
+    "SUBSTR(description, 1, 200) AS description_preview",
     "status",
     "due_at",
     "email_deadline_remind_hours",
     "priority",
-    "checklist_items",
     "assignee_user_id",
     "assignee_user_ids",
     "assignee_username",
@@ -524,7 +523,8 @@ _TASK_ANALYTICS_SELECT_COLUMNS = (
     "observer_user_ids",
 )
 _DEPARTMENT_SCOPE_SQL_SCAN_CAP = 2000
-_DEPARTMENT_SCOPE_FETCH_BATCH = 100
+_DEPARTMENT_SCOPE_FETCH_BATCH = 500
+_DEPARTMENT_SCOPE_IDS_CACHE_TTL_SEC = 3.0
 _HUB_REQUIRED_INDEXES = {
     "hub_announcements": {"idx_hub_announcements_published", "idx_hub_announcements_status_due"},
     "hub_announcement_attachments": {"idx_hub_announcement_attachments_announcement"},
@@ -678,6 +678,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         self._tasks_list_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
         self._tasks_list_cache_lock = Lock()
         self._tasks_list_cache_ttl_sec = 3.0
+        self._department_scope_ids_cache: dict[tuple[Any, ...], tuple[float, tuple[list[str], bool]]] = {}
+        self._department_scope_ids_cache_lock = Lock()
+        self._department_scope_ids_cache_ttl_sec = _DEPARTMENT_SCOPE_IDS_CACHE_TTL_SEC
         # Short soft-cache for notifications/poll (items + unread_counts); invalidated with unread.
         self._notifications_poll_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
         self._notifications_poll_cache_lock = Lock()
@@ -839,6 +842,29 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             participant_user_ids=self._task_viewer_user_ids(row_dict, include_delegates=True),
         )
 
+    def _get_cached_department_scope_ids(
+        self,
+        cache_key: tuple[Any, ...],
+    ) -> tuple[list[str], bool] | None:
+        now_mono = time.monotonic()
+        with self._department_scope_ids_cache_lock:
+            cached = self._department_scope_ids_cache.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) < self._department_scope_ids_cache_ttl_sec:
+                return cached[1]
+        return None
+
+    def _store_department_scope_ids(
+        self,
+        cache_key: tuple[Any, ...],
+        visible_ids: list[str],
+        truncated: bool,
+    ) -> None:
+        with self._department_scope_ids_cache_lock:
+            self._department_scope_ids_cache[cache_key] = (
+                time.monotonic(),
+                (list(visible_ids), truncated),
+            )
+
     def _collect_department_scope_visible_task_ids(
         self,
         conn: sqlite3.Connection,
@@ -849,7 +875,21 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         sort_expr: str,
         normalized_sort_dir: str,
         tie_breaker: str,
+        user_id: Optional[int] = None,
     ) -> tuple[list[str], bool]:
+        cache_key: tuple[Any, ...] | None = None
+        if user_id is not None and user_id > 0:
+            cache_key = (
+                int(user_id),
+                sort_expr,
+                normalized_sort_dir,
+                tie_breaker,
+                where_sql,
+                tuple(params),
+            )
+            cached = self._get_cached_department_scope_ids(cache_key)
+            if cached is not None:
+                return cached
         visible_ids: list[str] = []
         sql_offset = 0
         sql_rows_scanned = 0
@@ -879,6 +919,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 break
         else:
             truncated = True
+        if cache_key is not None:
+            self._store_department_scope_ids(cache_key, visible_ids, truncated)
         return visible_ids, truncated
 
     def _fetch_task_list_rows_by_ids(self, conn: sqlite3.Connection, task_ids: list[str]) -> list[sqlite3.Row]:
@@ -2477,6 +2519,53 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         ).fetchall()
         return {_normalize_text(row["id"]): dict(row) for row in rows}
 
+    def _task_checklist_counts_by_ids(
+        self,
+        conn,
+        task_ids: list[str],
+    ) -> dict[str, dict[str, int]]:
+        """Counts derived with SQL parsing so the list SELECT can skip dropping
+        the thick checklist_items column per row (dialect-safe)."""
+        if not task_ids:
+            return {}
+        placeholders = ", ".join(["?"] * len(task_ids))
+        params = tuple(task_ids)
+        if self._uses_postgresql():
+            rows = conn.execute(
+                f"""
+                SELECT t.id AS task_id,
+                       COUNT(e.value) AS c_total,
+                       SUM(CASE WHEN (e.value ->> 'done') IN ('true', 't', '1') THEN 1 ELSE 0 END) AS c_done
+                FROM {self._TASKS_TABLE} t
+                LEFT JOIN LATERAL jsonb_array_elements(
+                    COALESCE(NULLIF(t.checklist_items, ''), '[]')::jsonb
+                ) e(value) ON true
+                WHERE t.id IN ({placeholders})
+                GROUP BY t.id
+                """,
+                params,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT t.id AS task_id,
+                       COUNT(e.value) AS c_total,
+                       SUM(CASE WHEN CAST(json_extract(e.value, '$.done') AS INTEGER) = 1 THEN 1 ELSE 0 END) AS c_done
+                FROM {self._TASKS_TABLE} t
+                LEFT JOIN json_each(COALESCE(t.checklist_items, '[]')) e
+                WHERE t.id IN ({placeholders})
+                GROUP BY t.id
+                """,
+                params,
+            ).fetchall()
+        return {
+            _normalize_text(row["task_id"]): {
+                "checklist_total": self._as_int(row["c_total"]),
+                "checklist_done": self._as_int(row["c_done"]),
+            }
+            for row in rows
+        }
+
     def _build_task_list_batch_context(
         self,
         conn: sqlite3.Connection,
@@ -2492,6 +2581,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "comment_counts": {},
                 "latest_comments": {},
                 "last_seen_at": {},
+                "checklist_counts": {},
                 "viewer_user_id": self._as_int(viewer_user_id),
             }
         placeholders = ", ".join(["?"] * len(normalized_ids))
@@ -2569,6 +2659,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 for row in latest_comment_rows
             },
             "last_seen_at": last_seen_at,
+            "checklist_counts": self._task_checklist_counts_by_ids(conn, normalized_ids),
             "viewer_user_id": normalized_viewer_id,
         }
 
@@ -2659,15 +2750,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _unread_comments_exists_sql(self, *, user_id: int, table_alias: str = "") -> tuple[str, list[Any]]:
         normalized_user_id = self._as_int(user_id)
         task_ref = f"{table_alias}." if table_alias else ""
+        # Correlated EXISTS only: any comment from another user newer than the
+        # viewer's last-seen mark is unread (equivalent to MAX(created_at)
+        # semantics) without an inner GROUP BY over the whole comments table.
         clause = f"""
             EXISTS (
                 SELECT 1
                 FROM {self._TASK_COMMENTS_TABLE} c
-                INNER JOIN (
-                    SELECT task_id, MAX(created_at) AS max_created_at
-                    FROM {self._TASK_COMMENTS_TABLE}
-                    GROUP BY task_id
-                ) latest ON latest.task_id = c.task_id AND c.created_at = latest.max_created_at
                 LEFT JOIN {self._TASK_COMMENT_READS_TABLE} r
                     ON r.task_id = c.task_id AND r.user_id = ?
                 WHERE c.task_id = {task_ref}id
@@ -2699,7 +2788,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         project = projects_by_id.get(project_id) if project_id else None
         task_object = objects_by_id.get(object_id) if object_id else None
         department = departments_by_id.get(department_id) if department_id else None
-        checklist_items = self._normalize_checklist_items(raw.get("checklist_items"))
+        checklist_counts = batch_ctx.get("checklist_counts", {}).get(
+            task_id,
+            {"checklist_total": 0, "checklist_done": 0},
+        )
         completed_at, completed_at_source = self._derive_completed_tracking(raw)
         comment_summary = self._comment_summary_from_batch(task_id=task_id, batch_ctx=batch_ctx)
         item = {
@@ -2755,8 +2847,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             "is_overdue": self._is_task_overdue(raw.get("due_at"), raw.get("status")),
             "attachments_count": self._as_int(batch_ctx.get("attachment_counts", {}).get(task_id, 0)),
             "reports_count": self._as_int(batch_ctx.get("report_counts", {}).get(task_id, 0)),
-            "checklist_total": len(checklist_items),
-            "checklist_done": sum(1 for checklist_item in checklist_items if bool(checklist_item.get("done"))),
+            "checklist_total": int(checklist_counts.get("checklist_total") or 0),
+            "checklist_done": int(checklist_counts.get("checklist_done") or 0),
             **comment_summary,
         }
         # Stable schema: never emit thick/detail-only keys from list DTO.
@@ -8130,6 +8222,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     sort_expr=sort_expr,
                     normalized_sort_dir=normalized_sort_dir,
                     tie_breaker=tie_breaker,
+                    user_id=int(user_id),
                 )
                 total_count = len(visible_ids)
                 page_ids = visible_ids[safe_offset:safe_offset + safe_limit]
@@ -9281,11 +9374,19 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         with self._tasks_list_cache_lock:
             if user_id is None:
                 self._tasks_list_cache.clear()
-                return
-            normalized = int(user_id)
-            stale_keys = [key for key in self._tasks_list_cache if key[0] == normalized]
-            for key in stale_keys:
-                self._tasks_list_cache.pop(key, None)
+            else:
+                normalized = int(user_id)
+                stale_keys = [key for key in self._tasks_list_cache if key[0] == normalized]
+                for key in stale_keys:
+                    self._tasks_list_cache.pop(key, None)
+        with self._department_scope_ids_cache_lock:
+            if user_id is None:
+                self._department_scope_ids_cache.clear()
+            else:
+                normalized = int(user_id)
+                stale_keys = [key for key in self._department_scope_ids_cache if key[0] == normalized]
+                for key in stale_keys:
+                    self._department_scope_ids_cache.pop(key, None)
 
     def _get_cached_tasks_list(self, cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
         now_mono = time.monotonic()

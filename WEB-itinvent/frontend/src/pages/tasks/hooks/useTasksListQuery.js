@@ -9,9 +9,17 @@ import {
   buildGanttRows,
   buildTaskListSections,
 } from '../taskViewModes';
-import { KANBAN_COLUMNS } from '../taskConstants';
+import { KANBAN_COLUMNS, TASKS_QUERY_MIN_CHARS } from '../taskConstants';
+import { getOrFetchSWR, invalidateSWRCacheByPrefix } from '../../../lib/swrCache';
 
+// Append buffer ceiling: keep at most ~3 pages in memory/DOM. Beyond that the
+// next page replaces the buffer (sliding window) instead of growing it forever.
 const TASKS_PAGE_SIZE = 150;
+const MAX_APPEND_PAGES = 3;
+
+const EMPTY_TASK_LIST_SECTIONS = { active: { items: [] }, completed: { items: [] } };
+const EMPTY_CALENDAR_PAYLOAD = { days: [], noDueCount: 0 };
+const EMPTY_GANTT_PAYLOAD = { rows: [], noDueItems: [] };
 
 export default function useTasksListQuery({
   setError,
@@ -82,26 +90,43 @@ export default function useTasksListQuery({
     if (!force && taskDepartmentsLoadedRef.current) return;
     taskDepartmentsLoadedRef.current = true;
     try {
-      const departmentsPayload = await departmentsAPI.list();
-      setDepartments(Array.isArray(departmentsPayload?.items) ? departmentsPayload.items : []);
+      const swr = await getOrFetchSWR(
+        ['hub', 'tasks', 'departments'],
+        async () => {
+          const departmentsPayload = await departmentsAPI.list();
+          return Array.isArray(departmentsPayload?.items) ? departmentsPayload.items : [];
+        },
+        { staleTimeMs: 300_000, force },
+      );
+      setDepartments(Array.isArray(swr?.data) ? swr.data : []);
     } catch {
       taskDepartmentsLoadedRef.current = false;
       setDepartments([]);
     }
   }, []);
-
   const loadTaskProjectMeta = useCallback(async ({ force = false } = {}) => {
     if (!force && taskProjectMetaLoadedRef.current) return;
     taskProjectMetaLoadedRef.current = true;
     try {
-      const [projectsPayload, objectsPayload] = await Promise.all([
-        hubTaskSupportAPI.getTaskProjects({ include_inactive: true }),
-        hubTaskSupportAPI.getTaskObjects({ include_inactive: true }),
-      ]);
-      setTaskProjects(Array.isArray(projectsPayload?.items) ? projectsPayload.items : []);
-      setTaskObjects(Array.isArray(objectsPayload?.items) ? objectsPayload.items : []);
+      const swr = await getOrFetchSWR(
+        ['hub', 'tasks', 'taskProjectMeta'],
+        async () => {
+          const [projectsPayload, objectsPayload] = await Promise.all([
+            hubTaskSupportAPI.getTaskProjects({ include_inactive: true }),
+            hubTaskSupportAPI.getTaskObjects({ include_inactive: true }),
+          ]);
+          return {
+            projects: Array.isArray(projectsPayload?.items) ? projectsPayload.items : [],
+            objects: Array.isArray(objectsPayload?.items) ? objectsPayload.items : [],
+          };
+        },
+        { staleTimeMs: 120_000, force },
+      );
+      setTaskProjects(swr?.data?.projects || []);
+      setTaskObjects(swr?.data?.objects || []);
     } catch {
       taskProjectMetaLoadedRef.current = false;
+      invalidateSWRCacheByPrefix('hub', 'tasks', 'taskProjectMeta');
     }
   }, []);
 
@@ -116,6 +141,11 @@ export default function useTasksListQuery({
   }, [loadTaskMeta, loadTaskUserDirectories]);
 
   const loadTasks = useCallback(async ({ offset = 0, append = false } = {}) => {
+    const normalizedSearch = String(debouncedQ || '').trim();
+    if (normalizedSearch.length > 0 && normalizedSearch.length < TASKS_QUERY_MIN_CHARS) {
+      // Stray single-character queries are skipped entirely: nothing to search.
+      return;
+    }
     const requestId = loadTasksRequestRef.current + 1;
     loadTasksRequestRef.current = requestId;
     setLoading(true);
@@ -128,7 +158,7 @@ export default function useTasksListQuery({
         scope,
         role_scope: roleScope,
         status: statusFilter || undefined,
-        q: debouncedQ || undefined,
+        q: debouncedQ && String(debouncedQ).trim().length >= TASKS_QUERY_MIN_CHARS ? debouncedQ : undefined,
         due_state: dueState || undefined,
         has_attachments: hasAttachments || undefined,
         assignee_user_id: canManageAllTasks && viewMode === 'all' && assigneeFilter ? Number(assigneeFilter) : undefined,
@@ -199,7 +229,8 @@ export default function useTasksListQuery({
   ]);
 
   useEffect(() => {
-    void loadTasks({ offset: listOffset, append: listOffset > 0 });
+    const append = listOffset > 0 && listOffset < TASKS_PAGE_SIZE * MAX_APPEND_PAGES;
+    void loadTasks({ offset: listOffset, append });
   }, [listOffset, loadTasks]);
 
   useEffect(() => {
@@ -273,22 +304,36 @@ export default function useTasksListQuery({
     () => TASK_MODE_OPTIONS.find((item) => item.value === pageMode) || TASK_MODE_OPTIONS[0],
     [pageMode],
   );
-  const taskGroupingNow = useMemo(() => new Date(), [tasksPayload]);
+  // "Now" for the section/bucket builders must not be recreated on every payload
+  // change; a coarse minute tick keeps derived grouping fresh without rework.
+  const [taskGroupingNowTick, setTaskGroupingNowTick] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setTaskGroupingNowTick(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const taskListSections = useMemo(
-    () => buildTaskListSections(visibleTaskItems, taskGroupingNow),
-    [taskGroupingNow, visibleTaskItems],
+    () => (pageMode === 'list'
+      ? buildTaskListSections(visibleTaskItems, taskGroupingNowTick)
+      : EMPTY_TASK_LIST_SECTIONS),
+    [pageMode, taskGroupingNowTick, visibleTaskItems],
   );
   const deadlineBuckets = useMemo(
-    () => buildDeadlineBuckets(visibleTaskItems, taskGroupingNow),
-    [taskGroupingNow, visibleTaskItems],
+    () => (pageMode === 'deadlines'
+      ? buildDeadlineBuckets(visibleTaskItems, taskGroupingNowTick)
+      : []),
+    [pageMode, taskGroupingNowTick, visibleTaskItems],
   );
   const calendarPayload = useMemo(
-    () => buildCalendarDays(visibleTaskItems, calendarMonth),
-    [calendarMonth, visibleTaskItems],
+    () => (pageMode === 'calendar'
+      ? buildCalendarDays(visibleTaskItems, calendarMonth)
+      : EMPTY_CALENDAR_PAYLOAD),
+    [calendarMonth, pageMode, visibleTaskItems],
   );
   const ganttPayload = useMemo(
-    () => buildGanttRows(visibleTaskItems),
-    [visibleTaskItems],
+    () => (pageMode === 'gantt'
+      ? buildGanttRows(visibleTaskItems)
+      : EMPTY_GANTT_PAYLOAD),
+    [pageMode, visibleTaskItems],
   );
 
   const openTasksCount = useMemo(
@@ -310,9 +355,7 @@ export default function useTasksListQuery({
   const loadMoreTasks = useCallback(() => {
     if (!hasMoreTasks || loading) return;
     setListOffset((prev) => prev + TASKS_PAGE_SIZE);
-  }, [hasMoreTasks, loading]);
-
-  const reloadTasks = useCallback(async () => {
+  }, [hasMoreTasks, loading]);  const reloadTasks = useCallback(async () => {
     if (listOffset !== 0) {
       setListOffset(0);
       return;

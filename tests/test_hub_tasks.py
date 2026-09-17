@@ -2481,3 +2481,19 @@ def test_force_status_log_ddl_forbidden_in_production(task_env, monkeypatch):
     with pytest.raises(RuntimeError, match="forbidden"):
         with service._db_conn(write=True) as conn:
             service._ensure_task_status_log_table(conn)
+
+
+def test_taxonomy_support_routes_send_private_cache_control(task_env):
+    client = task_env["client"]
+
+    projects = client.get("/hub/task-projects", params={"include_inactive": True})
+    assert projects.status_code == 200, projects.text
+    assert projects.headers.get("Cache-Control") == "private, max-age=300"
+
+    objects = client.get("/hub/task-objects", params={"include_inactive": True})
+    assert objects.status_code == 200, objects.text
+    assert objects.headers.get("Cache-Control") == "private, max-age=300"
+
+    assignees = client.get("/hub/users/assignees")
+    assert assignees.status_code == 200, assignees.text
+    assert "Cache-Control" not in assignees.headers

@@ -15,6 +15,7 @@ import {
   normalizeTaskDetailView,
 } from '../../../lib/taskNavigation';
 import { createChecklistItemId } from '../taskChecklistUtils';
+import { stripTaskDetailOnlyKeys } from '../taskApiHelpers';
 
 const taskHasAssignee = (task, userId) => {
   const normalizedUserId = Number(userId);
@@ -36,6 +37,7 @@ export default function useTaskDetails({
   patchTaskItem,
   loadTasks,
   departments = [],
+  visibleTaskItems = [],
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -194,7 +196,7 @@ export default function useTaskDetails({
     try {
       const task = await hubTasksAPI.getTask(normalizedId);
       if (isStale()) return;
-      patchTaskItem(normalizedId, task || {});
+      patchTaskItem(normalizedId, stripTaskDetailOnlyKeys(task || {}));
       setDetailsTask(task || null);
       setDetailsLoading(false);
       setDetailsLoadNonce((prev) => prev + 1);
@@ -275,6 +277,20 @@ export default function useTaskDetails({
     if (taskId) await loadTaskDetails(taskId);
   }, [loadTaskDetails, loadTasks]);
 
+  // Mutations that return the full updated task (transitions, edit, checklist save)
+  // update the list item and open details locally instead of reloading the whole list.
+  const applyTaskUpdate = useCallback((taskId, task) => {
+    const normalizedId = String(taskId || task?.id || '').trim();
+    if (!normalizedId || !task) return;
+    const patch = stripTaskDetailOnlyKeys(task);
+    patchTaskItem(normalizedId, patch);
+    setDetailsTask((prev) => (prev && String(prev.id || '') === normalizedId ? { ...prev, ...task } : prev));
+    if (loadedActivityRef.current.taskId === normalizedId) {
+      loadedActivityRef.current = { taskId: normalizedId, comments: false, history: false };
+    }
+    setDetailsLoadNonce((prev) => prev + 1);
+  }, [patchTaskItem]);
+
   const closeTaskDetails = useCallback(() => {
     setDetailsTask(null);
     setDetailsComments([]);
@@ -308,9 +324,16 @@ export default function useTaskDetails({
     const id = String(task?.id || '').trim();
     if (!id) return;
     const requestedView = String(view || '').trim();
-    setDetailsLoading(true);
+    // Stale-while-revalidate: the lean list row is already on screen — draw it
+    // immediately and let the background full fetch (effect below) reconcile.
+    const cachedListItem = visibleTaskItems.find((item) => String(item?.id || '') === id) || null;
+    if (cachedListItem) {
+      setDetailsTask({ ...cachedListItem });
+      setDetailsLoading(false);
+    } else {
+      setDetailsLoading(true);
+    }
     setDetailsActivityLoading(true);
-    setDetailsTask(null);
     setDetailsComments([]);
     setDetailsStatusLog([]);
     setDiscussionError('');
@@ -419,16 +442,35 @@ export default function useTaskDetails({
     if (!taskId || !body) return;
     setDetailsCommentSaving(true);
     try {
-      await hubTaskActivityAPI.addTaskComment(taskId, body);
+      const createdComment = await hubTaskActivityAPI.addTaskComment(taskId, body);
       setDetailsCommentBody('');
-      await refreshTasksAndDetails(taskId);
+      const createdAt = String(createdComment?.created_at || '');
+      const authorId = Number(createdComment?.user_id || 0);
+      const patch = {
+        comments_count: Number(detailsTask?.comments_count || 0) + 1,
+        latest_comment_preview: String(createdComment?.body || '').slice(0, 200),
+        latest_comment_at: createdAt,
+        latest_comment_user_id: authorId,
+        latest_comment_username: String(createdComment?.username || ''),
+        latest_comment_full_name: String(createdComment?.full_name || ''),
+        has_unread_comments: false,
+        ...(createdAt ? { updated_at: createdAt } : {}),
+      };
+      patchTaskItem(taskId, patch);
+      setDetailsTask((prev) => (prev && String(prev.id || '') === taskId ? { ...prev, ...patch } : prev));
+      if (String(createdComment?.id || '')) {
+        setDetailsComments((prev) => ([
+          ...(Array.isArray(prev) ? prev : []),
+          createdComment,
+        ]));
+      }
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка добавления комментария');
     } finally {
       setDetailsCommentSaving(false);
     }
-  }, [detailsCommentBody, detailsTask?.id, refreshTasksAndDetails, setError]);
+  }, [detailsCommentBody, detailsTask?.comments_count, detailsTask?.id, patchTaskItem, setError]);
 
   const ensureTaskDiscussion = useCallback(async (taskId, { replace = true } = {}) => {
     const normalizedTaskId = String(taskId || '').trim();
@@ -702,16 +744,13 @@ export default function useTaskDetails({
       const updatedTask = await chain;
       if (mutations.get(taskId)?.chain === chain) {
         mutations.delete(taskId);
-        const serverItems = Array.isArray(updatedTask?.checklist_items) ? updatedTask.checklist_items : nextItems;
-        const patch = { checklist_items: serverItems };
-        patchTaskItem(taskId, patch);
-        setDetailsTask((prev) => (prev && String(prev.id || '') === taskId ? { ...prev, ...patch } : prev));
+        applyTaskUpdate(taskId, updatedTask || { id: taskId, checklist_total: nextItems.length, checklist_done: nextItems.filter((i) => i.done).length });
       }
     } catch (err) {
       if (mutations.get(taskId)?.chain === chain) mutations.delete(taskId);
       setError(err?.response?.data?.detail || err?.message || 'Ошибка обновления чек-листа');
     }
-  }, [patchTaskItem, setError]);
+  }, [applyTaskUpdate, setError]);
 
   const handleAddTaskChecklistItem = useCallback(async (task, text) => {
     const taskId = String(task?.id || '').trim();
@@ -720,12 +759,12 @@ export default function useTaskDetails({
     const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
     const nextItems = [...items, { id: createChecklistItemId(), text: itemText, done: false }];
     try {
-      await hubTasksAPI.updateTask(taskId, { checklist_items: nextItems });
-      await refreshTasksAndDetails(taskId);
+      const updatedTask = await hubTasksAPI.updateTask(taskId, { checklist_items: nextItems });
+      applyTaskUpdate(taskId, updatedTask || {});
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка добавления пункта чек-листа');
     }
-  }, [canUpdateTaskChecklist, refreshTasksAndDetails, setError]);
+  }, [applyTaskUpdate, canUpdateTaskChecklist, setError]);
 
   const renderTaskChecklist = useCallback((task) => (
     <TaskDetailChecklist
@@ -785,6 +824,7 @@ export default function useTaskDetails({
     canUploadFiles,
     canUpdateTaskChecklist,
     refreshTasksAndDetails,
+    applyTaskUpdate,
     loadTaskDetails,
   };
 }

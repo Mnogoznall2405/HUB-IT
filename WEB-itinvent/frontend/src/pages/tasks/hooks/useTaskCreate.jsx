@@ -32,6 +32,7 @@ export default function useTaskCreate({
   setObserverSearchInput,
   resetTaskUserSearchInputs,
   refreshTasksAndDetails,
+  applyTaskUpdate,
   loadTaskDetails,
   closeTaskDetails,
   selectedTaskId,
@@ -63,6 +64,7 @@ export default function useTaskCreate({
   const editForm = useTaskEditForm({
     setError,
     refreshTasksAndDetails,
+    applyTaskUpdate,
     controllers,
     departments,
     activeTaskObjects,
@@ -100,6 +102,7 @@ export default function useTaskCreate({
   const workflow = useTaskWorkflowActions({
     setError,
     refreshTasksAndDetails,
+    applyTaskUpdate,
     loadTaskDetails,
     loadTasks,
     closeTaskDetails,

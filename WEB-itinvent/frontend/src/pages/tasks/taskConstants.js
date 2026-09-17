@@ -5,6 +5,9 @@ export const KANBAN_COLUMNS = [
   { key: 'done', label: 'Готово', color: '#059669' },
 ];
 
+// Search query needs this many characters before a server-side search triggers.
+export const TASKS_QUERY_MIN_CHARS = 2;
+
 export const priorityOptions = [
   { value: 'low', label: 'Низкий', dotColor: '#64748b' },
   { value: 'normal', label: 'Обычный', dotColor: '#2563eb' },

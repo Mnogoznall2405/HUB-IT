@@ -37,6 +37,8 @@ function TasksListTableRow({
         onOpen?.();
       }}
       sx={{
+        'content-visibility': 'auto',
+        'contain-intrinsic-size': 'auto 72px',
         cursor: 'pointer',
         '&:hover td': { bgcolor: ui.actionHover },
         '&:focus-visible': {

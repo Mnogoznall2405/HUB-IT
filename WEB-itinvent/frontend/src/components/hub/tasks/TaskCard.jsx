@@ -130,6 +130,8 @@ const TaskCard = memo(function TaskCard({
           onOpen?.(task);
         }}
         sx={{
+          'content-visibility': 'auto',
+          'contain-intrinsic-size': 'auto 168px',
           px: 1.35,
           py: 1,
           borderRadius: 0,
@@ -262,6 +264,8 @@ const TaskCard = memo(function TaskCard({
         onOpen?.(task);
       }}
       sx={{
+        'content-visibility': 'auto',
+        'contain-intrinsic-size': 'auto 140px',
         p: 1.15,
         borderRadius: '14px',
         border: '1px solid',

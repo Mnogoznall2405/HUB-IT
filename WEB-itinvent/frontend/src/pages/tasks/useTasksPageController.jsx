@@ -19,6 +19,8 @@ import {
   HUB_REALTIME_TASK_EVENT,
 } from '../../lib/hubRealtimeSocket';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import hubTasksAPI from '../../api/hubTasks';
+import { stripTaskDetailOnlyKeys } from './taskApiHelpers';
 import {
   statusMeta,
   priorityMeta,
@@ -252,33 +254,78 @@ export default function useTasksPageController() {
     patchTaskItem: list.patchTaskItem,
     loadTasks: list.loadTasks,
     departments: list.departments,
+    visibleTaskItems: list.visibleTaskItems,
   });
 
   useEffect(() => {
     let refreshTimer = null;
     let refreshSelectedTask = false;
     let selectedTaskDeleted = false;
+    let needsFullListReload = false;
+    const patchTaskIds = new Set();
+
+    const isListCompositionEvent = (op) => op === 'created' || op === 'deleted';
+
     const scheduleRefresh = ({ taskId = '', operation = '', forceSnapshot = false } = {}) => {
       const normalizedTaskId = String(taskId || '').trim();
       const selectedTaskId = String(details.selectedTaskId || '').trim();
-      if (forceSnapshot || (normalizedTaskId && normalizedTaskId === selectedTaskId)) {
+      const normalizedOperation = String(operation || '').trim().toLowerCase();
+      if (normalizedOperation === 'deleted' && normalizedTaskId && normalizedTaskId === selectedTaskId) {
+        selectedTaskDeleted = true;
+      }
+      if (forceSnapshot || (normalizedOperation && isListCompositionEvent(normalizedOperation))) {
+        needsFullListReload = true;
+      } else if (normalizedTaskId) {
+        patchTaskIds.add(normalizedTaskId);
+      } else if (normalizedOperation) {
+        needsFullListReload = true;
+      } else {
+        // Unknown payload shape (no task id): conservatively refresh the whole list.
+        needsFullListReload = true;
+      }
+      if (
+        normalizedTaskId
+        && normalizedTaskId === selectedTaskId
+        && !isListCompositionEvent(normalizedOperation)
+      ) {
         refreshSelectedTask = Boolean(selectedTaskId);
-        selectedTaskDeleted = selectedTaskDeleted
-          || (normalizedTaskId === selectedTaskId && operation === 'deleted');
       }
       if (refreshTimer) return;
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
-        void list.reloadTasks();
-        if (selectedTaskDeleted) {
-          details.closeTaskDetails();
-        } else if (refreshSelectedTask && selectedTaskId) {
-          void details.loadTaskDetails(selectedTaskId);
+        if (needsFullListReload) {
+          void list.reloadTasks();
+          if (selectedTaskDeleted) {
+            details.closeTaskDetails();
+          } else if (refreshSelectedTask && selectedTaskId) {
+            void details.loadTaskDetails(selectedTaskId);
+          }
+        } else {
+          const taskIds = [...patchTaskIds];
+          patchTaskIds.clear();
+          if (refreshSelectedTask && selectedTaskId) {
+            void details.loadTaskDetails(selectedTaskId);
+          }
+          void Promise.all(
+            taskIds.slice(0, 10).map((id) => (async () => {
+              try {
+                const task = await hubTasksAPI.getTask(id);
+                list.patchTaskItem(id, stripTaskDetailOnlyKeys(task || {}));
+              } catch {
+                // patched item stays stale until the next full reload
+              }
+            })()),
+          );
         }
+        if (needsFullListReload && patchTaskIds.size) {
+          patchTaskIds.clear();
+        }
+        needsFullListReload = false;
         refreshSelectedTask = false;
         selectedTaskDeleted = false;
       }, 75);
     };
+
     const handleTaskChanged = (event) => {
       const payload = event?.detail?.payload || {};
       scheduleRefresh({
@@ -299,6 +346,7 @@ export default function useTasksPageController() {
     details.closeTaskDetails,
     details.loadTaskDetails,
     details.selectedTaskId,
+    list.patchTaskItem,
     list.reloadTasks,
   ]);
 
@@ -323,6 +371,7 @@ export default function useTasksPageController() {
     setObserverSearchInput,
     resetTaskUserSearchInputs,
     refreshTasksAndDetails: details.refreshTasksAndDetails,
+    applyTaskUpdate: details.applyTaskUpdate,
     loadTaskDetails: details.loadTaskDetails,
     closeTaskDetails: details.closeTaskDetails,
     selectedTaskId: details.selectedTaskId,

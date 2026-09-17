@@ -12,6 +12,7 @@ import hubTaskFilesAPI from '../api/hubTaskFiles';
 import hubTaskDiscussionAPI from '../api/hubTaskDiscussion';
 import hubMarkdownAPI from '../api/hubMarkdown';
 import { departmentsAPI } from '../api/departments';
+import { clearSWRCache } from '../lib/swrCache';
 
 const authState = vi.hoisted(() => ({
   user: { id: 1, role: 'admin', username: 'admin', permissions: [] },
@@ -291,6 +292,7 @@ const taskSummary = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearSWRCache();
   window.localStorage.clear();
   window.sessionStorage.clear();
   delete window.__HUBIT_MOBILE_APP__;

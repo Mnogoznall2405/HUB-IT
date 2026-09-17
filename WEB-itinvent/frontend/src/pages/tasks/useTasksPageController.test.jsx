@@ -148,7 +148,7 @@ describe('useTasksPageController', () => {
     expect(result.current.dateSortDirection).toBe('asc');
   });
 
-  it('reconciles the task list after a HUB realtime invalidation', async () => {
+  it('reloads the whole list after a list-composition realtime event (created)', async () => {
     renderHook(() => useTasksPageController(), {
       wrapper: ({ children }) => (
         <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
@@ -160,9 +160,48 @@ describe('useTasksPageController', () => {
 
     window.dispatchEvent(new CustomEvent('hub-realtime-task-changed', {
       detail: {
+        type: 'tasks.task.created',
+        payload: { event_id: 'task-event-2', task_id: 'task-new', operation: 'created' },
+      },
+    }));
+
+    await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());
+  });
+
+  it('patches a single task on updated event without reloading the whole list', async () => {
+    const { result } = renderHook(() => useTasksPageController(), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    hubTasksAPI.getTask.mockResolvedValue({ id: 'task-1', title: 'Изменённая задача', status: 'review' });
+    await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());
+    hubTasksAPI.getTasks.mockClear();
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-task-changed', {
+      detail: {
         type: 'tasks.task.updated',
         payload: { event_id: 'task-event-1', task_id: 'task-1', operation: 'updated' },
       },
+    }));
+
+    await waitFor(() => expect(hubTasksAPI.getTask).toHaveBeenCalledWith('task-1'));
+    expect(hubTasksAPI.getTasks).not.toHaveBeenCalled();
+  });
+
+  it('surfaces unknown realtime payloads as a full list refresh', async () => {
+    renderHook(() => useTasksPageController(), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());
+    hubTasksAPI.getTasks.mockClear();
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-task-changed', {
+      detail: { type: 'tasks.task.updated', payload: {} },
     }));
 
     await waitFor(() => expect(hubTasksAPI.getTasks).toHaveBeenCalled());

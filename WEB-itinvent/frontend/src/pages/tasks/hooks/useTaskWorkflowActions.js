@@ -21,6 +21,7 @@ export function formatTaskTransitionConflictMessage(detail) {
 export default function useTaskWorkflowActions({
   setError,
   refreshTasksAndDetails,
+  applyTaskUpdate,
   loadTaskDetails,
   loadTasks,
   closeTaskDetails,
@@ -53,45 +54,53 @@ export default function useTaskWorkflowActions({
     setError(typeof detail === 'string' ? detail : (fallbackMessage || 'Ошибка сервера'));
   }, [loadTaskDetails, setError]);
 
+  const applyTransitionUpdate = useCallback(async (taskId, updatedTask, fallbackTaskId = '') => {
+    if (typeof applyTaskUpdate === 'function' && updatedTask?.id) {
+      applyTaskUpdate(taskId, updatedTask);
+      return;
+    }
+    await refreshTasksAndDetails(taskId || fallbackTaskId);
+  }, [applyTaskUpdate, refreshTasksAndDetails]);
+
   const handleReviewTask = useCallback(async (decision, comment = '') => {
     if (!reviewTask?.id || reviewSaving) return;
     const reviewTaskId = reviewTask.id;
     setReviewSaving(true);
     try {
-      await hubTasksAPI.reviewTask(reviewTaskId, { decision, comment });
+      const updatedTask = await hubTasksAPI.reviewTask(reviewTaskId, { decision, comment });
       setReviewTask(null);
-      await refreshTasksAndDetails(reviewTaskId);
+      await applyTransitionUpdate(reviewTaskId, updatedTask);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       await handleWorkflowConflict(err, reviewTaskId, 'Ошибка проверки задачи');
     } finally {
       setReviewSaving(false);
     }
-  }, [handleWorkflowConflict, refreshTasksAndDetails, reviewSaving, reviewTask]);
+  }, [applyTransitionUpdate, handleWorkflowConflict, reviewSaving, reviewTask]);
 
   const handleCloseTask = useCallback(async ({ comment = '' } = {}) => {
     if (!closeTask?.id || closeSaving) return;
     const closeTaskId = closeTask.id;
     setCloseSaving(true);
     try {
-      await hubTasksAPI.completeTask(closeTaskId, { comment });
+      const updatedTask = await hubTasksAPI.completeTask(closeTaskId, { comment });
       setCloseTask(null);
-      await refreshTasksAndDetails(closeTaskId);
+      await applyTransitionUpdate(closeTaskId, updatedTask);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       await handleWorkflowConflict(err, closeTaskId, 'Ошибка закрытия задачи');
     } finally {
       setCloseSaving(false);
     }
-  }, [closeSaving, closeTask, handleWorkflowConflict, refreshTasksAndDetails]);
+  }, [applyTransitionUpdate, closeSaving, closeTask, handleWorkflowConflict]);
 
   const handleStartTask = async (taskId) => {
     const normalizedId = String(taskId || '').trim();
     if (!normalizedId || startingTaskId) return;
     setStartingTaskId(normalizedId);
     try {
-      await hubTasksAPI.startTask(normalizedId);
-      await refreshTasksAndDetails(normalizedId);
+      const updatedTask = await hubTasksAPI.startTask(normalizedId);
+      await applyTransitionUpdate(normalizedId, updatedTask);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       await handleWorkflowConflict(err, normalizedId, 'Ошибка перевода задачи в работу');
@@ -115,9 +124,9 @@ export default function useTaskWorkflowActions({
     if (!normalizedId || reopeningTaskId) return;
     setReopeningTaskId(normalizedId);
     try {
-      await hubTasksAPI.reopenTask(normalizedId, { due_at: dueAt ?? null });
+      const updatedTask = await hubTasksAPI.reopenTask(normalizedId, { due_at: dueAt ?? null });
       setReopenTargetTask(null);
-      await refreshTasksAndDetails(normalizedId);
+      await applyTransitionUpdate(normalizedId, updatedTask);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       await handleWorkflowConflict(err, normalizedId, 'Ошибка возврата задачи в работу');
@@ -130,21 +139,21 @@ export default function useTaskWorkflowActions({
     if (!submitTask?.id || submitSaving) return;
     setSubmitSaving(true);
     try {
-      await hubTasksAPI.submitTask({
+      const updatedTask = await hubTasksAPI.submitTask({
         taskId: submitTask.id,
         comment,
         file: file || null,
       });
       const taskId = submitTask.id;
       setSubmitTask(null);
-      await refreshTasksAndDetails(taskId);
+      await applyTransitionUpdate(taskId, updatedTask);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       await handleWorkflowConflict(err, submitTask.id, 'Ошибка сдачи задачи');
     } finally {
       setSubmitSaving(false);
     }
-  }, [handleWorkflowConflict, refreshTasksAndDetails, setError, submitSaving, submitTask]);
+  }, [applyTransitionUpdate, handleWorkflowConflict, setError, submitSaving, submitTask]);
 
   const selectedTaskRef = useRef({ id: selectedTaskId });
   if (selectedTaskRef.current.id !== selectedTaskId) {

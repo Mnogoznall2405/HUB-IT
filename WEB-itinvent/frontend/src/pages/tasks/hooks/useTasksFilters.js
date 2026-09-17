@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   dueStateOptions,
   statusOptions,
+  TASKS_QUERY_MIN_CHARS,
 } from '../taskConstants';
 import {
   findDepartmentById,
@@ -79,10 +80,15 @@ export default function useTasksFilters({
   }, [location.pathname, location.search, navigate]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQ(String(q || '').trim()), 250);
+    const timer = window.setTimeout(() => {
+      const trimmed = String(q || '').trim();
+      // Skip searches for stray single characters: they either return nothing or
+      // flood the LIKE '%…%' scan; keep the previous debounced value instead.
+      if (trimmed.length > 0 && trimmed.length < TASKS_QUERY_MIN_CHARS) return;
+      setDebouncedQ(trimmed);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [q]);
-
   useEffect(() => {
     if (!mobileSearchOpen || !isMobile) return undefined;
     const frameId = window.requestAnimationFrame(() => {

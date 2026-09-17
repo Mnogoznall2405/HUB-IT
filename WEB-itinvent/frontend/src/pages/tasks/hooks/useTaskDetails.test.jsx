@@ -4,13 +4,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import useTaskDetails from './useTaskDetails';
 
-const { mockGetTask, mockOpenTaskDiscussion } = vi.hoisted(() => ({
+const { mockGetTask, mockOpenTaskDiscussion, mockAddTaskComment, mockUpdateTask } = vi.hoisted(() => ({
   mockGetTask: vi.fn(),
   mockOpenTaskDiscussion: vi.fn(),
+  mockAddTaskComment: vi.fn(),
+  mockUpdateTask: vi.fn(),
 }));
 
-vi.mock('../../../api/hubTasks', () => ({ default: { getTask: mockGetTask } }));
-vi.mock('../../../api/hubTaskActivity', () => ({ default: {} }));
+vi.mock('../../../api/hubTasks', () => ({ default: { getTask: mockGetTask, updateTask: mockUpdateTask } }));
+vi.mock('../../../api/hubTaskActivity', () => ({
+  default: {
+    addTaskComment: mockAddTaskComment,
+    getTaskComments: vi.fn(),
+    getTaskStatusLog: vi.fn(),
+    markTaskCommentsSeen: vi.fn(),
+  },
+}));
 vi.mock('../../../api/hubTaskFiles', () => ({ default: {} }));
 vi.mock('../../../api/hubTaskDiscussion', () => ({
   default: { openTaskDiscussion: mockOpenTaskDiscussion },
@@ -43,6 +52,186 @@ function renderUseTaskDetails(overrides = {}) {
     ),
   });
 }
+
+describe('useTaskDetails patch mutations', () => {
+  beforeEach(() => {
+    mockAddTaskComment.mockReset();
+    mockAddTaskComment.mockResolvedValue({
+      id: 'comment-new',
+      task_id: 'task-1',
+      user_id: 3,
+      username: 'user',
+      full_name: 'User Full',
+      body: 'комментарий',
+      created_at: '2026-09-17T10:00:00Z',
+    });
+    mockUpdateTask.mockReset();
+  });
+
+  it('adds a comment locally: patches the list item and appends details comments without loading tasks', async () => {
+    const patchTaskItem = vi.fn();
+    const loadTasks = vi.fn();
+    const setError = vi.fn();
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: false,
+      isMobile: false,
+      ui: {},
+      setError,
+      patchTaskItem,
+      loadTasks,
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks?task=task-1']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.detailsTask?.id).toBe('task-1'));
+    act(() => result.current.setDetailsCommentBody('комментарий'));
+    const pending = result.current.handleAddTaskComment();
+    await act(async () => { await pending; });
+
+    expect(mockAddTaskComment).toHaveBeenCalledWith('task-1', 'комментарий');
+    expect(loadTasks).not.toHaveBeenCalled();
+    const listPatch = patchTaskItem.mock.calls[patchTaskItem.mock.calls.length - 1][1];
+    expect(listPatch.comments_count).toBe(1);
+    expect(listPatch.latest_comment_preview).toBe('комментарий');
+    expect(listPatch.has_unread_comments).toBe(false);
+    expect(result.current.detailsComments).toHaveLength(1);
+  });
+
+  it('applies the add-checklist server task without reloading the list', async () => {
+    const patchTaskItem = vi.fn();
+    const loadTasks = vi.fn();
+    const stableSetError = vi.fn();
+    mockUpdateTask.mockResolvedValue({
+      id: 'task-1',
+      title: 'Задача',
+      status: 'in_progress',
+      assignee_user_id: 3,
+      checklist_total: 1,
+      checklist_done: 0,
+      description: 'full-detail-description',
+      attachments: [{ id: 'a1' }],
+    });
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: false,
+      isMobile: false,
+      ui: {},
+      setError: stableSetError,
+      patchTaskItem,
+      loadTasks,
+      departments: [],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await act(async () => {
+      await result.current.handleAddTaskChecklistItem({
+        id: 'task-1',
+        status: 'in_progress',
+        assignee_user_id: 3,
+        checklist_items: [],
+      }, 'новый пункт');
+    });
+
+    expect(loadTasks).not.toHaveBeenCalled();
+    expect(mockUpdateTask).toHaveBeenCalledWith('task-1', { checklist_items: [expect.objectContaining({ text: 'новый пункт' })] });
+    expect(patchTaskItem).toHaveBeenCalledWith('task-1', expect.objectContaining({ checklist_total: 1, checklist_done: 0 }));
+    const listKeys = Object.keys(patchTaskItem.mock.calls[0][1]);
+    expect(listKeys).not.toContain('description');
+    expect(listKeys).not.toContain('attachments');
+    expect(listKeys).not.toContain('checklist_items');
+  });
+});
+
+describe('useTaskDetails SWR details and toggle', () => {
+  const stableSetError = vi.fn();
+  const stablePatchTaskItem = vi.fn();
+  const stableLoadTasks = vi.fn();
+  const stableDepartments = [];
+
+  it('draws the lean list item immediately before the network resolve (SWR details)', async () => {
+    const listTask = {
+      id: 'task-list-seed',
+      title: 'Из листа',
+      status: 'in_progress',
+      assignee_user_id: 3,
+    };
+    mockGetTask.mockImplementation(() => new Promise(() => { /* network never resolves */ }));
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: false,
+      isMobile: false,
+      ui: {},
+      setError: stableSetError,
+      patchTaskItem: stablePatchTaskItem,
+      loadTasks: stableLoadTasks,
+      departments: stableDepartments,
+      visibleTaskItems: [listTask],
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    expect(result.current.detailsTask).toBeNull();
+    act(() => result.current.openTaskDetails(listTask));
+    expect(result.current.detailsTask?.title).toBe('Из листа');
+
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
+    expect(mockGetTask).toHaveBeenCalledWith('task-list-seed');
+  });
+
+  it('a list item can be toggled through handleToggleTaskChecklistItem without a list reload', async () => {
+    mockGetTask.mockResolvedValue({ id: 'task-toggle', capabilities: {} });
+    mockUpdateTask.mockResolvedValue({
+      id: 'task-toggle',
+      status: 'in_progress',
+      assignee_user_id: 3,
+      checklist_total: 1,
+      checklist_done: 1,
+    });
+    const { result } = renderHook(() => useTaskDetails({
+      user: { id: 3 },
+      canManageAllTasks: false,
+      canReviewTasks: true,
+      taskDiscussionChatEnabled: false,
+      isMobile: false,
+      ui: {},
+      setError: stableSetError,
+      patchTaskItem: stablePatchTaskItem,
+      loadTasks: stableLoadTasks,
+      departments: stableDepartments,
+    }), {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={['/tasks']}>{children}</MemoryRouter>
+      ),
+    });
+
+    await act(async () => {
+      await result.current.handleToggleTaskChecklistItem({
+        id: 'task-toggle',
+        status: 'in_progress',
+        assignee_user_id: 3,
+        checklist_items: [{ id: 'i1', text: 'шаг', done: false }],
+      }, 'i1', true);
+    });
+
+    expect(stableLoadTasks).not.toHaveBeenCalled();
+    expect(stablePatchTaskItem).toHaveBeenCalledWith('task-toggle', expect.objectContaining({ checklist_done: 1 }));
+  });
+});
 
 describe('useTaskDetails canReviewTask', () => {
   it('blocks assignee who is controller but not creator', () => {
