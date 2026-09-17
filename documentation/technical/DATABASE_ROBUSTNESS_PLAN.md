@@ -504,10 +504,17 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 | — | Отклонено: сериализация Pydantic, Collator-сортировка, SWR 30с, `toInvNo` vs `parseInvNosInput` | — | — | Не трогать | — |
 
 Проверки: `test_uploaded_act_inv_parsing` + transfer-act/reminder + equipment contract +
-upload-act email = **52/52**; vitest `EquipmentTable`+`Database` = 45/45; `import backend.main` ок (702 route).
+upload-act email = **53/53**; vitest `EquipmentTable`+`Database` = 45/45; `import backend.main` ок (702 route).
 
-Открытый вопрос (не finding): таймауты/отмена LLM-парсинга в `/acts/upload/parse`
-(`_call_openrouter_act_parser`, `:585`) — проверить границы ожидания отдельным заходом.
+Закрытый вопрос — границы ожидания LLM-парсинга `/acts/upload/parse`
+(`_call_openrouter_act_parser`): диагностика показала sync-вызов через
+`run_in_threadpool` (event loop цел), дефолт 45с на попытку, но без общего
+бюджета — худший случай N моделей × M режимов × 45с; отмены при дисконнекте
+клиента нет (sync-поток не прерывается). Реализовано: общий дедлайн
+`ACT_PARSE_LLM_TOTAL_TIMEOUT_SEC` (деф. 150с) + явный per-attempt
+`ACT_PARSE_LLM_TIMEOUT_SEC` (деф. 45с, floor 10с), остаток бюджета передаётся
+в `complete_json(timeout=...)`; при исчерпании — warning в драфт и выход без
+перебора остальных моделей. Тест `test_act_parser_respects_total_llm_timeout_budget`.
 
 ## Финал-2: структурная декомпозиция (замер 2026-09-17, без тестовых файлов)
 

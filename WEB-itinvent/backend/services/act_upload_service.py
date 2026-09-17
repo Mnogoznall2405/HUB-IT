@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import base64
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -661,7 +662,21 @@ def _call_openrouter_act_parser(
         len(text_for_model),
     )
 
+    # Bound the whole parse: candidates x modes x per-attempt timeout is
+    # otherwise unbounded (N x M x 45s default).
+    llm_attempt_timeout_sec = max(
+        10.0, float(_read_env("ACT_PARSE_LLM_TIMEOUT_SEC", "45") or "45")
+    )
+    llm_total_timeout_sec = max(
+        llm_attempt_timeout_sec,
+        float(_read_env("ACT_PARSE_LLM_TOTAL_TIMEOUT_SEC", "150") or "150"),
+    )
+    llm_deadline = time.monotonic() + llm_total_timeout_sec
+    total_timeout_hit = False
+
     for model in model_candidates:
+        if total_timeout_hit:
+            break
         attempt_modes = _attempt_modes_for_model()
         tried_images = False
         mode_index = 0
@@ -674,6 +689,17 @@ def _call_openrouter_act_parser(
                     continue
             if (not use_images) and (not text_for_model.strip()):
                 continue
+            remaining_sec = llm_deadline - time.monotonic()
+            if remaining_sec <= 5:
+                total_timeout_hit = True
+                warnings.append(
+                    "Исчерпан общий лимит времени LLM-парсинга — попробуйте повторить или введите данные вручную."
+                )
+                logger.warning(
+                    "Uploaded act parse: total LLM timeout budget exhausted (file=%s)",
+                    file_name,
+                )
+                break
             try:
                 logger.info(
                     "Uploaded act parse: sending request to RouterAI (file=%s, model=%s, text_len=%s, images=%s, healing=1)",
@@ -691,6 +717,7 @@ def _call_openrouter_act_parser(
                     max_tokens=_ACT_PARSE_MAX_TOKENS,
                     response_schema=None,
                     response_healing=True,
+                    timeout=min(llm_attempt_timeout_sec, remaining_sec),
                 )
                 logger.info(
                     "Uploaded act parse: RouterAI response received (file=%s, model=%s, use_images=%s)",

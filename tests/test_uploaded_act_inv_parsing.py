@@ -1,5 +1,6 @@
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -338,3 +339,45 @@ def test_normalize_inv_no_token_shared_helper_semantics():
     # Shared helper exposes the choice explicitly.
     assert normalize_inv_no_token("INV/2") == "INV/2"
     assert normalize_inv_no_token("INV/2", strict_digits=True) is None
+
+
+def test_act_parser_respects_total_llm_timeout_budget(monkeypatch):
+    """Total deadline bounds N models x M modes; per-attempt timeout is passed."""
+    monkeypatch.setenv("ACT_PARSE_LLM_TIMEOUT_SEC", "45")
+    monkeypatch.setenv("ACT_PARSE_LLM_TOTAL_TIMEOUT_SEC", "150")
+    monkeypatch.setattr(
+        act_upload_service, "resolve_model_candidates", lambda _purpose: ["m1", "m2"]
+    )
+    monkeypatch.setattr(
+        act_upload_service.openrouter_client, "is_configured", lambda: True
+    )
+
+    base = time.monotonic()
+    ticks = {"n": 0}
+
+    def fake_monotonic():
+        ticks["n"] += 1
+        return base + ticks["n"] * 100
+
+    monkeypatch.setattr(act_upload_service.time, "monotonic", fake_monotonic)
+
+    captured_timeouts = []
+
+    def fake_complete_json(**kwargs):
+        captured_timeouts.append(kwargs.get("timeout"))
+        return {}, {}
+
+    monkeypatch.setattr(
+        act_upload_service.openrouter_client, "complete_json", fake_complete_json
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="act.pdf",
+        pdf_text="Передаточный акт. Сотрудник Иванов И.И. передал оборудование инв. 100500 датой 01.02.2026.",
+    )
+
+    assert payload is None
+    # One attempt runs with a bounded timeout, then the deadline stops the rest.
+    assert len(captured_timeouts) == 1
+    assert 0 < captured_timeouts[0] <= 45
+    assert any("лимит времени LLM-парсинга" in w for w in warnings)
