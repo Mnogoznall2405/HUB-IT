@@ -529,7 +529,12 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
   deep-link QR/location-state). В композиторе остались auth/permissions, `useDatabaseSelection`,
   `useDatabaseLookups`, кэш act→equipment и 2 кросс-доменных колбэка. Контракт return-объекта
   сохранён spread-мержем.
-- [ ] **S4 (опц.) — `useDatabaseTransferAction.js` 969:** transfer / maintenance / акты.
+- [x] **S4 — `useDatabaseTransferAction.js` 969 → 376.** Композитор над тремя доменными
+  хуками: `useTransferFormState.js` (327, поля формы + lookup-эффекты сотрудник/
+  подразделение/локации + мемо), `useTransferActJob.js` (413, submit/polling/retry/
+  идемпотентный operation_id/скачивание акта/точечный refresh), `useTransferEmail.js`
+  (145, получатель/отправка/статус). Общий `transferResult` владеет композитором
+  (форма и job циклически связаны). Return-контракт сохранён.
 
 Приёмка прогона: database-скоп **466/466 зелёный** (84 файла), `npm run build` ок.
 Чанк `Database` 255.7→257.3 kB (+1.6 raw / +0.15 gzip) — в пределах шума сборки;
@@ -562,10 +567,16 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 
 ## Что дальше делаем (очередь после S1/S3)
 
-1. S2 (view-model 1835 строк → доменные контроллеры) — последний структурный пакет; S4 опционален.
-2. Закоммитить S1/S3 (сейчас всё висит в workdir) отдельным коммитом Database.
+1. ~~S2 (view-model → доменные контроллеры)~~ — выполнен: `useDatabasePageViewModel.js`
+   1942→321, контроллеры `useDatabaseListController` (583) / `useDatabaseDialogController` (467) /
+   `useDatabaseEmployeeFlow` (306). ~~S4 опционален~~ — тоже выполнен:
+   `useDatabaseTransferAction` 969→376 + `useTransferFormState`/`useTransferActJob`/
+   `useTransferEmail`. Структурные пакеты S1–S4 закрыты полностью.
+2. ~~Закоммитить~~ — `0b571582` (S1/S3/S2 одним Database-коммитом, 23 файла).
 3. Ручное: 390px, desktop-smoke, staging-smoke (gzip/Vary/stale/multi-worker).
-4. Заморозка страницы и плана; наблюдение за флаком из прошлой сессии.
+4. Заморозка страницы и плана; флак lazy-диалога сотрудника воспроизведён и закрыт
+   (`timeout: 5000` на `findByRole` в `Database.test.jsx` — под нагрузкой lazy-чанк
+   превышал дефолтные 1s).
 
 S1 подтверждён функционально: `EmployeeEquipmentDialog.jsx` 2172→575 строк, выносы
 `HubEquipmentList.jsx` (402), `WarehouseBalancesPanel.jsx` (452), `EquipmentHistoryDialog.jsx` (84),
