@@ -2,6 +2,7 @@
 Equipment database functions using correct schema with dynamic database switching.
 """
 from typing import List, Dict, Any, Optional
+import json
 import logging
 import os
 import time
@@ -48,10 +49,114 @@ def invalidate_equipment_cache(db_id: Optional[str] = None) -> None:
     with _equipment_payload_cache_lock:
         if db_id is None:
             _equipment_payload_cache.clear()
-            return
-        for cache_key in list(_equipment_payload_cache.keys()):
-            if f"{needle}|" in cache_key or cache_key.endswith(needle):
-                _equipment_payload_cache.pop(cache_key, None)
+        else:
+            for cache_key in list(_equipment_payload_cache.keys()):
+                if f"{needle}|" in cache_key or cache_key.endswith(needle):
+                    _equipment_payload_cache.pop(cache_key, None)
+    bump_equipment_data_version(db_id)
+
+
+# --- data_version: shared counter so other sessions/workers can detect mutations ---
+_DATA_VERSION_FILE = "equipment_data_version.json"
+_DATA_VERSION_KEY_PREFIX = "equipment_data_version:"
+_DATA_VERSION_CACHE_TTL_SEC = 5.0
+_data_version_cache: Dict[str, Any] = {}
+_data_version_local_store: Any = None
+
+
+def _data_version_key(db_id: Optional[str]) -> str:
+    return f"{_DATA_VERSION_KEY_PREFIX}{str(db_id or '').strip() or 'default'}"
+
+
+def _data_version_store() -> Any:
+    global _data_version_local_store
+    if _data_version_local_store is None:
+        from local_store import get_local_store
+        _data_version_local_store = get_local_store()
+    return _data_version_local_store
+
+
+def _parse_version_value(raw: Any) -> int:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def _read_data_version(db_id: Optional[str]) -> int:
+    from backend.appdb.db import app_session, is_app_database_configured
+    key = _data_version_key(db_id)
+    if is_app_database_configured():
+        from backend.appdb.models import AppGlobalSetting
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, key)
+            return _parse_version_value(row.value_json) if row else 0
+    data = _data_version_store().load_json(_DATA_VERSION_FILE, default_content={})
+    return _parse_version_value((data or {}).get(key))
+
+
+def get_equipment_data_version(db_id: Optional[str] = None) -> int:
+    """Current mutation counter for the DB; short memo bounds KV reads per request burst."""
+    key = _data_version_key(db_id)
+    now = time.monotonic()
+    entry = _data_version_cache.get(key)
+    if entry and entry[0] > now:
+        return int(entry[1])
+    value = _read_data_version(db_id)
+    _data_version_cache[key] = (now + _DATA_VERSION_CACHE_TTL_SEC, value)
+    return value
+
+
+def bump_equipment_data_version(db_id: Optional[str] = None) -> int:
+    """Increment the mutation counter for db_id (or all known keys when db_id is None)."""
+    from backend.appdb.db import app_session, is_app_database_configured
+    from sqlalchemy import select
+
+    if is_app_database_configured():
+        from backend.appdb.models import AppGlobalSetting
+        with app_session() as session:
+            if db_id is None:
+                rows = session.scalars(
+                    select(AppGlobalSetting).where(AppGlobalSetting.key.like(f"{_DATA_VERSION_KEY_PREFIX}%"))
+                ).all()
+                next_value = 0
+                for row in rows:
+                    next_value = _parse_version_value(row.value_json) + 1
+                    row.value_json = json.dumps(next_value)
+                for row in rows:
+                    _data_version_cache.pop(row.key, None)
+                return next_value
+            key = _data_version_key(db_id)
+            row = session.execute(
+                select(AppGlobalSetting).where(AppGlobalSetting.key == key).with_for_update()
+            ).scalar_one_or_none()
+            next_value = _parse_version_value(row.value_json) + 1 if row else 1
+            if row is not None:
+                row.value_json = json.dumps(next_value)
+            else:
+                session.add(AppGlobalSetting(key=key, value_json=json.dumps(next_value)))
+            _data_version_cache.pop(key, None)
+            return next_value
+
+    store = _data_version_store()
+    data = store.load_json(_DATA_VERSION_FILE, default_content={})
+    if not isinstance(data, dict):
+        data = {}
+    next_value = 0
+    if db_id is None:
+        for key in list(data.keys()):
+            if str(key).startswith(_DATA_VERSION_KEY_PREFIX):
+                next_value = _parse_version_value(data[key]) + 1
+                data[key] = next_value
+                _data_version_cache.pop(key, None)
+    else:
+        key = _data_version_key(db_id)
+        next_value = _parse_version_value(data.get(key)) + 1
+        data[key] = next_value
+        _data_version_cache.pop(key, None)
+    store.save_json(_DATA_VERSION_FILE, data)
+    return next_value
 
 
 def _get_cached_equipment_total(
@@ -167,7 +272,8 @@ def get_equipment_by_branch(branch_name: str, page: int = 1, limit: int = 10000,
             'page': page,
             'limit': limit,
             'pages': (total + limit - 1) // limit,
-            'branch': branch_name
+            'branch': branch_name,
+            'data_version': get_equipment_data_version(db_id),
         }
     except Exception as e:
         logger.error(f"Error getting equipment by branch: {e}", exc_info=True)
@@ -207,6 +313,7 @@ def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] 
     cache_key = _build_equipment_cache_key("equipment_grouped", db_id, page, limit)
     cached_payload = _get_cached_equipment_payload(cache_key)
     if cached_payload is not None:
+        cached_payload['data_version'] = get_equipment_data_version(db_id)
         return cached_payload
 
     db = get_db(db_id)
@@ -228,7 +335,8 @@ def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] 
         'total': total,
         'page': page,
         'limit': limit,
-        'pages': (total + limit - 1) // limit
+        'pages': (total + limit - 1) // limit,
+        'data_version': get_equipment_data_version(db_id),
     })
 
 
@@ -254,6 +362,7 @@ def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str
     cache_key = _build_equipment_cache_key("consumables_grouped", db_id, page, limit)
     cached_payload = _get_cached_equipment_payload(cache_key)
     if cached_payload is not None:
+        cached_payload['data_version'] = get_equipment_data_version(db_id)
         return cached_payload
 
     db = get_db(db_id)
@@ -275,5 +384,6 @@ def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str
         'total': total,
         'page': page,
         'limit': limit,
-        'pages': (total + limit - 1) // limit
+        'pages': (total + limit - 1) // limit,
+        'data_version': get_equipment_data_version(db_id),
     })

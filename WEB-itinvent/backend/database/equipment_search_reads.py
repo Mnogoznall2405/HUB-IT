@@ -51,6 +51,7 @@ QUERY_SEARCH_BY_INV_NO = QUERY_SEARCH_BY_SERIAL.replace(
 
 QUERY_SEARCH_UNIVERSAL = """
     SELECT
+        i.ID as id,
         i.INV_NO as inv_no,
         i.SERIAL_NO as serial_no,
         i.HW_SERIAL_NO as hw_serial_no,

@@ -539,7 +539,7 @@ export default function EquipmentDetailWarehouse1CTab({
 
           {!balancesLoading && balances.length > 0 ? (
             <Stack spacing={1}>
-              {balancesMatchSummary.allMatch ? (
+              {!balancesIncomplete && balancesMatchSummary.allMatch ? (
                 <Alert severity="success" icon={<CheckCircleOutlineIcon fontSize="inherit" />}>
                   Остатки сходятся
                 </Alert>
@@ -585,7 +585,9 @@ export default function EquipmentDetailWarehouse1CTab({
                       row.hub_employee_name || row.warehouse_name || '',
                     ).trim();
                     const employeeDept = String(row.hub_employee_dept || '').trim();
-                    const match = resolveHubBalanceMatch(row);
+                    const match = balancesIncomplete
+                      ? { status: 'unknown', label: '' }
+                      : resolveHubBalanceMatch(row);
                     const matchChipColor = match.status === 'match'
                       ? 'success'
                       : match.status === 'unknown'

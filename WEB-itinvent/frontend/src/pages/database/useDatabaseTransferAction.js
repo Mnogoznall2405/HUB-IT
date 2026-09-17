@@ -88,6 +88,7 @@ export function useDatabaseTransferAction({
   navigate,
   openUploadActModalForReminder,
   onTransferJobDone,
+  onDataVersion,
   pollingMaxAttempts = 240,
 } = {}) {
   const [transferOperationMode, setTransferOperationMode] = useState(TRANSFER_OPERATION_MOVE);
@@ -129,6 +130,7 @@ export function useDatabaseTransferAction({
     }
     try {
       const fresh = await equipmentAPI.getByInvNos(list);
+      onDataVersion?.(fresh?.data_version);
       const items = Array.isArray(fresh?.equipment) ? fresh.equipment : [];
       if (!items.length) {
         await fetchAllEquipment?.({ force: true });
@@ -140,7 +142,7 @@ export function useDatabaseTransferAction({
     } catch {
       await fetchAllEquipment?.({ force: true });
     }
-  }, [fetchAllEquipment, setAllEquipment, setFilteredData]);
+  }, [fetchAllEquipment, onDataVersion, setAllEquipment, setFilteredData]);
 
   const withTransferOperationId = useCallback((payload, forceNew = false) => {
     const fingerprint = JSON.stringify(payload || {});

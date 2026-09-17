@@ -6,6 +6,7 @@ import {
   getEditConsumableQtyInitialValue,
 } from './consumableModel';
 import { readFirst } from './databaseRecordModel';
+import { toInvNo, updateItemFieldsInGrouped } from './equipmentModel';
 
 const createClosedModal = () => ({ open: false, item: null });
 
@@ -19,6 +20,8 @@ const buildQtySuccessMessage = (item, qty) => {
 export function useDatabaseConsumableQty({
   canDatabaseWrite = false,
   fetchAllEquipment,
+  setAllEquipment,
+  setFilteredData,
   notifyDatabaseSuccess,
 } = {}) {
   const [editConsumableQtyModal, setEditConsumableQtyModal] = useState(createClosedModal);
@@ -71,7 +74,16 @@ export function useDatabaseConsumableQty({
       const message = buildQtySuccessMessage(item, payload.qty);
       notifyDatabaseSuccess?.(message);
       closeEditConsumableQtyModal();
-      await fetchAllEquipment?.({ force: true });
+
+      const invNo = toInvNo(item);
+      const patch = { QTY: payload.qty, qty: payload.qty };
+      if (invNo && typeof setAllEquipment === 'function') {
+        setAllEquipment((prev) => updateItemFieldsInGrouped(prev, invNo, patch));
+        setFilteredData?.((prev) =>
+          prev === null ? prev : updateItemFieldsInGrouped(prev, invNo, patch));
+      } else {
+        await fetchAllEquipment?.({ force: true });
+      }
     } catch (error) {
       const apiDetail = error?.response?.data?.detail;
       setEditConsumableQtyError(
@@ -89,6 +101,8 @@ export function useDatabaseConsumableQty({
     editConsumableQtyValue,
     fetchAllEquipment,
     notifyDatabaseSuccess,
+    setAllEquipment,
+    setFilteredData,
   ]);
 
   return {

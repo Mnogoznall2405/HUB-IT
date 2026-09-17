@@ -21,7 +21,7 @@ from backend.api.deps import (
 )
 from backend.database import queries
 from backend.database.connection import get_db
-from backend.database.equipment_db import invalidate_equipment_cache
+from backend.database.equipment_db import get_equipment_data_version, invalidate_equipment_cache
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_DATABASE_DELETE,
@@ -875,7 +875,10 @@ async def search_universal(
     if not q or len(q.strip()) == 0:
         return {"equipment": [], "total": 0, "page": 1, "pages": 0}
 
-    return await run_in_threadpool(queries.search_equipment_universal, q, page, limit, db_id)
+    result = await run_in_threadpool(queries.search_equipment_universal, q, page, limit, db_id)
+    if isinstance(result, dict):
+        result["data_version"] = get_equipment_data_version(db_id)
+    return result
 
 
 @router.get("/search/employee", response_model=EmployeeSearchResponse)
@@ -1020,6 +1023,7 @@ async def get_equipment_by_inv_nos(
         "equipment": equipment,
         "not_found": not_found,
         "requested": len(normalized_inv_nos),
+        "data_version": get_equipment_data_version(db_id),
     }
 
 

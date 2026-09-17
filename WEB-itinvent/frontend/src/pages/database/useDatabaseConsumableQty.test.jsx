@@ -20,6 +20,8 @@ const item = {
 const createProps = (overrides = {}) => ({
   canDatabaseWrite: true,
   fetchAllEquipment: vi.fn(),
+  setAllEquipment: vi.fn(),
+  setFilteredData: vi.fn(),
   notifyDatabaseSuccess: vi.fn(),
   ...overrides,
 });
@@ -82,7 +84,14 @@ describe('useDatabaseConsumableQty', () => {
       qty: 7,
     });
     expect(props.notifyDatabaseSuccess).toHaveBeenCalled();
-    expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
+    // Point update: qty patched in grouped state, no full refetch.
+    expect(props.fetchAllEquipment).not.toHaveBeenCalled();
+    const updater = props.setAllEquipment.mock.calls[0][0];
+    const grouped = { HQ: { Office: [{ ...item }] } };
+    const patched = updater(grouped);
+    expect(patched.HQ.Office[0].QTY).toBe(7);
+    expect(patched.HQ.Office[0].qty).toBe(7);
+    expect(props.setFilteredData).toHaveBeenCalledWith(expect.any(Function));
     expect(result.current.editConsumableQtyModal.open).toBe(false);
     expect(result.current.editConsumableQtyLoading).toBe(false);
   });
@@ -105,5 +114,21 @@ describe('useDatabaseConsumableQty', () => {
     expect(result.current.editConsumableQtyModal.open).toBe(true);
     expect(result.current.editConsumableQtyError).toBe('backend failed');
     expect(result.current.editConsumableQtyLoading).toBe(false);
+  });
+
+  it('falls back to a full refetch when grouped setters are unavailable', async () => {
+    const props = createProps({ setAllEquipment: undefined, setFilteredData: undefined });
+    const { result } = renderHook(() => useDatabaseConsumableQty(props));
+
+    act(() => {
+      result.current.openEditConsumableQtyModal(item);
+      result.current.setEditConsumableQtyInput('7');
+    });
+
+    await act(async () => {
+      await result.current.handleEditConsumableQtySubmit();
+    });
+
+    expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
   });
 });

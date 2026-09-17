@@ -109,10 +109,10 @@ class DatabaseInfo(BaseModel):
 def _get_assigned_db(current_user: Optional[User]) -> Optional[str]:
     if not current_user:
         return None
-    user_assigned_db = (str(current_user.assigned_database or "").strip() or None)
+    user_assigned_db = (str(getattr(current_user, "assigned_database", None) or "").strip() or None)
     if user_assigned_db:
         return user_assigned_db
-    return user_db_selection_service.get_assigned_database(current_user.telegram_id)
+    return user_db_selection_service.get_assigned_database(getattr(current_user, "telegram_id", None))
 
 
 def normalize_database_id(database_id: object) -> Optional[str]:

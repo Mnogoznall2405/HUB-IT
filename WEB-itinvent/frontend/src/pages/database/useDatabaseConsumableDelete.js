@@ -2,11 +2,17 @@ import { useCallback, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
 import { readFirst } from './databaseRecordModel';
-import { toInvNo } from './equipmentModel';
+import { removeItemFromGrouped, toInvNo } from './equipmentModel';
 
 export function useDatabaseConsumableDelete({
   canDatabaseDelete = false,
   fetchAllEquipment,
+  setAllEquipment,
+  setFilteredData,
+  setSelectedItems,
+  setLoadedCount,
+  setServerTotal,
+  setTotal,
   notifyDatabaseSuccess,
 } = {}) {
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -47,7 +53,16 @@ export function useDatabaseConsumableDelete({
         invNo ? `Расходник ${invNo} удалён.` : 'Расходник удалён.',
       );
       setDeleteTarget(null);
-      await fetchAllEquipment?.({ force: true });
+      if (invNo && typeof setAllEquipment === 'function') {
+        setAllEquipment((prev) => removeItemFromGrouped(prev, invNo));
+        setFilteredData?.((prev) => (prev === null ? prev : removeItemFromGrouped(prev, invNo)));
+        setSelectedItems?.((prev) => prev.filter((value) => String(value || '').trim() !== invNo));
+        setLoadedCount?.((prev) => Math.max(0, Number(prev || 0) - 1));
+        setServerTotal?.((prev) => Math.max(0, Number(prev || 0) - 1));
+        setTotal?.((prev) => Math.max(0, Number(prev || 0) - 1));
+      } else {
+        await fetchAllEquipment?.({ force: true });
+      }
     } catch (error) {
       const apiDetail = error?.response?.data?.detail;
       setDeleteError(
@@ -64,6 +79,12 @@ export function useDatabaseConsumableDelete({
     deleteTarget?.itemId,
     fetchAllEquipment,
     notifyDatabaseSuccess,
+    setAllEquipment,
+    setFilteredData,
+    setLoadedCount,
+    setSelectedItems,
+    setServerTotal,
+    setTotal,
   ]);
 
   return {

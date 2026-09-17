@@ -114,4 +114,43 @@ describe('EquipmentDetailWarehouse1CTab balance requests', () => {
     expect(screen.queryByText('Stale owner')).not.toBeInTheDocument();
     expect(screen.getByText('Latest owner')).toBeInTheDocument();
   });
+
+  it('does not show match semantics when the balances snapshot is incomplete', async () => {
+    searchNomenclature.mockResolvedValue([
+      { ref: 'nom-1', code: 'ONE', name: 'First nomenclature' },
+    ]);
+    getBalancesBatch.mockResolvedValue({
+      items: [{ nomenclature_ref: 'nom-1', qty_1c_total: 1, status: 'ok' }],
+      meta: { status: 'ok' },
+    });
+    getBalancesWithHub.mockResolvedValue({
+      items: [
+        {
+          warehouse_ref: 'w-1',
+          warehouse_name: 'Holder',
+          qty_balance: 0,
+          qty_1c_total: 0,
+          hub_count: 0,
+        },
+      ],
+      meta: { status: 'unknown' },
+    });
+
+    render(
+      <MemoryRouter>
+        <EquipmentDetailWarehouse1CTab
+          active
+          data={{ MODEL_NAME: 'Xerox VersaLink B605' }}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByText('First nomenclature'));
+
+    expect(await screen.findByText('Holder')).toBeInTheDocument();
+    expect(screen.getByText(/Не удалось подтвердить полноту остатков 1С/i)).toBeInTheDocument();
+    expect(screen.queryByText('Остатки сходятся')).not.toBeInTheDocument();
+    expect(screen.queryByText('Сходится')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(0);
+  });
 });

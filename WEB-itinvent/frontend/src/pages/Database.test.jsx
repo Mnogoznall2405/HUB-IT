@@ -13,6 +13,8 @@ const mockApi = vi.hoisted(() => ({
     getAllEquipmentGrouped: vi.fn(),
     getAllConsumablesGrouped: vi.fn(),
     getByInvNos: vi.fn(),
+    getCurrentActs: vi.fn(),
+    searchUniversal: vi.fn(),
     getEquipmentHistory: vi.fn(),
     getEquipmentActs: vi.fn(),
     getRecentCards: vi.fn(),
@@ -233,6 +235,8 @@ beforeEach(() => {
     not_found: [],
     requested: 1,
   });
+  mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({ items: [] });
+  mockApi.equipmentAPI.searchUniversal.mockResolvedValue({ equipment: [], total: 0, page: 1, pages: 1 });
   mockApi.equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [], total: 0 });
   mockApi.equipmentAPI.getRecentCards.mockResolvedValue({ items: [] });
   mockApi.equipmentAPI.getRecentActs.mockResolvedValue({ items: [] });
@@ -427,19 +431,7 @@ describe('Database equipment row helpers', () => {
     expect(await screen.findByRole('button', { name: 'Свернуть разделы' })).toBeInTheDocument();
   });
 
-  it('keeps pagination alive while a search misses already loaded pages', async () => {
-    let intersectionCallback = null;
-    class CapturingIntersectionObserver {
-      constructor(callback) {
-        intersectionCallback = callback;
-      }
-
-      observe() {}
-
-      disconnect() {}
-    }
-    window.IntersectionObserver = CapturingIntersectionObserver;
-
+  it('searches the whole database server-side, not only loaded pages', async () => {
     renderDatabase();
 
     // Страница 1 + prefetch страницы 2; страница 3 ещё не загружена.
@@ -448,23 +440,30 @@ describe('Database equipment row helpers', () => {
     ));
     expect(await screen.findByText('HQ')).toBeInTheDocument();
 
+    // Серверный universal находит строку, которой нет в загруженных страницах.
+    mockApi.equipmentAPI.searchUniversal.mockResolvedValue({
+      equipment: [
+        {
+          id: 77,
+          inv_no: 'INV-777',
+          model_name: 'Latitude 7420',
+          type_name: 'PC',
+          branch_name: 'HQ',
+          location: 'Office',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pages: 1,
+    });
+
     const searchInput = screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...');
     fireEvent.change(searchInput, { target: { value: 'Latitude' } });
     fireEvent.keyDown(searchInput, { key: 'Enter' });
 
-    // Активный поиск не прячет sentinel и не запускает 1С fallback,
-    // пока не загружены все страницы Хаба.
-    expect(await screen.findByTestId('equipment-load-more-sentinel')).toBeInTheDocument();
+    await waitFor(() => expect(mockApi.equipmentAPI.searchUniversal).toHaveBeenCalledWith('Latitude', 1, 200));
     expect(mockApi.equipmentSearchAPI.searchByEmployee).not.toHaveBeenCalled();
-
-    await act(async () => {
-      intersectionCallback?.([{ isIntersecting: true }]);
-    });
-
-    await waitFor(() => expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledWith(
-      expect.objectContaining({ page: 3 }),
-    ));
-    expect(await screen.findByText('Latitude')).toBeInTheDocument();
+    expect(await screen.findByText('Latitude 7420')).toBeInTheDocument();
   });
 
   it('shows equipment part number in the desktop table', async () => {

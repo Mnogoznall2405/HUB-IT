@@ -71,6 +71,35 @@ export function useDatabaseEquipmentData({
   });
   // ITEMS.ID set already sent to /equipment/current-acts (lazy act column).
   const currentActsFetchedRef = useRef(new Set());
+  // Last server data_version observed per db scope; a newer version on any
+  // subsequent response means someone else mutated the data meanwhile.
+  const seenDataVersionRef = useRef({});
+  const [dataVersionStale, setDataVersionStale] = useState(false);
+
+  // Point-refresh call sites already applied fresh rows: advance the baseline
+  // silently so the next list page doesn't nag about our own mutation.
+  const notifyDataVersion = useCallback((version, { scope = null } = {}) => {
+    const next = Number(version);
+    if (!Number.isFinite(next) || next <= 0) return;
+    const resolvedScope = scope ?? currentScopeRef.current();
+    const seen = seenDataVersionRef.current[resolvedScope];
+    if (seen === undefined || next > seen) seenDataVersionRef.current[resolvedScope] = next;
+  }, []);
+
+  // List loads are the staleness witness: a newer version than the baseline
+  // means the loaded pages predate someone else's mutation.
+  const handleListDataVersion = useCallback((version, { clearStale = false, scope = null } = {}) => {
+    const next = Number(version);
+    if (!Number.isFinite(next) || next <= 0) return;
+    const resolvedScope = scope ?? currentScopeRef.current();
+    const seen = seenDataVersionRef.current[resolvedScope];
+    if (clearStale) {
+      setDataVersionStale(false);
+    } else if (seen !== undefined && next > seen) {
+      setDataVersionStale(true);
+    }
+    if (seen === undefined || next > seen) seenDataVersionRef.current[resolvedScope] = next;
+  }, []);
 
   const [initialLoading, setInitialLoading] = useState(true);
   const [modeLoading, setModeLoading] = useState(false);
@@ -194,10 +223,11 @@ export function useDatabaseEquipmentData({
 
   const fetchEquipmentGroupedPage = useCallback(async (page, { force = false, mode = dataModeRef.current } = {}) => {
     const safePage = Math.max(1, Number(page || 1));
+    const requestScope = getDbCacheScope();
     const groupedCacheKey = mode === DATA_MODE_CONSUMABLES ? 'consumables-grouped' : 'equipment-grouped';
     const cacheKey = buildCacheKey(
       groupedCacheKey,
-      getDbCacheScope(),
+      requestScope,
       safePage,
       pageLimit
     );
@@ -210,11 +240,12 @@ export function useDatabaseEquipmentData({
       ),
       { staleTimeMs, force }
     );
+    handleListDataVersion(data?.data_version, { clearStale: force, scope: requestScope });
     return {
       ...(data || {}),
       grouped: normalizeGroupedDatabaseData(data?.grouped || {}),
     };
-  }, [getDbCacheScope, pageLimit, staleTimeMs]);
+  }, [getDbCacheScope, pageLimit, staleTimeMs, handleListDataVersion]);
 
   // Lazy batch for the "current act" column: the list endpoint no longer runs
   // the heavy enrich CTE; visible rows fetch acts in one call and merge in.
@@ -411,6 +442,7 @@ export function useDatabaseEquipmentData({
     setNextEquipmentPage(null);
     setLoadingMoreEquipment(false);
     setModeLoading(false);
+    setDataVersionStale(false);
   }, []);
 
   const resetAllModeData = useCallback(() => {
@@ -512,6 +544,8 @@ export function useDatabaseEquipmentData({
     equipmentPagesTotal,
     loadingMoreEquipment,
     initialLoadDone,
+    dataVersionStale,
+    notifyDataVersion,
     setAllEquipment,
     setLoadedCount,
     setServerTotal,

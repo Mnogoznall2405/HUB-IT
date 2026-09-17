@@ -498,7 +498,7 @@ const EquipmentTable = memo(function EquipmentTable({
             const isSelected = selectedItemsSet.has(invNo);
             return (
               <EquipmentRow
-                key={invNo + '-' + idx}
+                key={invNo || `row-${idx}`}
                 item={item}
                 isSelected={isSelected}
                 isMobile={isMobile}

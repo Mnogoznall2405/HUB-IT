@@ -217,10 +217,12 @@ def test_equipment_grouped_caches_total_count_across_pages(monkeypatch):
             return []
 
     monkeypatch.setattr(equipment_db, "get_db", lambda db_id=None: PagingDB())
+    # The list page must not run the current-act enrich CTE at all.
+    from backend.database import equipment_current_act_reads
     monkeypatch.setattr(
-        equipment_db,
-        "enrich_equipment_current_acts",
-        lambda rows, db_id=None, get_db_fn=None: rows,
+        equipment_current_act_reads,
+        "lookup_current_acts",
+        lambda *args, **kwargs: pytest.fail("enrich must not run on the list path"),
     )
 
     for page in (1, 2, 3):
@@ -250,6 +252,43 @@ def test_grouped_pagination_queries_have_deterministic_id_tiebreaker():
         queries_new.QUERY_GET_EQUIPMENT_BY_BRANCH,
     ):
         assert ", i.ID" in query.split("ORDER BY")[-1]
+
+
+def test_pyodbc_pool_pings_only_idle_connections(monkeypatch):
+    """SELECT 1 runs only when the pooled conn sat idle past the threshold."""
+    from backend.database import connection as db_connection
+
+    pool = db_connection._PyodbcConnectionPool("DSN=test", pool_size=1, idle_ping_sec=30.0)
+
+    class FakeCursor:
+        def __init__(self, log):
+            self._log = log
+        def execute(self, _q):
+            self._log.append("SELECT 1")
+        def close(self):
+            pass
+
+    class FakeConn:
+        def __init__(self):
+            self.pings = []
+        def cursor(self):
+            return FakeCursor(self.pings)
+        def close(self):
+            pass
+
+    conn = FakeConn()
+    pool.release(conn)
+
+    # Fresh borrow — no ping.
+    assert pool.acquire() is conn
+    assert conn.pings == []
+    pool.release(conn)
+
+    # Forced idle — ping required.
+    _stored = pool._pool.get_nowait()
+    pool._pool.put_nowait((_stored[0], _stored[1] - 60.0))
+    assert pool.acquire() is conn
+    assert conn.pings == ["SELECT 1"]
 
 
 def test_pyodbc_pool_failed_create_does_not_leak_created_slots(monkeypatch):

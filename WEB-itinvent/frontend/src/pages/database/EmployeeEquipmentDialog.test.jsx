@@ -9,11 +9,13 @@ const {
   downloadEquipmentActFile,
   getEmployeeEquipment,
   getEmployeeWarehouse,
+  getWarehouseMovements,
   exportEmployeeEquipmentWorkbook,
 } = vi.hoisted(() => ({
   downloadEquipmentActFile: vi.fn(),
   getEmployeeEquipment: vi.fn(),
   getEmployeeWarehouse: vi.fn(),
+  getWarehouseMovements: vi.fn(),
   exportEmployeeEquipmentWorkbook: vi.fn(),
 }));
 
@@ -22,15 +24,25 @@ vi.mock('../../api/equipmentSearch', () => ({
 }));
 
 vi.mock('../../api/warehouse1c', () => ({
-  warehouse1cAPI: { getEmployeeWarehouse },
+  warehouse1cAPI: { getEmployeeWarehouse, getWarehouseMovements },
+  isMeaningful1cRef: (value) => Boolean(value),
 }));
 
 vi.mock('../../api/equipmentTransferActs', () => ({
   equipmentTransferActsAPI: { downloadEquipmentActFile },
 }));
 
+vi.mock('../../api/equipmentRecords', () => ({
+  equipmentRecordsAPI: { getEquipmentHistory: vi.fn(async () => ({ history: [] })) },
+}));
+
 vi.mock('../../components/documentPreview/DocumentPreviewDialog', () => ({
   default: ({ open, title }) => (open ? <div role="dialog" aria-label={title} /> : null),
+  isDocumentPreviewKind: () => false,
+}));
+
+vi.mock('../../components/mail/MailAttachmentPreviewDialog', () => ({
+  default: () => null,
 }));
 
 vi.mock('./employeeEquipmentExcel', () => ({
@@ -59,6 +71,8 @@ describe('EmployeeEquipmentDialog', () => {
     getEmployeeEquipment.mockReset();
     getEmployeeEquipment.mockResolvedValue({ equipment: [] });
     getEmployeeWarehouse.mockReset();
+    getWarehouseMovements.mockReset();
+    getWarehouseMovements.mockResolvedValue({ items: [], has_more: false, status: 'ok' });
     downloadEquipmentActFile.mockReset();
     downloadEquipmentActFile.mockResolvedValue({
       data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
@@ -189,7 +203,6 @@ describe('EmployeeEquipmentDialog', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Списки' }));
     expect(await screen.findByText('Сотрудник не найден в справочнике Хаба.')).toBeInTheDocument();
     await waitFor(() => expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2));
 
@@ -206,7 +219,45 @@ describe('EmployeeEquipmentDialog', () => {
     });
   });
 
-  it('opens the compare view by default and joins rows by part number', async () => {
+  it('colors rows by compare status on both sides', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' },
+        { INV_NO: 'INV-2', MODEL_NAME: 'Monitor', PART_NO: '11' },
+        { INV_NO: 'INV-3', MODEL_NAME: 'Keyboard', PART_NO: '30' },
+      ],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [
+          { nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+          { nomenclature_ref: 'n2', nomenclature_code: '20', nomenclature_name: 'Кабель', qty_balance: 2 },
+          { nomenclature_ref: 'n3', nomenclature_code: '30', nomenclature_name: 'Клавиатура', qty_balance: 2 },
+        ],
+        balances_meta: { status: 'ok' },
+      });
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    // Совпало: INV-1 (Парт. № 10) и строка 1С «10» — зелёные.
+    expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+    // Кол-во ≠: INV-3 (Парт. № 30, 1 шт) и строка 1С «30» (2 шт) — оранжевые.
+    expect(document.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(2);
+    // Только в Хабе: INV-2 (Парт. № 11) — красная.
+    expect(document.querySelectorAll('[data-compare-status="only_hub"]')).toHaveLength(1);
+    // Только в 1С: «Кабель» (код 20) — синяя.
+    expect(document.querySelectorAll('[data-compare-status="only_1c"]')).toHaveLength(1);
+  });
+
+  it('filters both lists by compare status', async () => {
     getEmployeeEquipment.mockResolvedValue({
       equipment: [
         { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' },
@@ -232,11 +283,91 @@ describe('EmployeeEquipmentDialog', () => {
     renderDialog(false, true);
 
     expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
-    expect(await screen.findByText('Кабель')).toBeInTheDocument();
-    expect(await screen.findByText('Monitor')).toBeInTheDocument();
-    expect(screen.getByText('Сходится: 1')).toBeInTheDocument();
-    expect(screen.getByText('Только в 1С: 1')).toBeInTheDocument();
-    expect(screen.getByText('Только в Хабе: 1')).toBeInTheDocument();
+    expect(screen.getByText('INV-1')).toBeInTheDocument();
+    expect(screen.getByText('INV-2')).toBeInTheDocument();
+    expect(screen.getByText('Кабель')).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByLabelText('Статус сверки'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Только в Хабе' }));
+
+    await waitFor(() => expect(screen.queryByText('INV-1')).not.toBeInTheDocument());
+    expect(screen.getByText('INV-2')).toBeInTheDocument();
+    // На стороне 1С под фильтр «Только в Хабе» ничего не подходит.
+    expect(screen.queryByText('Ноутбук')).not.toBeInTheDocument();
+    expect(screen.queryByText('Кабель')).not.toBeInTheDocument();
+    expect(screen.getByText('По фильтру в 1С ничего не найдено.')).toBeInTheDocument();
+  });
+
+  it('filters hub equipment by type and narrows the 1C list to matching codes', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10', TYPE_NAME: 'Ноутбук' },
+        { INV_NO: 'INV-2', MODEL_NAME: 'Dell 24', PART_NO: '11', TYPE_NAME: 'Монитор' },
+      ],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [
+          { nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+          { nomenclature_ref: 'n2', nomenclature_code: '20', nomenclature_name: 'Кабель', qty_balance: 2 },
+        ],
+        balances_meta: { status: 'ok' },
+      });
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(screen.getByText('INV-1')).toBeInTheDocument();
+    expect(screen.getByText('INV-2')).toBeInTheDocument();
+    expect(screen.getByText('Кабель')).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByLabelText('Тип оборудования'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Ноутбук' }));
+
+    // В Хабе остаются только ноутбуки.
+    await waitFor(() => expect(screen.queryByText('INV-2')).not.toBeInTheDocument());
+    expect(screen.getByText('INV-1')).toBeInTheDocument();
+    // В 1С — только код, встречающийся среди парт. № ноутбуков.
+    // «Ноутбук» совпадает и с выбранным значением в селекте, поэтому ≥1.
+    expect(screen.getAllByText('Ноутбук').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Кабель')).not.toBeInTheDocument();
+  });
+
+  it('fails closed when the 1C balances snapshot is incomplete', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' },
+      ],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [
+          { nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+        ],
+        balances_meta: { status: 'unknown' },
+      });
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(screen.getByText(/Остатки 1С загружены не полностью/i)).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
   });
 
   it('exports both visible tables to Excel after they finish loading', async () => {
@@ -253,11 +384,10 @@ describe('EmployeeEquipmentDialog', () => {
         status: 'matched',
         warehouse: { ref: 'wh-1', name: 'Иванова Екатерина Юрьевна' },
         balances: [{ nomenclature_code: '10', nomenclature_name: 'Кабель', qty_balance: 2 }],
+        balances_meta: { status: 'ok' },
       });
 
     renderDialog(false, true);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Списки' }));
 
     const exportButton = await screen.findByRole('button', { name: 'Выгрузить в Excel' });
     await waitFor(() => expect(exportButton).not.toBeDisabled());
@@ -279,7 +409,78 @@ describe('EmployeeEquipmentDialog', () => {
         warehouseStatus: 'matched',
         includeWarehouse: true,
         filterText: '',
+        statusFilter: '',
+        typeFilter: '',
+        compareMaps: expect.objectContaining({
+          qty1cByCode: expect.any(Map),
+          countByPartNo: expect.any(Map),
+        }),
+        movements: [],
       });
     });
+  });
+
+  it('shows warehouse movements grouped by document in the Перемещения tab', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+      })
+      .mockResolvedValueOnce({
+        status: 'matched',
+        warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+        balances: [],
+        balances_meta: { status: 'ok' },
+      });
+    getWarehouseMovements.mockResolvedValue({
+      items: [
+        {
+          registrar_ref: 'doc-1',
+          registrar_number: '000123',
+          registrar_name: 'Перемещение МПЗ между складами 000123',
+          period: '2025-03-12T10:00:00',
+          document_type: 'transfer',
+          direction: 'out',
+          positions: 2,
+          transfer_from_warehouse_name: 'Иванова Е.Ю.',
+          transfer_to_warehouse_name: 'Центральный склад',
+          items: [
+            { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_out: 1 },
+            { nomenclature_code: '20', nomenclature_name: 'Кабель', qty_out: 2 },
+          ],
+        },
+      ],
+      has_more: false,
+      status: 'ok',
+    });
+
+    renderDialog(false, true);
+
+    const tab = await screen.findByRole('tab', { name: 'Перемещения' });
+    fireEvent.click(tab);
+
+    await waitFor(() => {
+      expect(getWarehouseMovements).toHaveBeenCalledWith({
+        warehouseRef: 'wh-1',
+        limit: 100,
+        cursor: '',
+        dateFrom: '',
+        dateTo: '',
+      });
+    });
+    expect(await screen.findByText(/Перемещение №000123/)).toBeInTheDocument();
+    expect(screen.getByText('Иванова Е.Ю. → Центральный склад')).toBeInTheDocument();
+    expect(screen.getByText('2 поз.')).toBeInTheDocument();
+    // «Расход» — чип фильтра и чип направления документа.
+    expect(screen.getAllByText('Расход').length).toBeGreaterThanOrEqual(2);
+
+    // Позиции раскрываются по клику на документ.
+    fireEvent.click(screen.getByRole('button', { name: 'Показать позиции' }));
+    expect(await screen.findByText(/Ноутбук/)).toBeInTheDocument();
+    expect(screen.getByText(/Кабель/)).toBeInTheDocument();
   });
 });

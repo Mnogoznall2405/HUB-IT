@@ -2,7 +2,14 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { equipmentAPI } from '../../api/client';
 import { useDatabaseSearch } from './useDatabaseSearch';
+
+vi.mock('../../api/client', () => ({
+  equipmentAPI: {
+    searchUniversal: vi.fn(),
+  },
+}));
 
 const printer = {
   INV_NO: 'INV-1',
@@ -29,6 +36,25 @@ const stockPrinter = {
 const groupedEquipment = {
   HQ: { Office: [printer], Lab: [pc] },
   Remote: { Stock: [stockPrinter] },
+};
+
+// Flat rows the server returns (search/universal shape).
+const serverPrinterRow = {
+  id: 11,
+  inv_no: 'INV-1',
+  model_name: 'LaserJet 400',
+  type_name: 'Printer',
+  branch_name: 'HQ',
+  location: 'Office',
+};
+
+const serverRemoteRow = {
+  id: 12,
+  inv_no: 'INV-3',
+  model_name: 'DeskJet Stock',
+  type_name: 'Printer',
+  branch_name: 'Remote',
+  location: 'Stock',
 };
 
 const setExpandedBranches = vi.fn();
@@ -59,10 +85,16 @@ function renderSearchHook(overrides = {}) {
   });
 }
 
-describe('useDatabaseSearch', () => {
+describe('useDatabaseSearch (server-primary)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    equipmentAPI.searchUniversal.mockResolvedValue({
+      equipment: [serverPrinterRow],
+      total: 1,
+      page: 1,
+      pages: 1,
+    });
   });
 
   afterEach(() => {
@@ -70,17 +102,7 @@ describe('useDatabaseSearch', () => {
     vi.useRealTimers();
   });
 
-  it('builds branch-filtered source data and search index', () => {
-    const { result } = renderSearchHook({ selectedBranch: ' hq ' });
-
-    expect(result.current.searchSourceData).toEqual({
-      HQ: { Office: [printer], Lab: [pc] },
-    });
-    expect(result.current.searchIndex).toHaveLength(2);
-    expect(result.current.searchIndex.map((entry) => entry.item)).toEqual([printer, pc]);
-  });
-
-  it('debounces search changes and expands matched branches and locations', () => {
+  it('debounces input and groups server rows into branch/location data', async () => {
     const { result } = renderSearchHook();
 
     act(() => {
@@ -89,130 +111,215 @@ describe('useDatabaseSearch', () => {
 
     expect(result.current.searchQuery).toBe('laser');
     expect(result.current.appliedSearchQuery).toBe('');
-    expect(result.current.filteredData).toBeNull();
-    expect(setExpandedBranches).not.toHaveBeenCalled();
+    expect(equipmentAPI.searchUniversal).not.toHaveBeenCalled();
 
-    act(() => {
-      vi.advanceTimersByTime(49);
-    });
-    expect(result.current.filteredData).toBeNull();
-
-    act(() => {
-      vi.advanceTimersByTime(1);
+    await act(async () => {
+      vi.advanceTimersByTime(50);
     });
 
-    expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledWith('laser', 1, 200);
     expect(result.current.appliedSearchQuery).toBe('laser');
+    expect(result.current.filteredData).toEqual({ HQ: { Office: [serverPrinterRow] } });
     expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
     expect(setExpandedLocations).toHaveBeenLastCalledWith(new Set(['HQ::Office']));
+    expect(result.current.searchHasMore).toBe(false);
   });
 
-  it('runs search immediately on Enter and cancels the pending debounce', () => {
+  it('runs the server search immediately on Enter and cancels the debounce', async () => {
     const preventDefault = vi.fn();
     const { result } = renderSearchHook();
 
     act(() => {
-      result.current.handleSearchChange({ target: { value: 'anna' } });
+      result.current.handleSearchChange({ target: { value: 'laser' } });
+    });
+    await act(async () => {
       result.current.handleSearchKeyDown({ key: 'Enter', preventDefault });
     });
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
-    expect(result.current.filteredData).toEqual({ HQ: { Lab: [pc] } });
-    expect(setExpandedBranches).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      vi.advanceTimersByTime(50);
-    });
-
-    expect(setExpandedBranches).toHaveBeenCalledTimes(1);
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledTimes(1);
+    expect(result.current.filteredData).toEqual({ HQ: { Office: [serverPrinterRow] } });
   });
 
-  it('clears filtered data for queries shorter than two characters', () => {
+  it('clears filtered data for queries shorter than two characters', async () => {
     const { result } = renderSearchHook();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'laser' } });
+    });
+    await act(async () => {
       vi.advanceTimersByTime(50);
     });
-    expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
+    expect(result.current.filteredData).not.toBeNull();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'l' } });
     });
 
-    expect(result.current.searchQuery).toBe('l');
     expect(result.current.filteredData).toBeNull();
-
-    act(() => {
-      vi.advanceTimersByTime(50);
-    });
-
-    expect(result.current.filteredData).toBeNull();
+    expect(result.current.appliedSearchQuery).toBe('');
   });
 
-  it('re-runs an active query when branch-filtered search data changes', () => {
-    const { result, rerender } = renderHook(() => {
+  it('re-runs the active server query when the branch filter changes', async () => {
+    equipmentAPI.searchUniversal.mockResolvedValue({
+      equipment: [serverPrinterRow, serverRemoteRow],
+      total: 2,
+      page: 1,
+      pages: 1,
+    });
+    const { result, rerender } = renderHook((props) => {
       const [searchQuery, setSearchQuery] = useState('');
       const [filteredData, setFilteredData] = useState(null);
-      const [selectedBranch, setSelectedBranch] = useState('');
       const search = useDatabaseSearch({
-        allEquipment: groupedEquipment,
-        selectedBranch,
-        setExpandedBranches,
-        setExpandedLocations,
-        debounceMs: 50,
+        ...createProps({ selectedBranch: props.selectedBranch }),
         searchQuery,
         setSearchQuery,
         filteredData,
         setFilteredData,
       });
-      return { ...search, setSelectedBranch };
-    });
+      return search;
+    }, { initialProps: { selectedBranch: '' } });
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'printer' } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(result.current.filteredData).toEqual({
+      HQ: { Office: [serverPrinterRow] },
+      Remote: { Stock: [serverRemoteRow] },
+    });
+
+    rerender({ selectedBranch: 'Remote' });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 1, 200);
+    expect(result.current.filteredData).toEqual({ Remote: { Stock: [serverRemoteRow] } });
+    expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['Remote']));
+  });
+
+  it('does not re-run the search when more list pages load', async () => {
+    const { result, rerender } = renderHook((props) => {
+      const [searchQuery, setSearchQuery] = useState('');
+      const [filteredData, setFilteredData] = useState(null);
+      const search = useDatabaseSearch({
+        ...createProps({ allEquipment: props.allEquipment }),
+        searchQuery,
+        setSearchQuery,
+        filteredData,
+        setFilteredData,
+      });
+      return search;
+    }, { initialProps: { allEquipment: groupedEquipment } });
+
+    act(() => {
+      result.current.handleSearchChange({ target: { value: 'laser' } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledTimes(1);
+    const calls = setExpandedBranches.mock.calls.length;
+
+    // A second list page merged into allEquipment must not retrigger search.
+    rerender({
+      allEquipment: { ...groupedEquipment, Remote2: { Stock: [stockPrinter] } },
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledTimes(1);
+    expect(setExpandedBranches.mock.calls.length).toBe(calls);
+    expect(result.current.filteredData).toEqual({ HQ: { Office: [serverPrinterRow] } });
+  });
+
+  it('falls back to the client index on server failure and flags degradation', async () => {
+    equipmentAPI.searchUniversal.mockRejectedValue(new Error('offline'));
+    const { result } = renderSearchHook();
+
+    act(() => {
+      result.current.handleSearchChange({ target: { value: 'laser' } });
+    });
+    await act(async () => {
       vi.advanceTimersByTime(50);
     });
 
-    expect(result.current.filteredData).toEqual({
-      HQ: { Office: [printer] },
-      Remote: { Stock: [stockPrinter] },
-    });
-
-    act(() => {
-      result.current.setSelectedBranch('Remote');
-    });
-
-    expect(result.current.filteredData).toEqual({
-      Remote: { Stock: [stockPrinter] },
-    });
-    expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['Remote']));
-    expect(setExpandedLocations).toHaveBeenLastCalledWith(new Set(['Remote::Stock']));
+    expect(result.current.serverSearchDegraded).toBe(true);
+    // Fallback index matched the locally loaded printer.
+    expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
+    expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
   });
 
-  it('cancels pending debounced search on clearSearch and unmount', () => {
+  it('paginates server results via loadMoreSearchResults', async () => {
+    equipmentAPI.searchUniversal
+      .mockResolvedValueOnce({
+        equipment: [serverPrinterRow],
+        total: 2,
+        page: 1,
+        pages: 2,
+      })
+      .mockResolvedValueOnce({
+        equipment: [serverRemoteRow],
+        total: 2,
+        page: 2,
+        pages: 2,
+      });
+    const { result } = renderSearchHook();
+
+    act(() => {
+      result.current.handleSearchChange({ target: { value: 'printer' } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(result.current.searchHasMore).toBe(true);
+    expect(result.current.searchTotal).toBe(2);
+
+    await act(async () => {
+      result.current.loadMoreSearchResults();
+    });
+
+    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 2, 200);
+    expect(result.current.filteredData).toEqual({
+      HQ: { Office: [serverPrinterRow] },
+      Remote: { Stock: [serverRemoteRow] },
+    });
+    expect(result.current.searchHasMore).toBe(false);
+    // load-more merges via functional updates — resolve them against the
+    // previously expanded set.
+    const lastUpdater = setExpandedBranches.mock.calls.at(-1)[0];
+    const merged = typeof lastUpdater === 'function' ? lastUpdater(new Set(['HQ'])) : lastUpdater;
+    expect(merged).toEqual(new Set(['HQ', 'Remote']));
+  });
+
+  it('cancels pending debounced search on clearSearch and unmount', async () => {
     const { result, unmount } = renderSearchHook();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'laser' } });
       result.current.clearSearch();
+    });
+    await act(async () => {
       vi.advanceTimersByTime(50);
     });
 
     expect(result.current.searchQuery).toBe('');
     expect(result.current.appliedSearchQuery).toBe('');
     expect(result.current.filteredData).toBeNull();
-    expect(setExpandedBranches).not.toHaveBeenCalled();
+    expect(equipmentAPI.searchUniversal).not.toHaveBeenCalled();
 
     act(() => {
-      result.current.handleSearchChange({ target: { value: 'anna' } });
+      result.current.handleSearchChange({ target: { value: 'laser' } });
     });
     unmount();
 
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(50);
     });
-
-    expect(setExpandedBranches).not.toHaveBeenCalled();
+    expect(equipmentAPI.searchUniversal).not.toHaveBeenCalled();
   });
 });

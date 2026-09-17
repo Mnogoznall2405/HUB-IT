@@ -4,6 +4,7 @@ Database connection management with dynamic database switching support.
 import os
 import queue
 import threading
+import time
 from contextlib import contextmanager
 from typing import Generator, Optional
 
@@ -82,11 +83,23 @@ def _env_pool_size(default: int = 10) -> int:
         return default
 
 
+def _env_pool_idle_ping_sec(default: float = 30.0) -> float:
+    """Seconds a pooled connection may sit idle before it needs a SELECT 1 ping."""
+    raw = str(os.getenv("SQL_SERVER_POOL_IDLE_PING_SEC", str(default)) or "").strip()
+    try:
+        return max(0.0, min(600.0, float(raw)))
+    except (TypeError, ValueError):
+        return default
+
+
 class _PyodbcConnectionPool:
-    def __init__(self, connection_string: str, *, pool_size: int) -> None:
+    """Pool of (conn, released_at) entries — SELECT 1 only for idle connections."""
+
+    def __init__(self, connection_string: str, *, pool_size: int, idle_ping_sec: float = 30.0) -> None:
         self._connection_string = connection_string
         self._pool_size = max(1, int(pool_size))
-        self._pool: queue.Queue[pyodbc.Connection] = queue.Queue(maxsize=self._pool_size)
+        self._idle_ping_sec = max(0.0, float(idle_ping_sec))
+        self._pool: queue.Queue[tuple[pyodbc.Connection, float]] = queue.Queue(maxsize=self._pool_size)
         self._created = 0
         self._lock = threading.Lock()
 
@@ -98,11 +111,14 @@ class _PyodbcConnectionPool:
 
     def acquire(self) -> pyodbc.Connection:
         try:
-            conn = self._pool.get_nowait()
+            conn, released_at = self._pool.get_nowait()
             try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
+                # Ping only when the connection sat idle long enough to risk a
+                # server-side/network timeout — a fresh borrow needs no SELECT 1.
+                if time.monotonic() - released_at > self._idle_ping_sec:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT 1")
+                    cursor.close()
                 return conn
             except Exception:
                 try:
@@ -128,11 +144,12 @@ class _PyodbcConnectionPool:
                     self._created = max(0, self._created - 1)
                 raise
 
-        return self._pool.get(timeout=30)
+        conn, _released_at = self._pool.get(timeout=30)
+        return conn
 
     def release(self, conn: pyodbc.Connection) -> None:
         try:
-            self._pool.put_nowait(conn)
+            self._pool.put_nowait((conn, time.monotonic()))
         except queue.Full:
             try:
                 conn.close()
@@ -150,7 +167,11 @@ def _get_connection_pool(connection_string: str) -> _PyodbcConnectionPool:
     with _POOLS_LOCK:
         pool = _POOLS.get(connection_string)
         if pool is None:
-            pool = _PyodbcConnectionPool(connection_string, pool_size=_env_pool_size())
+            pool = _PyodbcConnectionPool(
+                connection_string,
+                pool_size=_env_pool_size(),
+                idle_ping_sec=_env_pool_idle_ping_sec(),
+            )
             _POOLS[connection_string] = pool
         return pool
 

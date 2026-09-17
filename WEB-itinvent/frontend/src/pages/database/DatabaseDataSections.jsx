@@ -56,7 +56,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
             const invNo = toInvNo(item);
             return (
               <ModernEquipmentCard
-                key={`${invNo}-${index}`}
+                key={invNo || `row-${index}`}
                 item={item}
                 theme={theme}
                 onAction={onAction}

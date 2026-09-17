@@ -120,6 +120,7 @@ class EquipmentGroupedListResponse(BaseModel):
     page: int = Field(1, description="Current page number")
     limit: int = Field(1000, description="Page size")
     pages: int = Field(0, description="Total number of pages")
+    data_version: int = Field(0, description="Mutation counter for stale-data detection")
 
 
 class EquipmentCurrentActsRequest(BaseModel):

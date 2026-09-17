@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { buildCompareMaps } from './employeeCompareModel';
 import {
   buildEmployeeEquipmentSheet,
   formatEmployeeEquipmentFilename,
@@ -87,6 +88,49 @@ describe('employeeEquipmentExcel', () => {
     expect(sheet.aoa[4]).toEqual(['Инв. №', 'Модель', 'Серийник', 'Парт. №', 'База']);
     expect(sheet.aoa[5][4]).toBe('MSK');
     expect(sheet.aoa[6][4]).toBe('SPB');
+  });
+
+  it('adds compare status columns and fill marks when compare maps are given', () => {
+    const hubItems = [
+      { INV_NO: 'INV-1', PART_NO: '10' },
+      { INV_NO: 'INV-2', PART_NO: '11' },
+    ];
+    const warehouseBalances = [
+      { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      { nomenclature_code: '20', nomenclature_name: 'Кабель', qty_balance: 2 },
+    ];
+    const sheet = buildEmployeeEquipmentSheet({
+      employeeName: 'Иванова',
+      hubItems,
+      warehouseBalances,
+      warehouseStatus: 'matched',
+      includeWarehouse: true,
+      compareMaps: buildCompareMaps({ hubItems, balances: warehouseBalances }),
+      statusFilter: 'diff',
+      exportedAt,
+    });
+
+    expect(sheet.aoa[2]).toEqual(['Фильтр по статусу', 'Кол-во ≠']);
+    expect(sheet.aoa[3][0]).toBe('Сводка сверки');
+    expect(sheet.aoa[3][1]).toBe('Совпадает: 2 | Кол-во ≠: 0 | Только в Хабе: 1 | Только в 1С: 1 | Без парт. №: 0');
+
+    const headerRow = sheet.aoa[6];
+    expect(headerRow[4]).toBe('Сверка');
+    expect(headerRow[9]).toBe('Сверка');
+
+    expect(sheet.aoa[7][0]).toBe('INV-1');
+    expect(sheet.aoa[7][4]).toBe('Совпадает');
+    expect(sheet.aoa[7][6]).toBe('10');
+    expect(sheet.aoa[7][9]).toBe('Совпадает');
+    expect(sheet.aoa[8][4]).toBe('Только в Хабе');
+    expect(sheet.aoa[8][9]).toBe('Только в 1С');
+
+    expect(sheet.fills).toEqual([
+      { row: 7, leftStatus: 'match', rightStatus: 'match' },
+      { row: 8, leftStatus: 'only_hub', rightStatus: 'only_1c' },
+    ]);
+    expect(sheet.leftCols).toEqual([0, 4]);
+    expect(sheet.rightCols).toEqual([6, 9]);
   });
 
   it('notes an active filter and empty warehouse status', () => {

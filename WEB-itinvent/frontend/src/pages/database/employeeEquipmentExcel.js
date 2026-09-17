@@ -1,7 +1,21 @@
 import { readFirst } from './databaseRecordModel';
+import {
+  COMPARE_STATUS_LABEL,
+  resolve1cRowStatus,
+  resolveHubRowStatus,
+} from './employeeCompareModel';
 
 const GAP_COLUMNS = 1;
 const MAX_COL_WIDTH = 56;
+
+const STATUS_FILL_RGB = {
+  match: '63BE7B',
+  diff: 'FFC000',
+  only_hub: 'FF7C80',
+  only_1c: '5B9BD5',
+};
+
+const NO_KEY_FILTER = 'none';
 
 function displayText(value, fallback = '') {
   const text = String(value ?? '').trim();
@@ -136,17 +150,37 @@ export function buildEmployeeEquipmentSheet({
   warehouseStatus = '',
   includeWarehouse = false,
   filterText = '',
+  statusFilter = '',
+  typeFilter = '',
+  compareMaps = null,
   exportedAt = new Date(),
 } = {}) {
   const includeDb = shouldShowHubDbColumn(hubItems);
+  const hasCompare = Boolean(includeWarehouse && compareMaps);
   const hubHeaders = includeDb
     ? ['Инв. №', 'Модель', 'Серийник', 'Парт. №', 'База']
     : ['Инв. №', 'Модель', 'Серийник', 'Парт. №'];
   const warehouseHeaders = ['Код', 'Номенклатура', 'Кол-во'];
+  if (hasCompare) {
+    hubHeaders.push('Сверка');
+    warehouseHeaders.push('Сверка');
+  }
   const leftWidth = hubHeaders.length;
-  const hubRows = (Array.isArray(hubItems) ? hubItems : []).map((item) => mapHubRow(item, includeDb));
-  const warehouseRows = includeWarehouse
-    ? (Array.isArray(warehouseBalances) ? warehouseBalances : []).map(mapWarehouseRow)
+  const hubEntries = (Array.isArray(hubItems) ? hubItems : []).map((item) => {
+    const cells = mapHubRow(item, includeDb);
+    const status = hasCompare
+      ? resolveHubRowStatus(readFirst(item, ['PART_NO', 'part_no'], ''), compareMaps)
+      : null;
+    if (hasCompare) cells.push(COMPARE_STATUS_LABEL[status] || '');
+    return { cells, status };
+  });
+  const warehouseEntries = includeWarehouse
+    ? (Array.isArray(warehouseBalances) ? warehouseBalances : []).map((row) => {
+      const cells = mapWarehouseRow(row);
+      const status = hasCompare ? resolve1cRowStatus(row?.nomenclature_code, compareMaps) : null;
+      if (hasCompare) cells.push(COMPARE_STATUS_LABEL[status] || '');
+      return { cells, status };
+    })
     : [];
 
   const aoa = [
@@ -155,13 +189,28 @@ export function buildEmployeeEquipmentSheet({
   ];
   const filter = String(filterText || '').trim();
   if (filter) aoa.push(['Фильтр', filter]);
+  const statusFilterLabel = statusFilter === NO_KEY_FILTER
+    ? 'Без парт. № / кода'
+    : COMPARE_STATUS_LABEL[statusFilter];
+  if (statusFilterLabel) aoa.push(['Фильтр по статусу', statusFilterLabel]);
+  const type = String(typeFilter || '').trim();
+  if (type) aoa.push(['Тип оборудования', type]);
+  if (hasCompare) {
+    const summary = { match: 0, diff: 0, only_hub: 0, only_1c: 0, none: 0 };
+    for (const entry of hubEntries) summary[entry.status || 'none'] += 1;
+    for (const entry of warehouseEntries) summary[entry.status || 'none'] += 1;
+    aoa.push([
+      'Сводка сверки',
+      `Совпадает: ${summary.match} | Кол-во ≠: ${summary.diff} | Только в Хабе: ${summary.only_hub} | Только в 1С: ${summary.only_1c} | Без парт. №: ${summary.none}`,
+    ]);
+  }
   aoa.push([]);
 
-  const hubTitle = `В Хабе (${hubRows.length})`;
+  const hubTitle = `В Хабе (${hubEntries.length})`;
   const warehouseTitle = warehouseSectionTitle({
     status: warehouseStatus,
     warehouseName,
-    count: warehouseRows.length,
+    count: warehouseEntries.length,
   });
   const sectionRowIndex = aoa.length;
   if (includeWarehouse) {
@@ -173,22 +222,35 @@ export function buildEmployeeEquipmentSheet({
   }
 
   const headerRowIndex = aoa.length - 1;
-  const dataRowCount = Math.max(hubRows.length, includeWarehouse ? warehouseRows.length : 0, 1);
+  const fills = [];
+  const dataRowCount = Math.max(hubEntries.length, includeWarehouse ? warehouseEntries.length : 0, 1);
   for (let index = 0; index < dataRowCount; index += 1) {
-    const left = hubRows[index]
-      || (index === 0 && hubRows.length === 0 ? ['Нет оборудования'] : []);
+    const leftEntry = hubEntries[index]
+      || (index === 0 && hubEntries.length === 0 ? { cells: ['Нет оборудования'], status: null } : null);
     if (!includeWarehouse) {
-      aoa.push(padRow(left, leftWidth));
+      aoa.push(padRow(leftEntry?.cells || [], leftWidth));
       continue;
     }
-    const right = warehouseRows[index]
-      || (index === 0 && warehouseRows.length === 0 ? [warehouseEmptyLabel(warehouseStatus)] : []);
-    aoa.push(joinSideBySide(left, right, leftWidth));
+    const rightEntry = warehouseEntries[index]
+      || (index === 0 && warehouseEntries.length === 0
+        ? { cells: [warehouseEmptyLabel(warehouseStatus)], status: null }
+        : null);
+    aoa.push(joinSideBySide(leftEntry?.cells || [], rightEntry?.cells || [], leftWidth));
+    fills.push({
+      row: aoa.length - 1,
+      leftStatus: leftEntry?.status || null,
+      rightStatus: rightEntry?.status || null,
+    });
   }
 
   const totalCols = includeWarehouse ? leftWidth + GAP_COLUMNS + warehouseHeaders.length : leftWidth;
   const minWidths = includeWarehouse
-    ? [...(includeDb ? [14, 28, 18, 16, 16] : [14, 28, 18, 16]), 3, 12, 36, 10]
+    ? [
+      ...(includeDb ? [14, 28, 18, 16, 16] : [14, 28, 18, 16]),
+      ...(hasCompare ? [12] : []),
+      3, 12, 36, 10,
+      ...(hasCompare ? [12] : []),
+    ]
     : (includeDb ? [14, 28, 18, 16, 16] : [14, 28, 18, 16]);
   const merges = includeWarehouse
     ? [
@@ -204,18 +266,80 @@ export function buildEmployeeEquipmentSheet({
     aoa,
     cols: autosizeColumns(aoa, minWidths),
     merges,
+    fills,
+    leftCols: [0, leftWidth - 1],
+    rightCols: includeWarehouse ? [leftWidth + GAP_COLUMNS, totalCols - 1] : null,
     freezeRows: headerRowIndex + 1,
     sheetName: sanitizeSheetName(employeeName || 'Сотрудник'),
     filename: formatEmployeeEquipmentFilename(employeeName, exportedAt),
   };
 }
 
+const MOVEMENT_DIRECTION_EXCEL_LABEL = {
+  in: 'Приход',
+  out: 'Расход',
+  inout: 'Приход/расход',
+};
+
+/** Rows for the "Перемещения" sheet: one row per document position, docs grouped. */
+export function buildMovementsSheetRows(movements = []) {
+  const aoa = [
+    ['Движения склада 1С'],
+    [],
+    ['Дата', 'Документ', 'Направление', 'Откуда', 'Куда', 'Номенклатура', 'Код', 'Кол-во'],
+  ];
+  for (const doc of Array.isArray(movements) ? movements : []) {
+    const items = Array.isArray(doc?.items) ? doc.items : [];
+    const docTitle = [doc?.registrar_number, doc?.registrar_name]
+      .map((v) => String(v || '').trim())
+      .filter(Boolean)[0] || '';
+    const base = [
+      doc?.period || doc?.registrar_date || '',
+      docTitle,
+      MOVEMENT_DIRECTION_EXCEL_LABEL[doc?.direction] || '',
+      doc?.transfer_from_warehouse_name || '',
+      doc?.transfer_to_warehouse_name || doc?.warehouse_name || '',
+    ];
+    if (!items.length) {
+      aoa.push([...base, '', '', '']);
+      continue;
+    }
+    items.forEach((item, index) => {
+      const docCols = index === 0 ? base : ['', '', '', '', ''];
+      aoa.push([
+        ...docCols,
+        item?.nomenclature_name || '',
+        item?.nomenclature_code || '',
+        item?.qty_in ?? item?.qty_out ?? '',
+      ]);
+    });
+  }
+  return aoa;
+}
+
 export async function exportEmployeeEquipmentWorkbook(params = {}) {
-  const XLSX = await import('xlsx');
+  const XLSX = await import('xlsx-js-style');
   const model = buildEmployeeEquipmentSheet(params);
   const worksheet = XLSX.utils.aoa_to_sheet(model.aoa);
   worksheet['!cols'] = model.cols;
   worksheet['!merges'] = model.merges;
+
+  const paintCell = (rowIdx, colIdx, status) => {
+    const rgb = STATUS_FILL_RGB[status];
+    if (!rgb) return;
+    const address = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+    const cell = worksheet[address] || (worksheet[address] = { t: 's', v: '' });
+    cell.s = { fill: { patternType: 'solid', fgColor: { rgb } } };
+  };
+  (Array.isArray(model.fills) ? model.fills : []).forEach(({ row, leftStatus, rightStatus }) => {
+    const [leftStart, leftEnd] = model.leftCols || [0, -1];
+    for (let c = leftStart; c <= leftEnd; c += 1) paintCell(row, c, leftStatus);
+    if (model.rightCols) {
+      const [rightStart, rightEnd] = model.rightCols;
+      for (let c = rightStart; c <= rightEnd; c += 1) paintCell(row, c, rightStatus);
+    }
+  });
+
   worksheet['!views'] = [{
     state: 'frozen',
     ySplit: model.freezeRows,
@@ -229,6 +353,14 @@ export async function exportEmployeeEquipmentWorkbook(params = {}) {
   };
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, model.sheetName);
+  if (Array.isArray(params.movements) && params.movements.length) {
+    const movementsSheet = XLSX.utils.aoa_to_sheet(buildMovementsSheetRows(params.movements));
+    movementsSheet['!cols'] = [
+      { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 28 }, { wch: 28 },
+      { wch: 45 }, { wch: 16 }, { wch: 10 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, movementsSheet, 'Перемещения');
+  }
   XLSX.writeFile(workbook, model.filename);
   return model.filename;
 }

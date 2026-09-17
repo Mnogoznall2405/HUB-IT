@@ -1,15 +1,18 @@
 import { memo } from 'react';
 import {
   Box,
+  CircularProgress,
   IconButton,
   InputAdornment,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   alpha,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SearchIcon from '@mui/icons-material/Search';
+import CloudOffIcon from '@mui/icons-material/CloudOff';
 
 export const SEARCH_SCOPE_EQUIPMENT = 'equipment';
 export const SEARCH_SCOPE_ACTS = 'acts';
@@ -25,6 +28,8 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   theme,
   ui,
   compact = false,
+  loading = false,
+  degraded = false,
 }) {
   const showScopeToggle = !isConsumablesMode && typeof onSearchScopeChange === 'function';
   const isActsScope = searchScope === SEARCH_SCOPE_ACTS;
@@ -117,22 +122,30 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
               <SearchIcon sx={{ color: textSecondary }} />
             </InputAdornment>
           ),
-          endAdornment: value ? (
+          endAdornment: (
             <InputAdornment position="end">
-              <IconButton
-                size="small"
-                onClick={onClear}
-                aria-label="Очистить поиск"
-                sx={{
-                  bgcolor: actionHover,
-                  color: textSecondary,
-                  '&:hover': { bgcolor: alpha(textSecondary, theme.palette.mode === 'dark' ? 0.18 : 0.12) },
-                }}
-              >
-                <CloseIcon fontSize="small" />
-              </IconButton>
+              {loading ? <CircularProgress size={18} sx={{ color: textSecondary, mr: 0.5 }} /> : null}
+              {degraded ? (
+                <Tooltip title="Сервер поиска недоступен — показаны совпадения только по загруженным данным">
+                  <CloudOffIcon fontSize="small" sx={{ color: theme.palette.warning.main, mr: 0.5 }} />
+                </Tooltip>
+              ) : null}
+              {value ? (
+                <IconButton
+                  size="small"
+                  onClick={onClear}
+                  aria-label="Очистить поиск"
+                  sx={{
+                    bgcolor: actionHover,
+                    color: textSecondary,
+                    '&:hover': { bgcolor: alpha(textSecondary, theme.palette.mode === 'dark' ? 0.18 : 0.12) },
+                  }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              ) : null}
             </InputAdornment>
-          ) : null,
+          ),
         }}
         sx={{
           flex: 1,

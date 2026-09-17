@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-09-14 08:42 UTC_  
+_Сгенерировано: 2026-09-16 20:15 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@10.103.0.10:5432/hubit_chat?sslmode=require` (`10.103.0.10:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).

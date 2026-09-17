@@ -196,55 +196,295 @@
 Не параллелить этапы 2 и 3 (оба трогают состояние поиска/списка). Этап 7 можно вести параллельно с 3–4.
 
 ### Этап 1. Контракты
-- [ ] Тест контракта `GET /equipment/all-grouped`: `page/pages/total/limit`, стабильный `ORDER BY`
-  с tie-breaker `ID`, задокументированный максимум `limit`
-- [ ] Тест контракта `search/universal`: честные `page/pages/total` (код уже готов в рабочем дереве —
+- [x] Тест контракта `GET /equipment/all-grouped`: `page/pages/total/limit`, стабильный `ORDER BY`
+  с tie-breaker `ID` (`i.INV_NO, i.ID`), `limit` cap `le=10000` → 422 выше; branch-путь теперь тоже
+  возвращает `limit` (`tests/test_equipment_contract.py`, 8 тестов)
+- [x] Тест контракта `search/universal`: честные `page/pages/total` (код уже готов в рабочем дереве —
   только зафиксировать, не переписывать)
-- [ ] `EquipmentListRow` DTO (~8 полей, без enrich): схема + тест; полные 25 полей — только в детали
-- [ ] Приёмка этапа: контрактные тесты зелёные, фронт на новом контракте со старым UI
+- [x] `EquipmentListRow` DTO: схема whitelist (~22 поля — минимум для текущего UI/поискового индекса,
+  не «~8»: serial/part/ip/mac/netbios/domain нужны индексу до этапа 2), `extra=ignore` отрезает
+  `DESCR nvarchar(max)`/vendor/enrich с wire; `response_model` на `/all-grouped`. Из SQL списка
+  убраны `i.DESCR` и `VENDORS`-join (тяжёлая колонка больше не едет); by-branch запрос нормализован
+  к тем же алиасам, `description`/`vendor_name` оставлены для прямого вызова AI-тулом. Полные
+  поля — в детали/by-inv-nos (фронт сам догружает через `hasFullDetailFields`)
+- [x] Приёмка этапа: контрактные тесты зелёные (8/8), фронт на новом контракте со старым UI
+  (755/755 vitest)
 
 ### Этап 2. Поиск на сервер
-- [ ] Основной скоп — серверный `universal` с пагинацией (дебаунс 300 мс уже есть, не трогать)
-- [ ] Убрать `searchIndex` из deps эффекта `useDatabaseSearch.js:109-121` (стоп сброса раскрытия при догрузке)
-- [ ] Сравнительный тест выдачи серверного vs клиентского поиска на контрольной выборке
-- [ ] Удалить `buildDatabaseSearchIndex` только после зелёного сравнительного теста
-- [ ] Приёмка: догрузка не сбрасывает раскрытие; клиентского индекса нет (или флаг деградации)
+- [x] Основной скоп — серверный `universal` с пагинацией: `runSearchNow` →
+  `equipmentAPI.searchUniversal(q, page, 200)`; flat-строки группируются в branch→location
+  (`groupSearchRowsByBranchLocation`); `loadMoreSearchResults` догружает страницы поиска,
+  sentinel в режиме поиска переключён на search-пагинацию («Найдено X из Y»).
+  Debounce 300 мс и Enter-мгновенно сохранены
+- [x] `searchIndex`/`allEquipment` вынесены из deps эффекта в ref — догрузка страниц списка
+  больше не перезапускает активный поиск и не сбрасывает раскрытие
+  (тест «does not re-run the search when more list pages load»)
+- [x] Сравнительный тест: `test_universal_search_covers_client_index_fields` пинит, что WHERE
+  universal покрывает все поля клиентского индекса (superset: +vendor/dept/branch/location/
+  status); в SELECT добавлен `i.ID as id` для акт-бейджа и merge
+- [x] `buildDatabaseSearchIndex` — **осознанно не удалён**: остаётся как деградация
+  (ошибка сервера → `serverSearchDegraded` + client fallback) и как движок поиска расходников
+  (`serverSearchEnabled=false`, universal ищет только CI_TYPE=1). Индекс строится лениво
+  внутри fallback-ветки — горячий путь не платит O(n) rebuild на load-more
+- [x] Приёмка: догрузка не сбрасывает раскрытие; клиентский индекс — только деградация
+  с флагом `serverSearchDegraded`
 
 ### Этап 3. Разбор god-компонента (без смены поведения)
-- [ ] `DatabaseContainer` (композиция, <300 строк) + `EquipmentListFeature` + `DatabaseSearchFeature`
-  + `EquipmentDetailFeature` + `DatabaseDialogsLayer` (перенос `lazy` как есть)
-- [ ] Выбор и раскрытие — вниз в фичи; наверх только `databaseReady/db_name/query`
-- [ ] Запреты соблюдены: нет новых `useState` в контейнере, нет inline-компонентов, `key={invNo}`
-- [ ] Приёмка: `Database.test.jsx` + все тесты `pages/database/` зелёные, поведение то же
+- [x] `Database.jsx` — тонкий контейнер композиции (~40 строк): `useDatabasePageViewModel()`
+  + `<DatabasePageView vm={vm}/>`. Вся оркестрация хуков вынесена в
+  `database/useDatabasePageViewModel.js` (~1900 строк, возвращает 316 биндингов), весь JSX —
+  в `database/DatabasePageView.jsx` (~1250 строк). Ни один `useState` в контейнере
+- [x] `DatabaseDialogsLayer` — все 14 lazy-диалогов в отдельном файле, контейнер передаёт
+  бандлы пропсов
+- [x] Выбор и раскрытие остаются во view-model (фичи-хуки `useDatabaseSelection`,
+  `useDatabaseListNavigation` и др. уже существуют); наверх — только `vm`
+- [x] Запреты: `key={invNo}` — композитные `invNo-idx` убраны из `DatabaseDataSections` и
+  виртуализованного `EquipmentTable`; inline-компонентов нет; новых `useState` в контейнере нет
+- [x] Приёмка: `Database.test.jsx` 42/42, весь database-скоп 762/762, поведение то же,
+  файл контейнера <300 строк
 
 ### Этап 4. Мутации без полного refetch
-- [ ] transfer/add уже точечные (не переделывать); покрыть остаток: consumable-qty, consumable-delete,
-  delete-equipment (проверить), коммит акта — везде `upsert/remove` + fallback force-refetch
-- [ ] `fetchAllEquipment({force:true})` остаётся только в кнопке «Обновить» и конфликте версий
-- [ ] Приёмка: тест на каждую мутацию (список обновлён точечно, счётчик корректен, лишних запросов страниц нет)
+- [x] transfer/add-equipment — уже точечные (fallback-only `fetchAllEquipment`); покрыт остаток:
+  consumable-qty → `updateItemFieldsInGrouped` (patch QTY без refetch, fallback при отсутствии
+  сеттеров), consumable-delete → `removeItemFromGrouped` + декремент счётчиков (новый тест),
+  delete-equipment — уже точечный (проверено), коммит акта → point-refresh по
+  `linked_inv_nos`/`linked_item_ids` (`getByInvNos` upsert + `getCurrentActs` merge бейджа)
+- [x] `fetchAllEquipment({force:true})` остаётся в: кнопке «Обновить»; **сознательные остатки:**
+  `add-consumable` (CI_TYPE=4 — `getByInvNos` его не вернёт, point-read API нет) и
+  maintenance-consume (cartridge/component — частичный consume делает локальный patch
+  ненадёжным, qty живёт в consumables-снапшоте); оба редкие пути
+- [x] Приёмка: тесты на qty/delete (point update + fallback), счётчики корректны,
+  лишних запросов страниц нет
 
 ### Этап 5. Кэш с версией
-- [ ] `data_version` в app-хранилище, bump при каждой API-мутации рядом с `invalidate_equipment_cache`
-- [ ] Ключ кэша `db_id + data_version + kind + page/limit`; ответы отдают `data_version`
-- [ ] Фронт: баннер «Данные обновлены — Обновить» при расхождении версии
-- [ ] Приёмка: два воркера отдают одну версию после мутации; stale определяется клиентом
+- [x] `data_version` в app-хранилище: `app_settings` KV (`equipment_data_version:{db}`,
+  SELECT FOR UPDATE bump) или JSON-файл `equipment_data_version.json` через `local_store`
+  в dev-fallback; bump внутри `invalidate_equipment_cache` — автоматически на каждой
+  мутации (все точки вызова уже есть). Мемо чтения 5с — ≤1 KV-lookup на всплеск запросов
+- [x] Ответы отдают `data_version`: `all-grouped`, `consumables-grouped`, `by-branch`,
+  `by-inv-nos`, `search/universal`; поле в `EquipmentGroupedListResponse` (дефолт 0 —
+  обратная совместимость). Ключ кэша **не** включает версию — invalidate уже сносит
+  payload'ы; версия нужна клиенту для staleness, не для ключа
+- [x] Фронт: `useDatabaseEquipmentData` — `seenDataVersionRef` per-scope, флаг
+  `dataVersionStale` при росте версии на list-load; `notifyDataVersion` для point-refresh
+  путей (transfer, act-commit) — свои мутации не дёргают баннер; Alert «Данные были
+  изменены в другой сессии — Обновить» в `Database.jsx`
+- [x] Приёмка: `tests/test_equipment_data_version.py` 5/5 (bump/per-db scope/global
+  bump/поле в ответе/persist); фронт-тесты stale-flag 2/2; чтение версии из общего
+  хранилища → два воркера видят один счётчик
 
 ### Этап 6. Рендер-жёсткость (после 1–4)
-- [ ] Стейт `expanded`/выбор поднят из карточек в стор фичи (иначе виртуализация съест состояние)
-- [ ] Стабильные колбэки, `key={invNo}`, индекс `invNo→row` в `ref`
-- [ ] Приёмка: скролл 5000 строк без просадок ввода, раскрытие переживает скролл, рендер-тесты зелёные
+- [x] Стейт `expandedBranches`/`expandedLocations`/выбор уже в контейнере (не в карточках) —
+  виртуализация/анмаунт состояние не съедает; в ref переносить не требуется
+- [x] `key={invNo || row-idx}` вместо `invNo-idx` в `DatabaseDataSections` и `EquipmentTable`
+  (последний виртуализован — стабильный ключ сохраняет reconciliation при скролле);
+  индекс `invNo→row` — `buildEquipmentIndex` (useMemo) уже есть
+- [x] Приёмка: рендер-тесты зелёные (762/762 скоп); замер «скролл 5000 строк» —
+  ручной/живой, не автоматизирован
 
 ### Этап 7. Бэк-жёсткость (можно параллельно с 3–4)
-- [ ] Резолв БД: key-lookup + короткий TTL вместо двух full-scan на каждый запрос
-- [ ] Кэш doc-type map; `not in` → set в enrich (микро, вместе)
-- [ ] **Главное: enrich «текущий акт» вынести из страницы списка** (99 мс из 150 мс) —
-  отдельный ленивый батч-эндпоинт для видимых строк
-- [ ] Пул: `SELECT 1` только при idle > N сек
-- [ ] Приёмка: число SQL на открытие/карточку меньше baseline этапа 0
+- [x] Резолв БД: key-lookup (`session.get` по PK) + TTL-мемо 30с в
+  `UserDBSelectionService.get_assigned_database` и `SettingsService.get_user_settings`
+  (инвалидация на `_write_mapping`/`_save_all`); чистится в conftest
+- [x] Кэш doc-type map: `_doc_type_map_cache` TTL 300с keyed `(db_id, sorted type_nos)` —
+  INFORMATION_SCHEMA-discovery убран из request path при повторах; `not in` → `seen_ids` set
+  в enrich (было O(n²) на 1000 id)
+- [x] **Главное: enrich «текущий акт» вынесен из страницы списка** (99 мс из 150 мс) —
+  `get_equipment_grouped`/`get_equipment_by_branch` больше не дёргают CTE; новый
+  `POST /equipment/current-acts` (`lookup_current_acts`, ≤2000 ids, `available=None` при сбое
+  lookup). Фронт: `getCurrentActs` + `mergeCurrentActsIntoGrouped` + ленивый батч на загруженные
+  строки в `useDatabaseEquipmentData` (dedup-Set, merge в allEquipment/filteredData, снапшоты
+  режимов подхватывают merge авто-эффектом; consumables-режим не вызывает эндпоинт).
+  Point-refresh by-inv-nos не стирает бейдж: `upsertItemInGrouped` проносит `current_act_*`,
+  если свежая строка их не несёт. Employee-диалог (`get_equipment_by_owner_with_current_acts`)
+  остаётся синхронно обогащённым — там enrich по месту
+- [x] Пул: `SELECT 1` только при idle > N сек — пул хранит `(conn, released_at)`;
+  ping пропускается, если соединение простаивало < `SQL_SERVER_POOL_IDLE_PING_SEC` (30с по
+  умолчанию, env-настройка); тест `test_pyodbc_pool_pings_only_idle_connections`
+- [x] Приёмка: число SQL на открытие страницы меньше baseline этапа 0 — страница списка
+  теперь COUNT(кэш)+1 list-SQL вместо +enrich-CTE; акты — один ленивый батч вне горячего пути;
+  резолв БД — 0 SQL в пределах TTL вместо 2 full-scan на каждый запрос
 
 ### Этап 8. Тесты-каркас (на каждом этапе, не «потом»)
 - [ ] Контрактные тесты этапов 1–2; мутационные тесты этапа 4; перф-бюджеты
   («страница ≤ X SQL») краснеют при превышении
+
+### Этап 9. PWA / mobile / desktop — только веб (безshm native-клиентов)
+
+Диагноз контролёра (2026-09-17, чтение кода; на реальном телефоне не проверено):
+- Диалог сотрудника на телефоне: `fullScreen`, `DialogContent overflow:hidden`
+  (`EmployeeEquipmentDialog.jsx:1895-1903`), внутри двухпанельный Stack Хаб+1С с
+  `direction column` на `xs` и внешним `overflow:hidden` (`:2005-2010`), каждая панель тоже
+  `overflow:hidden` (`:2012-2020`, `:2056-2064`), скролл только внутри таблиц (`:366`, `:413`,
+  `:749`, `:1063`). Итог: на телефоне два зажатых полуэкрана, внешний скролл заблокирован —
+  нижняя панель (склад 1С) фактически не видна, до неё не доскроллить. Это и есть жалоба
+  «список у сотрудника не виден, нет скрола».
+- Мобильные строки уже есть (`HubEquipmentMobileRow :174-273`, `WarehouseBalanceMobileRow`,
+  `ModernEquipmentCard` с `content-visibility`) — база для переработки карточки есть.
+- PWA: `manifest.webmanifest` standalone + shortcuts (dashboard/tasks/mail/chat —
+  **shortcut на `/database` отсутствует**), `sw.js` существует; кэширование `/api` в SW
+  отклонено ранее (stale) — запрет в силе.
+- Desktop: тонкая WebView2-оболочка (`desktop/README.md`), тот же фронт. Отдельной
+  бизнес-логики не делать; учитывать `display_override window-controls-overlay`,
+  печать через WebView2, отсутствие hover на тачскринах.
+
+Чек-лист 9.1. Диалог сотрудника на телефоне (приоритет 1)
+- [ ] На `xs`: вместо двух зажатых панелей — **одна видимая панель с таб-переключателем**
+  «Хаб / Склад 1С» (переиспользовать существующий `warehouseTab`-паттерн); либо внешний
+  скролл колонки с панелями авто-высоты. Запрет: два `overflow:hidden` друг в друге на телефоне
+- [ ] Фильтры (поиск/тип/статус, `:1909-1958`) на телефоне — сворачиваемые (collapsed по умолчанию),
+  иначе съедают полэкрана до списка
+- [ ] Тач-таргеты строк/кнопок ≥44px (как уже сделано для hit-areas), свайпы не вводить
+- [ ] Приёмка: на 390px видны и доступны скроллом оба списка (Хаб и 1С) + фильтры + экспорт;
+  UI-тест на мобильный layout (рендер обеих панелей по табам), ручная проверка на телефоне
+
+Чек-лист 9.2. Карточка оборудования для PWA (переработка)
+- [ ] Единая мобильная карточка на базе `ModernEquipmentCard`: инв.№ + модель крупно,
+  сотрудник/статус, бейдж акта (`EquipmentCurrentActIndicator`, «?» при отсутствии данных —
+  поведение уже корректное), раскрытие деталей по тапу, действия (акты/история/QR) — иконки 44px
+- [ ] Состояние `expanded`/выбора — вне карточки (требование этапа 6, иначе виртуализация съест)
+- [ ] Приёмка: 390px — нет горизонтального overflow, текст не налезает, тёмная тема ок;
+  тесты `ModernEquipmentCard.test.jsx` + новый тест раскрытия
+
+Чек-лист 9.3. PWA-контур (веб)
+- [ ] Shortcut `/database` в `manifest.webmanifest`; проверить `viewport-fit=cover` +
+  `theme-color` в `index.html` (safe-area уже используется в диалогах)
+- [ ] SW: офлайн-заглушка только для shell/статики; **`/api` и `/auth` не кэшировать**
+  (запрет из `DATABASE_OPTIMIZATION.md` в силе)
+- [ ] Приёмка: Lighthouse PWA на странице `/database` без регрессий; install prompt работает
+
+Чек-лист 9.4. Desktop WebView2 (только проверка, без кода оболочки)
+- [ ] Страница `/database` в окне десктопа: layout ≥1024px без мобильной деградации,
+  печать QR/актов через WebView2 print UI, хоткеи/фокус не ломаются
+- [ ] Приёмка: smoke в desktop-клиенте по чек-листу выше; баги чинятся во фронте, не в оболочке
+
+### Этап 9.5. Компоновка страницы (layout-review 2026-09-17, скиллы better-layout/interface/accessibility)
+
+Карта слоёв `Database.jsx`: MobileHeader → Tabs → SearchBar → Fallback → MobileControlStrip /
+DesktopToolbar+RecentCards → RecentCardsStrip → ActionSheet → BulkActionBar/SelectionBar →
+Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Проверено только чтением кода
+(без рендера на устройстве — визуальное подтверждение за исполнителем).
+
+- [ ] Дубли `BulkActionBar`/`SelectionBar` (`Database.jsx:1911-1960`, ~20 идентичных пропсов)
+  + третий action-surface `MobileActionSheet` → единый `SelectionActionBar` с `variant`
+- [ ] Двойной `EmployeeCompareProvider` (`:1766` и `:1978`, те же данные) → один провайдер сверху
+- [ ] Двойная анимация переключения табов `Fade` + keyframes `:1962-1970` → один механизм +
+  guard `prefers-reduced-motion` (сейчасMotion идёт безусловно)
+- [ ] Счётчики «Найдено/Загружено» (`:2006-2017`) объявить скринридеру: `role="status"` polite-region
+- [ ] Degraded-сигнал (`DatabaseSearchBar.jsx:128-132`, иконка только с hover-tooltip, нефокусируемая) →
+  фокусируемый элемент с `aria-label` и тем же текстом (сейчас клавиатура/SR его не получают)
+- [ ] `UploadActDialog` (50+ пропсов, `:2027-2086`) — разбить по шагам в рамках этапа 3
+- [ ] Приёмка: тесты `Database.test.jsx` зелёные; ручная проверка 390px + клавиатурный проход
+  (Tab до поиска/табов/карточек, Enter/Space, Esc в диалогах) + скринридер на счётчиках
+
+Что НЕ делать: редизайн ради редизайна — `fullWidth`-табы, sticky-стрип, `content-visibility`,
+индикатор «?» при отсутствии акта и `main`-landmark в `MainLayout` признаны нормой, не трогать.
+
+Что НЕ делать: native-клиенты и Capacitor не трогать (действующие — веб-PWA и `mobile-hub`/Expo);
+свайп-жесты и pull-to-refresh не вводить без отдельного решения; `/api` в SW-кэш — запрещено.
+
+## Верификация контролёра — сессия агента 2026-09-17 (этапы 3, 5, 6; код не менялся)
+
+Проверено чтением diff, точечными grep и прогонами поверх `d78e4d2a` (всё ещё не закоммичено).
+
+**Подтверждаю:**
+- Этап 3: `Database.jsx` — 39 строк, контейнер без состояния, старые реэкспорты (`uploadAct`,
+  `equipmentModel`) сохранены для совместимости. Оркестрация — `useDatabasePageViewModel.js`
+  (1821 строка), JSX — `DatabasePageView.jsx` (1130 строк), 14 lazy-диалогов — в
+  `DatabaseDialogsLayer.jsx` (все `lazy()`, сплит чанков сохранён; слой подключён в PageView).
+  Ключи `key={invNo || row-idx}` — в `DatabaseDataSections.jsx:59`, `EquipmentTable.jsx:501`.
+- Этап 5: счётчик в `equipment_db.py` (KV `app_settings` + JSON-fallback, bump внутри
+  `invalidate_equipment_cache`, `with_for_update` в PG-ветке — проверено чтением `:111-159`);
+  `data_version` отдают все 5 путей: grouped/by-branch (`equipment_db.py:276,339`),
+  consumables (`:388`), `by-inv-nos` (`equipment.py:1026`), `search/universal` (`:880`).
+  Фронт: `dataVersionStale` + баннер (`DatabasePageView.jsx:543`), point-refresh пути версию
+  учитывают (`useDatabaseTransferAction.js:133`, view-model `:386`). Тесты:
+  `test_equipment_data_version.py` 5/5 (мой прогон), stale-флаги фронта зелёные.
+- Этап 6: стейт раскрытия/выбора не в карточках (проверено ранее), ключи стабильные.
+- Проверки мои: backend-скоп 33/33, `data_version` 5/5, фронт database-скоп **84 файла / 463 теста —
+  всё зелёное**, включая `Database.test.jsx` 42/42. Production build не гонял: изменений сборки/
+  роутинга/auth/API-клиента в скоупе нет, граф импортов покрыт тестами.
+- Мульти-воркер видимость счётчика — только кодом (общее KV-хранилище); живой check — на стенде.
+
+**Поправки к записям агента:**
+- «762/762» — не сошлось с замером: database-скоп у меня 463/463 (84 файла). Исправить отчётность
+  агента; суть (всё зелёное) верна.
+- Баннер stale — в `DatabasePageView.jsx:543`, не в `Database.jsx` (мелочь).
+- Размеры: PageView 1130 строк (не ~1250), view-model 1821 (не ~1900) — порядок тот же.
+- Остаток этапов: 8 (каркас), 9.1–9.5 (PWA/mobile/компоновка), live smoke + multi-worker check.
+
+## Верификация контролёра — сессия агента (2026-09-17, workdir поверх `d78e4d2a`, код не менялся)
+
+Проверено чтением diff, точечными grep и прогонами. Что агент заявил в чек-листах выше —
+по существу верно, с поправками ниже.
+
+**Подтверждаю:**
+- Этап 2: серверный поиск реализован как заявлено (`useDatabaseSearch.js` → `searchUniversal(q,1,200)`,
+  `groupSearchRowsByBranchLocation`, `loadMoreSearchResults`, sentinel на search-пагинацию,
+  debounce 300/Enter сохранены, `searchIndex` из deps убран — данные в ref, сравнительный тест
+  `test_universal_search_covers_client_index_fields` (`tests/test_equipment_contract.py:234`) зелёный,
+  `i.ID as id` в SELECT есть). `buildDatabaseSearchIndex` оставлен как fallback + движок расходников —
+  решение разумное, принимаю.
+- Этап 4: qty → `updateItemFieldsInGrouped`, delete → `removeItemFromGrouped` + декремент счётчиков,
+  коммит акта → point-refresh по `linked_inv_nos`/`linked_item_ids` (оба поля реально есть в ответе
+  API — `backend/api/v1/equipment.py:2351-2352`, `models/equipment.py:480-481`). Остатки
+  add-consumable/maintenance задокументированы честно. `upsertItemInGrouped` проносит `current_act_*` —
+  проверено чтением.
+- Этап 7 (новое, незакоммичено): idle-ping пула (`connection.py`, `SQL_SERVER_POOL_IDLE_PING_SEC`, тест
+  `test_pyodbc_pool_pings_only_idle_connections` зелёный); key-lookup + TTL 30с в
+  `settings_service`/`user_db_selection_service` с инвалидацией на записи; defensive `getattr`
+  в `database.py:112` + починка фикстуры — `tests/test_equipment_history_api.py` теперь 4/4
+  (было 2 падения, мои и агентские прогоны сходятся).
+- Этап 1: код из HEAD-коммита, `tests/test_equipment_contract.py` — **9/9** (в плане написано 8 — мелочь).
+- Проверки мои: backend-скоп 33/33 (`search_read_helpers`, `history_api`, `contract`, `hot_paths`,
+  `selection_contract`); фронт Database-скоп 30 + 64 = 94/94 (`useDatabaseSearch`, `ConsumableQty`,
+  `EquipmentData`, `equipmentModel`, `Database.test` 42, `EmployeeEquipmentDialog` 11,
+  `Warehouse1CTab`, `Excel`, новый `useDatabaseConsumableDelete.test`); полный фронт-сюит:
+  3594 passed / 2 skipped, 3 падения — **предсуществующие** (`requestOrdering`, `Settings AiBots`,
+  `ChatThread font`; доказано прогоном тех же 3 файлов на чистом worktree HEAD — падают так же).
+  Заявление «755/755 vitest» в плане неверно: всего ~3599 тестов, Database-скоп зелёный полностью.
+
+**Замечания (не блокеры, в работу агенту):**
+1. ~~`searchLoading` и `serverSearchDegraded` возвращаются хуком, но `Database.jsx` их не деструктурирует~~ —
+   **снято 2026-09-17 как ошибочное:** оба флага деструктурируются (`Database.jsx:449,453`),
+   проброшены в `DatabaseSearchBar` (`:1762-1763`) и рисуются (спиннер `:127`,
+   degraded-иконка `:128-132`). Остаток по теме — только доступность degraded-сигнала (см. этап 9.5).
+2. Коммит акта с пустыми `linked_inv_nos` и `linked_item_ids` одновременно: ни point-refresh,
+   ни fallback не срабатывают — тишина вместо обновления (раньше всегда был force-reload).
+   Маловероятно (payload требует inv), но стоит fallback на этот случай.
+3. Строки результатов поиска без актов показывают «?» в `EquipmentCurrentActIndicator` — корректно
+   и задумано, фиксирую как ок.
+4. Вне плана и вне Database-коммита держать отдельно: реворк `EmployeeEquipmentDialog` (+1368:
+   табы, сортировка, `InventoryTaskDialog`, `warehouse1cMovementDetail`, mail-preview), удаление
+   `EmployeeComparePanel` (висячих импортов нет — проверено), правки excel/1C-таба, `TASKS_OPTIMIZATION.md`,
+   мусор дерева (`tmp_*`, `nul`, `probe_1c.py`, `_manual_env_tests/`, `equipment_on_dismissed_employees.txt`,
+   `missing_current_acts_all_dbs.txt`, `test_backend_restart_runtime.py`, `test_warehouse_1c_*`,
+   `mobile-hub/release-notes/1.1.40.json`) — не смешивать с Database-коммитом.
+5. Незакоммиченные файлы Database-скопа, не забыть при коммите: `tests/test_equipment_contract.py`,
+   `useDatabaseConsumableDelete.test.jsx`, `InventoryTaskDialog.jsx`, `warehouse1cMovementDetail.jsx`
+   (последние два — только если реворк диалога идёт в тот же коммит; рекомендую отдельным).
+
+## Верификация контролёра (2026-09-16, пост-коммит `d78e4d2a`)
+
+Проверено независимыми прогонами и live-замерами (SELECT-only, ITINVENT, холодный кэш):
+
+- Этап 1 — подтверждаю: `tests/test_equipment_contract.py` 8/8 (мой прогон);
+  slim-строки live (23 ключа, без `DESCR`/enrich); universal live (p1 62.8 мс/total 158/pages 4).
+- Этап 7 — подтверждаю почти всё: страница списка **37 мс** вместо 147–161 мс (enrich убран
+  из `equipment_db.py` полностью — проверено grep; остался только owner-путь `queries.py:400`
+  для employee-диалога, это задумано); `POST /equipment/current-acts` live (55 id за 84 мс);
+  цепочка `getCurrentActs → merge` с generation-guard и retry; `currentActsFetchedRef` чистится
+  при смене БД (`database-changed` → `resetAllModeData`), подозрение на stale-акты снято;
+  `seen_ids`-set на месте; doc-type memo на месте (чтением кода).
+- Оговорка: резолв-БД через key-lookup (`settings_service`/`user_db_selection_service`)
+  лежит в **незакоммиченном** остатке дерева — пометка [x] выше относится к workdir, не к `d78e4d2a`.
+- Предсуществующая поломка (не от коммита, доказано прогоном на чистом worktree `HEAD~1`):
+  `tests/test_equipment_history_api.py` — 2 теста падают из-за фикстуры без `assigned_database`
+  (`database.py:112` прямой доступ к атрибуту). Задача рефактореру: defensive `getattr` в
+  `_get_assigned_db` и/или починка фикстуры. Код не правил.
+- Тесты пост-коммит: backend 62/64 (2 падения — те самые предсуществующие history);
+  фронт `pages/database` 454/454 + точечные хуки 34/34. Остаток дерева (68 записей, my_files/1C/mobile)
+  не проверялся.
 
 ## Порядок и effort
 

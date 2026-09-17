@@ -24,7 +24,14 @@ def equipment_history_env():
     app = FastAPI()
     app.include_router(equipment_api.router, prefix="/equipment")
 
-    current_user = SimpleNamespace(username="operator", role="operator", is_active=True)
+    current_user = SimpleNamespace(
+        id=1,
+        username="operator",
+        role="operator",
+        is_active=True,
+        telegram_id=None,
+        assigned_database=None,
+    )
     app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
     app.dependency_overrides[deps.get_current_database_id] = lambda: "main"
 

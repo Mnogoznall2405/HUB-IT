@@ -13,6 +13,7 @@ vi.mock('../../api/client', () => ({
     getBranchesList: vi.fn(),
     getAllEquipmentGrouped: vi.fn(),
     getAllConsumablesGrouped: vi.fn(),
+    getCurrentActs: vi.fn(),
   },
 }));
 
@@ -62,6 +63,44 @@ describe('useDatabaseEquipmentData', () => {
       total: 1,
       pages: 1,
     });
+    equipmentAPI.getCurrentActs.mockResolvedValue({ items: [] });
+  });
+
+  it('lazy-loads current acts once for loaded equipment rows and merges them', async () => {
+    const itemWithId = { ...firstItem, ID: 11 };
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(async ({ page = 1 } = {}) => (
+      page === 1
+        ? { grouped: { HQ: { Office: [itemWithId] } }, total: 1, pages: 1 }
+        : { grouped: {}, total: 1, pages: 1 }
+    ));
+    equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [{ item_id: 11, available: true, doc_no: 77, doc_number: 'Акт 77', doc_date: '2026-01-05' }],
+    });
+    const setFilteredData = vi.fn();
+
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({
+      prefetchPages: 0,
+      setFilteredData,
+    })));
+
+    await waitFor(() => expect(equipmentAPI.getCurrentActs).toHaveBeenCalledWith([11]));
+    await waitFor(() => expect(
+      result.current.allEquipment.HQ.Office[0].current_act_available
+    ).toBe(true));
+    expect(result.current.allEquipment.HQ.Office[0].current_act_doc_no).toBe(77);
+    expect(setFilteredData).toHaveBeenCalledWith(expect.any(Function));
+    // Consumables mode must not call the equipment-only acts endpoint.
+    expect(equipmentAPI.getAllConsumablesGrouped).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch current acts for consumables mode', async () => {
+    renderHook(() => useDatabaseEquipmentData(createProps({
+      dataMode: DATA_MODE_CONSUMABLES,
+      prefetchPages: 0,
+    })));
+
+    await waitFor(() => expect(equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalled());
+    expect(equipmentAPI.getCurrentActs).not.toHaveBeenCalled();
   });
 
   it('loads dictionaries, first page, and prefetched next page on mount', async () => {
@@ -234,5 +273,54 @@ describe('useDatabaseEquipmentData', () => {
       expect.any(Function),
       { staleTimeMs: 1234, force: true }
     );
+  });
+
+  it('flags stale data when a later response carries a newer data_version', async () => {
+    let version = 1;
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(async ({ page = 1 } = {}) => (
+      page === 1
+        ? { grouped: { HQ: { Office: [firstItem] } }, total: 1, pages: 1, data_version: version }
+        : { grouped: {}, total: 1, pages: 1, data_version: version }
+    ));
+
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+    await waitFor(() => expect(result.current.loadedCount).toBe(1));
+    expect(result.current.dataVersionStale).toBe(false);
+
+    // Someone else mutated the data; the next list response reports a newer version.
+    version = 2;
+    await act(async () => {
+      await result.current.fetchAllEquipment({ force: false, mode: DATA_MODE_EQUIPMENT });
+    });
+    expect(result.current.dataVersionStale).toBe(true);
+  });
+
+  it('clears the stale flag on a force refresh and tracks point-refresh versions', async () => {
+    let version = 3;
+    equipmentAPI.getAllEquipmentGrouped.mockImplementation(async ({ page = 1 } = {}) => (
+      page === 1
+        ? { grouped: { HQ: { Office: [firstItem] } }, total: 1, pages: 1, data_version: version }
+        : { grouped: {}, total: 1, pages: 1, data_version: version }
+    ));
+
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+    await waitFor(() => expect(result.current.loadedCount).toBe(1));
+
+    // A point refresh (by-inv-nos) already saw the newer version — no stale nag.
+    act(() => {
+      result.current.notifyDataVersion(4);
+    });
+    version = 4;
+    await act(async () => {
+      await result.current.fetchAllEquipment({ force: false, mode: DATA_MODE_EQUIPMENT });
+    });
+    expect(result.current.dataVersionStale).toBe(false);
+
+    // Force refresh clears the flag even when the server version advanced.
+    version = 5;
+    await act(async () => {
+      await result.current.fetchAllEquipment({ force: true, mode: DATA_MODE_EQUIPMENT });
+    });
+    expect(result.current.dataVersionStale).toBe(false);
   });
 });

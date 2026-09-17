@@ -138,18 +138,46 @@ export const getEquipmentRowActions = ({
   ]));
 };
 
+const CURRENT_ACT_FIELDS = [
+  'current_act_available',
+  'current_act_doc_no',
+  'current_act_doc_number',
+  'current_act_doc_date',
+];
+
 export const upsertItemInGrouped = (groupedData, nextItem) => {
   const targetInvNo = toInvNo(nextItem);
   const nextGrouped = {};
+  let previousItem = null;
 
   Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
     Object.entries(locations || {}).forEach(([locationName, items]) => {
-      const filteredItems = (items || []).filter((item) => toInvNo(item) !== targetInvNo);
+      const filteredItems = (items || []).filter((item) => {
+        if (toInvNo(item) === targetInvNo) {
+          previousItem = item;
+          return false;
+        }
+        return true;
+      });
       if (filteredItems.length === 0) return;
       if (!nextGrouped[branchName]) nextGrouped[branchName] = {};
       nextGrouped[branchName][locationName] = filteredItems;
     });
   });
+
+  // Point-refresh rows (by-inv-nos) don't carry the lazy current-act fields —
+  // carry them over so the badge isn't erased mid-session.
+  let itemToInsert = nextItem;
+  if (
+    previousItem &&
+    nextItem.current_act_available === undefined &&
+    previousItem.current_act_available !== undefined
+  ) {
+    itemToInsert = { ...nextItem };
+    CURRENT_ACT_FIELDS.forEach((field) => {
+      itemToInsert[field] = previousItem[field];
+    });
+  }
 
   const targetBranch = String(nextItem?.BRANCH_NAME || nextItem?.branch_name || 'Не указан').trim() || 'Не указан';
   const targetLocation = String(
@@ -158,7 +186,7 @@ export const upsertItemInGrouped = (groupedData, nextItem) => {
 
   if (!nextGrouped[targetBranch]) nextGrouped[targetBranch] = {};
   if (!nextGrouped[targetBranch][targetLocation]) nextGrouped[targetBranch][targetLocation] = [];
-  nextGrouped[targetBranch][targetLocation] = [nextItem, ...nextGrouped[targetBranch][targetLocation]];
+  nextGrouped[targetBranch][targetLocation] = [itemToInsert, ...nextGrouped[targetBranch][targetLocation]];
 
   return nextGrouped;
 };
@@ -191,6 +219,28 @@ export const mergeCurrentActsIntoGrouped = (groupedData, actsByItemId) => {
     nextGrouped[branchName] = nextLocations;
   });
   return nextGrouped;
+};
+
+// Patch fields on an existing row in place (qty edit etc.) — no refetch, row
+// keeps its branch/location bucket and identity.
+export const updateItemFieldsInGrouped = (groupedData, targetInvNo, patch) => {
+  const normalizedInvNo = String(targetInvNo || '').trim();
+  if (!normalizedInvNo || !patch || typeof patch !== 'object') return groupedData || {};
+
+  const nextGrouped = {};
+  let touched = false;
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      nextLocations[locationName] = (items || []).map((item) => {
+        if (toInvNo(item) !== normalizedInvNo) return item;
+        touched = true;
+        return { ...item, ...patch };
+      });
+    });
+    nextGrouped[branchName] = nextLocations;
+  });
+  return touched ? nextGrouped : groupedData;
 };
 
 export const removeItemFromGrouped = (groupedData, targetInvNo) => {
