@@ -11,7 +11,7 @@ from backend.api.v1 import my_files as my_files_api
 from backend.config import MyFilesPublicRateLimitConfig, config
 from backend.models.auth import User
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
-from backend.services.my_files_service import DownloadPayload, MyFilesNotFoundError, _UNSET
+from backend.services.my_files_service import DownloadPayload, MyFilesNotFoundError, MyFilesService, _UNSET
 
 
 def _user() -> User:
@@ -63,6 +63,24 @@ class FakeMyFilesService:
         self.upload = None
         self.folders = {}
         self.folder_calls = []
+        self.zstd_plaintext = b"hello zstd world\n" * 64
+
+    @staticmethod
+    def iter_zstd_download(path, *, start=0, end=None):
+        return MyFilesService.iter_zstd_download(path, start=start, end=end)
+
+    def consume_download_grant(self, *, token: str, meta=None):
+        if token != "grant-token":
+            raise MyFilesNotFoundError("File not found")
+        path = self.tmp_path / "grant-payload.txt"
+        path.write_bytes(b"grant-payload")
+        return DownloadPayload(
+            path=path,
+            mode="stored",
+            file_name="grant-payload.txt",
+            media_type="text/plain",
+            download_size_bytes=len(b"grant-payload"),
+        )
 
     def list_files(self, *, user_id: int, folder_id=None, view: str = ""):
         self.seen_user_id = user_id
@@ -258,6 +276,19 @@ class FakeMyFilesService:
         }
 
     def get_public_download(self, *, token: str, meta=None):
+        if token == "zstd-token":
+            import zstandard as zstd
+
+            payload = self.zstd_plaintext
+            path = self.tmp_path / "zstd-token.zst"
+            path.write_bytes(zstd.ZstdCompressor(level=3).compress(payload))
+            return DownloadPayload(
+                path=path,
+                mode="zstd",
+                file_name="zstd-token.txt",
+                media_type="text/plain",
+                download_size_bytes=len(payload),
+            )
         if token not in {"share-token", "share-token-b"}:
             raise MyFilesNotFoundError("File not found")
         path = self.tmp_path / f"{token}.txt"
@@ -513,7 +544,7 @@ def test_authenticated_chunked_upload_reserves_appends_and_completes(monkeypatch
 def test_chunked_upload_rejects_oversized_chunk_before_service_write(monkeypatch, tmp_path):
     fake_service = FakeMyFilesService(tmp_path)
     monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
-    monkeypatch.setattr(my_files_api, "UPLOAD_CHUNK_SIZE_BYTES", 4)
+    monkeypatch.setattr(my_files_api, "UPLOAD_CHUNK_MAX_SIZE_BYTES", 4)
     client = _client(fake_service)
     client.post(
         "/my-files/upload-sessions",
@@ -760,3 +791,100 @@ def test_list_folders_endpoint(monkeypatch, tmp_path):
     assert response.status_code == 200
     names = [f["name"] for f in response.json()["items"]]
     assert names == ["Папка А", "Папка Б"]
+
+
+def test_public_zstd_download_streams_full_body(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.get("/my-files/public/zstd-token/download")
+
+    assert response.status_code == 200
+    assert response.content == fake_service.zstd_plaintext
+    assert response.headers["content-length"] == str(len(fake_service.zstd_plaintext))
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_public_zstd_download_honors_single_byte_range(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    total = len(fake_service.zstd_plaintext)
+
+    response = client.get("/my-files/public/zstd-token/download", headers={"range": "bytes=2-5"})
+
+    assert response.status_code == 206
+    assert response.content == fake_service.zstd_plaintext[2:6]
+    assert response.headers["content-range"] == f"bytes 2-5/{total}"
+    assert response.headers["content-length"] == "4"
+    assert response.headers["accept-ranges"] == "bytes"
+
+
+def test_public_zstd_download_honors_open_ended_and_suffix_ranges(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    total = len(fake_service.zstd_plaintext)
+
+    open_ended = client.get("/my-files/public/zstd-token/download", headers={"range": "bytes=4-"})
+    suffix = client.get("/my-files/public/zstd-token/download", headers={"range": "bytes=-3"})
+
+    assert open_ended.status_code == 206
+    assert open_ended.content == fake_service.zstd_plaintext[4:]
+    assert open_ended.headers["content-range"] == f"bytes 4-{total - 1}/{total}"
+    assert suffix.status_code == 206
+    assert suffix.content == fake_service.zstd_plaintext[-3:]
+    assert suffix.headers["content-range"] == f"bytes {total - 3}-{total - 1}/{total}"
+
+
+@pytest.mark.parametrize(
+    "range_header",
+    [
+        "bytes=abc",
+        "bytes=0-1,2-3",
+        "bytes=99999999-",
+        "bytes=5-3",
+        "bytes=-0",
+        "items=0-1",
+        "bytes=-",
+    ],
+)
+def test_public_zstd_download_rejects_bad_ranges(monkeypatch, tmp_path, range_header):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    total = len(fake_service.zstd_plaintext)
+
+    response = client.get("/my-files/public/zstd-token/download", headers={"range": range_header})
+
+    assert response.status_code == 416
+    assert response.headers["content-range"] == f"bytes */{total}"
+
+
+def test_stored_download_keeps_native_file_response_range(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    response = client.get("/my-files/public/share-token/download", headers={"range": "bytes=0-3"})
+
+    assert response.status_code == 206
+    assert response.content == b"hell"
+    assert response.headers["content-range"] == "bytes 0-3/11"
+
+
+def test_download_grant_token_allows_bounded_retries(monkeypatch, tmp_path):
+    fake_service = FakeMyFilesService(tmp_path)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+
+    responses = [
+        client.get("/my-files/download-grant/grant-token")
+        for _ in range(5)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200, 429]
+    assert responses[-1].headers.get("retry-after")

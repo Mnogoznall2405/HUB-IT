@@ -58,7 +58,7 @@ def enforce_download_grant_consume_limits(request: Request, token: str) -> None:
     enforce_rate_limit(
         namespace="my_files_download_grant_consume:token",
         key=_hash_grant_token(token),
-        limit=1,
+        limit=limits.consume_limit_per_token,
         window_seconds=max(30, int(limits.ttl_seconds or 120)),
         request=request,
         include_retry_after=True,

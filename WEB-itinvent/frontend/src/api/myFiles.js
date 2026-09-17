@@ -10,6 +10,7 @@ const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15000;
 /** 16 MB chunk over a slow link; keep above typical IIS/ARR defaults when raised to 10 min. */
 const UPLOAD_CHUNK_TIMEOUT_MS = 300_000;
 const UPLOAD_COMPLETE_TIMEOUT_MS = 120_000;
+const UPLOAD_PARALLEL_CHUNKS = 4;
 /** Согласовано с backend MY_FILES_MAX_FILE_BYTES; чанки идут отдельными запросами. */
 export const MY_FILES_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
 
@@ -58,7 +59,12 @@ const findResumableSession = async ({ file, folderId, signal }) => {
     const status = await myFilesAPI.getUploadSession(fileId, { signal });
     if (Number(status?.file_size_bytes || 0) !== Number(file?.size || 0)) return null;
     if (status?.complete) return null;
-    return { file_id: fileId, chunk_size_bytes: status?.chunk_size_bytes, uploaded_bytes: status?.uploaded_bytes };
+    return {
+      file_id: fileId,
+      chunk_size_bytes: status?.chunk_size_bytes,
+      uploaded_bytes: status?.uploaded_bytes,
+      ranges: status?.ranges,
+    };
   } catch {
     return null;
   }
@@ -97,6 +103,38 @@ const emitUploadProgress = (callback, loaded, total) => {
     loaded: Math.max(0, Math.min(Number(total || 0), Number(loaded || 0))),
     total: Math.max(0, Number(total || 0)),
   });
+};
+
+const normalizeUploadRanges = (ranges, totalBytes) => {
+  if (!Array.isArray(ranges)) return null;
+  const normalized = ranges
+    .map((item) => [Number(item?.[0] || 0), Number(item?.[1] || 0)])
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start)
+    .map(([start, end]) => [start, Math.min(end, totalBytes)])
+    .sort((a, b) => a[0] - b[0]);
+  return normalized;
+};
+
+const rangeIsCovered = (ranges, start, end) => (
+  Array.isArray(ranges) && ranges.some(([rs, re]) => rs <= start && re >= end)
+);
+
+const buildUploadTasks = (coveredRanges, totalBytes, chunkSizeBytes) => {
+  const tasks = [];
+  let cursor = 0;
+  const sorted = [...coveredRanges].sort((a, b) => a[0] - b[0]);
+  for (const [start, end] of sorted) {
+    if (start > cursor) {
+      for (let offset = cursor; offset < start; offset += chunkSizeBytes) {
+        tasks.push({ offset, end: Math.min(start, offset + chunkSizeBytes) });
+      }
+    }
+    cursor = Math.max(cursor, end);
+  }
+  for (let offset = cursor; offset < totalBytes; offset += chunkSizeBytes) {
+    tasks.push({ offset, end: Math.min(totalBytes, offset + chunkSizeBytes) });
+  }
+  return tasks;
 };
 
 const waitForUploadRetry = (delayMs, signal) => new Promise((resolve, reject) => {
@@ -139,6 +177,11 @@ const isRetriableUploadError = (error) => {
   if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return false;
   const status = Number(error?.response?.status || 0);
   if (!status) return true; // network / timeout without HTTP status
+  if (status === 400) {
+    const detail = error?.response?.data?.detail;
+    if (typeof detail === 'string') return !detail.trim();
+    return detail === undefined || detail === null;
+  }
   if (status === 408 || status === 425 || status === 429) return true;
   if (status >= 500) return true;
   return false;
@@ -326,7 +369,7 @@ export const myFilesAPI = {
     );
     return response.data;
   },
-  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal } = {}) => {
+  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal, parallelChunks = UPLOAD_PARALLEL_CHUNKS } = {}) => {
     const totalBytes = Math.max(0, Number(file?.size || 0));
     let fileId = '';
     emitUploadProgress(onUploadProgress, 0, totalBytes);
@@ -336,59 +379,76 @@ export const myFilesAPI = {
       fileId = String(session?.file_id || '').trim();
       saveUploadResume(file, folderId, fileId);
       const chunkSizeBytes = Number(session?.chunk_size_bytes || 0);
-      let uploadedBytes = Math.max(0, Number(session?.uploaded_bytes || 0));
-      if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0 || uploadedBytes > totalBytes) {
+      if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0) {
         throw new Error('My files upload session response is invalid');
       }
 
-      emitUploadProgress(onUploadProgress, uploadedBytes, totalBytes);
-      while (uploadedBytes < totalBytes) {
-        const chunkOffset = uploadedBytes;
-        const chunk = file.slice(chunkOffset, Math.min(totalBytes, chunkOffset + chunkSizeBytes));
-        let acknowledged = false;
-        let lastError = null;
+      const coveredRanges = normalizeUploadRanges(session?.ranges, totalBytes)
+        || (Number(session?.uploaded_bytes || 0) > 0
+          ? [[0, Math.min(totalBytes, Number(session.uploaded_bytes))]]
+          : []);
+      const tasks = buildUploadTasks(coveredRanges, totalBytes, chunkSizeBytes);
+      let confirmedBytes = coveredRanges.reduce((sum, [start, end]) => sum + (end - start), 0);
+      const inFlight = new Map();
+      const emitAggregate = () => {
+        let sent = confirmedBytes;
+        inFlight.forEach((loaded) => { sent += loaded; });
+        emitUploadProgress(onUploadProgress, sent, totalBytes);
+      };
+      emitAggregate();
 
-        for (let attempt = 0; attempt <= UPLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+      let nextTaskIndex = 0;
+      const uploadTask = async (taskIndex) => {
+        const { offset, end } = tasks[taskIndex];
+        const chunk = file.slice(offset, end);
+        for (let attempt = 0; ; attempt += 1) {
           try {
-            const result = await myFilesAPI.uploadChunk(fileId, chunk, {
-              offset: chunkOffset,
+            await myFilesAPI.uploadChunk(fileId, chunk, {
+              offset,
               signal,
               onUploadProgress: (event) => {
-                const sent = Math.min(Number(chunk?.size || 0), Number(event?.loaded || 0));
-                emitUploadProgress(onUploadProgress, chunkOffset + sent, totalBytes);
+                inFlight.set(taskIndex, Math.min(end - offset, Number(event?.loaded || 0)));
+                emitAggregate();
               },
             });
-            const nextUploadedBytes = Number(result?.uploaded_bytes || 0);
-            if (nextUploadedBytes <= chunkOffset || nextUploadedBytes > totalBytes) {
-              throw new Error('My files upload chunk acknowledgement is invalid');
-            }
-            uploadedBytes = nextUploadedBytes;
-            acknowledged = true;
-            break;
+            inFlight.delete(taskIndex);
+            confirmedBytes += end - offset;
+            emitAggregate();
+            return;
           } catch (error) {
-            lastError = error;
+            inFlight.delete(taskIndex);
             if (signal?.aborted) throw error;
             try {
               const status = await myFilesAPI.getUploadSession(fileId, { signal });
-              const recoveredBytes = Number(status?.uploaded_bytes || 0);
-              if (recoveredBytes > chunkOffset && recoveredBytes <= totalBytes) {
-                uploadedBytes = recoveredBytes;
-                acknowledged = true;
-                break;
+              const ranges = normalizeUploadRanges(status?.ranges, totalBytes);
+              if (ranges && rangeIsCovered(ranges, offset, end)) {
+                confirmedBytes += end - offset;
+                emitAggregate();
+                return;
               }
             } catch (statusError) {
               if (signal?.aborted) throw statusError;
             }
-            if (!isRetriableUploadError(error)) throw error;
-            if (attempt < UPLOAD_RETRY_DELAYS_MS.length) {
-              await waitForUploadRetry(UPLOAD_RETRY_DELAYS_MS[attempt], signal);
+            if (!isRetriableUploadError(error) || attempt >= UPLOAD_RETRY_DELAYS_MS.length) {
+              throw error;
             }
+            await waitForUploadRetry(UPLOAD_RETRY_DELAYS_MS[attempt], signal);
           }
         }
+      };
 
-        if (!acknowledged) throw lastError || new Error('My files upload chunk failed');
-        emitUploadProgress(onUploadProgress, uploadedBytes, totalBytes);
-      }
+      const requestedWorkers = Math.trunc(Number(parallelChunks) || UPLOAD_PARALLEL_CHUNKS);
+      const workers = Array.from(
+        { length: Math.min(Math.max(1, requestedWorkers), UPLOAD_PARALLEL_CHUNKS, tasks.length) },
+        async () => {
+          while (nextTaskIndex < tasks.length) {
+            const taskIndex = nextTaskIndex;
+            nextTaskIndex += 1;
+            await uploadTask(taskIndex);
+          }
+        },
+      );
+      await Promise.all(workers);
 
       const completed = await myFilesAPI.completeUploadSession(fileId, { signal });
       emitUploadProgress(onUploadProgress, totalBytes, totalBytes);
@@ -450,15 +510,16 @@ export const myFilesAPI = {
   triggerNativeDownload: (absoluteUrl) => {
     const url = String(absoluteUrl || '').trim();
     if (!url || typeof document === 'undefined') return false;
-    const iframe = document.createElement('iframe');
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.setAttribute('tabindex', '-1');
-    iframe.style.cssText = 'display:none;width:0;height:0;border:0';
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    window.setTimeout(() => {
-      iframe.remove();
-    }, 120_000);
+    const anchor = document.createElement('a');
+    anchor.setAttribute('aria-hidden', 'true');
+    anchor.setAttribute('tabindex', '-1');
+    anchor.style.display = 'none';
+    anchor.href = url;
+    anchor.download = '';
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
     return true;
   },
   createShare: async (fileId, { rotate = false } = {}) => {

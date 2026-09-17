@@ -425,11 +425,15 @@ it('does not let an older response overwrite an explicit refresh', async () => {
 it('expands and collapses the full filename without loading data again', async () => {
   const view = await render(<NativeMyFilesScreen />);
   await waitFor(() => expect(view.getByText('report.pdf')).toBeTruthy());
+  expect(view.queryByTestId('native-my-file-expand-f-1')).toBeNull();
+  const nameMeasure = view.getByTestId('native-my-file-name-measure-f-1', { includeHiddenElements: true });
+  fireEvent(nameMeasure, 'textLayout', { nativeEvent: { lines: [{}, {}, {}] } });
   const calls = (myFilesApi.listMyFiles as jest.Mock).mock.calls.length;
-  await fireEvent.press(view.getByLabelText('Показать полное название файла: report.pdf'));
-  expect(view.getByLabelText('Свернуть название файла: report.pdf').props.accessibilityState.expanded).toBe(true);
-  await fireEvent.press(view.getByLabelText('Свернуть название файла: report.pdf'));
-  expect(view.getByLabelText('Показать полное название файла: report.pdf').props.accessibilityState.expanded).toBe(false);
+  const expander = await waitFor(() => view.getByTestId('native-my-file-expand-f-1'));
+  await fireEvent.press(expander);
+  expect(view.getByTestId('native-my-file-expand-f-1').props.accessibilityState.expanded).toBe(true);
+  await fireEvent.press(view.getByTestId('native-my-file-expand-f-1'));
+  expect(view.getByTestId('native-my-file-expand-f-1').props.accessibilityState.expanded).toBe(false);
   expect(myFilesApi.listMyFiles).toHaveBeenCalledTimes(calls);
   await view.unmount();
 });
@@ -564,6 +568,7 @@ it('restores and permanently removes trash entries', async () => {
   const view = await render(<NativeMyFilesScreen />);
   await waitFor(() => expect(view.getByTestId('native-my-files-list')).toBeTruthy());
 
+  await pressAndFlush(view.getByTestId('native-my-files-view-picker'));
   await pressAndFlush(view.getByTestId('native-my-files-view-trash'));
 
   await waitFor(() => expect(myFilesApi.listMyFilesTrash).toHaveBeenCalled());
@@ -622,6 +627,7 @@ it('lists pinned files without a folder snapshot and uses only local open and re
  (offlineStore.getNativeMyFilesOfflineIds as jest.Mock).mockResolvedValue(new Set([readyFile.id]));
  (offlineStore.getNativeMyFilesOfflineFile as jest.Mock).mockResolvedValue({uri:'file:///document/offline.pdf'});
  const v=await render(<NativeMyFilesScreen/>);
+ await pressAndFlush(v.getByTestId('native-my-files-view-picker'));
  await pressAndFlush(v.getByTestId('native-my-files-view-offline'));
  await waitFor(()=>expect(v.getByText('report.pdf')).toBeTruthy());
  expect(myFilesApi.listMyFiles).not.toHaveBeenCalled();

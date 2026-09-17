@@ -326,5 +326,6 @@ def test_folder_archive_grant_builds_zip(tmp_path):
         assert sorted(archive.namelist()) == ["top.bin", "Внутренняя/nested.bin"]
     payload.path.unlink(missing_ok=True)
 
-    with pytest.raises(MyFilesNotFoundError):
-        service.consume_download_grant(token=grant["token"])
+    retry = service.consume_download_grant(token=grant["token"])
+    assert retry.file_name == "Внешняя.zip"
+    retry.path.unlink(missing_ok=True)

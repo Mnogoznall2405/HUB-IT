@@ -148,10 +148,39 @@ def test_kaspersky_detection_is_blocked(tmp_path, monkeypatch, enabled_antivirus
 
 
 @pytest.mark.parametrize(
+    "errors,skipped",
+    [(1, 0), (0, 1)],
+)
+def test_kaspersky_partial_coverage_passes_with_detail(
+    tmp_path,
+    monkeypatch,
+    enabled_antivirus,
+    errors,
+    skipped,
+):
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"payload")
+    kaspersky_path = Path(r"C:\Kaspersky\avp.com")
+    enabled_antivirus.antivirus_provider = "kaspersky"
+    monkeypatch.setattr(antivirus, "_resolve_kaspersky_path", lambda _path="": kaspersky_path, raising=False)
+    monkeypatch.setattr(
+        antivirus.subprocess,
+        "run",
+        lambda args, **_kwargs: _completed(
+            args, _kaspersky_output(errors=errors, skipped=skipped)
+        ),
+    )
+
+    result = antivirus.scan_my_file(payload)
+
+    assert result.status == "clean"
+    assert result.engine == "kaspersky-endpoint-security"
+    assert "Partial scan coverage" in result.detail
+
+
+@pytest.mark.parametrize(
     "stdout,returncode",
     [
-        (_kaspersky_output(errors=1), 0),
-        (_kaspersky_output(skipped=1), 0),
         ("Scan_Objects completed\n", 0),
         (_kaspersky_output(), 2),
     ],

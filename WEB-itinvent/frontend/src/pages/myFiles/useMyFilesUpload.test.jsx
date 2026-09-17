@@ -77,6 +77,7 @@ describe('useMyFilesUpload', () => {
         file,
         retentionDays: 1,
         folderId: 'folder-root',
+        parallelChunks: 4,
       }));
     });
     expect(mockNotifySuccess).toHaveBeenCalledWith(
@@ -85,6 +86,36 @@ describe('useMyFilesUpload', () => {
     );
     expect(mockLoadData).toHaveBeenCalledWith({ silent: true });
     expect(result.current.uploading).toBe(false);
+  });
+
+  it('uploads a batch with parallelChunks 2 and at most two files in flight', async () => {
+    const { result } = renderUpload();
+    const files = [makeFile('a.txt'), makeFile('b.txt'), makeFile('c.txt')];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const resolvers = [];
+    mockUploadFile.mockImplementation(() => new Promise((resolve) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      resolvers.push(() => {
+        inFlight -= 1;
+        resolve({ id: 'done' });
+      });
+    }));
+
+    act(() => result.current.openUploadDialog(files));
+    await act(async () => { result.current.confirmUpload(); });
+
+    for (let guard = 0; guard < 20 && (mockUploadFile.mock.calls.length < 3 || resolvers.length > 0); guard += 1) {
+      resolvers.splice(0).forEach((resolve) => resolve());
+      await act(async () => {});
+    }
+
+    expect(mockUploadFile).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    mockUploadFile.mock.calls.forEach(([args]) => {
+      expect(args).toEqual(expect.objectContaining({ parallelChunks: 2 }));
+    });
   });
 
   it('does nothing without write permission', () => {

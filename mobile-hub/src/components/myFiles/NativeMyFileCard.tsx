@@ -44,6 +44,7 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
   onMore: (item: MyFileRecord) => void;
 }) {
   const [nameExpanded, setNameExpanded] = useState(false);
+  const [nameTruncated, setNameTruncated] = useState(false);
   const ready = isMyFileReady(item);
   const previewKind = nativeMyFilePreviewKind(item);
   const processing = isMyFileProcessing(item);
@@ -69,10 +70,26 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
           <MaterialCommunityIcons name={myFileIcon(item)} size={26} color={tokens.primary} />
         </View>
         <View style={styles.titleBody}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`${nameExpanded ? 'Свернуть название файла' : 'Показать полное название файла'}: ${fileName}`} accessibilityState={{ expanded: nameExpanded }} onPress={() => setNameExpanded(value => !value)} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text numberOfLines={nameExpanded ? undefined : 2} style={[styles.title, { flex: 1, color: tokens.textPrimary }]}>{fileName}</Text>
-            <MaterialCommunityIcons name={nameExpanded ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
-          </Pressable>
+          {nameTruncated ? (
+            <Pressable testID={`native-my-file-expand-${item.id}`} accessibilityRole="button" accessibilityLabel={`${nameExpanded ? 'Свернуть название файла' : 'Показать полное название файла'}: ${fileName}`} accessibilityState={{ expanded: nameExpanded }} onPress={() => setNameExpanded(value => !value)} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text numberOfLines={nameExpanded ? undefined : 2} style={[styles.title, { flex: 1, color: tokens.textPrimary }]}>{fileName}</Text>
+              <MaterialCommunityIcons name={nameExpanded ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
+            </Pressable>
+          ) : (
+            <View>
+              <Text numberOfLines={2} style={[styles.title, { color: tokens.textPrimary }]}>{fileName}</Text>
+              <Text
+                testID={`native-my-file-name-measure-${item.id}`}
+                style={[styles.title, styles.titleMeasure]}
+                pointerEvents="none"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                onTextLayout={(event) => { if (event.nativeEvent.lines.length > 2) setNameTruncated(true); }}
+              >
+                {fileName}
+              </Text>
+            </View>
+          )}
           <View style={styles.statusRow}>
             {processing ? <ActivityIndicator size="small" color={statusColor} /> : <View style={[styles.statusDot, { backgroundColor: statusColor }]} />}
             <Text style={[styles.status, { color: statusColor }]}>{myFileStatusLabel(item)}</Text>
@@ -210,6 +227,7 @@ const styles = StyleSheet.create({
   icon: { width: 50, height: 50, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   titleBody: { flex: 1, minWidth: 0, gap: 6 },
   title: { fontSize: 15, lineHeight: 20, fontWeight: '800' },
+  titleMeasure: { position: 'absolute', left: 0, right: 0, top: 0, opacity: 0 },
   statusRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   status: { flexShrink: 1, fontSize: 12, lineHeight: 18, fontWeight: '800' },

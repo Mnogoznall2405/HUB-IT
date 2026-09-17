@@ -50,7 +50,7 @@ describe('myFilesAPI', () => {
     mockDelete.mockResolvedValue({ data: null });
   });
 
-  it('uploads a file in sequential chunks and completes the session', async () => {
+  it('uploads a file in parallel chunks and completes the session', async () => {
     const file = new File(['column_a,column_b\n1,2\n'], 'report.csv', { type: 'text/csv' });
     const onUploadProgress = vi.fn();
 
@@ -168,6 +168,113 @@ describe('myFilesAPI', () => {
         signal: undefined,
       },
     );
+  });
+
+  it('keeps at most four chunks in flight', async () => {
+    const file = new File(['x'.repeat(80)], 'big.bin', { type: 'application/octet-stream' });
+    mockPost.mockResolvedValueOnce({
+      data: { file_id: 'reserved-file', chunk_size_bytes: 8, uploaded_bytes: 0 },
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const resolvers = [];
+    mockPut.mockImplementation(() => new Promise((resolve) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      resolvers.push(() => {
+        inFlight -= 1;
+        resolve({ data: {} });
+      });
+    }));
+
+    const pending = myFilesAPI.uploadFile({ file });
+    for (let guard = 0; guard < 100 && (resolvers.length > 0 || mockPut.mock.calls.length < 10); guard += 1) {
+      resolvers.splice(0).forEach((resolve) => resolve());
+      await Promise.resolve();
+    }
+    await pending;
+
+    expect(mockPut).toHaveBeenCalledTimes(10);
+    expect(maxInFlight).toBe(4);
+    expect(mockPost).toHaveBeenLastCalledWith(
+      '/my-files/upload-sessions/reserved-file/complete',
+      null,
+      { signal: undefined, timeout: 120_000 },
+    );
+  });
+
+  it('retries a bare HTTP 400 without backend detail', async () => {
+    vi.useFakeTimers();
+    const file = new File(['fail-me'], 'fail.bin', { type: 'application/octet-stream' });
+    mockPost.mockResolvedValueOnce({
+      data: { file_id: 'reserved-file', chunk_size_bytes: 16, uploaded_bytes: 0 },
+    });
+    const droppedBody = Object.assign(new Error('Request failed with status code 400'), {
+      response: { status: 400, data: {} },
+    });
+    mockPut.mockRejectedValueOnce(droppedBody);
+    mockGet.mockResolvedValue({
+      data: { file_id: 'reserved-file', uploaded_bytes: 0, ranges: [] },
+    });
+
+    try {
+      const pending = myFilesAPI.uploadFile({ file });
+      const expectation = expect(pending).resolves.toEqual({ id: 'queued-file', status: 'queued' });
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      expect(mockPut).toHaveBeenCalledTimes(2);
+      expect(mockDelete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry a backend HTTP 400 that carries a detail', async () => {
+    const file = new File(['fail-me'], 'fail.bin', { type: 'application/octet-stream' });
+    mockPost.mockResolvedValueOnce({
+      data: { file_id: 'reserved-file', chunk_size_bytes: 16, uploaded_bytes: 0 },
+    });
+    const backendError = Object.assign(new Error('Request failed with status code 400'), {
+      response: { status: 400, data: { detail: 'Upload chunk is empty' } },
+    });
+    mockPut.mockRejectedValue(backendError);
+    mockGet.mockResolvedValue({
+      data: { file_id: 'reserved-file', uploaded_bytes: 0, ranges: [] },
+    });
+
+    await expect(myFilesAPI.uploadFile({ file })).rejects.toBe(backendError);
+
+    expect(mockPut).toHaveBeenCalledTimes(1);
+    expect(mockDelete).toHaveBeenCalledWith(
+      '/my-files/upload-sessions/reserved-file',
+      {
+        params: { reason: 'Upload chunk is empty' },
+        signal: undefined,
+      },
+    );
+  });
+
+  it('triggers a native download through a temporary anchor', () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const appendSpy = vi.spyOn(document.body, 'appendChild');
+    try {
+      expect(myFilesAPI.triggerNativeDownload('https://example.com/dl')).toBe(true);
+
+      const anchor = appendSpy.mock.calls
+        .map(([node]) => node)
+        .find((node) => node?.tagName === 'A');
+      expect(anchor).toBeTruthy();
+      expect(anchor.getAttribute('href')).toBe('https://example.com/dl');
+      expect(anchor.getAttribute('download')).toBe('');
+      expect(anchor.getAttribute('rel')).toBe('noopener');
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(anchor.isConnected).toBe(false);
+      expect(document.querySelector('iframe')).toBeNull();
+    } finally {
+      click.mockRestore();
+      appendSpy.mockRestore();
+    }
   });
 
   it('offers thirty-day retention', () => {

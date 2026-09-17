@@ -23,6 +23,8 @@ import { formatFileSize } from '../../lib/myFilesPreview';
 
 const normalizeFiles = (value) => Array.from(value || []).filter(Boolean);
 
+const UPLOAD_PARALLEL_FILES = 2;
+
 export function useMyFilesUpload({
   canWrite,
   currentFolderId,
@@ -58,40 +60,52 @@ export function useMyFilesUpload({
     try {
       let uploaded = 0;
       const failures = [];
-      for (const [index, file] of selected.entries()) {
-        if (Number(file?.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
-          failures.push(`«${file.name}» — больше 10 ГБ`);
-          continue;
-        }
-        const targetFolderId = typeof resolveFolderId === 'function'
-          ? resolveFolderId(file)
-          : (uploadTargetFolderId || currentFolderId);
-        const progressKey = `${index}::${String(file?.webkitRelativePath || file?.name || 'file')}`;
-        const displayName = String(file?.webkitRelativePath || file?.name || 'file');
-        try {
-          await myFilesAPI.uploadFile({
-            file,
-            retentionDays: selectedRetentionDays,
-            folderId: targetFolderId,
-            onUploadProgress: (event) => {
-              const total = Number(event?.total || file.size || 0);
-              const loaded = Number(event?.loaded || 0);
-              const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
-              setUploadProgress((current) => ({
-                ...current,
-                [progressKey]: { name: displayName, percent },
-              }));
-            },
-          });
-          uploaded += 1;
-        } catch (error) {
-          const status = Number(error?.response?.status || 0);
-          const detail = status === 413
-            ? 'превышен лимит сервера'
-            : String(error?.response?.data?.detail || error?.message || 'ошибка сети');
-          failures.push(`«${file.name}» — ${detail}`);
-        }
-      }
+      let nextIndex = 0;
+      const parallelChunks = selected.length > 1 ? 2 : 4;
+      const workers = Array.from(
+        { length: Math.min(UPLOAD_PARALLEL_FILES, selected.length) },
+        async () => {
+          while (nextIndex < selected.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            const file = selected[index];
+            if (Number(file?.size || 0) > MY_FILES_MAX_UPLOAD_BYTES) {
+              failures.push(`«${file.name}» — больше 10 ГБ`);
+              continue;
+            }
+            const targetFolderId = typeof resolveFolderId === 'function'
+              ? resolveFolderId(file)
+              : (uploadTargetFolderId || currentFolderId);
+            const progressKey = `${index}::${String(file?.webkitRelativePath || file?.name || 'file')}`;
+            const displayName = String(file?.webkitRelativePath || file?.name || 'file');
+            try {
+              await myFilesAPI.uploadFile({
+                file,
+                retentionDays: selectedRetentionDays,
+                folderId: targetFolderId,
+                parallelChunks,
+                onUploadProgress: (event) => {
+                  const total = Number(event?.total || file.size || 0);
+                  const loaded = Number(event?.loaded || 0);
+                  const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+                  setUploadProgress((current) => ({
+                    ...current,
+                    [progressKey]: { name: displayName, percent },
+                  }));
+                },
+              });
+              uploaded += 1;
+            } catch (error) {
+              const status = Number(error?.response?.status || 0);
+              const detail = status === 413
+                ? 'превышен лимит сервера'
+                : String(error?.response?.data?.detail || error?.message || 'ошибка сети');
+              failures.push(`«${file.name}» — ${detail}`);
+            }
+          }
+        },
+      );
+      await Promise.all(workers);
       if (uploaded > 0) {
         notifySuccess(`Загружено файлов: ${uploaded}. Они добавлены в очередь обработки.`, { source: 'my-files-upload', dedupeMode: 'none' });
       }

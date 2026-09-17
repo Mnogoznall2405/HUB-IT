@@ -174,19 +174,26 @@ def _scan_with_kaspersky(executable: Path, path: Path, *, timeout: int) -> Secur
         and processed is not None
         and processed > 0
         and detected == 0
-        and errors == 0
-        and skipped == 0
-        and corrupted == 0
     ):
+        partial = ", ".join(
+            f"{name}={value}"
+            for name, value in (("errors", errors), ("skipped", skipped), ("corrupted", corrupted))
+            if value
+        )
+        detail = f"Partial scan coverage: {partial}" if partial else ""
         if password_protected:
-            return SecurityScanResult(
-                status="clean",
-                engine="kaspersky-endpoint-security",
-                detail="Password-protected archive; contents not scanned",
-            )
-        return SecurityScanResult(status="clean", engine="kaspersky-endpoint-security")
+            note = "Password-protected archive; contents not scanned"
+            detail = f"{detail}; {note}" if detail else note
+        return SecurityScanResult(
+            status="clean",
+            engine="kaspersky-endpoint-security",
+            detail=detail,
+        )
     raise MyFilesAntivirusError(
-        f"Kaspersky scan failed with exit code {result.returncode}",
+        "Kaspersky scan failed with exit code "
+        f"{result.returncode} (processed={processed} detected={detected} "
+        f"errors={errors} skipped={skipped} corrupted={corrupted} "
+        f"password_protected={password_protected})",
         engine="kaspersky-endpoint-security",
     )
 

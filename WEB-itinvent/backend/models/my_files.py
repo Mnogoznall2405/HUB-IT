@@ -97,6 +97,7 @@ class MyFileUploadSessionResponse(BaseModel):
     chunk_size_bytes: int
     uploaded_bytes: int
     file_size_bytes: int
+    ranges: list[list[int]] = Field(default_factory=list)
     complete: bool = False
 
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from backend.appdb.db import app_session
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFilePreview
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFilePreview
 from backend.models.auth import User
 from backend.services.my_files_service import (
     STORAGE_ZSTD,
@@ -156,7 +158,7 @@ def test_chunked_upload_appends_retries_idempotently_and_completes(tmp_path):
     assert completed["status"] == "queued"
 
 
-def test_chunked_upload_rejects_gap_and_mismatched_retry(tmp_path):
+def test_chunked_upload_accepts_out_of_order_and_rejects_mismatched_retry(tmp_path):
     service = _new_service(tmp_path)
     spool_path = service.new_spool_path("chunked.bin")
     reserved = service.reserve_upload(
@@ -169,12 +171,89 @@ def test_chunked_upload_rejects_gap_and_mismatched_retry(tmp_path):
     )
     service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"hello")
 
-    with pytest.raises(MyFilesValidationError, match="expected 5"):
-        service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=6, payload=b"x")
+    gapped = service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=6, payload=b"xyzw")
+    assert gapped["uploaded_bytes"] == 5
+    assert gapped["complete"] is False
+
     with pytest.raises(MyFilesValidationError, match="does not match"):
         service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"HELLO")
+    with pytest.raises(MyFilesValidationError, match="overlaps"):
+        service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=4, payload=b"!!")
 
-    assert spool_path.read_bytes() == b"hello"
+    filled = service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=5, payload=b"!")
+    assert filled["uploaded_bytes"] == 10
+    assert filled["complete"] is True
+    assert spool_path.read_bytes() == b"hello!xyzw"
+
+    completed = service.complete_upload(
+        file_id=reserved["id"],
+        user_id=7,
+        actual_size_bytes=filled["uploaded_bytes"],
+    )
+    assert completed["status"] == "queued"
+
+
+def test_chunked_upload_incomplete_ranges_cannot_complete(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("chunked.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="chunked.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=10,
+        retention_days=1,
+    )
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"hello")
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=6, payload=b"xyzw")
+
+    with pytest.raises(MyFilesValidationError, match="incomplete"):
+        service.complete_upload(file_id=reserved["id"], user_id=7, actual_size_bytes=10)
+
+
+def test_chunked_upload_accepts_parallel_chunks_without_lost_ranges(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("parallel.bin")
+    chunk_size = 4 * 1024 * 1024
+    chunks = [
+        hashlib.sha256(f"chunk-{index}".encode("utf-8")).digest() * (chunk_size // 32)
+        for index in range(8)
+    ]
+    expected_payload = b"".join(chunks)
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="parallel.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=len(expected_payload),
+        retention_days=1,
+    )
+
+    def send_chunk(index: int):
+        return service.append_upload_chunk(
+            file_id=reserved["id"],
+            user_id=7,
+            offset=index * chunk_size,
+            payload=chunks[index],
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(send_chunk, range(len(chunks))))
+
+    session_state = service.get_upload_session(file_id=reserved["id"], user_id=7)
+    assert session_state["complete"] is True
+    assert session_state["uploaded_bytes"] == len(expected_payload)
+    assert session_state["ranges"] == [[0, len(expected_payload)]]
+    stored = spool_path.read_bytes()
+    assert stored == expected_payload
+    assert hashlib.sha256(stored).hexdigest() == hashlib.sha256(expected_payload).hexdigest()
+
+    completed = service.complete_upload(
+        file_id=reserved["id"],
+        user_id=7,
+        actual_size_bytes=len(expected_payload),
+    )
+    assert completed["status"] == "queued"
 
 
 def test_chunked_upload_is_owner_scoped(tmp_path):
@@ -280,7 +359,48 @@ def test_upload_processing_deduplicates_by_sha256_and_public_downloads_one_file(
         service.get_public_file(token=share["token"])
 
 
-def test_download_grant_is_one_time_and_short_lived(tmp_path):
+def test_zstd_compression_skips_already_compressed_extensions(tmp_path):
+    service = _new_service(tmp_path)
+    payload = b"compressible text " * 4096
+    source = tmp_path / "archive.zip"
+    source.write_bytes(payload)
+
+    assert service._try_zstd_compression(source, len(payload), "application/zip", "archive.zip") is None
+    stored = service._build_stored_payload(source, "archive.zip", "application/zip", "sha", len(payload))
+    assert stored.mode == "stored"
+
+
+def test_zstd_compression_skips_source_above_configured_max(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    monkeypatch.setattr(
+        "backend.services.my_files_service.config.my_files_security.zstd_max_source_bytes",
+        16,
+    )
+    payload = b"compressible text " * 4096
+    source = tmp_path / "big.txt"
+    source.write_bytes(payload)
+
+    assert service._try_zstd_compression(source, len(payload), "text/plain", "big.txt") is None
+    stored = service._build_stored_payload(source, "big.txt", "text/plain", "sha", len(payload))
+    assert stored.mode == "stored"
+
+
+def test_zstd_compression_rejects_candidate_below_min_savings(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    monkeypatch.setattr(
+        "backend.services.my_files_service.config.my_files_security.zstd_min_savings_percent",
+        100,
+    )
+    payload = b"compressible text " * 4096
+    source = tmp_path / "data.txt"
+    source.write_bytes(payload)
+
+    assert service._try_zstd_compression(source, len(payload), "text/plain", "data.txt") is None
+    stored = service._build_stored_payload(source, "data.txt", "text/plain", "sha", len(payload))
+    assert stored.mode == "stored"
+
+
+def test_download_grant_is_retryable_until_expiry(tmp_path):
     service = _new_service(tmp_path)
     spool_path = _stage_upload(service, "native.bin", b"native-download")
     created = service.create_pending_upload(
@@ -297,6 +417,14 @@ def test_download_grant_is_one_time_and_short_lived(tmp_path):
     token = grant["token"]
     payload = service.consume_download_grant(token=token)
     assert _read_download(service, payload) == b"native-download"
+
+    retry = service.consume_download_grant(token=token)
+    assert _read_download(service, retry) == b"native-download"
+
+    database_url = _sqlite_url(tmp_path / "app.db")
+    with app_session(database_url) as session:
+        grant_row = session.query(AppMyFileDownloadGrant).one()
+        grant_row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     with pytest.raises(MyFilesNotFoundError):
         service.consume_download_grant(token=token)
@@ -398,6 +526,39 @@ def test_cleanup_expired_disables_share_and_removes_unreferenced_blob(tmp_path):
         assert row.share_token_hash is None
         assert session.query(AppMyFileBlob).count() == 0
     assert not blob_path.exists()
+
+
+def test_cleanup_expired_survives_preview_with_empty_path(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "old-preview.txt", b"payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="old-preview.txt",
+        mime_type="text/plain",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+    processed = service.process_file(created["id"])
+    assert processed is not None
+
+    database_url = _sqlite_url(tmp_path / "app.db")
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, created["id"])
+        session.add(AppMyFilePreview(
+            blob_id=row.blob_id,
+            status="error",
+            preview_kind="unsupported",
+            preview_path="",
+        ))
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    assert service.cleanup_expired() == 1
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, created["id"])
+        assert row.status == "deleted"
+        assert session.query(AppMyFilePreview).count() == 0
+        assert session.query(AppMyFileBlob).count() == 0
 
 
 def test_security_scan_blocks_file_before_dedup_or_compression(tmp_path):

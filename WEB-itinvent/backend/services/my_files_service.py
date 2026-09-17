@@ -54,7 +54,8 @@ IIS_MAX_CONTENT_LENGTH_BYTES = (2**32) - 1
 # bypass it because each chunk is a separate request.
 MAX_FILE_SIZE_BYTES = min(USER_QUOTA_BYTES, IIS_MAX_CONTENT_LENGTH_BYTES)
 MY_FILES_MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024
-UPLOAD_CHUNK_SIZE_BYTES = 16 * 1024 * 1024
+UPLOAD_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
+UPLOAD_CHUNK_MAX_SIZE_BYTES = 16 * 1024 * 1024
 MAX_ZSTD_WINDOW_SIZE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 
@@ -76,6 +77,13 @@ STORAGE_OPTIMIZED_MEDIA = "optimized_media"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+ZSTD_SKIP_EXTENSIONS = {
+    ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".cab", ".msi",
+    ".exe", ".jar", ".apk", ".pdf", ".docx", ".xlsx", ".pptx",
+    ".jpg", ".jpeg", ".png", ".webp", ".gif",
+    ".mp3", ".aac", ".ogg", ".flac",
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".iso",
+}
 PREVIEW_UNAVAILABLE_MESSAGE = "Preview is temporarily unavailable. Download is still available."
 
 _UNSET = object()
@@ -178,6 +186,54 @@ def _copy_file(source: Path, target: Path) -> int:
     return target.stat().st_size
 
 
+def _load_spool_ranges(parts_path: Path) -> list[list[int]]:
+    try:
+        raw = json.loads(parts_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    ranges: list[list[int]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            start, end = int(item[0]), int(item[1])
+            if 0 <= start < end:
+                ranges.append([start, end])
+    ranges.sort()
+    return ranges
+
+
+def _store_spool_ranges(parts_path: Path, ranges: list[list[int]]) -> None:
+    tmp_path = parts_path.with_name(f"{parts_path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(json.dumps(ranges), encoding="utf-8")
+    tmp_path.replace(parts_path)
+
+
+def _merge_spool_range(ranges: list[list[int]], start: int, end: int) -> list[list[int]]:
+    merged: list[list[int]] = []
+    for item in sorted(ranges + [[start, end]]):
+        if merged and item[0] <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], item[1])
+        else:
+            merged.append([item[0], item[1]])
+    return merged
+
+
+def _spool_covered_prefix(ranges: list[list[int]]) -> int:
+    covered = 0
+    for start, end in sorted(ranges):
+        if start > covered:
+            break
+        covered = max(covered, end)
+    return covered
+
+
+def _spool_range_covered(ranges: list[list[int]], start: int, end: int) -> bool:
+    return any(item[0] <= start and item[1] >= end for item in ranges)
+
+
+def _spool_range_overlaps(ranges: list[list[int]], start: int, end: int) -> bool:
+    return any(item[0] < end and item[1] > start for item in ranges)
+
+
 def _actor_id(actor: Any) -> int:
     try:
         return int(getattr(actor, "id", 0) or 0)
@@ -258,7 +314,13 @@ class MyFilesService:
         self.blobs_root = self.storage_root
         self._antivirus_scanner = antivirus_scanner or scan_my_file
         self._reservation_lock = threading.RLock()
+        self._upload_locks = [threading.RLock() for _ in range(64)]
         self._legacy_share_migration_disabled = False
+
+    def _upload_lock(self, file_id: str) -> threading.RLock:
+        digest = hashlib.sha256(_normalize_text(file_id).encode("utf-8")).digest()
+        index = int.from_bytes(digest[:8], "big") % len(self._upload_locks)
+        return self._upload_locks[index]
 
     @property
     def configured(self) -> bool:
@@ -586,8 +648,27 @@ class MyFilesService:
         return row
 
     @staticmethod
+    def _spool_parts_path(spool_path: Path) -> Path:
+        return spool_path.with_name(f"{spool_path.name}.parts.json")
+
+    @staticmethod
+    def _delete_spool_payload(path: Path) -> None:
+        path.unlink(missing_ok=True)
+        MyFilesService._spool_parts_path(path).unlink(missing_ok=True)
+
+    @staticmethod
+    def _spool_ranges(spool_path: Path) -> list[list[int]]:
+        parts_path = MyFilesService._spool_parts_path(spool_path)
+        if parts_path.is_file():
+            return _load_spool_ranges(parts_path)
+        if spool_path.is_file():
+            return [[0, spool_path.stat().st_size]] if spool_path.stat().st_size else []
+        return []
+
+    @staticmethod
     def _upload_session_response(row: AppMyFile, spool_path: Path) -> dict[str, Any]:
-        uploaded_bytes = spool_path.stat().st_size if spool_path.is_file() else 0
+        ranges = MyFilesService._spool_ranges(spool_path)
+        uploaded_bytes = _spool_covered_prefix(ranges)
         expected_size = int(row.original_size_bytes or 0)
         if uploaded_bytes > expected_size:
             raise MyFilesValidationError("Uploaded file exceeds reservation")
@@ -596,6 +677,7 @@ class MyFilesService:
             "chunk_size_bytes": UPLOAD_CHUNK_SIZE_BYTES,
             "uploaded_bytes": uploaded_bytes,
             "file_size_bytes": expected_size,
+            "ranges": ranges,
             "complete": uploaded_bytes == expected_size,
         }
 
@@ -621,34 +703,37 @@ class MyFilesService:
             raise MyFilesValidationError("Upload chunk offset is invalid")
         if not chunk:
             raise MyFilesValidationError("Upload chunk is empty")
-        if len(chunk) > UPLOAD_CHUNK_SIZE_BYTES:
+        if len(chunk) > UPLOAD_CHUNK_MAX_SIZE_BYTES:
             raise MyFilesValidationError("Upload chunk exceeds size limit")
 
-        with app_session(database_url) as session:
+        with self._upload_lock(file_id), app_session(database_url) as session:
             row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
             spool_path = Path(_normalize_text(row.spool_path))
             if not _normalize_text(row.spool_path):
                 raise MyFilesValidationError("Upload payload path is missing")
             spool_path.parent.mkdir(parents=True, exist_ok=True)
-            current_size = spool_path.stat().st_size if spool_path.is_file() else 0
             expected_size = int(row.original_size_bytes or 0)
+            end_offset = requested_offset + len(chunk)
 
-            if current_size > expected_size or requested_offset + len(chunk) > expected_size:
+            if end_offset > expected_size:
                 raise MyFilesValidationError("Upload chunk exceeds reservation")
-            if requested_offset > current_size:
-                raise MyFilesValidationError(f"Upload chunk offset mismatch; expected {current_size}")
-            if requested_offset < current_size:
-                if requested_offset + len(chunk) > current_size:
-                    raise MyFilesValidationError(f"Upload chunk offset mismatch; expected {current_size}")
+
+            parts_path = self._spool_parts_path(spool_path)
+            ranges = self._spool_ranges(spool_path)
+            if _spool_range_covered(ranges, requested_offset, end_offset):
                 with spool_path.open("rb") as source:
                     source.seek(requested_offset)
                     if source.read(len(chunk)) != chunk:
                         raise MyFilesValidationError("Upload chunk retry does not match stored data")
                 return self._upload_session_response(row, spool_path)
+            if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                raise MyFilesValidationError("Upload chunk overlaps partially stored data")
 
-            with spool_path.open("ab") as target:
+            with spool_path.open("r+b" if spool_path.is_file() else "w+b") as target:
+                target.seek(requested_offset)
                 target.write(chunk)
                 target.flush()
+            _store_spool_ranges(parts_path, _merge_spool_range(ranges, requested_offset, end_offset))
             row.updated_at = _utc_now()
             return self._upload_session_response(row, spool_path)
 
@@ -673,6 +758,8 @@ class MyFilesService:
                 raise MyFilesValidationError("Uploaded file size does not match reservation")
             spool_path = Path(_normalize_text(row.spool_path))
             if not spool_path.exists() or not spool_path.is_file() or spool_path.stat().st_size != size:
+                raise MyFilesValidationError("Uploaded file is incomplete")
+            if self._spool_parts_path(spool_path).is_file() and _spool_covered_prefix(self._spool_ranges(spool_path)) < size:
                 raise MyFilesValidationError("Uploaded file is incomplete")
             row.status = STATUS_QUEUED
             row.updated_at = _utc_now()
@@ -702,7 +789,7 @@ class MyFilesService:
             row.updated_at = _utc_now()
             self._write_audit(session, action="upload_aborted", row=row, actor=actor, meta=meta)
         if spool_path is not None:
-            spool_path.unlink(missing_ok=True)
+            self._delete_spool_payload(spool_path)
 
     def create_pending_upload(
         self,
@@ -992,7 +1079,7 @@ class MyFilesService:
             deleted_count = len(files)
 
         for path in spool_paths:
-            path.unlink(missing_ok=True)
+            self._delete_spool_payload(path)
         return deleted_count
 
     def restore_folder(
@@ -1088,7 +1175,7 @@ class MyFilesService:
             purged_count = len(files)
 
         for path in spool_paths:
-            path.unlink(missing_ok=True)
+            self._delete_spool_payload(path)
         return purged_count
 
     def list_trash(self, *, user_id: int) -> dict[str, Any]:
@@ -1437,7 +1524,12 @@ class MyFilesService:
             candidate.unlink(missing_ok=True)
             return None
 
-    def _try_zstd_compression(self, source: Path, source_size: int, mime_type: str) -> StoredPayload | None:
+    def _try_zstd_compression(self, source: Path, source_size: int, mime_type: str, original_file_name: str) -> StoredPayload | None:
+        if _extension(original_file_name) in ZSTD_SKIP_EXTENSIONS:
+            return None
+        max_source_bytes = int(config.my_files_security.zstd_max_source_bytes or 0)
+        if max_source_bytes > 0 and source_size > max_source_bytes:
+            return None
         candidate = source.with_name(f"{source.stem}.{uuid.uuid4().hex}.zst")
         try:
             import zstandard as zstd  # type: ignore
@@ -1472,6 +1564,10 @@ class MyFilesService:
                 candidate.unlink(missing_ok=True)
                 return None
             stored_sha256, stored_size = _sha256_file(candidate)
+            min_savings_percent = max(0, int(config.my_files_security.zstd_min_savings_percent or 0))
+            if (source_size - stored_size) * 100 < min_savings_percent * source_size:
+                candidate.unlink(missing_ok=True)
+                return None
             return StoredPayload(
                 path=candidate,
                 mode=STORAGE_ZSTD,
@@ -1492,7 +1588,7 @@ class MyFilesService:
         if media_payload is not None:
             return media_payload
 
-        zstd_payload = self._try_zstd_compression(source, source_size, mime_type)
+        zstd_payload = self._try_zstd_compression(source, source_size, mime_type, original_file_name)
         if zstd_payload is not None:
             return zstd_payload
 
@@ -1615,8 +1711,11 @@ class MyFilesService:
         preview = session.get(AppMyFilePreview, normalized)
         if preview is None:
             return
-        path = Path(_normalize_text(preview.preview_path))
+        raw_path = _normalize_text(preview.preview_path)
         session.delete(preview)
+        if not raw_path:
+            return
+        path = Path(raw_path)
         self._delete_physical_file(path)
         self._delete_physical_file(self._preview_thumb_path(path))
         try:
@@ -1757,16 +1856,20 @@ class MyFilesService:
                 .limit(max(1, int(limit or 100)))
             ).all()
             for row in rows:
-                if _normalize_text(row.spool_path):
-                    spool_paths.append(Path(_normalize_text(row.spool_path)))
-                row.status = STATUS_FAILED
-                row.error_text = "Upload reservation expired"
-                row.spool_path = ""
-                row.updated_at = _utc_now()
-                self._write_audit(session, action="upload_expired", row=row)
-                count += 1
+                try:
+                    with session.begin_nested():
+                        if _normalize_text(row.spool_path):
+                            spool_paths.append(Path(_normalize_text(row.spool_path)))
+                        row.status = STATUS_FAILED
+                        row.error_text = "Upload reservation expired"
+                        row.spool_path = ""
+                        row.updated_at = _utc_now()
+                        self._write_audit(session, action="upload_expired", row=row)
+                        count += 1
+                except Exception:
+                    logger.exception("Failed to expire my-file upload %s", row.id)
         for path in spool_paths:
-            path.unlink(missing_ok=True)
+            self._delete_spool_payload(path)
         return count
 
     def recover_stale_processing(self, *, force: bool = False) -> int:
@@ -1852,7 +1955,10 @@ class MyFilesService:
     def process_next_job(self) -> bool:
         if not self.configured:
             return False
-        self.run_job_maintenance()
+        try:
+            self.run_job_maintenance()
+        except Exception:
+            logger.exception("My-files maintenance cycle failed")
         file_id = self.claim_next_job()
         if not file_id:
             return False
@@ -2221,7 +2327,7 @@ class MyFilesService:
                         row.error_text = ""
                         row.updated_at = _utc_now()
                         self._queue_preview_for_row_locked(session, row)
-                        spool_path.unlink(missing_ok=True)
+                        self._delete_spool_payload(spool_path)
                         return self._response(row, session=session)
 
             payload = self._build_stored_payload(spool_path, original_file_name, mime_type, original_sha256, actual_size)
@@ -2305,7 +2411,7 @@ class MyFilesService:
                 row.updated_at = now
                 self._queue_preview_for_row_locked(session, row)
                 if payload.path != spool_path:
-                    spool_path.unlink(missing_ok=True)
+                    self._delete_spool_payload(spool_path)
                 return self._response(row, session=session)
         except Exception as exc:
             logger.exception("Failed to process my-file upload %s", file_id)
@@ -2316,7 +2422,7 @@ class MyFilesService:
                     row.error_text = str(exc)[:2000]
                     row.spool_path = ""
                     row.updated_at = _utc_now()
-            spool_path.unlink(missing_ok=True)
+            self._delete_spool_payload(spool_path)
             return None
 
     @staticmethod
@@ -2369,7 +2475,7 @@ class MyFilesService:
             row.spool_path = ""
             self._write_audit(session, action="trashed", row=row, actor=actor, meta=meta)
         if spool_path is not None:
-            spool_path.unlink(missing_ok=True)
+            self._delete_spool_payload(spool_path)
 
     def restore_file(
         self,
@@ -2427,7 +2533,7 @@ class MyFilesService:
             row.spool_path = ""
             self._write_audit(session, action="purged", row=row, actor=actor, meta=meta)
         if spool_path is not None:
-            spool_path.unlink(missing_ok=True)
+            self._delete_spool_payload(spool_path)
 
     def create_share(
         self,
@@ -3016,8 +3122,7 @@ class MyFilesService:
         now = _utc_now()
         session.execute(
             delete(AppMyFileDownloadGrant).where(
-                (AppMyFileDownloadGrant.expires_at <= now)
-                | (AppMyFileDownloadGrant.used_at.is_not(None))
+                AppMyFileDownloadGrant.expires_at <= now
             )
         )
 
@@ -3185,25 +3290,21 @@ class MyFilesService:
         token_hash = _hash_token(normalized_token)
         now = _utc_now()
         with app_session(database_url) as session:
-            consumed = session.execute(
-                update(AppMyFileDownloadGrant)
+            grant = session.scalars(
+                select(AppMyFileDownloadGrant)
                 .where(
                     AppMyFileDownloadGrant.token_hash == token_hash,
                     AppMyFileDownloadGrant.expires_at > now,
-                    AppMyFileDownloadGrant.used_at.is_(None),
                 )
-                .values(used_at=now)
-                .returning(
-                    AppMyFileDownloadGrant.file_id,
-                    AppMyFileDownloadGrant.folder_id,
-                    AppMyFileDownloadGrant.owner_user_id,
-                )
+                .with_for_update()
             ).first()
-            if consumed is None:
+            if grant is None:
                 raise MyFilesNotFoundError("File not found")
-            file_id = _normalize_text(consumed[0])
-            folder_id = _normalize_text(consumed[1])
-            owner_user_id = int(consumed[2] or 0)
+            if grant.used_at is None:
+                grant.used_at = now
+            file_id = _normalize_text(grant.file_id)
+            folder_id = _normalize_text(grant.folder_id)
+            owner_user_id = int(grant.owner_user_id or 0)
             if folder_id:
                 folder = session.get(AppMyFileFolder, folder_id)
                 if folder is None or folder.owner_user_id != owner_user_id or folder.deleted_at is not None:
@@ -3257,32 +3358,52 @@ class MyFilesService:
                 .limit(max(1, int(limit or 100)))
             ).all()
             for row in rows:
-                if row.status == STATUS_READY:
-                    self._release_blob_locked(session, row.blob_id)
-                if _normalize_text(row.spool_path):
-                    spool_paths.append(Path(_normalize_text(row.spool_path)))
-                row.status = STATUS_DELETED
-                self._clear_share(row)
-                row.deleted_at = _utc_now()
-                row.updated_at = _utc_now()
-                row.spool_path = ""
-                self._write_audit(session, action="expired", row=row)
-                count += 1
+                try:
+                    with session.begin_nested():
+                        if row.status == STATUS_READY:
+                            self._release_blob_locked(session, row.blob_id)
+                        if _normalize_text(row.spool_path):
+                            spool_paths.append(Path(_normalize_text(row.spool_path)))
+                        row.status = STATUS_DELETED
+                        self._clear_share(row)
+                        row.deleted_at = _utc_now()
+                        row.updated_at = _utc_now()
+                        row.spool_path = ""
+                        self._write_audit(session, action="expired", row=row)
+                        count += 1
+                except Exception:
+                    logger.exception("Failed to expire my-file %s", row.id)
         for path in spool_paths:
-            path.unlink(missing_ok=True)
+            self._delete_spool_payload(path)
         return count
 
     @staticmethod
-    def iter_zstd_download(path: Path) -> Any:
+    def iter_zstd_download(path: Path, *, start: int = 0, end: int | None = None) -> Any:
         import zstandard as zstd  # type: ignore
+
+        offset = int(start or 0)
+        if offset < 0:
+            raise ValueError("start must be non-negative")
+        stop = None if end is None else int(end)
+        if stop is not None and stop < offset:
+            raise ValueError("end must be greater than or equal to start")
 
         with path.open("rb") as source:
             decompressor = zstd.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW_SIZE_BYTES)
             with decompressor.stream_reader(source) as reader:
-                while True:
-                    chunk = reader.read(CHUNK_SIZE)
+                skipped = 0
+                while skipped < offset:
+                    chunk = reader.read(min(CHUNK_SIZE, offset - skipped))
+                    if not chunk:
+                        return
+                    skipped += len(chunk)
+                produced = 0
+                while stop is None or produced < stop - offset:
+                    wanted = CHUNK_SIZE if stop is None else min(CHUNK_SIZE, stop - offset - produced)
+                    chunk = reader.read(wanted)
                     if not chunk:
                         break
+                    produced += len(chunk)
                     yield chunk
 
 

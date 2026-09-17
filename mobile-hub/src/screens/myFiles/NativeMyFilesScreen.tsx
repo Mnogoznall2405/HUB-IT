@@ -1,7 +1,7 @@
 import { russianPlural } from '../../utils/russianPlural';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,7 +10,6 @@ import {
   type ListRenderItemInfo,
   Linking,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -102,7 +101,7 @@ import {
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { shareNativeText } from '../../share/nativeOutgoingShare';
 import { useFluentTokens } from '../../theme/fluentTokens';
-import { NativeFilterChip, NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
+import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard, AccountSubpage } from '../account/AccountChrome';
 
 const PROCESSING_POLL_MS = 4_000;
@@ -129,6 +128,14 @@ const VIEW_OPTIONS: { value: MyFilesViewMode; label: string }[] = [
   { value: 'trash', label: 'Корзина' },
 ];
 
+const VIEW_ICONS: Record<MyFilesViewMode, ComponentProps<typeof MaterialCommunityIcons>['name']> = {
+  offline: 'cellphone-arrow-down',
+  files: 'folder-outline',
+  recent: 'history',
+  favorites: 'star-outline',
+  trash: 'delete-outline',
+};
+
 export function NativeMyFilesScreen() {
   const { user, hasPermission } = useAuth();
   const scope = ['my_files.read', 'my_files.write', 'my_files.share'].map(permission => hasPermission(permission)).join('|');
@@ -144,6 +151,7 @@ function NativeMyFilesContent() {
   const canShare = hasPermission('my_files.share');
   const userId = Number(user?.id || 0);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [viewPickerOpen, setViewPickerOpen] = useState(false);
   const [view, setView] = useState<MyFilesViewMode>('files');
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<MyFileFolder | null>(null);
@@ -360,6 +368,7 @@ function NativeMyFilesContent() {
 
   const selectView = useCallback((next: MyFilesViewMode) => {
     setView(next);
+    setViewPickerOpen(false);
     setFileQuery('');
     setFileActionsTarget(null);
     setFolderActionsTarget(null);
@@ -1224,26 +1233,6 @@ function NativeMyFilesContent() {
       {error && !uploadOpen ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
       {notice && !uploadOpen ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.success }]}>{notice}</Text> : null}
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        testID="native-my-files-view-group"
-        accessibilityRole="tablist"
-        contentContainerStyle={styles.viewChips}
-        keyboardShouldPersistTaps="handled"
-      >
-        {VIEW_OPTIONS.map((option) => (
-          <NativeFilterChip
-            key={option.value}
-            testID={`native-my-files-view-${option.value}`}
-            label={option.label}
-            selected={view === option.value}
-            tokens={tokens}
-            onPress={() => selectView(option.value)}
-          />
-        ))}
-      </ScrollView>
-
       <View style={styles.headerActions}>
         <Text numberOfLines={2} style={[styles.quotaText, { color: quotaPercent >= 90 ? tokens.warning : tokens.textSecondary }]}>
           {view === 'offline' ? `На устройстве: ${items.length} файлов` : quota ? `${formatMyFileSize(quota.used_bytes)} из ${formatMyFileSize(quota.limit_bytes)} · ${quotaPercent}%` : 'Квота временно недоступна'}
@@ -1380,7 +1369,17 @@ function NativeMyFilesContent() {
       ) : null}
 
       <View style={styles.listHeading}>
-        <Text numberOfLines={1} style={[styles.sectionTitle, { color: tokens.textPrimary }]}>{listTitle}</Text>
+        <Pressable
+          testID="native-my-files-view-picker"
+          onPress={() => setViewPickerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Выбор раздела файлов. Текущий: ${VIEW_OPTIONS.find((option) => option.value === view)?.label}`}
+          accessibilityState={{ expanded: viewPickerOpen }}
+          style={({ pressed }) => [styles.viewPickerTrigger, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <Text numberOfLines={1} style={[styles.sectionTitle, { color: tokens.textPrimary }]}>{listTitle}</Text>
+          <MaterialCommunityIcons name={viewPickerOpen ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.primary} />
+        </Pressable>
         <Pressable onPress={refreshFiles} disabled={refreshing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить список файлов" style={styles.refreshButton}>
           {refreshing ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="refresh" size={21} color={tokens.primary} />}
         </Pressable>
@@ -1438,6 +1437,21 @@ function NativeMyFilesContent() {
         />
       )}
 
+      {viewPickerOpen ? (
+        <NativeMyFilesActionSheet
+          title="Раздел файлов"
+          actions={VIEW_OPTIONS.map((option) => ({
+            key: option.value,
+            label: option.label,
+            icon: VIEW_ICONS[option.value],
+            selected: view === option.value,
+            testID: `native-my-files-view-${option.value}`,
+            onPress: () => selectView(option.value),
+          }))}
+          tokens={tokens}
+          onClose={() => setViewPickerOpen(false)}
+        />
+      ) : null}
       {fileActionsTarget ? (
         <NativeMyFilesActionSheet
           title={myFileName(fileActionsTarget)}
@@ -1512,7 +1526,7 @@ const styles = StyleSheet.create({
   warning: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   error: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   notice: { marginBottom: 7, fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  viewChips: { flexDirection: 'row', gap: 8, paddingVertical: 2, marginBottom: 8 },
+  viewPickerTrigger: { flexShrink: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 4 },
   quotaText: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: '700' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   uploadButton: { minHeight: 44, borderRadius: 12, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },

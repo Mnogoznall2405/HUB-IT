@@ -23,6 +23,7 @@ export type MyFilesSheetAction = {
   danger?: boolean;
   disabled?: boolean;
   busy?: boolean;
+  selected?: boolean;
   testID?: string;
   onPress: () => void;
 };
@@ -53,7 +54,7 @@ export function NativeMyFilesActionSheet({
                 onPress={action.onPress}
                 accessibilityRole="button"
                 accessibilityLabel={action.label}
-                accessibilityState={{ disabled: action.disabled || action.busy, busy: action.busy }}
+                accessibilityState={{ disabled: action.disabled || action.busy, busy: action.busy, selected: action.selected }}
                 style={({ pressed }) => [
                   styles.actionRow,
                   { borderColor: tokens.borderSoft, opacity: action.disabled ? 0.5 : pressed ? 0.7 : 1 },
@@ -61,10 +62,11 @@ export function NativeMyFilesActionSheet({
               >
                 {action.busy
                   ? <ActivityIndicator size="small" color={action.danger ? tokens.error : tokens.primary} />
-                  : <MaterialCommunityIcons name={action.icon} size={20} color={action.danger ? tokens.error : tokens.textPrimary} />}
-                <Text style={[styles.actionLabel, { color: action.danger ? tokens.error : tokens.textPrimary }]}>
+                  : <MaterialCommunityIcons name={action.icon} size={20} color={action.danger ? tokens.error : action.selected ? tokens.primary : tokens.textPrimary} />}
+                <Text style={[styles.actionLabel, { color: action.danger ? tokens.error : action.selected ? tokens.primary : tokens.textPrimary }]}>
                   {action.label}
                 </Text>
+                {action.selected ? <MaterialCommunityIcons name="check" size={19} color={tokens.primary} /> : null}
               </Pressable>
             ))}
           </ScrollView>

@@ -53,9 +53,10 @@ from backend.services.authorization_service import (
 from backend.services.my_files_service import (
     _UNSET,
     DEFAULT_RETENTION_DAYS,
+    CHUNK_SIZE,
     MAX_FILE_SIZE_BYTES,
     STORAGE_ZSTD,
-    UPLOAD_CHUNK_SIZE_BYTES,
+    UPLOAD_CHUNK_MAX_SIZE_BYTES,
     MyFilesCapacityError,
     MyFilesConfigurationError,
     MyFilesNotFoundError,
@@ -151,7 +152,7 @@ async def _read_upload_chunk(request: Request) -> bytes:
     raw_content_length = str(request.headers.get("content-length") or "").strip()
     if raw_content_length:
         try:
-            if int(raw_content_length) > UPLOAD_CHUNK_SIZE_BYTES:
+            if int(raw_content_length) > UPLOAD_CHUNK_MAX_SIZE_BYTES:
                 raise MyFilesValidationError("Upload chunk exceeds size limit")
         except ValueError as exc:
             raise MyFilesValidationError("Upload chunk content length is invalid") from exc
@@ -161,7 +162,7 @@ async def _read_upload_chunk(request: Request) -> bytes:
         if not chunk:
             continue
         payload.extend(chunk)
-        if len(payload) > UPLOAD_CHUNK_SIZE_BYTES:
+        if len(payload) > UPLOAD_CHUNK_MAX_SIZE_BYTES:
             raise MyFilesValidationError("Upload chunk exceeds size limit")
     if not payload:
         raise MyFilesValidationError("Upload chunk is empty")
@@ -175,22 +176,81 @@ def _content_disposition(file_name: str, *, inline: bool = False) -> str:
     return f'{disposition}; filename="{safe_name}"; filename*=UTF-8\'\'{quote(raw_name)}'
 
 
-def _download_response(payload) -> Response:
+class _RangeNotSatisfiable(Exception):
+    pass
+
+
+def _parse_single_byte_range(raw_header: str, total: int) -> tuple[int, int]:
+    """Parse one RFC7233 byte range; returns (start, end_exclusive)."""
+    if total <= 0:
+        raise _RangeNotSatisfiable
+    spec = str(raw_header or "").strip()
+    if not spec.lower().startswith("bytes="):
+        raise _RangeNotSatisfiable
+    spec = spec[len("bytes="):]
+    if "," in spec:
+        raise _RangeNotSatisfiable
+    first, separator, last = spec.partition("-")
+    if not separator:
+        raise _RangeNotSatisfiable
+    first = first.strip()
+    last = last.strip()
+    try:
+        if first:
+            start = int(first)
+            end = int(last) if last else total - 1
+            if start < 0 or end < start or start >= total:
+                raise _RangeNotSatisfiable
+            return start, min(end, total - 1) + 1
+        if not last:
+            raise _RangeNotSatisfiable
+        suffix_length = int(last)
+        if suffix_length <= 0:
+            raise _RangeNotSatisfiable
+        if suffix_length >= total:
+            return 0, total
+        return total - suffix_length, total
+    except ValueError as exc:
+        raise _RangeNotSatisfiable from exc
+
+
+def _download_response(payload, request: Request | None = None) -> Response:
     if payload.mode == STORAGE_ZSTD:
+        total = int(payload.download_size_bytes or 0)
         headers = dict(_DOWNLOAD_SECURITY_HEADERS)
         headers["Content-Disposition"] = _content_disposition(payload.file_name)
+        headers["Accept-Ranges"] = "bytes"
+        range_header = str(request.headers.get("range") or "").strip() if request is not None else ""
+        if range_header:
+            try:
+                start, end = _parse_single_byte_range(range_header, total)
+            except _RangeNotSatisfiable:
+                error_headers = dict(_DOWNLOAD_SECURITY_HEADERS)
+                error_headers["Content-Range"] = f"bytes */{total}"
+                return Response(status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE, headers=error_headers)
+            headers["Content-Length"] = str(end - start)
+            headers["Content-Range"] = f"bytes {start}-{end - 1}/{total}"
+            return StreamingResponse(
+                my_files_service.iter_zstd_download(payload.path, start=start, end=end),
+                status_code=status.HTTP_206_PARTIAL_CONTENT,
+                media_type=payload.media_type,
+                headers=headers,
+            )
+        headers["Content-Length"] = str(total)
         return StreamingResponse(
             my_files_service.iter_zstd_download(payload.path),
             media_type=payload.media_type,
             headers=headers,
         )
-    return FileResponse(
+    response = FileResponse(
         path=str(payload.path),
         media_type=payload.media_type,
         filename=payload.file_name,
         headers=_DOWNLOAD_SECURITY_HEADERS,
         background=BackgroundTask(payload.path.unlink, missing_ok=True) if getattr(payload, "cleanup_after", False) else None,
     )
+    response.chunk_size = CHUNK_SIZE
+    return response
 
 
 @router.get("", response_model=MyFileListResponse)
@@ -752,7 +812,7 @@ async def download_my_file_by_grant(token: str, request: Request):
             token=token,
             meta=_request_meta(request),
         )
-        return _download_response(payload)
+        return _download_response(payload, request=request)
     except MyFilesNotFoundError as exc:
         enforce_download_grant_miss_limit(request)
         raise _service_error_to_secure_http(exc) from exc
@@ -813,7 +873,7 @@ async def download_public_my_file(
             token=token,
             meta=_request_meta(request),
         )
-        return _download_response(payload)
+        return _download_response(payload, request=request)
     except MyFilesNotFoundError as exc:
         enforce_public_miss_limit(request)
         raise _service_error_to_secure_http(exc) from exc
