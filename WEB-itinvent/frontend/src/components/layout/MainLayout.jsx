@@ -79,6 +79,11 @@ import {
   shouldNotifyMailArrival,
 } from '../../lib/unreadCounts';
 import {
+  selectHubBellItems,
+  selectMailBellItems,
+  shouldKeepMailNotificationAfterRead,
+} from '../../lib/bellInbox';
+import {
   autoEnableWindowsNotificationsIfGranted,
   clearNotificationPermissionBannerDismissed,
   createHubSystemNotification,
@@ -114,19 +119,15 @@ import {
   HUB_REALTIME_STATUS_EVENT,
 } from '../../lib/hubRealtimeSocket';
 import {
-  buildChatNotificationRoute,
   claimChatMessageNotification,
   createChatSystemNotification,
-  resolveChatNotificationSenderName,
   getChatNotificationState,
   isNotificationSurfaceVisible,
-  filterHubBellNotifications,
   isLegacyOrdinaryChatHubNotification,
   resolveOrdinaryChatHubReadVisible,
   refreshChatNotificationState,
   setChatForegroundDiagnostic,
   setChatSocketStatus,
-  shouldDeliverExternalChatViaPushOnly,
   shouldSkipChatPushForegroundNotification,
   syncActiveChatConversationToServiceWorker,
   syncChatPushSubscription,
@@ -154,7 +155,7 @@ import {
 } from '../../lib/notificationPreferences';
 import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
-import { getMessagePreview } from '../chat/chatHelpers';
+import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
 import {
@@ -913,102 +914,61 @@ function MainLayout({
       const envelope = event?.detail || {};
       const message = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
-      const messageId = String(message?.id || '').trim();
-      if (!messageId || !conversationId || Boolean(message?.is_own)) return;
-      const currentUserId = Number(user?.id || 0);
-      const isCurrentUserMentioned = (
-        currentUserId > 0
-        && Array.isArray(message?.mentioned_user_ids)
-        && message.mentioned_user_ids.some((item) => Number(item) === currentUserId)
-      );
-      if (isChatConversationMuted(conversationId) && !isCurrentUserMentioned) {
-        setChatForegroundDiagnostic('conversation_muted');
-        return;
-      }
-      if (!claimChatMessageNotification(messageId)) return;
-
-      const isActiveVisibleConversation = (
-        (isChatRoute || isTaskDiscussionRoute)
-        && activeChatConversationId === conversationId
-        && isNotificationSurfaceVisible()
-      );
-      const isVisible = isNotificationSurfaceVisible();
-      if (isActiveVisibleConversation) {
-        setChatForegroundDiagnostic('active_visible_conversation');
-        return;
-      }
-      if (isMobileChatRoute && isVisible) {
-        setChatForegroundDiagnostic('mobile_chat_route_visible');
-        return;
-      }
-      if (!isNotificationChannelEnabled({
-        channel: 'chat',
-        conversation_kind: message?.conversation_kind,
-      }, notificationPreferencesRef.current)) {
-        setChatForegroundDiagnostic('notifications_disabled');
-        return;
-      }
-
-      const previewText = getMessagePreview(message);
-      const senderName = resolveChatNotificationSenderName(message);
-      const navigateTo = buildChatNotificationRoute({
-        conversationId,
-        messageId,
-        conversationKind: message?.conversation_kind,
-        taskId: message?.task_id,
+      const plan = resolveChatMessageNotificationPlan(envelope, {
+        userId: user?.id,
+        isConversationMuted: isChatConversationMuted(conversationId),
+        isChatRoute,
+        isTaskDiscussionRoute,
+        isMobileChatRoute,
+        activeChatConversationId,
+        isVisible: isNotificationSurfaceVisible(),
+        chatChannelEnabled: isNotificationChannelEnabled({
+          channel: 'chat',
+          conversation_kind: message?.conversation_kind,
+        }, notificationPreferencesRef.current),
+        chatNotificationState: getChatNotificationState(),
       });
-      if (isVisible) {
-        notifyInfoRef.current?.(previewText, {
-          title: senderName,
-          source: 'chat',
-          channel: 'system',
-          dedupeMode: 'recent',
-          dedupeKey: `chat:${messageId}`,
-          action: createNavigateToastAction(navigateTo, 'Открыть чат'),
-          durationMs: 5200,
-        });
-      }
-
-      const currentChatNotificationState = getChatNotificationState();
-      if (currentChatNotificationState.permission !== 'granted') {
-        setChatForegroundDiagnostic('permission_not_granted');
+      if (plan.kind === 'ignore') return;
+      if (plan.kind === 'suppress') {
+        setChatForegroundDiagnostic(plan.reason);
         return;
       }
-      const shouldShowLocalSystemNotification = (
-        !isVisible
-        && !shouldDeliverExternalChatViaPushOnly(currentChatNotificationState)
-      );
+      if (!claimChatMessageNotification(plan.messageId)) return;
+      if (plan.suppress) {
+        setChatForegroundDiagnostic(plan.suppress);
+        return;
+      }
+      if (plan.toast) {
+        notifyInfoRef.current?.(plan.toast.body, plan.toast.options);
+      }
+      if (plan.reason) {
+        setChatForegroundDiagnostic(plan.reason);
+        return;
+      }
       // #region agent log
       emitAgentDebugLog({
         location: 'MainLayout.jsx:handleChatMessageCreated',
-        message: shouldShowLocalSystemNotification ? 'local system notification requested' : 'local system notification skipped',
+        message: plan.shouldShowLocalSystemNotification ? 'local system notification requested' : 'local system notification skipped',
         hypothesisId: 'H5',
         data: {
-          messageId,
-          conversationId,
+          messageId: plan.messageId,
+          conversationId: plan.conversationId,
           activeChatConversationId: String(activeChatConversationId || '').trim(),
-          isActiveVisibleConversation,
+          isActiveVisibleConversation: plan.isActiveVisibleConversation,
           pathname: location.pathname,
           visibility: document.visibilityState,
-          pushSubscribed: currentChatNotificationState.pushSubscribed,
-          backgroundCapable: currentChatNotificationState.backgroundCapable,
-          shouldShowLocalSystemNotification,
+          pushSubscribed: getChatNotificationState().pushSubscribed,
+          backgroundCapable: getChatNotificationState().backgroundCapable,
+          shouldShowLocalSystemNotification: plan.shouldShowLocalSystemNotification,
         },
       });
       // #endregion
-      if (shouldShowLocalSystemNotification) {
-        setChatForegroundDiagnostic('');
+      setChatForegroundDiagnostic('');
+      if (plan.system) {
         createChatSystemNotification({
-          messageId,
-          title: senderName,
-          body: previewText,
-          conversationId,
-          conversationKind: message?.conversation_kind,
-          taskId: message?.task_id,
-          onNavigate: (target) => navigate(target || navigateTo),
+          ...plan.system,
+          onNavigate: (target) => navigate(target || plan.system.navigateTo),
         });
-      } else {
-        setChatForegroundDiagnostic('');
       }
     };
 
@@ -1293,12 +1253,9 @@ useEffect(() => {
       const targetId = String(detail?.targetId || '').trim();
       const mode = String(detail?.mode || 'messages').trim();
       if (targetId) {
-        setMailNotifications((previous) => (Array.isArray(previous) ? previous.filter((item) => {
-          if (mode === 'conversations') {
-            return String(item?.conversation_id || '').trim() !== targetId;
-          }
-          return String(item?.id || item?.message_id || '').trim() !== targetId;
-        }) : []));
+        setMailNotifications((previous) => (Array.isArray(previous)
+          ? previous.filter((item) => shouldKeepMailNotificationAfterRead(item, { targetId, mode }))
+          : []));
       }
     }
   }, []);
@@ -1323,11 +1280,7 @@ useEffect(() => {
           }).then((response) => {
             const readVisible = resolveOrdinaryChatHubReadVisible(response?.data?.hub_chat_ordinary);
             ordinaryChatHubReadVisibleRef.current = readVisible;
-            nextHubItems = filterHubBellNotifications(
-              (Array.isArray(response?.data?.items) ? response.data.items : [])
-                .filter((item) => Number(item?.unread || 0) === 1),
-              { ordinaryReadVisible: readVisible },
-            ).sort((left, right) => String(right?.created_at || '').localeCompare(String(left?.created_at || '')));
+            nextHubItems = selectHubBellItems(response, { ordinaryReadVisible: readVisible });
           }),
         );
       }
@@ -1336,9 +1289,7 @@ useEffect(() => {
           mailAPI.getNotificationFeed({
             limit: 20,
           }).then((data) => {
-            nextMailItems = (Array.isArray(data?.items) ? data.items : [])
-              .filter((item) => !item?.is_read)
-              .sort((left, right) => String(right?.received_at || '').localeCompare(String(left?.received_at || '')));
+            nextMailItems = selectMailBellItems(data);
           }),
         );
       }

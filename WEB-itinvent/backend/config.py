@@ -272,6 +272,7 @@ class MyFilesDownloadGrantConfig:
     mint_window_ip_sec: int = 60
     consume_limit_per_ip: int = 120
     consume_window_ip_sec: int = 60
+    consume_limit_per_token: int = 4
     miss_limit_per_ip: int = 60
     miss_window_ip_sec: int = 60
 
@@ -293,6 +294,8 @@ class MyFilesSecurityConfig:
     processing_timeout_sec: int = 21600
     zstd_threads: int = 2
     zstd_level: int = 19
+    zstd_max_source_bytes: int = 256 * 1024 * 1024
+    zstd_min_savings_percent: int = 10
     antivirus_enabled: bool = False
     antivirus_fail_closed: bool = True
     antivirus_timeout_sec: int = 300
@@ -515,6 +518,7 @@ class Config:
                 mint_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MINT_WINDOW_IP_SEC", 60),
                 consume_limit_per_ip=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_CONSUME_LIMIT_PER_IP", 120),
                 consume_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_CONSUME_WINDOW_IP_SEC", 60),
+                consume_limit_per_token=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_CONSUME_LIMIT_PER_TOKEN", 4),
                 miss_limit_per_ip=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MISS_LIMIT_PER_IP", 60),
                 miss_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MISS_WINDOW_IP_SEC", 60),
             ),
@@ -532,6 +536,8 @@ class Config:
                 processing_timeout_sec=_positive_int_env("MY_FILES_PROCESSING_TIMEOUT_SEC", 21600),
                 zstd_threads=_positive_int_env("MY_FILES_ZSTD_THREADS", 2),
                 zstd_level=_positive_int_env("MY_FILES_ZSTD_LEVEL", 19),
+                zstd_max_source_bytes=_positive_int_env("MY_FILES_ZSTD_MAX_SOURCE_BYTES", 256 * 1024 * 1024),
+                zstd_min_savings_percent=_positive_int_env("MY_FILES_ZSTD_MIN_SAVINGS_PERCENT", 10),
                 antivirus_enabled=_bool_env("MY_FILES_ANTIVIRUS_ENABLED", environment == "production"),
                 antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
                 antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),

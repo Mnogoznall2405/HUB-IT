@@ -4,6 +4,7 @@ Per-user UI/database settings storage.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,7 @@ class SettingsService:
         "database_branch_filters": {},
     }
     ALLOWED_FONT_FAMILIES = {"Aptos", "Inter", "Roboto", "Segoe UI"}
+    _SETTINGS_CACHE_TTL_SEC = 30.0
 
     def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
         if file_path is None:
@@ -62,6 +64,7 @@ class SettingsService:
         self._database_url = str(database_url or "").strip() or None
         self._use_app_database = bool(self._database_url) or is_app_database_configured()
         self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
+        self._settings_cache: dict[str, tuple[float, dict]] = {}
         if self._use_app_database:
             initialize_app_schema(self._database_url)
         self._ensure_file()
@@ -255,12 +258,49 @@ class SettingsService:
                 for user_id, row in existing_by_user_id.items():
                     if user_id not in incoming_ids:
                         session.delete(row)
+            self._settings_cache.clear()
             return
         self.store.save_json(self.FILE_NAME, data)
+        self._settings_cache.clear()
+
+    def _load_one(self, user_id: int) -> dict:
+        """Single-row settings load for the hot per-request path (no full scan)."""
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppUserSetting, int(user_id))
+                if row is None:
+                    return {}
+                return {
+                    "pinned_database": row.pinned_database,
+                    "theme_mode": str(row.theme_mode or "light"),
+                    "font_family": str(row.font_family or "Aptos"),
+                    "font_scale": float(row.font_scale or 1.0),
+                    "dashboard_sections": self._normalize_dashboard_sections(
+                        row.dashboard_mobile_sections_json,
+                        row.dashboard_mobile_sections_json,
+                    ),
+                    "dashboard_mobile_sections": self._dashboard_sections_to_legacy(
+                        row.dashboard_mobile_sections_json
+                    ),
+                    "mobile_bottom_nav_items": self._normalize_mobile_bottom_nav_items(
+                        row.mobile_bottom_nav_items_json
+                    ),
+                    "database_branch_filters": self._normalize_database_branch_filters(
+                        row.database_branch_filters_json
+                    ),
+                }
+        data = self._load_all()
+        return data.get(str(int(user_id))) or {}
 
     def get_user_settings(self, user_id: int) -> dict:
-        data = self._load_all()
-        raw = data.get(str(int(user_id))) or {}
+        key = str(int(user_id))
+        now = time.monotonic()
+        entry = self._settings_cache.get(key)
+        if entry and entry[0] > now:
+            raw = entry[1]
+        else:
+            raw = self._load_one(int(user_id))
+            self._settings_cache[key] = (now + self._SETTINGS_CACHE_TTL_SEC, raw)
         settings = {**self.DEFAULTS, **raw}
         if settings["theme_mode"] not in {"light", "dark", "system"}:
             settings["theme_mode"] = "light"

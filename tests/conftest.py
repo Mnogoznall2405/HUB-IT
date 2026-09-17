@@ -107,6 +107,7 @@ def isolate_equipment_payload_cache():
         sys.modules.get("backend.database.equipment_db"),
         sys.modules.get("backend.database.queries"),
         sys.modules.get("backend.database.equipment_directory_reads"),
+        sys.modules.get("backend.database.equipment_act_history_reads"),
     )
     caches = [
         getattr(module, attr)
@@ -114,9 +115,20 @@ def isolate_equipment_payload_cache():
             (modules[0], "_equipment_payload_cache"),
             (modules[1], "_table_columns_cache"),
             (modules[2], "_locations_branch_column_cache"),
+            (modules[3], "_doc_type_map_cache"),
         )
         if module is not None and isinstance(getattr(module, attr, None), dict)
     ]
+    # Per-request resolve memos (services are module-level singletons).
+    for service_name, attr in (
+        ("backend.services.user_db_selection_service", "_assigned_cache"),
+        ("backend.services.settings_service", "_settings_cache"),
+    ):
+        service_module = sys.modules.get(service_name)
+        service = getattr(service_module, service_name.rsplit(".", 1)[-1], None) if service_module else None
+        cache = getattr(service, attr, None)
+        if isinstance(cache, dict):
+            caches.append(cache)
     for cache in caches:
         cache.clear()
     yield

@@ -25,6 +25,7 @@ function MobileShellPageHeader({
   onDatabaseChange: onDatabaseChangeProp,
   dbLoading: dbLoadingProp,
   dbLocked: dbLockedProp,
+  databaseSelectSx = {},
   sx = {},
 }) {
   const theme = useTheme();
@@ -95,6 +96,7 @@ function MobileShellPageHeader({
               right: 4,
               color: theme.palette.text.secondary,
             },
+            ...databaseSelectSx,
           }}
         >
           {databases.map((db) => (
@@ -114,6 +116,7 @@ function MobileShellPageHeader({
     );
   }, [
     currentDb?.id,
+    databaseSelectSx,
     dbLocked,
     dbLoading,
     dbName,

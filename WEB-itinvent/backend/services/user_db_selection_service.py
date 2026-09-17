@@ -6,6 +6,7 @@ data/user_db_selection.json
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -27,9 +28,22 @@ class UserDBSelectionService:
         self.file_path = file_path
         self._database_url = str(database_url or "").strip() or None
         self._use_app_database = bool(self._database_url) or is_app_database_configured()
+        self._assigned_cache: dict[str, tuple[float, Optional[str]]] = {}
         self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
         if self._use_app_database:
             initialize_app_schema(self._database_url)
+
+    _ASSIGNED_LOOKUP_TTL_SEC = 30.0
+
+    def _read_assigned_database(self, telegram_id: int) -> Optional[str]:
+        """Key lookup for a single assignment (no full-table scan)."""
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppUserDatabaseSelection, int(telegram_id))
+                value = str(row.database_id).strip() if row else ""
+                return value or None
+        mapping = self._read_mapping()
+        return mapping.get(str(int(telegram_id)))
 
     def _read_mapping(self) -> dict[str, str]:
         if self._use_app_database:
@@ -42,6 +56,7 @@ class UserDBSelectionService:
         return {str(k): str(v).strip() for k, v in data.items() if str(v).strip()}
 
     def _write_mapping(self, mapping: dict[str, str]) -> None:
+        self._assigned_cache.clear()
         if self._use_app_database:
             with app_session(self._database_url) as session:
                 existing_rows = session.scalars(select(AppUserDatabaseSelection)).all()
@@ -69,11 +84,21 @@ class UserDBSelectionService:
         self.store.save_json("user_db_selection.json", mapping)
 
     def get_assigned_database(self, telegram_id: Optional[int]) -> Optional[str]:
-        """Return assigned DB ID for Telegram user or None."""
+        """Return assigned DB ID for Telegram user or None.
+
+        Key lookup + short TTL memo: this runs on every authenticated request,
+        so it must not scan the whole selection table/file each time.
+        """
         if telegram_id in (None, 0):
             return None
-        mapping = self._read_mapping()
-        return mapping.get(str(int(telegram_id)))
+        key = str(int(telegram_id))
+        entry = self._assigned_cache.get(key)
+        now = time.monotonic()
+        if entry and entry[0] > now:
+            return entry[1]
+        value = self._read_assigned_database(int(telegram_id))
+        self._assigned_cache[key] = (now + self._ASSIGNED_LOOKUP_TTL_SEC, value)
+        return value
 
     def set_assigned_database(self, telegram_id: Optional[int], database_id: Optional[str]) -> None:
         """Upsert or remove assigned DB for Telegram user."""

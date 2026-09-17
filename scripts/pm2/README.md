@@ -162,9 +162,11 @@ powershell -File scripts\pm2\restart-backend.ps1
 
 ```powershell
 pm2 start scripts\pm2\ecosystem.backend.config.js --only itinvent-backend
-pm2 restart itinvent-backend
+powershell -File scripts\pm2\restart-backend.ps1
 pm2 logs itinvent-backend --lines 100
 ```
+
+Прямой PM2-restart backend-процесса на Windows не использовать: безопасный lifecycle и проверка readiness находятся в `restart-backend.ps1`.
 
 ```powershell
 powershell -File scripts\pm2\restart-chat-scale.ps1
