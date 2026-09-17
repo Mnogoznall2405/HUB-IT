@@ -322,3 +322,19 @@ def test_create_uploaded_act_draft_uses_legacy_item_ids_when_model_inv_nos_not_c
     assert draft["equipment_inv_nos"] == ["101795"]
     assert [item["inv_no"] for item in draft["resolved_items"]] == ["101795"]
     assert any("legacy-конвертацию equipment_item_ids" in warning for warning in draft["warnings"])
+
+
+def test_normalize_inv_no_token_shared_helper_semantics():
+    """D1: one shared helper; queries keep alnum tokens, act upload drops them."""
+    from backend.utils.inv_no import normalize_inv_no_token
+
+    # queries path keeps non-numeric tokens for resilient matching (INV/2).
+    assert queries._normalize_inv_no_token("INV/2") == "INV/2"
+    assert queries._normalize_inv_no_token("  007  ") == "7"
+    assert queries._normalize_inv_no_token("123.0") == "123"
+    # act upload path stays strict: non-numeric candidates go to unmatched list.
+    assert act_upload_service._normalize_inv_no_token("INV/2") is None
+    assert act_upload_service._normalize_inv_no_token("007") == "7"
+    # Shared helper exposes the choice explicitly.
+    assert normalize_inv_no_token("INV/2") == "INV/2"
+    assert normalize_inv_no_token("INV/2", strict_digits=True) is None

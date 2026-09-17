@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, R
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
+import asyncio
 import os
 import re
 import threading
@@ -2512,23 +2513,27 @@ async def send_uploaded_act_email(
             resolved_recipients.append((int(owner_no), owner_name))
 
     sent_owner_nos: set[int] = set()
+    deduped_recipients: list[tuple[int, str]] = []
     for owner_no, owner_name in resolved_recipients:
         if owner_no in sent_owner_nos:
             continue
         sent_owner_nos.add(owner_no)
+        deduped_recipients.append((owner_no, owner_name))
 
+    # Per-recipient sends are independent SMTP calls — run them in parallel
+    # with a bounded timeout instead of serial seconds-per-recipient waits.
+    send_timeout_sec = max(5, int(os.getenv("TRANSFER_EMAIL_TIMEOUT_SEC", "60") or "60"))
+
+    async def _send_act_to_recipient(owner_no: int, owner_name: str) -> dict:
         owner_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
         if not owner_email:
-            statuses.append(
-                {
-                    "owner_no": int(owner_no),
-                    "employee_name": owner_name,
-                    "email": None,
-                    "status": "missing_email",
-                    "detail": "У сотрудника не указан email",
-                }
-            )
-            continue
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": None,
+                "status": "missing_email",
+                "detail": "У сотрудника не указан email",
+            }
 
         sent = await send_binary_file_email(
             recipient_email=owner_email,
@@ -2538,25 +2543,40 @@ async def send_uploaded_act_email(
             body=body,
         )
         if sent:
-            statuses.append(
-                {
-                    "owner_no": int(owner_no),
-                    "employee_name": owner_name,
-                    "email": owner_email,
-                    "status": "sent",
-                    "detail": "Отправлено",
-                }
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": owner_email,
+                "status": "sent",
+                "detail": "Отправлено",
+            }
+        return {
+            "owner_no": int(owner_no),
+            "employee_name": owner_name,
+            "email": owner_email,
+            "status": "error",
+            "detail": "Ошибка отправки SMTP",
+        }
+
+    async def _send_act_with_timeout(owner_no: int, owner_name: str) -> dict:
+        try:
+            return await asyncio.wait_for(
+                _send_act_to_recipient(owner_no, owner_name),
+                timeout=send_timeout_sec,
             )
-        else:
-            statuses.append(
-                {
-                    "owner_no": int(owner_no),
-                    "employee_name": owner_name,
-                    "email": owner_email,
-                    "status": "error",
-                    "detail": "Ошибка отправки SMTP",
-                }
-            )
+        except Exception:
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": None,
+                "status": "error",
+                "detail": "Таймаут или ошибка отправки SMTP",
+            }
+
+    recipient_statuses = await asyncio.gather(
+        *(_send_act_with_timeout(owner_no, owner_name) for owner_no, owner_name in deduped_recipients)
+    )
+    statuses.extend(recipient_statuses)
 
     success_count = sum(1 for row in statuses if row.get("status") == "sent")
     failed_count = len(statuses) - success_count

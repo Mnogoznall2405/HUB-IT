@@ -18,7 +18,8 @@ from uuid import uuid4
 from dotenv import dotenv_values
 
 from backend.database import queries
-from backend.ai_chat.openrouter_client import (
+from backend.utils.inv_no import cleanup_inv_no_candidate, normalize_inv_no_token
+from shared.llm import (
     OpenRouterClientError,
     is_image_unsupported_error,
     openrouter_client,
@@ -321,24 +322,13 @@ def _normalize_item_ids_legacy(raw_ids: Any) -> list[int]:
 
 
 def _cleanup_inv_no_candidate(raw: Any) -> Optional[str]:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    text = re.sub(r"\s+", "", text)
-    text = text.replace("№", "")
-    text = text.strip(".,;:|")
-    if not text:
-        return None
-    if re.fullmatch(r"\d+[.,]0+", text):
-        text = re.split(r"[.,]", text, maxsplit=1)[0]
-    return text or None
+    return cleanup_inv_no_candidate(raw)
 
 
 def _normalize_inv_no_token(raw: Any) -> Optional[str]:
-    text = _cleanup_inv_no_candidate(raw)
-    if not text or not re.fullmatch(r"\d+", text):
-        return None
-    return str(int(text))
+    # Strict semantics for uploaded acts: non-numeric tokens are rejected into
+    # the "unmatched" list instead of being passed to the lookup.
+    return normalize_inv_no_token(raw, strict_digits=True)
 
 
 def _collect_inv_nos(raw_values: Any) -> tuple[list[str], list[str]]:
@@ -441,9 +431,10 @@ def _resolve_cyrillic_ttf_path() -> Optional[str]:
     return None
 
 
-def _stamp_pdf_doc_no(file_bytes: bytes, doc_no: int) -> bytes:
-    """
-    Put visible document number in the top-left corner of first PDF page.
+def _stamp_pdf_overlay(file_bytes: bytes, label: str, draw_fn) -> bytes:
+    """Shared PDF stamp skeleton: first-page overlay merged into the output.
+
+    ``draw_fn(overlay, width, height)`` draws on the reportlab canvas.
     Returns original bytes on any non-critical failure.
     """
     if not file_bytes or not bytes(file_bytes).startswith(b"%PDF-"):
@@ -452,11 +443,9 @@ def _stamp_pdf_doc_no(file_bytes: bytes, doc_no: int) -> bytes:
     try:
         import io
         from pypdf import PdfReader, PdfWriter  # type: ignore
-        from reportlab.pdfbase import pdfmetrics  # type: ignore
-        from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
         from reportlab.pdfgen import canvas  # type: ignore
     except Exception as exc:
-        logger.warning("DOC_NO stamp skipped: PDF libs unavailable (%s)", exc)
+        logger.warning("%s stamp skipped: PDF libs unavailable (%s)", label, exc)
         return bytes(file_bytes)
 
     try:
@@ -466,34 +455,13 @@ def _stamp_pdf_doc_no(file_bytes: bytes, doc_no: int) -> bytes:
             return bytes(file_bytes)
 
         writer = PdfWriter()
-        font_name = "Helvetica-Bold"
-        font_size = 10
-        stamp_text = f"\u2116{int(doc_no)}"
-
-        cyr_font_path = _resolve_cyrillic_ttf_path()
-        if cyr_font_path:
-            try:
-                cyr_font_name = "StampCyrFontDocNo"
-                if cyr_font_name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(cyr_font_name, cyr_font_path))
-                font_name = cyr_font_name
-            except Exception as exc:
-                logger.warning("DOC_NO stamp: failed to load Cyrillic font (%s)", exc)
-        else:
-            logger.warning("DOC_NO stamp: Cyrillic font not found")
-
         for index, page in enumerate(reader.pages):
             if index == 0:
                 width = float(page.mediabox.width)
                 height = float(page.mediabox.height)
                 overlay_stream = io.BytesIO()
                 overlay = canvas.Canvas(overlay_stream, pagesize=(width, height))
-                overlay.setFont(font_name, font_size)
-                text_width = overlay.stringWidth(stamp_text, font_name, font_size)
-                margin = 18
-                x = margin
-                y = max(margin, height - margin - font_size)
-                overlay.drawString(x, y, stamp_text)
+                draw_fn(overlay, width, height)
                 overlay.save()
                 overlay_stream.seek(0)
 
@@ -507,8 +475,47 @@ def _stamp_pdf_doc_no(file_bytes: bytes, doc_no: int) -> bytes:
         stamped = out.getvalue()
         return stamped or bytes(file_bytes)
     except Exception as exc:
-        logger.warning("DOC_NO stamp failed for doc_no=%s: %s", doc_no, exc)
+        logger.warning("%s stamp failed: %s", label, exc)
         return bytes(file_bytes)
+
+
+def _register_stamp_cyrillic_font(font_name: str, label: str) -> bool:
+    """Register the Cyrillic TTF under ``font_name``; returns True when usable."""
+    from reportlab.pdfbase import pdfmetrics  # type: ignore
+    from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
+
+    cyr_font_path = _resolve_cyrillic_ttf_path()
+    if cyr_font_path:
+        try:
+            if font_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(font_name, cyr_font_path))
+            return True
+        except Exception as exc:
+            logger.warning("%s stamp: failed to load Cyrillic font (%s)", label, exc)
+    else:
+        logger.warning("%s stamp: Cyrillic font not found", label)
+    return False
+
+
+def _stamp_pdf_doc_no(file_bytes: bytes, doc_no: int) -> bytes:
+    """
+    Put visible document number in the top-left corner of first PDF page.
+    Returns original bytes on any non-critical failure.
+    """
+    font_name = "Helvetica-Bold"
+    font_size = 10
+    stamp_text = f"№{int(doc_no)}"
+    if _register_stamp_cyrillic_font("StampCyrFontDocNo", "DOC_NO"):
+        font_name = "StampCyrFontDocNo"
+
+    def _draw(overlay, width, height):
+        overlay.setFont(font_name, font_size)
+        margin = 18
+        x = margin
+        y = max(margin, height - margin - font_size)
+        overlay.drawString(x, y, stamp_text)
+
+    return _stamp_pdf_overlay(file_bytes, "DOC_NO", _draw)
 
 
 def _stamp_pdf_annulled(file_bytes: bytes, doc_no: int) -> bytes:
@@ -516,70 +523,23 @@ def _stamp_pdf_annulled(file_bytes: bytes, doc_no: int) -> bytes:
     Put visible annulled stamp on first PDF page.
     Returns original bytes on any non-critical failure.
     """
-    if not file_bytes or not bytes(file_bytes).startswith(b"%PDF-"):
-        return bytes(file_bytes or b"")
+    font_name = "Helvetica-Bold"
+    font_size = 36
+    stamp_text = f"АННУЛИРОВАНО DOC_NO: {int(doc_no)}"
+    if _register_stamp_cyrillic_font("StampCyrFont", "ANNULLED"):
+        font_name = "StampCyrFont"
 
-    try:
-        import io
-        from pypdf import PdfReader, PdfWriter  # type: ignore
-        from reportlab.pdfbase import pdfmetrics  # type: ignore
-        from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
-        from reportlab.pdfgen import canvas  # type: ignore
-    except Exception as exc:
-        logger.warning("ANNULLED stamp skipped: PDF libs unavailable (%s)", exc)
-        return bytes(file_bytes)
+    def _draw(overlay, width, height):
+        overlay.setFillColorRGB(0.75, 0.0, 0.0)
+        overlay.setFont(font_name, font_size)
+        overlay.saveState()
+        overlay.translate(width / 2.0, height / 2.0)
+        overlay.rotate(27)
+        text_width = overlay.stringWidth(stamp_text, font_name, font_size)
+        overlay.drawString(-text_width / 2.0, 0, stamp_text)
+        overlay.restoreState()
 
-    try:
-        source = io.BytesIO(bytes(file_bytes))
-        reader = PdfReader(source)
-        if not reader.pages:
-            return bytes(file_bytes)
-
-        writer = PdfWriter()
-        font_name = "Helvetica-Bold"
-        font_size = 36
-        stamp_text = f"\u0410\u041d\u041d\u0423\u041b\u0418\u0420\u041e\u0412\u0410\u041d\u041e DOC_NO: {int(doc_no)}"
-        cyr_font_path = _resolve_cyrillic_ttf_path()
-        if cyr_font_path:
-            try:
-                cyr_font_name = "StampCyrFont"
-                if cyr_font_name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(cyr_font_name, cyr_font_path))
-                font_name = cyr_font_name
-            except Exception as exc:
-                logger.warning("ANNULLED stamp: failed to load Cyrillic font (%s)", exc)
-        else:
-            logger.warning("ANNULLED stamp: Cyrillic font not found")
-
-        for index, page in enumerate(reader.pages):
-            if index == 0:
-                width = float(page.mediabox.width)
-                height = float(page.mediabox.height)
-                overlay_stream = io.BytesIO()
-                overlay = canvas.Canvas(overlay_stream, pagesize=(width, height))
-                overlay.setFillColorRGB(0.75, 0.0, 0.0)
-                overlay.setFont(font_name, font_size)
-                overlay.saveState()
-                overlay.translate(width / 2.0, height / 2.0)
-                overlay.rotate(27)
-                text_width = overlay.stringWidth(stamp_text, font_name, font_size)
-                overlay.drawString(-text_width / 2.0, 0, stamp_text)
-                overlay.restoreState()
-                overlay.save()
-                overlay_stream.seek(0)
-
-                overlay_reader = PdfReader(overlay_stream)
-                page.merge_page(overlay_reader.pages[0])
-
-            writer.add_page(page)
-
-        out = io.BytesIO()
-        writer.write(out)
-        stamped = out.getvalue()
-        return stamped or bytes(file_bytes)
-    except Exception as exc:
-        logger.warning("ANNULLED stamp failed for doc_no=%s: %s", doc_no, exc)
-        return bytes(file_bytes)
+    return _stamp_pdf_overlay(file_bytes, "ANNULLED", _draw)
 
 
 def _call_openrouter_act_parser(

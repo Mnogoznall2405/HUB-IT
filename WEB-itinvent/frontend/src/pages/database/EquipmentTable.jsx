@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Checkbox,
   IconButton,
@@ -267,6 +267,8 @@ const EquipmentTable = memo(function EquipmentTable({
   isAdmin = false,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
+  const pendingScrollTopRef = useRef(0);
+  const scrollRafRef = useRef(0);
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
 
   const sortedItems = useMemo(
@@ -320,10 +322,21 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipment.status
         + TABLE_WIDTHS.equipment.actions);
 
+  // rAF-throttle: scroll events fire per tick, but the table only needs one
+  // state update per frame — keeps virtualization from re-rendering per event.
   const handleContainerScroll = useCallback((event) => {
     if (!useVirtualization) return;
-    setScrollTop(event.currentTarget.scrollTop);
+    pendingScrollTopRef.current = event.currentTarget.scrollTop;
+    if (scrollRafRef.current) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = 0;
+      setScrollTop(pendingScrollTopRef.current);
+    });
   }, [useVirtualization]);
+
+  useEffect(() => () => {
+    if (scrollRafRef.current) window.cancelAnimationFrame(scrollRafRef.current);
+  }, []);
 
   return (
     <TableContainer

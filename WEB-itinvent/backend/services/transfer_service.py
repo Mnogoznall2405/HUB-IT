@@ -632,10 +632,27 @@ async def send_transfer_acts_email(
                 continue
             recipient_map.setdefault(recipient, []).append(record)
 
-        for recipient, recipient_records in recipient_map.items():
-            subject = f"Акты приема-передачи ({datetime.now().strftime('%d.%m.%Y')})"
-            body = "Во вложении акт приема-передачи оборудования."
-            sent = await _send_files(recipient, recipient_records, subject, body)
+        subject = f"Акты приема-передачи ({datetime.now().strftime('%d.%m.%Y')})"
+        body = "Во вложении акт приема-передачи оборудования."
+        timeout_sec = max(5, int(_read_env("TRANSFER_EMAIL_TIMEOUT_SEC", "60") or "60"))
+
+        async def _send_one(recipient: str, recipient_records: list[dict[str, Any]]) -> bool:
+            try:
+                return await asyncio.wait_for(
+                    _send_files(recipient, recipient_records, subject, body),
+                    timeout=timeout_sec,
+                )
+            except Exception as exc:
+                logger.warning("Transfer acts email to %s failed: %s", recipient, exc)
+                return False
+
+        sent_flags = await asyncio.gather(
+            *(
+                _send_one(recipient, recipient_records)
+                for recipient, recipient_records in recipient_map.items()
+            )
+        )
+        for recipient, sent in zip(recipient_map.keys(), sent_flags):
             if sent:
                 success_count += 1
             else:

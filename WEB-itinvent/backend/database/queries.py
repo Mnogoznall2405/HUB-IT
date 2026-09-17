@@ -11,6 +11,7 @@ import logging
 import re
 import os
 from backend.database.connection import get_db
+from backend.utils.inv_no import normalize_inv_no_token
 from backend.utils.person_names import to_short_fio
 from backend.database.equipment_act_history_reads import (
     get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
@@ -703,23 +704,12 @@ def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None)
 
 
 def _normalize_inv_no_token(raw: Any) -> Optional[str]:
-    """Normalize inventory number token for resilient matching."""
-    text = str(raw or "").strip()
-    if not text:
-        return None
+    """Normalize inventory number token for resilient matching.
 
-    text = re.sub(r"\s+", "", text)
-    text = text.replace("№", "")
-    text = text.strip(".,;:|")
-    if not text:
-        return None
-
-    if re.fullmatch(r"\d+[.,]0+", text):
-        text = re.split(r"[.,]", text, maxsplit=1)[0]
-    if re.fullmatch(r"\d+", text):
-        text = str(int(text))
-
-    return text
+    Keeps non-numeric tokens (``INV/2``); the strict all-digits variant lives
+    behind ``strict_digits=True`` in the shared helper (act upload semantics).
+    """
+    return normalize_inv_no_token(raw)
 
 
 def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:

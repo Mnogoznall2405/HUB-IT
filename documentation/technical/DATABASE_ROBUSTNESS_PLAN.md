@@ -489,6 +489,26 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 После F1–F3 страницу считать закрытой; план заморозить рядом с `DATABASE_OPTIMIZATION.md`.
 Не делать: новые фичи на странице до заморозки; редизайн; SW-кэш `/api`.
 
+## Доисследование 2026-09-18: рендер, дубли, контур актов (контролёр, код не менялся)
+
+Проверено чтением кода + замерами прошлых сессий. Рантайм-узких мест не найдено;
+найдены дубли с расходящейся семантикой и блокирующие отправки в request path.
+
+| ID | Что | Где | Эффект / риск | Действие | Статус |
+|---|---|---|---|---|---|
+| D1 | `_normalize_inv_no_token` — два определения с РАЗНОЙ семантикой: `queries.py:705` пропускает нечисловые (`INV/2`), `act_upload_service.py:337` молча дропает всё нечисловое. Одно имя = ловушка | backend | Medium (корректность матчинга инв. №) | Один хелпер с явным `strict_digits=False`, поправить вызовы + тест на `INV/2` | ✅ `backend/utils/inv_no.py` (`cleanup_inv_no_candidate` + `normalize_inv_no_token(strict_digits=)`); оба call-site делегируют; тест в `test_uploaded_act_inv_parsing.py` |
+| D2 | `_stamp_pdf_doc_no` vs `_stamp_pdf_annulled` — ~70 строк общего скелета | `act_upload_service.py` | Low-Med (дрейф копий) | Выделить `_stamp_pdf_overlay(file_bytes, label, draw_fn)` | ✅ скелет + `_register_stamp_cyrillic_font`; рисование — per-stamp `draw_fn` |
+| D3 | LLM-вызов актов через `backend.ai_chat.openrouter_client`, а не `shared.llm` напрямую | backend | Low (инвариант AGENTS.md) | `from shared.llm import ...` | ✅ импорт переключён |
+| A1 | Последовательные SMTP-await в request path: `equipment.py` (цикл получателей), `transfer_service.py` (mode "old") | backend | Medium (хвост latency) | `asyncio.gather` с таймаутом | ✅ gather + `asyncio.wait_for` (`TRANSFER_EMAIL_TIMEOUT_SEC`, деф. 60с); per-recipient контракт статусов сохранён |
+| R1 | `EquipmentTable.jsx` — `setScrollTop` на каждый тик скролла | frontend | Low | ref + rAF-throttle | ✅ `pendingScrollTopRef` + `requestAnimationFrame`, cancel на unmount |
+| — | Отклонено: сериализация Pydantic, Collator-сортировка, SWR 30с, `toInvNo` vs `parseInvNosInput` | — | — | Не трогать | — |
+
+Проверки: `test_uploaded_act_inv_parsing` + transfer-act/reminder + equipment contract +
+upload-act email = **52/52**; vitest `EquipmentTable`+`Database` = 45/45; `import backend.main` ок (702 route).
+
+Открытый вопрос (не finding): таймауты/отмена LLM-парсинга в `/acts/upload/parse`
+(`_call_openrouter_act_parser`, `:585`) — проверить границы ожидания отдельным заходом.
+
 ## Финал-2: структурная декомпозиция (замер 2026-09-17, без тестовых файлов)
 
 Крупняк каталога `pages/database`: `EmployeeEquipmentDialog.jsx` 2172, `useDatabasePageViewModel.js`
@@ -542,6 +562,24 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
 Прочий крупняк вне скопа S-пакетов (`Warehouse1CReconcilePanel` 953, `useDatabaseTransferAction` 969
 → S4, `useDatabaseUploadActWorkflow` 675, `useDatabaseDetailRuntime` 688, `EquipmentDetail*` 618/679,
 `DatabaseBulkActionBar` 663) задокументирован кандидатами на следующую итерацию.
+
+## Верификация контролёра — S1/S2/S3/S4 в коммитах 2026-09-18 (код не менялся)
+
+Проверены `0b571582` (S1/S3/S2) и `20a1620a` (S4, Devin). Все файлы каталога <600 строк
+(максимум refactored — 575; `Warehouse1CReconcilePanel.jsx` 907 — предсуществующий, вне скоупа).
+Новое: `HubEquipmentList`, `WarehouseBalancesPanel`, `WarehouseMovementsList`,
+`EquipmentHistoryDialog`, `EmployeeEquipmentSubDialogs`, `EmployeeCompareFilters`,
+`employeeCompareFormat`, `DatabasePageHeader/ScopeContent/ListSection`, `dialogsLayerProps`,
+`useDatabaseListController/DialogController/EmployeeFlow`, `useTransferFormState/ActJob/Email`.
+Прямых unit-тестов новых модулей нет — покрытие интеграционное (`Database.test.jsx`,
+диалоги, хуки).
+
+Проверки мои: pytest DB-скоп 42/42; vitest database-скоп 84 файла / 466 тестов — всё зелёное.
+Чанк Database: 255.7 КБ (было 257.3) — в бюджете 280, динамика здоровая. Поведение 1-в-1 —
+по тестам и проводке пропсов; визуальный регресс диалогов/табов — только ручным проходом 390px.
+
+Остаток по странице: ручное (390px, desktop-smoke, staging-smoke), наблюдение за флаком,
+заморозка. S1–S4 как код — приняты.
 
 ## Верификация контролёра — S1/S3 2026-09-18 (исправлено: прошлое чтение было несвежим снепшотом)
 
