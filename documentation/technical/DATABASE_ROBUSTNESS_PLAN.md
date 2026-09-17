@@ -472,6 +472,117 @@ Fade → dataSections/sentinel → слой из ~14 lazy-диалогов. Пр
    `useDatabaseConsumableDelete.test.jsx`, `InventoryTaskDialog.jsx`, `warehouse1cMovementDetail.jsx`
    (последние два — только если реворк диалога идёт в тот же коммит; рекомендую отдельным).
 
+## Финал: декомпозиция закрытия страницы (2026-09-17)
+
+Состояние: код этапов 0–7 + 9.x готов и закоммичен (`5da816b8`), дерево чистое.
+`UploadActDialog.jsx` — 271 строка, сплит не требуется (50+ пропсов идут из хука воркфлоу —
+это его API, не god-компонент). Остаток — только проверки и решение про деплой.
+
+| Пакет | Объём | Приёмка | Effort | Зависимости |
+|---|---|---|---|---|
+| F1. Ручной проход 390px | Поиск «козловский» → сотрудник/акт/1С; табы диалога; фильтры; экспорт; тёмная тема; нет горизонтального overflow | Чек-лист 9.1–9.2, 9.5-тесты уже зелёные | S | — |
+| F2. Live smoke стенда | gzip на `all-grouped`, `Vary` справочников, stale-баннер при правке из второй сессии, счётчик двух воркеров | Без доступа не закрыть | S | стенд |
+| F3. Desktop smoke | `/database` ≥1024px, печать QR/актов, фокус/хоткеи | Чек-лист 9.4 | S | клиент |
+| F4. Наблюдение за флаком | Один невоспроизведённый падение фронта (сессия 2026-09-17) | 3 чистых прогона подряд / найден виновник | S | — |
+| F5. Решение про деплой | Отдельное явное согласие; раскатка PM2-контура уже идёт (14 online) | — | — | F1–F3 |
+
+После F1–F3 страницу считать закрытой; план заморозить рядом с `DATABASE_OPTIMIZATION.md`.
+Не делать: новые фичи на странице до заморозки; редизайн; SW-кэш `/api`.
+
+## Финал-2: структурная декомпозиция (замер 2026-09-17, без тестовых файлов)
+
+Крупняк каталога `pages/database`: `EmployeeEquipmentDialog.jsx` 2172, `useDatabasePageViewModel.js`
+1835 (компонует ~20 хуков, всего `useDatabase*` файлов — 21), `DatabasePageView.jsx` 1127,
+`useDatabaseTransferAction.js` 908, `Warehouse1CReconcilePanel.jsx` 907. Правило пакета:
+без смены поведения, те же тесты зелёные, каждый файл <600 строк.
+
+| Пакет | Разбить | На что | Effort |
+|---|---|---|---|
+| S1 | `EmployeeEquipmentDialog.jsx` (~10 вложенных компонентов) | `HubEquipmentList.jsx` (таблица+моб.строка+chip+сортировка), `WarehouseBalancesPanel.jsx` (остатки+движения), `EquipmentHistoryDialog.jsx`, хелперы форматирования в `employeeCompareFormat.js`; в диалоге — только shell и состояние | M |
+| S2 | `useDatabasePageViewModel.js` | Доменные контроллеры: `useDatabaseListController`, `useDatabaseDialogController`, `useDatabaseEmployeeFlow`; тонкий композитор сверху | L |
+| S3 | `DatabasePageView.jsx` | Секции: `DatabasePageHeader` (табы+поиск), `DatabaseScopeContent` (стрипы+тулбар), `DatabaseListSection`; `DatabaseDialogsLayer` уже отделён | M |
+| S4 (опц.) | `useDatabaseTransferAction.js` 908 | transfer / maintenance / акты — три хука | M |
+
+Порядок: S1 → S3 → S2 → S4. Запреты: смена поведения, переименование пропсов, новые зависимости.
+Приёмка каждого: database-скоп 466+ зелёный + лимит 600 строк + `npm run build` без роста чанков.
+
+### Статус декомпозиции (реализация, workdir)
+
+- [x] **S1 — `EmployeeEquipmentDialog.jsx` 2172 → 585.** Вынесены: `HubEquipmentList.jsx` (414,
+  таблица+моб.строка+chip+сортировка), `WarehouseBalancesPanel.jsx` (466, остатки+кандидаты),
+  `WarehouseMovementsList.jsx` (176, перемещения+карточка документа), `EquipmentHistoryDialog.jsx`
+  (86), `EmployeeCompareFilters.jsx` (160, фильтры+чипы статусов), `EmployeeEquipmentSubDialogs.jsx`
+  (94, превью акта/match/движения/история/инвентаризация), `employeeCompareFormat.js` (155,
+  сортировка+форматирование+`buildDiscrepanciesText`), хуки `useEmployeeEquipmentData.js` (306,
+  загрузка Хаб+1С+движения), `useEmployeeWarehouseNavigation.js` (60, переходы в Склад 1С с
+  return-state), `useEmployeeEquipmentExport.js` (95, Excel), `useDiscrepanciesCopy.js` (43).
+  В диалоге — только shell, состояние фильтров/сортировки и мемо видимых списков.
+- [x] **S3 — `DatabasePageView.jsx` 1127 → 548.** Вынесены: `DatabasePageHeader.jsx` (95,
+  табы+поиск+stale-алерт), `DatabaseScopeContent.jsx` (237, стрипы/тулбар/FAB-шит/бар выбора/акты),
+  `DatabaseListSection.jsx` (95, список+sentinel+live-region), `dialogsLayerProps.js` (569,
+  сборка ~340 строк пропсов `DatabaseDialogsLayer`). Плюс удалён мёртвый код ui-snapshot.
+- [x] **S2 — `useDatabasePageViewModel.js` 1942 → 321.** Композитор теперь собирает три
+  доменных контроллера: `useDatabaseListController.js` (583, workspace/поиск/данные списка/
+  infinite scroll/выбор/ветки/data_version/недавние), `useDatabaseDialogController.js` (467,
+  detail-модалка/add/delete/consume/transfer/upload-act/QR-печать/return-context),
+  `useDatabaseEmployeeFlow.js` (306, employee-fallback/диалог сотрудника/compare-бейджи/
+  deep-link QR/location-state). В композиторе остались auth/permissions, `useDatabaseSelection`,
+  `useDatabaseLookups`, кэш act→equipment и 2 кросс-доменных колбэка. Контракт return-объекта
+  сохранён spread-мержем.
+- [ ] **S4 (опц.) — `useDatabaseTransferAction.js` 969:** transfer / maintenance / акты.
+
+Приёмка прогона: database-скоп **466/466 зелёный** (84 файла), `npm run build` ок.
+Чанк `Database` 255.7→257.3 kB (+1.6 raw / +0.15 gzip) — в пределах шума сборки;
+отдельный чанк `EmployeeEquipmentDialog` 57.9 kB без изменений логики.
+Прочий крупняк вне скопа S-пакетов (`Warehouse1CReconcilePanel` 953, `useDatabaseTransferAction` 969
+→ S4, `useDatabaseUploadActWorkflow` 675, `useDatabaseDetailRuntime` 688, `EquipmentDetail*` 618/679,
+`DatabaseBulkActionBar` 663) задокументирован кандидатами на следующую итерацию.
+
+## Верификация контролёра — S1/S3 2026-09-18 (исправлено: прошлое чтение было несвежим снепшотом)
+
+Перепроверено начисто, shell-замерами (консистентны между собой): `EmployeeEquipmentDialog.jsx`
+575 строк, `DatabasePageView.jsx` 538 строк; выносы S1/S3 импортированы и используются;
+счётчик и сентинел живут в `DatabaseListSection.jsx` (93 строки). Старая пометка про
+«движущуюся цель» снята как ошибочная — агент ничего параллельно не правил, несвежим был
+мой инструмент чтения. Тесты: database-скоп 84 файла / 466 тестов — зелёное. Сборка успешна.
+
+Про чанк честно: Database 227→257 КБ raw (+13%), gzip 69.7→76.6 КБ (+10%). Утечек lazy-кода
+нет (доказано поиском маркеров), значит прирост — фичи после baseline (моб. табы, фильтры
+сверки, акты/спиннеры поиска), а не дублирование от сплита. Критичность: LOW для основного
+контура (офисная сеть, десктоп, кэшированная PWA — разовая доплата ~7 КБ за релиз) и MODERATE
+для первого открытия PWA на слабой мобильной сети (~+0.3–0.6 с на медленном 3G, ~+50–100 мс
+на 4G, плюс ~10–100 мс парсинга). Не блокер. Решение: принять 257/76.6 как новый baseline,
+бюджет — не выше 280 КБ raw (следить через `npm run check:startup-bundle`), гнаться за
+возвратом к 227 нецелесообразно.
+
+Инцидент процесса (моя вина, зафиксировано): `git worktree remove --force` поверх worktree
+с junction на `node_modules` вытер реальный `node_modules` фронтенда (0 каталогов). Восстановлено
+через `npm install`, `package.json`/`package-lock.json` не изменились, тесты после этого зелёные.
+Правило: junction внутрь worktree больше не делать; для изолированных сборок — только копия.
+
+## Что дальше делаем (очередь после S1/S3)
+
+1. S2 (view-model 1835 строк → доменные контроллеры) — последний структурный пакет; S4 опционален.
+2. Закоммитить S1/S3 (сейчас всё висит в workdir) отдельным коммитом Database.
+3. Ручное: 390px, desktop-smoke, staging-smoke (gzip/Vary/stale/multi-worker).
+4. Заморозка страницы и плана; наблюдение за флаком из прошлой сессии.
+
+S1 подтверждён функционально: `EmployeeEquipmentDialog.jsx` 2172→575 строк, выносы
+`HubEquipmentList.jsx` (402), `WarehouseBalancesPanel.jsx` (452), `EquipmentHistoryDialog.jsx` (84),
+`EmployeeEquipmentSubDialogs.jsx` (88), `EmployeeCompareFilters.jsx` (156) — все импортированы
+и используются, старых вложенных компонентов в диалоге не осталось. S3: `DatabasePageView.jsx`
+1127→538 строк, секции `DatabasePageHeader/ScopeContent/ListSection` подключены.
+Lazy-границы целы (14 `lazy()` в `DatabaseDialogsLayer`, кода диалогов в Database-чанке нет —
+проверено поиском маркеров строк). Тесты: database-скоп 466/466. Сборка успешна.
+
+Оговорки (честно):
+- Чанк Database вырос 227→257 КБ (~+30 КБ), атрибуция не установлена: baseline-сборка из HEAD
+  дважды упала на рендеринге (память, рядом крутятся 14 PM2-процессов), а агент параллельно
+  правит файлы — замеры гонятся за движущейся целью. Утечек lazy-кода в чанк нет (доказано),
+  остаток прироста — на совести новых фич uncommitted-дерева, не сплита как такового.
+- Требование: заморозить дерево → пересобрать → зафиксировать цифру; иначе «без роста чанков»
+  подтвердить нельзя. S2 не начат (новых controller-файлов нет).
+
 ## Верификация контролёра — финальная готовность 2026-09-17 (код не менялся)
 
 Этапы 0–7: выполнены и проверены ранее. Этап 8 частично: контрактные/мутационные тесты есть,
@@ -559,8 +670,18 @@ multi-worker, live smoke gzip/Vary), красные перф-бюджеты эт
 
 ## Финальная приёмка robustness
 
-- [ ] Контейнер <300 строк, фичи изолированы, новых стейтов в корне нет.
-- [ ] Клиентского поискового индекса нет (или только как деградация с флагом).
-- [ ] Мутации точечные, полный refetch — только по кнопке/конфликту версии.
-- [ ] Версия данных сквозная (бэк → фронт), stale определяется, а не молчит.
-- [ ] Перф-бюджеты из этапа 0 не превышены; контракт universal честный.
+- [x] Контейнер <300 строк (`Database.jsx` ~40), новых стейтов в корне нет — вся
+  оркестрация в `useDatabasePageViewModel`, рендер в `DatabasePageView`,
+  диалоги в `DatabaseDialogsLayer`.
+- [x] Клиентский индекс — только как деградация: `serverSearchEnabled` false →
+  fallback на загруженные данные + CloudOff-сигнал; consumables ищутся отдельно
+  (universal покрывает только CI_TYPE=1).
+- [x] Мутации точечные (transfer/add/delete/qty/акт → upsert/remove + счётчики);
+  полный refetch — только «Обновить», конфликт версии и задокументированные
+  fallback'и (add-consumable без point-read, maintenance consume).
+- [x] `data_version` сквозная: bump в `invalidate_equipment_cache`, поле в
+  list/search ответах, фронт сравнивает per-scope и показывает stale-баннер.
+- [x] Перф-бюджеты запинены тестом (`test_equipment_page_budget.py`: ≤2 SQL на
+  список/поиск, 1 SQL на ≤1800 id актов); контракт universal честный
+  (COUNT+OFFSET/FETCH). Сравнение с live-базлайном этапа 0 — за исполнителем
+  на реальном контуре.

@@ -827,7 +827,9 @@ describe('Database equipment row helpers', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Иванов И.И.' }));
 
-    const employeeDialog = await screen.findByRole('dialog', { name: 'Оборудование сотрудника' });
+    // Диалог сотрудника подгружается через lazy() — под нагрузкой чанк может
+    // превышать дефолтный asyncTimeout (1s); даём запас.
+    const employeeDialog = await screen.findByRole('dialog', { name: 'Оборудование сотрудника' }, { timeout: 5000 });
     const searchInput = await screen.findByRole('textbox', { name: 'Поиск' });
     fireEvent.change(searchInput, { target: { value: 'OptiPlex' } });
     fireEvent.click(await screen.findByRole('button', { name: '1001' }));
