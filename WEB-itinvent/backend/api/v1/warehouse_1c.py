@@ -262,6 +262,21 @@ async def get_dismissed_employee_warehouses(
     )
 
 
+@router.get("/employee-compare-summary")
+async def get_employee_compare_summary(
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+    db_id: str | None = Depends(get_current_database_id),
+):
+    target_db_id, _ = _resolve_scoped_hub_db(
+        current_user=current_user,
+        selected_db_id=db_id,
+        requested_scope="current",
+    )
+    return await _run_or_raise(
+        warehouse_1c_service.get_employee_compare_summary(db_id=target_db_id)
+    )
+
+
 @router.get("/balances")
 async def get_balances(
     nomenclature_ref: str = Query("", max_length=64),
@@ -410,6 +425,26 @@ async def get_movements(
             limit=limit,
             cursor=cursor or None,
             include_meta=include_meta,
+        )
+    )
+
+
+@router.get("/warehouse-movements")
+async def get_warehouse_movements(
+    warehouse_ref: str = Query(..., max_length=64),
+    date_from: str = Query("", max_length=10),
+    date_to: str = Query("", max_length=10),
+    limit: int = Query(100, ge=1, le=500),
+    cursor: str = Query("", max_length=512),
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    return await _run_or_raise(
+        warehouse_1c_service.get_warehouse_movements(
+            warehouse_ref=warehouse_ref,
+            date_from=date_from or None,
+            date_to=date_to or None,
+            limit=limit,
+            cursor=cursor or None,
         )
     )
 

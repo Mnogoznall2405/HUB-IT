@@ -104,10 +104,19 @@ DISMISSED_WAREHOUSE_REFS_MAX = 2000
 DISMISSED_WAREHOUSE_REFS_BATCH = 100
 MOVEMENTS_DEFAULT_LIMIT = 500
 MOVEMENTS_MAX_LIMIT = 2000
+WAREHOUSE_MOVEMENTS_DEFAULT_LIMIT = 100
+WAREHOUSE_MOVEMENTS_MAX_LIMIT = 500
+# Documents are built from register rows; one transfer document may write many
+# rows (one per nomenclature), so the row fetch is capped separately.
+WAREHOUSE_MOVEMENTS_ROW_CAP = 8000
 DEFAULT_MAX_ATTACHED_FILE_BYTES = 25 * 1024 * 1024
 
 QUERY_TIMEOUT_SEC = 45
 MAX_CONCURRENT_1C_CALLS = 2
+# Employee↔1C list-badge summary: one batched 1C call costs ~5-10 s, so the
+# result is cached briefly — repeat page loads stay instant, data stays fresh
+# enough for a reconciliation indicator.
+EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS = 120
 MAX_QUEUED_1C_CALLS = 16
 COM_CIRCUIT_BREAKER_FAILURES = 4
 COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
@@ -159,6 +168,7 @@ PROCESS_BRIDGE_OPERATIONS = (
     "it_request_detail",
     "it_requests",
     "movements",
+    "warehouse_movements",
 )
 _PROCESS_BRIDGE_DISABLED = object()
 
@@ -925,6 +935,8 @@ class Warehouse1CService:
         self._catalog_fallback_reason = "catalog_not_loaded"
         self._catalog_app_retry_after = 0.0
         self._catalog_app_status_cache: dict[str, Any] | None = None
+        self._employee_compare_cache: dict[str, dict[str, Any]] = {}
+        self._employee_compare_lock = asyncio.Lock()
         self._catalog_leader_status: dict[str, Any] = {
             "mode": "not_checked",
             "is_leader": False,
@@ -2487,6 +2499,220 @@ class Warehouse1CService:
             "ambiguous_warehouses": ambiguous_warehouses,
         }
 
+    async def get_employee_compare_summary(self, db_id=None) -> dict[str, Any]:
+        """Cached wrapper — the build costs one batched 1C call (~5-10 s)."""
+        cache_key = str(db_id or "default").casefold() or "default"
+        async with self._employee_compare_lock:
+            entry = self._employee_compare_cache.get(cache_key)
+            if entry and (time.monotonic() - entry["at"]) < EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS:
+                return dict(entry["payload"])
+            payload = await self._build_employee_compare_summary(db_id)
+            self._employee_compare_cache[cache_key] = {
+                "at": time.monotonic(),
+                "payload": payload,
+            }
+            return payload
+
+    async def _build_employee_compare_summary(self, db_id=None) -> dict[str, Any]:
+        """Per-owner Hub↔1C reconcile summary for list badges.
+
+        Costs two local SQL reads plus one batched 1C call over the employee
+        warehouses matched to Hub owners — no per-employee 1C round-trips.
+        """
+        from backend.database import queries as db_queries
+
+        owners, count_rows = await asyncio.gather(
+            asyncio.to_thread(db_queries.list_owners_compact, db_id),
+            asyncio.to_thread(db_queries.get_owner_part_no_counts, db_id),
+        )
+
+        hub_counts: dict[int, dict[str, int]] = {}
+        no_part_counts: dict[int, int] = {}
+        sentinel_counts: dict[int, int] = {}
+        for row in count_rows or []:
+            try:
+                owner_no = int(row.get("owner_no") or row.get("OWNER_NO") or 0)
+                item_count = int(row.get("item_count") or row.get("ITEM_COUNT") or 0)
+            except (TypeError, ValueError):
+                continue
+            if owner_no <= 0 or item_count <= 0:
+                continue
+            part_no = str(row.get("part_no") or row.get("PART_NO") or "")
+            if db_queries._is_usable_hub_part_no(part_no):
+                key = db_queries._normalize_hub_part_no_text(part_no)
+                bucket = hub_counts.setdefault(owner_no, {})
+                bucket[key] = bucket.get(key, 0) + item_count
+            elif db_queries._is_not_in_1c_hub_part_no(part_no):
+                sentinel_counts[owner_no] = sentinel_counts.get(owner_no, 0) + item_count
+            else:
+                no_part_counts[owner_no] = no_part_counts.get(owner_no, 0) + item_count
+
+        warehouse_entries, catalog_meta = await asyncio.to_thread(
+            self._list_warehouse_catalog_entries
+        )
+        warehouses_by_surname: dict[str, list[dict[str, str]]] = {}
+        for entry in warehouse_entries:
+            ref = normalize_1c_ref(entry.get("ref"))
+            name = normalize_text(entry.get("name"))
+            if not ref or not name:
+                continue
+            tokens = person_name_tokens(name)
+            if tokens:
+                warehouses_by_surname.setdefault(tokens[0], []).append(
+                    {"ref": ref, "name": name}
+                )
+
+        matched: dict[int, dict[str, str]] = {}
+        owner_rows: list[dict[str, Any]] = []
+        for owner in owners or []:
+            try:
+                owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no") or 0)
+            except (TypeError, ValueError):
+                continue
+            if owner_no <= 0:
+                continue
+            employee_name = str(
+                owner.get("OWNER_DISPLAY_NAME") or owner.get("owner_display_name") or ""
+            ).strip()
+            has_hub_items = (
+                owner_no in hub_counts
+                or owner_no in no_part_counts
+                or owner_no in sentinel_counts
+            )
+            tokens = person_name_tokens(employee_name)
+            candidates = warehouses_by_surname.get(tokens[0], []) if tokens else []
+            match = self._match_employee_warehouse_entries(employee_name, candidates)
+            warehouse = match.get("warehouse") if match.get("status") == "matched" else None
+            ambiguous = warehouse is None and match.get("status") == "ambiguous"
+            if warehouse:
+                matched[owner_no] = warehouse
+            if not has_hub_items and warehouse is None and not ambiguous:
+                continue
+            owner_rows.append({
+                "owner_no": owner_no,
+                "employee_name": employee_name,
+                "warehouse": warehouse,
+                "ambiguous": ambiguous,
+            })
+
+        refs = [w["ref"] for w in matched.values() if w.get("ref")]
+        if refs:
+            balance_payload = await self.get_balances_for_warehouses(
+                warehouse_refs=refs,
+                limit=DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT,
+            )
+        else:
+            balance_payload = {
+                "items": [],
+                "status": "ok",
+                "truncated": False,
+                "as_of": utc_now_iso(),
+                "source": "live_1c",
+            }
+
+        qty_by_warehouse: dict[str, dict[str, float]] = {}
+        for row in balance_payload.get("items") or []:
+            ref = normalize_1c_ref(row.get("warehouse_ref"))
+            code = db_queries._normalize_hub_part_no_text(row.get("nomenclature_code"))
+            if not ref or not code:
+                continue
+            try:
+                qty = float(row.get("qty_balance") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            bucket = qty_by_warehouse.setdefault(ref, {})
+            bucket[code] = bucket.get(code, 0.0) + qty
+
+        items: list[dict[str, Any]] = []
+        for owner_row in owner_rows:
+            owner_no = owner_row["owner_no"]
+            warehouse = owner_row["warehouse"]
+            counts_map = hub_counts.get(owner_no, {})
+            qty_map = qty_by_warehouse.get(warehouse["ref"], {}) if warehouse else {}
+            match_cnt = diff = only_hub = only_1c = 0
+            part_status: dict[str, str] = {}
+            for key in set(counts_map) | set(qty_map):
+                hub_qty = counts_map.get(key)
+                qty_1c = qty_map.get(key)
+                if hub_qty is not None and qty_1c is not None:
+                    if abs(qty_1c - hub_qty) <= 1e-6:
+                        match_cnt += 1
+                    else:
+                        diff += 1
+                elif hub_qty is not None:
+                    only_hub += 1
+                else:
+                    only_1c += 1
+                if hub_qty is not None and qty_1c is not None:
+                    part_status[key] = "match" if abs(qty_1c - hub_qty) <= 1e-6 else "diff"
+                elif hub_qty is not None:
+                    part_status[key] = "only_hub"
+            if warehouse is None:
+                status = "ambiguous" if owner_row["ambiguous"] else "no_warehouse"
+            elif not counts_map and not only_1c:
+                status = "match" if not no_part_counts.get(owner_no) else "unknown"
+            elif not counts_map:
+                status = "only_1c"
+            elif diff:
+                status = "diff"
+            elif only_hub:
+                status = "only_hub"
+            elif only_1c:
+                status = "only_1c"
+            else:
+                status = "match"
+            items.append({
+                "owner_no": owner_no,
+                "employee_name": owner_row["employee_name"],
+                "warehouse_ref": warehouse["ref"] if warehouse else "",
+                "warehouse_name": warehouse["name"] if warehouse else "",
+                "status": status,
+                "part_status": part_status,
+                "counts": {
+                    "match": match_cnt,
+                    "diff": diff,
+                    "only_hub": only_hub,
+                    "only_1c": only_1c,
+                    "no_part": no_part_counts.get(owner_no, 0),
+                    "not_in_1c": sentinel_counts.get(owner_no, 0),
+                    "hub_items": (
+                        sum(counts_map.values())
+                        + no_part_counts.get(owner_no, 0)
+                        + sentinel_counts.get(owner_no, 0)
+                    ),
+                },
+            })
+
+        balances_truncated = bool(
+            balance_payload.get("truncated") or balance_payload.get("has_more")
+        )
+        balances_status = normalize_text(balance_payload.get("status")).lower() or "unknown"
+        incomplete = bool(
+            balances_status != "ok"
+            or balances_truncated
+            or catalog_meta.get("truncated")
+        )
+        if incomplete:
+            for item in items:
+                item["status"] = "unknown"
+                item["part_status"] = {}
+                counts = item.get("counts") or {}
+                for key in ("match", "diff", "only_hub", "only_1c"):
+                    counts[key] = 0
+        return {
+            "items": items,
+            "meta": {
+                "status": "incomplete" if incomplete else "ok",
+                "balances_status": balances_status,
+                "balances_truncated": balances_truncated,
+                "catalog_truncated": bool(catalog_meta.get("truncated")),
+                "warehouses_count": len(warehouse_entries),
+                "owners_count": len(items),
+                "as_of": balance_payload.get("as_of") or utc_now_iso(),
+                "source": balance_payload.get("source") or "live_1c",
+            },
+        }
+
     async def suggest_nomenclature(
         self,
         text: str = "",
@@ -3203,7 +3429,7 @@ class Warehouse1CService:
                 and current_db_id.casefold() == one_db_id.casefold()
             )
             try:
-                owners = db_queries.list_owners_compact(db_id=one_db_id)
+                owners = await asyncio.to_thread(db_queries.list_owners_compact, db_id=one_db_id)
             except Exception as exc:
                 logger.warning("list_owners_compact failed for db=%s: %s", one_db_id, exc)
                 continue
@@ -3285,7 +3511,8 @@ class Warehouse1CService:
                 continue
 
             try:
-                counts = db_queries.count_equipment_by_owners_hub_query(
+                counts = await asyncio.to_thread(
+                    db_queries.count_equipment_by_owners_hub_query,
                     matched_owner_nos,
                     part_no=part_no,
                     part_nos=[nomenclature_code] if nomenclature_code else None,
@@ -3414,7 +3641,8 @@ class Warehouse1CService:
                 and current_db_id.casefold() == one_db_id.casefold()
             )
             try:
-                hub_owners = db_queries.count_all_owners_by_hub_query(
+                hub_owners = await asyncio.to_thread(
+                    db_queries.count_all_owners_by_hub_query,
                     part_no=part_no,
                     part_nos=[nomenclature_code] if nomenclature_code else None,
                     model_name=model_name,
@@ -3921,7 +4149,36 @@ class Warehouse1CService:
         condition = " И ".join(condition_parts)
 
         query = connection.NewObject("Query")
-        query.Text = f"""
+        query.Text = self._movements_query_text(
+            condition=condition,
+            period_start_expr=period_start_expr,
+            period_end_expr=period_end_expr,
+            limit=limit,
+        )
+        query.SetParameter("Номенклатура", nomenclature_obj)
+        if warehouse_obj is not None:
+            query.SetParameter("Склад", warehouse_obj)
+        if series_obj is not None:
+            query.SetParameter("Серия", series_obj)
+        if date_from:
+            query.SetParameter("НачалоПериода", datetime(date_from.year, date_from.month, date_from.day))
+        if date_to:
+            query.SetParameter(
+                "КонецПериода",
+                datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59),
+            )
+
+        return self._select_movement_rows(connection, query)
+
+    @staticmethod
+    def _movements_query_text(
+        *,
+        condition: str,
+        period_start_expr: str,
+        period_end_expr: str,
+        limit: int,
+    ) -> str:
+        return f"""
 ВЫБРАТЬ ПЕРВЫЕ {limit}
     ОиО.Регистратор КАК Регистратор,
     ОиО.ПериодСекунда КАК Период,
@@ -3971,19 +4228,8 @@ class Warehouse1CService:
 УПОРЯДОЧИТЬ ПО
     ОиО.ПериодСекунда УБЫВ
 """
-        query.SetParameter("Номенклатура", nomenclature_obj)
-        if warehouse_obj is not None:
-            query.SetParameter("Склад", warehouse_obj)
-        if series_obj is not None:
-            query.SetParameter("Серия", series_obj)
-        if date_from:
-            query.SetParameter("НачалоПериода", datetime(date_from.year, date_from.month, date_from.day))
-        if date_to:
-            query.SetParameter(
-                "КонецПериода",
-                datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59),
-            )
 
+    def _select_movement_rows(self, connection: Any, query: Any) -> list[dict[str, Any]]:
         selection = query.Execute().Select()
         rows: list[dict[str, Any]] = []
         while selection.Next():
@@ -3994,6 +4240,157 @@ class Warehouse1CService:
             if self._is_actual_movement(movement):
                 rows.append(movement)
         return rows
+
+    def _get_warehouse_movements_sync(
+        self,
+        connection: Any,
+        warehouse_ref: str,
+        date_from: date | None,
+        date_to: date | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """All register movements touching one warehouse, newest first."""
+        warehouse_obj = self._rebuild_ref(connection, WAREHOUSE_CATALOG, warehouse_ref)
+        period_start_expr = "&НачалоПериода" if date_from else ""
+        period_end_expr = "&КонецПериода" if date_to else ""
+
+        query = connection.NewObject("Query")
+        query.Text = self._movements_query_text(
+            condition="Склад = &Склад",
+            period_start_expr=period_start_expr,
+            period_end_expr=period_end_expr,
+            limit=limit,
+        )
+        query.SetParameter("Склад", warehouse_obj)
+        if date_from:
+            query.SetParameter("НачалоПериода", datetime(date_from.year, date_from.month, date_from.day))
+        if date_to:
+            query.SetParameter(
+                "КонецПериода",
+                datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59),
+            )
+
+        return self._select_movement_rows(connection, query)
+
+    def _group_movements_to_documents(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Collapse per-nomenclature register rows into one row per registrar.
+
+        Rows arrive ordered by period desc, so documents keep recency order;
+        within a document the first row supplies registrar/route fields while
+        quantities and positions accumulate across its rows.
+        """
+        documents: list[dict[str, Any]] = []
+        index: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = row.get("registrar_ref") or f"row:{len(index)}"
+            doc = index.get(key)
+            if doc is None:
+                doc = {
+                    "registrar_ref": row.get("registrar_ref") or "",
+                    "registrar_name": row.get("registrar_name") or "",
+                    "registrar_number": row.get("registrar_number") or "",
+                    "registrar_date": row.get("registrar_date") or "",
+                    "period": row.get("period") or "",
+                    "document_type": row.get("registrar_document_type") or "",
+                    "is_transfer": bool(row.get("is_transfer")),
+                    "can_open_detail": bool(row.get("can_open_detail")),
+                    "transfer_from_warehouse_ref": row.get("transfer_from_warehouse_ref") or "",
+                    "transfer_from_warehouse_name": row.get("transfer_from_warehouse_name") or "",
+                    "transfer_to_warehouse_ref": row.get("transfer_to_warehouse_ref") or "",
+                    "transfer_to_warehouse_name": row.get("transfer_to_warehouse_name") or "",
+                    "qty_in": 0.0,
+                    "qty_out": 0.0,
+                    "items": [],
+                }
+                index[key] = doc
+                documents.append(doc)
+            doc["qty_in"] += one_c_number(row.get("qty_in"))
+            doc["qty_out"] += one_c_number(row.get("qty_out"))
+            if str(row.get("period") or "") > str(doc["period"]):
+                doc["period"] = row.get("period") or doc["period"]
+            doc["items"].append({
+                "nomenclature_ref": row.get("nomenclature_ref") or "",
+                "nomenclature_code": row.get("nomenclature_code") or "",
+                "nomenclature_name": row.get("nomenclature_name") or "",
+                "series_name": row.get("series_name") or "",
+                "qty_in": one_c_number(row.get("qty_in")),
+                "qty_out": one_c_number(row.get("qty_out")),
+            })
+        for doc in documents:
+            doc["positions"] = len(doc["items"])
+            if doc["qty_in"] > QTY_EPSILON and doc["qty_out"] > QTY_EPSILON:
+                doc["direction"] = "inout"
+            elif doc["qty_in"] > QTY_EPSILON:
+                doc["direction"] = "in"
+            elif doc["qty_out"] > QTY_EPSILON:
+                doc["direction"] = "out"
+            else:
+                doc["direction"] = ""
+        return documents
+
+    async def get_warehouse_movements(
+        self,
+        warehouse_ref: str,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Document-level movement history for one warehouse, newest first."""
+        normalized_warehouse_ref = normalize_1c_ref(warehouse_ref)
+        if not is_meaningful_1c_ref(normalized_warehouse_ref):
+            raise Warehouse1CValidationError("warehouse_ref обязателен для ведомости движений склада")
+        parsed_date_from = parse_date_param(date_from, "date_from")
+        parsed_date_to = parse_date_param(date_to, "date_to")
+        if parsed_date_from is not None and parsed_date_to is None:
+            parsed_date_to = date.today()
+        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
+            raise Warehouse1CValidationError("date_from не может быть позже date_to")
+        doc_limit = clamp_limit(limit, WAREHOUSE_MOVEMENTS_DEFAULT_LIMIT, WAREHOUSE_MOVEMENTS_MAX_LIMIT)
+        offset = decode_movement_cursor(cursor)
+        bridged = await self._run_process_bridge(
+            "warehouse_movements",
+            {
+                "warehouse_ref": normalized_warehouse_ref,
+                "date_from": parsed_date_from.isoformat() if parsed_date_from else "",
+                "date_to": parsed_date_to.isoformat() if parsed_date_to else "",
+                "limit": doc_limit,
+                "cursor": cursor or "",
+            },
+        )
+        if bridged is not _PROCESS_BRIDGE_DISABLED:
+            return bridged
+        # Rows per document are unknown ahead of time; fetch a bounded window
+        # that covers the requested document page with generous headroom.
+        fetch_limit = min(WAREHOUSE_MOVEMENTS_ROW_CAP, (offset + doc_limit) * 20 + 1)
+        rows = await self._run_pooled(
+            self._get_warehouse_movements_sync,
+            normalized_warehouse_ref,
+            parsed_date_from,
+            parsed_date_to,
+            fetch_limit,
+        )
+        rows = [row for row in rows if self._is_actual_movement(row)]
+        documents = self._group_movements_to_documents(rows)
+        page = documents[offset : offset + doc_limit]
+        next_offset = offset + len(page)
+        row_cap_reached = len(rows) >= fetch_limit
+        has_more = len(documents) > next_offset or row_cap_reached
+        return {
+            "items": page,
+            "returned": len(page),
+            "total": None,
+            "has_more": bool(has_more),
+            "truncated": bool(has_more or row_cap_reached),
+            "incomplete_reason": "row_cap" if row_cap_reached else ("next_page" if has_more else None),
+            "next_cursor": encode_movement_cursor(next_offset) if has_more else None,
+            "as_of": utc_now_iso(),
+            "source": "live_1c",
+            "status": "incomplete" if has_more else "ok",
+            "date_from": parsed_date_from.isoformat() if parsed_date_from else None,
+            "date_to": parsed_date_to.isoformat() if parsed_date_to else None,
+        }
 
     async def get_movements(
         self,

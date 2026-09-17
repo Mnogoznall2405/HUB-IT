@@ -202,6 +202,26 @@ export const warehouse1cAPI = {
     return data;
   },
 
+  getWarehouseMovements: async ({
+    warehouseRef,
+    dateFrom = '',
+    dateTo = '',
+    limit = 100,
+    cursor = '',
+  } = {}) => {
+    const { data } = await apiClient.get('/warehouse-1c/warehouse-movements', {
+      params: {
+        warehouse_ref: normalize1cRef(warehouseRef),
+        date_from: dateFrom,
+        date_to: dateTo,
+        limit,
+        ...(cursor ? { cursor } : {}),
+      },
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+    });
+    return data;
+  },
+
   getCatalogStatus: async () => {
     const { data } = await apiClient.get('/warehouse-1c/catalog/status', {
       timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
@@ -262,6 +282,13 @@ export const warehouse1cAPI = {
       },
     )
   ),
+
+  getEmployeeCompareSummary: async () => {
+    const { data } = await apiClient.get('/warehouse-1c/employee-compare-summary', {
+      timeout: 120_000,
+    });
+    return data;
+  },
 
   getEmployeeWarehouse: async ({
     employeeName = '',

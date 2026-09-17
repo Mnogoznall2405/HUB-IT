@@ -71,6 +71,16 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
                 include_meta=bool(payload.get("include_meta")),
             )
         )
+    if operation == "warehouse_movements":
+        return asyncio.run(
+            service.get_warehouse_movements(
+                str(payload.get("warehouse_ref") or ""),
+                date_from=str(payload.get("date_from") or "") or None,
+                date_to=str(payload.get("date_to") or "") or None,
+                limit=payload.get("limit"),
+                cursor=str(payload.get("cursor") or "") or None,
+            )
+        )
     if operation == "it_requests":
         raw_overdue = payload.get("overdue")
         overdue = raw_overdue if isinstance(raw_overdue, bool) else None

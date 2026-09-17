@@ -49,6 +49,7 @@ DEFAULT_READ_OPERATIONS = frozenset(
         "movements",
         "nomenclature_search",
         "registrar",
+        "warehouse_movements",
         "warehouse_search",
     }
 )

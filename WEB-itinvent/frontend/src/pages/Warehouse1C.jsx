@@ -66,6 +66,11 @@ import HubNomenclatureMatchDialog from './database/HubNomenclatureMatchDialog';
 import Warehouse1CReconcilePanel from './database/Warehouse1CReconcilePanel';
 import { loadWarehouseMovementFilePreview } from './database/warehouse1cMovementFilePreview';
 import {
+  downloadBlobResponse,
+  MovementDetailDialog,
+  resolveErrorMessage,
+} from './database/warehouse1cMovementDetail';
+import {
   isMeaningful1cRef,
   isWarehouse1cListIncomplete,
   normalize1cRef,
@@ -84,35 +89,6 @@ import {
 const AUTOCOMPLETE_DEBOUNCE_MS = 300;
 const AUTOCOMPLETE_MIN_CHARS = 2;
 const NOMENCLATURE_AUTOCOMPLETE_LIMIT = 50;
-
-function downloadBlobResponse(response, fallbackName = 'file.bin') {
-  const blob = response?.data instanceof Blob
-    ? response.data
-    : new Blob([response?.data || response], {
-      type: response?.headers?.['content-type'] || 'application/octet-stream',
-    });
-  const disposition = String(response?.headers?.['content-disposition'] || '');
-  const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
-  let filename = fallbackName;
-  if (utfMatch?.[1]) {
-    try {
-      filename = decodeURIComponent(utfMatch[1]);
-    } catch {
-      filename = utfMatch[1];
-    }
-  } else if (plainMatch?.[1]) {
-    filename = plainMatch[1];
-  }
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename || fallbackName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(url);
-}
 
 function canOpenMovementDetail(row) {
   if (!row) return false;
@@ -213,17 +189,7 @@ function useEntityAutocomplete(searchFn, limit = 20) {
   return { inputValue, setInputValue, options, loading, error, reset, truncated };
 }
 
-export const resolveErrorMessage = (err, fallback) => {
-  if (err?.code === 'ECONNABORTED') {
-    return '1С не ответила вовремя. Сузьте фильтр (номенклатура/склад) и повторите запрос.';
-  }
-  const detail = err?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail;
-  if (detail && typeof detail === 'object' && typeof detail.message === 'string' && detail.message.trim()) {
-    return detail.message;
-  }
-  return fallback;
-};
+export { resolveErrorMessage };
 
 const formatNumber = (value, digits = 2) => {
   const num = Number(value || 0);
@@ -1046,222 +1012,6 @@ function EntityAutocomplete({
   );
 }
 
-function MovementDetailDialog({
-  open,
-  row,
-  detail,
-  loading,
-  error,
-  downloadingFileRef,
-  previewingFileRef,
-  onPreviewFile,
-  onDownloadFile,
-  onClose,
-  fullScreen = false,
-}) {
-  const fromName = detail?.transfer_from_warehouse_name || row?.transfer_from_warehouse_name;
-  const toName = detail?.transfer_to_warehouse_name || row?.transfer_to_warehouse_name;
-  const warehouseName = detail?.warehouse_name || row?.warehouse_name;
-  const counterpartyName = detail?.counterparty_name;
-  const registrarNumber = detail?.registrar_number || row?.registrar_number;
-  const registrarDate = detail?.registrar_date || row?.registrar_date;
-  const registrarName = detail?.registrar_name || row?.registrar_name;
-  const registrarRef = detail?.registrar_ref || row?.registrar_ref;
-  const isTransfer = detail?.is_transfer ?? row?.is_transfer;
-  const documentTitle = detail?.document_title
-    || (isTransfer ? 'Перемещение между складами' : 'Документ склада');
-  const files = Array.isArray(detail?.files) ? detail.files : [];
-  const filesStatus = detail?.files_status || 'pending';
-  const hasRoute = Boolean(fromName || toName);
-
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen}>
-      <DialogTitle
-        sx={{
-          pr: 6,
-          pt: fullScreen ? 'calc(env(safe-area-inset-top) + 12px)' : undefined,
-        }}
-      >
-        {documentTitle}
-        <IconButton
-          aria-label="Закрыть"
-          onClick={onClose}
-          sx={{ position: 'absolute', right: 8, top: fullScreen ? 'calc(env(safe-area-inset-top) + 4px)' : 8 }}
-        >
-          <CloseIcon />
-        </IconButton>
-      </DialogTitle>
-      <DialogContent dividers>
-        <Stack spacing={2}>
-          <Box>
-            <Typography variant="subtitle2" color="text.secondary">
-              Документ
-            </Typography>
-            <Typography variant="body1" sx={{ fontWeight: 600 }}>
-              {registrarNumber ? `№ ${registrarNumber}` : registrarName || '-'}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {formatDateTime(registrarDate)}
-            </Typography>
-            {row?.nomenclature_name ? (
-              <Box sx={{ mt: 1 }}>
-                <NomenclatureCell
-                  code={row.nomenclature_code}
-                  name={`${row.nomenclature_name}${row.series_name ? ` · ${row.series_name}` : ''}`}
-                />
-              </Box>
-            ) : null}
-          </Box>
-
-          <Divider />
-
-          {hasRoute ? (
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Маршрут перемещения
-              </Typography>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Chip label={fromName || 'Не указан'} color="default" variant="outlined" />
-                <TrendingFlatIcon fontSize="small" color="action" />
-                <Chip label={toName || 'Не указан'} color="primary" variant="outlined" />
-              </Stack>
-            </Box>
-          ) : (
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Склад
-              </Typography>
-              <Chip label={warehouseName || 'Не указан'} color="primary" variant="outlined" />
-              {counterpartyName ? (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Контрагент: {counterpartyName}
-                </Typography>
-              ) : null}
-            </Box>
-          )}
-
-          {detail?.comment ? (
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Комментарий
-              </Typography>
-              <Typography variant="body2">{detail.comment}</Typography>
-            </Box>
-          ) : null}
-
-          <Divider />
-
-          <Box>
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-              Прикреплённые файлы
-            </Typography>
-            {loading ? (
-              <Stack direction="row" spacing={1} alignItems="center">
-                <CircularProgress size={18} />
-                <Typography variant="body2" color="text.secondary">
-                  Загрузка списка файлов...
-                </Typography>
-              </Stack>
-            ) : null}
-            {error ? <Alert severity="error">{error}</Alert> : null}
-            {!loading && !error && filesStatus === 'access_denied' ? (
-              <Alert severity="warning">
-                {detail?.files_message || 'Нет прав на чтение прикреплённых файлов в 1С.'}
-              </Alert>
-            ) : null}
-            {!loading && !error && (filesStatus === 'unsupported' || filesStatus === 'empty') && files.length === 0 ? (
-              <Alert severity="info">
-                {detail?.files_message || 'Прикреплённые файлы недоступны.'}
-              </Alert>
-            ) : null}
-            {!loading && !error && filesStatus === 'ok' && files.length === 0 ? (
-              <Typography variant="body2" color="text.secondary">
-                К этому документу файлы не прикреплены.
-              </Typography>
-            ) : null}
-            {!loading && !error && files.length > 0 ? (
-              <List dense disablePadding>
-                {files.map((file) => {
-                  const fileKey = file.ref || file.name;
-                  const busy = downloadingFileRef === fileKey || previewingFileRef === fileKey;
-                  return (
-                    <ListItem
-                      key={fileKey}
-                      disableGutters
-                      secondaryAction={(
-                        <Stack direction="row" spacing={0.5}>
-                          <Tooltip title="Открыть предпросмотр">
-                            <span>
-                              <IconButton
-                                edge="end"
-                                aria-label={`Открыть ${file.name}`}
-                                disabled={!file.ref || !registrarRef || busy}
-                                onClick={() => onPreviewFile?.(registrarRef, file)}
-                              >
-                                {previewingFileRef === fileKey
-                                  ? <CircularProgress size={18} />
-                                  : <VisibilityIcon fontSize="small" />}
-                              </IconButton>
-                            </span>
-                          </Tooltip>
-                          <Tooltip title="Скачать">
-                            <span>
-                              <IconButton
-                                edge="end"
-                                aria-label={`Скачать ${file.name}`}
-                                disabled={!file.ref || !registrarRef || busy}
-                                onClick={() => onDownloadFile?.(registrarRef, file)}
-                              >
-                                {downloadingFileRef === fileKey
-                                  ? <CircularProgress size={18} />
-                                  : <DownloadIcon fontSize="small" />}
-                              </IconButton>
-                            </span>
-                          </Tooltip>
-                        </Stack>
-                      )}
-                    >
-                      <AttachFileIcon fontSize="small" color="action" sx={{ mr: 1 }} />
-                      <ListItemText
-                        primary={(
-                          <Typography
-                            variant="body2"
-                            component="button"
-                            type="button"
-                            onClick={() => onPreviewFile?.(registrarRef, file)}
-                            disabled={!file.ref || !registrarRef || busy}
-                            sx={{
-                              border: 0,
-                              background: 'none',
-                              p: 0,
-                              m: 0,
-                              cursor: (!file.ref || !registrarRef || busy) ? 'default' : 'pointer',
-                              color: 'primary.main',
-                              textAlign: 'left',
-                              textDecoration: 'underline',
-                              textUnderlineOffset: 2,
-                              font: 'inherit',
-                            }}
-                          >
-                            {file.name}
-                          </Typography>
-                        )}
-                        secondary={formatFileSize(file.size) || null}
-                      />
-                    </ListItem>
-                  );
-                })}
-              </List>
-            ) : null}
-          </Box>
-        </Stack>
-      </DialogContent>
-      <DialogActions sx={{ pb: fullScreen ? 'calc(env(safe-area-inset-bottom) + 8px)' : undefined }}>
-        <Button onClick={onClose}>Закрыть</Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
 
 function Warehouse1C() {
   const navigate = useNavigate();
