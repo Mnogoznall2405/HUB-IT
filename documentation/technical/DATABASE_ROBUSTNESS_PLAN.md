@@ -827,8 +827,11 @@ multi-worker, live smoke gzip/Vary), красные перф-бюджеты эт
 
 ### Открытые находки аудита (не исправлены — зафиксированы)
 
-- O1: последовательный fan-out `get_equipment_by_owner_all_databases` (N БД × 2 запроса) —
-  кандидат на `ThreadPoolExecutor` при росте числа БД.
+- ~~O1: последовательный fan-out~~ — исправлено: `get_equipment_by_owner_all_databases`
+  использует `ThreadPoolExecutor(max_workers=min(4, N))` (`hub-crossdb`), latency →
+  max(RTT) вместо Σ(RTT); `list_owner_mismatches` в reconcile — `asyncio.gather`
+  + `asyncio.to_thread` по каждой БД. Порядок `failed_dbs`/строк детерминирован
+  (map/gather сохраняют порядок конфигов, финальная сортировка на месте).
 - O3: `_get_cached_equipment_total` не привязан к `data_version` — count дрейфует до TTL
   при частых мутациях.
 - O4: `get_all_equipment` (queries.py) не возвращает `data_version` — если `/all` ещё жив,

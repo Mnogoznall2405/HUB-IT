@@ -455,7 +455,13 @@ async def list_owner_mismatches(
         warehouse_ref_value = str(warehouse.get("ref") or warehouse_ref or "").strip()
         warehouse_name_value = str(warehouse.get("name") or "").strip()
 
-        for cfg in _hub_db_configs(db_id):
+        async def _compare_one_db(cfg: dict) -> tuple:
+            """Resolve warehouse owners and count HUB matches for one DB.
+
+            Returns (mismatch_rows, only_in_1c_rows, candidate_rows, failed).
+            A failed count is reported so the result status can be downgraded
+            instead of silently dropping the warehouse from comparison.
+            """
             one_db_id = str(cfg.get("id") or "").strip() or None
             one_db_name = str(cfg.get("name") or one_db_id or "default")
             from backend.services.one_c_reconcile_registry_service import one_c_reconcile_registry_service
@@ -470,7 +476,9 @@ async def list_owner_mismatches(
             match_score: int | None = 100 if owner_nos else None
             if not owner_nos and warehouse_name_value:
                 try:
-                    owners = db_queries.list_owners_compact(db_id=one_db_id)
+                    owners = await asyncio.to_thread(
+                        db_queries.list_owners_compact, db_id=one_db_id
+                    )
                     matched, score = warehouse_1c_service._match_warehouse_to_owners(
                         warehouse_name_value,
                         owners,
@@ -486,18 +494,21 @@ async def list_owner_mismatches(
                     owner_nos = []
 
             if not owner_nos or not codes:
-                continue
+                return [], [], [], False
             try:
-                counts = db_queries.count_equipment_by_owners_and_part_nos(
+                counts = await asyncio.to_thread(
+                    db_queries.count_equipment_by_owners_and_part_nos,
                     owner_nos,
                     codes,
                     db_id=one_db_id,
                 )
             except Exception as exc:
                 logger.warning("Batch HUB count failed for warehouse=%s db=%s: %s", warehouse_name_value, one_db_id, exc)
-                hub_count_failures += 1
-                continue
+                return [], [], [], True
 
+            mismatch_rows: list[dict[str, Any]] = []
+            only_in_1c_rows: list[dict[str, Any]] = []
+            candidate_rows: list[dict[str, Any]] = []
             for aggregate in aggregates:
                 code = str(aggregate.get("nomenclature_code") or "").strip()
                 if not db_queries._is_usable_hub_part_no(code):
@@ -522,11 +533,29 @@ async def list_owner_mismatches(
                 if abs(delta) <= 0.0001:
                     continue
                 if mapping_method == "explicit":
-                    mismatches.append(payload)
+                    mismatch_rows.append(payload)
                     if hub_count <= 0 and qty_1c > 0:
-                        only_in_1c.append(payload)
+                        only_in_1c_rows.append(payload)
                 else:
-                    candidate_mismatches.append(payload)
+                    candidate_rows.append(payload)
+            return mismatch_rows, only_in_1c_rows, candidate_rows, False
+
+        hub_db_configs = _hub_db_configs(db_id)
+        if len(hub_db_configs) > 1:
+            # Fan out across DBs: reconcile latency becomes the slowest DB's
+            # RTT instead of the sum of all of them.
+            outcomes = await asyncio.gather(
+                *[_compare_one_db(cfg) for cfg in hub_db_configs]
+            )
+        else:
+            outcomes = [await _compare_one_db(cfg) for cfg in hub_db_configs]
+
+        for mismatch_rows, only_in_1c_rows, candidate_rows, failed in outcomes:
+            if failed:
+                hub_count_failures += 1
+            mismatches.extend(mismatch_rows)
+            only_in_1c.extend(only_in_1c_rows)
+            candidate_mismatches.extend(candidate_rows)
 
     warehouse_result_status = str(warehouse_payload.get("status") or "").strip().lower()
     if balances_incomplete:

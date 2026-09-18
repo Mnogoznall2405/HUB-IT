@@ -461,9 +461,13 @@ def get_equipment_by_owner_all_databases(
         db_configs = [{"id": None, "name": "default"}]
 
     label = str(employee_name or "").strip()
-    merged: List[dict] = []
-    failed_dbs: List[str] = []
-    for cfg in db_configs:
+
+    def _load_for_db(cfg: dict) -> tuple:
+        """Resolve the owner and fetch equipment for one Hub DB.
+
+        Returns (rows, failed_db_name) — a per-DB failure is reported to the
+        caller instead of silently dropping the database.
+        """
         one_db_id = str(cfg.get("id") or "").strip() or None
         one_db_name = str(cfg.get("name") or one_db_id or "Hub").strip() or "Hub"
         is_current_db = bool(
@@ -478,10 +482,9 @@ def get_equipment_by_owner_all_databases(
             )
         except Exception:
             logger.exception("owner resolution failed for db=%s", one_db_id)
-            failed_dbs.append(one_db_name)
-            continue
+            return [], one_db_name
         if not resolved:
-            continue
+            return [], None
         try:
             rows = (
                 get_equipment_by_owner_with_current_acts(resolved, one_db_id)
@@ -490,15 +493,37 @@ def get_equipment_by_owner_all_databases(
             )
         except Exception:
             logger.exception("get_equipment_by_owner failed for db=%s owner=%s", one_db_id, resolved)
-            failed_dbs.append(one_db_name)
-            continue
+            return [], one_db_name
+        payloads = []
         for row in rows or []:
             payload = dict(row)
             payload["hub_db_id"] = one_db_id or ""
             payload["hub_db_name"] = one_db_name
             payload["is_current_db"] = is_current_db
             payload["hub_owner_no"] = resolved
-            merged.append(payload)
+            payloads.append(payload)
+        return payloads, None
+
+    if len(db_configs) > 1:
+        # Fan out across DBs: latency becomes the slowest DB's RTT instead of
+        # the sum — matters once a remote SQL Server lags or hangs.
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(4, len(db_configs))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="hub-crossdb"
+        ) as pool:
+            # map preserves config order, so failed_dbs stays deterministic.
+            outcomes = list(pool.map(_load_for_db, db_configs))
+    else:
+        outcomes = [_load_for_db(cfg) for cfg in db_configs]
+
+    merged: List[dict] = []
+    failed_dbs: List[str] = []
+    for rows, failed_name in outcomes:
+        merged.extend(rows)
+        if failed_name:
+            failed_dbs.append(failed_name)
 
     merged.sort(
         key=lambda row: (
