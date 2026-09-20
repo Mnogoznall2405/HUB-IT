@@ -177,6 +177,7 @@ export default function FeedPostCard({
 
   const headerMeta = [
     authorHandle && authorHandle !== `@${authorName}` ? authorHandle : '',
+    post?.is_unread ? 'Новое' : '',
     priority?.label || '',
     post?.is_pinned_active ? 'Закреплено' : '',
   ].filter(Boolean);
@@ -232,6 +233,8 @@ export default function FeedPostCard({
             {post?.is_unread ? (
               <Box
                 component="span"
+                role="img"
+                aria-label="Новая публикация"
                 title="Новая публикация"
                 sx={{ width: 7, height: 7, flexShrink: 0, borderRadius: '50%', bgcolor: 'primary.main' }}
               />
@@ -429,8 +432,10 @@ export default function FeedPostCard({
             sx={{
               mt: 0.15,
               p: 0,
+              px: 1,
+              ml: -1,
               minWidth: 0,
-              minHeight: 30,
+              minHeight: { xs: 44, sm: 32 },
               color: 'text.secondary',
               fontWeight: 600,
               fontSize: '0.9rem',
@@ -518,7 +523,7 @@ export default function FeedPostCard({
                       },
                       flex: '0 0 auto',
                       minWidth: { xs: 44, sm: 36 },
-                      minHeight: { xs: 40, sm: 32 },
+                      minHeight: { xs: 44, sm: 36 },
                       px: 0.8,
                       gap: 0.45,
                       borderRadius: '999px',
@@ -555,7 +560,7 @@ export default function FeedPostCard({
                   size="small"
                   aria-label={`Показать ещё ${reactionGroups.length - MOBILE_VISIBLE_REACTIONS} вида реакций`}
                   onClick={() => onOpenReactions(post, '')}
-                  sx={{ display: { xs: 'inline-flex', sm: 'none' }, flex: '0 0 auto', minWidth: 44, minHeight: 40, px: 0.75, borderRadius: '999px', color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), fontWeight: 700, textTransform: 'none' }}
+                  sx={{ display: { xs: 'inline-flex', sm: 'none' }, flex: '0 0 auto', minWidth: 44, minHeight: 44, px: 0.75, borderRadius: '999px', color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), fontWeight: 700, textTransform: 'none' }}
                 >
                   +{reactionGroups.length - MOBILE_VISIBLE_REACTIONS}
                 </Button>
@@ -566,7 +571,7 @@ export default function FeedPostCard({
                   size="small"
                   aria-label={`Показать ещё ${reactionGroups.length - DESKTOP_VISIBLE_REACTIONS} вид реакций`}
                   onClick={() => onOpenReactions(post, '')}
-                  sx={{ display: { xs: 'none', sm: 'inline-flex' }, flex: '0 0 auto', minWidth: 36, minHeight: 32, px: 0.75, borderRadius: '999px', color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), fontWeight: 700, textTransform: 'none' }}
+                  sx={{ display: { xs: 'none', sm: 'inline-flex' }, flex: '0 0 auto', minWidth: 36, minHeight: 36, px: 0.75, borderRadius: '999px', color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), fontWeight: 700, textTransform: 'none' }}
                 >
                   +{reactionGroups.length - DESKTOP_VISIBLE_REACTIONS}
                 </Button>
@@ -579,7 +584,7 @@ export default function FeedPostCard({
                     aria-haspopup="menu"
                     aria-expanded={Boolean(reactionAnchor)}
                     onClick={(event) => setReactionAnchor(event.currentTarget)}
-                    sx={{ flex: '0 0 auto', width: { xs: 40, sm: 32 }, height: { xs: 40, sm: 32 }, color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), '&:hover': { color: 'primary.main', bgcolor: alpha(theme.palette.primary.main, ui.isDark ? 0.2 : 0.11) } }}
+                    sx={{ flex: '0 0 auto', width: { xs: 44, sm: 36 }, height: { xs: 44, sm: 36 }, color: 'text.secondary', bgcolor: alpha(theme.palette.text.primary, ui.isDark ? 0.07 : 0.05), '&:hover': { color: 'primary.main', bgcolor: alpha(theme.palette.primary.main, ui.isDark ? 0.2 : 0.11) } }}
                   >
                     <AddReactionOutlinedIcon aria-hidden="true" sx={{ fontSize: 19 }} />
                   </IconButton>
@@ -591,7 +596,7 @@ export default function FeedPostCard({
                   <IconButton
                     aria-label="Показать всех отреагировавших сотрудников"
                     onClick={() => onOpenReactions(post, '')}
-                    sx={{ flex: '0 0 auto', width: { xs: 40, sm: 32 }, height: { xs: 40, sm: 32 }, color: 'text.secondary', '&:hover': { color: 'primary.main', bgcolor: alpha(theme.palette.primary.main, ui.isDark ? 0.16 : 0.08) } }}
+                    sx={{ flex: '0 0 auto', width: { xs: 44, sm: 36 }, height: { xs: 44, sm: 36 }, color: 'text.secondary', '&:hover': { color: 'primary.main', bgcolor: alpha(theme.palette.primary.main, ui.isDark ? 0.16 : 0.08) } }}
                   >
                     <PeopleAltOutlinedIcon aria-hidden="true" sx={{ fontSize: 19 }} />
                   </IconButton>

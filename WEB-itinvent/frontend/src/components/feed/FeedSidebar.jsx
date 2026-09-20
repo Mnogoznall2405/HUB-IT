@@ -1,8 +1,9 @@
-import { Box, Button, ButtonBase, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
+import { Box, Button, ButtonBase, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
 import FiberManualRecordRoundedIcon from '@mui/icons-material/FiberManualRecordRounded';
 import PriorityHighRoundedIcon from '@mui/icons-material/PriorityHighRounded';
+import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import BookmarkBorderRoundedIcon from '@mui/icons-material/BookmarkBorderRounded';
 import EditNoteRoundedIcon from '@mui/icons-material/EditNoteRounded';
@@ -15,6 +16,7 @@ const FILTERS = [
   { id: 'all', label: 'Все публикации', icon: DynamicFeedRoundedIcon },
   { id: 'unread', label: 'Новое для меня', icon: FiberManualRecordRoundedIcon },
   { id: 'important', label: 'Важные новости', icon: PriorityHighRoundedIcon },
+  { id: 'my_departments', label: 'Мои подразделения', icon: ApartmentRoundedIcon },
   { id: 'saved', label: 'Сохранённые', icon: BookmarkBorderRoundedIcon },
   { id: 'drafts', label: 'Черновики', icon: EditNoteRoundedIcon, managerOnly: true },
   { id: 'scheduled', label: 'Запланированные', icon: ScheduleRoundedIcon, managerOnly: true },
@@ -37,6 +39,8 @@ export default function FeedSidebar({
   tag = '',
   onTagChange,
   onManageCategories,
+  taxonomyError = false,
+  onRetryTaxonomy,
 }) {
   const theme = useTheme();
   const ui = buildOfficeUiTokens(theme);
@@ -55,6 +59,7 @@ export default function FeedSidebar({
     >
       <TextField
         fullWidth
+        label="Поиск в ленте"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         placeholder="Поиск"
@@ -143,15 +148,27 @@ export default function FeedSidebar({
 
       <Paper elevation={0} sx={{ p: 2, borderRadius: '16px', bgcolor: ui.panelSolid, boxShadow: 'none', border: 0 }}>
         <Typography component="h2" sx={{ mb: 1.25, fontSize: '0.95rem', fontWeight: 800 }}>Фильтры</Typography>
+        {taxonomyError ? (
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.25 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>Не удалось загрузить категории и теги.</Typography>
+            <Button size="small" onClick={() => onRetryTaxonomy?.()} sx={{ minHeight: 44, flexShrink: 0, textTransform: 'none' }}>Повторить</Button>
+          </Stack>
+        ) : null}
         <Stack spacing={1.25}>
-          <Select size="small" displayEmpty value={categoryId} onChange={(event) => onCategoryChange?.(event.target.value)} inputProps={{ 'aria-label': 'Фильтр по категории' }} sx={{ minHeight: 44, borderRadius: '10px' }}>
-            <MenuItem value="">Все категории</MenuItem>
-            {categories.map((category) => <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>)}
-          </Select>
-          <Select size="small" displayEmpty value={tag} onChange={(event) => onTagChange?.(event.target.value)} inputProps={{ 'aria-label': 'Фильтр по тегу' }} sx={{ minHeight: 44, borderRadius: '10px' }}>
-            <MenuItem value="">Все теги</MenuItem>
-            {tags.map((item) => <MenuItem key={item.id || item.slug} value={item.slug || item.name}>#{item.name}</MenuItem>)}
-          </Select>
+          <FormControl fullWidth size="small">
+            <InputLabel shrink id="feed-sidebar-category-label">Категория</InputLabel>
+            <Select labelId="feed-sidebar-category-label" label="Категория" displayEmpty value={categoryId} onChange={(event) => onCategoryChange?.(event.target.value)} inputProps={{ 'aria-label': 'Фильтр по категории' }} sx={{ minHeight: 44, borderRadius: '10px' }}>
+              <MenuItem value="">Все категории</MenuItem>
+              {categories.map((category) => <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel shrink id="feed-sidebar-tag-label">Тег</InputLabel>
+            <Select labelId="feed-sidebar-tag-label" label="Тег" displayEmpty value={tag} onChange={(event) => onTagChange?.(event.target.value)} inputProps={{ 'aria-label': 'Фильтр по тегу' }} sx={{ minHeight: 44, borderRadius: '10px' }}>
+              <MenuItem value="">Все теги</MenuItem>
+              {tags.map((item) => <MenuItem key={item.id || item.slug} value={item.slug || item.name}>#{item.name}</MenuItem>)}
+            </Select>
+          </FormControl>
           {onManageCategories ? <Button variant="outlined" onClick={onManageCategories} sx={{ minHeight: 42, textTransform: 'none' }}>Управлять категориями</Button> : null}
         </Stack>
       </Paper>

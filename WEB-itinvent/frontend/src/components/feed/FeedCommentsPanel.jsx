@@ -4,6 +4,10 @@ import {
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   MenuItem,
   Paper,
@@ -59,6 +63,8 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
   const [replyingTo, setReplyingTo] = useState(null);
   const [editId, setEditId] = useState('');
   const [editBody, setEditBody] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [pendingDeleteComment, setPendingDeleteComment] = useState(null);
   const [replies, setReplies] = useState({});
   const [expandedRoots, setExpandedRoots] = useState(new Set());
   const [busyReaction, setBusyReaction] = useState('');
@@ -71,7 +77,10 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
 
   const loadComments = useCallback(async ({ background = false, append = false } = {}) => {
     if (!post?.id) return;
-    if (!background && !append) setLoading(true);
+    if (!background && !append) {
+      setLoading(true);
+      setLoadError('');
+    }
     try {
       const offset = append ? items.length : 0;
       const payload = await hubAnnouncementsAPI.getComments(post.id, { limit: 20, offset, sort });
@@ -81,7 +90,11 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
       setNextOffset(payload?.next_offset ?? null);
       onCountChange?.(post.id, Number(payload?.comments_total ?? post?.comments_count ?? payload?.total ?? 0));
     } catch (error) {
-      if (!background) notifyError?.(error, 'Не удалось загрузить комментарии.');
+      if (!background && !append) {
+        setLoadError(error?.response?.data?.detail || error?.message || 'Не удалось загрузить комментарии.');
+      } else if (!background) {
+        notifyError?.(error, 'Не удалось загрузить комментарии.');
+      }
     } finally {
       if (!background && !append) setLoading(false);
     }
@@ -235,8 +248,15 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
     }
   };
 
-  const deleteComment = async (comment) => {
-    if (!window.confirm('Удалить комментарий? Ответы останутся в обсуждении.')) return;
+  const deleteComment = (comment) => {
+    if (!comment?.id || comment.pending) return;
+    setPendingDeleteComment(comment);
+  };
+
+  const confirmDeleteComment = async () => {
+    const comment = pendingDeleteComment;
+    if (!comment?.id) return;
+    setPendingDeleteComment(null);
     try {
       await hubAnnouncementsAPI.deleteComment(post.id, comment.id);
       const tombstone = (list) => list.map((item) => (
@@ -361,9 +381,21 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
         <Select size="small" value={sort} onChange={(event) => setSort(event.target.value)} inputProps={{ 'aria-label': 'Сортировка комментариев' }} sx={{ height: 38, borderRadius: '10px', fontSize: '0.86rem' }}><MenuItem value="interesting">Интересные</MenuItem><MenuItem value="newest">Новые</MenuItem><MenuItem value="oldest">Старые</MenuItem></Select>
       </Stack>
       <Box aria-live="polite" sx={{ borderTop: '1px solid', borderColor: alpha(theme.palette.text.primary, 0.08) }}>
-        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : items.length ? <>{items.map((comment) => <Box key={comment.id}>{renderComment(comment)}{Number(comment.reply_count || 0) > 0 && !expandedRoots.has(comment.id) ? <Button onClick={() => { setExpandedRoots((current) => new Set(current).add(comment.id)); void loadReplies(comment.id); }} sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.75, minHeight: 36, textTransform: 'none' }}>Показать ответы · {comment.reply_count}</Button> : null}{expandedRoots.has(comment.id) ? (replies[comment.id] || []).map((reply) => renderComment(reply, { reply: true })) : null}</Box>)}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Начните обсуждение этой публикации.</Typography></Box>}
+        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : loadError && !items.length ? <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Не удалось загрузить комментарии</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{loadError}</Typography><Button onClick={() => void loadComments()} sx={{ mt: 1.5, minHeight: 44, textTransform: 'none' }}>Повторить</Button></Box> : items.length ? <>{items.map((comment) => <Box key={comment.id}>{renderComment(comment)}{Number(comment.reply_count || 0) > 0 && !expandedRoots.has(comment.id) ? <Button onClick={() => { setExpandedRoots((current) => new Set(current).add(comment.id)); void loadReplies(comment.id); }} sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.75, minHeight: 36, textTransform: 'none' }}>Показать ответы · {comment.reply_count}</Button> : null}{expandedRoots.has(comment.id) ? (replies[comment.id] || []).map((reply) => renderComment(reply, { reply: true })) : null}</Box>)}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Начните обсуждение этой публикации.</Typography></Box>}
       </Box>
       {composer}
+      <Dialog open={Boolean(pendingDeleteComment)} onClose={() => setPendingDeleteComment(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Удалить комментарий?</DialogTitle>
+        <DialogContent dividers>
+          <Typography>Комментарий будет удалён, ответы останутся в обсуждении.</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPendingDeleteComment(null)}>Отмена</Button>
+          <Button variant="contained" color="error" onClick={() => void confirmDeleteComment()} sx={{ textTransform: 'none' }}>
+            Удалить комментарий
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   );
 }

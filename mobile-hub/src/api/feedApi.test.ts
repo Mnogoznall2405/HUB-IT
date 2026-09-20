@@ -139,6 +139,14 @@ describe('feedApi', () => {
           { id: 0, username: 'invalid' },
         ],
         roles: [{ value: 'manager', label: 'Менеджер' }, { value: '', label: 'Invalid' }],
+        departments: [
+          { code: 'd100', name: 'Отдел логистики' },
+          { code: '', name: 'Invalid' },
+        ],
+        cities: [
+          { value: 'москва', label: 'Москва' },
+          { value: '', label: 'Invalid' },
+        ],
       },
     });
 
@@ -148,6 +156,8 @@ describe('feedApi', () => {
         expect.objectContaining({ id: 9, username: 'ivan' }),
       ],
       roles: [{ value: 'manager', label: 'Менеджер' }],
+      departments: [{ code: 'd100', name: 'Отдел логистики' }],
+      cities: [{ value: 'москва', label: 'Москва' }],
       total: undefined,
       limit: undefined,
     });

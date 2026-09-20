@@ -18,6 +18,7 @@ export type FeedListParams = {
   unread_only?: boolean;
   priority?: string;
   bookmarked_only?: boolean;
+  audience_targeted?: boolean;
   category_id?: string;
   tag?: string;
   limit?: number;
@@ -30,9 +31,11 @@ export type FeedEditorPayload = {
   preview: string;
   body: string;
   priority: 'low' | 'normal' | 'high';
-  audience_scope: 'all' | 'roles' | 'users';
+  audience_scope: 'all' | 'roles' | 'users' | 'departments' | 'cities' | 'departments_cities';
   audience_roles?: string[];
   audience_user_ids?: number[];
+  audience_department_codes?: string[];
+  audience_cities?: string[];
   requires_ack: boolean;
   is_pinned: boolean;
   pinned_until?: string | null;
@@ -80,9 +83,15 @@ export type FeedRecipientUser = {
 
 export type FeedRecipientRole = { value: string; label: string };
 
+export type FeedRecipientDepartment = { code: string; name: string };
+
+export type FeedRecipientCity = { value: string; label: string };
+
 export type FeedRecipientsResponse = {
   users: FeedRecipientUser[];
   roles: FeedRecipientRole[];
+  departments: FeedRecipientDepartment[];
+  cities: FeedRecipientCity[];
   total?: number;
   limit?: number | null;
 };
@@ -164,6 +173,7 @@ export async function listFeedPosts(params: FeedListParams = {}): Promise<FeedLi
       unread_only: params.unread_only || undefined,
       priority: params.priority || undefined,
       bookmarked_only: params.bookmarked_only || undefined,
+      audience_targeted: params.audience_targeted || undefined,
       category_id: params.category_id || undefined,
       tag: params.tag || undefined,
       include_body: true,
@@ -193,6 +203,8 @@ function feedEditorFormData(payload: FeedEditorPayload, files: FeedUploadFile[])
   formData.append('audience_scope', payload.audience_scope);
   formData.append('audience_roles', JSON.stringify(payload.audience_roles || []));
   formData.append('audience_user_ids', JSON.stringify(payload.audience_user_ids || []));
+  formData.append('audience_department_codes', JSON.stringify(payload.audience_department_codes || []));
+  formData.append('audience_cities', JSON.stringify(payload.audience_cities || []));
   formData.append('requires_ack', payload.requires_ack ? '1' : '0');
   formData.append('is_pinned', payload.is_pinned ? '1' : '0');
   formData.append('pinned_until', payload.pinned_until || '');
@@ -253,9 +265,25 @@ export async function getFeedRecipients(options: {
     if (!value) return [];
     return [{ value, label: String(row.label || value).trim() || value }];
   }) : [];
+  const departments = Array.isArray(payload.departments) ? payload.departments.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const row = item as Record<string, unknown>;
+    const code = String(row.code || '').trim();
+    if (!code) return [];
+    return [{ code, name: String(row.name || code).trim() || code }];
+  }) : [];
+  const cities = Array.isArray(payload.cities) ? payload.cities.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const row = item as Record<string, unknown>;
+    const value = String(row.value || '').trim();
+    if (!value) return [];
+    return [{ value, label: String(row.label || value).trim() || value }];
+  }) : [];
   return {
     users,
     roles,
+    departments,
+    cities,
     total: payload.total == null ? undefined : Number(payload.total),
     limit: payload.limit == null ? undefined : Number(payload.limit),
   };

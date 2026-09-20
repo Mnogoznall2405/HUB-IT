@@ -194,6 +194,8 @@ _HUB_REQUIRED_COLUMNS = {
         "audience_scope",
         "audience_roles",
         "audience_user_ids",
+        "audience_department_codes",
+        "audience_cities",
         "requires_ack",
         "is_pinned",
         "pinned_until",
@@ -1380,6 +1382,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN audience_roles TEXT NOT NULL DEFAULT '[]'")
         if "audience_user_ids" not in columns:
             conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN audience_user_ids TEXT NOT NULL DEFAULT '[]'")
+        if "audience_department_codes" not in columns:
+            conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN audience_department_codes TEXT NOT NULL DEFAULT '[]'")
+        if "audience_cities" not in columns:
+            conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN audience_cities TEXT NOT NULL DEFAULT '[]'")
         if "requires_ack" not in columns:
             conn.execute(f"ALTER TABLE {self._ANN_TABLE} ADD COLUMN requires_ack INTEGER NOT NULL DEFAULT 0")
         if "is_pinned" not in columns:
@@ -2983,9 +2989,102 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         elif audience_scope == "users":
             audience_user_ids = set(self._unique_ints(self._json_load_list(announcement.get("audience_user_ids"))))
             recipients = [row for row in users if self._as_int(row.get("id")) in audience_user_ids]
+        elif audience_scope in self._GEO_AUDIENCE_SCOPES:
+            recipients = [row for row in users if self._announcement_geo_match(announcement, row)]
         else:
             recipients = users
         return [row for row in recipients if self._as_int(row.get("id")) != author_user_id]
+
+    _GEO_AUDIENCE_SCOPES = frozenset({"departments", "cities", "departments_cities"})
+
+    def _geo_reference_maps(self) -> tuple[dict[str, set[str]], dict[str, str], dict[str, str]]:
+        now = time.monotonic()
+        with self._user_directory_cache_lock:
+            cached = self._user_directory_cache.get("geo_reference_maps")
+            if cached and (now - cached[0]) < self._user_directory_cache_ttl_sec:
+                codes_by_name, names_by_code, cities_by_key = cached[1]
+                return (
+                    {key: set(value) for key, value in codes_by_name.items()},
+                    dict(names_by_code),
+                    dict(cities_by_key),
+                )
+        codes_by_name: dict[str, set[str]] = {}
+        names_by_code: dict[str, str] = {}
+        cities_by_key: dict[str, str] = {}
+        try:
+            from backend.services.address_book_service import (
+                address_book_service,
+                normalize_search_text,
+            )
+            cache = address_book_service.load_cache()
+            raw_items = (cache.get("items") or []) if isinstance(cache, dict) else []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                name = normalize_search_text(item.get("department"))
+                code = normalize_search_text(item.get("department_code"))
+                if name:
+                    entry = codes_by_name.setdefault(name, set())
+                    if code:
+                        entry.add(code)
+                department_label = _normalize_text(item.get("department"))
+                if code and department_label and code not in names_by_code:
+                    names_by_code[code] = department_label
+                location = _normalize_text(item.get("department_location"))
+                city_key = normalize_search_text(location)
+                if city_key and city_key not in cities_by_key:
+                    cities_by_key[city_key] = location
+        except Exception:
+            logger.exception("Unable to build geo reference maps for announcements")
+        with self._user_directory_cache_lock:
+            self._user_directory_cache["geo_reference_maps"] = (
+                now,
+                (
+                    {key: set(value) for key, value in codes_by_name.items()},
+                    dict(names_by_code),
+                    dict(cities_by_key),
+                ),
+            )
+        return codes_by_name, names_by_code, cities_by_key
+
+    def _geo_department_codes_by_name(self) -> dict[str, set[str]]:
+        codes_by_name, _, _ = self._geo_reference_maps()
+        return codes_by_name
+
+    def _announcement_geo_profile(self, user_row: Any) -> dict[str, Any] | None:
+        if not isinstance(user_row, dict):
+            return None
+        try:
+            from backend.services.zup_user_profile_service import zup_user_profile_service
+            return zup_user_profile_service.resolve_user(user_row)
+        except Exception:
+            logger.exception("Unable to resolve ZUP geo profile for announcement audience")
+            return None
+
+    def _announcement_geo_match(self, announcement: dict[str, Any], user_row: Any) -> bool:
+        from backend.services.address_book_service import normalize_search_text
+        audience_scope = _normalize_text(announcement.get("audience_scope"), "all").lower()
+        if audience_scope not in self._GEO_AUDIENCE_SCOPES:
+            return False
+        codes = {normalize_search_text(code) for code in self._unique_texts(self._json_load_list(announcement.get("audience_department_codes")))}
+        cities = {normalize_search_text(city) for city in self._unique_texts(self._json_load_list(announcement.get("audience_cities")))}
+        codes.discard("")
+        cities.discard("")
+        profile = self._announcement_geo_profile(user_row)
+        if not profile:
+            return False
+        if audience_scope in {"departments", "departments_cities"}:
+            if not codes:
+                return False
+            user_codes = self._geo_department_codes_by_name().get(normalize_search_text(profile.get("department")), set())
+            if not (user_codes & codes):
+                return False
+        if audience_scope in {"cities", "departments_cities"}:
+            if not cities:
+                return False
+            if normalize_search_text(profile.get("city")) not in cities:
+                return False
+        return True
 
     def _announcement_is_visible_to_user(self, announcement: dict[str, Any], *, user_id: int, is_admin: bool = False) -> bool:
         normalized_user_id = self._as_int(user_id)
@@ -3020,10 +3119,43 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 return False
             viewer = self._users_by_id().get(normalized_user_id) or {}
             return _normalize_text(viewer.get("role")).lower() in audience_roles
+        if audience_scope in self._GEO_AUDIENCE_SCOPES:
+            viewer = self._users_by_id().get(normalized_user_id) or {}
+            return self._announcement_geo_match(announcement, viewer)
         return normalized_user_id in {
             self._as_int(item.get("id"))
             for item in self._announcement_recipient_users(announcement)
         }
+
+    @staticmethod
+    def _plural_ru(count: int, one: str, few: str, many: str) -> str:
+        remainder_100 = abs(int(count)) % 100
+        remainder_10 = remainder_100 % 10
+        if 11 <= remainder_100 <= 14:
+            return many
+        if remainder_10 == 1:
+            return one
+        if 2 <= remainder_10 <= 4:
+            return few
+        return many
+
+    def _geo_department_display_names(self, codes: list[str]) -> list[str]:
+        from backend.services.address_book_service import normalize_search_text
+        wanted = {normalize_search_text(code) for code in codes}
+        wanted.discard("")
+        if not wanted:
+            return []
+        _, names_by_code, _ = self._geo_reference_maps()
+        return [names_by_code.get(code, code) for code in sorted(wanted)]
+
+    def _geo_city_display_names(self, cities: list[str]) -> list[str]:
+        from backend.services.address_book_service import normalize_search_text
+        wanted = {normalize_search_text(city) for city in cities}
+        wanted.discard("")
+        if not wanted:
+            return []
+        _, _, cities_by_key = self._geo_reference_maps()
+        return [cities_by_key.get(key, key) for key in sorted(wanted)]
 
     def _announcement_recipients_summary(self, announcement: dict[str, Any]) -> str:
         audience_scope = _normalize_text(announcement.get("audience_scope"), "all").lower()
@@ -3045,7 +3177,36 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if len(labels) > 3:
                 return ", ".join(labels[:3]) + f" +{len(labels) - 3}"
             return ", ".join(labels)
-        return "Для всех"
+        if audience_scope not in {"departments", "cities", "departments_cities"}:
+            return "Для всех"
+        if audience_scope in {"departments", "departments_cities"}:
+            department_codes = self._unique_texts(self._json_load_list(announcement.get("audience_department_codes")))
+            department_names = self._geo_department_display_names(department_codes)
+            if department_names:
+                if len(department_names) > 3:
+                    departments_part = ", ".join(department_names[:3]) + f" +{len(department_names) - 3}"
+                else:
+                    departments_part = ", ".join(department_names)
+            elif department_codes:
+                departments_part = f"{len(department_codes)} {self._plural_ru(len(department_codes), 'отдел', 'отдела', 'отделов')}"
+            else:
+                departments_part = "Подразделения"
+        else:
+            departments_part = ""
+        if audience_scope in {"cities", "departments_cities"}:
+            city_names = self._geo_city_display_names(self._unique_texts(self._json_load_list(announcement.get("audience_cities"))))
+            if city_names:
+                if len(city_names) > 3:
+                    cities_part = ", ".join(city_names[:3]) + f" +{len(city_names) - 3}"
+                else:
+                    cities_part = ", ".join(city_names)
+            else:
+                cities_part = "Города"
+        else:
+            cities_part = ""
+        if departments_part and cities_part:
+            return f"{departments_part} · {cities_part}"
+        return departments_part or cities_part or "Для подразделений"
 
     def _load_announcement_reads_for_user(
         self,
@@ -3339,6 +3500,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         item["audience_scope"] = _normalize_text(item.get("audience_scope"), "all").lower()
         item["audience_roles"] = self._unique_texts(self._json_load_list(item.get("audience_roles")))
         item["audience_user_ids"] = self._unique_ints(self._json_load_list(item.get("audience_user_ids")))
+        item["audience_department_codes"] = self._unique_texts(self._json_load_list(item.get("audience_department_codes")))
+        item["audience_cities"] = self._unique_texts(self._json_load_list(item.get("audience_cities")))
         item["requires_ack"] = requires_ack
         item["is_pinned"] = bool(self._as_int(item.get("is_pinned")))
         item["is_active"] = bool(self._as_int(item.get("is_active"), 1))
@@ -4156,12 +4319,27 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             seen_roles.add(role_value)
             roles.append({"value": role_value, "label": role_value.title()})
         roles.sort(key=lambda item: item["label"])
+        geo_departments, geo_cities = self._geo_audience_catalog()
         return {
             "users": users,
             "roles": roles,
+            "departments": geo_departments,
+            "cities": geo_cities,
             "total": total,
             "limit": normalized_limit,
         }
+
+    def _geo_audience_catalog(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        _, names_by_code, cities_by_key = self._geo_reference_maps()
+        departments = [
+            {"code": code, "name": names_by_code[code]}
+            for code in sorted(names_by_code, key=str.casefold)
+        ]
+        cities = [
+            {"value": key, "label": cities_by_key[key]}
+            for key in sorted(cities_by_key, key=str.casefold)
+        ]
+        return departments, cities
 
     def list_task_projects(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
@@ -4364,7 +4542,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     def _normalize_announcement_payload(self, payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         source = payload or {}
         audience_scope = _normalize_text(source.get("audience_scope"), "all").lower()
-        if audience_scope not in {"all", "roles", "users"}:
+        if audience_scope not in {"all", "roles", "users", "departments", "cities", "departments_cities"}:
             audience_scope = "all"
         normalized = {
             "title": _normalize_text(source.get("title")),
@@ -4374,6 +4552,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             "audience_scope": audience_scope,
             "audience_roles": self._unique_texts(source.get("audience_roles")),
             "audience_user_ids": self._unique_ints(source.get("audience_user_ids")),
+            "audience_department_codes": self._unique_texts(source.get("audience_department_codes"))[:200],
+            "audience_cities": self._unique_texts(source.get("audience_cities"))[:200],
             "requires_ack": bool(source.get("requires_ack")),
             "is_pinned": bool(source.get("is_pinned")),
             "pinned_until": _normalize_text(source.get("pinned_until")) or None,
@@ -4394,12 +4574,33 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if normalized["audience_scope"] == "roles":
             normalized["audience_roles"] = self._unique_texts(normalized["audience_roles"])
             normalized["audience_user_ids"] = []
+            normalized["audience_department_codes"] = []
+            normalized["audience_cities"] = []
         elif normalized["audience_scope"] == "users":
             normalized["audience_user_ids"] = self._unique_ints(normalized["audience_user_ids"])
             normalized["audience_roles"] = []
+            normalized["audience_department_codes"] = []
+            normalized["audience_cities"] = []
+        elif normalized["audience_scope"] == "departments":
+            normalized["audience_department_codes"] = self._unique_texts(normalized["audience_department_codes"])[:200]
+            normalized["audience_roles"] = []
+            normalized["audience_user_ids"] = []
+            normalized["audience_cities"] = []
+        elif normalized["audience_scope"] == "cities":
+            normalized["audience_cities"] = self._unique_texts(normalized["audience_cities"])[:200]
+            normalized["audience_roles"] = []
+            normalized["audience_user_ids"] = []
+            normalized["audience_department_codes"] = []
+        elif normalized["audience_scope"] == "departments_cities":
+            normalized["audience_department_codes"] = self._unique_texts(normalized["audience_department_codes"])[:200]
+            normalized["audience_cities"] = self._unique_texts(normalized["audience_cities"])[:200]
+            normalized["audience_roles"] = []
+            normalized["audience_user_ids"] = []
         else:
             normalized["audience_roles"] = []
             normalized["audience_user_ids"] = []
+            normalized["audience_department_codes"] = []
+            normalized["audience_cities"] = []
         return normalized
 
     def _normalize_announcement_poll_payload(self, value: Any) -> dict[str, Any] | None:
@@ -4533,11 +4734,21 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         audience_scope = _normalize_text(announcement.get("audience_scope"), "all")
         audience_roles = announcement.get("audience_roles")
         audience_user_ids = announcement.get("audience_user_ids")
+        audience_department_codes = announcement.get("audience_department_codes")
+        audience_cities = announcement.get("audience_cities")
         roles = self._unique_texts(audience_roles) if isinstance(audience_roles, list) else self._unique_texts(self._json_load_list(audience_roles))
         user_ids = self._unique_ints(audience_user_ids) if isinstance(audience_user_ids, list) else self._unique_ints(self._json_load_list(audience_user_ids))
+        department_codes = self._unique_texts(audience_department_codes) if isinstance(audience_department_codes, list) else self._unique_texts(self._json_load_list(audience_department_codes))
+        cities = self._unique_texts(audience_cities) if isinstance(audience_cities, list) else self._unique_texts(self._json_load_list(audience_cities))
         if audience_scope == "roles" and not roles:
             raise ValueError("Announcement audience must not be empty")
         if audience_scope == "users" and not user_ids:
+            raise ValueError("Announcement audience must not be empty")
+        if audience_scope == "departments" and not department_codes:
+            raise ValueError("Announcement audience must not be empty")
+        if audience_scope == "cities" and not cities:
+            raise ValueError("Announcement audience must not be empty")
+        if audience_scope == "departments_cities" and not (department_codes and cities):
             raise ValueError("Announcement audience must not be empty")
 
         now = datetime.now(timezone.utc)
@@ -4748,9 +4959,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 INSERT INTO {self._ANN_TABLE}
                 (id, title, preview, body, priority, is_active, author_user_id, author_username, author_full_name,
                  published_at, updated_at, version, audience_scope, audience_roles, audience_user_ids,
+                 audience_department_codes, audience_cities,
                  requires_ack, is_pinned, pinned_until, published_from, expires_at,
                  status, comments_enabled, reactions_enabled, publication_notified_at, category_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ann_id,
@@ -4767,6 +4979,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     normalized["audience_scope"],
                     self._serialize_json_list(normalized["audience_roles"]),
                     self._serialize_json_list(normalized["audience_user_ids"]),
+                    self._serialize_json_list(normalized["audience_department_codes"]),
+                    self._serialize_json_list(normalized["audience_cities"]),
                     1 if normalized["requires_ack"] else 0,
                     1 if normalized["is_pinned"] else 0,
                     normalized["pinned_until"],
@@ -4883,6 +5097,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "audience_scope",
                 "audience_roles",
                 "audience_user_ids",
+                "audience_department_codes",
+                "audience_cities",
                 "requires_ack",
                 "is_pinned",
                 "pinned_until",
@@ -4902,6 +5118,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 elif key == "audience_user_ids":
                     updates.append("audience_user_ids = ?")
                     params.append(self._serialize_json_list(normalized["audience_user_ids"]))
+                elif key in {"audience_department_codes", "audience_cities"}:
+                    updates.append(f"{key} = ?")
+                    params.append(self._serialize_json_list(normalized[key]))
                 elif key in {"requires_ack", "is_pinned", "is_active", "comments_enabled", "reactions_enabled"}:
                     updates.append(f"{key} = ?")
                     params.append(1 if normalized[key] else 0)
@@ -5094,6 +5313,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         category_id: str = "",
         tag: str = "",
         bookmarked_only: bool = False,
+        audience_targeted: bool = False,
     ) -> dict[str, Any]:
         safe_limit = self._coerce_limit(limit, default=30, minimum=1, maximum=300)
         safe_offset = max(0, self._as_int(offset, 0))
@@ -5121,6 +5341,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             categories, tags = self._load_announcement_taxonomy_state(conn)
             polls = self._load_announcement_polls(conn, viewer_user_id=int(user_id))
             now_utc = datetime.now(timezone.utc)
+            geo_viewer = (self._users_by_id().get(int(user_id)) or {}) if audience_targeted else {}
             items: list[dict[str, Any]] = []
             unread_total = 0
             ack_pending_total = 0
@@ -5183,6 +5404,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     continue
                 if bool(bookmarked_only) and not bool(item.get("viewer_bookmarked")):
                     continue
+                if bool(audience_targeted) and not self._announcement_geo_match(item, geo_viewer):
+                    continue
                 unread_total += 1 if bool(item.get("is_unread")) else 0
                 ack_pending_total += 1 if bool(item.get("is_ack_pending")) else 0
                 items.append(item)
@@ -5223,6 +5446,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "category_id": category_filter,
                 "tag": tag_filter,
                 "bookmarked_only": bool(bookmarked_only),
+                "audience_targeted": bool(audience_targeted),
             },
         }
 

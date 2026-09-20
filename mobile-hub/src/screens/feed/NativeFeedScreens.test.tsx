@@ -280,6 +280,14 @@ describe('NativeFeedEditorScreen', () => {
     (feedApi.getFeedRecipients as jest.Mock).mockResolvedValue({
       users: [{ id: 8, username: 'maria', full_name: 'Мария', department: 'ИТ' }],
       roles: [{ value: 'manager', label: 'Менеджер' }],
+      departments: [
+        { code: 'd100', name: 'Отдел логистики' },
+        { code: 'd200', name: 'Отдел продаж' },
+      ],
+      cities: [
+        { value: 'москва', label: 'Москва' },
+        { value: 'казань', label: 'Казань' },
+      ],
     });
     (feedApi.listFeedCategories as jest.Mock).mockResolvedValue([]);
     (feedApi.listFeedTags as jest.Mock).mockResolvedValue([]);
@@ -409,6 +417,33 @@ describe('NativeFeedEditorScreen', () => {
           is_anonymous: true,
           closes_at: expect.any(String),
         }),
+      }),
+      [],
+    ));
+  });
+
+  it('publishes department and city targeting from the native editor', async () => {
+    const view = await render(<NativeFeedEditorScreen />);
+    await waitFor(() => expect(feedApi.getFeedRecipients).toHaveBeenCalled());
+    await act(async () => {
+      fireEvent.changeText(view.getByTestId('feed-editor-title'), 'Новости логистики');
+      fireEvent.changeText(view.getByTestId('feed-editor-body'), 'Текст для отдела');
+      fireEvent.press(view.getByTestId('feed-editor-audience-departments_cities'));
+    });
+    await waitFor(() => expect(view.getByTestId('feed-editor-department-d100')).toBeTruthy());
+    await act(async () => {
+      fireEvent.press(view.getByTestId('feed-editor-department-d100'));
+      fireEvent.press(view.getByTestId('feed-editor-city-казань'));
+    });
+    await act(async () => { fireEvent.press(view.getByTestId('feed-editor-publish')); });
+
+    await waitFor(() => expect(feedApi.createFeedPost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audience_scope: 'departments_cities',
+        audience_department_codes: ['d100'],
+        audience_cities: ['казань'],
+        audience_roles: [],
+        audience_user_ids: [],
       }),
       [],
     ));

@@ -49,6 +49,8 @@ const EMPTY_FORM = {
   audience_scope: 'all',
   audience_roles: [],
   audience_user_ids: [],
+  audience_department_codes: [],
+  audience_cities: [],
   requires_ack: false,
   is_pinned: false,
   pinned_until: '',
@@ -99,6 +101,8 @@ const normalizeForm = (post) => post ? {
   audience_scope: post.audience_scope || 'all',
   audience_roles: Array.isArray(post.audience_roles) ? post.audience_roles : [],
   audience_user_ids: Array.isArray(post.audience_user_ids) ? post.audience_user_ids.map(Number) : [],
+  audience_department_codes: Array.isArray(post.audience_department_codes) ? post.audience_department_codes : [],
+  audience_cities: Array.isArray(post.audience_cities) ? post.audience_cities : [],
   requires_ack: Boolean(post.requires_ack),
   is_pinned: Boolean(post.is_pinned),
   pinned_until: toLocalDateTime(post.pinned_until),
@@ -121,7 +125,7 @@ const normalizeForm = (post) => post ? {
 export default function FeedComposerDialog({
   open,
   post = null,
-  recipients = { users: [], roles: [] },
+  recipients = { users: [], roles: [], departments: [], cities: [] },
   user = null,
   onClose,
   onSaved,
@@ -143,6 +147,7 @@ export default function FeedComposerDialog({
   const [categories, setCategories] = useState([]);
   const [existingAttachments, setExistingAttachments] = useState([]);
   const [coverAttachmentId, setCoverAttachmentId] = useState('');
+  const [pendingDeleteAttachment, setPendingDeleteAttachment] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -182,6 +187,11 @@ export default function FeedComposerDialog({
   const audienceMissing = (
     (form.audience_scope === 'roles' && form.audience_roles.length === 0)
     || (form.audience_scope === 'users' && form.audience_user_ids.length === 0)
+    || (form.audience_scope === 'departments' && form.audience_department_codes.length === 0)
+    || (form.audience_scope === 'cities' && form.audience_cities.length === 0)
+    || (form.audience_scope === 'departments_cities' && (
+      form.audience_department_codes.length === 0 || form.audience_cities.length === 0
+    ))
   );
   const audienceInvalid = submitted && audienceMissing;
   const publishedTime = form.published_from ? new Date(form.published_from).getTime() : null;
@@ -214,6 +224,12 @@ export default function FeedComposerDialog({
     audience_scope: form.audience_scope,
     audience_roles: form.audience_scope === 'roles' ? form.audience_roles : [],
     audience_user_ids: form.audience_scope === 'users' ? form.audience_user_ids.map(Number) : [],
+    audience_department_codes: (
+      form.audience_scope === 'departments' || form.audience_scope === 'departments_cities'
+    ) ? form.audience_department_codes : [],
+    audience_cities: (
+      form.audience_scope === 'cities' || form.audience_scope === 'departments_cities'
+    ) ? form.audience_cities : [],
     requires_ack: Boolean(form.requires_ack),
     is_pinned: Boolean(form.is_pinned),
     pinned_until: form.is_pinned ? toIso(form.pinned_until) : null,
@@ -306,8 +322,15 @@ export default function FeedComposerDialog({
     }));
   };
 
-  const removeExistingAttachment = async (attachment) => {
-    if (!post?.id || !window.confirm(`Удалить файл «${attachment.file_name}»?`)) return;
+  const removeExistingAttachment = (attachment) => {
+    if (!post?.id || !attachment?.id) return;
+    setPendingDeleteAttachment(attachment);
+  };
+
+  const confirmRemoveExistingAttachment = async () => {
+    const attachment = pendingDeleteAttachment;
+    if (!post?.id || !attachment?.id) return;
+    setPendingDeleteAttachment(null);
     try {
       await hubAnnouncementsAPI.deleteAttachment(post.id, attachment.id);
       setExistingAttachments((current) => current.filter((item) => item.id !== attachment.id));
@@ -494,6 +517,9 @@ export default function FeedComposerDialog({
                       <MenuItem value="all">Все пользователи</MenuItem>
                       <MenuItem value="roles">Выбранные роли</MenuItem>
                       <MenuItem value="users">Конкретные пользователи</MenuItem>
+                      <MenuItem value="departments">Отделы и подразделения</MenuItem>
+                      <MenuItem value="cities">Города</MenuItem>
+                      <MenuItem value="departments_cities">Отделы в выбранных городах</MenuItem>
                     </Select>
                   </FormControl>
                 </Grid>
@@ -566,6 +592,54 @@ export default function FeedComposerDialog({
                     </FormControl>
                   </Grid>
                 ) : null}
+                {form.audience_scope === 'departments' || form.audience_scope === 'departments_cities' ? (
+                  <Grid item xs={12}>
+                    <FormControl fullWidth error={audienceInvalid}>
+                      <InputLabel id="feed-departments-label">Отделы</InputLabel>
+                      <Select
+                        multiple
+                        labelId="feed-departments-label"
+                        label="Отделы"
+                        value={form.audience_department_codes}
+                        onChange={(event) => setField('audience_department_codes', event.target.value)}
+                        renderValue={(values) => values.map((value) => (
+                          (recipients.departments || []).find((item) => item.code === value)?.name || value
+                        )).join(', ')}
+                      >
+                        {(recipients.departments || []).map((department) => (
+                          <MenuItem key={department.code} value={department.code}>
+                            <Checkbox checked={form.audience_department_codes.includes(department.code)} />
+                            <ListItemText primary={department.name} />
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                ) : null}
+                {form.audience_scope === 'cities' || form.audience_scope === 'departments_cities' ? (
+                  <Grid item xs={12}>
+                    <FormControl fullWidth error={audienceInvalid}>
+                      <InputLabel id="feed-cities-label">Города</InputLabel>
+                      <Select
+                        multiple
+                        labelId="feed-cities-label"
+                        label="Города"
+                        value={form.audience_cities}
+                        onChange={(event) => setField('audience_cities', event.target.value)}
+                        renderValue={(values) => values.map((value) => (
+                          (recipients.cities || []).find((item) => item.value === value)?.label || value
+                        )).join(', ')}
+                      >
+                        {(recipients.cities || []).map((city) => (
+                          <MenuItem key={city.value} value={city.value}>
+                            <Checkbox checked={form.audience_cities.includes(city.value)} />
+                            <ListItemText primary={city.label} />
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                ) : null}
                 <Grid item xs={12} md={4}>
                   <TextField fullWidth label="Опубликовать с" type="datetime-local" value={form.published_from} onChange={(event) => setField('published_from', event.target.value)} InputLabelProps={{ shrink: true }} />
                 </Grid>
@@ -631,6 +705,18 @@ export default function FeedComposerDialog({
           {editing ? 'Сохранить' : 'Опубликовать'}
         </Button>
       </DialogActions>
+      <Dialog open={Boolean(pendingDeleteAttachment)} onClose={() => setPendingDeleteAttachment(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Удалить файл?</DialogTitle>
+        <DialogContent dividers>
+          <Typography>{`Файл «${pendingDeleteAttachment?.file_name || ''}» будет удалён из публикации.`}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPendingDeleteAttachment(null)}>Отмена</Button>
+          <Button variant="contained" color="error" onClick={() => void confirmRemoveExistingAttachment()} sx={{ textTransform: 'none' }}>
+            Удалить файл
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }

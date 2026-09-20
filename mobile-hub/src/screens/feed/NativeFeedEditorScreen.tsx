@@ -20,6 +20,8 @@ import {
   uploadFeedAttachment,
   type FeedEditorPayload,
   type FeedCategory,
+  type FeedRecipientCity,
+  type FeedRecipientDepartment,
   type FeedTag,
   type FeedRecipientRole,
   type FeedRecipientUser,
@@ -64,6 +66,9 @@ const AUDIENCE_SCOPES = [
   { value: 'all', label: 'Все сотрудники' },
   { value: 'roles', label: 'По ролям' },
   { value: 'users', label: 'Выбранные сотрудники' },
+  { value: 'departments', label: 'По отделам' },
+  { value: 'cities', label: 'По городам' },
+  { value: 'departments_cities', label: 'Отделы в городах' },
 ] as const;
 
 const RECIPIENT_SEARCH_DELAY_MS = 300;
@@ -219,11 +224,15 @@ export function NativeFeedEditorScreen() {
   const [categoryId, setCategoryId] = useState('');
   const [isActive, setIsActive] = useState(true);
   const [notifyOnUpdate, setNotifyOnUpdate] = useState(false);
-  const [audienceScope, setAudienceScope] = useState<'all' | 'roles' | 'users'>('all');
+  const [audienceScope, setAudienceScope] = useState<FeedEditorPayload['audience_scope']>('all');
   const [audienceRoles, setAudienceRoles] = useState<string[]>([]);
   const [audienceUserIds, setAudienceUserIds] = useState<number[]>([]);
+  const [audienceDepartmentCodes, setAudienceDepartmentCodes] = useState<string[]>([]);
+  const [audienceCities, setAudienceCities] = useState<string[]>([]);
   const [recipientUsers, setRecipientUsers] = useState<FeedRecipientUser[]>([]);
   const [recipientRoles, setRecipientRoles] = useState<FeedRecipientRole[]>([]);
+  const [recipientDepartments, setRecipientDepartments] = useState<FeedRecipientDepartment[]>([]);
+  const [recipientCities, setRecipientCities] = useState<FeedRecipientCity[]>([]);
   const [recipientQuery, setRecipientQuery] = useState('');
   const [recipientsLoading, setRecipientsLoading] = useState(false);
   const [recipientsError, setRecipientsError] = useState('');
@@ -244,11 +253,12 @@ export function NativeFeedEditorScreen() {
   const createRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
 
   const [createdPostId, setCreatedPostId] = useState('');
-  const localState = { createdPostId, title, preview, body, priority, requiresAck, isPinned, commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate, audienceScope, audienceRoles, audienceUserIds, publishedFrom, expiresAt, pinnedUntil, pollEnabled, pollQuestion, pollOptions, pollAllowsMultiple, pollAnonymous, pollClosesAt, existingAttachments, newFiles, attachmentOrder, coverKey, createRequest: createRequestRef.current };
-  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: `feed-editor-${postId || 'new'}`, state: localState, ready: canEdit && !loading, paused: busy || attachmentBusy || transformingBody, restore: (saved) => { setCreatedPostId(saved.createdPostId); setTitle(saved.title); setPreview(saved.preview); setBody(saved.body); setPriority(saved.priority); setRequiresAck(saved.requiresAck); setIsPinned(saved.isPinned); setCommentsEnabled(saved.commentsEnabled); setReactionsEnabled(saved.reactionsEnabled); setTagsText(saved.tagsText); setCategoryId(saved.categoryId); setIsActive(saved.isActive); setNotifyOnUpdate(saved.notifyOnUpdate); setAudienceScope(saved.audienceScope); setAudienceRoles(saved.audienceRoles); setAudienceUserIds(saved.audienceUserIds); setPublishedFrom(saved.publishedFrom); setExpiresAt(saved.expiresAt); setPinnedUntil(saved.pinnedUntil); setPollEnabled(saved.pollEnabled); setPollQuestion(saved.pollQuestion); setPollOptions(saved.pollOptions); setPollAllowsMultiple(saved.pollAllowsMultiple); setPollAnonymous(saved.pollAnonymous); setPollClosesAt(saved.pollClosesAt); setExistingAttachments(saved.existingAttachments); setNewFiles(saved.newFiles); setAttachmentOrder(saved.attachmentOrder); setCoverKey(saved.coverKey); createRequestRef.current = saved.createRequest; } });
+  const localState = { createdPostId, title, preview, body, priority, requiresAck, isPinned, commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate, audienceScope, audienceRoles, audienceUserIds, audienceDepartmentCodes, audienceCities, publishedFrom, expiresAt, pinnedUntil, pollEnabled, pollQuestion, pollOptions, pollAllowsMultiple, pollAnonymous, pollClosesAt, existingAttachments, newFiles, attachmentOrder, coverKey, createRequest: createRequestRef.current };
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: `feed-editor-${postId || 'new'}`, state: localState, ready: canEdit && !loading, paused: busy || attachmentBusy || transformingBody, restore: (saved) => { setCreatedPostId(saved.createdPostId); setTitle(saved.title); setPreview(saved.preview); setBody(saved.body); setPriority(saved.priority); setRequiresAck(saved.requiresAck); setIsPinned(saved.isPinned); setCommentsEnabled(saved.commentsEnabled); setReactionsEnabled(saved.reactionsEnabled); setTagsText(saved.tagsText); setCategoryId(saved.categoryId); setIsActive(saved.isActive); setNotifyOnUpdate(saved.notifyOnUpdate); setAudienceScope(saved.audienceScope); setAudienceRoles(saved.audienceRoles); setAudienceUserIds(saved.audienceUserIds); setAudienceDepartmentCodes(Array.isArray(saved.audienceDepartmentCodes) ? saved.audienceDepartmentCodes : []); setAudienceCities(Array.isArray(saved.audienceCities) ? saved.audienceCities : []); setPublishedFrom(saved.publishedFrom); setExpiresAt(saved.expiresAt); setPinnedUntil(saved.pinnedUntil); setPollEnabled(saved.pollEnabled); setPollQuestion(saved.pollQuestion); setPollOptions(saved.pollOptions); setPollAllowsMultiple(saved.pollAllowsMultiple); setPollAnonymous(saved.pollAnonymous); setPollClosesAt(saved.pollClosesAt); setExistingAttachments(saved.existingAttachments); setNewFiles(saved.newFiles); setAttachmentOrder(saved.attachmentOrder); setCoverKey(saved.coverKey); createRequestRef.current = saved.createRequest; } });
   const formFingerprint = JSON.stringify([title, preview, body, priority, requiresAck, isPinned,
     commentsEnabled, reactionsEnabled, tagsText, categoryId, isActive, notifyOnUpdate,
-    audienceScope, audienceRoles, audienceUserIds, publishedFrom, expiresAt, pinnedUntil,
+    audienceScope, audienceRoles, audienceUserIds, audienceDepartmentCodes, audienceCities,
+    publishedFrom, expiresAt, pinnedUntil,
     pollEnabled, pollQuestion, pollOptions, pollAllowsMultiple, pollAnonymous, pollClosesAt,
     existingAttachments.map((file) => file.id), newFiles, attachmentOrder, coverKey]);
   const baseline = useRef<{ postId: string; fingerprint: string } | null>(null);
@@ -324,6 +334,8 @@ export function NativeFeedEditorScreen() {
       if (!active) return;
       setRecipientUsers(payload.users);
       setRecipientRoles(payload.roles);
+      setRecipientDepartments(Array.isArray(payload.departments) ? payload.departments : []);
+      setRecipientCities(Array.isArray(payload.cities) ? payload.cities : []);
     }).catch((cause) => {
       if (active) setRecipientsError(formatApiError(cause, 'Не удалось загрузить аудиторию.'));
     }).finally(() => {
@@ -367,13 +379,14 @@ export function NativeFeedEditorScreen() {
       setTagsText((post.tags || []).join(', '));
       setCategoryId(String(post.category_id || ''));
       setIsActive(post.is_active !== false);
-      setAudienceScope(
-        post.audience_scope === 'roles' || post.audience_scope === 'users'
-          ? post.audience_scope
-          : 'all',
-      );
+      const loadedAudienceScope = ['roles', 'users', 'departments', 'cities', 'departments_cities'].includes(String(post.audience_scope || ''))
+        ? post.audience_scope as FeedEditorPayload['audience_scope']
+        : 'all';
+      setAudienceScope(loadedAudienceScope);
       setAudienceRoles(Array.isArray(post.audience_roles) ? post.audience_roles.map(String) : []);
       setAudienceUserIds(Array.isArray(post.audience_user_ids) ? post.audience_user_ids.map(Number).filter((id) => id > 0) : []);
+      setAudienceDepartmentCodes(Array.isArray(post.audience_department_codes) ? post.audience_department_codes.map(String) : []);
+      setAudienceCities(Array.isArray(post.audience_cities) ? post.audience_cities.map(String) : []);
       setPublishedFrom(feedDateTimeInputValue(post.published_from));
       setExpiresAt(feedDateTimeInputValue(post.expires_at));
       setPinnedUntil(feedDateTimeInputValue(post.pinned_until));
@@ -413,6 +426,12 @@ export function NativeFeedEditorScreen() {
     audience_scope: audienceScope,
     audience_roles: audienceScope === 'roles' ? audienceRoles : [],
     audience_user_ids: audienceScope === 'users' ? audienceUserIds : [],
+    audience_department_codes: (
+      audienceScope === 'departments' || audienceScope === 'departments_cities'
+    ) ? audienceDepartmentCodes : [],
+    audience_cities: (
+      audienceScope === 'cities' || audienceScope === 'departments_cities'
+    ) ? audienceCities : [],
     requires_ack: requiresAck,
     is_pinned: isPinned,
     pinned_until: isPinned ? feedDateTimeToIso(pinnedUntil) : null,
@@ -432,6 +451,8 @@ export function NativeFeedEditorScreen() {
       closes_at: feedDateTimeToIso(pollClosesAt),
     } : null,
   }), [
+    audienceCities,
+    audienceDepartmentCodes,
     audienceRoles,
     audienceScope,
     audienceUserIds,
@@ -464,6 +485,14 @@ export function NativeFeedEditorScreen() {
     if (!payload.body) return 'Добавьте основной текст публикации.';
     if (audienceScope === 'roles' && audienceRoles.length === 0) return 'Выберите хотя бы одну роль.';
     if (audienceScope === 'users' && audienceUserIds.length === 0) return 'Выберите хотя бы одного сотрудника.';
+    if (
+      (audienceScope === 'departments' || audienceScope === 'departments_cities')
+      && audienceDepartmentCodes.length === 0
+    ) return 'Выберите хотя бы один отдел.';
+    if (
+      (audienceScope === 'cities' || audienceScope === 'departments_cities')
+      && audienceCities.length === 0
+    ) return 'Выберите хотя бы один город.';
     const dateError = validateFeedEditorDates({ publishedFrom, expiresAt, pinnedUntil, pollClosesAt }, {
       isPinned,
       pollEnabled,
@@ -475,6 +504,8 @@ export function NativeFeedEditorScreen() {
     }
     return '';
   }, [
+    audienceCities.length,
+    audienceDepartmentCodes.length,
     audienceRoles.length,
     audienceScope,
     audienceUserIds.length,
@@ -903,6 +934,56 @@ export function NativeFeedEditorScreen() {
                 {!recipientsLoading && visibleRecipientUsers.length === 0 ? (
                   <Text style={{ color: tokens.textSecondary }}>Совпадений нет.</Text>
                 ) : null}
+              </View>
+            ) : null}
+            {audienceScope === 'departments' || audienceScope === 'departments_cities' ? (
+              <View style={styles.selectionList}>
+                {recipientDepartments.length === 0 ? (
+                  <Text style={{ color: tokens.textSecondary }}>Справочник отделов пуст.</Text>
+                ) : recipientDepartments.map((department) => {
+                  const selected = audienceDepartmentCodes.includes(department.code);
+                  return (
+                    <Pressable
+                      key={department.code}
+                      testID={`feed-editor-department-${department.code}`}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: selected, disabled: busy || offlineMode }}
+                      disabled={busy || offlineMode}
+                      onPress={() => setAudienceDepartmentCodes((current) => (
+                        selected ? current.filter((value) => value !== department.code) : [...current, department.code]
+                      ))}
+                      style={[styles.selectionRow, { borderColor: tokens.borderSoft }]}
+                    >
+                      <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={22} color={selected ? tokens.primary : tokens.iconMuted} />
+                      <Text style={[styles.selectionLabel, { color: tokens.textPrimary }]}>{department.name}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+            {audienceScope === 'cities' || audienceScope === 'departments_cities' ? (
+              <View style={styles.selectionList}>
+                {recipientCities.length === 0 ? (
+                  <Text style={{ color: tokens.textSecondary }}>Справочник городов пуст.</Text>
+                ) : recipientCities.map((city) => {
+                  const selected = audienceCities.includes(city.value);
+                  return (
+                    <Pressable
+                      key={city.value}
+                      testID={`feed-editor-city-${city.value}`}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: selected, disabled: busy || offlineMode }}
+                      disabled={busy || offlineMode}
+                      onPress={() => setAudienceCities((current) => (
+                        selected ? current.filter((value) => value !== city.value) : [...current, city.value]
+                      ))}
+                      style={[styles.selectionRow, { borderColor: tokens.borderSoft }]}
+                    >
+                      <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={22} color={selected ? tokens.primary : tokens.iconMuted} />
+                      <Text style={[styles.selectionLabel, { color: tokens.textPrimary }]}>{city.label}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             ) : null}
           </AccountSectionCard>

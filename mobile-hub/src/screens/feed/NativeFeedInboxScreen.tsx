@@ -79,6 +79,7 @@ function filterOfflineFeedPosts(
   options: { filter: FeedInboxFilterId; query: string; categoryId: string; tag: string },
 ) {
   const normalizedQuery = options.query.trim().toLocaleLowerCase('ru-RU');
+  if (options.filter === 'my_departments') return [];
   return items.filter((post) => {
     if (normalizedQuery && !`${post.title || ''} ${post.preview || ''} ${post.body || ''}`.toLocaleLowerCase('ru-RU').includes(normalizedQuery)) return false;
     if (options.categoryId && post.category_id !== options.categoryId) return false;
@@ -162,7 +163,7 @@ export function NativeFeedInboxScreen() {
         userId,
         signature,
       );
-      if (!snapshot && offlineMode) {
+      if (!snapshot && offlineMode && filter !== 'my_departments') {
         const defaultSignature = JSON.stringify({ filter: 'all', q: '', categoryId: '', tag: '' });
         snapshot = await readNativeCollectionSnapshot<NativeFeedInboxSnapshot>(
           'feed-inbox',
@@ -226,6 +227,7 @@ export function NativeFeedInboxScreen() {
         unread_only: filter === 'unread',
         priority: filter === 'important' ? 'high' : '',
         bookmarked_only: filter === 'saved',
+        audience_targeted: filter === 'my_departments',
         category_id: categoryId,
         tag,
         limit: FEED_PAGE_SIZE,

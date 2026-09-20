@@ -494,6 +494,7 @@ async def get_announcements(
     category_id: str = Query(""),
     tag: str = Query(""),
     bookmarked_only: bool = Query(False),
+    audience_targeted: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     return hub_service.list_announcements(
@@ -510,6 +511,7 @@ async def get_announcements(
         category_id=_normalize_text(category_id),
         tag=_normalize_text(tag),
         bookmarked_only=bool(bookmarked_only),
+        audience_targeted=bool(audience_targeted),
     )
 
 
@@ -576,6 +578,8 @@ async def create_announcement(
             audience_scope = _normalize_text(form.get("audience_scope"), "all")
             audience_roles = _coerce_json_list(form.get("audience_roles"))
             audience_user_ids = _coerce_json_list(form.get("audience_user_ids"))
+            audience_department_codes = _coerce_json_list(form.get("audience_department_codes"))
+            audience_cities = _coerce_json_list(form.get("audience_cities"))
             requires_ack = _coerce_bool(form.get("requires_ack"))
             is_pinned = _coerce_bool(form.get("is_pinned"))
             pinned_until = _normalize_text(form.get("pinned_until"))
@@ -620,6 +624,8 @@ async def create_announcement(
             audience_scope = _normalize_text(payload.get("audience_scope"), "all")
             audience_roles = payload.get("audience_roles")
             audience_user_ids = payload.get("audience_user_ids")
+            audience_department_codes = payload.get("audience_department_codes")
+            audience_cities = payload.get("audience_cities")
             requires_ack = _coerce_bool(payload.get("requires_ack"))
             is_pinned = _coerce_bool(payload.get("is_pinned"))
             pinned_until = _normalize_text(payload.get("pinned_until"))
@@ -642,6 +648,8 @@ async def create_announcement(
                 "audience_scope": audience_scope,
                 "audience_roles": audience_roles,
                 "audience_user_ids": audience_user_ids,
+                "audience_department_codes": audience_department_codes,
+                "audience_cities": audience_cities,
                 "requires_ack": requires_ack,
                 "is_pinned": is_pinned,
                 "pinned_until": pinned_until,

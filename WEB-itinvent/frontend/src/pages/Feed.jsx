@@ -38,6 +38,7 @@ import FeedShareDialog from '../components/feed/FeedShareDialog';
 import FeedQuickComposer from '../components/feed/FeedQuickComposer';
 import FeedSidebar from '../components/feed/FeedSidebar';
 import { buildFeedPostPath } from '../components/feed/feedUtils';
+import { getFeedReaction } from '../components/feed/feedReactions';
 import { hubAnnouncementsAPI } from '../api/hubAnnouncements';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -48,6 +49,7 @@ const MOBILE_FILTERS = [
   { id: 'all', label: 'Все' },
   { id: 'unread', label: 'Новое' },
   { id: 'important', label: 'Важное' },
+  { id: 'my_departments', label: 'Мои подразделения' },
   { id: 'saved', label: 'Сохранённые' },
 ];
 
@@ -99,7 +101,7 @@ export default function Feed() {
   const [likingIds, setLikingIds] = useState(new Set());
   const [composerOpen, setComposerOpen] = useState(false);
   const [editingPost, setEditingPost] = useState(null);
-  const [recipients, setRecipients] = useState({ users: [], roles: [] });
+  const [recipients, setRecipients] = useState({ users: [], roles: [], departments: [], cities: [] });
   const [sharePost, setSharePost] = useState(null);
   const [reactionsView, setReactionsView] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -109,6 +111,10 @@ export default function Feed() {
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [categoryName, setCategoryName] = useState('');
+  const [confirmState, setConfirmState] = useState(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [renameCategoryTarget, setRenameCategoryTarget] = useState(null);
+  const [renameCategoryValue, setRenameCategoryValue] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const commentComposerRef = useRef(null);
   const focusedCommentsPostRef = useRef('');
@@ -156,6 +162,7 @@ export default function Feed() {
           unread_only: activeFilterRef.current === 'unread',
           priority: activeFilterRef.current === 'important' ? 'high' : '',
           bookmarked_only: activeFilterRef.current === 'saved',
+          audience_targeted: activeFilterRef.current === 'my_departments',
           category_id: categoryIdRef.current,
           tag: tagRef.current,
           include_body: true,
@@ -191,15 +198,22 @@ export default function Feed() {
     }
   }, []);
 
+  const [taxonomyError, setTaxonomyError] = useState(false);
+
   const loadTaxonomy = useCallback(async () => {
-    const [categoryPayload, tagPayload] = await Promise.all([
-      hubAnnouncementsAPI.getCategories(), hubAnnouncementsAPI.getTags(),
-    ]);
-    setCategories(Array.isArray(categoryPayload?.items) ? categoryPayload.items : []);
-    setTags(Array.isArray(tagPayload?.items) ? tagPayload.items : []);
+    setTaxonomyError(false);
+    try {
+      const [categoryPayload, tagPayload] = await Promise.all([
+        hubAnnouncementsAPI.getCategories(), hubAnnouncementsAPI.getTags(),
+      ]);
+      setCategories(Array.isArray(categoryPayload?.items) ? categoryPayload.items : []);
+      setTags(Array.isArray(tagPayload?.items) ? tagPayload.items : []);
+    } catch {
+      setTaxonomyError(true);
+    }
   }, []);
 
-  useEffect(() => { void loadTaxonomy().catch(() => undefined); }, [loadTaxonomy]);
+  useEffect(() => { void loadTaxonomy(); }, [loadTaxonomy]);
 
   useEffect(() => {
     if (deepLinkedPostId) return undefined;
@@ -428,6 +442,8 @@ export default function Feed() {
       setRecipients({
         users: Array.isArray(payload?.users) ? payload.users : [],
         roles: Array.isArray(payload?.roles) ? payload.roles : [],
+        departments: Array.isArray(payload?.departments) ? payload.departments : [],
+        cities: Array.isArray(payload?.cities) ? payload.cities : [],
       });
     } catch (requestError) {
       notifyApiError(requestError, 'Не удалось загрузить список получателей.');
@@ -453,30 +469,56 @@ export default function Feed() {
     window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
   };
 
-  const archivePost = async (post) => {
-    if (!post?.id || !window.confirm(`Снять публикацию «${post.title || ''}» с ленты?`)) return;
+  const runConfirm = async () => {
+    if (!confirmState?.onConfirm || confirmBusy) return;
+    setConfirmBusy(true);
     try {
-      await hubAnnouncementsAPI.archiveAnnouncement(post.id);
-      setItems((current) => current.filter((item) => item.id !== post.id));
-      setTotal((current) => Math.max(0, current - 1));
-      setFeedTotal((current) => Math.max(0, current - 1));
-      notifySuccess('Публикация снята с ленты.', { source: 'feed' });
-    } catch (requestError) {
-      notifyApiError(requestError, 'Не удалось снять публикацию с ленты.');
+      await confirmState.onConfirm();
+      setConfirmState(null);
+    } finally {
+      setConfirmBusy(false);
     }
   };
 
-  const deletePost = async (post) => {
-    if (!post?.id || !window.confirm(`Удалить публикацию «${post.title || ''}» без возможности восстановления?`)) return;
-    try {
-      await hubAnnouncementsAPI.deleteAnnouncement(post.id);
-      setItems((current) => current.filter((item) => item.id !== post.id));
-      setTotal((current) => Math.max(0, current - 1));
-      setFeedTotal((current) => Math.max(0, current - 1));
-      notifySuccess('Публикация удалена.', { source: 'feed' });
-    } catch (requestError) {
-      notifyApiError(requestError, 'Не удалось удалить публикацию.');
-    }
+  const archivePost = (post) => {
+    if (!post?.id) return;
+    setConfirmState({
+      title: 'Снять с публикации?',
+      body: `Публикация «${post.title || ''}» пропадёт из ленты, но останется в архиве.`,
+      confirmLabel: 'Снять с ленты',
+      onConfirm: async () => {
+        try {
+          await hubAnnouncementsAPI.archiveAnnouncement(post.id);
+          setItems((current) => current.filter((item) => item.id !== post.id));
+          setTotal((current) => Math.max(0, current - 1));
+          setFeedTotal((current) => Math.max(0, current - 1));
+          notifySuccess('Публикация снята с ленты.', { source: 'feed' });
+        } catch (requestError) {
+          notifyApiError(requestError, 'Не удалось снять публикацию с ленты.');
+        }
+      },
+    });
+  };
+
+  const deletePost = (post) => {
+    if (!post?.id) return;
+    setConfirmState({
+      title: 'Удалить публикацию?',
+      body: `Публикация «${post.title || ''}» будет удалена без возможности восстановления.`,
+      confirmLabel: 'Удалить публикацию',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await hubAnnouncementsAPI.deleteAnnouncement(post.id);
+          setItems((current) => current.filter((item) => item.id !== post.id));
+          setTotal((current) => Math.max(0, current - 1));
+          setFeedTotal((current) => Math.max(0, current - 1));
+          notifySuccess('Публикация удалена.', { source: 'feed' });
+        } catch (requestError) {
+          notifyApiError(requestError, 'Не удалось удалить публикацию.');
+        }
+      },
+    });
   };
 
   const openAnalytics = async (post) => {
@@ -505,25 +547,39 @@ export default function Feed() {
     }
   };
 
-  const renameCategory = async (category) => {
-    const name = window.prompt('Новое название категории', category.name);
-    if (!name?.trim() || name.trim() === category.name) return;
+  const renameCategory = (category) => {
+    if (!category?.id) return;
+    setRenameCategoryTarget(category);
+    setRenameCategoryValue(category.name || '');
+  };
+
+  const submitRenameCategory = async () => {
+    const name = renameCategoryValue.trim();
+    if (!renameCategoryTarget?.id || name.length < 2 || name === renameCategoryTarget.name) return;
     try {
-      await hubAnnouncementsAPI.updateCategory(category.id, { name: name.trim(), is_active: true });
+      await hubAnnouncementsAPI.updateCategory(renameCategoryTarget.id, { name, is_active: true });
+      setRenameCategoryTarget(null);
       await loadTaxonomy();
     } catch (requestError) {
       notifyApiError(requestError, 'Не удалось переименовать категорию.');
     }
   };
 
-  const deactivateCategory = async (category) => {
-    if (!window.confirm(`Скрыть категорию «${category.name}»?`)) return;
-    try {
-      await hubAnnouncementsAPI.deleteCategory(category.id);
-      await loadTaxonomy();
-    } catch (requestError) {
-      notifyApiError(requestError, 'Не удалось скрыть категорию.');
-    }
+  const deactivateCategory = (category) => {
+    if (!category?.id) return;
+    setConfirmState({
+      title: 'Скрыть категорию?',
+      body: `Категория «${category.name}» пропадёт из фильтров ленты.`,
+      confirmLabel: 'Скрыть категорию',
+      onConfirm: async () => {
+        try {
+          await hubAnnouncementsAPI.deleteCategory(category.id);
+          await loadTaxonomy();
+        } catch (requestError) {
+          notifyApiError(requestError, 'Не удалось скрыть категорию.');
+        }
+      },
+    });
   };
 
   const shareUrl = sharePost?.id
@@ -784,6 +840,7 @@ export default function Feed() {
 
             <TextField
               fullWidth
+              label="Поиск в ленте"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Поиск"
@@ -800,7 +857,18 @@ export default function Feed() {
               }}
             />
 
-            {error ? <Alert severity="error">{error}</Alert> : null}
+            {error ? (
+              <Alert
+                severity="error"
+                action={(
+                  <Button color="inherit" size="small" onClick={() => void loadPage({ reset: true })}>
+                    Повторить
+                  </Button>
+                )}
+              >
+                {error}
+              </Alert>
+            ) : null}
 
             {loading ? (
               <Stack spacing={1.25} aria-label="Загрузка публикаций">
@@ -829,7 +897,7 @@ export default function Feed() {
               <Stack spacing={1.25}>
                 {items.map((post) => renderPostCard(post))}
               </Stack>
-            ) : (
+            ) : error ? null : (
               <Paper
                 elevation={0}
                 sx={{
@@ -843,10 +911,22 @@ export default function Feed() {
               >
                 <DynamicFeedRoundedIcon sx={{ fontSize: 40, color: 'text.disabled' }} />
                 <Typography sx={{ mt: 1, fontSize: '1.05rem', fontWeight: 800 }}>
-                  {query ? 'Публикации не найдены' : activeFilter === 'all' ? 'Лента пока пуста' : 'Здесь пока ничего нет'}
+                  {query
+                    ? 'Публикации не найдены'
+                    : activeFilter === 'all'
+                      ? 'Лента пока пуста'
+                      : activeFilter === 'my_departments'
+                        ? 'Для ваших подразделений новостей нет'
+                        : 'Здесь пока ничего нет'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, textWrap: 'pretty' }}>
-                  {query ? 'Попробуйте изменить запрос.' : activeFilter === 'all' ? 'Первая корпоративная новость появится здесь.' : 'Выберите другой раздел ленты.'}
+                  {query
+                    ? 'Попробуйте изменить запрос.'
+                    : activeFilter === 'all'
+                      ? 'Первая корпоративная новость появится здесь.'
+                      : activeFilter === 'my_departments'
+                        ? 'Публикации по отделам и городам появятся здесь.'
+                        : 'Выберите другой раздел ленты.'}
                 </Typography>
                 {query ? <Button onClick={() => setQuery('')} sx={{ mt: 1 }}>Очистить поиск</Button> : null}
               </Paper>
@@ -857,7 +937,7 @@ export default function Feed() {
                 variant="outlined"
                 onClick={() => void loadPage({ reset: false })}
                 disabled={loadingMore}
-                sx={{ minHeight: 48, borderRadius: { xs: 0, sm: '12px' }, bgcolor: feedSurface, textTransform: 'none', fontWeight: 700 }}
+                sx={{ minHeight: 48, borderRadius: '12px', mx: { xs: 1.5, sm: 0 }, bgcolor: feedSurface, textTransform: 'none', fontWeight: 700 }}
               >
                 {loadingMore ? <CircularProgress size={22} /> : `Показать ещё · ${Math.max(0, total - items.length)}`}
               </Button>
@@ -882,6 +962,8 @@ export default function Feed() {
               tag={tag}
               onTagChange={setTag}
               onManageCategories={canModerate ? () => setCategoryDialogOpen(true) : null}
+              taxonomyError={taxonomyError}
+              onRetryTaxonomy={() => void loadTaxonomy()}
             />
           ) : null}
         </Box>
@@ -934,6 +1016,12 @@ export default function Feed() {
               ) : null}
 
               <Divider />
+              {taxonomyError ? (
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>Не удалось загрузить категории и теги.</Typography>
+                  <Button size="small" onClick={() => void loadTaxonomy()} sx={{ minHeight: 44, flexShrink: 0, textTransform: 'none' }}>Повторить</Button>
+                </Stack>
+              ) : null}
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25}>
                 <FormControl fullWidth>
                   <InputLabel id="feed-mobile-category-label">Категория</InputLabel>
@@ -1003,6 +1091,54 @@ export default function Feed() {
         </DialogContent>
         <DialogActions><Button onClick={() => setCategoryDialogOpen(false)}>Закрыть</Button></DialogActions>
       </Dialog>
+      <Dialog open={Boolean(confirmState)} onClose={() => (confirmBusy ? undefined : setConfirmState(null))} fullWidth maxWidth="xs">
+        <DialogTitle>{confirmState?.title || 'Подтвердите действие'}</DialogTitle>
+        <DialogContent dividers>
+          <Typography>{confirmState?.body || ''}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmState(null)} disabled={confirmBusy}>Отмена</Button>
+          <Button
+            variant="contained"
+            color={confirmState?.danger ? 'error' : 'primary'}
+            onClick={() => void runConfirm()}
+            disabled={confirmBusy}
+            sx={{ textTransform: 'none' }}
+          >
+            {confirmState?.confirmLabel || 'Подтвердить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={Boolean(renameCategoryTarget)}
+        onClose={() => setRenameCategoryTarget(null)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Переименовать категорию</DialogTitle>
+        <DialogContent dividers>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Название категории"
+            value={renameCategoryValue}
+            onChange={(event) => setRenameCategoryValue(event.target.value)}
+            inputProps={{ maxLength: 80 }}
+            onKeyDown={(event) => { if (event.key === 'Enter') void submitRenameCategory(); }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameCategoryTarget(null)}>Отмена</Button>
+          <Button
+            variant="contained"
+            onClick={() => void submitRenameCategory()}
+            disabled={renameCategoryValue.trim().length < 2 || renameCategoryValue.trim() === renameCategoryTarget?.name}
+            sx={{ textTransform: 'none' }}
+          >
+            Переименовать
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={Boolean(analyticsPost)} onClose={() => setAnalyticsPost(null)} fullWidth maxWidth="sm">
         <DialogTitle>Статистика публикации</DialogTitle>
         <DialogContent dividers>
@@ -1019,7 +1155,7 @@ export default function Feed() {
                 ].map(([label, value]) => <Paper key={label} elevation={0} sx={{ p: 1.5, bgcolor: ui.panelBg, borderRadius: '12px' }}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography sx={{ fontSize: '1.35rem', fontWeight: 800 }}>{Number(value || 0)}</Typography></Paper>)}
               </Box>
               <Typography sx={{ fontWeight: 800 }}>Реакции</Typography>
-              <Typography color="text.secondary">{Object.entries(analytics.summary.reaction_counts || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'Реакций пока нет'}</Typography>
+              <Typography color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{Object.entries(analytics.summary.reaction_counts || {}).map(([key, value]) => `${getFeedReaction(key)?.label || key}: ${value}`).join(' · ') || 'Реакций пока нет'}</Typography>
               <Typography sx={{ fontWeight: 800 }}>Получатели</Typography>
               <Stack spacing={0.75}>{(analytics.items || []).map((item) => <Stack key={item.user_id} direction="row" spacing={1}><Typography sx={{ flex: 1 }}>{item.full_name || item.username}</Typography><Typography variant="caption" color="text.secondary">{item.is_seen ? 'Прочитано' : 'Не прочитано'}{item.is_acknowledged ? ' · подтверждено' : ''}</Typography></Stack>)}</Stack>
             </Stack>

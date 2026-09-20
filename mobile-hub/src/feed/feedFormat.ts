@@ -40,6 +40,8 @@ export type FeedPost = {
   audience_scope?: string | null;
   audience_roles?: string[];
   audience_user_ids?: number[];
+  audience_department_codes?: string[];
+  audience_cities?: string[];
   is_pinned?: boolean;
   pinned_until?: string | null;
   published_from?: string | null;
@@ -161,6 +163,7 @@ export const FEED_FILTERS = [
   { id: 'all', label: 'Все' },
   { id: 'unread', label: 'Новое' },
   { id: 'important', label: 'Важное' },
+  { id: 'my_departments', label: 'Подразделения' },
   { id: 'saved', label: 'Сохранённые' },
 ] as const;
 
