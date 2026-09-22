@@ -293,10 +293,8 @@ export default function FeedPostCard({
             sx={{
               display: 'block',
               width: '100%',
-              maxHeight: { xs: 560, sm: 680 },
-              minHeight: { xs: 210, sm: 280 },
-              objectFit: 'cover',
-              bgcolor: ui.panelInset,
+              maxHeight: { xs: 340, sm: 420 },
+              objectFit: 'contain',
             }}
           />
           {visibleGalleryItems.length > 1 ? (
