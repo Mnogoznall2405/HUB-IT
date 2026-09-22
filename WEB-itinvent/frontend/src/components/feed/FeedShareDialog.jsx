@@ -5,7 +5,6 @@ import {
   Button,
   CircularProgress,
   Dialog,
-  DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
@@ -14,7 +13,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
+import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
@@ -122,43 +121,42 @@ export default function FeedShareDialog({ open, post, url, onClose, notifySucces
           <CloseRoundedIcon />
         </IconButton>
       </DialogTitle>
-      <DialogContent dividers>
+      <DialogContent>
         <Stack spacing={2}>
-          {CHAT_FEATURE_ENABLED ? (
-            <Box>
-              <Typography sx={{ fontWeight: 800, mb: 0.75 }}>Корпоративный чат</Typography>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
-                <Autocomplete
-                  fullWidth
-                  options={users}
-                  value={selectedUser}
-                  inputValue={query}
-                  onInputChange={(_event, value) => setQuery(value)}
-                  onChange={(_event, value) => setSelectedUser(value)}
-                  getOptionLabel={userLabel}
-                  isOptionEqualToValue={(option, value) => Number(option?.id) === Number(value?.id)}
-                  loading={loading}
-                  noOptionsText={query.trim().length < 2 ? 'Введите минимум 2 символа' : 'Сотрудники не найдены'}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label="Получатель"
-                      placeholder="Имя или логин"
-                      InputProps={{
-                        ...params.InputProps,
-                        endAdornment: <>{loading ? <CircularProgress size={18} /> : null}{params.InputProps.endAdornment}</>,
-                      }}
-                    />
-                  )}
-                />
-                <Button variant="contained" startIcon={<ForumOutlinedIcon />} onClick={shareToChat} sx={{ minHeight: 56, whiteSpace: 'nowrap' }}>
-                  Открыть чат
-                </Button>
-              </Stack>
-            </Box>
-          ) : null}
-          <Divider />
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              p: 0.75,
+              pl: 1.5,
+              borderRadius: '12px',
+              bgcolor: ui.panelBg,
+              border: '1px solid',
+              borderColor: alpha(theme.palette.text.primary, 0.08),
+            }}
+          >
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              noWrap
+              title={url}
+              sx={{ flex: 1, minWidth: 0, fontFamily: 'monospace' }}
+            >
+              {url}
+            </Typography>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<ContentCopyRoundedIcon />}
+              onClick={copyLink}
+              sx={{ flexShrink: 0, minHeight: 40, borderRadius: '10px', textTransform: 'none', fontWeight: 700 }}
+            >
+              Копировать
+            </Button>
+          </Box>
+
+          <Stack direction="row" spacing={1}>
             <Button
               component="a"
               href={telegramUrl || undefined}
@@ -168,23 +166,69 @@ export default function FeedShareDialog({ open, post, url, onClose, notifySucces
               startIcon={<TelegramIcon />}
               disabled={!telegramUrl}
               fullWidth
+              sx={{ minHeight: 44, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
             >
               Telegram
             </Button>
-            <Button variant="outlined" startIcon={<ContentCopyRoundedIcon />} onClick={copyLink} fullWidth>
-              Копировать ссылку
-            </Button>
             {nativeShareAvailable ? (
-              <Button variant="outlined" startIcon={<ShareOutlinedIcon />} onClick={shareNative} fullWidth>
+              <Button
+                variant="outlined"
+                startIcon={<ShareOutlinedIcon />}
+                onClick={shareNative}
+                fullWidth
+                sx={{ minHeight: 44, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
+              >
                 Другие приложения
               </Button>
             ) : null}
           </Stack>
+
+          {CHAT_FEATURE_ENABLED ? (
+            <>
+              <Divider sx={{ '&::before, &::after': { borderColor: alpha(theme.palette.text.primary, 0.08) } }}>
+                <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
+                  или сотруднику в чат
+                </Typography>
+              </Divider>
+              <Autocomplete
+                fullWidth
+                options={users}
+                value={selectedUser}
+                inputValue={query}
+                onInputChange={(_event, value) => setQuery(value)}
+                onChange={(_event, value) => setSelectedUser(value)}
+                getOptionLabel={userLabel}
+                isOptionEqualToValue={(option, value) => Number(option?.id) === Number(value?.id)}
+                loading={loading}
+                noOptionsText={query.trim().length < 2 ? 'Введите минимум 2 символа' : 'Сотрудники не найдены'}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder="Имя или логин"
+                    inputProps={{ ...params.inputProps, 'aria-label': 'Сотрудник' }}
+                    InputProps={{
+                      ...params.InputProps,
+                      startAdornment: <ForumOutlinedIcon sx={{ mr: 1, color: 'text.disabled' }} />,
+                      endAdornment: <>{loading ? <CircularProgress size={18} /> : null}{params.InputProps.endAdornment}</>,
+                    }}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: '12px', bgcolor: ui.panelBg } }}
+                  />
+                )}
+              />
+              <Button
+                variant="contained"
+                startIcon={<ForumOutlinedIcon />}
+                onClick={shareToChat}
+                disabled={!selectedUser}
+                fullWidth
+                sx={{ minHeight: 44, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
+              >
+                {selectedUser ? 'Отправить в чат' : 'Открыть чат'}
+              </Button>
+            </>
+          ) : null}
         </Stack>
       </DialogContent>
-      <DialogActions>
-        <Button color="inherit" onClick={onClose}>Закрыть</Button>
-      </DialogActions>
     </Dialog>
   );
 }
