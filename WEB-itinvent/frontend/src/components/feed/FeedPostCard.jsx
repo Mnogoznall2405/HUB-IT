@@ -280,6 +280,8 @@ export default function FeedPostCard({
             position: 'relative',
             bgcolor: '#101114',
             overflow: 'hidden',
+            aspectRatio: { xs: '4 / 3', sm: '16 / 9' },
+            maxHeight: { xs: 340, sm: 420 },
           }}
         >
           <Box
@@ -293,7 +295,7 @@ export default function FeedPostCard({
             sx={{
               display: 'block',
               width: '100%',
-              maxHeight: { xs: 340, sm: 420 },
+              height: '100%',
               objectFit: 'contain',
             }}
           />
