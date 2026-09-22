@@ -67,6 +67,7 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
   const [pendingDeleteComment, setPendingDeleteComment] = useState(null);
   const [replies, setReplies] = useState({});
   const [expandedRoots, setExpandedRoots] = useState(new Set());
+  const [loadingReplyRoots, setLoadingReplyRoots] = useState(() => new Set());
   const [busyReaction, setBusyReaction] = useState('');
 
   const focusComposer = useCallback(() => {
@@ -213,6 +214,7 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
           String(item.id) === String(rootId) ? { ...item, reply_count: Number(item.reply_count || 0) + 1 } : item
         )));
         setExpandedRoots((current) => new Set(current).add(rootId));
+        void loadReplies(rootId);
       } else {
         setItems((current) => current.map((item) => (item.id === tempId ? created : item)));
       }
@@ -288,6 +290,30 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
     }
   };
 
+  const toggleReplies = async (comment) => {
+    const rootId = comment.id;
+    if (expandedRoots.has(rootId)) {
+      setExpandedRoots((current) => {
+        const next = new Set(current);
+        next.delete(rootId);
+        return next;
+      });
+      return;
+    }
+    setExpandedRoots((current) => new Set(current).add(rootId));
+    if (replies[rootId]?.length) return;
+    setLoadingReplyRoots((current) => new Set(current).add(rootId));
+    try {
+      await loadReplies(rootId);
+    } finally {
+      setLoadingReplyRoots((current) => {
+        const next = new Set(current);
+        next.delete(rootId);
+        return next;
+      });
+    }
+  };
+
   const renderComment = (comment, { reply = false } = {}) => {
     const counts = comment.reaction_counts || {};
     return (
@@ -333,12 +359,16 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
           {!comment.pending && !comment.is_deleted ? (
             <Stack direction="row" spacing={0.4} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mt: 0.45 }}>
               <Button size="small" color="inherit" onClick={() => startReply(comment)} startIcon={<ReplyRoundedIcon />} sx={{ minHeight: 34, textTransform: 'none', color: 'text.secondary' }}>Ответить</Button>
-              {REACTIONS.map((reaction) => {
-                const count = Number(counts[reaction.id] || 0);
-                if (!count && comment.viewer_reaction !== reaction.id) return null;
-                return <Button key={reaction.id} size="small" aria-label={`${reaction.label}: ${count}`} aria-pressed={comment.viewer_reaction === reaction.id} onClick={() => react(comment, reaction.id)} disabled={busyReaction === `${comment.id}:${reaction.id}`} sx={{ minWidth: 36, minHeight: 34, px: 0.65, borderRadius: '999px', bgcolor: comment.viewer_reaction === reaction.id ? alpha(theme.palette.primary.main, 0.14) : 'transparent' }}>{reaction.emoji}{count ? ` ${count}` : ''}</Button>;
-              })}
-              {!comment.viewer_reaction ? <Select size="small" value="" displayEmpty aria-label="Добавить реакцию" onChange={(event) => react(comment, event.target.value)} sx={{ minWidth: 48, height: 34, borderRadius: '999px', '& .MuiSelect-select': { py: 0.5, px: 1 } }}><MenuItem value="" disabled>＋</MenuItem>{REACTIONS.map((reaction) => <MenuItem key={reaction.id} value={reaction.id}>{reaction.emoji} {reaction.label}</MenuItem>)}</Select> : null}
+              {post?.reactions_enabled !== false ? (
+                <>
+                  {REACTIONS.map((reaction) => {
+                    const count = Number(counts[reaction.id] || 0);
+                    if (!count && comment.viewer_reaction !== reaction.id) return null;
+                    return <Button key={reaction.id} size="small" aria-label={`${reaction.label}: ${count}`} aria-pressed={comment.viewer_reaction === reaction.id} onClick={() => react(comment, reaction.id)} disabled={busyReaction === `${comment.id}:${reaction.id}`} sx={{ minWidth: 36, minHeight: 34, px: 0.65, borderRadius: '999px', bgcolor: comment.viewer_reaction === reaction.id ? alpha(theme.palette.primary.main, 0.14) : 'transparent' }}>{reaction.emoji}{count ? ` ${count}` : ''}</Button>;
+                  })}
+                  {!comment.viewer_reaction ? <Select size="small" value="" displayEmpty aria-label="Добавить реакцию" onChange={(event) => react(comment, event.target.value)} sx={{ minWidth: 48, height: 34, borderRadius: '999px', '& .MuiSelect-select': { py: 0.5, px: 1 } }}><MenuItem value="" disabled>＋</MenuItem>{REACTIONS.map((reaction) => <MenuItem key={reaction.id} value={reaction.id}>{reaction.emoji} {reaction.label}</MenuItem>)}</Select> : null}
+                </>
+              ) : null}
             </Stack>
           ) : null}
         </Box>
@@ -381,7 +411,33 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
         <Select size="small" value={sort} onChange={(event) => setSort(event.target.value)} inputProps={{ 'aria-label': 'Сортировка комментариев' }} sx={{ height: 38, borderRadius: '10px', fontSize: '0.86rem' }}><MenuItem value="interesting">Интересные</MenuItem><MenuItem value="newest">Новые</MenuItem><MenuItem value="oldest">Старые</MenuItem></Select>
       </Stack>
       <Box aria-live="polite" sx={{ borderTop: '1px solid', borderColor: alpha(theme.palette.text.primary, 0.08) }}>
-        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : loadError && !items.length ? <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Не удалось загрузить комментарии</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{loadError}</Typography><Button onClick={() => void loadComments()} sx={{ mt: 1.5, minHeight: 44, textTransform: 'none' }}>Повторить</Button></Box> : items.length ? <>{items.map((comment) => <Box key={comment.id}>{renderComment(comment)}{Number(comment.reply_count || 0) > 0 && !expandedRoots.has(comment.id) ? <Button onClick={() => { setExpandedRoots((current) => new Set(current).add(comment.id)); void loadReplies(comment.id); }} sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.75, minHeight: 36, textTransform: 'none' }}>Показать ответы · {comment.reply_count}</Button> : null}{expandedRoots.has(comment.id) ? (replies[comment.id] || []).map((reply) => renderComment(reply, { reply: true })) : null}</Box>)}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Начните обсуждение этой публикации.</Typography></Box>}
+        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : loadError && !items.length ? <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Не удалось загрузить комментарии</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{loadError}</Typography><Button onClick={() => void loadComments()} sx={{ mt: 1.5, minHeight: 44, textTransform: 'none' }}>Повторить</Button></Box> : items.length ? <>{items.map((comment) => {
+          const expanded = expandedRoots.has(comment.id);
+          const loadedReplies = replies[comment.id] || [];
+          const repliesLoading = loadingReplyRoots.has(comment.id) && loadedReplies.length === 0;
+          return (
+            <Box key={comment.id}>
+              {renderComment(comment)}
+              {Number(comment.reply_count || 0) > 0 ? (
+                <Button
+                  aria-expanded={expanded}
+                  onClick={() => void toggleReplies(comment)}
+                  sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.75, minHeight: 36, textTransform: 'none' }}
+                >
+                  {expanded ? 'Скрыть ответы' : `Показать ответы · ${comment.reply_count}`}
+                </Button>
+              ) : null}
+              {expanded ? (
+                repliesLoading ? (
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: { xs: 5.5, sm: 8 }, py: 0.75 }}>
+                    <CircularProgress size={16} />
+                    <Typography variant="body2" color="text.secondary">Загрузка ответов…</Typography>
+                  </Stack>
+                ) : loadedReplies.map((reply) => renderComment(reply, { reply: true }))
+              ) : null}
+            </Box>
+          );
+        })}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Начните обсуждение этой публикации.</Typography></Box>}
       </Box>
       {composer}
       <Dialog open={Boolean(pendingDeleteComment)} onClose={() => setPendingDeleteComment(null)} fullWidth maxWidth="xs">

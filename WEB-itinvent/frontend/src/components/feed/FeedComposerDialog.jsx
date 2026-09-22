@@ -3,23 +3,21 @@ import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
   Chip,
   CircularProgress,
+  createFilterOptions,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
   FormControlLabel,
   Grid,
   IconButton,
-  InputLabel,
   ListItemText,
-  MenuItem,
-  Select,
   Stack,
   Switch,
   TextField,
@@ -69,6 +67,54 @@ const EMPTY_FORM = {
   poll_is_anonymous: false,
   poll_closes_at: '',
 };
+
+const AUDIENCE_OPTIONS = [
+  { value: 'all', label: 'Все пользователи' },
+  { value: 'roles', label: 'Выбранные роли' },
+  { value: 'users', label: 'Конкретные пользователи' },
+  { value: 'departments', label: 'Отделы и подразделения' },
+  { value: 'cities', label: 'Города' },
+  { value: 'departments_cities', label: 'Отделы в выбранных городах' },
+];
+
+const PRIORITY_OPTIONS = [
+  { value: 'low', label: 'Информация' },
+  { value: 'normal', label: 'Обычная новость' },
+  { value: 'high', label: 'Важное сообщение' },
+];
+
+const filterAnywhereOptions = createFilterOptions({ matchFrom: 'any', ignoreCase: true, trim: true });
+const filterUserOptions = createFilterOptions({
+  matchFrom: 'any',
+  ignoreCase: true,
+  trim: true,
+  stringify: (option) => [option?.full_name, option?.username].filter(Boolean).join(' '),
+});
+
+const parseTagsField = (value) => String(value || '')
+  .split(',')
+  .map((item) => item.trim().replace(/^#/, ''))
+  .filter(Boolean);
+
+const joinTagsField = (values) => [...new Set(
+  (Array.isArray(values) ? values : []).flatMap((item) => parseTagsField(item)),
+)].join(', ');
+
+const renderCheckedOption = (getPrimary, getSecondary) => (props, option, { selected }) => {
+  const { key, ...optionProps } = props;
+  const secondary = getSecondary ? getSecondary(option) : '';
+  return (
+    <Box component="li" key={key} {...optionProps}>
+      <Checkbox checked={selected} tabIndex={-1} disableRipple size="small" sx={{ p: 0.25, mr: 0.75, flexShrink: 0 }} />
+      <ListItemText primary={getPrimary(option)} secondary={secondary || undefined} />
+    </Box>
+  );
+};
+
+const renderOptionChips = (getLabel) => (values, getTagProps) => values.map((option, index) => {
+  const { key, ...tagProps } = getTagProps({ index });
+  return <Chip key={key} {...tagProps} label={getLabel(option)} size="small" />;
+});
 
 const toLocalDateTime = (value) => {
   if (!value) return '';
@@ -145,6 +191,7 @@ export default function FeedComposerDialog({
   const [autosaveState, setAutosaveState] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [categories, setCategories] = useState([]);
+  const [tagOptions, setTagOptions] = useState([]);
   const [existingAttachments, setExistingAttachments] = useState([]);
   const [coverAttachmentId, setCoverAttachmentId] = useState('');
   const [pendingDeleteAttachment, setPendingDeleteAttachment] = useState(null);
@@ -168,6 +215,12 @@ export default function FeedComposerDialog({
     let cancelled = false;
     hubAnnouncementsAPI.getCategories().then((payload) => {
       if (!cancelled) setCategories(Array.isArray(payload?.items) ? payload.items : []);
+    }).catch(() => undefined);
+    hubAnnouncementsAPI.getTags().then((payload) => {
+      if (!cancelled) {
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        setTagOptions([...new Set(items.map((item) => item.name || item.slug).filter(Boolean))]);
+      }
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [open]);
@@ -215,6 +268,18 @@ export default function FeedComposerDialog({
     ? hubAnnouncementsAPI.buildAttachmentUrl(post.id, selectedExistingCover.id)
     : '';
   const composerCoverUrl = coverPreview || existingCoverUrl;
+  const audienceRoleOptions = form.audience_roles.map((value) => (
+    (recipients.roles || []).find((item) => item.value === value) || { value, label: value }
+  ));
+  const audienceUserOptions = form.audience_user_ids.map((id) => (
+    (recipients.users || []).find((item) => Number(item.id) === Number(id)) || { id, username: String(id) }
+  ));
+  const audienceDepartmentOptions = form.audience_department_codes.map((code) => (
+    (recipients.departments || []).find((item) => item.code === code) || { code, name: code }
+  ));
+  const audienceCityOptions = form.audience_cities.map((value) => (
+    (recipients.cities || []).find((item) => item.value === value) || { value, label: value }
+  ));
 
   const buildPayload = useCallback((extra = {}) => ({
     title: form.title.trim(),
@@ -409,8 +474,10 @@ export default function FeedComposerDialog({
             required
             fullWidth
             error={titleInvalid}
+            placeholder="Например: переезд офиса в новое здание"
             helperText={titleInvalid ? 'Введите заголовок длиной не менее 3 символов.' : 'Коротко сформулируйте главную новость.'}
             inputProps={{ maxLength: 240 }}
+            InputLabelProps={{ shrink: true }}
           />
           <TextField
             label="Краткое описание"
@@ -419,8 +486,10 @@ export default function FeedComposerDialog({
             fullWidth
             multiline
             minRows={2}
+            placeholder="Одно-два предложения для карточки в ленте"
             inputProps={{ maxLength: 800 }}
             helperText="Этот текст виден в свёрнутой карточке. Если оставить поле пустым, будет использовано начало публикации."
+            InputLabelProps={{ shrink: true }}
           />
           <Box>
             <Typography sx={{ mb: 0.75, fontWeight: 800 }}>Структура текста</Typography>
@@ -437,6 +506,7 @@ export default function FeedComposerDialog({
             minRows={10}
             placeholder="Расскажите подробнее: что произошло, для кого это важно и что нужно сделать."
             visualVariant="taskDialog"
+            inputLabelProps={{ shrink: true }}
           />
 
           <Box sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: '14px', bgcolor: ui.panelBg, boxShadow: `inset 0 0 0 1px ${ui.borderSoft}` }}>
@@ -449,11 +519,11 @@ export default function FeedComposerDialog({
             </Stack>
             {form.poll_enabled ? (
               <Stack spacing={1.25} sx={{ mt: 1.5 }}>
-                <TextField fullWidth label="Вопрос" value={form.poll_question} onChange={(event) => setField('poll_question', event.target.value)} error={submitted && form.poll_question.trim().length < 3} inputProps={{ maxLength: 300 }} />
+                <TextField fullWidth label="Вопрос" value={form.poll_question} onChange={(event) => setField('poll_question', event.target.value)} error={submitted && form.poll_question.trim().length < 3} placeholder="Что хотите узнать у коллег?" inputProps={{ maxLength: 300 }} InputLabelProps={{ shrink: true }} />
                 <Stack spacing={0.75}>
                   {form.poll_options.map((option, index) => (
                     <Stack key={index} direction="row" spacing={0.75} alignItems="center">
-                      <TextField fullWidth label={`Вариант ${index + 1}`} value={option} onChange={(event) => updatePollOption(index, event.target.value)} error={submitted && !String(option || '').trim()} inputProps={{ maxLength: 160 }} />
+                      <TextField fullWidth label={`Вариант ${index + 1}`} value={option} onChange={(event) => updatePollOption(index, event.target.value)} error={submitted && !String(option || '').trim()} placeholder="Текст варианта" inputProps={{ maxLength: 160 }} InputLabelProps={{ shrink: true }} />
                       <IconButton aria-label={`Удалить вариант ${index + 1}`} disabled={form.poll_options.length <= 2} onClick={() => removePollOption(index)} sx={{ width: 44, height: 44, flexShrink: 0 }}><DeleteOutlineRoundedIcon /></IconButton>
                     </Stack>
                   ))}
@@ -506,138 +576,150 @@ export default function FeedComposerDialog({
             <AccordionDetails>
               <Grid container spacing={1.5}>
                 <Grid item xs={12} md={6}>
-                  <FormControl fullWidth error={audienceInvalid}>
-                    <InputLabel id="feed-audience-label">Аудитория</InputLabel>
-                    <Select
-                      labelId="feed-audience-label"
-                      label="Аудитория"
-                      value={form.audience_scope}
-                      onChange={(event) => setField('audience_scope', event.target.value)}
-                    >
-                      <MenuItem value="all">Все пользователи</MenuItem>
-                      <MenuItem value="roles">Выбранные роли</MenuItem>
-                      <MenuItem value="users">Конкретные пользователи</MenuItem>
-                      <MenuItem value="departments">Отделы и подразделения</MenuItem>
-                      <MenuItem value="cities">Города</MenuItem>
-                      <MenuItem value="departments_cities">Отделы в выбранных городах</MenuItem>
-                    </Select>
-                  </FormControl>
+                  <Autocomplete
+                    options={AUDIENCE_OPTIONS}
+                    value={AUDIENCE_OPTIONS.find((option) => option.value === form.audience_scope) || AUDIENCE_OPTIONS[0]}
+                    onChange={(_event, option) => { if (option) setField('audience_scope', option.value); }}
+                    getOptionLabel={(option) => option.label}
+                    isOptionEqualToValue={(option, optionValue) => option.value === optionValue.value}
+                    filterOptions={filterAnywhereOptions}
+                    autoHighlight
+                    disableClearable
+                    noOptionsText="Ничего не найдено"
+                    renderInput={(params) => (
+                      <TextField {...params} label="Аудитория" placeholder="Поиск варианта…" error={audienceInvalid} InputLabelProps={{ shrink: true }} />
+                    )}
+                  />
                 </Grid>
                 <Grid item xs={12} md={6}>
-                  <FormControl fullWidth>
-                    <InputLabel id="feed-category-label">Категория</InputLabel>
-                    <Select labelId="feed-category-label" label="Категория" value={form.category_id} onChange={(event) => setField('category_id', event.target.value)}>
-                      <MenuItem value="">Без категории</MenuItem>
-                      {categories.map((category) => <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>)}
-                    </Select>
-                  </FormControl>
+                  <Autocomplete
+                    options={categories}
+                    value={categories.find((category) => String(category.id) === String(form.category_id)) || null}
+                    onChange={(_event, option) => setField('category_id', option?.id || '')}
+                    getOptionLabel={(option) => option.name || ''}
+                    isOptionEqualToValue={(option, optionValue) => String(option.id) === String(optionValue.id)}
+                    filterOptions={filterAnywhereOptions}
+                    autoHighlight
+                    noOptionsText="Категория не найдена"
+                    renderInput={(params) => (
+                      <TextField {...params} label="Категория" placeholder="Без категории" InputLabelProps={{ shrink: true }} />
+                    )}
+                  />
                 </Grid>
                 <Grid item xs={12} md={6}>
-                  <TextField fullWidth label="Теги" value={form.tags} onChange={(event) => setField('tags', event.target.value)} placeholder="офис, инструкция, безопасность" helperText="Разделяйте теги запятыми." />
+                  <Autocomplete
+                    multiple
+                    freeSolo
+                    options={tagOptions}
+                    value={parseTagsField(form.tags)}
+                    onChange={(_event, values) => setField('tags', joinTagsField(values))}
+                    filterOptions={filterAnywhereOptions}
+                    autoHighlight
+                    noOptionsText="Совпадений нет — Enter добавит новый тег"
+                    renderTags={renderOptionChips((option) => option)}
+                    renderInput={(params) => (
+                      <TextField {...params} label="Теги" placeholder="офис, инструкция, безопасность" helperText="Выберите из списка или введите свой и нажмите Enter." InputLabelProps={{ shrink: true }} />
+                    )}
+                  />
                 </Grid>
                 <Grid item xs={12} md={6}>
-                  <FormControl fullWidth>
-                    <InputLabel id="feed-priority-label">Тип сообщения</InputLabel>
-                    <Select labelId="feed-priority-label" label="Тип сообщения" value={form.priority} onChange={(event) => setField('priority', event.target.value)}>
-                      <MenuItem value="low">Информация</MenuItem>
-                      <MenuItem value="normal">Обычная новость</MenuItem>
-                      <MenuItem value="high">Важное сообщение</MenuItem>
-                    </Select>
-                  </FormControl>
+                  <Autocomplete
+                    options={PRIORITY_OPTIONS}
+                    value={PRIORITY_OPTIONS.find((option) => option.value === form.priority) || PRIORITY_OPTIONS[1]}
+                    onChange={(_event, option) => { if (option) setField('priority', option.value); }}
+                    getOptionLabel={(option) => option.label}
+                    isOptionEqualToValue={(option, optionValue) => option.value === optionValue.value}
+                    filterOptions={filterAnywhereOptions}
+                    autoHighlight
+                    disableClearable
+                    noOptionsText="Ничего не найдено"
+                    renderInput={(params) => (
+                      <TextField {...params} label="Тип сообщения" placeholder="Поиск типа…" InputLabelProps={{ shrink: true }} />
+                    )}
+                  />
                 </Grid>
                 {form.audience_scope === 'roles' ? (
                   <Grid item xs={12}>
-                    <FormControl fullWidth error={audienceInvalid}>
-                      <InputLabel id="feed-roles-label">Роли</InputLabel>
-                      <Select
-                        multiple
-                        labelId="feed-roles-label"
-                        label="Роли"
-                        value={form.audience_roles}
-                        onChange={(event) => setField('audience_roles', event.target.value)}
-                        renderValue={(values) => values.map((value) => recipients.roles.find((item) => item.value === value)?.label || value).join(', ')}
-                      >
-                        {(recipients.roles || []).map((role) => (
-                          <MenuItem key={role.value} value={role.value}>
-                            <Checkbox checked={form.audience_roles.includes(role.value)} />
-                            <ListItemText primary={role.label} />
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
+                    <Autocomplete
+                      multiple
+                      disableCloseOnSelect
+                      options={recipients.roles || []}
+                      value={audienceRoleOptions}
+                      onChange={(_event, options) => setField('audience_roles', options.map((option) => option.value))}
+                      getOptionLabel={(option) => option.label || String(option.value || '')}
+                      isOptionEqualToValue={(option, optionValue) => option.value === optionValue.value}
+                      filterOptions={filterAnywhereOptions}
+                      autoHighlight
+                      noOptionsText="Ничего не найдено"
+                      renderOption={renderCheckedOption((option) => option.label)}
+                      renderTags={renderOptionChips((option) => option.label)}
+                      renderInput={(params) => (
+                        <TextField {...params} label="Роли" placeholder="Поиск роли…" error={audienceInvalid} helperText={audienceInvalid ? 'Выберите хотя бы одну роль.' : ''} InputLabelProps={{ shrink: true }} />
+                      )}
+                    />
                   </Grid>
                 ) : null}
                 {form.audience_scope === 'users' ? (
                   <Grid item xs={12}>
-                    <FormControl fullWidth error={audienceInvalid}>
-                      <InputLabel id="feed-users-label">Пользователи</InputLabel>
-                      <Select
-                        multiple
-                        labelId="feed-users-label"
-                        label="Пользователи"
-                        value={form.audience_user_ids}
-                        onChange={(event) => setField('audience_user_ids', event.target.value.map(Number))}
-                        renderValue={(values) => values.map((value) => {
-                          const item = recipients.users.find((user) => Number(user.id) === Number(value));
-                          return item?.full_name || item?.username || value;
-                        }).join(', ')}
-                      >
-                        {(recipients.users || []).map((user) => (
-                          <MenuItem key={user.id} value={Number(user.id)}>
-                            <Checkbox checked={form.audience_user_ids.includes(Number(user.id))} />
-                            <ListItemText primary={user.full_name || user.username} secondary={user.username} />
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
+                    <Autocomplete
+                      multiple
+                      disableCloseOnSelect
+                      options={recipients.users || []}
+                      value={audienceUserOptions}
+                      onChange={(_event, options) => setField('audience_user_ids', options.map((option) => Number(option.id)))}
+                      getOptionLabel={(option) => option.full_name || option.username || String(option.id || '')}
+                      isOptionEqualToValue={(option, optionValue) => Number(option.id) === Number(optionValue.id)}
+                      filterOptions={filterUserOptions}
+                      autoHighlight
+                      noOptionsText="Ничего не найдено"
+                      renderOption={renderCheckedOption((option) => option.full_name || option.username, (option) => option.username)}
+                      renderTags={renderOptionChips((option) => option.full_name || option.username)}
+                      renderInput={(params) => (
+                        <TextField {...params} label="Пользователи" placeholder="Поиск сотрудника…" error={audienceInvalid} helperText={audienceInvalid ? 'Выберите хотя бы одного пользователя.' : ''} InputLabelProps={{ shrink: true }} />
+                      )}
+                    />
                   </Grid>
                 ) : null}
                 {form.audience_scope === 'departments' || form.audience_scope === 'departments_cities' ? (
                   <Grid item xs={12}>
-                    <FormControl fullWidth error={audienceInvalid}>
-                      <InputLabel id="feed-departments-label">Отделы</InputLabel>
-                      <Select
-                        multiple
-                        labelId="feed-departments-label"
-                        label="Отделы"
-                        value={form.audience_department_codes}
-                        onChange={(event) => setField('audience_department_codes', event.target.value)}
-                        renderValue={(values) => values.map((value) => (
-                          (recipients.departments || []).find((item) => item.code === value)?.name || value
-                        )).join(', ')}
-                      >
-                        {(recipients.departments || []).map((department) => (
-                          <MenuItem key={department.code} value={department.code}>
-                            <Checkbox checked={form.audience_department_codes.includes(department.code)} />
-                            <ListItemText primary={department.name} />
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
+                    <Autocomplete
+                      multiple
+                      disableCloseOnSelect
+                      options={recipients.departments || []}
+                      value={audienceDepartmentOptions}
+                      onChange={(_event, options) => setField('audience_department_codes', options.map((option) => option.code))}
+                      getOptionLabel={(option) => option.name || String(option.code || '')}
+                      isOptionEqualToValue={(option, optionValue) => option.code === optionValue.code}
+                      filterOptions={filterAnywhereOptions}
+                      autoHighlight
+                      noOptionsText="Ничего не найдено"
+                      renderOption={renderCheckedOption((option) => option.name)}
+                      renderTags={renderOptionChips((option) => option.name)}
+                      renderInput={(params) => (
+                        <TextField {...params} label="Отделы" placeholder="Поиск отдела…" error={audienceInvalid} helperText={audienceInvalid ? 'Выберите хотя бы один отдел.' : ''} InputLabelProps={{ shrink: true }} />
+                      )}
+                    />
                   </Grid>
                 ) : null}
                 {form.audience_scope === 'cities' || form.audience_scope === 'departments_cities' ? (
                   <Grid item xs={12}>
-                    <FormControl fullWidth error={audienceInvalid}>
-                      <InputLabel id="feed-cities-label">Города</InputLabel>
-                      <Select
-                        multiple
-                        labelId="feed-cities-label"
-                        label="Города"
-                        value={form.audience_cities}
-                        onChange={(event) => setField('audience_cities', event.target.value)}
-                        renderValue={(values) => values.map((value) => (
-                          (recipients.cities || []).find((item) => item.value === value)?.label || value
-                        )).join(', ')}
-                      >
-                        {(recipients.cities || []).map((city) => (
-                          <MenuItem key={city.value} value={city.value}>
-                            <Checkbox checked={form.audience_cities.includes(city.value)} />
-                            <ListItemText primary={city.label} />
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
+                    <Autocomplete
+                      multiple
+                      disableCloseOnSelect
+                      options={recipients.cities || []}
+                      value={audienceCityOptions}
+                      onChange={(_event, options) => setField('audience_cities', options.map((option) => option.value))}
+                      getOptionLabel={(option) => option.label || String(option.value || '')}
+                      isOptionEqualToValue={(option, optionValue) => option.value === optionValue.value}
+                      filterOptions={filterAnywhereOptions}
+                      autoHighlight
+                      noOptionsText="Ничего не найдено"
+                      renderOption={renderCheckedOption((option) => option.label)}
+                      renderTags={renderOptionChips((option) => option.label)}
+                      renderInput={(params) => (
+                        <TextField {...params} label="Города" placeholder="Поиск города…" error={audienceInvalid} helperText={audienceInvalid ? 'Выберите хотя бы один город.' : ''} InputLabelProps={{ shrink: true }} />
+                      )}
+                    />
                   </Grid>
                 ) : null}
                 <Grid item xs={12} md={4}>

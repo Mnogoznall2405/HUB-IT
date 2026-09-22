@@ -10,6 +10,7 @@ function MarkdownEditor({
   onChange,
   minRows = 6,
   placeholder = '',
+  inputLabelProps,
   enableAiTransform = false,
   transformContext = 'announcement',
   onAiTransform,
@@ -96,6 +97,7 @@ function MarkdownEditor({
           minRows={minRows}
           fullWidth
           placeholder={placeholder}
+          InputLabelProps={inputLabelProps}
           sx={isTaskDialog ? { '& .MuiOutlinedInput-root': { bgcolor: ui.panelSolid, borderRadius: '10px' } } : undefined}
         />
       ) : (
