@@ -128,6 +128,7 @@ export default function Feed() {
   const itemsLengthRef = useRef(items.length);
   const listRequestRef = useRef(0);
   const listPendingRef = useRef(false);
+  const loadMoreObserverRef = useRef(null);
   const listScope = JSON.stringify([query, activeFilter, categoryId, tag, deepLinkedPostId]);
   const listScopeRef = useRef(listScope);
   if (listScopeRef.current !== listScope) {
@@ -197,6 +198,18 @@ export default function Feed() {
       }
     }
   }, []);
+
+  const canAutoLoadMore = typeof window !== 'undefined' && 'IntersectionObserver' in window;
+  const loadMoreSentinelRef = useCallback((node) => {
+    loadMoreObserverRef.current?.disconnect();
+    loadMoreObserverRef.current = null;
+    if (!node || !canAutoLoadMore) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadPage({ reset: false });
+    }, { rootMargin: '360px 0px' });
+    observer.observe(node);
+    loadMoreObserverRef.current = observer;
+  }, [canAutoLoadMore, loadPage]);
 
   const [taxonomyError, setTaxonomyError] = useState(false);
 
@@ -932,15 +945,21 @@ export default function Feed() {
               </Paper>
             )}
 
-            {!loading && items.length < total ? (
-              <Button
-                variant="outlined"
-                onClick={() => void loadPage({ reset: false })}
-                disabled={loadingMore}
-                sx={{ minHeight: 48, borderRadius: '12px', mx: { xs: 1.5, sm: 0 }, bgcolor: feedSurface, textTransform: 'none', fontWeight: 700 }}
-              >
-                {loadingMore ? <CircularProgress size={22} /> : `Показать ещё · ${Math.max(0, total - items.length)}`}
-              </Button>
+            {!loading && !MANAGEMENT_STATUS_BY_FILTER[activeFilter] && items.length < total ? (
+              canAutoLoadMore ? (
+                <Box ref={loadMoreSentinelRef} aria-hidden="true" sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 48 }}>
+                  {loadingMore ? <CircularProgress size={22} /> : null}
+                </Box>
+              ) : (
+                <Button
+                  variant="outlined"
+                  onClick={() => void loadPage({ reset: false })}
+                  disabled={loadingMore}
+                  sx={{ minHeight: 48, borderRadius: '12px', mx: { xs: 1.5, sm: 0 }, bgcolor: feedSurface, textTransform: 'none', fontWeight: 700 }}
+                >
+                  {loadingMore ? <CircularProgress size={22} /> : `Показать ещё · ${Math.max(0, total - items.length)}`}
+                </Button>
+              )
             ) : null}
               </>
             )}
