@@ -118,7 +118,7 @@ export default function Feed() {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const commentComposerRef = useRef(null);
   const focusedCommentsPostRef = useRef('');
-  const feedScrollPositionRef = useRef(0);
+  const feedScrollPositionRef = useRef(null);
   const openedPostIdRef = useRef('');
   const wasInDetailRef = useRef(Boolean(deepLinkedPostId));
   const queryRef = useRef(query);
@@ -267,13 +267,18 @@ export default function Feed() {
 
   const openPost = useCallback((post, { comments = false } = {}) => {
     if (!post?.id) return;
-    feedScrollPositionRef.current = window.scrollY;
-    openedPostIdRef.current = String(post.id);
+    const postId = String(post.id);
+    const anchor = Array.from(document.querySelectorAll('[data-feed-post-open]'))
+      .find((element) => element.getAttribute('data-feed-post-open') === postId);
+    feedScrollPositionRef.current = {
+      y: window.scrollY,
+      postId,
+      viewportTop: anchor ? anchor.getBoundingClientRect().top : null,
+    };
+    openedPostIdRef.current = postId;
+    if (!comments) window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     const path = buildFeedPostPath(post.id);
     navigate(comments ? `${path}#comments` : path);
-    if (!comments) {
-      window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: 'auto' }));
-    }
   }, [navigate]);
 
   const closePost = useCallback(() => {
@@ -281,17 +286,45 @@ export default function Feed() {
   }, [navigate]);
 
   useEffect(() => {
+    if (!('scrollRestoration' in window.history)) return undefined;
+    const previous = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    return () => { window.history.scrollRestoration = previous; };
+  }, []);
+
+  useEffect(() => {
     const isInDetail = Boolean(deepLinkedPostId);
-    if (!isInDetail && wasInDetailRef.current) {
-      window.requestAnimationFrame(() => {
-        window.scrollTo({ top: feedScrollPositionRef.current, left: 0, behavior: 'auto' });
-        const openedPostId = openedPostIdRef.current;
-        const trigger = Array.from(document.querySelectorAll('[data-feed-post-open]'))
-          .find((element) => element.getAttribute('data-feed-post-open') === openedPostId);
-        trigger?.focus({ preventScroll: true });
-      });
-    }
+    const leavingDetail = !isInDetail && wasInDetailRef.current;
     wasInDetailRef.current = isInDetail;
+    if (!leavingDetail) return undefined;
+    const saved = feedScrollPositionRef.current;
+    let appliedTop = null;
+    const restore = () => {
+      const anchor = saved?.postId
+        ? Array.from(document.querySelectorAll('[data-feed-post-open]'))
+          .find((element) => element.getAttribute('data-feed-post-open') === saved.postId)
+        : null;
+      if (anchor && saved?.viewportTop !== null && saved?.viewportTop !== undefined) {
+        appliedTop = Math.max(0, anchor.getBoundingClientRect().top + window.scrollY - saved.viewportTop);
+      } else {
+        appliedTop = saved?.y || 0;
+      }
+      window.scrollTo({ top: appliedTop, left: 0, behavior: 'auto' });
+    };
+    const frame = window.requestAnimationFrame(() => {
+      restore();
+      const openedPostId = openedPostIdRef.current;
+      const trigger = Array.from(document.querySelectorAll('[data-feed-post-open]'))
+        .find((element) => element.getAttribute('data-feed-post-open') === openedPostId);
+      trigger?.focus({ preventScroll: true });
+    });
+    const retry = window.setTimeout(() => {
+      if (appliedTop === null || Math.abs(window.scrollY - appliedTop) < 24) restore();
+    }, 350);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(retry);
+    };
   }, [deepLinkedPostId]);
 
   const focusCommentComposer = useCallback(() => {

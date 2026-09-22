@@ -327,14 +327,14 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
         alignItems="flex-start"
         sx={{
           px: { xs: 1.25, sm: 2 },
-          py: 1.25,
+          py: 1,
           ml: reply ? { xs: 2, sm: 5 } : 0,
           borderInlineStart: reply ? `2px solid ${alpha(theme.palette.primary.main, 0.2)}` : 0,
           scrollMarginBlock: { xs: '140px', sm: '80px' },
           '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: -2 },
         }}
       >
-        <Avatar sx={{ width: reply ? 32 : 36, height: reply ? 32 : 36, fontSize: 11, bgcolor: 'action.selected', color: 'text.primary' }}>
+        <Avatar sx={{ width: reply ? 28 : 32, height: reply ? 28 : 32, fontSize: 11, bgcolor: 'action.selected', color: 'text.primary' }}>
           {getFeedInitials(comment.full_name || comment.username)}
         </Avatar>
         <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -357,7 +357,7 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
             </Stack>
           ) : null}
           {!comment.pending && !comment.is_deleted ? (
-            <Stack direction="row" spacing={0.4} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mt: 0.45 }}>
+            <Stack direction="row" spacing={0.4} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mt: 0.25 }}>
               <Button size="small" color="inherit" onClick={() => startReply(comment)} startIcon={<ReplyRoundedIcon />} sx={{ minHeight: 34, textTransform: 'none', color: 'text.secondary' }}>Ответить</Button>
               {post?.reactions_enabled !== false ? (
                 <>
@@ -385,11 +385,11 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
       borderTop: '1px solid',
       borderColor: alpha(theme.palette.text.primary, 0.08),
       bgcolor: ui.panelSolid,
-      p: { xs: 1.25, sm: 2 },
-      pb: { xs: 'max(10px, env(safe-area-inset-bottom))', sm: 2 },
+      p: { xs: 1, sm: 1.5 },
+      pb: { xs: 'max(8px, env(safe-area-inset-bottom))', sm: 1.5 },
       boxShadow: { xs: `0 -8px 24px ${alpha(theme.palette.common.black, ui.isDark ? 0.22 : 0.08)}`, sm: 'none' },
     }}>
-      <Stack direction="row" alignItems="center" sx={{ minHeight: 32, mb: 0.5, pl: { xs: 0, sm: 5.5 }, visibility: replyingTo ? 'visible' : 'hidden' }} aria-hidden={!replyingTo}>
+      <Stack direction="row" alignItems="center" sx={{ minHeight: 26, mb: 0.25, pl: { xs: 0, sm: 5.5 }, visibility: replyingTo ? 'visible' : 'hidden' }} aria-hidden={!replyingTo}>
         <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: 1 }}>Ответ для {replyingTo?.full_name || replyingTo?.username || 'пользователя'}</Typography>
         <IconButton aria-label="Отменить ответ" size="small" tabIndex={replyingTo ? 0 : -1} onClick={cancelReply} sx={{ width: 32, height: 32 }}><CloseRoundedIcon fontSize="small" /></IconButton>
       </Stack>
@@ -406,12 +406,12 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
 
   return (
     <Paper component="section" id="feed-comments" aria-labelledby="feed-comments-title" aria-busy={loading} elevation={0} sx={{ borderRadius: { xs: 0, sm: '14px' }, bgcolor: ui.panelSolid, boxShadow: 'none', border: 0, overflow: 'hidden' }}>
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ px: { xs: 1.75, sm: 2.25 }, py: 1.5 }}>
-        <Typography id="feed-comments-title" component="h2" sx={{ fontSize: '1.05rem', fontWeight: 800, flex: 1 }}>Комментарии{Number(post?.comments_count || 0) > 0 ? ` · ${post.comments_count}` : ''}</Typography>
-        <Select size="small" value={sort} onChange={(event) => setSort(event.target.value)} inputProps={{ 'aria-label': 'Сортировка комментариев' }} sx={{ height: 38, borderRadius: '10px', fontSize: '0.86rem' }}><MenuItem value="interesting">Интересные</MenuItem><MenuItem value="newest">Новые</MenuItem><MenuItem value="oldest">Старые</MenuItem></Select>
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ px: { xs: 1.5, sm: 2 }, py: 1 }}>
+        <Typography id="feed-comments-title" component="h2" sx={{ fontSize: '1rem', fontWeight: 800, flex: 1 }}>Комментарии{Number(post?.comments_count || 0) > 0 ? ` · ${post.comments_count}` : ''}</Typography>
+        <Select size="small" value={sort} onChange={(event) => setSort(event.target.value)} inputProps={{ 'aria-label': 'Сортировка комментариев' }} sx={{ height: 34, borderRadius: '10px', fontSize: '0.84rem' }}><MenuItem value="interesting">Интересные</MenuItem><MenuItem value="newest">Новые</MenuItem><MenuItem value="oldest">Старые</MenuItem></Select>
       </Stack>
       <Box aria-live="polite" sx={{ borderTop: '1px solid', borderColor: alpha(theme.palette.text.primary, 0.08) }}>
-        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : loadError && !items.length ? <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Не удалось загрузить комментарии</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{loadError}</Typography><Button onClick={() => void loadComments()} sx={{ mt: 1.5, minHeight: 44, textTransform: 'none' }}>Повторить</Button></Box> : items.length ? <>{items.map((comment) => {
+        {loading ? <Stack spacing={2} sx={{ p: 2 }}>{[0, 1].map((index) => <Stack key={index} direction="row" spacing={1}><Skeleton variant="circular" width={36} height={36} /><Box sx={{ flex: 1 }}><Skeleton width="35%" /><Skeleton width={index ? '60%' : '78%'} /></Box></Stack>)}</Stack> : loadError && !items.length ? <Box sx={{ px: 2, py: 3, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Не удалось загрузить комментарии</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>{loadError}</Typography><Button onClick={() => void loadComments()} sx={{ mt: 1, minHeight: 44, textTransform: 'none' }}>Повторить</Button></Box> : items.length ? <>{items.map((comment) => {
           const expanded = expandedRoots.has(comment.id);
           const loadedReplies = replies[comment.id] || [];
           const repliesLoading = loadingReplyRoots.has(comment.id) && loadedReplies.length === 0;
@@ -422,14 +422,14 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
                 <Button
                   aria-expanded={expanded}
                   onClick={() => void toggleReplies(comment)}
-                  sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.75, minHeight: 36, textTransform: 'none' }}
+                  sx={{ ml: { xs: 5.5, sm: 8 }, mb: 0.5, minHeight: 32, textTransform: 'none' }}
                 >
                   {expanded ? 'Скрыть ответы' : `Показать ответы · ${comment.reply_count}`}
                 </Button>
               ) : null}
               {expanded ? (
                 repliesLoading ? (
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: { xs: 5.5, sm: 8 }, py: 0.75 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: { xs: 5.5, sm: 8 }, py: 0.5 }}>
                     <CircularProgress size={16} />
                     <Typography variant="body2" color="text.secondary">Загрузка ответов…</Typography>
                   </Stack>
@@ -437,7 +437,7 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
               ) : null}
             </Box>
           );
-        })}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ p: 4, textAlign: 'center' }}><Typography sx={{ fontWeight: 800 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Начните обсуждение этой публикации.</Typography></Box>}
+        })}{nextOffset !== null ? <Button fullWidth onClick={() => loadComments({ append: true })} sx={{ minHeight: 44, textTransform: 'none' }}>Показать ещё</Button> : null}</> : <Box sx={{ px: 2, py: 3, textAlign: 'center' }}><Typography variant="body2" sx={{ fontWeight: 700 }}>Комментариев пока нет</Typography><Typography variant="body2" color="text.secondary">Начните обсуждение этой публикации.</Typography></Box>}
       </Box>
       {composer}
       <Dialog open={Boolean(pendingDeleteComment)} onClose={() => setPendingDeleteComment(null)} fullWidth maxWidth="xs">
